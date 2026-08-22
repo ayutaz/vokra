@@ -41,6 +41,53 @@ ASR has decoding controls: `--beam-size`, `--word-timestamps`,
   --beam-size 5 --word-timestamps
 ```
 
+### CT-Punc paired token input
+
+CT-Punc deliberately does not infer tokenization. Supply the token strings and
+the exact vocabulary ids passed to the model in one versioned UTF-8 TSV file:
+
+```
+vokra-ct-punc-tsv-v1
+101	we
+202	build
+303	世界
+```
+
+Each record is `<u32 id><TAB><escaped token>`. A token may contain literal
+Unicode or the escapes `\\`, `\t`, `\n`, `\r`, and `\u{HEX}`. Empty records,
+extra TSV columns, malformed escapes, and out-of-range ids are errors. The
+single record stream makes a token/id length mismatch unrepresentable.
+
+```sh
+./target/release/vokra-cli run --model ct-punc.gguf \
+  --tokens tokens.tsv --output restored.txt
+```
+
+Without `--output`, the restored text is printed as `ct_punc: <text>`. With
+`--output`, the file is the exact restored UTF-8 text without a diagnostic
+prefix or implicit newline.
+
+### Mimi encode/decode and the portable code container
+
+Mimi has explicit directions; nested Rust arrays are never used as an
+interchange format:
+
+```sh
+./target/release/vokra-cli run --model mimi.gguf --codec-mode encode \
+  --input speech-24k.wav --output speech.vmc
+./target/release/vokra-cli run --model mimi.gguf --codec-mode decode \
+  --input speech.vmc --output reconstructed.wav
+```
+
+`speech.vmc` is `VKRMCODE` version 1. Its fixed little-endian header pins mono
+channel count, sample rate, frame rate in milli-Hz, frame count, original PCM
+sample count, codebook count/size, feature width, and the SHA-256 of the
+effective GGUF codebook tables. The payload is unsigned 32-bit codes in
+time-major `[frame, codebook]` order. Decode rejects a different model hash or
+topology, trailing/truncated bytes, out-of-range codes, and a PCM length that
+does not equal `frames * model_hop`. Encode likewise requires an exact positive
+frame-hop multiple; there is no implicit resample, padding, or trimming.
+
 ## 3. `convert` — checkpoint → GGUF (offline)
 
 The runtime loads **GGUF only**; ONNX / safetensors are handled here, offline.
@@ -104,8 +151,9 @@ extractor:
 time_sec<TAB>hz<TAB>voiced<TAB>confidence
 ```
 
-An unvoiced frame is `hz=0.000`, `voiced=false`. Neither op exposes a
-per-frame confidence, so the column reports `1.0` / `0.0` alongside `voiced`
+An unvoiced frame is `hz=0.000`, `voiced=false`. PyIN reports its real
+per-frame voiced probability in `confidence`; YIN has no probability output,
+so its confidence remains the explicit binary `1.0` / `0.0` alongside `voiced`.
 rather than a fabricated score.
 
 The sample rate is **not** fixed: both ops derive their lag search from the
@@ -147,7 +195,7 @@ make, not one Vokra makes behind your back.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-16 — against the `run` / `convert` / `bench` / `f0`
+**Last verified: 2026-08-21 — against the `run` / `convert` / `bench` / `f0`
 argument parsers in `crates/vokra-cli/src/`.**
 
 - **Update responsibility**: a PR that adds or renames a CLI flag updates this

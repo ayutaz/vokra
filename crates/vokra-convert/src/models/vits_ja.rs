@@ -61,12 +61,12 @@
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Irodori contract). Real-weight binding is a follow-up
-//! wave gated on the upstream tensor-name manifest fetch; this
-//! converter passes every F32 / F16 tensor through unchanged so a
-//! future `VitsJaWeights::from_gguf` can walk the same names.
+//! GGUF tensor names are the normalized upstream `VITSGenerator` names
+//! verbatim. Operator-held ESPnet `.pth` files must first pass through
+//! `tools/parity/vits_ja_prepare_checkpoint.py`, which strips known wrapper
+//! prefixes and validates the canonical 885-tensor manifest. The runtime's
+//! `VitsJaCheckpoint` binds that complete manifest; arbitrary training-state
+//! dictionaries are rejected rather than partly consumed.
 //!
 //! # BF16 posture
 //!
@@ -432,9 +432,10 @@ mod tests {
 
     fn minimal_safetensors_one_f32() -> Vec<u8> {
         // Single f32 tensor so the pass-through arm fires once and the
-        // report counts a non-zero write. The tensor name mirrors an
-        // upstream ESPnet VITS scaffold name (text encoder embed).
-        let header = r#"{"generator.text_encoder.emb.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+        // report counts a non-zero write. The tensor name mirrors the
+        // canonical normalized ESPnet VITS generator name.
+        let header =
+            r#"{"text_encoder.emb.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
@@ -451,7 +452,8 @@ mod tests {
     }
 
     fn minimal_safetensors_one_f16() -> Vec<u8> {
-        let header = r#"{"generator.text_encoder.emb.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let header =
+            r#"{"text_encoder.emb.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
@@ -460,7 +462,8 @@ mod tests {
     }
 
     fn minimal_safetensors_one_bf16() -> Vec<u8> {
-        let header = r#"{"generator.text_encoder.emb.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let header =
+            r#"{"text_encoder.emb.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
@@ -788,7 +791,7 @@ mod tests {
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
         let info = file
-            .tensor_info("generator.text_encoder.emb.weight")
+            .tensor_info("text_encoder.emb.weight")
             .expect("BF16 tensor must be present after pass-through");
         assert_eq!(
             info.dtype,

@@ -9,7 +9,8 @@
 //! - **per-frame** DC-offset removal then pre-emphasis (`0.97`), applied to
 //!   each frame independently (librosa applies neither, or applies them once to
 //!   the whole utterance);
-//! - the **Povey window** ([`povey`], Hann^0.85);
+//! - an explicit analysis-window contract: **Povey** ([`povey`], Hann^0.85)
+//!   for the compatibility entry point, or symmetric **Hamming** for FunASR;
 //! - a power spectrum over a **power-of-two padded** FFT (`400 → 512`);
 //! - a **Kaldi HTK mel** with **mel-domain** triangular ramps
 //!   ([`MelInterp::Mel`]) and *no* Slaney area normalization;
@@ -27,12 +28,21 @@
 //! (`feature-window.cc`, `feature-fbank.cc`, `mel-computations.cc`); no
 //! reference numbers are fabricated.
 
-use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale};
+use vokra_core::ir::graph::{MelAttrs, MelInterp, MelNorm, MelScale, Window, WindowSymmetry};
 use vokra_core::{Result, VokraError};
 
 use crate::fft::RealFftPlan;
 use crate::mel::MelFilterbank;
-use crate::window::povey;
+use crate::window::{povey, window as sample_window};
+
+/// Analysis-window variants used by Kaldi-compatible fbank frontends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KaldiFbankWindow {
+    /// Kaldi's default Hann^0.85 window (CAM++ / CosyVoice).
+    Povey,
+    /// Symmetric Hamming window used by the released FunASR FSMN-VAD.
+    Hamming,
+}
 
 /// Kaldi fbank knobs (mirrors `torchaudio.compliance.kaldi.fbank`), with the
 /// frame geometry expressed directly in **samples** to avoid the ms↔samples
@@ -102,6 +112,19 @@ impl KaldiFbankOpts {
 /// or if `pcm` is shorter than one frame (snip-edges yields no frames — the
 /// reference clip is too short to embed).
 pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usize)> {
+    kaldi_fbank_with_window(pcm, opts, KaldiFbankWindow::Povey)
+}
+
+/// Computes Kaldi-compatible fbank features with an explicit analysis window.
+///
+/// This is the same checked frontend as [`kaldi_fbank`]; only the window is
+/// selectable. Existing callers retain Povey through [`kaldi_fbank`], while
+/// FunASR FSMN-VAD selects the Hamming contract stamped by its `config.yaml`.
+pub fn kaldi_fbank_with_window(
+    pcm: &[f32],
+    opts: &KaldiFbankOpts,
+    window: KaldiFbankWindow,
+) -> Result<(Vec<f32>, usize)> {
     let (flen, fshift) = (opts.frame_length, opts.frame_shift);
     if flen == 0 || fshift == 0 {
         return Err(VokraError::InvalidArgument(
@@ -130,7 +153,12 @@ pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usiz
     let nbins = opts.num_mel_bins;
 
     // Analysis window, FFT plan and mel bank are frame-invariant: build once.
-    let win = povey(flen);
+    let win = match window {
+        KaldiFbankWindow::Povey => povey(flen),
+        KaldiFbankWindow::Hamming => {
+            sample_window(Window::Hamming, flen, WindowSymmetry::Symmetric)
+        }
+    };
     let plan = RealFftPlan::new(fft_size);
     let nyquist = 0.5 * opts.sample_rate as f32;
     let fmax = if opts.high_freq > 0.0 {
@@ -178,7 +206,7 @@ pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usiz
             }
             frame[0] -= c * frame[0];
         }
-        // (3) Windowing (Povey).
+        // (3) Windowing (the caller-selected checked contract).
         for (v, &w) in frame[..flen].iter_mut().zip(win.iter()) {
             *v *= w;
         }
@@ -315,5 +343,32 @@ mod tests {
             "tone spectrum unexpectedly flat ({lo}..{hi})"
         );
         assert!(t > 0);
+    }
+
+    #[test]
+    fn explicit_povey_matches_compatibility_entry_point() {
+        let opts = KaldiFbankOpts {
+            subtract_mean: false,
+            ..KaldiFbankOpts::camplus()
+        };
+        let pcm = signal(4_000);
+        let compat = kaldi_fbank(&pcm, &opts).unwrap();
+        let explicit = kaldi_fbank_with_window(&pcm, &opts, KaldiFbankWindow::Povey).unwrap();
+        assert_eq!(compat, explicit);
+    }
+
+    #[test]
+    fn hamming_is_a_distinct_finite_frontend_contract() {
+        let opts = KaldiFbankOpts {
+            subtract_mean: false,
+            ..KaldiFbankOpts::camplus()
+        };
+        let pcm = signal(4_000);
+        let (povey_features, frames) = kaldi_fbank(&pcm, &opts).unwrap();
+        let (hamming_features, hamming_frames) =
+            kaldi_fbank_with_window(&pcm, &opts, KaldiFbankWindow::Hamming).unwrap();
+        assert_eq!(frames, hamming_frames);
+        assert!(hamming_features.iter().all(|value| value.is_finite()));
+        assert_ne!(povey_features, hamming_features);
     }
 }

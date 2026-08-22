@@ -25,10 +25,8 @@
 //!       [`Qwen3TtsConfig::qwen3_tts_0_6b_base`] (transcribed **verbatim**
 //!       from `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/config.json`,
 //!       fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」),
-//!     * at least one talker weight tensor is present so the GGUF is not
-//!       metadata-only (the converter surfaces a loud `notes` entry when
-//!       `report.written == 0`, and this leg refuses to report a pass on
-//!       such a metadata-only artifact);
+//!     * the strict [`Qwen3TtsCheckpoint`] binder accepts the exact official
+//!       478-tensor name/shape manifest and exposes a permissive license;
 //! * when BOTH the GGUF **and** the reference-dir env vars are set: reads
 //!   the upstream `config.json` at
 //!   `<VOKRA_QWEN3_TTS_REFDIR>/config.json`, walks the `talker.*` and
@@ -40,19 +38,15 @@
 //!   converter's transcription — a hidden drift between the two would
 //!   fail loudly.
 //!
-//! # Why no `synthesize` / `transcribe` byte-level parity yet
+//! # Why no `synthesize` byte-level parity yet
 //!
-//! `Qwen3TtsTts::synthesize` returns `VokraError::NotImplemented` today
-//! (see the module docstring on
-//! `vokra_models::qwen3_tts::Qwen3TtsTts::synthesize`): the full
-//! talker → code-predictor → `qwen3_tts_codec` → neural-decoder → PCM
-//! forward is a follow-up wave. This harness therefore validates what IS
-//! available — GGUF binding, arch tag, primary-source-transcribed hparam
-//! chunks, talker weight-tensor shape sanity — plus the flip-the-switch
-//! reference-dir cross-check that closes the transcription loop against
-//! the upstream `config.json`. Byte-level output parity gets added here
-//! by name (`parity_qwen3_tts_synthesize_matches_upstream_pcm`) in the
-//! follow-up wave that lands the forward.
+//! [`Qwen3TtsCheckpoint::synthesize`] returns `VokraError::NotImplemented`
+//! today: the strict real-checkpoint binder and native decoder-block forward
+//! are available, but the full talker → code predictor → separate neural
+//! speech-tokenizer decoder → PCM path still needs its BPE sidecars,
+//! autoregressive loop, and sibling tokenizer checkpoint. The decoder block
+//! has its own committed official-PyTorch fixture parity test; this harness
+//! covers the large real artifact without claiming end-to-end PCM parity.
 //!
 //! # Zero-dep
 //!
@@ -66,12 +60,13 @@
 
 use std::path::{Path, PathBuf};
 
+use vokra_core::LicenseClass;
 use vokra_core::gguf::chunks::KEY_MODEL_ARCH;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::json::{self, JsonValue};
 use vokra_models::qwen3_tts::{
     EXPECTED_ARCH, QWEN3_TTS_NUM_CODE_GROUPS, QWEN3_TTS_SAMPLE_RATE, QWEN3_TTS_SPEAKER_EMBED_DIM,
-    Qwen3TtsConfig,
+    Qwen3TtsCheckpoint, Qwen3TtsConfig,
 };
 
 // ---------------------------------------------------------------------------
@@ -165,11 +160,6 @@ fn get_str<'f>(file: &'f GgufFile, key: &str, gguf_path: &Path) -> &'f str {
         ),
         None => panic!("{}: missing `{key}`", gguf_path.display()),
     }
-}
-
-/// True if any tensor name matches `pred`.
-fn any_tensor(file: &GgufFile, pred: impl Fn(&str) -> bool) -> bool {
-    file.tensors().iter().any(|t| pred(&t.name))
 }
 
 // ---------------------------------------------------------------------------
@@ -389,31 +379,6 @@ fn assert_metadata_matches_primary_source(file: &GgufFile, gguf_path: &Path) {
     eprintln!(
         "[parity_tts_qwen3] {} `vokra.qwen3_tts.*` chunk group matches \
          Qwen3TtsConfig::qwen3_tts_0_6b_base() ({} tensors present)",
-        gguf_path.display(),
-        file.tensors().len(),
-    );
-}
-
-/// Loud "the GGUF has at least one talker weight tensor" check.
-///
-/// A metadata-only GGUF (the converter's `report.written == 0` path) is a
-/// legitimate conversion outcome (BF16 pass-through arm not yet wired for
-/// the release build), but a parity leg claiming a pass on it would be
-/// fabricated — no weights means no forward, so no reference could ever
-/// have run. Fail loudly (FR-EX-08).
-fn assert_has_talker_weights(file: &GgufFile, gguf_path: &Path) {
-    let has_talker = any_tensor(file, |name| name.starts_with("talker."));
-    assert!(
-        has_talker,
-        "{}: no `talker.*` weight tensors present — the GGUF is metadata-only \
-         (converter `report.written == 0` path; upstream is BF16 and the streaming BF16 \
-         pass-through has not landed yet). Refusing to report a pass on a weightless \
-         artifact (FR-EX-08). Re-convert after widening to F32 offline, or wait for the \
-         Moshi / Kyutai-STT streaming BF16 arm.",
-        gguf_path.display(),
-    );
-    eprintln!(
-        "[parity_tts_qwen3] {}: talker weight tensors present ({} total tensors)",
         gguf_path.display(),
         file.tensors().len(),
     );
@@ -700,7 +665,7 @@ fn assert_gguf_matches_reference_config(file: &GgufFile, refdir: &Path, gguf_pat
 /// | env vars set                                                | leg that fires                                  |
 /// | :---------------------------------------------------------- | :---------------------------------------------- |
 /// | *(none)*                                                    | clean skip with reason (never a fabricated pass) |
-/// | `VOKRA_QWEN3_TTS_GGUF`                                      | load + arch + `vokra.qwen3_tts.*` chunk check + talker-weight sanity |
+/// | `VOKRA_QWEN3_TTS_GGUF`                                      | mmap load + metadata + strict 478-tensor binder |
 /// | `VOKRA_QWEN3_TTS_GGUF` + `VOKRA_QWEN3_TTS_REFDIR`           | above + cross-check every axis against `<refdir>/config.json` |
 #[test]
 fn parity_qwen3_tts_qwen3_tts_0_6b_base() {
@@ -715,13 +680,7 @@ fn parity_qwen3_tts_qwen3_tts_0_6b_base() {
 
     // Opted-in: unreadable / malformed / arch-mismatched all hard-fail
     // (never a silent skip once the env var is set).
-    let bytes = std::fs::read(&gguf_path).unwrap_or_else(|e| {
-        panic!(
-            "VOKRA_QWEN3_TTS_GGUF = {}: unreadable: {e}",
-            gguf_path.display(),
-        )
-    });
-    let file = GgufFile::parse(bytes).unwrap_or_else(|e| {
+    let file = GgufFile::open(&gguf_path).unwrap_or_else(|e| {
         panic!(
             "VOKRA_QWEN3_TTS_GGUF = {}: not a parseable GGUF: {e:?}",
             gguf_path.display(),
@@ -729,7 +688,30 @@ fn parity_qwen3_tts_qwen3_tts_0_6b_base() {
     });
 
     assert_metadata_matches_primary_source(&file, &gguf_path);
-    assert_has_talker_weights(&file, &gguf_path);
+    let checkpoint = Qwen3TtsCheckpoint::from_gguf(&file).unwrap_or_else(|error| {
+        panic!(
+            "VOKRA_QWEN3_TTS_GGUF = {}: strict 0.6B binder rejected the artifact: {error}",
+            gguf_path.display(),
+        )
+    });
+    assert_eq!(checkpoint.model_name(), "qwen3-tts-12hz-0.6b-base");
+    assert_eq!(checkpoint.tensor_count(), 478);
+    assert_eq!(checkpoint.weight_license(), LicenseClass::Permissive);
+    let talker_block = checkpoint
+        .load_talker_block(&file, 0)
+        .expect("decode real BF16 talker layer 0");
+    let code_predictor_block = checkpoint
+        .load_code_predictor_block(&file, 0)
+        .expect("decode real BF16 code-predictor layer 0");
+    assert_eq!(talker_block.q_proj.len(), 2_048 * 1_024);
+    assert_eq!(code_predictor_block.q_proj.len(), 2_048 * 1_024);
+    assert!(talker_block.q_proj.iter().all(|value| value.is_finite()));
+    assert!(
+        code_predictor_block
+            .q_proj
+            .iter()
+            .all(|value| value.is_finite())
+    );
 
     if let Some(refdir) = refdir_env {
         assert_gguf_matches_reference_config(&file, &refdir, &gguf_path);

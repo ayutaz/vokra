@@ -115,6 +115,9 @@
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{ChatterboxNanoCheckpoint, ChatterboxNanoSpeakerProjection};
+
 // ---------------------------------------------------------------------------
 // Public seam re-exports (SoTA plan §1(a) 訂正 shared with CosyVoice2/3)
 // ---------------------------------------------------------------------------

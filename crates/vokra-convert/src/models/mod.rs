@@ -83,6 +83,10 @@ pub(crate) mod chatterbox_turbo;
 // (`vokra-models::cosyvoice2::hift_chain::HiFTChain`) applies —
 // no new op or backend kernel is added.
 pub(crate) mod chatterbox_nano;
+// Charsiu English 10 ms forced aligner. The converter accepts only the
+// canonical `charsiu/en_w2v2_fc_10ms` manifest, folds its positional-conv
+// weight norm, and stamps the official 42-entry phone inventory.
+pub(crate) mod charsiu;
 pub(crate) mod cosyvoice2;
 // M5 gap follow-up (2026-07-30): marl/crepe (Kim et al. 2018) — a
 // monophonic F0 (fundamental-frequency) extractor. The upstream release
@@ -253,18 +257,16 @@ pub mod neutts_air;
 // ecapa_tdnn / qwen3_tts / vibevoice pattern; real-weight parity is
 // deferred to owner sign-off (`docs/license-audit.md` §3.1).
 pub mod nkf_aec;
-// coverage-audit-2026-08-03 Wave A ticket: Xiph RNNoise v0.2
-// (BSD-3-Clause, ~90 KB `weights_blob_9.bin` from
-// `github.com/xiph/rnnoise/releases/tag/v0.2`). Real-time noise reduction
-// — a compact GRU stack over 22-band Bark filterbank features
+// Xiph RNNoise v0.2 (BSD-3-Clause). The 2024-04-15 release contains the
+// trained arrays in `src/rnnoise_data.c` (not a standalone weight asset).
+// Its 65-feature / 32-band network is Conv1d(128) + Conv1d(384) + 3×GRU(384)
 // (Valin 2018, arXiv:1709.08243). Distinct arch tag from DeepFilterNet3
 // (Vokra's existing `Denoise` ModelKind and `vokra.denoise.*` chunk
 // group): DFN3 is complex-Conv + ERB deep-filtering, RNNoise is tiny-GRU
 // + Bark, and silently sharing would mis-route the runtime dispatch.
-// BF16 pass-through skeleton mirroring `neucodec` / `emotion2vec`;
-// real-weight parity is deferred to owner once the future
-// `vokra-models/src/rnnoise/` native forward and Xiph reference-C parity
-// land. The upstream C-array blob is flattened to safetensors by
+// The strict 36-array converter and `vokra-models::rnnoise` real-weight
+// neural forward are pinned against the Xiph C implementation. The C arrays
+// are converted to canonical safetensors by
 // `tools/parity/rnnoise_prepare_checkpoint.py` before entering the
 // converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
 // no C / Python enters the runtime, NFR-DS-02).
@@ -908,16 +910,12 @@ pub mod yue_bundle;
 // Distinct arch tag `openwakeword`, category `kws`. Scale ~0.01 GB =
 // local convert safe on M1 iMac (well below vast.ai threshold).
 pub mod openwakeword;
-// 2026-08-02 Wave residual: UsefulSensors/moonshine-tiny (27M raw-audio
-// transformer enc-dec ASR, MIT). Distinct from Whisper: no mel front-end
-// (raw 16 kHz audio via Conv1D stack) + rotary + SwiGLU. Distinct arch
-// tag `moonshine`, category `asr`. Scale ~0.11 GB = local convert safe.
+// `moonshine-ai/moonshine-tiny` (27M raw-audio transformer enc-dec ASR,
+// MIT). Exact 160-tensor F32 manifest + pinned BPE tokenizer.
+pub(crate) mod moonshine_common;
 pub mod moonshine_tiny;
-// 2026-08-02 Wave residual: UsefulSensors/moonshine-base (61.5M raw-audio
-// transformer enc-dec ASR, MIT). Sibling to `moonshine_tiny` — same
-// arch family (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
-// backbone. Distinct arch tag `moonshine` (shared with sibling Tiny),
-// category `asr`. Scale ~0.25 GB = local convert safe.
+// `moonshine-ai/moonshine-base` (61.5M sibling). Exact 210-tensor F32
+// manifest; shared runtime arch and tokenizer contract with Tiny.
 pub mod moonshine_base;
 // 2026-08-02 Wave residual: facebook/demucs (HT-Demucs, MIT). Hybrid
 // transformer Demucs (Rouard et al. 2023, arXiv:2211.08553) — U-Net

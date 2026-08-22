@@ -71,7 +71,7 @@
 //!
 //! | op-kind id                       | FR-OP    | blocker                                            |
 //! | -------------------------------- | -------- | -------------------------------------------------- |
-//! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | runtime primitive landed (`vokra_ops::bigvgan_generator`, `BigVGanGenerator::forward`), plus a standalone `bigvgan` arch binder (`vokra_models::bigvgan`, whose `BigVGan::decode` delegates verbatim) and a converter; the min-dtype anchor is registered (M2-08). Reserved: the graph-side `OpKind` variant + C ABI export. Separately still loud-partial: `BigVGan::from_gguf` binds no tensor, so weights come from `new` / `synthesized` today |
+//! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | runtime primitive, strict real-weight binder, alias-free forward, CLI mel contract, and independent waveform parity landed; the min-dtype anchor is registered (M2-08). Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`CTC_DECODE_OP`]                | FR-OP-41 | runtime primitives landed (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam`, incl. n-gram LM shallow fusion + hotword boost) and the NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`); those binders are loud-partial and name this primitive as the piece that already exists, so no live call site exists yet. Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`RNNT_DECODE_OP`]               | FR-OP-42 | runtime primitive landed (`vokra_ops::rnnt_decode`) with a **live consumer**: `ParakeetTdt11b::decode_tdt` calls it at `vokra-models/src/parakeet_tdt_1_1b/mod.rs:621`. The e2e `transcribe` stays loud-partial (encoder axes await the first real 1.1B weight). Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | CAM++ already covers speaker embedding             |
@@ -153,7 +153,7 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
             blocker: "graph-side OpKind variant + C ABI export reserved; the runtime vocoder \
                       landed (vokra_ops::bigvgan_generator, plus the vokra_models::bigvgan arch \
                       binder whose decode delegates verbatim) and the min-dtype anchor is \
-                      registered (M2-08). BigVGan::from_gguf is separately still loud-partial",
+                      registered (M2-08); strict real-weight binding and waveform parity landed",
         },
         M5ResidualAnchor {
             op_id: CTC_DECODE_OP,

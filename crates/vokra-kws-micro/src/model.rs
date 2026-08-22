@@ -267,9 +267,10 @@ impl Model {
                 )));
             }
             let data: Vec<f32> = bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
+                // The multiple-of-four gate above makes every chunk exactly
+                // four bytes. Use `chunks` instead of the newer
+                // `slice::as_chunks` API to preserve the workspace MSRV.
+                .chunks(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             tensors.push(Tensor {

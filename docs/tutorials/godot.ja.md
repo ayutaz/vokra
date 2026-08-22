@@ -42,10 +42,16 @@ var out: Dictionary = session.synthesize("Hello from Vokra.")
 ```
 
 `VokraStream` は streaming プリミティブ — `push_pcm(pcm)` / `poll(n)` /
-`interrupt()`（barge-in）を提供する。正直なギャップに注意: GDScript から
-VAD stream を開く（Object を返す `session.vad_open_stream`）のは**まだ配線
-されておらず**、偽の値ではなく明示エラーを返す — その return path には追加の
-Variant plumbing が要る。
+`interrupt()`（barge-in）を提供する。`session.vad_open_stream(16000)` は
+Godot が lifetime を所有する実 `VokraStream` Object を返す:
+
+```gdscript
+var stream: VokraStream = session.vad_open_stream(16000)
+stream.push_pcm(pcm_chunk)
+var probabilities: PackedFloat32Array = stream.poll(64)
+stream.interrupt()
+stream.free()
+```
 
 ## 4. demo プロジェクト
 
@@ -66,15 +72,15 @@ Variant plumbing が要る。
 実行時に system CUDA を `dlopen` する。`libcudart` / `libcudnn` / `libcublas`
 / `libnvrtc` を同梱しない）。
 
-## 6. 正直な状態（owner editor 検証）
+## 6. 検証状態
 
 trampoline の runtime dispatch は code-complete: `transcribe` / `synthesize` /
-`push_pcm` / `poll` / `interrupt` が Variant を unpack/pack して runtime を呼ぶ
+`vad_open_stream` / `push_pcm` / `poll` / `interrupt` が Variant を unpack/pack して runtime を呼ぶ
 （`integrations/vokra-godot/src/trampoline.rs`
-<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->）。ここで**未完**
-なのは、実 Godot 4.x editor 内で動かして demo を end-to-end で駆動すること —
-その runtime 検証は owner タスク（M3-11 T19）である。本ページは API 契約で
-あって、editor で実際に動作確認済みという証明ではない。
+<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->）。Linux CI は
+checksum 固定した公式 Godot 4.7.1 を取得し、asset-free の ClassDB/error harness
+と実 Silero VAD stream smoke の両方を実行する。ASR/TTS demo scene を editor で
+対話的に開く確認は manual release 項目のままであり、自動化済みとは扱わない。
 
 ## 7. トラブルシューティング
 
@@ -83,7 +89,7 @@ trampoline の runtime dispatch は code-complete: `transcribe` / `synthesize` /
 | extension がロードされない | `.gdextension` の `bin/` パスがプラットフォーム/arch と一致する必要がある。正しい `TARGET_TRIPLE` で再ビルドする。 |
 | ビルドスクリプトが `unknown target triple` | サポートされる 5 triple のいずれかを渡す（`FR-EX-08`、無言の推測なし）。 |
 | `session.transcribe` がエラーを返す | `vokra_last_error()` を読む。backend/op エラーは明示的 `CallError` として現れ、偽の結果にはならない。 |
-| `vad_open_stream` がエラーを返す | 想定どおり — Object return path は未配線（§3）。 |
+| `vad_open_stream` がエラーを返す | streaming VAD model をロードし、model と一致する sample rate を指定する。backend 詳細は `vokra_last_error()` に残る。 |
 
 ## Next steps
 
@@ -93,13 +99,13 @@ trampoline の runtime dispatch は code-complete: `transcribe` / `synthesize` /
 
 ## Keeping this page current
 
-**最終確認日: 2026-07-21 — `integrations/vokra-godot/src/`（trampoline は
-dispatch する。2026-07-10 付 README はそれより前で stale）に対して確認。**
+**最終確認日: 2026-08-22 — 公式 Godot 4.7.1 headless、実 Silero VAD GGUF
++ raw-f32 PCM stream。**
 
 - **更新責任**: GDExtension API・ビルド target・compliance scanner を変えた PR
   が、同一 PR で本ページと英語版を更新する。
-- **review cadence**: 四半期 Go/No-go review（`NFR-MT-05`）。実 editor の
-  runtime 検証は owner（M3-11 T19）のもので、上に正直に記録している。
+- **review cadence**: 四半期 Go/No-go review（`NFR-MT-05`）。interactive editor
+  check は manual release 項目として上に正直に記録している。
 - **dispatch 状態の再検証**（README を信用しない）:
 
 ```sh

@@ -29,7 +29,8 @@
 #
 # Usage:
 #   GODOT=/path/to/Godot scripts/verify-godot-headless.sh                    # asset-free
-#   GODOT=/path/to/Godot scripts/verify-godot-headless.sh MODEL.gguf AUDIO.wav
+#   GODOT=/path/to/Godot scripts/verify-godot-headless.sh MODEL.gguf AUDIO.wav # ASR
+#   GODOT=/path/to/Godot scripts/verify-godot-headless.sh --vad MODEL.gguf AUDIO.f32
 #
 # `GODOT` may point at the binary itself or at a macOS `Godot.app` bundle.
 # Godot is a free download (https://godotengine.org/download) — no account,
@@ -44,8 +45,22 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CRATE_DIR="$REPO_ROOT/integrations/vokra-godot"
-MODEL_PATH="${1:-}"
-AUDIO_PATH="${2:-}"
+MODE="asset-free"
+MODEL_PATH=""
+AUDIO_PATH=""
+if [[ "${1:-}" == "--vad" ]]; then
+  MODE="vad"
+  MODEL_PATH="${2:-}"
+  AUDIO_PATH="${3:-}"
+elif [[ -n "${1:-}" || -n "${2:-}" ]]; then
+  MODE="asr"
+  MODEL_PATH="${1:-}"
+  AUDIO_PATH="${2:-}"
+fi
+if [[ "$MODE" != "asset-free" && ( -z "$MODEL_PATH" || -z "$AUDIO_PATH" ) ]]; then
+  echo "ERROR: $MODE verification requires both model and audio paths." >&2
+  exit 2
+fi
 # Per-Godot-invocation watchdog. Generous enough for a cold whisper-base
 # transcription on a loaded machine; short enough that a hang is reported
 # rather than waited out.
@@ -134,11 +149,22 @@ status=0
 
 # --- leg 1: positive path ---------------------------------------------------
 echo
-if [[ -n "$MODEL_PATH" && -n "$AUDIO_PATH" ]]; then
+if [[ "$MODE" != "asset-free" ]]; then
   [[ -f "$MODEL_PATH" ]] || { echo "ERROR: model '$MODEL_PATH' not found." >&2; exit 2; }
   [[ -f "$AUDIO_PATH" ]] || { echo "ERROR: audio '$AUDIO_PATH' not found." >&2; exit 2; }
-  run_limited "$GODOT_TIMEOUT" "$GODOT_BIN" --headless --path "$PROJECT_DIR" \
-    --script res://verify.gd -- "$MODEL_PATH" "$AUDIO_PATH" || status=1
+  # Godot runs with the throwaway project as its working directory. Resolve
+  # caller-relative fixture paths before crossing that boundary; otherwise a
+  # perfectly valid repo-relative GGUF is looked up under PROJECT_DIR and the
+  # smoke only exercises the missing-file error path.
+  MODEL_PATH="$(cd "$(dirname "$MODEL_PATH")" && pwd)/$(basename "$MODEL_PATH")"
+  AUDIO_PATH="$(cd "$(dirname "$AUDIO_PATH")" && pwd)/$(basename "$AUDIO_PATH")"
+  if [[ "$MODE" == "vad" ]]; then
+    run_limited "$GODOT_TIMEOUT" "$GODOT_BIN" --headless --path "$PROJECT_DIR" \
+      --script res://verify.gd -- --vad "$MODEL_PATH" "$AUDIO_PATH" || status=1
+  else
+    run_limited "$GODOT_TIMEOUT" "$GODOT_BIN" --headless --path "$PROJECT_DIR" \
+      --script res://verify.gd -- "$MODEL_PATH" "$AUDIO_PATH" || status=1
+  fi
 else
   echo "No model/audio given → asset-free checks only."
   run_limited "$GODOT_TIMEOUT" "$GODOT_BIN" --headless --path "$PROJECT_DIR" \

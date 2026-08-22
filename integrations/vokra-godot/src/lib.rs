@@ -45,11 +45,10 @@
 //! - **T19**: 実 Godot 4.3+ editor での `demos/asr_demo` + `demos/tts_demo`
 //!   smoke — M3-18 と併走 runtime verification。
 //! - **T20**: M3-11 WP-close PR。
-//! - `session_transcribe`, `session_synthesize`, `stream_push_pcm`, and
-//!   `stream_poll` now have full Variant packing/unpacking. The sole remaining
-//!   trampoline implementation gap is `session_vad_open_stream`: construct a
-//!   Godot Object with the correct `StreamInstance` lifetime and pack it into
-//!   the return Variant. Real editor/headless smoke remains owner evidence.
+//! - `session_transcribe`, `session_synthesize`, `session_vad_open_stream`,
+//!   `stream_push_pcm`, and `stream_poll` now have full Variant
+//!   packing/unpacking and runtime dispatch. Real editor/headless smoke remains
+//!   owner evidence.
 //!
 //! # Unsafe policy (NFR-RL-07, workspace lint `unsafe_code = "deny"`)
 //!

@@ -26,27 +26,23 @@
 //!   sequence (blank between every pair of real tokens) so the algorithm
 //!   covers word / sub-word / character tokens uniformly. No external
 //!   weights.
-//! - [`charsiu`] — Wav2Vec2-based neural forced aligner (real forward,
-//!   2026-07-30). Reports one [`AlignedToken`] per input phoneme. Its
-//!   weights are caller-supplied ([`charsiu::CharsiuWeights`]); the
-//!   `vokra.charsiu.*` GGUF binding is not wired yet, so nothing is loaded
-//!   from a GGUF today — see "Current status (Charsiu)" below, which has
-//!   said so since the real forward landed.
+//! - [`charsiu`] — Wav2Vec2-based neural forced aligner. Reports one
+//!   [`AlignedToken`] per caller-supplied phone. The canonical
+//!   `charsiu/en_w2v2_fc_10ms` checkpoint is converted and bound from GGUF;
+//!   provenance, topology, vocabulary, tensor names and shapes are checked
+//!   before inference.
 //!
 //! # Current status (Charsiu)
 //!
-//! Charsiu now runs a **real** wav2vec 2.0 CTC forward end-to-end:
+//! Charsiu runs the upstream frame-classification forward end-to-end:
 //! raw-waveform 7-layer strided Conv1D stem
 //! ([`vokra_ops::waveform_frontend()`]) → feature projection (LayerNorm +
-//! Linear) → n_layer pre-norm Transformer encoder blocks (MHA + GELU FFN)
-//! → final LayerNorm → CTC head → log-softmax → [`ctc_segmentation`] for
-//! the Viterbi walk. Real weights arrive via [`charsiu::Charsiu::new`]
-//! from a caller-supplied [`charsiu::CharsiuWeights`]
-//! (scaffold via [`charsiu::CharsiuWeights::synthesized`] for shape /
-//! wiring tests). Real-GGUF binding (`from_gguf`) still returns
-//! [`LoadError::Gguf`] naming the follow-up wave that fetches the
-//! upstream tensor-name manifest (same posture as omniASR-CTC /
-//! CosyVoice2 / Voxtral).
+//! Linear) → grouped positional Conv1D → 12 post-norm Transformer blocks
+//! (MHA + exact GELU FFN) → 42-class frame head. The official long-silence
+//! mask and monotone DTW recover phone boundaries; this is not standard CTC
+//! segmentation and `[PAD]` is not treated as a CTC blank. Real GGUFs bind
+//! via [`charsiu::Charsiu::from_file`]; [`charsiu::Charsiu::new`] remains the
+//! checked constructor used by shape fixtures and embedders.
 //!
 //! # Output
 //!

@@ -187,14 +187,13 @@ impl FeatureExtractor {
         }
 
         // (4) Mel filterbank matmul: mel_energy[m] = Σ_k mel_fb[m,k] · power[k].
-        // Iterate row-wise over the fixed-shape filterbank (`as_chunks`
-        // hands out one `[N_BINS]` row per iteration, so `enumerate()` is
-        // not needed on `mel_energy` for indexing).
+        // Iterate row-wise over the fixed-shape filterbank. Explicit indexing
+        // keeps the MSRV at 1.85 (`slice::as_chunks` is newer) while retaining
+        // exact-row semantics: a malformed short table panics at the invariant
+        // boundary instead of accepting a partial final row.
         let mut mel_energy = [0.0f32; N_MELS];
-        for (e, row) in mel_energy
-            .iter_mut()
-            .zip(self.mel_fb.as_chunks::<N_BINS>().0)
-        {
+        for (m, e) in mel_energy.iter_mut().enumerate() {
+            let row = &self.mel_fb[m * N_BINS..(m + 1) * N_BINS];
             let mut acc = 0.0f32;
             for (w, p) in row.iter().zip(power.iter()) {
                 acc += w * p;

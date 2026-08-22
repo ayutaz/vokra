@@ -82,8 +82,8 @@ pub mod anti_aliased_upsample;
 // Anti-aliased periodic-activation vocoder — verbatim port of upstream
 // NVIDIA/BigVGAN (MIT, Copyright (c) 2024 NVIDIA CORPORATION). AMPBlock1 +
 // Snake/SnakeBeta + tanh terminal — see module docstring for the exact
-// upstream line references and a note on the (deferred) alias-free
-// activation wrapper. Snake activation is reused from [`crate::hiftnet`];
+// upstream line references, including the alias-free activation wrapper.
+// Snake activation is reused from [`crate::hiftnet`];
 // SnakeBeta lives here.
 pub mod bigvgan_generator;
 // ---------------------------------------------------------------------------
@@ -155,6 +155,10 @@ pub mod fsq_codec;
 // the M3-08 length_conditioning and M3-17 prosody pattern.
 pub mod flow_sampler;
 // -----------------------------------------------------------------------
+// ---- FireRedVAD native streaming DFSMN ---------------------------------
+// Exact causal DFSMN core for the official FireRedTeam Stream-VAD model.
+pub mod firered_vad;
+// -----------------------------------------------------------------------
 pub mod frontend;
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
 // FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
@@ -199,6 +203,12 @@ pub mod mfcc;
 // reference audio) — API surface only; adapter wiring per-engine is
 // follow-up.
 pub mod voice_ref;
+// ---- Vocos Fourier vocoder ------------------------------------------------
+// Native ConvNeXt-1D backbone + magnitude/phase iSTFT head. Runtime
+// function, not an OpKind variant, matching the hifigan/bigvgan generator
+// posture.
+pub mod vocos;
+// ---------------------------------------------------------------------------
 // ---- SoTA plan KWS binder (openwakeword classifier MLP, 2026-08-05) -----
 // Per-wake-word `Linear → ReLU → Linear → Sigmoid` classifier over a shared
 // 96-d speech embedding. First consumer is `vokra-models::kws::openwakeword`
@@ -308,6 +318,8 @@ pub mod snac_decode;
 pub mod snake;
 // -------------------------------------------------------------------------
 pub mod stft;
+// ---- TEN-VAD v1.0 native network + LPCNet-derived frontend --------------
+pub mod ten_vad;
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend (raw-waveform 7-layer
 // strided conv stem, FR-OP-40) — the mel-free ASR input path wav2vec 2.0 /
 // HuBERT / k2SSL consume. Runtime function, NOT an `OpKind` variant (same
@@ -490,6 +502,10 @@ pub use fsq_codec::{
     group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
 // ---------------------------------------------------------------------------
+pub use firered_vad::{
+    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, firered_vad_dfsmn_forward,
+};
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
 pub use fsmn_vad::{
@@ -508,12 +524,20 @@ pub use hifigan::{
 // -------------------------------------------------------------------------
 pub use istft::istft;
 pub use istft_streaming::{IstftStreamingState, istft_streaming_oneshot};
-pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window};
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+pub use vocos::{
+    VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
+};
 // ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
-pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+pub use openwakeword::{
+    OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights,
+    OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights,
+    openwakeword_classifier_forward, openwakeword_dnn_classifier_forward,
+    openwakeword_embedding_forward, openwakeword_melspectrogram,
+};
 // -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{
@@ -564,7 +588,7 @@ pub use stft::{Spectrogram, stft};
 // ---- SoTA plan Phase JA JA-ASR-1 waveform_frontend re-exports -----------
 pub use waveform_frontend::{
     ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
-    waveform_frontend,
+    waveform_frontend, waveform_frontend_with_right_padding,
 };
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 4 vae_continuous re-exports ------------------------
@@ -579,7 +603,7 @@ pub use voice_ref::{VoiceRef, VoiceRefSource};
 // ---- Wave 7 2026-08-14 audit follow-up classical DSP F0 re-exports ------
 // YIN / PyIN weight-free extractors. See the `pub mod f0` block above for
 // placement / red-line rationale.
-pub use f0::{pyin, yin};
+pub use f0::{PyinFrame, pyin, pyin_detailed, yin};
 // -------------------------------------------------------------------------
 // ---- Wave A (2026-08-15) WPE dereverberation re-exports -----------------
 // See the `pub mod wpe` block above for placement / licence rationale.

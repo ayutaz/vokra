@@ -134,6 +134,11 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 # Operational rule (M0-02-T03): `unsafe` blocks require a `// SAFETY:` comment.
 undocumented_unsafe_blocks = "deny"
+# `clippy.toml` pins suggestions to the declared workspace MSRV. Existing use
+# of APIs stabilised after that floor is audited by the dedicated MSRV build;
+# do not let Clippy turn that separate inventory into unrelated suggestion
+# churn on every stable release.
+incompatible_msrv = "allow"
 
 # ---------------------------------------------------------------------------
 # Build profiles (M1-11a: binary-size levers + <10MB size gate).

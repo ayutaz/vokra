@@ -224,6 +224,14 @@ pub(crate) const ARCH: &str = "whisper";
 /// publish path per X-Codec-2 (2026-07-28) precedent applies.
 pub(crate) const ARCH_CRISPERWHISPER: &str = "crisper-whisper";
 
+/// `vokra.model.arch` value written for `aiola/whisper-medusa-v1`.
+///
+/// The checkpoint wraps the ordinary Whisper-large-v2 tower below the
+/// `whisper_model.` module prefix and adds eleven Medusa residual heads.  The
+/// converter canonicalises only the wrapped Whisper names; the Medusa names
+/// remain distinct and are consumed by `vokra-models::whisper_medusa`.
+pub(crate) const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
+
 /// Which release-family provenance a Whisper GGUF carries. Every
 /// released Whisper family shares the vanilla Whisper tensor topology
 /// (identical `vokra.whisper.*` schema, identical detokenizer, identical
@@ -248,6 +256,10 @@ pub(crate) enum WhisperVariant {
     /// ([`LicenseClass::NonCommercial`]) — T4 Research-only publish
     /// path (`--allow-noncommercial` gate).
     CrisperWhisper,
+    /// `aiola/whisper-medusa-v1` — an MIT Whisper-large-v2 checkpoint whose
+    /// base tower is stored below `whisper_model.` and whose extra Medusa
+    /// heads require a distinct runtime binder.
+    WhisperMedusaV1,
 }
 
 impl WhisperVariant {
@@ -256,13 +268,14 @@ impl WhisperVariant {
         match self {
             Self::OpenAiMit => ARCH,
             Self::CrisperWhisper => ARCH_CRISPERWHISPER,
+            Self::WhisperMedusaV1 => ARCH_WHISPER_MEDUSA_V1,
         }
     }
 
     /// The provenance class stamped for this variant's weight license.
     pub(crate) const fn license_class(self) -> LicenseClass {
         match self {
-            Self::OpenAiMit => LicenseClass::Permissive,
+            Self::OpenAiMit | Self::WhisperMedusaV1 => LicenseClass::Permissive,
             Self::CrisperWhisper => LicenseClass::NonCommercial,
         }
     }
@@ -271,7 +284,7 @@ impl WhisperVariant {
     /// stamped for this variant's weight license.
     pub(crate) const fn license_spdx(self) -> &'static str {
         match self {
-            Self::OpenAiMit => "MIT",
+            Self::OpenAiMit | Self::WhisperMedusaV1 => "MIT",
             Self::CrisperWhisper => "cc-by-nc-4.0",
         }
     }
@@ -283,6 +296,20 @@ impl WhisperVariant {
             Self::CrisperWhisper => {
                 "nyrahealth/CrisperWhisper (cc-by-nc-4.0) — Whisper-large-v3 verbatim-word-timestamps fine-tune"
             }
+            Self::WhisperMedusaV1 => {
+                "aiola/whisper-medusa-v1 (MIT) — Whisper-large-v2 with Medusa residual heads"
+            }
+        }
+    }
+
+    /// Prefix applied to the canonical `model.*` tensor names in the source
+    /// safetensors checkpoint.  Ordinary Whisper variants are already rooted
+    /// at `model.*`; Whisper-Medusa stores the same tower below
+    /// `whisper_model.model.*`.
+    pub(crate) const fn source_prefix(self) -> &'static str {
+        match self {
+            Self::OpenAiMit | Self::CrisperWhisper => "",
+            Self::WhisperMedusaV1 => "whisper_model.",
         }
     }
 }
@@ -437,6 +464,25 @@ pub(crate) fn gguf_tensor_name(hf_name: &str) -> String {
     hf_name.to_owned()
 }
 
+/// Variant-aware source → GGUF tensor mapping.
+///
+/// Only the outer `whisper_model.` wrapper is removed for Medusa.  Its
+/// `medusa_heads.*` tensors have no such prefix and therefore pass through
+/// unchanged.  This keeps the shared Whisper loader on one canonical
+/// `model.*` namespace without hiding or aliasing the extra head family.
+fn gguf_tensor_name_for_variant(hf_name: &str, variant: WhisperVariant) -> String {
+    match hf_name.strip_prefix(variant.source_prefix()) {
+        Some(stripped) if !variant.source_prefix().is_empty() => stripped.to_owned(),
+        _ => gguf_tensor_name(hf_name),
+    }
+}
+
+/// Qualifies one canonical Whisper tensor name for lookup in the source
+/// checkpoint.
+fn source_tensor_name(variant: WhisperVariant, canonical: &str) -> String {
+    format!("{}{canonical}", variant.source_prefix())
+}
+
 /// The Whisper front-end feature-extraction parameters.
 ///
 /// Every value is transcribed from the upstream Whisper implementation, not
@@ -513,8 +559,12 @@ fn tensor_dim(st: &SafetensorsFile, name: &str, axis: usize) -> u64 {
 /// Reads `n_mels` from the checkpoint's `model.encoder.conv1.weight`
 /// (`[d_model, n_mels, 3]`) — 80 for base/small/medium, 128 for large-v3. `0`
 /// when the tensor is absent (a degenerate checkpoint the runtime then rejects).
-fn checkpoint_n_mels(st: &SafetensorsFile) -> u32 {
-    tensor_dim(st, "model.encoder.conv1.weight", 1) as u32
+fn checkpoint_n_mels(st: &SafetensorsFile, variant: WhisperVariant) -> u32 {
+    tensor_dim(
+        st,
+        &source_tensor_name(variant, "model.encoder.conv1.weight"),
+        1,
+    ) as u32
 }
 
 /// Legacy entry point: converts a Whisper safetensors buffer with an
@@ -615,14 +665,26 @@ pub(crate) fn convert_with_policy_and_variant(
     // exercise metadata layout, so those degenerate inputs get a fixed
     // `"whisper-unknown"` label. Real conversions must match one of the five
     // documented sizes.
-    let d_model = tensor_dim(&st, "model.encoder.conv1.weight", 0);
-    let n_mels_ck = tensor_dim(&st, "model.encoder.conv1.weight", 1);
-    let n_audio_layer = count_layers(&st, "model.encoder.layers.");
-    let n_text_layer = count_layers(&st, "model.decoder.layers.");
+    let d_model = tensor_dim(
+        &st,
+        &source_tensor_name(variant, "model.encoder.conv1.weight"),
+        0,
+    );
+    let n_mels_ck = tensor_dim(
+        &st,
+        &source_tensor_name(variant, "model.encoder.conv1.weight"),
+        1,
+    );
+    let n_audio_layer = count_layers(&st, &source_tensor_name(variant, "model.encoder.layers."));
+    let n_text_layer = count_layers(&st, &source_tensor_name(variant, "model.decoder.layers."));
     // n_vocab is needed to distinguish English-only .en variants
     // (vocab 51864) from multilingual (51865/51866) at the same
     // architectural shape — passed to derive_name below.
-    let n_vocab_ck = tensor_dim(&st, "model.decoder.embed_tokens.weight", 0);
+    let n_vocab_ck = tensor_dim(
+        &st,
+        &source_tensor_name(variant, "model.decoder.embed_tokens.weight"),
+        0,
+    );
     let name = match derive_name(d_model, n_audio_layer, n_text_layer, n_mels_ck, n_vocab_ck) {
         Ok(n) => n,
         Err(_)
@@ -655,16 +717,16 @@ pub(crate) fn convert_with_policy_and_variant(
     // The front-end spec's n_mels MUST come from the checkpoint (80 base / 128
     // large-v3), matching the hparams written by `write_hparams`; a hardcoded 80
     // makes the runtime's bit-exact front-end check reject a large-v3 GGUF.
-    frontend_spec(checkpoint_n_mels(&st)).write_into(&mut b);
-    write_hparams(&mut b, &st);
+    frontend_spec(checkpoint_n_mels(&st, variant)).write_into(&mut b);
+    write_hparams(&mut b, &st, variant);
     write_alignment_heads(&mut b, name, passthrough_heads.as_deref());
-    embed_tokenizer(&mut b, &st);
+    embed_tokenizer(&mut b, &st, variant);
     if let Some(p) = policy.as_ref() {
         write_quant_chunk(&mut b, p);
     }
 
     for t in st.tensors() {
-        let name = gguf_tensor_name(&t.name);
+        let name = gguf_tensor_name_for_variant(&t.name, variant);
         match policy.as_ref() {
             Some(p) => {
                 let scheme = resolve(p, &t.name);
@@ -723,16 +785,17 @@ pub(crate) fn convert_with_policy_and_variant(
 /// tensor writes `0` for that key, which the runtime's `WhisperConfig` loader
 /// rejects at load time — the converter stays infallible so degenerate inputs
 /// still round-trip.
-fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile) {
+fn write_hparams(b: &mut GgufBuilder, st: &SafetensorsFile, variant: WhisperVariant) {
     // d_model / n_mels from the first conv weight [d_model, n_mels, 3].
-    let d_model = tensor_dim(st, "model.encoder.conv1.weight", 0);
-    let n_mels = tensor_dim(st, "model.encoder.conv1.weight", 1);
-    let n_audio_ctx = tensor_dim(st, "model.encoder.embed_positions.weight", 0);
-    let n_text_ctx = tensor_dim(st, "model.decoder.embed_positions.weight", 0);
-    let n_vocab = tensor_dim(st, "model.decoder.embed_tokens.weight", 0);
-    let ffn_dim = tensor_dim(st, "model.encoder.layers.0.fc1.weight", 0);
-    let n_audio_layer = count_layers(st, "model.encoder.layers.");
-    let n_text_layer = count_layers(st, "model.decoder.layers.");
+    let source = |canonical: &str| source_tensor_name(variant, canonical);
+    let d_model = tensor_dim(st, &source("model.encoder.conv1.weight"), 0);
+    let n_mels = tensor_dim(st, &source("model.encoder.conv1.weight"), 1);
+    let n_audio_ctx = tensor_dim(st, &source("model.encoder.embed_positions.weight"), 0);
+    let n_text_ctx = tensor_dim(st, &source("model.decoder.embed_positions.weight"), 0);
+    let n_vocab = tensor_dim(st, &source("model.decoder.embed_tokens.weight"), 0);
+    let ffn_dim = tensor_dim(st, &source("model.encoder.layers.0.fc1.weight"), 0);
+    let n_audio_layer = count_layers(st, &source("model.encoder.layers."));
+    let n_text_layer = count_layers(st, &source("model.decoder.layers."));
     // Whisper invariant: head_dim == 64, so n_head == d_model / 64.
     let n_head = if d_model >= WHISPER_HEAD_DIM {
         d_model / WHISPER_HEAD_DIM
@@ -917,8 +980,12 @@ fn write_alignment_heads(b: &mut GgufBuilder, name: &str, passthrough: Option<&[
 /// checkpoints (n_vocab 0/2) are skipped so their metadata counts stay
 /// unchanged. The blob depends only on n_vocab, so the quantized and plain
 /// conversion paths embed byte-identical bytes.
-fn embed_tokenizer(b: &mut GgufBuilder, st: &SafetensorsFile) {
-    let n_vocab = tensor_dim(st, "model.decoder.embed_tokens.weight", 0);
+fn embed_tokenizer(b: &mut GgufBuilder, st: &SafetensorsFile, variant: WhisperVariant) {
+    let n_vocab = tensor_dim(
+        st,
+        &source_tensor_name(variant, "model.decoder.embed_tokens.weight"),
+        0,
+    );
     if n_vocab < u64::from(WHISPER_TEXT_VOCAB_LEN) {
         return;
     }

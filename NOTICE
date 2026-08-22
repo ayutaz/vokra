@@ -9,7 +9,7 @@ It is updated whenever a new model, external dependency, or bundled
 third-party component with distribution-relevant terms is added.
 
 --------------------------------------------------------------------------
-1. BigVGAN: scratch (clean-room) reimplementation policy
+1. BigVGAN (NVIDIA) — MIT attribution
 --------------------------------------------------------------------------
 CORRECTION (2026-07-22): the NVIDIA BigVGAN reference is **no longer**
 non-commercial. github.com/NVIDIA/BigVGAN now ships a standard MIT license
@@ -27,14 +27,24 @@ operator was originally scoped as a from-paper rebuild stays legible.
   Licensed under the MIT License.
   https://github.com/NVIDIA/BigVGAN
 
-If the reference is ported, the MIT license text is to be reproduced in
-crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt in the same pull
-request (see section 9).
+The reference-equivalent native operator, strict real-weight binder, and
+alias-free activation path landed on 2026-08-21. The complete upstream MIT
+text is reproduced in
+crates/vokra-ops/THIRD_PARTY_LICENSES/bigvgan-LICENSE.txt.
 
-Timing note: this is a forward-looking policy statement. The BigVGAN
-operator is not implemented in the current v0.1 spike (milestone M0); it is
-planned for a future release, scheduled together with the models that
-require it (see docs/milestones.md §1.3).
+BigVGAN's `alias_free_activation` implementation is adapted from
+`junjun3518/alias-free-torch` under Apache-2.0. Its sinc and low-pass filter
+construction additionally derives from Alexandre Defossez's `julius` under
+MIT. Vokra's native Rust port changes storage, tensor layout, error handling,
+and scalar execution while retaining those notices. The complete license
+texts are reproduced in:
+
+  crates/vokra-ops/THIRD_PARTY_LICENSES/alias-free-torch-LICENSE.txt
+  crates/vokra-ops/THIRD_PARTY_LICENSES/julius-LICENSE.txt
+
+Sources:
+  https://github.com/junjun3518/alias-free-torch
+  https://github.com/adefossez/julius
 
 --------------------------------------------------------------------------
 2. NVIDIA CUDA / cuDNN / cuBLAS runtime dependencies (not bundled)
@@ -177,9 +187,29 @@ loads only converted weights (offline, to the `vokra.denoise.*` GGUF); no
 ONNX / PyTorch runtime dependency is introduced. The MIT license text is to
 be reproduced in crates/vokra-ops/THIRD_PARTY_LICENSES/deepfilternet-LICENSE.txt
 when the real DeepFilterNet checkpoint is added to the model zoo (owner
-sign-off, docs/license-audit.md §3 — M4-20 T18). RNNoise (BSD, Xiph) and
-GTCRN (Apache 2.0) are alternate denoise candidates; their attribution is
-added here if/when they are integrated.
+sign-off, docs/license-audit.md §3 — M4-20 T18). GTCRN (MIT) is an alternate
+denoise candidate; its attribution is added here if/when its native forward is
+integrated.
+
+--------------------------------------------------------------------------
+8a. RNNoise v0.2 (Xiph.Org) — BSD-3-Clause attribution
+--------------------------------------------------------------------------
+Vokra's `rnnoise` model runtime is a pure-Rust implementation of the RNNoise
+v0.2 signal-processing and recurrent-network topology. The official source is
+also compiled only by developer-side parity oracles; no RNNoise C source or
+library is bundled, compiled, or linked into a Vokra runtime artifact.
+
+  RNNoise v0.2
+  Copyright (c) 2007-2017, 2024 Jean-Marc Valin
+  Copyright (c) 2023 Amazon
+  Copyright (c) 2017, Mozilla
+  Copyright (c) 2005-2017, Xiph.Org Foundation
+  Copyright (c) 2003-2004, Mark Borgerding
+  Licensed under the BSD-3-Clause License.
+  https://github.com/xiph/rnnoise/releases/tag/v0.2
+
+The complete upstream license is reproduced in
+crates/vokra-models/THIRD_PARTY_LICENSES/rnnoise-LICENSE.txt.
 
 --------------------------------------------------------------------------
 10. Japanese G2P chain (Open JTalk lineage) — BSD-3-Clause notices
@@ -298,7 +328,92 @@ the TitaNet checkpoint is added to the official model zoo (owner
 sign-off, docs/license-audit.md §3.1 = 2026-07-30 yousan).
 
 --------------------------------------------------------------------------
-12. NVIDIA NanoCodec — NVIDIA Open Model License attribution
+12. Pipecat SmartTurn v2 — BSD-2-Clause notice
+--------------------------------------------------------------------------
+Vokra's SmartTurn v2 converter, native endpoint classifier, and independent
+reference sidecar target Pipecat's released `pipecat-ai/smart-turn-v2`
+checkpoint and the endpoint head published in the Pipecat repository at
+commit c560a748b4213ca8db6f43a5d165d91aaa124a52.
+
+  Pipecat / SmartTurn
+  Copyright (c) 2024–2026, Daily
+  Licensed under the BSD 2-Clause License.
+  Source: https://github.com/pipecat-ai/pipecat
+          https://huggingface.co/pipecat-ai/smart-turn-v2
+
+The runtime remains dependency-free and does not compile or link Pipecat,
+Transformers, ONNX Runtime, or Python. The pinned Python sidecar is an offline
+parity oracle only. Official model weights are not bundled or published by
+this change. The complete license text is reproduced in
+tools/parity/THIRD_PARTY_LICENSES/pipecat-LICENSE.txt.
+
+--------------------------------------------------------------------------
+13. TEN-VAD v1.0 — restricted upstream license and LPCNet notices
+--------------------------------------------------------------------------
+Vokra's strict converter, native streaming VAD, and independent parity
+sidecar target TEN-framework/ten-vad commit
+8e96899ba05a8e8c0e883ec7417e7a144bd9dec0 (tag v1.0-ONNX).
+
+The upstream LICENSE is not unmodified Apache-2.0. It adds non-compete,
+application-only deployment conditions and requires derivative works to remain
+under those terms. Canonical GGUF conversion therefore stamps
+`LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` as
+`redistribution-forbidden`; this repository does not bundle or publish the
+official weights. Application-local use remains subject to the upstream terms.
+
+The LPCNet-derived frontend is separately covered by upstream NOTICES:
+
+  Copyright (c) 2017-2019 Mozilla                     (BSD-2-Clause)
+  Copyright (c) 2017-2018 Mozilla                     (BSD-3-Clause)
+  Copyright (c) 2007-2017 Jean-Marc Valin             (BSD-3-Clause)
+  Copyright (c) 2005-2017 Xiph.Org Foundation         (BSD-3-Clause)
+  Copyright (c) 2003-2004 Mark Borgerding             (BSD-3-Clause)
+
+The complete upstream license and both BSD notices are reproduced in
+tools/parity/THIRD_PARTY_LICENSES/ten-vad-LICENSE.txt and
+tools/parity/THIRD_PARTY_LICENSES/ten-vad-NOTICES.txt.
+
+--------------------------------------------------------------------------
+14. FunASR FSMN-VAD — MIT code notice
+--------------------------------------------------------------------------
+Vokra's native FSMN-VAD encoder and online frontend follow the released
+FunASR implementation pinned at commit
+3c58cb56a56598232c3efffa15d313d7e82a4307.
+
+  FunASR
+  Copyright (c) 2025 FunASR
+  Licensed under the MIT License.
+  Source: https://github.com/modelscope/FunASR
+
+The complete MIT text is reproduced in
+crates/vokra-ops/THIRD_PARTY_LICENSES/funasr-LICENSE.txt. The official
+`funasr/fsmn-vad` checkpoint is separately licensed Apache-2.0; code and
+weight provenance are not conflated. No official weight is bundled in this
+repository.
+
+--------------------------------------------------------------------------
+15. NVIDIA Parakeet-CTC-1.1B — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+Vokra's strict converter and native ASR runtime target the authenticated
+`nvidia/parakeet-ctc-1.1b` release. The model weights are distributed by
+NVIDIA under the Creative Commons Attribution 4.0 International license.
+Commercial use is permitted; attribution is required.
+
+  NVIDIA Parakeet-CTC-1.1B
+  Copyright (c) NVIDIA CORPORATION
+  Licensed under CC-BY 4.0
+  Source: https://huggingface.co/nvidia/parakeet-ctc-1.1b
+
+The converter embeds this notice in `vokra.provenance.attribution` and stamps
+the canonical `attribution-required` weight class. The runtime is a native,
+zero-dependency Rust implementation and does not bundle or link NVIDIA CUDA,
+cuDNN, PyTorch, Transformers, ONNX Runtime, Python, or upstream source code.
+Transformers is used only as the pinned offline reference oracle that produced
+the committed numerical fixtures. This runtime change did not upload or
+replace any model artifact.
+
+--------------------------------------------------------------------------
+16. NVIDIA NanoCodec — NVIDIA Open Model License attribution
 --------------------------------------------------------------------------
 The NVIDIA NeMo NanoCodec 22.05 kHz checkpoint family is distributed under
 the NVIDIA Open Model License Agreement, Version Release Date June 14, 2024.
@@ -321,8 +436,9 @@ substitute the later text without re-auditing the checkpoint's governing
 terms.
 
 --------------------------------------------------------------------------
-9. Maintaining this file
+17. Maintaining this file
 --------------------------------------------------------------------------
+
 Any pull request that adds support for a new model or introduces a new
 external dependency must run the license audit (docs/license-audit.md) and,
 when the addition carries attribution or distribution-relevant terms,

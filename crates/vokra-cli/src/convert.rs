@@ -17,12 +17,15 @@ use vokra_convert::{
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
-    convert_llama_omni2_file_with_config, convert_nanocodec_file,
-    convert_openwakeword_op_file_with_config, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
+    convert_openwakeword_op_file_with_config, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
     convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
     convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
-    convert_voxtral_file_with_adapter_config_quantized, parse_voxtral_hf_config,
+    convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
+    parse_voxtral_hf_config,
 };
 use vokra_core::gguf::GgmlType;
 
@@ -30,7 +33,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -40,6 +43,13 @@ USAGE:
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-tdt --input <model.safetensors> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
+                      --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -69,16 +79,18 @@ USAGE:
     vokra-cli convert --model rmvpe --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model crepe --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model styletts2 --input <model.safetensors> --output <out.gguf>
-    vokra-cli convert --model fsmn-vad --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model fsmn-vad --input <prepared.safetensors> --output <out.gguf>
+    vokra-cli convert --model firered-vad --input <prepared.safetensors> --output <out.gguf>
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
-                              distil-whisper | kotoba-whisper |
+                              distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
                               sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
@@ -90,7 +102,8 @@ OPTIONS:
                               qwen3-asr | wav2vec2 | moss-tts | melotts-english |
                               melotts-chinese | melotts-korean | speecht5 | parler-tts |
                               indic-parler-tts | vieneu-tts | bark | bark-small |
-                              hifigan-vocoder | speecht5-hifigan | bigvgan | focalcodec |
+                              hifigan-vocoder | speecht5-hifigan | bigvgan |
+                              vocos-mel-24khz | vocos-encodec-24khz | focalcodec |
                               snac | snac-24khz | snac-44khz |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
@@ -363,14 +376,21 @@ OPTIONS:
                               `rms_norm_eps`, `sample_rate`,
                               `speech_encoder_dim`, `speech_decoder_dim`
                               transcribed from the upstream config.json —
-                              six axes no tensor shape carries)
+                              six axes no tensor shape carries) OR the exact
+                              Parakeet-CTC config.json (required together with
+                              --preprocessor and --tokenizer)
+    --preprocessor <path>     Parakeet-CTC only: exact upstream
+                              preprocessor_config.json (80-bin Slaney mel,
+                              16 kHz, n_fft=512, hop=160, win=400,
+                              preemphasis=0.97)
     --adapter-config <path>   Voxtral audio-adapter side-car JSON (M3-10 Wave 8):
                               writes `vokra.voxtral.adapter.*` metadata so the
                               runtime binds the checkpoint's adapter tensors
                               and routes ASR through the audio-conditioned
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
-    --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3.
+    --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3 | parakeet-tdt |
+                              parakeet-ctc.
                               (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
@@ -435,6 +455,8 @@ struct Parsed {
     raw_model_slug: String,
     input: PathBuf,
     config: Option<PathBuf>,
+    /// Parakeet-CTC only: exact upstream `preprocessor_config.json`.
+    preprocessor: Option<PathBuf>,
     /// M3-10 Wave 8 — Voxtral only. When present, `convert` routes through
     /// `convert_voxtral_file_with_adapter_config` and emits the adapter
     /// metadata chunk into the GGUF so the runtime binds real adapter tensors
@@ -482,6 +504,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut raw_model_slug: String = String::new();
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
@@ -525,6 +548,12 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--preprocessor" => {
+                preprocessor = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--preprocessor requires a value")?,
                 ));
                 i += 2;
             }
@@ -591,6 +620,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         raw_model_slug,
         input: input.ok_or("--input is required")?,
         config,
+        preprocessor,
         adapter_config,
         tokenizer,
         output: output.ok_or("--output is required")?,
@@ -599,6 +629,17 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         license,
         silero_variant,
     })
+}
+
+/// Success-label contract for families whose variants collapse into one
+/// `ModelKind`. Vocos must preserve the selected raw slug because its two
+/// official artifacts have different manifests and input contracts; printing
+/// `ModelKind::as_arg()` would falsely label every Encodec conversion as Mel.
+fn conversion_display_model(model: ModelKind, raw_model_slug: &str) -> &str {
+    match model {
+        ModelKind::Vocos => raw_model_slug,
+        _ => model.as_arg(),
+    }
 }
 
 /// Entry point for `vokra-cli convert`.
@@ -635,13 +676,23 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::DebertaV3
             | ModelKind::BertBase
             | ModelKind::VoxCpm2
+            | ModelKind::MoonshineTiny
+            | ModelKind::MoonshineBase
+            | ModelKind::Parakeet
+            | ModelKind::ParakeetCtc
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
+                .to_owned(),
+        );
+    }
+    if !matches!(model, ModelKind::ParakeetCtc) && p.preprocessor.is_some() {
+        return Err(
+            "--preprocessor is only supported for --model parakeet-ctc (it pins the exact upstream frontend contract)"
                 .to_owned(),
         );
     }
@@ -826,6 +877,50 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 // `--quantize` was rejected above).
                 (None, None, None) => convert_file(model, &p.input, &p.output),
             }
+        }
+        ModelKind::Parakeet => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for --model parakeet-tdt".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model parakeet-tdt; its audited topology is fixed and text decoding uses --tokenizer <tokenizer.json>"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-tdt requires --tokenizer <tokenizer.json> for executable text ASR"
+                    .to_owned()
+            })?;
+            convert_parakeet_file_with_tokenizer(&p.input, tokenizer, &p.output)
+        }
+        ModelKind::ParakeetCtc => {
+            if p.quant.is_some() {
+                return Err("--quantize is not supported for --model parakeet-ctc".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            let config = p
+                .config
+                .as_deref()
+                .ok_or_else(|| "--model parakeet-ctc requires --config <config.json>".to_owned())?;
+            let preprocessor = p.preprocessor.as_deref().ok_or_else(|| {
+                "--model parakeet-ctc requires --preprocessor <preprocessor_config.json>".to_owned()
+            })?;
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-ctc requires --tokenizer <tokenizer.json>".to_owned()
+            })?;
+            convert_parakeet_ctc_file_with_assets(
+                &p.input,
+                config,
+                preprocessor,
+                tokenizer,
+                &p.output,
+            )
         }
         ModelKind::CosyVoice2 => {
             // Quantization surface is whisper-only; reject rather than
@@ -1078,6 +1173,58 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_styletts2_file(&p.input, &p.output)
         }
+        ModelKind::MoonshineTiny | ModelKind::MoonshineBase => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for Moonshine; pass the pinned tokenizer.json with --tokenizer"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                format!(
+                    "--model {} requires --tokenizer <tokenizer.json>; a weight-only GGUF cannot render transcripts",
+                    model.as_arg()
+                )
+            })?;
+            let (written, embedded) = match model {
+                ModelKind::MoonshineTiny => {
+                    let report = convert_moonshine_tiny_file_with_tokenizer(
+                        &p.input,
+                        Some(tokenizer),
+                        &p.output,
+                        p.license.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    (report.written, report.tokenizer_embedded)
+                }
+                ModelKind::MoonshineBase => {
+                    let report = convert_moonshine_base_file_with_tokenizer(
+                        &p.input,
+                        Some(tokenizer),
+                        &p.output,
+                        p.license.as_deref(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                    (report.written, report.tokenizer_embedded)
+                }
+                _ => unreachable!("outer match restricts Moonshine variants"),
+            };
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| format!("{}: {error}", p.output.display()))?
+                .len();
+            println!(
+                "converted {}: {written} strict F32 tensors, tokenizer_embedded={embedded}, {output_bytes} bytes -> {}",
+                model.as_arg(),
+                p.output.display()
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
         ModelKind::DebertaV2 => {
             // Blocker 5 (2026-08-06): dedicated dispatch so `--tokenizer
             // <vocab.txt>` reaches `convert_deberta_v2_file`'s
@@ -1282,6 +1429,35 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 }
             }
         }
+        ModelKind::WhisperMedusaV1 => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not yet supported for whisper-medusa-v1; convert the \
+                     canonical F32 artifact first so head-0 parity remains independently \
+                     auditable"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is not yet supported for whisper-medusa-v1".to_owned());
+            }
+            match &p.config {
+                Some(config) => convert_whisper_medusa_v1_with_config(
+                    &p.input,
+                    config,
+                    &p.output,
+                    p.license.as_deref(),
+                ),
+                None => {
+                    return Err(
+                        "--model whisper-medusa-v1 requires --config <config.json>; the \
+                         10 speculative heads, 11 base-head modules, choices tree and \
+                         init_from_proj contract are not inferred from tensor names"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         ModelKind::SbV2 => {
             // SBV2 v2 plan (2026-07-26 / 2026-08-06): the generic
             // `convert_file_with_slug` fallthrough arm in
@@ -1444,8 +1620,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
 
     match result {
         Ok(summary) => {
+            let display_model = conversion_display_model(model, &p.raw_model_slug);
             println!(
-                "converted {model}: {} tensors, {} metadata keys, {} bytes -> {}",
+                "converted {display_model}: {} tensors, {} metadata keys, {} bytes -> {}",
                 summary.tensor_count,
                 summary.metadata_count,
                 summary.output_bytes,
@@ -1562,6 +1739,22 @@ mod tests {
         assert_eq!(p.input, PathBuf::from("i"));
         assert_eq!(p.output, PathBuf::from("o"));
         assert_eq!(p.quant, Some(GgmlType::Q5K));
+    }
+
+    #[test]
+    fn vocos_success_label_preserves_selected_variant() {
+        assert_eq!(
+            conversion_display_model(ModelKind::Vocos, "vocos-encodec-24khz"),
+            "vocos-encodec-24khz"
+        );
+        assert_eq!(
+            conversion_display_model(ModelKind::Vocos, "vocos-mel-24khz"),
+            "vocos-mel-24khz"
+        );
+        assert_eq!(
+            conversion_display_model(ModelKind::Whisper, "whisper-base"),
+            "whisper"
+        );
     }
 
     #[test]
@@ -1799,6 +1992,7 @@ mod tests {
             ("omniasr-ctc", ModelKind::OmniasrCtc),
             ("distil-whisper", ModelKind::DistilWhisper),
             ("kotoba-whisper", ModelKind::KotobaWhisper),
+            ("whisper-medusa-v1", ModelKind::WhisperMedusaV1),
             ("chatterbox", ModelKind::Chatterbox),
             ("chatterbox-turbo", ModelKind::ChatterboxTurbo),
             ("chatterbox-nano", ModelKind::ChatterboxNano),
@@ -1879,6 +2073,21 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("requires --config"), "message: {e}");
         assert!(e.contains("sentinels"), "message must say why: {e}");
+    }
+
+    #[test]
+    fn whisper_medusa_without_config_is_a_loud_usage_error() {
+        let error = main(&args(&[
+            "--model",
+            "whisper-medusa-v1",
+            "--input",
+            "/nonexistent/ckpt.safetensors",
+            "--output",
+            "/nonexistent/out.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --config"), "message: {error}");
+        assert!(error.contains("11 base-head modules"), "message: {error}");
     }
 
     /// The quantization surface widened to voxtral only — every other model
@@ -2056,6 +2265,37 @@ mod tests {
         ]))
         .expect("valid");
         assert_eq!(p.tokenizer, None);
+    }
+
+    #[test]
+    fn parses_parakeet_tokenizer_side_car() {
+        let p = parse_args(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "model.safetensors",
+            "--tokenizer",
+            "tokenizer.json",
+            "--output",
+            "parakeet.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Parakeet);
+        assert_eq!(p.tokenizer, Some(PathBuf::from("tokenizer.json")));
+    }
+
+    #[test]
+    fn parakeet_requires_tokenizer_before_reading_input() {
+        let error = main(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "missing.safetensors",
+            "--output",
+            "unused.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --tokenizer"));
     }
 
     #[test]

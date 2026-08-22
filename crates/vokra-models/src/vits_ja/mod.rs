@@ -138,9 +138,10 @@
 //!   [`vokra_core::ir::graph::HifiGanAttrs`] the [`vokra_ops::hifigan_generator`]
 //!   primitive consumes; produces a struct that passes
 //!   [`vokra_core::ir::graph::HifiGanAttrs`]'s `validate_shape` by construction.
-//! - [`VitsJaWeights`] — deterministic zero-initialised
-//!   scaffold ([`VitsJaWeights::synthesized`]); the real safetensors
-//!   walk is a follow-up wave.
+//! - [`VitsJaWeights`] — deterministic zero-initialised legacy shape
+//!   fixture ([`VitsJaWeights::synthesized`]). Real artifacts bind through
+//!   [`VitsJaCheckpoint`], which validates the complete canonical 885-tensor
+//!   generator manifest and exposes a real phoneme-embedding consumer.
 //! - [`VitsJaTts`] — engine handle carrying config + weights. The
 //!   primary [`VitsJaTts::synthesize`] entry point returns
 //!   [`VokraError::NotImplemented`] naming the follow-up wave and the
@@ -158,6 +159,10 @@
 
 use vokra_core::{Result, VokraError};
 use vokra_ops::attrs::HifiGanAttrs;
+
+mod bound;
+
+pub use bound::{VitsJaCheckpoint, VitsJaTextEmbedding};
 
 /// `vokra.model.arch` a plain VITS JA GGUF must carry. Written by
 /// `vokra-convert::models::vits_ja::ARCH`. Intentionally **distinct**
@@ -866,11 +871,9 @@ impl VitsJaConfig {
             leaky_relu_slope: VITS_JA_LEAKY_RELU_SLOPE,
             // Canonical VITS/MB-iSTFT-VITS2 preset ships with
             // `resblock='1'` (ResBlock1) — see
-            // `tools/parity/vendor/vits/modules.py`. The real weight
-            // path is a scaffold today (no `convs2` tensor emission yet
-            // for VITS JA) but declaring the topology honestly here
-            // means when the loader lands it must supply c2 or fail
-            // loudly per `mrf_branch_forward`'s FR-EX-08 gate.
+            // `tools/parity/vendor/vits/modules.py`. The strict checkpoint
+            // manifest contains both convolution stacks; the full decoder
+            // forward must supply both or fail loudly at the op gate.
             res_block_type: vokra_core::ir::ResBlockType::V1,
         };
         // Redundant with `validate_for_forward` on paper, but the two
@@ -887,13 +890,11 @@ impl VitsJaConfig {
 // Weight-store scaffold
 // ---------------------------------------------------------------------------
 
-/// Plain VITS JA weight store scaffold.
+/// Plain VITS JA legacy weight-store scaffold.
 ///
-/// Real binding is a follow-up wave (T29-equivalent — the safetensors
-/// walk for the text encoder / SDP / flow / HiFi-GAN decoder defers to
-/// the T29 tensor-name manifest fetch). This scaffold carries only
-/// aggregate byte bundles so downstream shape flow / handshake tests
-/// are unblocked; the sole invariant this slice pins is that
+/// Real binding now lives in [`VitsJaCheckpoint`]. This fixture remains for
+/// cheap config/shape tests and carries only aggregate byte bundles; the sole
+/// invariant it pins is that
 /// `is_synthesized = true` prevents a spurious synthesize call from
 /// returning zero audio (FR-EX-08 — the loud [`VitsJaTts::synthesize`]
 /// guard).

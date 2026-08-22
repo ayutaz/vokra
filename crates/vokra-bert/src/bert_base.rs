@@ -776,7 +776,7 @@ impl BertBaseEncoder {
             .map(|f| f as f32)
             .unwrap_or(1e-12);
 
-        if num_heads == 0 || !hidden_size.is_multiple_of(num_heads) {
+        if num_heads == 0 || hidden_size % num_heads != 0 {
             return Err(VokraError::ModelLoad(format!(
                 "vokra.bert_base: hidden ({hidden_size}) not divisible by heads ({num_heads})"
             )));

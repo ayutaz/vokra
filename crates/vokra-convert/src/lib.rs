@@ -1079,12 +1079,10 @@ pub enum ModelKind {
     /// owed) pending the primitive landing. Provenance = **MIT**
     /// (Permissive — `Copyright (c) 2021 Nils L. Westhausen`).
     DtlnAec,
-    /// **Xiph RNNoise v0.2** weight blob (coverage-audit 2026-08-03
-    /// Wave A ticket). Category = `denoise`. Real-time noise
-    /// reduction — a compact GRU stack (`input_dense` 42→24 →
-    /// `vad_gru` / `noise_gru` / `denoise_gru` → `denoise_output`
-    /// 96→22, plus a `vad_output` 24→1 auxiliary head) over 22-band
-    /// Bark filterbank features (Valin 2018, arXiv:1709.08243).
+    /// **Xiph RNNoise v0.2** (coverage-audit 2026-08-03 Wave A ticket).
+    /// Category = `denoise`. Real-time noise reduction — 65 features feed
+    /// causal Conv1d(128) + Conv1d(384) + three 384-wide GRUs, producing
+    /// 32 band gains plus a VAD probability (Valin 2018, arXiv:1709.08243).
     /// **Distinct arch tag from [`Self::Denoise`]** (DeepFilterNet3):
     /// DFN3 is complex-Conv + ERB deep-filtering + `vokra.denoise.*`,
     /// RNNoise is tiny-GRU + Bark + `vokra.rnnoise.*` (`ARCH =
@@ -1092,15 +1090,15 @@ pub enum ModelKind {
     /// runtime dispatch (a DFN3 loader would try to interpret
     /// RNNoise's `input_dense` as `enc_conv0`). Provenance =
     /// **BSD-3-Clause** (Permissive — `github.com/xiph/rnnoise/blob/
-    /// main/COPYING`). Upstream ships as a ~90 KB C-array blob
-    /// (`weights_blob_9.bin` in the v0.2 GitHub Release tarball) —
-    /// `tools/parity/rnnoise_prepare_checkpoint.py` flattens it to
-    /// safetensors before entering this converter (mirror of the
+    /// main/COPYING`). Upstream embeds 36 trained arrays in
+    /// `src/rnnoise_data.c` inside the official v0.2 release tarball.
+    /// `tools/parity/rnnoise_prepare_checkpoint.py` validates and extracts
+    /// them to canonical safetensors before entering this converter (the
     /// DAC / DFN3 / CSM prepared-checkpoint contract; no C / Python
-    /// enters the runtime, NFR-DS-02). BF16 pass-through skeleton —
-    /// every F32 / F16 / BF16 tensor passes through verbatim; the
-    /// runtime binding + real-weight parity are deferred to owner
-    /// (docs/license-audit.md §3.1 sign-off queue). Convert with
+    /// enters the runtime, NFR-DS-02). The converter requires the exact
+    /// manifest, and `vokra-models::rnnoise` binds the real quantized network;
+    /// its stateful outputs are pinned to an independent Xiph C fixture.
+    /// Convert with
     /// `convert_file(ModelKind::Rnnoise, …)`.
     Rnnoise,
     /// Microsoft **NSNet2** noise-suppression baseline (Coverage-audit
@@ -1236,9 +1234,10 @@ pub enum ModelKind {
     /// — Chinese SoTA ASR + LID + SER + AED multitask. License audit
     /// deferred to owner. Convert with `convert_sensevoicesmall_file`.
     SenseVoiceSmall,
-    /// aiola **whisper-medusa-v1** (Apache-2.0, ~500 MB–2 GB) — Whisper
-    /// + Medusa speculative decoding head, 20-80% latency reduction.
-    /// Convert with `convert_whisper_medusa_v1_file`.
+    /// aiola **whisper-medusa-v1** (MIT, 6.25 GB F32) — Whisper-large-v2
+    /// plus eleven Medusa `base_head` residual modules. Convert with
+    /// [`convert_whisper_medusa_v1_with_config`]; the exact pinned upstream
+    /// `config.json` is mandatory.
     WhisperMedusaV1,
     /// Meta **facebook-denoiser** (`facebookresearch/denoiser`,
     /// **cc-by-nc-4.0**, coverage-audit-2026-08-03 Wave D T4) —
@@ -1287,11 +1286,11 @@ pub enum ModelKind {
     /// `convert_jasco_400m_chords_drums_file` — publish requires
     /// `--allow-noncommercial` per MusicGen family T4 precedent.
     Jasco400mChordsDrums,
-    // ---- coverage-audit-2026-08-03 Wave A permissive continuation ----
-    // (2026-08-04): 7 BF16 pass-through skeletons all in the T1
-    // (Permissive) tier — MIT / BSD-2-Clause / Apache-2.0 defaults
-    // land as `LicenseClass::Permissive` and sign-off ☑ Commercial by
-    // yousan at land time. Two flavors: HF-hosted (Utmosv2 /
+    // ---- coverage-audit-2026-08-03 Wave A continuation ----
+    // The original 2026-08-04 audit grouped seven converters as permissive.
+    // TEN-VAD was corrected on 2026-08-22 after its primary LICENSE revealed
+    // additional deployment restrictions; its dedicated docs below carry the
+    // fail-closed result. Two flavors: HF-hosted (Utmosv2 /
     // HtdemucsMulti / OpenwakewordOp / Mossformer2Ss16k /
     // AudiosealRealWeight) and GitHub-only (TorchaudioSquim / TenVad).
     /// **UTMOSv2** (`sarulab-speech/UTMOSv2`, MIT,
@@ -1348,15 +1347,13 @@ pub enum ModelKind {
     /// = `source-separation`. Convert with
     /// `convert_mossformer2_ss_16k_file`.
     Mossformer2Ss16k,
-    /// **TEN-VAD** (`TEN-framework/ten-vad`, Apache-2.0 main +
-    /// BSD-3-Clause LPCNet-derived front-end,
-    /// coverage-audit-2026-08-03 Wave A permissive continuation) —
-    /// compact ~306 KB LSTM/GRU VAD alternative to Silero VAD v5
-    /// (upstream claim: ~5.5x lighter). Category = `vad-kws`,
-    /// GitHub-only upstream (no HF mirror) — stamps
-    /// `vokra.provenance.upstream_url`. NOTICE attribution required
-    /// for the bundled LPCNet BSD-3-Clause front-end. Convert with
-    /// `convert_ten_vad_file`.
+    /// **TEN-VAD** (`TEN-framework/ten-vad`, restricted Agora deployment
+    /// license plus BSD-2-Clause and BSD-3-Clause LPCNet notices) — compact
+    /// ~306 KB streaming VAD. The 2026-08-22 primary-source correction found
+    /// non-compete/application-only terms layered over Apache-2.0, so the
+    /// canonical converter stamps `RedistributionForbidden` and no official
+    /// model-zoo publication is allowed. Category = `vad-kws`; GitHub-only
+    /// upstream provenance is stamped. Convert with `convert_ten_vad_file`.
     TenVad,
     /// **AudioSeal real weight** (`facebook/audioseal`, MIT,
     /// coverage-audit-2026-08-03 Wave A permissive continuation) —
@@ -1482,6 +1479,15 @@ pub enum ModelKind {
     /// not parse — the same offline-prepare split as DAC / Kokoro /
     /// UTMOS). Weight license = **MIT**.
     Crepe,
+    /// **Charsiu English 10 ms forced aligner**
+    /// (`charsiu/en_w2v2_fc_10ms`). The canonical wav2vec2-base-derived
+    /// frame classifier uses a 160-sample feature stride, grouped positional
+    /// convolution, 12 post-norm Transformer layers, and the official
+    /// 42-entry ARPAbet inventory. The converter accepts only the exact
+    /// canonical manifest, folds the positional-conv weight norm, and stamps
+    /// every runtime axis plus the vocabulary. Code/weight posture is MIT per
+    /// `docs/license-audit.md` §3.1 (owner sign-off 2026-07-30).
+    Charsiu,
     /// **pyannote/segmentation-3.0** (Bredin, CNRS — 2026-07-30
     /// license half unblock, `docs/license-audit.md` §3.1 row 263).
     /// Category = `vad`. PyanNet voice-activity-detection /
@@ -2152,9 +2158,11 @@ pub enum ModelKind {
     /// pipecat-ai **smart-turn-v2** checkpoint (TIER 1 F wave,
     /// 2026-07-30). Category = `vad` (turn-taking = VAD variant for
     /// dialogue turn boundaries — Pipecat realtime pipelines).
-    /// Small classifier that decides when a user has finished
-    /// speaking, rather than raw voice activity. BF16 pass-through
-    /// skeleton. Provenance = **bsd-2-clause** (Permissive).
+    /// Raw-waveform Wav2Vec2-base encoder with attention pooling and a
+    /// binary endpoint head. The strict converter pins the official F32
+    /// manifest, folds positional-convolution weight norm, drops only the
+    /// eval-unused SpecAugment vector, and rejects manifest drift.
+    /// Provenance = **bsd-2-clause** (Permissive).
     SmartTurn,
     /// LAION **CLAP** (Contrastive Language-Audio Pretraining)
     /// checkpoint (TIER 1 F wave, 2026-07-30). Category =
@@ -2294,7 +2302,7 @@ pub enum ModelKind {
     /// MIT) safetensors checkpoint (2026-08-01 wave). Category = `vocoder`.
     /// **Highest-download HF vocoder audio release** as of 2026-08-01
     /// (2.85M mel-24khz downloads). Fourier-space vocoder
-    /// (Siuzdak 2023 arXiv:2306.00814) = ConvNeXt V2 backbone +
+    /// (Siuzdak 2023 arXiv:2306.00814) = ConvNeXt 1D backbone +
     /// **iSTFT head** — a fundamentally different topology from every
     /// HiFi-GAN family sibling (`bigvgan`, `hifigan_vocoder`,
     /// `speecht5_hifigan`) which upsample time-domain waveforms
@@ -2303,14 +2311,11 @@ pub enum ModelKind {
     /// upstream releases ship torch pickle `pytorch_model.bin` +
     /// `config.yaml` only (no `model.safetensors` mirror, verified
     /// 2026-08-01 via HF cardData API); callers pre-flatten to
-    /// safetensors offline via `tools/parity/bin_to_safetensors.py` —
-    /// a dedicated `tools/parity/vocos_prepare_checkpoint.py` thin
-    /// bridge over it (the SpeechT5-HiFi-GAN pattern) is **not yet
-    /// written**. BF16
-    /// pass-through skeleton — every F32 / F16 / BF16 tensor passes
-    /// through verbatim under its upstream state-dict name; runtime
-    /// binding + real-weight parity are deferred to owner
-    /// (`docs/license-audit.md` §3.1 sign-off queue). Provenance =
+    /// safetensors offline via the revision-pinned
+    /// `tools/parity/vocos_prepare_checkpoint.py` bridge. Every F32 / F16 /
+    /// BF16 tensor passes through verbatim under its upstream state-dict
+    /// name. Both strict runtime manifests and the native ConvNeXt/iSTFT
+    /// forward are covered by official real-weight parity. Provenance =
     /// **mit** for both variants (Permissive — verified 2026-08-01 via
     /// HF cardData API `license: mit`). Two variants collapse into
     /// this single ModelKind; [`convert_file_with_slug`] picks the
@@ -2899,14 +2904,15 @@ pub enum ModelKind {
     /// GGUF bridge only; the audio-dialect `kws` op consumes the
     /// artifact in a future WP).
     Openwakeword,
-    /// **Moonshine-Tiny** (`UsefulSensors/moonshine-tiny`, **MIT**)
-    /// safetensors → GGUF (Wave residual, 2026-08-02). 27M-parameter
+    /// **Moonshine-Tiny** (`moonshine-ai/moonshine-tiny`, **MIT**)
+    /// safetensors → GGUF. 27M-parameter
     /// transformer encoder-decoder ASR (Jeffries et al. 2024,
     /// arXiv:2410.15608). **Distinct from sibling [`Self::Whisper`]** in
     /// two significant ways: (1) **no mel front-end** — the model
     /// consumes raw 16 kHz audio directly via a learned Conv1D stack
     /// (bypassing STFT + Mel filterbank), (2) **rotary position encoding
-    /// + SwiGLU** activations rather than Whisper's sinusoidal + GELU.
+    /// + a GELU encoder / SwiGLU decoder** rather than Whisper's
+    /// sinusoidal positions.
     /// Distinct arch tag `moonshine` — silently sharing with
     /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
     /// input boundary (raw-audio Conv1D vs Mel encoder), which FR-EX-08
@@ -2916,25 +2922,23 @@ pub enum ModelKind {
     /// Whisper / piper-plus / Silero / CAM++ first-party Permissive
     /// posture. Scale ~0.11 GB = local convert safe on M1 iMac 16 GB
     /// (well below the vast.ai ≥8 GB cutoff per memory
-    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
-    /// skeleton mirror of sibling `musicgen_small.rs` /
-    /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder (raw-
-    /// audio Conv1D + rotary + SwiGLU encoder-decoder + greedy decode)
-    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter validates
+    /// the exact 160-tensor F32 manifest and embeds the pinned BPE
+    /// tokenizer; the native runtime implements greedy decoding.
     MoonshineTiny,
-    /// **Moonshine-Base** (`UsefulSensors/moonshine-base`, **MIT**)
+    /// **Moonshine-Base** (`moonshine-ai/moonshine-base`, **MIT**)
     /// safetensors → GGUF (Wave residual, 2026-08-02). 61.5M-parameter
     /// transformer encoder-decoder ASR (Jeffries et al. 2024,
     /// arXiv:2410.15608). Sibling to [`Self::MoonshineTiny`] with the
     /// same architecture family (raw-audio Conv1D front-end + rotary
-    /// position encoding + SwiGLU activations) but a wider/deeper
+    /// position encoding + GELU encoder / SwiGLU decoder) but a wider/deeper
     /// backbone (~2.3× parameter count vs the 27M Tiny variant per the
     /// upstream release manifest). **Distinct from sibling
     /// [`Self::Whisper`]** in two significant ways: (1) **no mel
     /// front-end** — the model consumes raw 16 kHz audio directly via a
     /// learned Conv1D stack (bypassing STFT + Mel filterbank), (2)
-    /// **rotary position encoding + SwiGLU** activations rather than
-    /// Whisper's sinusoidal + GELU. Shares arch tag `moonshine` with
+    /// **rotary positions + GELU encoder / SwiGLU decoder** rather than
+    /// Whisper's sinusoidal positions. Shares arch tag `moonshine` with
     /// sibling [`Self::MoonshineTiny`] (Tiny and Base share the same
     /// architecture — only depth/width differ). Silently sharing with
     /// [`Self::Whisper`] would misroute runtime dispatch at the audio-
@@ -2945,12 +2949,9 @@ pub enum ModelKind {
     /// Whisper / piper-plus / Silero / CAM++ / Moonshine-Tiny first-
     /// party Permissive posture. Scale ~0.25 GB = local convert safe on
     /// M1 iMac 16 GB (well below the vast.ai ≥8 GB cutoff per memory
-    /// `[[feedback-large-models-on-vast-ai]]`). BF16 pass-through
-    /// skeleton mirror of sibling `moonshine_tiny.rs` /
-    /// `musicgen_small.rs` / `hubert_large_ls960.rs` / `openwakeword.rs`.
-    /// Runtime binder (raw-audio Conv1D + rotary + SwiGLU encoder-
-    /// decoder + greedy decode) deferred to owner sign-off
-    /// (`docs/license-audit.md` §3.1).
+    /// `[[feedback-large-models-on-vast-ai]]`). The converter validates
+    /// the exact 210-tensor F32 manifest and embeds the pinned BPE
+    /// tokenizer; the native runtime implements greedy decoding.
     MoonshineBase,
     /// **Demucs (HT-Demucs)** (`facebook/demucs`, **MIT**) safetensors →
     /// GGUF (Wave residual, 2026-08-02). Meta's hybrid transformer Demucs
@@ -4701,6 +4702,10 @@ impl ModelKind {
             // .h5 files), and the upstream GitHub coordinate.
             "crepe" | "crepe-tiny" | "crepe-small" | "crepe-medium" | "crepe-large"
             | "crepe-full" | "marl/crepe" => Some(Self::Crepe),
+            "charsiu"
+            | "charsiu-en"
+            | "en-w2v2-fc-10ms"
+            | "charsiu/en_w2v2_fc_10ms" => Some(Self::Charsiu),
             // pyannote/segmentation-3.0 (VAD / speaker-segmentation
             // backbone, 2026-07-30 license half unblock). Accept the
             // arch tag underscore + hyphen variants, the short forms
@@ -5542,30 +5547,33 @@ impl ModelKind {
             | "dscripka-openwakeword"
             | "dscripka/openwakeword"
             | "dscripka/openWakeWord" => Some(Self::Openwakeword),
-            // 2026-08-02 Wave residual: Moonshine-Tiny (UsefulSensors,
-            // MIT). 27M raw-audio transformer enc-dec ASR (arXiv:
+            // Moonshine-Tiny (`moonshine-ai`, MIT). 27M raw-audio
+            // transformer enc-dec ASR (arXiv:
             // 2410.15608). Distinct arch tag `moonshine`. Accept the
             // arch tag, the family-name spelling, hyphen / underscore
-            // variants, and the canonical HF org/name path.
+            // variants, the canonical HF org/name path, and the former
+            // UsefulSensors redirect spellings for compatibility.
             "moonshine"
             | "moonshine-tiny"
             | "moonshine_tiny"
+            | "moonshine-ai/moonshine-tiny"
             | "usefulsensors-moonshine-tiny"
             | "usefulsensors/moonshine-tiny"
             | "UsefulSensors/moonshine-tiny" => Some(Self::MoonshineTiny),
-            // 2026-08-02 Wave residual: Moonshine-Base (UsefulSensors,
-            // MIT). 61.5M raw-audio transformer enc-dec ASR (arXiv:
+            // Moonshine-Base (`moonshine-ai`, MIT). 61.5M raw-audio
+            // transformer enc-dec ASR (arXiv:
             // 2410.15608). Sibling to Moonshine-Tiny — same arch family
-            // (raw-audio Conv1D + rotary + SwiGLU), wider/deeper
+            // (raw-audio Conv1D + rotary + GELU encoder / SwiGLU decoder), wider/deeper
             // backbone. Shared arch tag `moonshine` at the runtime side,
             // distinct ModelKind at the converter side (the two
             // checkpoints have different tensor shapes; the dispatch
             // must not silently pick Tiny for a Base checkpoint or vice
             // versa — FR-EX-08). Accept the family-name spelling with
             // the `-base` suffix, hyphen / underscore variants, and the
-            // canonical HF org/name path.
+            // canonical HF org/name path plus the former redirect spellings.
             "moonshine-base"
             | "moonshine_base"
+            | "moonshine-ai/moonshine-base"
             | "usefulsensors-moonshine-base"
             | "usefulsensors/moonshine-base"
             | "UsefulSensors/moonshine-base" => Some(Self::MoonshineBase),
@@ -6038,6 +6046,7 @@ impl ModelKind {
             Self::Emotion2vec => "emotion2vec",
             Self::Rmvpe => "rmvpe",
             Self::Crepe => "crepe",
+            Self::Charsiu => "charsiu",
             Self::PyannoteSegmentation => "pyannote-segmentation",
             Self::PyannoteSpeakerDiarization31 => "pyannote-speaker-diarization-3.1",
             Self::Ast => "ast",
@@ -6228,6 +6237,34 @@ pub struct ConvertSummary {
     pub output_bytes: u64,
     /// Human-readable notes (e.g. skipped non-float initializers).
     pub notes: Vec<String>,
+}
+
+/// Converts the pinned `aiola/whisper-medusa-v1` merged safetensors together
+/// with its exact upstream `config.json`.
+///
+/// A dedicated entry point is required because the generic licensed
+/// dispatcher has no side-car parameter and silently omitting the Medusa
+/// geometry would produce an artifact the strict runtime must reject.
+pub fn convert_whisper_medusa_v1_with_config(
+    input: &Path,
+    config: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let report =
+        models::whisper_medusa_v1::convert_whisper_medusa_v1_file(input, output, config, license)?;
+    Ok(ConvertSummary {
+        model: ModelKind::WhisperMedusaV1,
+        tensor_count: report.written,
+        metadata_count: 0,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes: vec![format!(
+            "whisper-medusa-v1: {} tensors converted through the canonical Whisper writer \
+             ({} BF16 passthrough), {} non-float skipped; official Medusa base-head \
+             contract stamped",
+            report.written, report.bf16_passthrough, report.skipped_non_float,
+        )],
+    })
 }
 
 /// Errors that can occur while converting a checkpoint.
@@ -6934,6 +6971,22 @@ pub fn convert_file_licensed(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
+    // Whisper-Medusa needs an exact config side-car. Reject the legacy
+    // three-path dispatcher before reading the 6.25 GB checkpoint; the
+    // config-aware public entry point and CLI arm are the only valid routes.
+    if matches!(model, ModelKind::WhisperMedusaV1) {
+        return Err(ConvertError::Usage(
+            "whisper-medusa-v1 requires the exact upstream config.json; use \
+             convert_whisper_medusa_v1_with_config (CLI: --config <config.json>)"
+                .into(),
+        ));
+    }
+    if matches!(model, ModelKind::ParakeetCtc) {
+        return Err(ConvertError::Usage(
+            "parakeet-ctc requires the exact config.json, preprocessor_config.json and tokenizer.json; use convert_parakeet_ctc_file_with_assets (CLI: --config, --preprocessor, --tokenizer)"
+                .into(),
+        ));
+    }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -8081,11 +8134,8 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // Coverage-audit 2026-08-03 Wave A: Xiph RNNoise v0.2. BF16
-        // pass-through skeleton (mirror of neucodec / emotion2vec) —
-        // real-weight parity deferred to owner. The upstream weight
-        // blob is Xiph's C-array `weights_blob_9.bin`; the operator
-        // flattens it to safetensors with
+        // Xiph RNNoise v0.2 canonical 36-array converter. The operator
+        // extracts `src/rnnoise_data.c` from the official release tarball with
         // `tools/parity/rnnoise_prepare_checkpoint.py` before pointing
         // this converter at the safetensors output. Uses the
         // file-based early-return pattern (mirror of the Phase 5
@@ -8095,9 +8145,9 @@ pub fn convert_file_licensed(
         ModelKind::Rnnoise => {
             let report = models::rnnoise::convert_rnnoise_file(input, output, license)?;
             let notes = vec![format!(
-                "rnnoise: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "rnnoise: {} canonical v0.2 arrays written (quantized integers preserved \
+                 exactly in F32 containers)",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Rnnoise,
@@ -8415,20 +8465,7 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::WhisperMedusaV1 => {
-            let report =
-                models::whisper_medusa_v1::convert_whisper_medusa_v1_file(input, output, license)?;
-            let notes = vec![format!(
-                "whisper-medusa-v1: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::WhisperMedusaV1,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            unreachable!("whisper-medusa is rejected before whole-file input read")
         }
         // === coverage-audit-2026-08-03 Wave D T4 (non-commercial batch) ===
         ModelKind::FacebookDenoiser => {
@@ -8618,9 +8655,9 @@ pub fn convert_file_licensed(
             let report = models::ten_vad::convert_ten_vad_file(input, output, license)?;
             let notes = vec![format!(
                 "ten-vad: {} float weights written verbatim ({} BF16 passthrough), {} non-float \
-                 skipped (apache-2.0 default, Permissive; GitHub-only upstream, \
-                 vokra.provenance.upstream_url stamped; NOTICE attribution required for bundled \
-                 LPCNet BSD-3-Clause front-end)",
+                 skipped (restricted Agora deployment license default, RedistributionForbidden; \
+                 GitHub-only upstream stamped; BSD-2-Clause and BSD-3-Clause LPCNet notices \
+                 preserved)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -9083,6 +9120,16 @@ pub fn convert_file_licensed(
                  use convert_crepe_file"
                     .to_owned(),
             ));
+        }
+        ModelKind::Charsiu => {
+            let (builder, report) = models::charsiu::convert(bytes)?;
+            let notes = vec![format!(
+                "charsiu: {} runtime tensor(s) emitted from {} canonical upstream tensor(s); \
+                 training-only masked_spec_embed consumed but omitted; 10 ms Wav2Vec2 position \
+                 convolution weight norm folded; official 42-phone vocabulary embedded",
+                report.emitted, report.consumed,
+            )];
+            (builder, notes)
         }
         ModelKind::PyannoteSegmentation => {
             // 2026-07-30 license half unblock (docs/license-audit.md §3.1
@@ -9803,14 +9850,10 @@ pub fn convert_file_licensed(
             // 2.85M dl; `charactr/vocos-encodec-24khz` = second
             // variant, both MIT). Distinct arch tag `vocos` from every
             // HiFi-GAN family sibling — Vocos is a Fourier-space
-            // vocoder (ConvNeXt V2 backbone + iSTFT head), not
-            // time-domain upsample + MRF. BF16 pass-through skeleton
-            // mirror of speecht5_hifigan / bigvgan / focalcodec;
-            // runtime binding is deferred to owner. Upstream ships
-            // torch pickle only — pre-flatten via
-            // tools/parity/bin_to_safetensors.py; a dedicated
-            // tools/parity/vocos_prepare_checkpoint.py is not yet
-            // written.
+            // vocoder (ConvNeXt 1D backbone + iSTFT head), not
+            // time-domain upsample + MRF. Upstream ships torch pickle only;
+            // pre-flatten it through the revision-pinned
+            // tools/parity/vocos_prepare_checkpoint.py bridge.
             //
             // This path is the enum-arm default (Mel24khz); the
             // encodec-24khz variant is picked from the raw `--model`
@@ -10413,64 +10456,60 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === MoonshineTiny (2026-08-02 Wave residual, raw-audio ASR) ===
+        // === MoonshineTiny (strict raw-audio ASR manifest) ===
         ModelKind::MoonshineTiny => {
-            // Moonshine-Tiny (UsefulSensors, MIT). 27M transformer enc-
-            // dec ASR with raw-audio Conv1D front-end (no mel) + rotary
-            // + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608). Distinct
+            // Moonshine-Tiny (`moonshine-ai`, MIT). 27M transformer enc-
+            // dec ASR with raw-audio Conv1D front-end (no mel), rotary,
+            // GELU encoder and SwiGLU decoder (Jeffries et al. 2024,
+            // arXiv:2410.15608). Distinct
             // arch tag `moonshine` from sibling Whisper (different audio
             // input path + different attention/MLP variants) — silently
             // sharing would misroute runtime dispatch at the audio-input
-            // boundary (FR-EX-08). BF16 pass-through skeleton mirror of
-            // sibling musicgen_small / hubert_large_ls960 / openwakeword.
-            // Default license `mit` + Permissive (Whisper / piper-plus /
-            // Silero / CAM++ first-party posture). Scale ~0.11 GB =
-            // local convert safe on M1 iMac 16 GB.
+            // boundary (FR-EX-08). This compatibility API has no tokenizer
+            // parameter, so it writes an exact 160-tensor weight-only GGUF;
+            // the executable CLI paths require and embed tokenizer.json.
             let report =
                 models::moonshine_tiny::convert_moonshine_tiny_file(input, output, license)?;
             let notes = vec![format!(
-                "moonshine-tiny: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
-                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU)",
+                "moonshine-tiny: {} exact F32 tensors written ({} BF16 passthrough), \
+                 {} non-float skipped; weight-only compatibility output — use the Moonshine \
+                 CLI path with tokenizer.json for an executable GGUF",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: 26,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
         }
-        // === MoonshineBase (2026-08-02 Wave residual, raw-audio ASR) ===
+        // === MoonshineBase (strict raw-audio ASR manifest) ===
         ModelKind::MoonshineBase => {
-            // Moonshine-Base (UsefulSensors, MIT). 61.5M transformer
-            // enc-dec ASR with raw-audio Conv1D front-end (no mel) +
-            // rotary + SwiGLU (Jeffries et al. 2024, arXiv:2410.15608).
+            // Moonshine-Base (`moonshine-ai`, MIT). 61.5M transformer
+            // enc-dec ASR with raw-audio Conv1D front-end (no mel),
+            // rotary, GELU encoder and SwiGLU decoder (Jeffries et al. 2024,
+            // arXiv:2410.15608).
             // Sibling to Moonshine-Tiny — same arch family, wider/deeper
             // backbone (~2.3× parameter count per upstream release
             // manifest). Shares arch tag `moonshine` with Tiny at the
             // runtime side; distinct ModelKind at the converter side
             // (different tensor shapes — a Base checkpoint fed to a
-            // Tiny loader would misroute at load, FR-EX-08). BF16 pass-
-            // through skeleton mirror of sibling moonshine_tiny /
-            // musicgen_small / hubert_large_ls960 / openwakeword.
-            // Default license `mit` + Permissive (Whisper / piper-plus /
-            // Silero / CAM++ / Moonshine-Tiny first-party posture).
-            // Scale ~0.25 GB = local convert safe on M1 iMac 16 GB.
+            // Tiny loader would misroute at load, FR-EX-08). This
+            // compatibility API writes the exact 210 tensors but cannot
+            // embed tokenizer.json; executable CLI conversion requires it.
             let report =
                 models::moonshine_base::convert_moonshine_base_file(input, output, license)?;
             let notes = vec![format!(
-                "moonshine-base: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (mit default, Permissive — distinct arch tag `moonshine` \
-                 from sibling Whisper: raw-audio Conv1D front-end + rotary + SwiGLU; sibling \
-                 Moonshine-Tiny same arch, wider/deeper backbone)",
+                "moonshine-base: {} exact F32 tensors written ({} BF16 passthrough), \
+                 {} non-float skipped; weight-only compatibility output — use the Moonshine \
+                 CLI path with tokenizer.json for an executable GGUF",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: 26,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -11468,18 +11507,13 @@ pub fn convert_file_licensed(
         }
         // === FsmnVad (SoTA plan Phase 5 VAD-2, 2026-07-30) ===
         ModelKind::FsmnVad => {
-            // FSMN-VAD converter — full hparam chunk stamp + verbatim
-            // float pass-through (F32 / F16 / BF16). Every hparam axis
-            // is a compile-time constant transcribed from the released
-            // FunASR checkpoint; a future non-default variant would
-            // introduce a --config side-car (owner follow-up).
+            // Strict prepared bundle: 24 official weights plus the real
+            // AddShift/Rescale vectors extracted from the pinned am.mvn.
             let report = models::fsmn_vad::convert_fsmn_vad_file(input, output, license)?;
             let notes = vec![format!(
-                "fsmn-vad: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped; vokra.fsmn_vad.* hparam chunk group stamped \
-                 (n_blocks=4, input_dim=400, proj_dim=128, hidden_dim=128, lorder=20, \
-                 rorder=0, n_class=2, n_mels=80, lfr_m=5, lfr_n=1, sample_rate=16000)",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "fsmn-vad: {} prepared tensors read, {} official F32 weights written; \
+                 real CMVN AddShift/Rescale and canonical 4×FSMN/248-pdf geometry stamped",
+                report.read, report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::FsmnVad,
@@ -11509,9 +11543,9 @@ pub fn convert_file_licensed(
         ModelKind::SmartTurn => {
             let report = models::smart_turn::convert_smart_turn_file(input, output, license)?;
             let notes = vec![format!(
-                "smart-turn: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped, {} tensors read",
-                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+                "smart-turn: {} canonical F32 tensors emitted from {} source tensors; \
+                 positional weight norm folded and eval-unused SpecAugment vector omitted",
+                report.written, report.read,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::SmartTurn,
@@ -13124,6 +13158,8 @@ pub use models::neutts_air::{NeuTtsAirReport, convert_neutts_air_file};
 // are not in the safetensors, so it will not invent them — the
 // `ModelKind::Crepe` precedent). The working entry point is
 // [`convert_openwakeword_op_file_with_config`] below.
+pub use models::moonshine_base::{MoonshineBaseReport, convert_moonshine_base_file_with_tokenizer};
+pub use models::moonshine_tiny::{MoonshineTinyReport, convert_moonshine_tiny_file_with_tokenizer};
 pub use models::openwakeword_op::{OpenwakewordOpReport, convert_openwakeword_op_file};
 pub use models::ten_vad::{TenVadReport, convert_ten_vad_file};
 pub use models::torchaudio_squim::{TorchaudioSquimReport, convert_torchaudio_squim_file};
@@ -13836,13 +13872,10 @@ pub fn convert_chatterbox_nano_file(
 ///
 /// # BF16 posture
 ///
-/// The upstream Qwen3-TTS-0.6B release ships **BF16** safetensors
-/// (README-declared "0.9B parameters in BF16"); today's pass-through
-/// arm handles only F32 / F16, so BF16 tensors reach the
-/// `skipped_non_float` counter and the converter surfaces the loud
-/// "no float tensors" note. Pre-widen offline (float32) or wait for
-/// the streaming BF16 pass-through path (T29-equivalent — the Moshi /
-/// Kyutai STT pattern) to convert the release build directly.
+/// The upstream Qwen3-TTS-0.6B release ships **BF16** safetensors.
+/// BF16 tensors pass through verbatim as GGUF type 30; the runtime widens
+/// individual tensors through the canonical decode path only when a bound
+/// block is requested. No offline F32 widening is required.
 ///
 /// Weight license = **apache-2.0** **end-to-end**
 /// (`huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base` model-card
@@ -14307,13 +14340,10 @@ pub fn convert_kyutai_stt_file(
 ///
 /// This is the named entry point that mirrors `convert_kyutai_stt_file`
 /// / `convert_dia_file` / `convert_zonos_file`. It is functionally
-/// identical to `convert_file(ModelKind::Parakeet, input, output)` —
-/// Parakeet has no side-car config or tokenizer to embed at this
-/// scaffold stage (every hparam is transcribed as constants in
-/// `models::parakeet`; the SentencePiece tokenizer follows in a
-/// follow-up wave via the `--config` side-car pattern) — but the named
-/// entry keeps the `convert_*_file` naming symmetry with the other ASR
-/// / TTS models.
+/// identical to `convert_file(ModelKind::Parakeet, input, output)` and keeps
+/// the historical tokenizer-free artifact path available for decoder/head
+/// parity. An executable text-ASR GGUF should use
+/// [`convert_parakeet_file_with_tokenizer`] instead.
 ///
 /// The upstream Parakeet release ships raw safetensors (F32 per
 /// `config.json` `dtype: "float32"`); BF16-converted variants currently
@@ -14323,6 +14353,40 @@ pub fn convert_kyutai_stt_file(
 /// activates so a downstream must show the NVIDIA attribution.
 pub fn convert_parakeet_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Parakeet, input, output)
+}
+
+/// Converts Parakeet-TDT and embeds the official Hugging Face BPE + Metaspace
+/// `tokenizer.json` needed to render TDT emissions as text.
+pub fn convert_parakeet_file_with_tokenizer(
+    input: &Path,
+    tokenizer: &Path,
+    output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    let bytes = std::fs::read(input)?;
+    let tokenizer_bytes = std::fs::read(tokenizer)?;
+    let (builder, report) =
+        models::parakeet::convert_with_tokenizer(bytes, Some(&tokenizer_bytes))?;
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let out_bytes = builder.to_bytes()?;
+    std::fs::write(output, &out_bytes)?;
+    let mut notes = vec![format!(
+        "parakeet-tdt: {} float weights written verbatim, {} non-float skipped; official BPE+Metaspace tokenizer embedded",
+        report.written, report.skipped_non_float,
+    )];
+    notes.extend(
+        report
+            .notes
+            .iter()
+            .map(|note| format!("parakeet-tdt warning: {note}")),
+    );
+    Ok(ConvertSummary {
+        model: ModelKind::Parakeet,
+        tensor_count,
+        metadata_count,
+        output_bytes: out_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert an NVIDIA **Parakeet-CTC-1.1B** safetensors checkpoint into a
@@ -14361,10 +14425,55 @@ pub fn convert_parakeet_file(input: &Path, output: &Path) -> Result<ConvertSumma
 /// and the FR-MD-09 attribution surface activates so a downstream must
 /// show the NVIDIA attribution.
 pub fn convert_parakeet_ctc_file(
+    _input: &Path,
+    _output: &Path,
+) -> Result<ConvertSummary, ConvertError> {
+    Err(ConvertError::Usage(
+        "parakeet-ctc requires config.json, preprocessor_config.json and tokenizer.json; call convert_parakeet_ctc_file_with_assets"
+            .into(),
+    ))
+}
+
+/// Converts the exact pinned NVIDIA Parakeet-CTC-1.1B inference checkpoint.
+///
+/// `input` must be the output of
+/// `tools/parity/parakeet_ctc_prepare_checkpoint.py`: the official source
+/// SHA-256 is verified and exactly 42 training-only I64 BatchNorm counters are
+/// removed. The three official sidecars are validated and the tokenizer is
+/// embedded for executable text ASR.
+pub fn convert_parakeet_ctc_file_with_assets(
     input: &Path,
+    config: &Path,
+    preprocessor: &Path,
+    tokenizer: &Path,
     output: &Path,
 ) -> Result<ConvertSummary, ConvertError> {
-    convert_file(ModelKind::ParakeetCtc, input, output)
+    let checkpoint_bytes = std::fs::read(input)?;
+    let config_bytes = std::fs::read(config)?;
+    let preprocessor_bytes = std::fs::read(preprocessor)?;
+    let tokenizer_bytes = std::fs::read(tokenizer)?;
+    let (builder, report) = models::parakeet_ctc::convert_with_assets(
+        checkpoint_bytes,
+        &config_bytes,
+        &preprocessor_bytes,
+        &tokenizer_bytes,
+    )?;
+    let tensor_count = builder.tensor_count();
+    let metadata_count = builder.metadata_count();
+    let output_bytes = builder.to_bytes()?;
+    std::fs::write(output, &output_bytes)?;
+    let mut notes = vec![format!(
+        "parakeet-ctc: {} strict F32 inference tensors written; official BPE+Metaspace tokenizer embedded; BF16 passthrough={}",
+        report.written, report.bf16_passthrough
+    )];
+    notes.extend(report.notes);
+    Ok(ConvertSummary {
+        model: ModelKind::ParakeetCtc,
+        tensor_count,
+        metadata_count,
+        output_bytes: output_bytes.len() as u64,
+        notes,
+    })
 }
 
 /// Convert an NVIDIA **Canary-1B-v2** safetensors checkpoint into a Vokra
@@ -14880,6 +14989,9 @@ mod modelkind_alias_and_roundtrip_tests {
             // spelling in `as_arg` fails loudly (same rationale as the
             // Phase 2-5 additions above).
             Fcpe,
+            // Runtime-gap Wave 3 (2026-08-21): canonical Charsiu English
+            // 10 ms forced-aligner converter and strict GGUF binder.
+            Charsiu,
             // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD —
             // first-class audio-dialect op posture (distinct from Silero
             // VAD v5's FR-LD-06 1:1 subgraph). Every hparam axis is

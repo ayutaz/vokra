@@ -1,5 +1,5 @@
-//! Neural-net primitives the UTMOS `wav2vec2_regression.v1` stack needs and
-//! `vokra-backend-cpu` does not provide (M5-15 T15/T16/T17).
+//! Neural-net primitives and layers used by the UTMOS
+//! `wav2vec2_regression.v1` stack (M5-15 T15/T16/T17).
 //!
 //! # Why these live here and not in `vokra-backend-cpu`
 //!
@@ -10,9 +10,9 @@
 //!
 //! - [`group_norm_f32`] is a genuine missing primitive, but it has exactly one
 //!   consumer (the UTMOS feature encoder) and no GPU counterpart is planned;
-//! - [`grouped_conv1d_f32`] is a **composition** of the existing
-//!   `kernels::conv1d_f32` (it slices the channel groups and calls it once per
-//!   group), not a new kernel;
+//! - [`grouped_conv1d_f32`] delegates to the shared backend composition of
+//!   `kernels::conv1d_f32`; Charsiu's positional convolution now consumes the
+//!   same checked implementation;
 //! - [`BiLstm`] is a whole recurrent *layer*, not an op — putting a composite
 //!   layer into the kernel crate would be its first, and would invite the
 //!   Kokoro `BiLstm1d` to be moved there too.
@@ -186,74 +186,9 @@ pub fn grouped_conv1d_f32(
     groups: usize,
     out: &mut [f32],
 ) -> Result<()> {
-    let fail = |what: String| {
-        Err(VokraError::InvalidArgument(format!(
-            "grouped_conv1d: {what}"
-        )))
-    };
-    if groups == 0 {
-        return fail("groups must be > 0".into());
-    }
-    if in_ch % groups != 0 || out_ch % groups != 0 {
-        return fail(format!(
-            "in_ch {in_ch} and out_ch {out_ch} must both be divisible by groups {groups}"
-        ));
-    }
-    if stride == 0 || kernel == 0 {
-        return fail(format!(
-            "stride and kernel must be > 0 (got {stride} / {kernel})"
-        ));
-    }
-    let in_per = in_ch / groups;
-    let out_per = out_ch / groups;
-    if weight.len() != out_ch * in_per * kernel {
-        return fail(format!(
-            "weight length {} != out_ch × (in_ch / groups) × kernel = {out_ch} × {in_per} × \
-             {kernel} = {}",
-            weight.len(),
-            out_ch * in_per * kernel
-        ));
-    }
-    if let Some(b) = bias {
-        if b.len() != out_ch {
-            return fail(format!("bias length {} != out_ch {out_ch}", b.len()));
-        }
-    }
-    if input.len() != in_ch * in_len {
-        return fail(format!(
-            "input length {} != in_ch × in_len = {}",
-            input.len(),
-            in_ch * in_len
-        ));
-    }
-    let padded = in_len + 2 * padding;
-    if padded < kernel {
-        return fail(format!(
-            "padded input length {padded} (= {in_len} + 2 × {padding}) is shorter than kernel \
-             {kernel} — not even one output frame exists"
-        ));
-    }
-    let out_len = (padded - kernel) / stride + 1;
-    if out.len() != out_ch * out_len {
-        return fail(format!(
-            "out length {} != out_ch × out_len = {out_ch} × {out_len} = {}",
-            out.len(),
-            out_ch * out_len
-        ));
-    }
-
-    // One dense conv per group; each sees its own contiguous channel slab on
-    // both sides, so no scratch copy of the weights is needed.
-    for g in 0..groups {
-        let in_slice = &input[g * in_per * in_len..(g + 1) * in_per * in_len];
-        let w_slice = &weight[g * out_per * in_per * kernel..(g + 1) * out_per * in_per * kernel];
-        let b_slice = bias.map(|b| &b[g * out_per..(g + 1) * out_per]);
-        let out_slice = &mut out[g * out_per * out_len..(g + 1) * out_per * out_len];
-        kernels::conv1d_f32(
-            in_slice, in_per, in_len, w_slice, out_per, kernel, b_slice, stride, padding, out_slice,
-        )?;
-    }
-    Ok(())
+    kernels::grouped_conv1d_f32(
+        input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+    )
 }
 
 /// One direction's `torch.nn.LSTM` parameter set, in PyTorch's storage layout.

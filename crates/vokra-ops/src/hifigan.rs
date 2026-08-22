@@ -126,6 +126,20 @@
 use vokra_core::ir::graph::{HifiGanAttrs, ResBlockType};
 use vokra_core::{Result, VokraError};
 
+/// Boundary padding used by every stride-1 Conv1d in a HiFi-GAN generator.
+///
+/// Canonical HiFi-GAN / Transformers models use zero padding. SpeechBrain's
+/// `speechbrain.nnet.CNN.Conv1d(padding="same")` instead defaults to reflect
+/// padding, including conv_pre, both MRF convolution stacks, and conv_post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HifiGanConvPadding {
+    /// PyTorch `nn.Conv1d(..., padding=p)` semantics.
+    #[default]
+    Zero,
+    /// PyTorch `F.pad(..., mode="reflect")` followed by an unpadded Conv1d.
+    Reflect,
+}
+
 // ---------------------------------------------------------------------------
 // Weight bundle
 // ---------------------------------------------------------------------------
@@ -760,7 +774,30 @@ pub fn hifigan_generator(
     attrs: &HifiGanAttrs,
     config: &HifiGanConfig,
 ) -> Result<Vec<f32>> {
-    hifigan_generator_conditioned(mel, n_frames, weights, attrs, config, None)
+    hifigan_generator_internal(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        None,
+        HifiGanConvPadding::Zero,
+    )
+}
+
+/// Runs an unconditioned HiFi-GAN with an explicit stride-1 Conv1d boundary
+/// mode. This exists for SpeechBrain checkpoints whose public generator uses
+/// reflect padding; callers for canonical/Transformers models should keep
+/// using [`hifigan_generator`], which remains zero-padded and byte-compatible.
+pub fn hifigan_generator_with_conv_padding(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    conv_padding: HifiGanConvPadding,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal(mel, n_frames, weights, attrs, config, None, conv_padding)
 }
 
 /// HGAN-05-GIN-COND (2026-08-09): HiFi-GAN generator with optional
@@ -801,6 +838,26 @@ pub fn hifigan_generator_conditioned(
     attrs: &HifiGanAttrs,
     config: &HifiGanConfig,
     g: Option<&[f32]>,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        g,
+        HifiGanConvPadding::Zero,
+    )
+}
+
+fn hifigan_generator_internal(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    g: Option<&[f32]>,
+    conv_padding: HifiGanConvPadding,
 ) -> Result<Vec<f32>> {
     attrs.validate_shape()?;
     config.validate()?;
@@ -867,7 +924,7 @@ pub fn hifigan_generator_conditioned(
     }
 
     // --- Stage 0: initial conv1d [n_mels, n_frames] → [initial_channel, n_frames] ---
-    let mut h = conv1d_scalar(
+    let mut h = conv1d_scalar_with_padding_mode(
         mel,
         attrs.n_mels,
         n_frames,
@@ -877,6 +934,7 @@ pub fn hifigan_generator_conditioned(
         Some(&weights.conv_pre_bias),
         1,                           // stride
         weights.conv_pre_kernel / 2, // "same" padding
+        conv_padding,
     )?;
 
     // --- HGAN-05-GIN-COND: broadcast-add cond(g) after conv_pre ---
@@ -958,6 +1016,7 @@ pub fn hifigan_generator_conditioned(
                 branch,
                 attrs.leaky_relu_slope,
                 attrs.res_block_type,
+                conv_padding,
             )?;
             for (a, b) in mrf_acc.iter_mut().zip(branch_out.iter()) {
                 *a += *b;
@@ -996,7 +1055,7 @@ pub fn hifigan_generator_conditioned(
     } else {
         Some(&weights.conv_post_bias)
     };
-    let final_out = conv1d_scalar(
+    let final_out = conv1d_scalar_with_padding_mode(
         &h,
         cur_channels,
         cur_time,
@@ -1006,6 +1065,7 @@ pub fn hifigan_generator_conditioned(
         conv_post_bias_slot,
         1,
         weights.conv_post_kernel / 2,
+        conv_padding,
     )?;
     // tanh head — bound to (−1, 1).
     //
@@ -1051,7 +1111,7 @@ pub fn hifigan_generator_conditioned(
 ///
 /// [`VokraError::InvalidArgument`] on any shape mismatch or `stride == 0`.
 #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
-fn conv1d_scalar(
+fn conv1d_scalar_with_padding_mode(
     input: &[f32],
     in_ch: usize,
     in_len: usize,
@@ -1061,6 +1121,7 @@ fn conv1d_scalar(
     bias: Option<&[f32]>,
     stride: usize,
     padding: usize,
+    padding_mode: HifiGanConvPadding,
 ) -> Result<Vec<f32>> {
     if stride == 0 {
         return Err(VokraError::InvalidArgument(
@@ -1084,6 +1145,11 @@ fn conv1d_scalar(
             "conv1d: weight.len() {} != out_ch * in_ch * kernel {}",
             weight.len(),
             out_ch * in_ch * kernel
+        )));
+    }
+    if padding_mode == HifiGanConvPadding::Reflect && padding >= in_len {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d: reflect padding {padding} must be smaller than input length {in_len}"
         )));
     }
     if let Some(b) = bias
@@ -1110,13 +1176,10 @@ fn conv1d_scalar(
             for ic in 0..in_ch {
                 for k in 0..kernel {
                     let padded_ix = oi * stride + k;
-                    if padded_ix < padding {
+                    let Some(in_ix) = padded_input_index(padded_ix, padding, in_len, padding_mode)
+                    else {
                         continue;
-                    }
-                    let in_ix = padded_ix - padding;
-                    if in_ix >= in_len {
-                        continue;
-                    }
+                    };
                     let w = weight[(oc * in_ch + ic) * kernel + k];
                     let v = input[ic * in_len + in_ix];
                     acc += f64::from(w) * f64::from(v);
@@ -1262,6 +1325,7 @@ fn mrf_branch_forward(
     branch: &MrfBranchWeights,
     leaky_slope: f32,
     res_block_type: ResBlockType,
+    padding_mode: HifiGanConvPadding,
 ) -> Result<Vec<f32>> {
     if input.len() != channels * time {
         return Err(VokraError::InvalidArgument(format!(
@@ -1299,6 +1363,7 @@ fn mrf_branch_forward(
             Some(&layer.bias),
             layer.dilation,
             padding_c1,
+            padding_mode,
         )?;
         // ---- V1: xt = c2(lrelu(xt)) with c2.dilation = 1 ----
         match res_block_type {
@@ -1333,6 +1398,7 @@ fn mrf_branch_forward(
                     Some(bias_c2),
                     1, // dilation
                     padding_c2,
+                    padding_mode,
                 )?;
             }
             ResBlockType::V2 => {
@@ -1357,7 +1423,7 @@ fn mrf_branch_forward(
 }
 
 /// Dilated `conv1d` (stride == 1 always). `weight` layout matches
-/// [`conv1d_scalar`]: `[out_ch, in_ch, kernel]`.
+/// [`conv1d_scalar_with_padding_mode`]: `[out_ch, in_ch, kernel]`.
 #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
 fn dilated_conv1d_scalar(
     input: &[f32],
@@ -1369,11 +1435,17 @@ fn dilated_conv1d_scalar(
     bias: Option<&[f32]>,
     dilation: usize,
     padding: usize,
+    padding_mode: HifiGanConvPadding,
 ) -> Result<Vec<f32>> {
     if dilation == 0 {
         return Err(VokraError::InvalidArgument(
             "dilated_conv1d: dilation must be >= 1".to_owned(),
         ));
+    }
+    if padding_mode == HifiGanConvPadding::Reflect && padding >= in_len {
+        return Err(VokraError::InvalidArgument(format!(
+            "dilated_conv1d: reflect padding {padding} must be smaller than input length {in_len}"
+        )));
     }
     let padded = in_len + 2 * padding;
     let effective_kernel = 1 + (kernel - 1) * dilation;
@@ -1391,13 +1463,10 @@ fn dilated_conv1d_scalar(
             for ic in 0..in_ch {
                 for k in 0..kernel {
                     let padded_ix = oi + k * dilation;
-                    if padded_ix < padding {
+                    let Some(in_ix) = padded_input_index(padded_ix, padding, in_len, padding_mode)
+                    else {
                         continue;
-                    }
-                    let in_ix = padded_ix - padding;
-                    if in_ix >= in_len {
-                        continue;
-                    }
+                    };
                     let w = weight[(oc * in_ch + ic) * kernel + k];
                     let v = input[ic * in_len + in_ix];
                     acc += f64::from(w) * f64::from(v);
@@ -1407,6 +1476,31 @@ fn dilated_conv1d_scalar(
         }
     }
     Ok(out)
+}
+
+#[inline]
+fn padded_input_index(
+    padded_index: usize,
+    padding: usize,
+    input_len: usize,
+    mode: HifiGanConvPadding,
+) -> Option<usize> {
+    let logical = padded_index as isize - padding as isize;
+    match mode {
+        HifiGanConvPadding::Zero => {
+            (logical >= 0 && logical < input_len as isize).then_some(logical as usize)
+        }
+        HifiGanConvPadding::Reflect => {
+            debug_assert!(padding < input_len);
+            if logical < 0 {
+                Some((-logical) as usize)
+            } else if logical >= input_len as isize {
+                Some((2 * input_len as isize - 2 - logical) as usize)
+            } else {
+                Some(logical as usize)
+            }
+        }
+    }
 }
 
 /// In-place LeakyReLU (`y = x if x > 0 else slope * x`).
@@ -1654,6 +1748,58 @@ mod tests {
             res_block_type: ResBlockType::V1,
             ..tiny_attrs()
         }
+    }
+
+    #[test]
+    fn reflect_conv_padding_matches_pytorch_edge_mapping() {
+        let input = [1.0, 2.0, 3.0, 4.0];
+        let weight = [1.0, 10.0, 100.0];
+        let bias = [0.0];
+        let reflected = conv1d_scalar_with_padding_mode(
+            &input,
+            1,
+            4,
+            &weight,
+            1,
+            3,
+            Some(&bias),
+            1,
+            1,
+            HifiGanConvPadding::Reflect,
+        )
+        .expect("valid reflect convolution");
+        // PyTorch reflect pad([1,2,3,4], (1,1)) = [2,1,2,3,4,3].
+        assert_eq!(reflected, [212.0, 321.0, 432.0, 343.0]);
+
+        let zero = conv1d_scalar_with_padding_mode(
+            &input,
+            1,
+            4,
+            &weight,
+            1,
+            3,
+            Some(&bias),
+            1,
+            1,
+            HifiGanConvPadding::Zero,
+        )
+        .expect("valid zero-padded convolution");
+        assert_eq!(zero, [210.0, 321.0, 432.0, 43.0]);
+
+        let error = conv1d_scalar_with_padding_mode(
+            &input,
+            1,
+            4,
+            &weight,
+            1,
+            3,
+            Some(&bias),
+            1,
+            4,
+            HifiGanConvPadding::Reflect,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must be smaller"));
     }
 
     /// Deterministic weight builder: every weight cell is a small linear
@@ -2292,6 +2438,7 @@ mod tests {
             Some(b1),
             d1,
             padding_c1,
+            HifiGanConvPadding::Zero,
         )
         .unwrap();
         // xt = lrelu(xt)
@@ -2312,6 +2459,7 @@ mod tests {
             Some(b2),
             1,
             padding_c2,
+            HifiGanConvPadding::Zero,
         )
         .unwrap();
         // x = xt + x
@@ -2352,6 +2500,7 @@ mod tests {
             Some(b),
             d,
             padding,
+            HifiGanConvPadding::Zero,
         )
         .unwrap();
         let mut out = x.to_vec();
@@ -2419,8 +2568,16 @@ mod tests {
         let x2 = ref_v2_iteration(&x1, channels, time, &w1, &b1, 1, kernel, slope);
         let expected = x2;
         // Actual output from mrf_branch_forward.
-        let actual = mrf_branch_forward(&input, channels, time, &branch, slope, ResBlockType::V2)
-            .expect("V2 mrf_branch_forward");
+        let actual = mrf_branch_forward(
+            &input,
+            channels,
+            time,
+            &branch,
+            slope,
+            ResBlockType::V2,
+            HifiGanConvPadding::Zero,
+        )
+        .expect("V2 mrf_branch_forward");
         assert_eq!(
             actual.len(),
             expected.len(),
@@ -2495,8 +2652,16 @@ mod tests {
             &x1, channels, time, &w1_c1, &b1_c1, 1, &w1_c2, &b1_c2, kernel, slope,
         );
         let expected = x2;
-        let actual = mrf_branch_forward(&input, channels, time, &branch, slope, ResBlockType::V1)
-            .expect("V1 mrf_branch_forward");
+        let actual = mrf_branch_forward(
+            &input,
+            channels,
+            time,
+            &branch,
+            slope,
+            ResBlockType::V1,
+            HifiGanConvPadding::Zero,
+        )
+        .expect("V1 mrf_branch_forward");
         assert_eq!(
             actual.len(),
             expected.len(),
@@ -2533,8 +2698,16 @@ mod tests {
                 channels,
             }],
         };
-        let err = mrf_branch_forward(&input, channels, time, &branch, 0.1, ResBlockType::V1)
-            .expect_err("V1 without c2 must fail");
+        let err = mrf_branch_forward(
+            &input,
+            channels,
+            time,
+            &branch,
+            0.1,
+            ResBlockType::V1,
+            HifiGanConvPadding::Zero,
+        )
+        .expect_err("V1 without c2 must fail");
         match err {
             VokraError::InvalidArgument(msg) => {
                 assert!(
@@ -2568,8 +2741,16 @@ mod tests {
                 channels,
             }],
         };
-        let err = mrf_branch_forward(&input, channels, time, &branch, 0.1, ResBlockType::V2)
-            .expect_err("V2 with c2 must fail");
+        let err = mrf_branch_forward(
+            &input,
+            channels,
+            time,
+            &branch,
+            0.1,
+            ResBlockType::V2,
+            HifiGanConvPadding::Zero,
+        )
+        .expect_err("V2 with c2 must fail");
         match err {
             VokraError::InvalidArgument(msg) => {
                 assert!(

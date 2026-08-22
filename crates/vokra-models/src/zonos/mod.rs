@@ -93,6 +93,9 @@
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
+mod bound;
+pub use bound::{ZonosCheckpoint, ZonosSpeakerProjection};
+
 use crate::codec::DacCodecGguf;
 
 /// `vokra.model.arch` a Zonos GGUF must carry. Written by

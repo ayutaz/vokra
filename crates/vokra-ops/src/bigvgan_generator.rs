@@ -7,6 +7,13 @@
 //! - `bigvgan.py` — `BigVGAN.__init__` L206-322, `BigVGAN.forward` L324-354,
 //!   `AMPBlock1.__init__` L23-133, `AMPBlock1.forward` L135-145.
 //! - `activations.py` — `Snake` L7-59, `SnakeBeta` L62-114.
+//! - `alias_free_activation/torch/{act,filter,resample}.py` — adapted by
+//!   NVIDIA from `junjun3518/alias-free-torch` (Apache-2.0), with the sinc
+//!   and low-pass construction adapted from `adefossez/julius` (MIT).
+//!
+//! This Rust port changes storage, error handling, tensor layout, and scalar
+//! execution. The applicable third-party texts are retained in
+//! `THIRD_PARTY_LICENSES/` and the project `NOTICE`.
 //!
 //! # Op contract
 //!
@@ -63,18 +70,17 @@
 //! We spell out our own `AmpBlock1` so callers do not accidentally couple
 //! to HiFTNet's fixed-activation ResBlock.
 //!
-//! # Anti-aliased activation (deferred)
+//! # Anti-aliased activation
 //!
 //! Upstream wraps every `Snake` / `SnakeBeta` call with an `Activation1d`
 //! module that inserts a polyphase `UpSample1d → activation → DownSample1d`
 //! chain (`alias_free_activation/torch/act.py`, cited from `bigvgan.py:87`
 //! and `bigvgan.py:277`). That chain is what makes BigVGAN "anti-aliased".
-//! This Wave lands the *unwrapped* activation call — the alias-free wrapper
-//! is deferred to a follow-up Wave that lands the shared polyphase
-//! Kaiser-window filter primitive (the current `crate::resample` targets
-//! sample-rate conversion, not the intra-activation up/downsample). This
-//! is an honest omission recorded here so the caller / auditor knows the
-//! current output is the un-aliased activation on the same time base.
+//! [`AliasFreeActivation`] implements that wrapper directly from the stored
+//! upstream Kaiser filters. It reproduces the reference's replicate padding,
+//! grouped stride-2 transposed convolution, asymmetric crop, activation, and
+//! grouped stride-2 low-pass convolution. The input and output time axes are
+//! identical; the periodic nonlinearity runs at twice the time resolution.
 //!
 //! The task description hint "Anti-aliased upsampling uses low-pass filter
 //! after each ConvTranspose" does *not* match upstream (upstream wraps the
@@ -237,6 +243,85 @@ impl AmpActivation {
 }
 
 // ---------------------------------------------------------------------------
+// Alias-free Activation1d (upstream `alias_free_activation/torch/`)
+// ---------------------------------------------------------------------------
+
+/// The two per-activation Kaiser-window filters stored by upstream
+/// `Activation1d`. Released BigVGAN checkpoints use ratio 2 and 12 taps for
+/// both sides; the values are buffers in the real state dict and are bound
+/// rather than regenerated from remembered constants.
+#[derive(Debug, Clone)]
+pub struct AliasFreeActivationWeights {
+    /// `upsample.filter`, shape `[1, 1, kernel]`.
+    pub upsample_filter: Vec<f32>,
+    /// `downsample.lowpass.filter`, shape `[1, 1, kernel]`.
+    pub downsample_filter: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+struct AliasFreeActivation {
+    activation: AmpActivation,
+    weights: AliasFreeActivationWeights,
+}
+
+impl AliasFreeActivation {
+    const RATIO: usize = 2;
+
+    fn new(activation: AmpActivation, weights: AliasFreeActivationWeights) -> Result<Self> {
+        for (name, filter) in [
+            ("upsample.filter", &weights.upsample_filter),
+            ("downsample.lowpass.filter", &weights.downsample_filter),
+        ] {
+            if filter.len() < Self::RATIO || filter.len() % 2 != 0 {
+                return Err(VokraError::InvalidArgument(format!(
+                    "AliasFreeActivation {name}: expected a non-empty even kernel >= {}, got {} taps",
+                    Self::RATIO,
+                    filter.len()
+                )));
+            }
+            if !filter.iter().all(|value| value.is_finite()) {
+                return Err(VokraError::InvalidArgument(format!(
+                    "AliasFreeActivation {name}: filter contains a non-finite value"
+                )));
+            }
+        }
+        Ok(Self {
+            activation,
+            weights,
+        })
+    }
+
+    fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
+        if x.len() != channels * time {
+            return Err(VokraError::InvalidArgument(format!(
+                "AliasFreeActivation forward: input length {} != channels * time = {}",
+                x.len(),
+                channels * time
+            )));
+        }
+        let mut upsampled = alias_free_upsample(
+            x,
+            channels,
+            time,
+            Self::RATIO,
+            &self.weights.upsample_filter,
+        )?;
+        self.activation
+            .forward_in_place(&mut upsampled, channels, time * Self::RATIO)?;
+        let downsampled = alias_free_downsample(
+            &upsampled,
+            channels,
+            time * Self::RATIO,
+            Self::RATIO,
+            &self.weights.downsample_filter,
+        )?;
+        debug_assert_eq!(downsampled.len(), x.len());
+        x.copy_from_slice(&downsampled);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // AMPBlock1 (upstream `bigvgan.py:23-146`)
 // ---------------------------------------------------------------------------
 
@@ -270,6 +355,13 @@ pub struct AmpBlock1Weights {
     /// Per-branch second-activation `beta` — only populated when the block
     /// was configured with [`SnakeKind::SnakeBeta`]. `None` for Snake.
     pub activations2_beta: Option<Vec<Vec<f32>>>,
+    /// Per-branch first-activation alias-free filters. Length must equal
+    /// `dilations.len()`; each entry binds the upstream buffers for
+    /// `activations[0::2]`.
+    pub activations1_filters: Vec<AliasFreeActivationWeights>,
+    /// Per-branch second-activation alias-free filters for
+    /// `activations[1::2]`.
+    pub activations2_filters: Vec<AliasFreeActivationWeights>,
 }
 
 /// AMPBlock1 (upstream `bigvgan.py:23-146`). The BigVGAN default, matched
@@ -296,8 +388,8 @@ pub struct AmpBlock1 {
     kernel_size: u32,
     dilations: Vec<u32>,
     weights: AmpBlock1Weights,
-    activations1: Vec<AmpActivation>,
-    activations2: Vec<AmpActivation>,
+    activations1: Vec<AliasFreeActivation>,
+    activations2: Vec<AliasFreeActivation>,
 }
 
 impl AmpBlock1 {
@@ -329,6 +421,8 @@ impl AmpBlock1 {
             ("convs2_b", weights.convs2_b.len()),
             ("activations1_alpha", weights.activations1_alpha.len()),
             ("activations2_alpha", weights.activations2_alpha.len()),
+            ("activations1_filters", weights.activations1_filters.len()),
+            ("activations2_filters", weights.activations2_filters.len()),
         ] {
             if v != n_branches {
                 return Err(VokraError::InvalidArgument(format!(
@@ -442,8 +536,14 @@ impl AmpBlock1 {
                     a2.channels()
                 )));
             }
-            activations1.push(a1);
-            activations2.push(a2);
+            activations1.push(AliasFreeActivation::new(
+                a1,
+                weights.activations1_filters[i].clone(),
+            )?);
+            activations2.push(AliasFreeActivation::new(
+                a2,
+                weights.activations2_filters[i].clone(),
+            )?);
         }
         Ok(Self {
             channels,
@@ -561,8 +661,8 @@ impl Default for BigVGanConfig {
             resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
             activation: SnakeKind::SnakeBeta,
             snake_logscale: true,
-            use_bias_at_final: true,
-            use_tanh_at_final: true,
+            use_bias_at_final: false,
+            use_tanh_at_final: false,
         }
     }
 }
@@ -608,6 +708,8 @@ impl BigVGanConfig {
 ///   activation (upstream L263-275).
 /// - `activation_post_beta`: `[out_ch_{n-1}]` beta — required for
 ///   [`SnakeKind::SnakeBeta`], forbidden for [`SnakeKind::Snake`].
+/// - `activation_post_filter`: the terminal activation's stored alias-free
+///   upsample/downsample filter buffers.
 /// - `conv_post_w`: row-major `[1, out_ch_{n-1}, 7]` (upstream L281-283).
 /// - `conv_post_b`: `[1]` when `use_bias_at_final = true`, otherwise
 ///   `None` (upstream `bias=self.use_bias_at_final`).
@@ -628,6 +730,8 @@ pub struct BigVGanWeights {
     /// Optional `[out_ch_{n-1}]` beta for the terminal activation —
     /// required for SnakeBeta, forbidden for Snake.
     pub activation_post_beta: Option<Vec<f32>>,
+    /// Alias-free filter buffers for the terminal activation.
+    pub activation_post_filter: AliasFreeActivationWeights,
     /// Row-major `[1, out_ch_{n-1}, 7]` post-conv weight.
     pub conv_post_w: Vec<f32>,
     /// `[1]` post-conv bias — `None` iff `cfg.use_bias_at_final == false`
@@ -647,7 +751,7 @@ pub struct BigVGanGenerator {
     amp_blocks: Vec<AmpBlock1>,
     /// Terminal `activation_post` — Snake or SnakeBeta on the last stage's
     /// output channel count.
-    activation_post: AmpActivation,
+    activation_post: AliasFreeActivation,
 }
 
 impl BigVGanGenerator {
@@ -796,7 +900,7 @@ impl BigVGanGenerator {
                 weights.activation_post_alpha.len()
             )));
         }
-        let activation_post = match cfg.activation {
+        let activation_post_inner = match cfg.activation {
             SnakeKind::Snake => {
                 if weights.activation_post_beta.is_some() {
                     return Err(VokraError::InvalidArgument(
@@ -832,6 +936,10 @@ impl BigVGanGenerator {
                 )?)
             }
         };
+        let activation_post = AliasFreeActivation::new(
+            activation_post_inner,
+            weights.activation_post_filter.clone(),
+        )?;
         // Layout is `[1, last_ch, 7]` — `1 * last_ch * 7 = last_ch * 7`.
         let expected_post_w = last_ch * 7;
         if weights.conv_post_w.len() != expected_post_w {
@@ -881,8 +989,7 @@ impl BigVGanGenerator {
     }
 
     /// Forward pass. Reproduces upstream `BigVGAN.forward`
-    /// (`bigvgan.py:324-354`) verbatim (modulo the alias-free activation
-    /// wrapping, see module docstring "Anti-aliased activation (deferred)").
+    /// (`bigvgan.py:324-354`) including every alias-free activation wrapper.
     ///
     /// `mel` is row-major `[in_channels, t_mel]`. Output length is
     /// `t_mel * total_upsample_factor()`; the value range is `[-1, 1]`
@@ -989,6 +1096,103 @@ impl BigVGanGenerator {
 // "Zero third-party deps"; a shared conv helper crate is deferred until a
 // third consumer materialises).
 // ---------------------------------------------------------------------------
+
+/// Reference-equivalent `UpSample1d`: replicate-pad, grouped transposed
+/// convolution scaled by `ratio`, then crop the reference's asymmetric
+/// `pad_left` / `pad_right` interval.
+fn alias_free_upsample(
+    input: &[f32],
+    channels: usize,
+    time: usize,
+    ratio: usize,
+    filter: &[f32],
+) -> Result<Vec<f32>> {
+    if ratio == 0 || time == 0 || filter.len() < ratio || input.len() != channels * time {
+        return Err(VokraError::InvalidArgument(format!(
+            "alias_free_upsample: invalid shape/input (channels={channels}, time={time}, ratio={ratio}, taps={}, input={})",
+            filter.len(),
+            input.len()
+        )));
+    }
+    let pad = filter.len() / ratio - 1;
+    let padded_time = time + 2 * pad;
+    let core_time = (padded_time - 1) * ratio + filter.len();
+    let crop_left = pad * ratio + (filter.len() - ratio) / 2;
+    let crop_right = pad * ratio + (filter.len() - ratio).div_ceil(2);
+    let output_time = core_time
+        .checked_sub(crop_left + crop_right)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "alias_free_upsample: crop exceeds transposed-convolution output".to_owned(),
+            )
+        })?;
+    if output_time != time * ratio {
+        return Err(VokraError::InvalidArgument(format!(
+            "alias_free_upsample: derived output time {output_time} != time * ratio {}",
+            time * ratio
+        )));
+    }
+
+    let mut output = vec![0.0f32; channels * output_time];
+    for channel in 0..channels {
+        let input_row = channel * time;
+        let output_row = channel * output_time;
+        for padded_index in 0..padded_time {
+            let source = padded_index.saturating_sub(pad).min(time - 1);
+            let value = input[input_row + source] * ratio as f32;
+            for (tap, &coefficient) in filter.iter().enumerate() {
+                let core_index = padded_index * ratio + tap;
+                if core_index >= crop_left && core_index < core_time - crop_right {
+                    output[output_row + core_index - crop_left] += value * coefficient;
+                }
+            }
+        }
+    }
+    Ok(output)
+}
+
+/// Reference-equivalent `DownSample1d`: asymmetric replicate padding then a
+/// grouped low-pass convolution with stride `ratio`.
+fn alias_free_downsample(
+    input: &[f32],
+    channels: usize,
+    time: usize,
+    ratio: usize,
+    filter: &[f32],
+) -> Result<Vec<f32>> {
+    if ratio == 0 || time == 0 || filter.is_empty() || input.len() != channels * time {
+        return Err(VokraError::InvalidArgument(format!(
+            "alias_free_downsample: invalid shape/input (channels={channels}, time={time}, ratio={ratio}, taps={}, input={})",
+            filter.len(),
+            input.len()
+        )));
+    }
+    let even = usize::from(filter.len() % 2 == 0);
+    let pad_left = filter.len() / 2 - even;
+    let pad_right = filter.len() / 2;
+    let padded_time = time + pad_left + pad_right;
+    if padded_time < filter.len() {
+        return Err(VokraError::InvalidArgument(
+            "alias_free_downsample: filter exceeds padded input".to_owned(),
+        ));
+    }
+    let output_time = (padded_time - filter.len()) / ratio + 1;
+    let mut output = vec![0.0f32; channels * output_time];
+    for channel in 0..channels {
+        let input_row = channel * time;
+        let output_row = channel * output_time;
+        for output_index in 0..output_time {
+            let mut sum = 0.0f32;
+            for (tap, &coefficient) in filter.iter().enumerate() {
+                let padded_index = output_index * ratio + tap;
+                let source = padded_index.saturating_sub(pad_left).min(time - 1);
+                sum += input[input_row + source] * coefficient;
+            }
+            output[output_row + output_index] = sum;
+        }
+    }
+    Ok(output)
+}
 
 /// Same-padded 1-D convolution.
 ///
@@ -1197,6 +1401,13 @@ fn get_padding(kernel: usize, dilation: usize) -> usize {
 mod tests {
     use super::*;
 
+    fn test_alias_filter() -> AliasFreeActivationWeights {
+        AliasFreeActivationWeights {
+            upsample_filter: vec![0.5, 0.5],
+            downsample_filter: vec![0.5, 0.5],
+        }
+    }
+
     // ---- SnakeBeta ---------------------------------------------------
 
     #[test]
@@ -1276,6 +1487,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn alias_free_activation_matches_upstream_bigvgan_fixture() {
+        let fixture = include_str!("../../../tools/parity/fixtures/bigvgan_alias_free.csv");
+        let mut lines = fixture.lines();
+        let filter_row: Vec<&str> = lines.next().expect("filter row").split(',').collect();
+        assert_eq!(filter_row[0], "filter");
+        let filter: Vec<f32> = filter_row[1..]
+            .iter()
+            .map(|value| value.parse::<f32>().expect("filter f32"))
+            .collect();
+        assert_eq!(filter.len(), 12);
+
+        let mut alpha = Vec::new();
+        let mut beta = Vec::new();
+        let mut input = Vec::new();
+        let mut expected = Vec::new();
+        for (channel, line) in lines.enumerate() {
+            let fields: Vec<&str> = line.split(',').collect();
+            assert_eq!(fields.len(), 18);
+            assert_eq!(fields[0], "channel");
+            assert_eq!(fields[1].parse::<usize>().unwrap(), channel);
+            alpha.push(fields[2].parse::<f32>().unwrap());
+            beta.push(fields[3].parse::<f32>().unwrap());
+            input.extend(
+                fields[4..11]
+                    .iter()
+                    .map(|value| value.parse::<f32>().unwrap()),
+            );
+            expected.extend(
+                fields[11..18]
+                    .iter()
+                    .map(|value| value.parse::<f32>().unwrap()),
+            );
+        }
+        let channels = alpha.len();
+        assert_eq!(channels, 2);
+        let activation =
+            AmpActivation::SnakeBeta(SnakeBeta::new(alpha, beta, true).expect("fixture SnakeBeta"));
+        let alias_free = AliasFreeActivation::new(
+            activation,
+            AliasFreeActivationWeights {
+                upsample_filter: filter.clone(),
+                downsample_filter: filter,
+            },
+        )
+        .expect("fixture alias-free activation");
+        alias_free
+            .forward_in_place(&mut input, channels, 7)
+            .expect("alias-free forward");
+        let max_abs = input
+            .iter()
+            .zip(expected.iter())
+            .map(|(actual, reference)| (actual - reference).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs <= 3e-6,
+            "BigVGAN upstream Activation1d max |Δ| {max_abs:e} exceeds 3e-6"
+        );
+    }
+
     // ---- AmpBlock1 ---------------------------------------------------
 
     fn snake_amp_weights(ch: usize, k: usize, n_branches: usize) -> AmpBlock1Weights {
@@ -1289,6 +1560,8 @@ mod tests {
             activations2_alpha: vec![vec![1.0f32; ch]; n_branches],
             activations1_beta: None,
             activations2_beta: None,
+            activations1_filters: vec![test_alias_filter(); n_branches],
+            activations2_filters: vec![test_alias_filter(); n_branches],
         }
     }
 
@@ -1399,8 +1672,8 @@ mod tests {
         assert_eq!(cfg.resblock_kernel_sizes, vec![3, 7, 11]);
         assert_eq!(cfg.activation, SnakeKind::SnakeBeta);
         assert!(cfg.snake_logscale);
-        assert!(cfg.use_bias_at_final);
-        assert!(cfg.use_tanh_at_final);
+        assert!(!cfg.use_bias_at_final);
+        assert!(!cfg.use_tanh_at_final);
         assert_eq!(cfg.total_upsample_factor(), 4 * 4 * 2 * 2 * 2 * 2);
         assert_eq!(cfg.total_upsample_factor(), 256);
         assert_eq!(cfg.num_upsamples(), 6);
@@ -1481,6 +1754,7 @@ mod tests {
             } else {
                 None
             },
+            activation_post_filter: test_alias_filter(),
             conv_post_w: vec![
                 0.0f32;
                 (cfg.output_channels_at(cfg.num_upsamples() - 1) as usize) * 7
@@ -1744,6 +2018,7 @@ mod tests {
             amp_blocks: vec![],
             activation_post_alpha: vec![],
             activation_post_beta: None,
+            activation_post_filter: test_alias_filter(),
             conv_post_w: vec![],
             conv_post_b: Some(vec![0.0]),
         };

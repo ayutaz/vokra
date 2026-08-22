@@ -139,6 +139,12 @@ answer.
   FireRed-AED, Moonshine, SenseVoiceSmall; Chatterbox-Multilingual (+ Turbo,
   Nano), StyleTTS 2, Dia-1.6B, VibeVoice-1.5B, Zonos-v0.1, Irodori-TTS,
   ESPnet-family Japanese VITS, ChatTTS, Voila, LLaMA-Omni2.
+- **Parakeet-TDT-0.6B-v3 native ASR**: executable conversions embed the
+  official BPE + Metaspace tokenizer and bind all 699 inference tensors. The
+  CPU runtime now runs raw 16 kHz PCM through the exact log-mel,
+  depthwise-separable subsampler, 24-layer relative-position FastConformer,
+  recurrent TDT decoder, EOS handling, and text decode. Unsupported backends
+  fail explicitly; no CPU fallback or model artifact publication is implied.
 - **Style-Bert-VITS2 v2** completed end to end, including the per-language
   conditioning encoders (DeBERTa v2 / v3, Chinese-RoBERTa-wwm-ext).
 - **Text processing**: CT-Transformer punctuation restoration and
@@ -447,11 +453,13 @@ answer.
 - **Godot GDExtension** (M3-11): a `vokra-godot` excluded workspace, raw
   `gdextension_interface.h` FFI (no `godot-cpp`), Godot 4.3 ClassDB
   registration for `VokraSession` / `VokraStream` with `catch_unwind`
-  panic → Godot Error trampolines, Variant unpack + real dispatch, a
+  panic → Godot Error trampolines, Variant unpack + real dispatch including
+  a live Object-returning `vad_open_stream`, a checksum-pinned official Godot
+  4.7.1 headless Silero VAD stream gate, a
   5-target cross-build script + `godot-crossbuild.yml` + a release
   packaging job + a `check-godot-package-no-nvidia.sh` compliance scanner,
-  and asr_demo / tts_demo scaffolds. Real in-editor verification (T19) +
-  the WP-close PR (T20) are owner-gated.
+  and asr_demo / tts_demo scaffolds. Interactive in-editor verification stays
+  a manual release check.
 - **piper-plus GPU backends** (M3-12): the M0 native MB-iSTFT-VITS2
   implementation now runs on the Metal / CUDA Compute seam
   (`synthesize_with_intermediates` with explicit deterministic backend

@@ -277,13 +277,13 @@ jobs:
   #   A  CLI surface + referenced-path existence (no compiler, no network)
   #   B  compile / API existence (C blocks vs include/vokra.h; python / js /
   #      json against the real binding surfaces)
-  #   C  DEFERRED and ANNOUNCED on every run — swift and csharp blocks need
-  #      toolchains a PR runner lacks, and getting-started's sh blocks download
-  #      real upstream checkpoints. Those belong to the gated / nightly
-  #      workflows. The checker PRINTS every tier-C block it skipped rather
-  #      than quietly dropping it, so "verified" never overstates itself.
+  #   C  DEFERRED and ANNOUNCED on every run — swift, csharp, and gdscript
+  #      blocks need toolchains this PR job lacks, and getting-started's sh
+  #      blocks download real upstream checkpoints. Those belong to the gated
+  #      / nightly workflows. The checker PRINTS every tier-C block it skipped
+  #      rather than quietly dropping it, so "verified" never overstates itself.
   #
-  # 120 blocks across 24 documents (en + ja for getting-started, web,
+  # 126 blocks across 24 documents (en + ja for getting-started, web,
   # migration-guide, python, ios, unity, and — added by X-09b-T23 — the
   # backend-guide, the cli/android/godot/server tutorials, and api-reference).
   doc-examples:

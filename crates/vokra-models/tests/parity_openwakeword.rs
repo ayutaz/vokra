@@ -9,15 +9,15 @@
 //!
 //! # Fixture recipe (owner-side)
 //!
-//! The upstream `dscripka/openWakeWord` release ships two ONNX models:
-//! `embedding_model.onnx` (the frozen Google `speech_embedding` extractor)
-//! and one `<wakeword>.onnx` per wake-word (the per-wake-word classifier
-//! MLP). Bridge them offline to a merged safetensors + reference JSON:
+//! The pinned v0.5.1 release supplies `melspectrogram.onnx`,
+//! `embedding_model.onnx`, and one `<wakeword>.onnx` DNN per wake-word.
+//! Bridge them offline to a merged safetensors + reference JSON:
 //!
 //! ```text
 //! # 1. Fetch upstream ONNX from github.com/dscripka/openWakeWord releases
 //! # 2. Merge to Vokra safetensors + config side-car + reference probs (uv):
 //! uv run python tools/parity/openwakeword_prepare_checkpoint.py \
+//!     --melspectrogram ~/openwakeword/melspectrogram.onnx \
 //!     --embedding     ~/openwakeword/embedding_model.onnx \
 //!     --wakeword      alexa=~/openwakeword/alexa_v0.1.onnx \
 //!     --wakeword      hey_jarvis=~/openwakeword/hey_jarvis_v0.1.onnx \
@@ -62,21 +62,13 @@
 //!
 //! openWakeWord's per-wake-word head emits one sigmoid probability per
 //! rolling window step. The parity check is a per-hop `max |Δ|` bound
-//! ([`PROB_ATOL`]) against the upstream `openwakeword` + `onnxruntime`
-//! Python reference. At the reference release's default 96-d embedding
-//! plus tiny classifier MLP, a bound of `1e-4` corresponds to typical
-//! ONNX-RT-vs-Rust float rounding on this class (mirror of
-//! `parity_kokoro.rs`'s per-tensor atol scaffold — see
-//! `[[feedback-honest-parity-atol]]`).
-//!
-//! **When the Google `speech_embedding` real-weight bundle wave lands**
-//! (deferred per `docs/license-audit.md` §3.1 owner sign-off + real-
-//! checkpoint parity), the `parity_openwakeword_gated_hop_probs` test
-//! upgrades from a loud-partial smoke to a real hop-by-hop probability
-//! match; the harness is written so no code change is required beyond
-//! flipping `OpenwakewordSession`'s `EmbeddingExtractor::has_real_embedding_weights`
-//! flag inside `from_gguf` once the real embedding tensors bind.
+//! ([`PROB_ATOL`]) against the three official graphs executed directly by
+//! ONNX Runtime on Python 3.12. Comparison begins after 16 real embeddings
+//! replace the deterministic rolling-window initialization. The 2026-08-22
+//! VAST v0.5.1/Alexa run measured max |Δ| = `5.960464478e-8` across the
+//! compared hops, under the unchanged pre-registered `1e-4` bound.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::path::Path;
 
@@ -99,10 +91,111 @@ const WAV_ENV: &str = "VOKRA_OPENWAKEWORD_REAL_WAV";
 /// emits: `{"hop_probs": {"<wakeword>": [p0, p1, ...]}}`.
 const REFERENCE_JSON_ENV: &str = "VOKRA_OPENWAKEWORD_REFERENCE_JSON";
 
-/// Per-hop probability |Δ| tolerance (consumed once the embedding
-/// extractor lights up — see the module docs).
-#[allow(dead_code)]
+/// Per-hop probability |Δ| tolerance.
 const PROB_ATOL: f32 = 1e-4;
+/// The first 16 predictions still contain deterministic initial rolling
+/// embeddings. Numeric comparison begins once the window contains only
+/// real ONNX/Rust embeddings.
+const WARMUP_PREDICTIONS: usize = 16;
+
+#[derive(Debug)]
+struct OpenwakewordReference {
+    sample_rate: u32,
+    predict_chunk_samples: usize,
+    wakeword_names: Vec<String>,
+    hop_probs: BTreeMap<String, Vec<f32>>,
+}
+
+fn reference_number(value: &vokra_core::json::JsonValue, context: &str) -> f32 {
+    let number = match value {
+        vokra_core::json::JsonValue::Float(value) => *value,
+        vokra_core::json::JsonValue::Int(value) => *value as f64,
+        other => panic!("{context}: expected JSON number, got {other:?}"),
+    };
+    assert!(number.is_finite(), "{context}: probability must be finite");
+    number as f32
+}
+
+fn parse_openwakeword_reference(path: &Path) -> OpenwakewordReference {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|error| panic!("read reference JSON {}: {error}", path.display()));
+    let root = vokra_core::json::parse(&bytes)
+        .unwrap_or_else(|error| panic!("parse reference JSON {}: {error}", path.display()));
+
+    let required_u32 = |key: &str| -> u32 {
+        let raw = root
+            .get(key)
+            .unwrap_or_else(|| panic!("reference JSON {} missing `{key}`", path.display()))
+            .as_u64()
+            .unwrap_or_else(|| panic!("reference JSON `{key}` must be a non-negative integer"));
+        u32::try_from(raw).unwrap_or_else(|_| panic!("reference JSON `{key}` overflows u32"))
+    };
+
+    let wakeword_names = root
+        .get("wakeword_names")
+        .and_then(vokra_core::json::JsonValue::as_array)
+        .unwrap_or_else(|| panic!("reference JSON `wakeword_names` must be an array"))
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_str()
+                .unwrap_or_else(|| panic!("wakeword_names[{index}] must be a string"))
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !wakeword_names.is_empty(),
+        "reference JSON wakeword_names is empty"
+    );
+
+    let probs_object = root
+        .get("hop_probs")
+        .and_then(vokra_core::json::JsonValue::as_object)
+        .unwrap_or_else(|| panic!("reference JSON `hop_probs` must be an object"));
+    let mut hop_probs = BTreeMap::new();
+    for (name, value) in probs_object {
+        assert!(
+            wakeword_names.iter().any(|candidate| candidate == name),
+            "reference JSON hop_probs has undeclared wake-word `{name}`"
+        );
+        let values = value
+            .as_array()
+            .unwrap_or_else(|| panic!("hop_probs[{name:?}] must be an array"))
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let probability = reference_number(value, &format!("hop_probs[{name:?}][{index}]"));
+                assert!(
+                    (0.0..=1.0).contains(&probability),
+                    "hop_probs[{name:?}][{index}]={probability} is outside [0,1]"
+                );
+                probability
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !values.is_empty(),
+            "hop_probs[{name:?}] is empty; regenerate with the upstream openwakeword package installed"
+        );
+        assert!(
+            hop_probs.insert(name.clone(), values).is_none(),
+            "duplicate hop_probs key `{name}`"
+        );
+    }
+    for name in &wakeword_names {
+        assert!(
+            hop_probs.contains_key(name),
+            "reference JSON has no hop_probs entry for `{name}`"
+        );
+    }
+
+    OpenwakewordReference {
+        sample_rate: required_u32("sample_rate"),
+        predict_chunk_samples: required_u32("predict_chunk_samples") as usize,
+        wakeword_names,
+        hop_probs,
+    }
+}
 
 /// FIXTURE-FREE: the per-wake-word MLP classifier is a real primitive
 /// unit-testable independent of a real GGUF. Pins the classifier
@@ -226,18 +319,23 @@ fn parity_openwakeword_gguf_smoke() {
         "wakeword_names count must match n_wakewords (already checked at \
          load, re-pinned here)"
     );
-    assert_eq!(
-        session.classifiers().len(),
-        cfg.n_wakewords,
-        "one classifier per wake-word"
-    );
-    for bc in session.classifiers() {
-        assert_eq!(bc.weights.embedding_dim, cfg.embedding_dim);
-        assert!(
-            bc.weights.hidden_dim > 0,
-            "classifier `{}` must have hidden_dim > 0",
-            bc.name
-        );
+    if cfg.classifier_format == "dnn-relu-sigmoid-v1" {
+        assert_eq!(session.dnn_classifiers().len(), cfg.n_wakewords);
+        for classifier in session.dnn_classifiers() {
+            assert_eq!(classifier.weights.embedding_dim, cfg.embedding_dim);
+            assert_eq!(classifier.weights.input_frames, 16);
+            assert!(!classifier.weights.layers.is_empty());
+        }
+    } else {
+        assert_eq!(session.classifiers().len(), cfg.n_wakewords);
+        for bc in session.classifiers() {
+            assert_eq!(bc.weights.embedding_dim, cfg.embedding_dim);
+            assert!(
+                bc.weights.hidden_dim > 0,
+                "classifier `{}` must have hidden_dim > 0",
+                bc.name
+            );
+        }
     }
     eprintln!(
         "openwakeword GGUF loaded from {gguf_path}: {} wake-words \
@@ -248,13 +346,9 @@ fn parity_openwakeword_gguf_smoke() {
 
 /// GATED: pushes real 16 kHz PCM through the session and compares the
 /// emitted per-hop wake-word probabilities against the owner-provisioned
-/// reference JSON. Today this test enforces the **loud-partial**
-/// posture: it opts in on [`GGUF_ENV`] / [`WAV_ENV`], loads the real
-/// GGUF + WAV, calls `push_pcm16k`, and asserts the call errors with
-/// [`VokraError::UnsupportedOp`] — no fabricated `0.0 == 0.0` "match".
-/// The moment the embedding extractor lights up (see the module docs),
-/// the assertion flips from "expect UnsupportedOp" to "match reference
-/// probs within [`PROB_ATOL`]" and consumes [`REFERENCE_JSON_ENV`].
+/// reference JSON. Native v0.5.1 artifacts take the numeric branch; legacy
+/// classifier-only artifacts retain their loud [`VokraError::UnsupportedOp`]
+/// compatibility contract.
 #[test]
 fn parity_openwakeword_gated_hop_probs() {
     let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
@@ -271,9 +365,9 @@ fn parity_openwakeword_gated_hop_probs() {
         );
         return;
     };
-    // REFERENCE_JSON_ENV is only consumed once the embedding extractor
-    // lights up; assert its presence for documentation purposes so the
-    // owner sees the missing side-car early.
+    // REFERENCE_JSON_ENV is consumed once the embedding extractor lights
+    // up; mention it early so an owner staging artifacts sees the missing
+    // side-car before the runtime transition.
     if env::var(REFERENCE_JSON_ENV).is_err() {
         eprintln!(
             "note: {REFERENCE_JSON_ENV} unset — the loud-partial gate \
@@ -299,11 +393,13 @@ fn parity_openwakeword_gated_hop_probs() {
         "openwakeword parity WAV must not be empty"
     );
 
-    // Push a nontrivial slice — at least one hop's worth (`hop_samples`
-    // frames = 160 samples at the reference release). The current
-    // landing hits the loud-partial gate here.
-    let hop = session.config().hop_samples;
-    let take = (hop * 8).min(wav.samples.len()); // 8 hops = ~80 ms
+    let predict_chunk = session.config().predict_chunk_samples;
+    let take = wav.samples.len() / predict_chunk * predict_chunk;
+    assert!(
+        take >= (WARMUP_PREDICTIONS + 1) * predict_chunk,
+        "parity WAV needs at least {} complete predict chunks",
+        WARMUP_PREDICTIONS + 1
+    );
     let result = session.push_pcm16k(&wav.samples[..take]);
 
     match result {
@@ -321,11 +417,6 @@ fn parity_openwakeword_gated_hop_probs() {
             );
         }
         Ok(hops) => {
-            // Once the embedding extractor lights up we land here.
-            // Compare against the reference JSON — but only when the
-            // side-car is actually present (the owner might have staged
-            // the real embedding without the reference JSON yet, in
-            // which case we still want the load-path smoke).
             let ref_json_path = env::var(REFERENCE_JSON_ENV).unwrap_or_else(|_| {
                 panic!(
                     "the embedding extractor is now real but {REFERENCE_JSON_ENV} \
@@ -333,19 +424,58 @@ fn parity_openwakeword_gated_hop_probs() {
                      tools/parity/openwakeword_prepare_checkpoint.py"
                 )
             });
-            let _ = ref_json_path; // Consumed by the follow-up wave's parser.
+            let reference = parse_openwakeword_reference(Path::new(&ref_json_path));
+            assert_eq!(reference.sample_rate, 16_000, "reference sample rate");
+            assert_eq!(
+                reference.predict_chunk_samples, predict_chunk,
+                "reference/runtime prediction chunk drifted"
+            );
+            assert_eq!(
+                reference.wakeword_names,
+                session.config().wakeword_names,
+                "reference/GGUF wake-word label ordering drifted"
+            );
             assert!(
                 !hops.is_empty(),
                 "real embedding path must emit at least one hop for the \
                  pushed PCM slice"
             );
-            // TODO(follow-up wave): parse the reference JSON with
-            // vokra_core::json (zero-dep) and assert
-            // `max_i (|hops[i].1 - ref[hops[i].0][i]|) < PROB_ATOL`.
-            panic!(
-                "reference-JSON comparison harness is a follow-up wave; \
-                 embedding extractor lit up unexpectedly early — wire the \
-                 comparison here"
+            let mut seen = BTreeMap::<String, usize>::new();
+            let mut max_abs = 0.0_f32;
+            for (name, probability) in &hops {
+                let index = seen.entry(name.clone()).or_default();
+                let expected = reference
+                    .hop_probs
+                    .get(name)
+                    .unwrap_or_else(|| panic!("runtime emitted unknown wake-word `{name}`"))
+                    .get(*index)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        panic!("runtime emitted more `{name}` hops than the reference")
+                    });
+                let abs = (probability - expected).abs();
+                if *index >= WARMUP_PREDICTIONS {
+                    max_abs = max_abs.max(abs);
+                    assert!(
+                        abs <= PROB_ATOL,
+                        "{name} hop {index}: runtime={probability:.9e}, reference={expected:.9e}, abs={abs:.9e} > {PROB_ATOL:.1e}"
+                    );
+                } else if *index < 5 {
+                    assert_eq!(*probability, 0.0, "first five outputs are suppressed");
+                    assert_eq!(expected, 0.0, "reference first five outputs are suppressed");
+                }
+                *index += 1;
+            }
+            for name in &reference.wakeword_names {
+                assert_eq!(
+                    seen.get(name).copied(),
+                    Some(take / predict_chunk),
+                    "one probability per complete predict chunk for `{name}`"
+                );
+            }
+            eprintln!(
+                "openwakeword real hop parity: {} labels, max_abs={max_abs:.9e}",
+                reference.wakeword_names.len()
             );
         }
         Err(other) => {

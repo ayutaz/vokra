@@ -3,8 +3,8 @@
 //! # Why this is its own subcommand rather than a `run --task`
 //!
 //! Every `run` task loads a GGUF: `RunArgs::model` is a required `String`, and
-//! the F0 route there (`ModelTask::F0Rmvpe`) reaches its extractor through
-//! `RMVPE::open(&a.model)`. YIN and PyIN have no weights at all — they are
+//! the F0 routes there (`ModelTask::F0Rmvpe`, `F0Fcpe`, `F0Crepe`) reach their
+//! extractors through the supplied GGUF. YIN and PyIN have no weights at all — they are
 //! pure DSP over the input samples, with no checkpoint, no license class and
 //! no `docs/license-audit.md` §3.1 row. Threading them through a
 //! model-loading path would mean inventing a `--model` a caller cannot
@@ -30,11 +30,10 @@
 //! so a caller can swap `--algo` (or swap in the RMVPE route) without
 //! touching whatever parses the rows.
 //!
-//! Both ops return `Vec<f32>` of Hz with `0.0` marking an unvoiced frame, so
-//! `voiced` is derived as `hz > 0.0` and `confidence` is reported as `1.0` /
-//! `0.0` to match. Neither op exposes a per-frame confidence today; emitting a
-//! fabricated one would be worse than emitting the binary the op actually
-//! supports (FR-EX-08), and the column exists so the row shape stays shared.
+//! YIN returns only Hz, so its `confidence` remains the explicit binary
+//! `1.0`/`0.0` supported by that op. PyIN exposes its pre-decode voiced
+//! probability, and the CLI reports that real probability while preserving
+//! the same four-column row shape.
 //!
 //! # Sample rate
 //!
@@ -176,13 +175,19 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         .ok_or("f0: --input <in.wav> is required")?;
 
     let clip = wav::read_wav(path)?;
-    let hz = match a.algo {
-        Algo::Yin => vokra_ops::yin(&clip.samples, clip.sample_rate, a.fmin, a.fmax),
-        Algo::Pyin => vokra_ops::pyin(&clip.samples, clip.sample_rate, a.fmin, a.fmax),
-    }
-    .map_err(|e| format!("f0 ({}): {e}", a.algo.name()))?;
-
-    for line in render(&hz, clip.sample_rate, a.algo) {
+    let rows = match a.algo {
+        Algo::Yin => {
+            let hz = vokra_ops::yin(&clip.samples, clip.sample_rate, a.fmin, a.fmax)
+                .map_err(|e| format!("f0 ({}): {e}", a.algo.name()))?;
+            render(&hz, clip.sample_rate, a.algo)
+        }
+        Algo::Pyin => {
+            let frames = vokra_ops::pyin_detailed(&clip.samples, clip.sample_rate, a.fmin, a.fmax)
+                .map_err(|e| format!("f0 ({}): {e}", a.algo.name()))?;
+            render_pyin(&frames, clip.sample_rate)
+        }
+    };
+    for line in rows {
         println!("{line}");
     }
     Ok(ExitCode::SUCCESS)
@@ -197,25 +202,55 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
 /// unguarded. `render` takes the Hz slice directly, which is what the ops
 /// return, so a test can hand it a known track and check every field.
 fn render(hz: &[f32], sample_rate: u32, algo: Algo) -> Vec<String> {
-    let voiced = hz.iter().filter(|v| **v > 0.0).count();
-    let mut out = Vec::with_capacity(hz.len() + 1);
+    let frames: Vec<RenderFrame> = hz
+        .iter()
+        .map(|&hz| RenderFrame {
+            hz,
+            voiced: hz > 0.0,
+            confidence: if hz > 0.0 { 1.0 } else { 0.0 },
+        })
+        .collect();
+    render_frames(&frames, sample_rate, algo)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RenderFrame {
+    hz: f32,
+    voiced: bool,
+    confidence: f32,
+}
+
+fn render_pyin(frames: &[vokra_ops::PyinFrame], sample_rate: u32) -> Vec<String> {
+    let frames: Vec<RenderFrame> = frames
+        .iter()
+        .map(|frame| RenderFrame {
+            hz: frame.hz,
+            voiced: frame.voiced,
+            confidence: frame.confidence,
+        })
+        .collect();
+    render_frames(&frames, sample_rate, Algo::Pyin)
+}
+
+fn render_frames(frames: &[RenderFrame], sample_rate: u32, algo: Algo) -> Vec<String> {
+    let voiced = frames.iter().filter(|frame| frame.voiced).count();
+    let mut out = Vec::with_capacity(frames.len() + 1);
     out.push(format!(
         "f0: {} frames, voiced_frames={voiced}, algo={} @ {sample_rate} Hz",
-        hz.len(),
+        frames.len(),
         algo.name(),
     ));
     // The op's frame index times its hop, both fixed by the op — see
     // `vokra_ops::f0::DEFAULT_HOP`. Computed here rather than returned by the
     // op because the op's contract is "one Hz value per frame".
     let hop_sec = vokra_ops::f0::DEFAULT_HOP as f32 / sample_rate as f32;
-    for (i, v) in hz.iter().enumerate() {
-        let is_voiced = *v > 0.0;
+    for (i, frame) in frames.iter().enumerate() {
         out.push(format!(
             "{:.4}\t{:.3}\t{}\t{:.4}",
             i as f32 * hop_sec,
-            v,
-            is_voiced,
-            if is_voiced { 1.0_f32 } else { 0.0 }
+            frame.hz,
+            frame.voiced,
+            frame.confidence,
         ));
     }
     out
@@ -319,24 +354,25 @@ mod tests {
         assert_eq!(rows[4], "0.0480\t440.500\ttrue\t1.0000");
     }
 
-    /// The confidence column tracks `voiced`, which tracks `hz > 0.0`.
-    ///
-    /// Pinned separately because the three are derived from one another: a
-    /// change that decoupled them would still produce plausible-looking rows.
+    /// PyIN reports its actual voiced probability, including on a frame the
+    /// HMM ultimately decodes as unvoiced.
     #[test]
-    fn confidence_never_disagrees_with_the_voiced_flag() {
-        let hz = [0.0_f32, 1.0, 0.0, 99.0, 0.0];
-        for row in render(&hz, 16_000, Algo::Pyin).iter().skip(1) {
-            let f: Vec<&str> = row.split('\t').collect();
-            let hz_v: f32 = f[1].parse().expect("hz column");
-            let voiced: bool = f[2].parse().expect("voiced column");
-            let conf: f32 = f[3].parse().expect("confidence column");
-            assert_eq!(voiced, hz_v > 0.0, "voiced must follow hz: {row}");
-            assert!(
-                (conf - if voiced { 1.0 } else { 0.0 }).abs() < f32::EPSILON,
-                "confidence must follow voiced: {row}"
-            );
-        }
+    fn pyin_renders_probability_instead_of_binary_confidence() {
+        let frames = [
+            vokra_ops::PyinFrame {
+                hz: 220.0,
+                voiced: true,
+                confidence: 0.875,
+            },
+            vokra_ops::PyinFrame {
+                hz: 0.0,
+                voiced: false,
+                confidence: 0.125,
+            },
+        ];
+        let rows = render_pyin(&frames, 16_000);
+        assert_eq!(rows[1], "0.0000\t220.000\ttrue\t0.8750");
+        assert_eq!(rows[2], "0.0160\t0.000\tfalse\t0.1250");
     }
 
     /// The row shape must stay swappable with `run`'s RMVPE route, which is

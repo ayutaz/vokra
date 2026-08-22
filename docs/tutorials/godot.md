@@ -43,10 +43,16 @@ var out: Dictionary = session.synthesize("Hello from Vokra.")
 ```
 
 `VokraStream` provides the streaming primitives — `push_pcm(pcm)`, `poll(n)`
-and `interrupt()` (barge-in). Note the honest gap: opening a VAD stream from
-GDScript (`session.vad_open_stream`, which returns an Object) is **not yet
-wired** and reports an explicit error rather than a fake value — that return
-path needs more Variant plumbing.
+and `interrupt()` (barge-in). `session.vad_open_stream(16000)` returns a live
+`VokraStream` Object whose lifetime is owned by Godot:
+
+```gdscript
+var stream: VokraStream = session.vad_open_stream(16000)
+stream.push_pcm(pcm_chunk)
+var probabilities: PackedFloat32Array = stream.poll(64)
+stream.interrupt()
+stream.free()
+```
 
 ## 4. Demo projects
 
@@ -66,16 +72,16 @@ NVIDIA runtime is bundled** by `scripts/compliance/check-godot-package-no-nvidia
 build `dlopen`s the system CUDA at run time; it never ships a `libcudart` /
 `libcudnn` / `libcublas` / `libnvrtc`).
 
-## 6. Honest state (owner editor verification)
+## 6. Verification state
 
 The trampoline runtime dispatch is code-complete: `transcribe`, `synthesize`,
-`push_pcm`, `poll` and `interrupt` unpack/pack Variants and call the runtime
+`vad_open_stream`, `push_pcm`, `poll` and `interrupt` unpack/pack Variants and call the runtime
 (`integrations/vokra-godot/src/trampoline.rs`
-<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->). What is **not**
-done here is running it inside a real Godot 4.x editor and driving the demos
-end-to-end — that runtime verification is an owner task (M3-11 T19). Treat this
-page as the API contract, not a certification that it has been clicked through
-in the editor.
+<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->). The Linux CI leg
+downloads the checksum-pinned official Godot 4.7.1 binary and runs both the
+asset-free ClassDB/error harness and a real Silero VAD stream smoke. Opening
+the ASR/TTS demo scenes interactively in the editor remains a manual release
+check; it is not represented as automated evidence.
 
 ## 7. Troubleshooting
 
@@ -84,7 +90,7 @@ in the editor.
 | The extension does not load | The `.gdextension` `bin/` paths must match your platform/arch; rebuild for the right `TARGET_TRIPLE`. |
 | `unknown target triple` from the build script | Pass one of the five supported triples (`FR-EX-08`, no silent guess). |
 | `session.transcribe` returns an error | Read `vokra_last_error()`; a backend/op error surfaces as an explicit `CallError`, never a fake result. |
-| `vad_open_stream` reports an error | Expected — the Object return path is not yet wired (§3). |
+| `vad_open_stream` reports an error | The loaded model must be a streaming VAD model and the requested sample rate must match it; backend details remain in `vokra_last_error()`. |
 
 ## Next steps
 
@@ -94,15 +100,14 @@ in the editor.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against `integrations/vokra-godot/src/` (the
-trampolines dispatch; the README dated 2026-07-10 pre-dates that and is
-stale).**
+**Last verified: 2026-08-22 — official Godot 4.7.1 headless, real Silero VAD
+GGUF + raw-f32 PCM stream.**
 
 - **Update responsibility**: a PR that changes the GDExtension API, the build
   targets, or the compliance scanner updates this page and its Japanese twin in
   the same PR.
-- **Review cadence**: quarterly Go/No-go review (`NFR-MT-05`); the real-editor
-  runtime verification is the owner's (M3-11 T19), recorded honestly above.
+- **Review cadence**: quarterly Go/No-go review (`NFR-MT-05`); the interactive
+  editor check remains a manual release item, recorded honestly above.
 - **Re-verify the dispatch state** (do not trust the README):
 
 ```sh

@@ -16,9 +16,13 @@ use vokra_core::{BackendKind, Session, VokraError};
 use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
 use vokra_models::distil_whisper::DistilWhisperAsr;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
+use vokra_models::moonshine::Moonshine;
+use vokra_models::parakeet::ParakeetAsr;
+use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
+use vokra_models::whisper_medusa::WhisperMedusa;
 
 /// The task a loaded model performs (selected by its architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +147,17 @@ pub(crate) enum ModelTask {
     /// `forward_features` / stream `push_pcm` run the encoder, no
     /// loud-partial gate).
     VadFsmn,
+    /// Voice activity detection through FireRedTeam Stream-VAD.
+    ///
+    /// The native Kaldi-fbank + CMVN + causal DFSMN forward implements the
+    /// same `VadEngine` contract as Silero and FSMN-VAD.
+    VadFirered,
+    /// Voice activity detection through native TEN-VAD v1.0.
+    ///
+    /// The LPCNet-derived frontend and separable-conv/two-LSTM network share
+    /// the common `VadEngine` stream contract. Canonical official weights are
+    /// local-use only because their upstream deployment license is restricted.
+    VadTen,
     /// Speech enhancement through NSNet2 (Microsoft DNS-Challenge baseline).
     ///
     /// Real forward: [`vokra_models::nsnet2::Nsnet2V1::denoise_pcm`] runs
@@ -172,11 +187,53 @@ pub(crate) enum ModelTask {
     /// name `extract`, so the obvious name on a loaded model handed back a
     /// fabricated track.)
     ///
-    /// Its siblings FCPE and CREPE are still NOT routed here, but as of
-    /// 2026-08-15 no longer because they fabricate: both now refuse a
-    /// weightless or wrong-rate artifact with a named error. What they lack
-    /// is the CLI wiring. See their rows in [`BOUND_ARCHES`].
     F0Rmvpe,
+    /// F0 extraction through FCPE. The concrete path-taking binder is opened
+    /// once by the `run` arm and returns the same [`vokra_models::f0::F0Frame`]
+    /// rows as RMVPE.
+    F0Fcpe,
+    /// F0 extraction through CREPE. Kept distinct from FCPE/RMVPE so rate and
+    /// checkpoint diagnostics name the actual front-end.
+    F0Crepe,
+    /// Charsiu neural forced alignment. The run arm binds the concrete model
+    /// from the already parsed GGUF and pairs `--input` audio with the
+    /// whitespace-delimited official phone sequence in `--text`.
+    AlignCharsiu,
+    /// WeTextProcessing inverse/text normalization (`--text` → text). The
+    /// concrete binder is built from the session GGUF in the `run` arm; a
+    /// build without `vokra-wfst` retains the binder's loud feature error.
+    TextNormalize,
+    /// NKF-AEC offline paired-WAV route. The concrete model opens a stateful
+    /// [`vokra_core::engines::AecStreamHandle`] in the `run` arm because the
+    /// generic [`Session`] facade has no AEC engine slot.
+    AecNkf,
+    /// CT-Transformer punctuation restoration. The generic session has no
+    /// punctuation-engine slot, so `run` binds [`vokra_models::ct_punc::CtPunc`]
+    /// from `session.gguf()` and consumes the versioned paired token/id TSV.
+    CtPunc,
+    /// Standalone Mimi codec encode/decode. `run` binds the real encoder,
+    /// effective RVQ tables, and neural decoder from the same GGUF and uses
+    /// the versioned portable code container between the two modes.
+    MimiCodec,
+    /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
+    /// model from the session GGUF and consumes channel-major little-endian
+    /// f32 mel frames from `--input`.
+    VocoderBigVgan,
+    /// Microsoft SpeechT5 HiFi-GAN mel-to-waveform vocoder. The concrete
+    /// model is bound from the session GGUF in the `run` arm.
+    VocoderHifiGan,
+    /// Charactr Vocos feature-to-waveform vocoder. The mel variant consumes
+    /// 100-channel features; the Encodec variant consumes 128-channel
+    /// features plus an explicit bandwidth condition.
+    VocoderVocos,
+    /// openWakeWord streaming keyword spotting. The generic Session facade
+    /// has no KWS slot, so `run` binds the concrete mutable session once from
+    /// the already parsed GGUF and feeds the complete 16 kHz clip.
+    KwsOpenwakeword,
+    /// Pipecat smart-turn v2 semantic endpointing. The whole input utterance
+    /// maps to one completion probability; this is deliberately distinct
+    /// from the streaming frame-level VAD tasks.
+    SmartTurn,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -269,9 +326,19 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 /// [`vokra_models::fsmn_vad::ARCH`] and of what `vokra-cli convert --model
 /// fsmn-vad` writes.
 const ARCH_FSMN_VAD: &str = "fsmn-vad";
+/// FireRedTeam Stream-VAD native DFSMN.
+const ARCH_FIRERED_VAD: &str = "firered_vad";
+/// TEN-framework TEN-VAD v1.0 native streaming VAD.
+const ARCH_TEN_VAD: &str = "ten_vad";
+/// openWakeWord native v0.5.1 KWS pipeline.
+const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
+/// Pipecat smart-turn v2 utterance-level endpoint classifier.
+const ARCH_SMART_TURN: &str = "smart_turn";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
+/// Xiph RNNoise v0.2 native waveform denoiser.
+const ARCH_RNNOISE: &str = "rnnoise";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
@@ -280,6 +347,31 @@ const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
 /// keys off `vokra.f0.*` instead), so this dispatch is the only place the
 /// string is matched; it is kept verbatim in lock-step with the converter.
 const ARCH_RMVPE: &str = "rmvpe";
+/// FCPE pitch extractor — mirror of `vokra_models::f0::fcpe::ARCH`.
+const ARCH_FCPE: &str = "fcpe";
+/// CREPE pitch extractor — mirror of `vokra_models::f0::crepe::ARCH`.
+const ARCH_CREPE: &str = "crepe";
+/// Charsiu English 10 ms forced aligner.
+const ARCH_CHARSIU: &str = "charsiu";
+/// WeTextProcessing ITN/TN bundle — mirror of
+/// `vokra_models::wetextprocessing::ARCH`.
+const ARCH_WETEXTPROCESSING: &str = "wetextprocessing";
+/// NKF-AEC — mirror of `vokra_models::aec::nkf_aec::ARCH`.
+const ARCH_NKF_AEC: &str = "nkf_aec";
+/// CT-Punc text post-processor — mirror of
+/// [`vokra_models::ct_punc::ARCH`].
+const ARCH_CT_PUNC: &str = "ct_punc";
+/// Standalone Kyutai Mimi codec — mirror of what
+/// `vokra-cli convert --model mimi` writes.
+const ARCH_MIMI: &str = "mimi";
+/// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
+const ARCH_BIGVGAN: &str = "bigvgan";
+/// Microsoft SpeechT5 HiFi-GAN vocoder.
+const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
+/// SpeechBrain LibriTTS 22.05 kHz HiFi-GAN vocoder.
+const ARCH_HIFIGAN_VOCODER: &str = "hifigan_vocoder";
+/// Charactr Fourier-space Vocos vocoder.
+const ARCH_VOCOS: &str = "vocos";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -299,6 +391,14 @@ const ARCH_DISTIL_WHISPER: &str = "distil-whisper";
 /// kotoba-whisper (`kotoba-tech/kotoba-whisper-v2.0` and family) — mirror of
 /// `vokra-convert::models::kotoba_whisper::ARCH`.
 const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
+/// Moonshine Tiny/Base raw-waveform encoder-decoder ASR.
+const ARCH_MOONSHINE: &str = "moonshine";
+/// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
+const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
+/// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
+const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
+/// aiola Whisper-Medusa-v1 official module-0 ASR forward.
+const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -418,6 +518,72 @@ pub(crate) fn load_session_with_backend_and_mimi(
             let asr = KotobaWhisperAsr::from_gguf(session.gguf())
                 .map_err(|e| e.to_string())?
                 .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_MOONSHINE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_MOONSHINE}`)"
+                ));
+            }
+            let asr = Moonshine::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_TDT => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_PARAKEET_TDT}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Parakeet-TDT currently implements the exact FastConformer/TDT forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr = ParakeetAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            if !asr.has_tokenizer() {
+                return Err(
+                    "Parakeet-TDT GGUF has no embedded official tokenizer.json; reconvert with `vokra-cli convert --model parakeet-tdt --tokenizer tokenizer.json`"
+                        .to_owned(),
+                );
+            }
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_CTC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_PARAKEET_CTC}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Parakeet-CTC currently implements the exact FastConformer/CTC forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr =
+                ParakeetCtcAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_WHISPER_MEDUSA_V1 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_WHISPER_MEDUSA_V1}`)"
+                ));
+            }
+            if backend != BackendKind::Cpu {
+                return Err(format!(
+                    "Whisper-Medusa module-0 output adaptation is CPU-only; backend \
+                     {backend:?} is unsupported (no silent CPU fallback)"
+                ));
+            }
+            let asr =
+                WhisperMedusa::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
@@ -603,10 +769,51 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 })?;
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadFsmn))
         }
-        ARCH_NSNET2 => {
+        ARCH_FIRERED_VAD => {
             if hint.is_some() {
                 return Err(format!(
-                    "task hint {hint:?} is not supported on arch `{ARCH_NSNET2}`"
+                    "task hint {hint:?} is not supported on arch `{ARCH_FIRERED_VAD}`"
+                ));
+            }
+            let vad = vokra_models::firered_vad::FireredVad::from_gguf(session.gguf())
+                .map_err(|error| format!("arch `{ARCH_FIRERED_VAD}`: {error}"))?;
+            Ok((
+                session.with_vad_engine(Arc::new(vad)),
+                ModelTask::VadFirered,
+            ))
+        }
+        ARCH_TEN_VAD => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_TEN_VAD}`"
+                ));
+            }
+            let vad = vokra_models::ten_vad::TenVad::from_gguf(session.gguf())
+                .map_err(|error| format!("arch `{ARCH_TEN_VAD}`: {error}"))?;
+            Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadTen))
+        }
+        ARCH_OPENWAKEWORD_OP => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_OPENWAKEWORD_OP}`"
+                ));
+            }
+            Ok((session, ModelTask::KwsOpenwakeword))
+        }
+        ARCH_SMART_TURN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SMART_TURN}`"
+                ));
+            }
+            // Bare session: the run/bench arm binds the 379 MB concrete model
+            // exactly once and calls its utterance-level endpoint surface.
+            Ok((session, ModelTask::SmartTurn))
+        }
+        ARCH_NSNET2 | ARCH_RNNOISE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on denoise arch `{arch}`"
                 ));
             }
             // Bare session — the `run` arm binds the concrete `Nsnet2V1` from
@@ -639,6 +846,96 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // `vokra.f0.*`, not an already-parsed handle), so the `run` arm
             // binds it from `--model`.
             Ok((session, ModelTask::F0Rmvpe))
+        }
+        ARCH_FCPE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FCPE}`"
+                ));
+            }
+            // Path-taking binder; bind once in the run arm so the same loaded
+            // weights produce both the config/rate check and the F0 track.
+            Ok((session, ModelTask::F0Fcpe))
+        }
+        ARCH_CREPE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CREPE}`"
+                ));
+            }
+            Ok((session, ModelTask::F0Crepe))
+        }
+        ARCH_CHARSIU => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CHARSIU}`"
+                ));
+            }
+            Ok((session, ModelTask::AlignCharsiu))
+        }
+        ARCH_WETEXTPROCESSING => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_WETEXTPROCESSING}`"
+                ));
+            }
+            // The binder consumes the already parsed GGUF in the run arm and
+            // the feature-gated FST pipeline returns its own precise error.
+            Ok((session, ModelTask::TextNormalize))
+        }
+        ARCH_NKF_AEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NKF_AEC}`"
+                ));
+            }
+            Ok((session, ModelTask::AecNkf))
+        }
+        ARCH_CT_PUNC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_CT_PUNC}`"
+                ));
+            }
+            // Bare session: the run arm binds the concrete model once so its
+            // paired token/id API remains reachable without adding a fake
+            // generic text-engine trait.
+            Ok((session, ModelTask::CtPunc))
+        }
+        ARCH_MIMI => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MIMI}`"
+                ));
+            }
+            // Bare session: standalone encode/decode needs all three concrete
+            // codec components and a versioned codes container, none of which
+            // belongs in the ASR/TTS/S2S session slots.
+            Ok((session, ModelTask::MimiCodec))
+        }
+        ARCH_BIGVGAN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_BIGVGAN}`"
+                ));
+            }
+            Ok((session, ModelTask::VocoderBigVgan))
+        }
+        ARCH_SPEECHT5_HIFIGAN | ARCH_HIFIGAN_VOCODER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHT5_HIFIGAN}`"
+                ));
+            }
+            Ok((session, ModelTask::VocoderHifiGan))
+        }
+        ARCH_VOCOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VOCOS}`"
+                ));
+            }
+            Ok((session, ModelTask::VocoderVocos))
         }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
@@ -737,11 +1034,20 @@ pub(crate) fn load_session_with_backend_and_mimi(
             Err(format!(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
+                 `{ARCH_MOONSHINE}` / `{ARCH_PARAKEET_TDT}` / \
+                 `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
-                 `{ARCH_RMVPE}` / `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
+                 `{ARCH_FIRERED_VAD}` / \
+                 `{ARCH_OPENWAKEWORD_OP}` / \
+                 `{ARCH_SMART_TURN}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
+                 `{ARCH_CHARSIU}` / \
+                 `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / \
+                 `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
                 BOUND_ARCHES.len()
@@ -775,8 +1081,7 @@ fn print_attribution_banner(info: &vokra_core::AttributionInfo) {
 // *which* primitive is missing — restating that here would be a second source
 // of truth that drifts silently away from the binder. It carries only facts
 // this file can keep honest: the module that binds the arch, the public entry
-// point a caller reaches the runtime through, the class of blocker (verified
-// by reading each module's entry point), and — where the binder's loader
+// point a caller reaches the runtime through, and — where the binder's loader
 // accepts an already-parsed GGUF handle — a probe that actually loads it, so a
 // malformed artifact surfaces the BINDER's own load error rather than a
 // generic message.
@@ -789,114 +1094,12 @@ fn print_attribution_banner(info: &vokra_core::AttributionInfo) {
 /// hands the binder's own diagnostic straight to the user.
 type BoundProbe = fn(&GgufFile) -> Result<(), VokraError>;
 
-/// Why an architecture that `vokra-models` binds has no `vokra-cli run` task.
-///
-/// Each value was established by reading the module's entry point, not
-/// inferred: see the per-variant note for the evidence class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoundReason {
-    /// The binder loads and validates, but its runtime entry point is a
-    /// loud-partial: it returns `UnsupportedOp` / `NotImplemented`
-    /// unconditionally, naming the missing primitive and its primary source.
-    /// Verified per module by reading the entry point's body.
-    LoudPartialForward,
-    /// The runtime works, but what it emits is not a CLI-shaped artifact —
-    /// hidden states, per-token logits, codec codes, or an output that needs
-    /// a caller-supplied tokenization / phoneme sequence the GGUF does not
-    /// carry. Rendering one of those as a `run` result would mean inventing a
-    /// presentation the model never defined.
-    NoCliShapedOutput,
-    /// The forward is real and complete, but it consumes a **pair** of
-    /// strictly sample-aligned input streams — an AEC mic signal plus its
-    /// far-end reference — and `run` carries exactly one `--input`. Neither
-    /// the GGUF nor any current flag supplies the second stream (`--compare`
-    /// is the campplus speaker-verify pair and is rejected on every other
-    /// task), so there is no honest input to drive the model with.
-    NeedsPairedInput,
-    /// The forward is real, complete and fallible — it refuses a bad artifact
-    /// with a named error rather than handing back a plausible-looking
-    /// fabrication — and its output would be CLI-shaped. Nothing about the
-    /// binder blocks a `run` task; this CLI simply has not wired one for the
-    /// arch yet.
-    ///
-    /// The gloss above used to name only the F0 instance of that fallibility
-    /// ("a weightless or wrong-rate artifact ... rather than degrading to a
-    /// zero track"), because the FCPE and CREPE rows were its only users. The
-    /// `wetextprocessing` row is a text side-car with neither a sample rate
-    /// nor a track, so the wording was widened to the class and the audio
-    /// instance moved into those rows' own comment, where it is still exact.
-    /// Nothing about the variant's meaning changed.
-    ///
-    /// A row here may still carry a BUILD-time gate — `wetextprocessing`'s
-    /// two FST stages need the `vokra-wfst` feature — provided its `entry`
-    /// names that gate. What the variant forbids is a forward that refuses
-    /// unconditionally: that is [`Self::LoudPartialForward`], and confusing
-    /// the two in either direction is the defect both rows' comments record.
-    ///
-    /// # A `SkeletonFallback` variant used to sit here
-    ///
-    /// It named the opposite hazard: a forward that runs when the GGUF
-    /// carries weights but degrades to an all-zero, frame-count-only track
-    /// when it does not, so that printing the track could not be told apart
-    /// from a real measurement. Its only two users were the FCPE and CREPE
-    /// rows, and on 2026-08-15 both binders stopped doing that — every
-    /// failure is now a named error. The variant was removed with its last
-    /// user rather than kept as a label no row could honestly carry.
-    ///
-    /// If a future binder reintroduces that shape, reintroduce the variant
-    /// with it; do not file it under this one, which asserts the opposite.
-    RealForwardNoCliTask,
-    /// The module has no GGUF loader at all yet — its weights come from a
-    /// deterministic `synthesized` fixture, so there is nothing for the CLI
-    /// to bind from a converted artifact.
-    ///
-    /// A module whose `from_gguf` exists but refuses on every path, binding
-    /// no tensor, is the same class and belongs here: what separates this
-    /// variant from the others is whether a converted artifact can yield a
-    /// usable handle, not whether a symbol by that name compiles. `charsiu`
-    /// is filed here on that reading — see its comment in [`BOUND_ARCHES`].
-    /// This is a note on the variant's scope, not a widening of it: the
-    /// sentence above already says "nothing to bind", which is what such a
-    /// module reports, and `explain()` is unchanged.
-    NoGgufLoader,
-}
-
-impl BoundReason {
-    /// One sentence naming the blocker class, for the `run` diagnostic.
-    fn explain(self) -> &'static str {
-        match self {
-            Self::LoudPartialForward => {
-                "its runtime forward is a loud-partial — calling the entry point below \
-                 reports the specific missing primitive and the primary source to \
-                 transcribe it from (this CLI deliberately does not restate that gap: a \
-                 copy here would drift away from the binder)"
-            }
-            Self::NoCliShapedOutput => {
-                "its output is not a CLI-shaped artifact (hidden states / logits / codec \
-                 codes, or it needs a caller-supplied tokenization the GGUF does not \
-                 carry), so `run` has no honest way to render it"
-            }
-            Self::NeedsPairedInput => {
-                "its forward is real, but it consumes a PAIR of strictly sample-aligned \
-                 streams (an AEC mic signal plus its far-end reference) while `run` \
-                 carries exactly one `--input` — neither the GGUF nor any current flag \
-                 supplies the second one, so there is nothing honest to feed it"
-            }
-            Self::RealForwardNoCliTask => {
-                "its forward is real, complete and fallible — it refuses a bad artifact with \
-                 a named error rather than handing back a plausible-looking fabrication — so \
-                 nothing about the binder blocks execution; this CLI has simply not wired a \
-                 `run` task for the arch yet, and the entry point below is callable from a \
-                 library context today, subject to any build-time feature gate that entry \
-                 names"
-            }
-            Self::NoGgufLoader => {
-                "the module has no GGUF loader yet (its weights come from a deterministic \
-                 `synthesized` fixture), so there is nothing to bind from this artifact"
-            }
-        }
-    }
-}
+/// Every current registry row has a GGUF loader and a loud-partial runtime
+/// forward. The former `NoGgufLoader` class reached zero in the 2026-08-22 TTS
+/// loader wave, so the diagnostic no longer carries a dead blocker variant.
+const LOUD_PARTIAL_EXPLANATION: &str = "its runtime forward is a loud-partial — calling the entry point below reports the \
+     specific missing primitive and the primary source to transcribe it from (this CLI \
+     deliberately does not restate that gap: a copy here would drift away from the binder)";
 
 /// One architecture `vokra-models` binds but `vokra-cli run` cannot execute.
 #[derive(Clone, Copy)]
@@ -907,11 +1110,8 @@ struct BoundArch {
     module: &'static str,
     /// The public entry point a library caller reaches the runtime through.
     entry: &'static str,
-    /// The class of blocker keeping it out of `run`.
-    reason: BoundReason,
     /// Load probe, when the binder's loader takes an already-parsed
-    /// `&GgufFile`. `None` for path-taking loaders and for
-    /// [`BoundReason::NoGgufLoader`] rows.
+    /// `&GgufFile`. `None` for path-taking loaders.
     probe: Option<BoundProbe>,
 }
 
@@ -929,14 +1129,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "canary",
         module: "vokra_models::canary",
         entry: "CanaryAsr::from_gguf → CanaryAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::canary::CanaryAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "canary-1b-flash",
         module: "vokra_models::canary_1b_flash",
         entry: "Canary1bFlashAsr::from_gguf → Canary1bFlashAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::canary_1b_flash::Canary1bFlashAsr::from_gguf(g).map(|_| ())
         }),
@@ -945,7 +1143,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::canary_qwen::CanaryQwenAsr::from_gguf(g).map(|_| ())
         }),
@@ -958,60 +1155,25 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // not re-add them: `bound_arch_registry_is_disjoint_from_the_routed_arches`
     // now fails on a row that shadows either arch.
     BoundArch {
-        arch: "whisper-medusa-v1",
-        module: "vokra_models::whisper_medusa",
-        entry: "WhisperMedusa::from_gguf → WhisperMedusa::transcribe_tokens",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::whisper_medusa::WhisperMedusa::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "moonshine",
-        module: "vokra_models::moonshine",
-        entry: "Moonshine::from_gguf → Moonshine::transcribe",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::moonshine::Moonshine::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "omniasr-ctc",
         module: "vokra_models::omniasr_ctc",
         entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "parakeet-ctc",
-        module: "vokra_models::parakeet_ctc",
-        entry: "ParakeetCtcAsr::from_gguf → ParakeetCtcAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::parakeet_ctc::ParakeetCtcAsr::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
         arch: "parakeet-tdt-1_1b",
         module: "vokra_models::parakeet_tdt_1_1b",
         entry: "ParakeetTdt11b::from_gguf → ParakeetTdt11b::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
-        arch: "parakeet-tdt",
-        module: "vokra_models::parakeet",
-        entry: "ParakeetAsr::transcribe",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
         arch: "sensevoicesmall",
         module: "vokra_models::sensevoicesmall_runtime",
         entry: "SenseVoiceSmall::from_gguf → SenseVoiceSmall::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::sensevoicesmall_runtime::SenseVoiceSmall::from_gguf(g).map(|_| ())
         }),
@@ -1020,7 +1182,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "firered_asr_aed_l",
         module: "vokra_models::firered_asr_aed",
         entry: "FireredAsrAed::from_gguf → FireredAsrAed::transcribe_tokens",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::firered_asr_aed::FireredAsrAed::from_gguf(g).map(|_| ())
         }),
@@ -1029,180 +1190,127 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sber_gigaam_v3",
         module: "vokra_models::gigaam",
         entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "gigaam_multilingual",
         module: "vokra_models::gigaam",
         entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "kyutai-stt",
         module: "vokra_models::kyutai_stt",
         entry: "KyutaiSttAsr::from_path → KyutaiSttAsr::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "mt3",
         module: "vokra_models::mt3",
         entry: "Mt3::from_gguf → Mt3::transcribe",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::mt3::Mt3::from_gguf(g).map(|_| ())),
-    },
-    // --- VAD / KWS / turn-taking ----------------------------------------
-    BoundArch {
-        arch: "firered_vad",
-        module: "vokra_models::firered_vad",
-        entry: "FireredVad::from_gguf → FireredVad::speech_probabilities",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::firered_vad::FireredVad::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "ten_vad",
-        module: "vokra_models::ten_vad",
-        entry: "TenVad::from_gguf → TenVad::frame_probability",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::ten_vad::TenVad::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "smart_turn",
-        module: "vokra_models::smart_turn",
-        entry: "SmartTurn::from_gguf → SmartTurn::predict_endpoint",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| vokra_models::smart_turn::SmartTurn::from_gguf(g).map(|_| ())),
-    },
-    // `LoudPartialForward` asserts something specific: that the LOAD
-    // works and only the forward is partial. Until 2026-08-15 that was
-    // false for this row, and not marginally so — the named converter
-    // (`vokra-convert/src/models/openwakeword_op.rs`) stamped none of the
-    // seven `vokra.openwakeword.*` keys `OpenwakewordConfig::from_gguf`
-    // requires, so no GGUF this workspace could produce reached the
-    // forward at all. The row described the second failure of a pipeline
-    // that never survived the first.
-    //
-    // Worth noting why the `probe` below did not catch it: it runs
-    // against a GGUF a caller supplies at runtime, so it can only fail on
-    // someone's machine, never in CI. The tests that now hold this row
-    // honest are `crates/vokra-convert/tests/openwakeword_op_roundtrip.rs`
-    // and `crates/vokra-models/tests/openwakeword_convert_bind.rs`, the
-    // latter running the real converter into the real binder.
-    //
-    // The claim is accurate as of the converter repair: the load binds
-    // real config and real per-wake-word classifier weights, and
-    // `push_pcm16k` is a genuine loud-partial (`UnsupportedOp` naming the
-    // frozen Google `speech_embedding` extractor and the env-gated parity
-    // harness). Note the converter now requires a `--config` side-car for
-    // the per-wake-word names, which are not derivable from the tensors.
-    BoundArch {
-        arch: "openwakeword_op",
-        module: "vokra_models::kws::openwakeword",
-        entry: "OpenwakewordSession::from_gguf → OpenwakewordSession::push_pcm16k",
-        reason: BoundReason::LoudPartialForward,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::kws::openwakeword::OpenwakewordSession::from_gguf(g).map(|_| ())
-        }),
     },
     // --- TTS -------------------------------------------------------------
     BoundArch {
         arch: "styletts2",
         module: "vokra_models::styletts2",
         entry: "StyleTts2Tts::from_gguf → StyleTts2Tts::synthesize",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "cosyvoice2",
         module: "vokra_models::cosyvoice2",
         entry: "CosyVoice2Tts::from_path → CosyVoice2Tts::synthesize_pcm_from_mel",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "cosyvoice3",
         module: "vokra_models::cosyvoice3",
-        entry: "CosyVoice3Tts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "CosyVoice3Checkpoint::from_gguf → CosyVoice3Checkpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::cosyvoice3::CosyVoice3Checkpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox",
         module: "vokra_models::chatterbox",
-        entry: "ChatterboxTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxCheckpoint::from_gguf → ChatterboxCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox::ChatterboxCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox_nano",
         module: "vokra_models::chatterbox_nano",
-        entry: "ChatterboxNanoTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxNanoCheckpoint::from_gguf → ChatterboxNanoCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox_nano::ChatterboxNanoCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "chatterbox_turbo",
         module: "vokra_models::chatterbox_turbo",
-        entry: "ChatterboxTurboTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ChatterboxTurboCheckpoint::from_gguf → ChatterboxTurboCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::chatterbox_turbo::ChatterboxTurboCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "dia",
         module: "vokra_models::dia",
-        entry: "DiaTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "DiaCheckpoint::from_gguf → DiaCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| vokra_models::dia::DiaCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "irodori-tts",
         module: "vokra_models::irodori",
-        entry: "IrodoriTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "IrodoriCheckpoint::from_gguf → IrodoriCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::irodori::IrodoriCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "qwen3_tts",
         module: "vokra_models::qwen3_tts",
-        entry: "Qwen3TtsTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "Qwen3TtsCheckpoint::from_gguf → Qwen3TtsCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "vibevoice",
         module: "vokra_models::vibevoice",
-        entry: "VibeVoiceTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VibeVoiceCheckpoint::from_gguf → VibeVoiceCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::vibevoice::VibeVoiceCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "vits-ja",
         module: "vokra_models::vits_ja",
-        entry: "VitsJaTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VitsJaCheckpoint::from_gguf → VitsJaCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::vits_ja::VitsJaCheckpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "voxcpm2",
         module: "vokra_models::voxcpm2",
-        entry: "VoxCpm2Tts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "VoxCpm2Checkpoint::from_gguf → VoxCpm2Checkpoint::synthesize",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::voxcpm2::VoxCpm2Checkpoint::from_gguf(g).map(|_| ())
+        }),
     },
     BoundArch {
         arch: "zonos",
         module: "vokra_models::zonos",
-        entry: "ZonosTts::synthesize",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
+        entry: "ZonosCheckpoint::from_gguf → ZonosCheckpoint::synthesize",
+        probe: Some(|g: &GgufFile| vokra_models::zonos::ZonosCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "diffsinger",
         module: "vokra_models::diffsinger",
         entry: "DiffSinger::from_gguf → DiffSinger::synthesize_mel",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::diffsinger::DiffSinger::from_gguf(g).map(|_| ())),
     },
     // --- Speech-to-speech -------------------------------------------------
@@ -1236,14 +1344,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "llama_omni2",
         module: "vokra_models::llama_omni2",
         entry: "LlamaOmni2::from_path → LlamaOmni2::converse",
-        reason: BoundReason::LoudPartialForward,
         probe: None,
     },
     BoundArch {
         arch: "voila",
         module: "vokra_models::voila",
         entry: "Voila::from_gguf → Voila::converse",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
     // --- Music / audio generation ----------------------------------------
@@ -1251,35 +1357,30 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "musicgen",
         module: "vokra_models::musicgen",
         entry: "MusicGen::from_gguf → MusicGen::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::musicgen::MusicGen::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audiogen",
         module: "vokra_models::audiogen",
         entry: "AudioGen::from_gguf → AudioGen::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audiogen::AudioGen::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audioldm2",
         module: "vokra_models::audioldm2",
         entry: "AudioLdm2::from_gguf → AudioLdm2::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audioldm2::AudioLdm2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "jasco_400m_chords_drums",
         module: "vokra_models::jasco",
         entry: "Jasco::from_gguf → Jasco::generate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::jasco::Jasco::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "beat-this",
         module: "vokra_models::beat_this",
         entry: "BeatThis::from_gguf → BeatThis::analyze",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::beat_this::BeatThis::from_gguf(g).map(|_| ())),
     },
     // --- Source separation / enhancement / super-resolution ---------------
@@ -1287,35 +1388,30 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sepformer",
         module: "vokra_models::sepformer",
         entry: "SepFormer::from_gguf → SepFormer::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::sepformer::SepFormer::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "conv_tasnet",
         module: "vokra_models::conv_tasnet",
         entry: "ConvTasnet::from_gguf → ConvTasnet::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::conv_tasnet::ConvTasnet::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "demucs",
         module: "vokra_models::demucs",
         entry: "Demucs::from_gguf → Demucs::separate",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::demucs::Demucs::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "gtcrn",
         module: "vokra_models::gtcrn",
         entry: "Gtcrn::from_gguf → Gtcrn::denoise",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::gtcrn::Gtcrn::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "facebook_denoiser",
         module: "vokra_models::facebook_denoiser",
         entry: "FbDenoiser::from_gguf → FbDenoiser::denoise",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::facebook_denoiser::FbDenoiser::from_gguf(g).map(|_| ())
         }),
@@ -1324,14 +1420,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "storm",
         module: "vokra_models::storm",
         entry: "Storm::from_gguf → Storm::enhance",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::storm::Storm::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "audiosr",
         module: "vokra_models::audiosr",
         entry: "AudioSr::from_gguf → AudioSr::super_resolve",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::audiosr::AudioSr::from_gguf(g).map(|_| ())),
     },
     // --- Diarization / speaker -------------------------------------------
@@ -1339,7 +1433,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "sortformer",
         module: "vokra_models::sortformer_diar_4spk_v1",
         entry: "SortformerDiar::from_gguf → SortformerDiar::diarize",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::sortformer_diar_4spk_v1::SortformerDiar::from_gguf(g).map(|_| ())
         }),
@@ -1348,7 +1441,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "speaker_3d",
         module: "vokra_models::speaker_3d_eres2net",
         entry: "Speaker3dEres2Net::from_gguf → Speaker3dEres2Net::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::speaker_3d_eres2net::Speaker3dEres2Net::from_gguf(g).map(|_| ())
         }),
@@ -1357,14 +1449,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "redimnet",
         module: "vokra_models::redimnet",
         entry: "ReDimNet::from_gguf → ReDimNet::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::redimnet::ReDimNet::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "wavlm_sv",
         module: "vokra_models::wavlm",
         entry: "WavLmSv::from_gguf → WavLmSv::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::wavlm::WavLmSv::from_gguf(g).map(|_| ())),
     },
     // --- SSL / representation encoders and classifiers --------------------
@@ -1381,49 +1471,42 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "atst",
         module: "vokra_models::atst",
         entry: "Atst::from_gguf → Atst::encode / Atst::embed",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::atst::Atst::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "eat",
         module: "vokra_models::eat",
         entry: "Eat::from_gguf → Eat::encode / Eat::embed_utterance",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::eat::Eat::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "m2d",
         module: "vokra_models::m2d",
         entry: "M2d::from_gguf → M2d::encode / M2d::embed",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::m2d::M2d::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "maest",
         module: "vokra_models::maest",
         entry: "Maest::from_gguf → Maest::encode / Maest::tag",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::maest::Maest::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "w2v-bert-2",
         module: "vokra_models::w2v_bert2",
         entry: "W2vBert2::from_gguf → W2vBert2::encode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::w2v_bert2::W2vBert2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "clap",
         module: "vokra_models::clap",
         entry: "Clap::from_gguf → Clap::encode_audio",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::clap::Clap::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "emotion2vec",
         module: "vokra_models::emotion2vec",
         entry: "Emotion2Vec::from_gguf → Emotion2Vec::classify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::emotion2vec::Emotion2Vec::from_gguf(g).map(|_| ())
         }),
@@ -1432,7 +1515,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "panns",
         module: "vokra_models::panns",
         entry: "Panns::from_gguf → Panns::classify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::panns::Panns::from_gguf(g).map(|_| ())),
     },
     // --- Quality metrics --------------------------------------------------
@@ -1440,7 +1522,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "dnsmos",
         module: "vokra_models::dnsmos_p808_p835",
         entry: "Dnsmos::from_gguf → Dnsmos::score_all",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf(g).map(|_| ())
         }),
@@ -1449,281 +1530,31 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "nisqa_v2_weight",
         module: "vokra_models::nisqa",
         entry: "Nisqa::from_gguf → Nisqa::score",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::nisqa::Nisqa::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "utmosv2",
         module: "vokra_models::utmosv2",
         entry: "Utmosv2::from_gguf → Utmosv2::predict_mos",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::utmosv2::Utmosv2::from_gguf(g).map(|_| ())),
     },
     BoundArch {
         arch: "torchaudio_squim",
         module: "vokra_models::squim",
         entry: "Squim::from_gguf → Squim::estimate_objective / estimate_subjective",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::squim::Squim::from_gguf(g).map(|_| ())),
     },
     // --- Vocoders / codecs -----------------------------------------------
-    //
-    // Wave K (2026-08-15) — corrected rows. `bigvgan`, `hifigan_vocoder` and
-    // `speecht5_hifigan` all shipped as `LoudPartialForward` naming
-    // `X::from_gguf → X::decode`. Both halves were false, in the same
-    // direction as the Wave J charsiu defect: a non-loadable binder labelled
-    // as a working-loader-with-a-partial-forward. What the source says:
-    //
-    //   * The forwards are REAL and complete. `HiFiGan::decode`
-    //     (`hifigan/mod.rs`) is one call to the landed `hifigan_generator`
-    //     op; `BigVGan::decode` (`bigvgan/mod.rs`) delegates verbatim to
-    //     `BigVGanGenerator::forward`. Neither returns a deferral of any
-    //     kind, so `LoudPartialForward`'s promise — "calling the entry
-    //     point below reports the specific missing primitive" — sent the
-    //     reader hunting for a primitive that does not exist.
-    //   * The LOADERS are what block. `HiFiGan::from_gguf` returns
-    //     `NotImplemented` on both supported arches, and `BigVGan::from_gguf`
-    //     contains no `Ok(` return on any path — the variant check is the
-    //     last thing that can succeed, and the tensor walk past it is
-    //     deferred. Neither ever binds a tensor.
-    //
-    // So the blocker that fires FIRST is that nothing binds from a converted
-    // artifact — the same ordering rule the charsiu row above states.
-    // `NoGgufLoader` is that class, and its docstring already covers this
-    // exact shape ("A module whose `from_gguf` exists but refuses on every
-    // path, binding no tensor, is the same class"). Its `explain()`
-    // parenthetical about `synthesized` fixtures holds too: both modules
-    // ship `synthesized` alongside `new`, and that is where weights come
-    // from today.
-    //
-    // `entry` now names the constructor a caller can actually reach, per the
-    // charsiu precedent. `probe` drops to `None` because the registry
-    // invariant below requires it of this reason — a row must not claim
-    // "nothing binds" while carrying a probe that demonstrates a binder.
-    //
-    // Wave L (2026-08-15) — `vocos`, the fourth row, corrected. Wave K
-    // exempted it: it kept `LoudPartialForward` on the ground that its
-    // `Vocos::decode` genuinely IS a loud-partial (it discards both args and
-    // returns `backbone_forward_loud_partial`, naming the ConvNeXt V2
-    // backbone), and only its `entry` was rewritten. That exemption was
-    // wrong, and the paragraph asserting it has been removed rather than
-    // left standing — a comment that justifies the wrong answer is worse
-    // than none, because the next reader trusts it.
-    //
-    // What it got wrong is not the observation but the ordering. BOTH
-    // blockers apply to vocos:
-    //
-    //   * `Vocos::from_gguf` (`crates/vokra-models/src/vocos/mod.rs`) has no
-    //     `Ok(` return on any path — the whole file's single `Ok(` belongs to
-    //     `Vocos::new`. The variant check is the last thing that can succeed,
-    //     and the tensor walk past it returns `NotImplemented` on both
-    //     variant arms. Exactly the `BigVGan::from_gguf` shape above.
-    //   * `Vocos::decode` then refuses too, as Wave K observed.
-    //
-    // The loader is the one that fires FIRST, and the ordering rule this very
-    // comment states two paragraphs up ("the blocker that fires FIRST is that
-    // nothing binds from a converted artifact") does not stop applying because
-    // a second blocker also exists. Wave K read the second blocker's presence
-    // as grounds to name it, which inverted the rule it was applying to the
-    // three siblings in the same breath. A user was promised a forward-blocker
-    // diagnostic and handed a load failure.
-    //
-    // So the row is filed with its three siblings: `NoGgufLoader`, no probe.
-    // The forward gap is not discarded — it moves into `entry`, which is
-    // where a caller who gets past the (absent) loader would meet it. That is
-    // the one thing separating this row from the other three, whose `decode`
-    // calls are complete.
-    BoundArch {
-        arch: "bigvgan",
-        module: "vokra_models::bigvgan",
-        entry: "BigVGan::new(BigVGanVariant, BigVGanWeights) → BigVGan::decode",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
-        arch: "vocos",
-        module: "vokra_models::vocos",
-        entry: "Vocos::new(VocosVariant, VocosConfig, u32) → Vocos::decode (a SECOND \
-                blocker, unlike its bigvgan / hifigan siblings: the ConvNeXt V2 backbone \
-                is absent from vokra-ops, so decode names that gap instead of returning PCM)",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
-        arch: "hifigan_vocoder",
-        module: "vokra_models::hifigan",
-        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    BoundArch {
-        arch: "speecht5_hifigan",
-        module: "vokra_models::hifigan",
-        entry: "HiFiGan::new(HifiGanWeights, HifiGanAttrs, HifiGanConfig, u32) → HiFiGan::decode",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
+    // BigVGAN and Vocos left this registry on 2026-08-21 after strict
+    // loaders, real forwards, parity, and explicit feature-file CLI
+    // contracts landed.
     BoundArch {
         arch: "snac",
         module: "vokra_models::snac",
         entry: "Snac::from_gguf → Snac::encode / Snac::decode",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
     },
-    BoundArch {
-        arch: "mimi",
-        module: "vokra_models::mimi",
-        entry: "MimiEncoder::encode_all / MimiNeuralDecoder::decode_all",
-        reason: BoundReason::NoCliShapedOutput,
-        probe: None,
-    },
     // --- Text / alignment side-cars ---------------------------------------
-    BoundArch {
-        arch: "ct_punc",
-        module: "vokra_models::ct_punc",
-        entry: "CtPunc::from_gguf → CtPunc::restore",
-        reason: BoundReason::NoCliShapedOutput,
-        probe: Some(|g: &GgufFile| vokra_models::ct_punc::CtPunc::from_gguf(g).map(|_| ())),
-    },
-    // Wave M (2026-08-15) — corrected row. This shipped as
-    // `NoCliShapedOutput`, whose definition above names the blocker class
-    // "hidden states, per-token logits, codec codes, or an output that needs a
-    // caller-supplied tokenization / phoneme sequence the GGUF does not carry".
-    // None of those applies. The entry the row itself names is declared in
-    // `crates/vokra-models/src/wetextprocessing/mod.rs` as
-    //
-    //     pub fn normalize(&self, input: &str) -> Result<String>
-    //
-    // text in, text out — and `run` already carries `--text`.
-    //
-    // The tag looks borrowed from the neighbour directly above rather than read
-    // off the binder. That `ct_punc` row IS correct under the same definition,
-    // because `CtPunc::restore(&self, tokens: &[&str], token_ids: &[u32])`
-    // genuinely needs a tokenization no GGUF carries. Two adjacent text
-    // side-cars, one signature apart, and the wrong one was copied.
-    //
-    // What actually blocks it, in the order a caller meets them:
-    //
-    //   1. no `run` task is wired for the arch. Structural, true in every
-    //      build, and exactly what `RealForwardNoCliTask` states.
-    //   2. the two FST stages behind `normalize` compile only under the
-    //      `vokra-wfst` feature — `crates/vokra-ops/src/itn/pipeline.rs` gates
-    //      `compose_stage` on it. Until 2026-08-15 `vokra-cli` declared no such
-    //      feature, so a CLI build could not reach the real forward at all and
-    //      the honest tag then WOULD have been `LoudPartialForward`; the
-    //      passthrough in `crates/vokra-cli/Cargo.toml` is what changed that.
-    //
-    // Blocker 2 is build-conditional, so it is stated in `entry` — the vocos
-    // precedent above for naming a second blocker — while `reason` carries the
-    // class that holds in both builds. Filing the row back under
-    // `LoudPartialForward` would now repeat the Wave I distil-whisper defect in
-    // its own direction: that variant asserts an UNCONDITIONAL refusal, and a
-    // `--features vokra-wfst` build composes both grammars for real.
-    //
-    // The feature-off build still refuses loudly for every non-empty input
-    // (`UnsupportedOp` naming the absent OpenFST reader, the rebuild command
-    // and the upstream URL). The one input it does not refuse is the empty
-    // string, which short-circuits to `Ok("")` in both builds because
-    // upstream's `Processor::Tag` / `Processor::Verbalize` do. No normalised
-    // text is fabricated on any path, in either build (FR-EX-08).
-    //
-    // The half of this judgement a compiler can hold — the two signatures — is
-    // pinned by `text_shaped_entry_points_still_have_the_signatures_their_rows_assume`
-    // below, so the next reader need not take the paragraphs above on trust.
-    BoundArch {
-        arch: "wetextprocessing",
-        module: "vokra_models::wetextprocessing",
-        entry: "WeTextProcessing::from_gguf → WeTextProcessing::normalize (real text→text; \
-                the two FST stages behind it compile only under the `vokra-wfst` feature, \
-                which this crate now forwards — without it `normalize` refuses loudly \
-                instead of composing, so build the CLI with `--features vokra-wfst`)",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: Some(|g: &GgufFile| {
-            vokra_models::wetextprocessing::WeTextProcessing::from_gguf(g).map(|_| ())
-        }),
-    },
-    // Wave J (2026-08-15) — corrected row. This shipped as
-    // `NoCliShapedOutput` naming `Charsiu::from_gguf → Charsiu::align`,
-    // which reads as "the forward works, only the presentation blocks it".
-    // Both halves were false in the same direction — the Wave I
-    // distil-whisper defect inverted: there a working binder was labelled
-    // broken, here a non-loadable one was labelled working. What the source
-    // says:
-    //
-    //   * `Charsiu::from_gguf` (`align/charsiu.rs`) returns
-    //     `LoadError::Gguf("charsiu: from_gguf is not wired yet …")` on
-    //     every path past the arch check. No tensor is ever bound, so the
-    //     first half of that entry never returns a handle.
-    //   * Nothing under `crates/vokra-convert/src/` mentions `charsiu`, so
-    //     no converter stamps the arch — the binder's own `EXPECTED_ARCH`
-    //     doc states this ("no crates/vokra-convert/src/models/charsiu.rs
-    //     exists"), and it is the reader half of a writer contract with no
-    //     writer yet.
-    //
-    // So the blocker that fires FIRST for the library caller this row points
-    // at — the ordering rule the AEC pair comment below states — is that
-    // there is nothing to bind from a converted artifact. `NoGgufLoader` is
-    // that class: its `explain()` says "there is nothing to bind from this
-    // artifact", which is the binder's own refusal in other words. Its
-    // parenthetical ("weights come from a deterministic `synthesized`
-    // fixture") holds for the scaffold path `CharsiuWeights::synthesized`;
-    // real weights would arrive as a caller-supplied `CharsiuWeights`.
-    //
-    // The forward past that point IS real (stem → feature projection →
-    // encoder blocks → CTC head → `ctc_segmentation`) and is reachable only
-    // through the constructor the module names, which is what `entry` now
-    // points at. `NoCliShapedOutput` was not merely mislabelled: `align`
-    // also needs a caller-supplied phoneme sequence, so that reason is
-    // separately true — but stating it FIRST asserts a load this build
-    // cannot perform, and that is the lie being removed.
-    //
-    // `scripts/check-bound-arch-coverage.sh` DOES see this arch. charsiu
-    // spells its constant `EXPECTED_ARCH`, and that gate's discovery scan
-    // was widened to that spelling by the same 2026-08-15 change that
-    // corrected this row — it now reports 89 arch constants across the
-    // spellings `ARCH`, `ARCH_<SUFFIX>` and `EXPECTED_ARCH`, `charsiu`
-    // among them. So this row is not merely kept on its own merits (a
-    // `charsiu`-stamped GGUF must not read as an unknown arch): the arch is
-    // not routed by the dispatch, so deleting the row would leave it
-    // unaccounted and fail that gate. Its self-test pins exactly that shape
-    // (fixture 2b drops the row of an `EXPECTED_ARCH` binder and requires a
-    // failure).
-    BoundArch {
-        arch: "charsiu",
-        module: "vokra_models::align::charsiu",
-        entry: "Charsiu::new(CharsiuConfig, CharsiuWeights) → Charsiu::align",
-        reason: BoundReason::NoGgufLoader,
-        probe: None,
-    },
-    // --- F0 siblings that are NOT routed to `ModelTask::F0Rmvpe` ----------
-    //
-    // Both stopped being skeleton-fallbacks on 2026-08-15, in the same change
-    // that gave RMVPE its `extract` / `extract_real` / `frame_times` shape.
-    // Each now refuses loudly instead of degrading to a zero track:
-    // `ModelLoad` when no weights were bound, `InvalidArgument` when the
-    // caller's sample rate is not the one the checkpoint is defined at, and —
-    // for FCPE — the STFT front-end's own error propagated verbatim instead
-    // of swallowed by an `Err(_) =>` arm. The timebase-only half moved to a
-    // `frame_times` accessor that returns bare `f32` seconds, so nothing it
-    // returns can be read as a pitch estimate.
-    //
-    // Both rows stay because no `run` task is wired for either arch — but the
-    // reason they carry had to change with the binders, and the entries they
-    // name had to stop pointing at a method whose contract no longer holds.
-    BoundArch {
-        arch: "fcpe",
-        module: "vokra_models::f0::fcpe",
-        entry: "FCPE::from_gguf → FCPE::extract",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: None,
-    },
-    BoundArch {
-        arch: "crepe",
-        module: "vokra_models::f0::crepe",
-        entry: "CREPE::from_gguf → CREPE::extract",
-        reason: BoundReason::RealForwardNoCliTask,
-        probe: None,
-    },
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
     // Each of these landed a `vokra-models` binder without the row the doc
@@ -1743,7 +1574,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "chattts",
         module: "vokra_models::chattts",
         entry: "ChatTts::from_gguf → ChatTts::synthesize",
-        reason: BoundReason::LoudPartialForward,
         // The probe is the un-gated `&GgufFile` binder, which reads only the
         // tensor MANIFEST (`ChatTtsWeights` holds `(name, dims)` pairs — no
         // payload) and drops it. ChatTTS weights are CC-BY-NC-4.0 and the
@@ -1756,7 +1586,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "deepfake_detection",
         module: "vokra_models::deepfake_detection",
         entry: "DeepfakeDetection::from_gguf → DeepfakeDetection::score",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| {
             vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
         }),
@@ -1765,30 +1594,15 @@ const BOUND_ARCHES: &[BoundArch] = &[
         arch: "lang_id_ecapa",
         module: "vokra_models::lang_id",
         entry: "LangIdEcapa::from_gguf → LangIdEcapa::identify",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
     },
-    // Both AEC binders take a paired (mic, far-end) input that `run` cannot
-    // supply, but `reason` names the blocker that fires FIRST for the library
-    // caller the row points at — and the two differ. DTLN-AEC's `process`
-    // returns `UnsupportedOp` unconditionally (the generic LSTM primitive is
-    // absent from `vokra-ops`), so a caller holding both streams still hits a
-    // loud-partial. NKF-AEC's forward is a real native re-implementation with
-    // an upstream parity harness, so for it the paired input IS the only
-    // blocker. Reporting both as loud-partials would slander a working model.
+    // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
+    // routed above now that `run` has an explicit far-end WAV contract.
     BoundArch {
         arch: "dtln_aec",
         module: "vokra_models::aec::dtln_aec",
         entry: "DtlnAec::from_gguf → DtlnAec::process",
-        reason: BoundReason::LoudPartialForward,
         probe: Some(|g: &GgufFile| vokra_models::aec::dtln_aec::DtlnAec::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "nkf_aec",
-        module: "vokra_models::aec::nkf_aec",
-        entry: "NkfAec::from_gguf → AecEngine::open_stream → NkfAecStream::push_paired",
-        reason: BoundReason::NeedsPairedInput,
-        probe: Some(|g: &GgufFile| vokra_models::aec::nkf_aec::NkfAec::from_gguf(g).map(|_| ())),
     },
 ];
 
@@ -1813,7 +1627,7 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
         // Deliberately states only that no probe ran, not WHY. The rows
         // reaching this arm no longer share a single cause: some have no
         // loader at all, some have one that takes a filesystem path, and
-        // some (bigvgan, vocos, hifigan_vocoder, speecht5_hifigan) have a
+        // some (vocos, hifigan_vocoder) have a
         // `&GgufFile` loader that refuses on every path. The previous
         // wording asserted the second case for all of them, and also told
         // the reader the load "has to happen through the library entry
@@ -1827,7 +1641,7 @@ fn bound_arch_error(bound: &BoundArch, gguf: &GgufFile) -> String {
     let arch = bound.arch;
     let module = bound.module;
     let entry = bound.entry;
-    let reason = bound.reason.explain();
+    let reason = LOUD_PARTIAL_EXPLANATION;
     format!(
         "arch `{arch}` is BOUND by this build — `{module}` has a runtime binder for it, \
          not an unknown architecture. {load_line} What it does NOT have is a `vokra-cli \
@@ -2189,11 +2003,16 @@ mod tests {
     /// removes the file. Shared by the Wave G tests below (the older tests
     /// inline the same steps; they are left byte-identical on purpose).
     fn with_arch_only_gguf<T>(arch: &str, tag: &str, f: impl FnOnce(&str) -> T) -> T {
+        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut b = vokra_core::gguf::GgufBuilder::new();
         b.add_string("vokra.model.arch", arch);
         let bytes = b.to_bytes().expect("serialize gguf");
         let mut path = std::env::temp_dir();
-        path.push(format!("vokra-cli-{tag}-{}.gguf", std::process::id()));
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        path.push(format!(
+            "vokra-cli-{tag}-{}-{fixture_id}.gguf",
+            std::process::id()
+        ));
         std::fs::write(&path, &bytes).unwrap();
         let out = f(path.to_str().unwrap());
         let _ = std::fs::remove_file(&path);
@@ -2223,13 +2042,18 @@ mod tests {
         );
     }
 
-    /// An `nsnet2` GGUF dispatches to [`ModelTask::Denoise`] with a bare
-    /// session — the concrete `Nsnet2V1` binds in the `run` arm (the
+    /// An `nsnet2` or `rnnoise` GGUF dispatches to [`ModelTask::Denoise`] with
+    /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
     #[test]
     fn load_session_detects_nsnet2_as_denoise_task() {
         let (_session, task) = with_arch_only_gguf("nsnet2", "nsnet2-arch", |p| {
             load_session(p).expect("nsnet2 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) = with_arch_only_gguf("rnnoise", "rnnoise-arch", |p| {
+            load_session(p).expect("rnnoise session builds (bare)")
         });
         assert_eq!(task, ModelTask::Denoise);
     }
@@ -2252,6 +2076,48 @@ mod tests {
         assert_eq!(task, ModelTask::F0Rmvpe);
     }
 
+    #[test]
+    fn load_session_routes_openwakeword_to_kws_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_OPENWAKEWORD_OP, "openwakeword-routed", |path| {
+                load_session(path).expect("openwakeword returns a bare KWS session")
+            });
+        assert_eq!(task, ModelTask::KwsOpenwakeword);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_OPENWAKEWORD_OP),
+            "a runnable KWS arch must not remain in the loud-partial registry"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_smart_turn_to_endpoint_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SMART_TURN, "smart-turn-routed", |path| {
+            load_session(path).expect("smart-turn returns a bare endpoint session")
+        });
+        assert_eq!(task, ModelTask::SmartTurn);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_SMART_TURN),
+            "a runnable endpoint arch must not remain in the loud-partial registry"
+        );
+    }
+
+    #[test]
+    fn load_session_detects_fcpe_crepe_and_nkf_tasks() {
+        for (arch, tag, expected) in [
+            (ARCH_FCPE, "fcpe-routed", ModelTask::F0Fcpe),
+            (ARCH_CREPE, "crepe-routed", ModelTask::F0Crepe),
+            (ARCH_NKF_AEC, "nkf-aec-routed", ModelTask::AecNkf),
+            (ARCH_CHARSIU, "charsiu-routed", ModelTask::AlignCharsiu),
+        ] {
+            let (_session, task) = with_arch_only_gguf(arch, tag, |p| {
+                load_session(p).expect("newly routed session builds (bare)")
+            });
+            assert_eq!(task, expected, "wrong task for `{arch}`");
+        }
+    }
+
     /// Task hints stay rejected on the newly routed arches (FR-EX-08 — no
     /// silent hint drop), same rule every other arch follows.
     #[test]
@@ -2260,7 +2126,13 @@ mod tests {
             ("nsnet2", "nsnet2-hint"),
             ("pyannote-segmentation", "pyannote-hint"),
             ("rmvpe", "rmvpe-hint"),
+            ("fcpe", "fcpe-hint"),
+            ("crepe", "crepe-hint"),
+            ("wetextprocessing", "wetext-hint"),
+            ("nkf_aec", "nkf-aec-hint"),
             ("fsmn-vad", "fsmn-hint"),
+            (ARCH_CHARSIU, "charsiu-hint"),
+            (ARCH_WHISPER_MEDUSA_V1, "whisper-medusa-hint"),
         ] {
             let err = with_arch_only_gguf(arch, tag, |p| {
                 // let-else rather than `.expect_err()`: `Session` is `!Debug`
@@ -2323,10 +2195,11 @@ mod tests {
         );
     }
 
-    /// A module with no GGUF loader says exactly that, rather than implying
-    /// a forward gap it has not reached yet.
+    /// Zonos moved from the last no-loader slice to a strict manifest probe;
+    /// an arch-only GGUF must surface the binder failure and the remaining
+    /// forward class rather than the retired synthesized-only diagnosis.
     #[test]
-    fn load_session_bound_arch_without_a_gguf_loader_says_so() {
+    fn load_session_zonos_uses_strict_probe_and_loud_partial_diagnostic() {
         let err = with_arch_only_gguf("zonos", "zonos-arch", |p| {
             let Err(e) = load_session(p) else {
                 panic!("zonos has no run task");
@@ -2334,8 +2207,8 @@ mod tests {
             e
         });
         assert!(
-            err.contains("no GGUF loader yet"),
-            "must name the real blocker for a synthesized-weights module: {err}"
+            err.contains("FAILED — the binder reports:") && err.contains("loud-partial"),
+            "must report the strict binder outcome and remaining forward class: {err}"
         );
         assert!(
             err.contains("vokra_models::zonos"),
@@ -2433,29 +2306,6 @@ mod tests {
         );
     }
 
-    /// NKF-AEC (`vokra_models::aec::nkf_aec`) — the one row of the five whose
-    /// forward is REAL (native re-implementation with an upstream parity
-    /// harness). Its blocker is the paired (mic, far-end) input `run` cannot
-    /// supply, so it must NOT be reported as a loud-partial like its DTLN
-    /// sibling — that would slander a working model.
-    #[test]
-    fn load_session_binds_nkf_aec_arch_as_paired_input_not_loud_partial() {
-        let err = assert_bound_arch(
-            "nkf_aec",
-            "nkf-aec-arch",
-            "vokra_models::aec::nkf_aec",
-            "NkfAecStream::push_paired",
-        );
-        assert!(
-            err.contains("PAIR of strictly sample-aligned"),
-            "nkf_aec must name the paired-input blocker: {err}"
-        );
-        assert!(
-            !err.contains("its runtime forward is a loud-partial"),
-            "nkf_aec's forward is real — reporting it as a loud-partial is a lie: {err}"
-        );
-    }
-
     // ---- Wave I (2026-08-15) — distil-whisper / kotoba-whisper ----------
     //
     // Both shipped as `BOUND_ARCHES` rows labelled `LoudPartialForward`, so a
@@ -2543,480 +2393,208 @@ mod tests {
         assert_routed_to_whisper_asr("crisper-whisper", "crisper-whisper-arch");
     }
 
+    #[test]
+    fn load_session_routes_whisper_medusa_to_its_strict_asr_binder() {
+        let error = with_arch_only_gguf(ARCH_WHISPER_MEDUSA_V1, "whisper-medusa-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only Whisper-Medusa cannot bind");
+            };
+            error
+        });
+        assert!(
+            error.contains("vokra.medusa.revision"),
+            "route must reach the strict Medusa metadata reader: {error}"
+        );
+        assert!(!error.contains("unsupported model arch"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_WHISPER_MEDUSA_V1)
+        );
+    }
+
     /// The registry must not carry either arch again. `assert_routed_to_whisper_asr`
     /// checks the message a user sees; this checks the data behind it, so a
     /// re-added row fails here with a direct explanation rather than only as a
     /// downstream symptom.
     #[test]
-    fn bound_arch_registry_does_not_slander_the_distilled_whispers() {
-        for arch in [ARCH_DISTIL_WHISPER, ARCH_KOTOBA_WHISPER] {
+    fn bound_arch_registry_excludes_routed_asr_forwards() {
+        for arch in [
+            ARCH_DISTIL_WHISPER,
+            ARCH_KOTOBA_WHISPER,
+            ARCH_MOONSHINE,
+            ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_CTC,
+            ARCH_WHISPER_MEDUSA_V1,
+        ] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
-                "`{arch}` has a real forward (its binder delegates to WhisperAsr) and is \
+                "`{arch}` has a real ASR forward and is \
                  routed to ModelTask::Asr — a BOUND_ARCHES row for it is both unreachable \
                  and untrue"
             );
         }
     }
 
-    // ---- Wave J (2026-08-15) — charsiu: a loader that never binds --------
-    //
-    // The row shipped as `NoCliShapedOutput` naming
-    // `Charsiu::from_gguf → Charsiu::align`, i.e. "the forward works, only
-    // the presentation blocks it". `Charsiu::from_gguf` refuses on every
-    // path and no converter stamps the arch, so the first half of that entry
-    // is unreachable. Nothing pinned either half, which is how the row and
-    // the binder drifted apart. These three tests pin the corrected state
-    // from both sides — the message a user sees, the binder behind it, and
-    // the row's own data — so it cannot invert again in either direction.
+    // ---- Wave 3 (2026-08-21) — Charsiu real artifact route ---------------
 
-    /// The `run` diagnostic names the blocker that actually fires (nothing
-    /// binds) instead of the output-shape one, and points at the constructor
-    /// a caller can really reach.
+    /// Charsiu now has a converter, a strict GGUF binder and a paired
+    /// audio/phone CLI contract.  The metadata-only fixture is sufficient to
+    /// prove dispatch because the concrete binder intentionally runs in the
+    /// `run` arm, after all paired inputs have been validated.
     #[test]
-    fn load_session_binds_charsiu_arch_as_unwired_loader_not_no_cli_shaped_output() {
-        let err = assert_bound_arch(
-            "charsiu",
-            "charsiu-arch",
-            "vokra_models::align::charsiu",
-            "Charsiu::new(CharsiuConfig, CharsiuWeights)",
-        );
-        assert!(
-            err.contains("no GGUF loader yet"),
-            "charsiu's first blocker is that nothing binds from a converted artifact: {err}"
-        );
-        assert!(
-            !err.contains("not a CLI-shaped artifact"),
-            "leading with the OUTPUT shape asserts a working load this build cannot \
-             perform — `Charsiu::from_gguf` refuses on every path: {err}"
-        );
-        assert!(
-            !err.contains("Charsiu::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
-        );
-    }
-
-    /// The claim the row rests on, checked against the binder itself:
-    /// `Charsiu::from_gguf` refuses even a correctly stamped GGUF.
-    ///
-    /// If a converter and a real binder land, this test fails — which is the
-    /// point. The row's `reason` and `entry` both assume nothing binds, so
-    /// that commit has to revisit them rather than leave a stale claim in
-    /// place.
-    #[test]
-    fn charsiu_from_gguf_still_binds_nothing() {
-        with_arch_only_gguf("charsiu", "charsiu-loader-probe", |p| {
-            // let-else rather than `.expect_err()`, per this module's rule.
-            let Err(err) =
-                vokra_models::align::charsiu::Charsiu::from_gguf(std::path::Path::new(p))
-            else {
-                panic!(
-                    "Charsiu::from_gguf bound a metadata-only GGUF — if the real binder \
-                     landed, revisit the BOUND_ARCHES row: its reason (NoGgufLoader) and \
-                     entry (Charsiu::new) both assume nothing binds"
-                );
-            };
-            let msg = err.to_string();
-            assert!(
-                msg.contains("not wired yet"),
-                "the refusal must still name the unwired binder: {msg}"
-            );
+    fn load_session_routes_charsiu_to_alignment_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_CHARSIU, "charsiu-routed", |p| {
+            load_session(p).expect("charsiu session builds (bare)")
         });
+        assert_eq!(task, ModelTask::AlignCharsiu);
     }
 
-    /// The row's data, asserted directly so a regression reports its cause
-    /// rather than only the downstream message.
     #[test]
-    fn bound_arch_registry_charsiu_row_does_not_promise_a_gguf_load() {
-        let row = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "charsiu")
-            .expect("charsiu has a vokra-models binder and must carry a row");
-        assert_eq!(
-            row.reason,
-            BoundReason::NoGgufLoader,
-            "`Charsiu::from_gguf` refuses on every path and no converter stamps the \
-             arch — any other reason asserts a load this build cannot perform"
-        );
+    fn load_session_routes_firered_vad_to_native_vad_loader() {
+        let error = with_arch_only_gguf(ARCH_FIRERED_VAD, "firered-vad-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only FireRedVAD GGUF must fail its tensor gate");
+            };
+            error
+        });
+        assert!(error.contains("zero tensors"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
         assert!(
-            !row.entry.contains("from_gguf"),
-            "`entry` must name a reachable constructor; `Charsiu::from_gguf` always \
-             errors, so naming it points the caller at a dead end: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("Charsiu::new"),
-            "the module names `Charsiu::new(CharsiuConfig, CharsiuWeights)` as the \
-             reachable constructor: {}",
-            row.entry
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_FIRERED_VAD),
+            "FireRedVAD has a real native forward and CLI VAD route"
         );
     }
 
-    // ---- Wave K (2026-08-15) — vocoders: real forwards, dead loaders -----
-    //
-    // `bigvgan`, `hifigan_vocoder` and `speecht5_hifigan` shipped as
-    // `LoudPartialForward` naming `X::from_gguf → X::decode`. Both halves
-    // were false: the forwards are complete calls into landed ops, while the
-    // LOADERS refuse on every path. No test mentioned any of them, which is
-    // exactly how they drifted; these pin the corrected state from all three
-    // sides — the message a user sees, the binder behind it, and the rows'
-    // own data.
-    //
-    // Wave L (2026-08-15) folded `vocos` in as the fourth. Wave K had left it
-    // on `LoudPartialForward` because its `decode` is a genuine loud-partial,
-    // which named the SECOND of its two blockers — its `from_gguf` is as dead
-    // as the other three. Its tests sit at the end of this block and are
-    // built to the same three-sided shape, so the exemption cannot return
-    // quietly. The scan behind that fold: of the 56 registry rows carrying a
-    // `&GgufFile` `from_gguf` probe, `vocos` was the only one whose loader
-    // had no `Ok(` return on any path — so this defect class is closed at
-    // four, not merely reduced.
-
-    /// The `run` diagnostic names the blocker that actually fires (nothing
-    /// binds) rather than a forward gap, and points at the constructor a
-    /// caller can really reach.
     #[test]
-    fn load_session_binds_hifigan_vocoder_as_unwired_loader_not_loud_partial_forward() {
-        let err = assert_bound_arch(
-            "hifigan_vocoder",
-            "hifigan-vocoder-arch",
-            "vokra_models::hifigan",
-            "HiFiGan::new",
-        );
+    fn load_session_routes_ten_vad_to_native_vad_loader() {
+        let error = with_arch_only_gguf(ARCH_TEN_VAD, "ten-vad-routed", |path| {
+            let Err(error) = load_session(path) else {
+                panic!("metadata-only TEN-VAD GGUF must fail its strict metadata gate");
+            };
+            error
+        });
+        assert!(error.contains("vokra.ten_vad.revision"), "{error}");
+        assert!(!error.contains("is BOUND"), "{error}");
         assert!(
-            err.contains("no GGUF loader yet"),
-            "hifigan_vocoder's first blocker is that nothing binds from a converted \
-             artifact: {err}"
-        );
-        assert!(
-            !err.contains("runtime forward is a loud-partial"),
-            "`HiFiGan::decode` is one complete call into the landed `hifigan_generator` op \
-             — leading with a forward gap sends the reader hunting for a missing primitive \
-             that does not exist: {err}"
-        );
-        assert!(
-            !err.contains("HiFiGan::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_TEN_VAD),
+            "TEN-VAD has a real native forward and CLI VAD route"
         );
     }
 
-    /// The claim the re-filed rows rest on, checked against the binder
-    /// itself: `HiFiGan::from_gguf` refuses a correctly stamped GGUF on BOTH
-    /// supported arches, binding no tensor.
-    ///
-    /// If a real loader lands, this test fails — which is the point. The
-    /// rows' `reason` and `entry` both assume nothing binds, so that commit
-    /// has to revisit them rather than leave a stale claim in place.
     #[test]
-    fn hifigan_from_gguf_still_binds_nothing_on_either_arch() {
-        for arch in ["hifigan_vocoder", "speecht5_hifigan"] {
-            let tag = format!("hifigan-loader-probe-{arch}");
-            with_arch_only_gguf(arch, &tag, |p| {
-                let gguf = GgufFile::open(p).expect("arch-only fixture parses");
-                // let-else rather than `.unwrap_err()`: `HiFiGan` is `!Debug`.
-                let Err(err) = vokra_models::hifigan::HiFiGan::from_gguf(&gguf) else {
-                    panic!(
-                        "HiFiGan::from_gguf bound a metadata-only `{arch}` GGUF — if the \
-                         real binder landed, revisit the BOUND_ARCHES row: its reason \
-                         (NoGgufLoader) and entry (HiFiGan::new) both assume nothing binds"
-                    );
-                };
-                let msg = err.to_string();
-                assert!(
-                    msg.contains("real-weight loader is deferred"),
-                    "the refusal must still name the deferred loader: {msg}"
-                );
+    fn bound_arch_registry_excludes_routed_charsiu() {
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_CHARSIU),
+            "Charsiu has a real GGUF loader and a ModelTask::AlignCharsiu route"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_bigvgan_to_vocoder_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_BIGVGAN, "bigvgan-routed", |path| {
+            load_session(path).expect("BigVGAN session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::VocoderBigVgan);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_BIGVGAN),
+            "BigVGAN has a strict real-weight loader, complete forward, and CLI route"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_speecht5_hifigan_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_SPEECHT5_HIFIGAN, "speecht5-hifigan-routed", |path| {
+                load_session(path).expect("SpeechT5 HiFi-GAN session builds (bare)")
             });
-        }
-    }
-
-    /// `BigVGan::from_gguf` has no `Ok(` return on any path. Stamping a valid
-    /// variant walks past both dispatch gates to the deepest reachable point
-    /// (the deferred tensor walk), so this pins the real blocker rather than
-    /// an early metadata refusal that would still fire under a real loader.
-    #[test]
-    fn bigvgan_from_gguf_still_binds_nothing_past_variant_dispatch() {
-        let mut b = vokra_core::gguf::GgufBuilder::new();
-        b.add_string("vokra.model.arch", "bigvgan");
-        b.add_string(
-            vokra_models::bigvgan::KEY_BIGVGAN_VARIANT,
-            vokra_models::bigvgan::VARIANT_TAG_V2_24KHZ_100BAND_256X,
-        );
-        let bytes = b.to_bytes().expect("serialize gguf");
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "vokra-cli-bigvgan-variant-{}.gguf",
-            std::process::id()
-        ));
-        std::fs::write(&path, &bytes).unwrap();
-        let gguf = GgufFile::open(&path).expect("bigvgan variant fixture parses");
-        // let-else rather than `.unwrap_err()`: `BigVGan` is `!Debug`.
-        let Err(err) = vokra_models::bigvgan::BigVGan::from_gguf(&gguf) else {
-            let _ = std::fs::remove_file(&path);
-            panic!(
-                "BigVGan::from_gguf bound a metadata-only GGUF past its variant gate — if \
-                 the real tensor walk landed, revisit the BOUND_ARCHES row: its reason \
-                 (NoGgufLoader) and entry (BigVGan::new) both assume nothing binds"
-            );
-        };
-        let _ = std::fs::remove_file(&path);
-        let msg = err.to_string();
+        assert_eq!(task, ModelTask::VocoderHifiGan);
         assert!(
-            msg.contains("real-weight loader is deferred"),
-            "the refusal must still name the deferred tensor walk: {msg}"
-        );
-    }
-
-    /// The rows' own data, asserted directly so a regression reports its
-    /// cause rather than only the downstream message.
-    #[test]
-    fn bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load() {
-        for (arch, ctor) in [
-            ("bigvgan", "BigVGan::new"),
-            ("hifigan_vocoder", "HiFiGan::new"),
-            ("speecht5_hifigan", "HiFiGan::new"),
-        ] {
-            let row = BOUND_ARCHES
+            BOUND_ARCHES
                 .iter()
-                .find(|b| b.arch == arch)
-                .unwrap_or_else(|| {
-                    panic!("`{arch}` has a vokra-models binder and must carry a row")
-                });
-            assert_eq!(
-                row.reason,
-                BoundReason::NoGgufLoader,
-                "`{arch}`: its loader refuses on every path, binding no tensor — \
-                 `LoudPartialForward` would assert a forward gap that its complete \
-                 `decode` does not have"
-            );
-            assert!(
-                !row.entry.contains("from_gguf"),
-                "`{arch}`: `entry` must name a reachable constructor, and its `from_gguf` \
-                 always errors: {}",
-                row.entry
-            );
-            assert!(
-                row.entry.contains(ctor),
-                "`{arch}`: the module names `{ctor}` as the reachable constructor: {}",
-                row.entry
-            );
-        }
-    }
-
-    /// The `run` diagnostic for `vocos` names the blocker that actually fires
-    /// FIRST — nothing binds — rather than the forward gap behind it.
-    ///
-    /// Wave K left this row on `LoudPartialForward` because `Vocos::decode`
-    /// really is a loud-partial. It is, but it is the SECOND blocker: a user
-    /// handed a `vocos` GGUF never reaches `decode`, because `Vocos::from_gguf`
-    /// refuses first. Promising a forward-blocker diagnostic and delivering a
-    /// load failure is the defect this pins shut.
-    #[test]
-    fn load_session_binds_vocos_arch_as_unwired_loader_not_loud_partial_forward() {
-        let err = assert_bound_arch("vocos", "vocos-arch", "vokra_models::vocos", "Vocos::new");
-        assert!(
-            err.contains("no GGUF loader yet"),
-            "vocos's first blocker is that nothing binds from a converted artifact — its \
-             `from_gguf` has no `Ok(` return on any path: {err}"
-        );
-        assert!(
-            !err.contains("runtime forward is a loud-partial"),
-            "leading with the forward gap asserts a working load this build cannot perform; \
-             the gap is real but second, and belongs in `entry`: {err}"
-        );
-        assert!(
-            !err.contains("Vocos::from_gguf"),
-            "the entry must not send a caller at a constructor that always errors: {err}"
-        );
-        assert!(
-            err.contains("ConvNeXt V2"),
-            "demoting the forward gap must not DELETE it — vocos is the one row here whose \
-             `decode` also refuses, and a caller past the constructor needs to know: {err}"
+                .all(|row| row.arch != ARCH_SPEECHT5_HIFIGAN),
+            "SpeechT5 HiFi-GAN has a strict real-weight loader, complete forward, and CLI route"
         );
     }
 
-    /// The claim the corrected row rests on, checked against the binder
-    /// itself. Stamping a valid variant walks past both dispatch gates to the
-    /// deepest reachable point (the deferred tensor walk), so this pins the
-    /// real blocker rather than an early metadata refusal that would still
-    /// fire under a real loader — the `bigvgan` precedent above.
-    ///
-    /// If a real loader lands, this test fails, which is the point: the row's
-    /// `reason` and `entry` both assume nothing binds.
     #[test]
-    fn vocos_from_gguf_still_binds_nothing_past_variant_dispatch() {
-        let mut b = vokra_core::gguf::GgufBuilder::new();
-        b.add_string("vokra.model.arch", "vocos");
-        b.add_string(
-            vokra_models::vocos::KEY_VOCOS_VARIANT,
-            vokra_models::vocos::VARIANT_TAG_MEL24KHZ,
-        );
-        let bytes = b.to_bytes().expect("serialize gguf");
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "vokra-cli-vocos-variant-{}.gguf",
-            std::process::id()
-        ));
-        std::fs::write(&path, &bytes).unwrap();
-        let gguf = GgufFile::open(&path).expect("vocos variant fixture parses");
-        // let-else for symmetry with the sibling probes above. Here it is a
-        // style match rather than a necessity: `BigVGan` and `HiFiGan` are
-        // `!Debug`, whereas `Vocos` derives it.
-        let Err(err) = vokra_models::vocos::Vocos::from_gguf(&gguf) else {
-            let _ = std::fs::remove_file(&path);
-            panic!(
-                "Vocos::from_gguf bound a metadata-only GGUF past its variant gate — if the \
-                 real tensor walk landed, revisit the BOUND_ARCHES row: its reason \
-                 (NoGgufLoader) and entry (Vocos::new) both assume nothing binds"
-            );
-        };
-        let _ = std::fs::remove_file(&path);
-        let msg = err.to_string();
+    fn load_session_routes_speechbrain_hifigan_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_HIFIGAN_VOCODER, "hifigan-vocoder-routed", |path| {
+                load_session(path).expect("SpeechBrain HiFi-GAN session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::VocoderHifiGan);
         assert!(
-            msg.contains("real-weight loader is deferred"),
-            "the refusal must still name the deferred tensor walk: {msg}"
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_HIFIGAN_VOCODER),
+            "SpeechBrain HiFi-GAN has a strict real-weight loader, complete forward, and CLI route"
         );
     }
 
-    /// The row's own data, asserted directly so a regression reports its cause
-    /// rather than only the downstream message.
-    ///
-    /// Kept separate from
-    /// `bound_arch_registry_vocoder_rows_do_not_promise_a_gguf_load` above
-    /// because vocos carries one assertion its three siblings must NOT: its
-    /// `entry` has to record the second blocker, since its `decode` — unlike
-    /// theirs — does not work either.
     #[test]
-    fn bound_arch_registry_vocos_row_does_not_promise_a_gguf_load() {
-        let row = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "vocos")
-            .expect("vocos has a vokra-models binder and must carry a row");
-        assert_eq!(
-            row.reason,
-            BoundReason::NoGgufLoader,
-            "`Vocos::from_gguf` has no `Ok(` return on any path, so nothing binds from a \
-             converted artifact — that fires BEFORE the (also real) forward gap, and \
-             `LoudPartialForward` states the second blocker as if it were the first"
-        );
+    fn load_session_routes_vocos_to_vocoder_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_VOCOS, "vocos-routed", |path| {
+            load_session(path).expect("Vocos session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::VocoderVocos);
         assert!(
-            row.probe.is_none(),
-            "a row claiming nothing binds must not carry a probe that demonstrates a binder"
-        );
-        assert!(
-            !row.entry.contains("from_gguf"),
-            "`entry` must name a reachable constructor; `Vocos::from_gguf` always errors: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("Vocos::new"),
-            "the module names `Vocos::new` as the reachable constructor: {}",
-            row.entry
-        );
-        assert!(
-            row.entry.contains("ConvNeXt V2"),
-            "vocos is the only row in this family whose `decode` ALSO refuses; demoting that \
-             gap out of `reason` must move it into `entry`, not drop it: {}",
-            row.entry
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_VOCOS),
+            "Vocos has strict loaders for both variants, a real forward, and a CLI route"
         );
     }
 
-    // ---- Wave M (2026-08-15) — wetextprocessing: a text side-car ---------
-    //
-    // The row shipped as `NoCliShapedOutput`, a class defined as "hidden
-    // states, per-token logits, codec codes, or an output that needs a
-    // caller-supplied tokenization the GGUF does not carry". Its own named
-    // entry point is `WeTextProcessing::normalize(&self, input: &str) ->
-    // Result<String>`, which is none of those, and `run` already carries
-    // `--text`. The neighbour it was filed beside, `ct_punc`, IS correct under
-    // that class — `CtPunc::restore` takes tokens and token ids from the
-    // caller — which is the likeliest route the wrong tag took.
-    //
-    // Nothing pinned either row, so these two tests pin both sides: the
-    // message a user sees, and the signatures the two classifications rest on.
+    // ---- Wave 1 (2026-08-21) — newly routed small runtime surfaces -------
 
-    /// The `run` diagnostic names the blockers that actually apply — no task
-    /// wired, plus the build-time FST feature gate — instead of an output
-    /// shape that does not.
+    /// WeTextProcessing now resolves to a real text task. Binding the grammar
+    /// and running its feature-gated FST pipeline happens in `run`, so an
+    /// arch-only GGUF is sufficient to prove dispatch ownership here.
     #[test]
-    fn load_session_binds_wetextprocessing_arch_as_unwired_task_not_no_cli_shaped_output() {
-        let err = assert_bound_arch(
-            "wetextprocessing",
-            "wetext-arch",
-            "vokra_models::wetextprocessing",
-            "WeTextProcessing::normalize",
-        );
-        assert!(
-            err.contains("not wired a `run` task"),
-            "`normalize` is text in, text out — what is missing is the task: {err}"
-        );
-        assert!(
-            !err.contains("not a CLI-shaped artifact"),
-            "a `&str` -> `String` entry point is exactly CLI-shaped, and `run` already \
-             carries `--text`: {err}"
-        );
-        assert!(
-            err.contains("vokra-wfst"),
-            "the real forward needs that feature; dropping the gate from the diagnostic \
-             would send a default-build user at an entry point that refuses: {err}"
-        );
+    fn load_session_routes_wetextprocessing_to_text_normalize() {
+        let (_session, task) = with_arch_only_gguf(ARCH_WETEXTPROCESSING, "wetext-routed", |p| {
+            load_session(p).expect("wetextprocessing session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::TextNormalize);
     }
 
-    /// The text-in/text-out judgement behind two adjacent rows, made
-    /// mechanical.
-    ///
-    /// `BoundReason` accuracy is otherwise established by reading each
-    /// module's entry point — the enum's own doc says so — which is how this
-    /// pair drifted: `wetextprocessing` ended up filed under the class its
-    /// neighbour belongs to. A signature is the one part of that judgement a
-    /// compiler can hold, so each entry point is coerced to an `fn` pointer
-    /// carrying the argument and return types its row assumes. Change either
-    /// binder's shape and this stops compiling, which forces the row to be
-    /// re-read rather than left behind.
-    ///
-    /// It cannot check the rest: nothing here can see whether a forward is a
-    /// loud-partial, or whether a task was wired. It covers only the half that
-    /// turns on "what must the caller supply, and what comes back" — which is
-    /// exactly the half `NoCliShapedOutput` rests on, and exactly where the
-    /// drift was.
+    /// Wave 2: both text surfaces are routed, but retain their distinct input
+    /// contracts. CT-Punc's paired token/id signature is what the versioned
+    /// TSV adapter feeds; it is not silently tokenized from `--text`.
     #[test]
-    fn text_shaped_entry_points_still_have_the_signatures_their_rows_assume() {
+    fn text_shaped_entry_points_are_routed_with_their_real_signatures() {
         // Text in, text out: no output shape blocks a `run` task here.
         const _: fn(
             &vokra_models::wetextprocessing::WeTextProcessing,
             &str,
         ) -> vokra_core::Result<String> =
             vokra_models::wetextprocessing::WeTextProcessing::normalize;
-        // A caller-supplied tokenization AND its ids, neither of which a GGUF
-        // carries — the contrast that keeps the neighbouring row where it is.
+        // A caller-supplied tokenization AND its ids, paired by the CLI TSV.
         const _: fn(&vokra_models::ct_punc::CtPunc, &[&str], &[u32]) -> vokra_core::Result<String> =
             vokra_models::ct_punc::CtPunc::restore;
 
-        let wetext = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "wetextprocessing")
-            .expect("wetextprocessing has a vokra-models binder and must carry a row");
-        let ct_punc = BOUND_ARCHES
-            .iter()
-            .find(|b| b.arch == "ct_punc")
-            .expect("ct_punc has a vokra-models binder and must carry a row");
-        assert_eq!(
-            wetext.reason,
-            BoundReason::RealForwardNoCliTask,
-            "`normalize` takes `&str` and returns `String`, so nothing about the output \
-             shape blocks a task — what is missing is the task itself"
-        );
-        assert_eq!(
-            ct_punc.reason,
-            BoundReason::NoCliShapedOutput,
-            "`restore` needs tokens and token ids from the caller — the contrast the \
-             wetextprocessing row's old tag had lost"
-        );
         assert!(
-            wetext.entry.contains("vokra-wfst"),
-            "the FST stages behind `normalize` are feature-gated — demoting that out of \
-             `reason` must move it into `entry`, not drop it: {}",
-            wetext.entry
+            BOUND_ARCHES
+                .iter()
+                .all(|b| b.arch != ARCH_WETEXTPROCESSING && b.arch != ARCH_CT_PUNC),
+            "both routed text arches must be absent from the unreachable registry"
+        );
+
+        let (_session, task) = with_arch_only_gguf(ARCH_CT_PUNC, "ct-punc-routed", |p| {
+            load_session(p).expect("ct-punc session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::CtPunc);
+    }
+
+    #[test]
+    fn load_session_routes_mimi_to_the_standalone_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_MIMI, "mimi-routed", |p| {
+            load_session(p).expect("mimi session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::MimiCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|b| b.arch != ARCH_MIMI),
+            "the routed standalone codec must not retain a registry row"
         );
     }
 
@@ -3035,6 +2613,10 @@ mod tests {
             ARCH_WHISPER,
             ARCH_DISTIL_WHISPER,
             ARCH_KOTOBA_WHISPER,
+            ARCH_MOONSHINE,
+            ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_CTC,
+            ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,
@@ -3044,9 +2626,23 @@ mod tests {
             ARCH_KOKORO,
             ARCH_SBV2,
             ARCH_FSMN_VAD,
+            ARCH_FIRERED_VAD,
+            ARCH_SMART_TURN,
             ARCH_NSNET2,
+            ARCH_RNNOISE,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
+            ARCH_FCPE,
+            ARCH_CREPE,
+            ARCH_WETEXTPROCESSING,
+            ARCH_NKF_AEC,
+            ARCH_CT_PUNC,
+            ARCH_MIMI,
+            ARCH_BIGVGAN,
+            ARCH_SPEECHT5_HIFIGAN,
+            ARCH_HIFIGAN_VOCODER,
+            ARCH_VOCOS,
+            ARCH_CHARSIU,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,
@@ -3073,13 +2669,6 @@ mod tests {
                 "row `{}` must name a library entry point",
                 row.arch
             );
-            if row.reason == BoundReason::NoGgufLoader {
-                assert!(
-                    row.probe.is_none(),
-                    "row `{}` claims no GGUF loader yet carries a probe",
-                    row.arch
-                );
-            }
         }
     }
 

@@ -222,6 +222,42 @@ jobs:
         shell: bash
         run: cargo test --manifest-path integrations/vokra-godot/Cargo.toml
 
+      # Mock ClassDB tests cannot prove that Godot accepts the registered
+      # signatures or that an Object returned by vad_open_stream owns a live
+      # VokraStream instance. Pin and checksum the official standard Linux
+      # editor, then drive the committed Silero model and raw-f32 PCM fixture
+      # through the real GDExtension ABI. The same harness also retains its
+      # asset-free registration and unloaded-session negative legs.
+      - name: Download official Godot 4.7.1 for headless VAD smoke
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          GODOT_DIR="${RUNNER_TEMP}/godot-4.7.1"
+          GODOT_ZIP="${GODOT_DIR}/Godot_v4.7.1-stable_linux.x86_64.zip"
+          mkdir -p "${GODOT_DIR}"
+          curl -fL --retry 3 \
+            -o "${GODOT_ZIP}" \
+            https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          echo "c7ff14fd28472c8d4f193043de30278dcf7e5241a1dcf7566b02e27addaa33ba  ${GODOT_ZIP}" \
+            | sha256sum -c -
+          unzip -q "${GODOT_ZIP}" -d "${GODOT_DIR}"
+          chmod +x "${GODOT_DIR}/Godot_v4.7.1-stable_linux.x86_64"
+          echo "GODOT=${GODOT_DIR}/Godot_v4.7.1-stable_linux.x86_64" >> "${GITHUB_ENV}"
+
+      - name: Run real Godot headless registration + VAD stream smoke
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        env:
+          GODOT_SILENCE_ROOT_WARNING: '1'
+          GODOT_TIMEOUT: '180'
+        run: |
+          set -euo pipefail
+          bash scripts/verify-godot-headless.sh
+          bash scripts/verify-godot-headless.sh --vad \
+            tests/parity/silero_vad/silero-vad-v5.gguf \
+            tests/capi/fixtures/vad_input_16k.f32
+
       # Explicit staging check — an empty pkg/lib/<triple>/ would mean the
       # cargo build silently produced no cdylib (e.g. wrong crate type).
       # FR-EX-08: fail loudly instead of uploading an empty artifact.

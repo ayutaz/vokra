@@ -1,5 +1,16 @@
 # Coverage-audit 2026-08-03 Wave A + B + D handoff
 
+> **LICENSE CORRECTION 2026-08-22**: the older TEN-VAD entries below preserve
+> the 2026-08-04 execution history, but their plain `apache-2.0`
+> classification was wrong. The pinned upstream `LICENSE` adds
+> non-compete/application-only deployment conditions and binds derivatives to
+> them. The converter now defaults to
+> `LicenseRef-Agora-TEN-VAD-Open-Source-License-2025` /
+> `RedistributionForbidden`; `docs/license-audit.md` is authoritative. The
+> existing public `vokra/ten-vad` repository is consequently mislabeled and is
+> a separate owner-authorized remediation item (make private or remove). This
+> code PR does not mutate hosted model repositories.
+
 > **UPDATE 2026-08-04 #10 (continuation batch: miocodec / neutts-air / sgmse-voicebank publish + w2v-bert-2 vast.ai handoff land + torchaudio-squim sidecar land)**: **HF vokra org 196 → 199 models (+3 新規)**。**Published 3**: `vokra/miocodec-25hz-44khz-v2` (503.6 MB, MIT、350 F32 tensors、Aratako/MioCodec-25Hz-44.1kHz-v2 = JA-focused 11-lang codec、arXiv:2507.21138、132 M F32 params、`15044dd`) + `vokra/neutts-air` (1426.6 MB, Apache-2.0、291 BF16 tensors、Neuphonic NeuTTS Air on-device instant voice-cloning TTS = Qwen2 0.5 B LLM backbone GQA 14:2 + NeuCodec token space extended vocab 217,652、sibling `vokra/neucodec` row 305、`ce03000`) + `vokra/sgmse-voicebank` (250.25 MB, Apache-2.0、647 F32 tensors、speechbrain/sgmse-voicebank = **Vokra catalog 初の M3-05 flow_sampler + ODE solver 実 weight consumer**、NCSN++ v2 + OUVE SDE reverse sampler、`b3fcf13`)。全 3 model = 新 `ModelKind` + BF16/F32 pass-through skeleton (miocodec/bicodec/neucodec/focalcodec/xcodec2 sibling pattern) + 新規 §3.1 row (☑ Commercial 2026-08-04 yousan、依頼者許可 = CC 判断、primary source HF cardData API clean、Aratako Irodori-TTS-500M-v3 MIT + Neuphonic apache-2.0 + SpeechBrain family precedent 全て適用)。sgmse は `tools/parity/sgmse_prepare_checkpoint.py` (torch pickle .ckpt → safetensors bridge、uv-managed Python 3.12、no pickle in runtime tree per FR-LD-05) 追加。**CC land + owner-defer 2**: (a) **w2v-bert-2.0** (`f2875a2`) = 新 `ModelKind::W2vBert2` + arch=`w2v-bert-2` (siblings hubert / wav2vec2_ctc / data2vec-audio と distinct = Conformer body + contrastive+MLM SSL、FR-EX-08 no silent op-shape misroute) + §3.1 row (☑ Commercial 2026-08-04 yousan) + signoff_match REPO+CONVERTER 双方登録 + 3 unit test all pass、実 publish は **safetensors 2.16 GB (= 2,322,063,736 bytes) が 2 GB local-convert owner threshold 超過で vast.ai handoff** (`docs/handoff/vast-ai-large-model-publish.md` §2)。将来コマンド = `bash scripts/publish/publish-one.sh w2v-bert-2-0 --push` / (b) **torchaudio-squim** = sidecar prep script `tools/parity/torchaudio_squim_prepare_checkpoint.py` (~420 行、dnsmos_prepare_checkpoint.py の bundle-merge pattern を objective./subjective. prefix で複製、torch.hub 自動 DL + `--objective-ckpt`/`--subjective-ckpt` offline override、F32/F16/BF16 pass-through only + FR-EX-08 loud-fail、data_ptr dedup、shared_pairs.json audit) 完備 + torchaudio>=2.11.0 uv dep を transitive-via-torch-audiomentations から explicit 昇格 (`296fe2a`)、実 publish は **owner license re-audit 必須** = 現 §3.1 row は BSD-2-Clause end-to-end + ☑ Commercial 2026-08-04 yousan だが upstream tutorial page で `squim_objective_dns2020.pth` = **CC-BY-4.0 (Attribution)** / `squim_subjective_bvcc_daps.pth` = **CC-BY-NC-4.0 (Non-Commercial)** が primary source。owner 3 択 = (A) 現状 BSD-2-Clause 単一 slug 維持 / (B) 2-slug split (`torchaudio-squim-objective` T2 CC-BY-4.0 + `torchaudio-squim-subjective` T4 CC-BY-NC-4.0 = X-Codec-2 precedent 踏襲) / (C) OBJECTIVE のみ publish + SUBJECTIVE hold。**Skipped 2**: (a) **openwakeword-op** = op-wiring anchor は既 landed (`ModelKind::OpenwakewordOp` + converter (424 行、3 unit test pass) + §3.1 row 460 (☑ Commercial 2026-08-04 yousan) + Wave A/F ticket = weight 非配布方針 EnCodec pattern codified)、HF probe で `vokra/openwakeword-op` = HTTP 404 (正しく never published)、Wave A.2 ticket 明示「Publish: なし = docs のみ upload の場合 owner 判断」= **no design intent**、runtime binder (`vokra-models/src/kws/openwakeword/mod.rs` + `KwsSession::from_gguf` + `Stream::next_probability()`) は独立 feature-development task (~6-8 h) / (b) **sensevoicesmall** = 依頼者 dispatch batch context が「Phase A already landed」を前提としていたが実 filesystem に converter / §3.1 row / signoff_match entry 全て absent (working tree 検証で docs/ subdirectory only を確認)、加えて FunASR MODEL_LICENSE v1.1 は **SPDX 未登録** で LicenseClass::Unknown fail-close = owner primary-source audit rate-limited (30-60 min) + `[[feedback-license-signoff-primary-source]]` で CC self-sign 禁止 = **CC 側 clean-fail、Phase A land を owner 再確認 → 再 dispatch 推奨**。全 commit: `296fe2a` torchaudio-squim sidecar / `15044dd` miocodec / `f2875a2` w2v-bert-2 / `ce03000` neutts-air / `b3fcf13` sgmse-voicebank。**verify 全 green** (cargo fmt --check / cargo clippy `-D warnings` / cargo test miocodec 3 pass + neutts-air 3 pass + sgmse 3 pass + w2v-bert-2 3 pass + torchaudio-squim 3 pass = **+15 new tests** / `scripts/check-zero-deps.sh` OK (NFR-DS-02 preserved) / `scripts/gen-c-abi.sh --check` no drift = **新規 C ABI ゼロ、v1.0-rc baseline 33 fn + 11 typedef 不変**)。local artifacts (checkpoints/ + gguf/ + target/publish/ scratch) 全 cleanup 済。**教訓**: (a) 2 GB size gate は catalog registration 前段の判定材料 = w2v-bert-2 のように converter code + §3.1 row + signoff_match は事前 land + owner vast.ai handoff が **Wave F 型 clean-hand-off pattern** (converter ready-state で size 単独 gate = 実 publish のみ owner に委譲、re-work なし)、(b) upstream tutorial page での per-checkpoint license divergence (torchaudio-squim = objective CC-BY-4.0 vs subjective CC-BY-NC-4.0) は §3.1 sign-off より primary source (upstream 公式ドキュメント) が優先 = **事後 re-audit trigger** となる、(c) sgmse-voicebank publish は Vokra catalog 初の **M3-05 flow_sampler + ODE solver 実 weight consumer** = future NCSN++ v2 + OUVE SDE reverse sampler 実装の real-weight parity harness の base (現時点は loud-partial per RMVPE / Charsiu / MOSS-Audio-Tokenizer / MioCodec / w2v-bert-2 precedent 継承)、(d) sensevoicesmall = dispatch context の「Phase A landed」前提と実 filesystem 状態の乖離を発見した時は **clean-fail + blocker report** = context refresh を owner に要求する pattern が正解 (fabricated Phase A の land は fail-closed 規律違反、`[[feedback-license-signoff-primary-source]]` の CC 越権禁止と同型)。
 
 > **UPDATE 2026-08-04 #9 (ultravox v0.5 + titanet-l batch publish、既 ModelKind + .nemo bridge +2)**: `vokra/ultravox-v0-5-llama-3-2-1b` (1.37GB, MIT、491 BF16 tensors、fixie-ai/ultravox-v0_5-llama-3_2-1b) + `vokra/titanet-l` (102MB, CC-BY-4.0、108 tensors、nvidia/speakerverification_en_titanet_large .nemo bridge 経由) = 既存 `ModelKind::UltravoxV05Llama321b` + `ModelKind::TitaNet` を direct convert で publish。`signoff_match.py` の REPO_TO_SIGNOFF_ROWS に `titanet-l` / `titanet-large` slug alias 追加。**HF vokra org 194 → 196 models (+2 新規)**。**CC 側 local publish candidates 実質枯渇** (残 未 publish で local 可能な既 signoff + ≤2GB pair は zonos 3.1GB / dia 6.4GB / moshi 15GB / voxtral 8.7GB = 全 vast.ai defer)。以降の追加 wins は新 ModelKind + 新 §3.1 row 実装 = 独立 wave 相当。
@@ -45,7 +56,7 @@
 | # | Slug | Size | Status | Notes |
 |---|------|------|--------|-------|
 | 1 | **nkf-aec** | 23.7 KB GGUF | ✅ **HTTP 200** published | upstream = `github.com/fjiang9/NKF-AEC/src/nkf_epoch70.pt` (README `pretrained/nkf.pt` 記述と異なる = 実 file は `src/`)、prep script 動作確認済 |
-| 2 | rnnoise-v0.2 | TBD | ⏸ upstream barrier | v0.2 release asset は source tarball のみ、`weights_blob_9.bin` は **build 必須** (`autogen.sh && ./configure && make`) or main branch checkout の別 path。**owner or 別 phase 対応** |
+| 2 | rnnoise-v0.2 | 4,469,280 B canonical GGUF (2026-08-22 VAST verification artifact) | ✅ native waveform runtime complete / ⚠ public artifact replacement not authorized | Official v0.2 の36 arraysをstrict bindし、32-band/65-feature frontend、pitch search、recurrent network、delayed gain、OLA、stream/CLIまで実装。portable Xiph C oracle に対し network `1.4901161e-7`、PCM `7.196754e-3`、VAD `3.1113923e-3`。既公開の旧opaque-blob GGUFは未変更。 |
 | 3 | nsnet2 | TBD | ⏸ upstream barrier | DNS-Challenge master にも interspeech2020/master にも `NSNet2-baseline` dir 不在。`download-dns-challenge-5-baseline.sh` 経由の **1.4 GB Baseline.zip** DL 要 (Azure blob URL、authorization 不要だが time cost 大)。**owner or 別 phase 対応** |
 | 4 | dnsmos-p808-p835 | ✅ **HTTP 200** published (2026-08-04) | commit `343750a` で prep script に empty-shape scalar + INT graph-metadata skip logic を追加、Wave A residual publish で published (UPDATE #1 参照)。 |
 | 5 | frcrn | TBD | ⏸ upstream barrier | `github.com/alibabasglab/FRCRN` は README のみで pretrained checkpoint 不在。ModelScope 経由 (`damo/speech_frcrn_ans_cirm_16k`) で `pytorch_model.bin` を DL 必要。HF mirror (`alibabasglab/FRCRN`) = 401 (不在)。**owner ModelScope authentication + `uv add modelscope`** |
@@ -59,16 +70,21 @@ credential-harvesting/manual-push recipe was removed from the live handoff.
 Any future rebuild uses the frozen `tools/parity` uv project on VAST and the
 current `publish-one.sh` dry-run → explicit upload-authorization flow.
 
-### 2b. rnnoise-v0.2 (C build 経由、~5 min)
-```bash
-cd ~/checkpoints/rnnoise
-tar -xzf rnnoise-0.2.tar.gz
-cd rnnoise-0.2
-./autogen.sh && ./configure && make
-# build 完了後、weights_blob_9.bin が root or .libs/ に生成
-find . -name "weights_blob_9.bin"
-# 次に prep + convert + publish (nkf-aec pattern)
-```
+### 2b. rnnoise-v0.2 — native waveform closure complete (2026-08-22)
+
+The former build recipe was wrong: v0.2 does not ship a
+`weights_blob_9.bin` asset, and the build writes a version-neutral
+`weights_blob.bin` only as a serialization of the arrays already present in
+`src/rnnoise_data.c`. Use `tools/parity/rnnoise_prepare_checkpoint.py` directly
+on the official release tarball. It verifies the canonical tar SHA-256 and
+extracts the 36 arrays without compiling or executing upstream C. Upstream C
+is used independently only by `rnnoise_v02_network_reference.c` to generate
+the committed network fixture and by `rnnoise_v02_waveform_reference.c` for a
+16-frame end-to-end oracle. The native runtime now covers the official 48 kHz
+frontend, pitch path, three recurrent layers, delayed gains, OLA, arbitrary
+stream chunks, reset, and CLI run/bench. The only RNNoise follow-up is the
+separately authorized replacement of the stale public Hub artifact; no upload
+was performed by this runtime change.
 
 ### 2c. nsnet2 (DNS5 Baseline.zip 1.4 GB DL、~10 min)
 ```bash

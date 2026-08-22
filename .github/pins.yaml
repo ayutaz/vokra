@@ -686,26 +686,27 @@ entries:
   - name: irodori-tts-500m-v3
     kind: checkpoint
     owning_workflow: .github/workflows/parity-tts-japanese-real.yml
-    owning_line: 141
+    owning_line: 134
     upstream:
-      url: https://huggingface.co/Aratako/Irodori-TTS-500M-v3
+      url: https://huggingface.co/vokra/irodori-tts-500m-v3
       license: MIT
     pinned_value:
-      hf_id: Aratako/Irodori-TTS-500M-v3
-      hf_revision: "236c1e56591279fc24e3c1bf6609fc06e48dde28"
+      hf_id: vokra/irodori-tts-500m-v3
+      hf_revision: "28e3efaf41f0890784d88f4744c34269e80bdd41"
+      sha256: "b64d970cf6a7b7cb81579147fa4b661761ee2c224c8da542926dc764fe04e09e"
     drift_policy:
       upstream_mismatch: advisory
       mirror_mismatch: hard_fail
     notes: |
       SoTA plan Phase JA real-checkpoint parity CI (tts-japanese family).
-      Aratako Irodori-TTS-500M-v3 (Rectified-Flow DiT + Semantic-DACVAE-JA
-      48 kHz). HONEST SLUG CORRECTION: the SoTA plan originally named
-      `Irodori-tech/Irodori-TTS-500M-v3` which returns HTTP 401; the
-      actual public HF repo is `Aratako/Irodori-TTS-500M-v3` (verified
-      via HF API 2026-07-25, workflow-header documented). Enable-gate:
+      This is the official Vokra GGUF converted from the MIT-licensed
+      Aratako/Irodori-TTS-500M-v3 release. The workflow fetches exactly this
+      already-published artifact and verifies its content SHA-256 before the
+      strict 637-tensor binder and real text-block leg run. The upstream
+      architecture/oracle source remains Aratako/Irodori-TTS; this catalog
+      row tracks the artifact actually consumed by the workflow. Enable-gate:
       VOKRA_TTS_JA_ENABLE=1 (or workflow_dispatch). Optional matrix filter
-      input `only=irodori` runs this leg alone. Initial workflow_dispatch
-      by owner. License sign-off pending in docs/license-audit.md §3.1.
+      input `only=irodori` runs this leg alone. No upload is performed.
 
   - name: vits-ja-kan-bayashi-jsut-vits
     kind: other

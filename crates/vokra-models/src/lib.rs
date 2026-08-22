@@ -50,14 +50,12 @@
 //     pure host-side algorithm — Viterbi over the standard CTC extended
 //     sequence — with no external weights. Emits `Vec<AlignedToken>` for
 //     word / sub-word / character granularity uniformly.
-//   * `align::charsiu` — Wav2Vec2-based neural forced aligner (real
-//     forward, 2026-07-30). Runs the raw-waveform stem
-//     (`vokra_ops::waveform_frontend`) → feature projection → n_layer
-//     pre-norm Transformer encoder → CTC head → log-softmax →
-//     `ctc_segmentation` end-to-end. Real weights bind via
-//     `Charsiu::new(CharsiuConfig, CharsiuWeights)`; the real-GGUF
-//     binder (`from_gguf`) is a follow-up wave gated on the upstream
-//     tensor-name manifest (T29-equivalent). License = MIT (permissive).
+//   * `align::charsiu` — canonical `charsiu/en_w2v2_fc_10ms` GGUF loader
+//     and real Wav2Vec2 frame-classification forward: waveform stem →
+//     feature projection → grouped positional convolution → post-norm
+//     Transformer → 42-phone head → upstream long-silence mask + monotone
+//     DTW. The binder verifies pinned revision/checkpoint SHA, metadata,
+//     vocabulary and every tensor shape. License = MIT (permissive).
 pub mod aec;
 pub mod align;
 pub mod canary;
@@ -132,6 +130,7 @@ pub mod chatterbox_nano;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
+mod strict_checkpoint;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B TTS
 // (apache-2.0). Same architecture as CosyVoice2 — Qwen2 LLM backbone +
 // chunk-aware Flow Matching CFM + **HiFTNet** vocoder (arXiv:2505.17589
@@ -312,10 +311,8 @@ pub mod moshi;
 pub mod nanocodec;
 // Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
 // runtime binder). A denoise-family runtime binder alongside DFN3
-// (`vokra_ops::denoise`). RNNoise v0.2 is NOT a sibling binder: it exists
-// only as the `vokra_ops::rnnoise` op set plus a converter
-// (`crates/vokra-convert/src/models/rnnoise.rs`, `ARCH = "rnnoise"`), with
-// no runtime binder. NSNet2 itself is a deliberately-weaker
+// (`vokra_ops::denoise`) and the RNNoise v0.2 real-weight neural binder.
+// NSNet2 itself is a deliberately-weaker
 // industry-baseline reference for quantization-CI cross-checks
 // (CLAUDE.md audio dialect §"Speech Enhancement / AGC / AEC"). REAL forward:
 // STFT (n_fft=512, hop=160, win=320, causal / non-center) → log-power
@@ -326,6 +323,8 @@ pub mod nanocodec;
 // (VOKRA_NSNET2_REAL_GGUF + VOKRA_NSNET2_REAL_WAV).
 pub mod nsnet2;
 pub mod piper_plus;
+/// Xiph RNNoise v0.2 canonical real-weight network binder.
+pub mod rnnoise;
 // SoTA plan Phase 3 (2026-07-24): Alibaba **Qwen3-TTS-12Hz-0.6B-Base**
 // TTS (apache-2.0 end-to-end — LM + codec + tokenizer + speaker
 // encoder all under a single apache-2.0 grant, huggingface.co/Qwen/
@@ -862,40 +861,19 @@ pub mod wavlm;
 // verified by the converter 2026-07-25 — no owner action needed for
 // MIT class per feedback-license-signoff-primary-source memory).
 pub mod emotion2vec;
-// Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
-// Wave 8 comment marker): Useful Sensors Moonshine ASR family
-// (`UsefulSensors/moonshine-{tiny,base}`, MIT) — real-time
+// Moonshine ASR family (`moonshine-ai/moonshine-{tiny,base}`, MIT) — real-time
 // transformer encoder-decoder ASR alternative to Whisper for edge
 // (Jeffries et al. 2024, arXiv:2410.15608 "Moonshine: Speech
 // Recognition for Live Transcription and Voice Commands"). **Distinct
 // from every Whisper-family sibling** (whisper / distil_whisper /
 // kotoba_whisper) in two significant ways: (1) **no mel front-end** —
 // the model consumes raw 16 kHz PCM directly via a learned Conv1D
-// stem (strides = [64, 3, 2] → 384x downsampling); (2) **RoPE + SwiGLU**
-// activations rather than Whisper's sinusoidal + GELU. Loud-partial
-// pattern per Wave 1-7 precedent (snac / wavlm / fsmn_vad /
-// openwakeword / dnsmos_p808_p835 / storm / sepformer / demucs /
-// conv_tasnet / musicgen / audiogen / audioldm2 / jasco / panns /
-// llama_omni2 / emotion2vec): `from_gguf` real (arch check + variant
-// discrimination via `vokra.model.name` + per-variant
-// `MoonshineConfig` primary-source-transcribed hparams + weight-
-// license class surfacing); `transcribe()` returns
-// `VokraError::UnsupportedOp` naming the three exact missing pieces
-// (i) raw-audio Conv1D stem walk, (ii) RoPE + SwiGLU transformer
-// encoder-decoder forward, (iii) greedy / beam decoding +
-// SentencePiece detokenize — every message cites all three primary
-// source URLs (github.com/usefulsensors/moonshine +
-// arXiv:2410.15608 + huggingface.co/UsefulSensors/moonshine-*) so a
-// reader diagnosing the gap has exactly three anchors to walk.
-// Consumes converter siblings `moonshine_tiny.rs` +
-// `moonshine_base.rs` (both landed Wave 9 2026-08-02, §3.1 rows 421 +
-// 422 both ☑ Commercial MIT by 2026-08-01 yousan — this runtime
-// binder needs NO new §3.1 row). No new C ABI, no new Cargo.toml dep
-// — cross-crate string handshake via duplicated
-// `pub const ARCH = "moonshine"` (mirror of the converter's ARCH
-// constant, preserving the layered convention `vokra-ops → nothing
-// GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
-// binder`, `vokra-convert → GGUF writer`).
+// stem (strides = [64, 3, 2] → 384x downsampling); (2) RoPE plus a GELU
+// encoder and SwiGLU decoder. The strict binder loads the complete official
+// manifest and pinned HF BPE tokenizer; `transcribe` runs native Conv1D,
+// encoder/decoder attention, tied logits and greedy decoding. Non-CPU
+// backends fail explicitly until the composed attention path is wired. No new
+// runtime dependency is introduced.
 pub mod moonshine;
 // Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
 // Wave 8 comment marker): Facebook Denoiser
@@ -1318,73 +1296,13 @@ pub mod utmosv2;
 // `vokra-convert → GGUF writer`).
 pub mod nisqa;
 
-// Wave B (2026-08-15) — TEN-VAD runtime binder (LIB.RS RULE: append at the
-// END of the `pub mod` block with a Wave marker; do NOT alphabetize —
-// rustfmt has reordered these before and broken a commit).
-//
-// Closes a real gap: `crates/vokra-convert/src/models/ten_vad.rs` (landed
-// coverage-audit-2026-08-03 Wave A permissive continuation, 2026-08-04)
-// produced a GGUF stamped `vokra.model.arch = "ten_vad"` that NOTHING in the
-// workspace read back, so every converted checkpoint was unloadable. This
-// module is that consumer.
-//
-// TEN-VAD (`github.com/TEN-framework/ten-vad`) is a compact (~306 KB ONNX
-// bundle) real-time voice-activity detector positioned upstream as a
-// ~5.5x-lighter alternative to Silero VAD v5. It is the THIRD first-class VAD
-// topology under the shared `category = "vad-kws"` umbrella, and it exposes
-// the same `vokra_core::engines::VadEngine` / `VadStreamHandle` seam as
-// `silero_vad` and `fsmn_vad`, so a caller can swap between the three without
-// rewriting call sites.
-//
-// REAL: strict `vokra.model.arch` verification that refuses a foreign GGUF
-// loudly with the whole `vad-kws` sibling fleet enumerated (`silero-vad`
-// 1:1-preserved pseudo-STFT + LSTM subgraph / `fsmn-vad` fbank + LFR + CMVN op
-// stack / `openwakeword` + `openwakeword_op` keyword spotting); a tensor
-// manifest walk with a non-empty gate AND a converter-contract dtype gate
-// (`convert_ten_vad_file` has no quantization arm — it passes F32/F16/BF16
-// through verbatim — so a K-quant tensor proves a foreign producer); a
-// `require_tensor` name-resolution primitive that fails loudly NAMING the
-// tensor and previewing the real manifest; a BF16 counter mirroring the
-// converter's `TenVadReport::bf16_passthrough`; the OPTIONAL, all-or-nothing
-// `vokra.ten_vad.*` topology group (absent -> `None`, half-stamped -> loud);
-// a real hop-based streaming frame accumulator with a loud sample-rate gate
-// (never a silent resample); and weight-license surfacing that fail-closes to
-// `LicenseClass::Unknown`.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `TenVad::frame_probability` and the stream's `push_pcm` return
-// `VokraError::UnsupportedOp` naming four concrete blockers — (i) the MISSING
-// TENSOR-NAME MANIFEST, because the published artefact came from the generic
-// `tools/parity/onnx_to_safetensors.py` bridge which passes ONNX initializer
-// names through verbatim and nothing here records them; (ii) the MISSING
-// TOPOLOGY AXES, since the converter stamps no `vokra.ten_vad.*` group at all,
-// leaving hop size / feature width / hidden width / layer count unknown;
-// (iii) the UNRESOLVED BACKBONE FAMILY, since the converter docstring says
-// "small LSTM/GRU backbone" without committing to either and a coin flip here
-// is SILENT-wrong (note `vokra_ops::rnnoise::gru_forward` is already
-// shape-generic, so the blocker is the manifest and the axes, not the
-// arithmetic); (iv) the MISSING LPCNet-DERIVED FRONT-END, since
-// `vokra_ops::rnnoise::bark_filterbank` is RNNoise's FIXED 22-band table (same
-// Xiph lineage, different hard-coded edges), not TEN-VAD's front-end. No
-// fabricated speech probability is ever emitted (FR-EX-08). Deliberately NO
-// `TenVadConfig::upstream_default()`: unlike `FsmnVadConfig`, TEN-VAD's axes
-// are not stated in any available primary source, so a default would be
-// invented numbers wearing an authoritative face (CLAUDE.md ハルシネーション厳禁).
-//
-// LICENSING: Apache-2.0 for the main project (`LicenseClass::Permissive`,
-// mirroring the converter's `DEFAULT_LICENSE_SPDX`), but the LPCNet-derived
-// DSP front-end bundled in the upstream distribution is separately
-// BSD-3-Clause and requires NOTICE attribution for the LPCNet copyright when
-// redistributing binaries that embed it — surfaced as the named constant
-// `FRONTEND_LICENSE_SPDX` so the follow-up front-end-port wave has a greppable
-// anchor for that obligation. `docs/license-audit.md` §3.1 sign-off stays
-// BLANK (owner-only per `[[feedback-license-signoff-primary-source]]` — CC
-// does NOT sign).
-//
-// Cross-crate string handshake via duplicated `pub const ARCH = "ten_vad"`
-// (mirror of the converter's ARCH constant, preserving the layered convention
-// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`,
-// `vokra-models → GGUF binder`, `vokra-convert → GGUF writer`).
+// Native TEN-VAD v1.0 runtime. The strict offline ONNX sidecar and converter
+// pin the 19-tensor manifest, topology, revision, and source hash. Runtime is
+// first-party Rust: LPCNet-derived streaming features feed the released
+// separable-conv/two-LSTM graph through the common `VadEngine` API. Upstream's
+// Apache text carries additional non-compete/application-only deployment
+// terms, so canonical GGUFs are fail-closed for redistribution. The frontend
+// preserves both BSD-2-Clause and BSD-3-Clause notices required by `NOTICES`.
 pub mod ten_vad;
 
 // Wave B (2026-08-15) — smart-turn v2 runtime binder for semantic
@@ -1404,7 +1322,7 @@ pub mod ten_vad;
 // `docs/license-audit.md` §3.1 row "Smart-Turn v2", fetched 2026-07-30) —
 // both are CATALOG labels, not architectural claims. A VAD answers "is
 // there speech in this frame?" per frame; smart-turn
-// (`pipecat-ai/smart-turn-v2`, BSD-2-Clause, w2v-BERT 2.0 backbone) answers
+// (`pipecat-ai/smart-turn-v2`, BSD-2-Clause, Wav2Vec2-base backbone) answers
 // "has this speaker finished their turn?" once per utterance-length
 // segment. A mid-sentence pause is speech-present AND turn-incomplete at
 // the same instant, which is exactly why a realtime pipeline runs both
@@ -1420,39 +1338,18 @@ pub mod ten_vad;
 // smart_turn distinct from the sibling `ten_vad` binder directly above,
 // which DOES implement `VadEngine` because it really is a frame-level VAD.
 //
-// REAL: strict `vokra.model.arch` verification refusing foreign GGUFs with
-// the whole `category = "vad"` sibling fleet enumerated by the question
-// each one actually answers (`fsmn-vad` / `firered_vad` / `silero-vad` /
-// `pyannote-segmentation`, all per-frame) plus the bare backbone
-// (`w2v-bert-2`, an SSL encoder with no turn head at all); a non-empty
-// tensor gate; an encoder-stack presence gate; a classification-head
-// presence gate that specifically stops a bare `facebook/w2v-bert-2.0`
-// converted with the wrong `--model` flag from binding as a turn detector;
-// the optional all-or-nothing `vokra.smart_turn.*` segment group; a
-// validating `TurnPrediction` constructor (a NaN probability would compare
-// false against every threshold, i.e. "still speaking" forever); and full
-// loud input validation on `predict_endpoint` (zero / mismatched sample
-// rate, empty segment, over-long segment) firing BEFORE the loud-partial
-// gate so a malformed request always gets the specific diagnostic.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `SmartTurn::predict_endpoint` returns
-// `VokraError::UnsupportedOp` naming four blockers — (i) the MISSING
-// ADAPTER, a w2v-BERT-flavoured Conformer: `vokra_ops::conformer` DOES
-// exist but is a NeMo port (Stacking subsampling stem, NeMo parameter
-// layout, parakeet/canary consumers) while w2v-BERT 2.0 uses the HF
-// `Wav2Vec2BertEncoder` variant that projects precomputed filterbank
-// features, and the shapes are close enough that a substituted forward
-// would RUN and return a plausible WRONG number rather than failing;
-// (ii) the MISSING METADATA, since the converter is a verbatim float
-// pass-through stamping no topology or front-end axes at all; (iii) the
-// MISSING HEAD CONTRACT — one-logit-sigmoid vs two-logit-softmax and which
-// index means "complete" are unrecoverable, and a guessed index has a 50%
-// chance of INVERTING the decision; (iv) the MISSING SIDECAR
-// `tools/parity/smart_turn_prepare_checkpoint.py`. No fabricated
-// turn-completion probability is ever emitted (FR-EX-08) — a fake "turn
-// complete" makes a realtime agent interrupt the user mid-sentence, so a
-// plausible lie here is worse than a loud failure.
+// REAL: the strict converter and binder pin all 223 source tensors / 221
+// canonical tensors, source revision and SHA-256 values, processor geometry,
+// Wav2Vec2-base axes, folded positional-convolution weight norm, and the
+// exact attention-pooling / classifier head. `predict_endpoint` implements
+// the complete native CPU forward. The fixed 16-second processor contract is
+// preserved efficiently: the first convolution's right-padded GroupNorm
+// statistics are computed without convolving the constant zero tail, and
+// only the encoder queries selected by Pipecat's ratio mask are evaluated.
+// Independent Transformers parity is generated by
+// `tools/parity/smart_turn_prepare_checkpoint.py` and gated by
+// `tests/parity_smart_turn.rs`. Input validation rejects mismatched sample
+// rates, empty or over-long utterances, and non-finite PCM before inference.
 //
 // LICENSING: `bsd-2-clause` → `LicenseClass::Permissive` (T1 Commercial).
 // The `docs/license-audit.md` §3.1 row is owner-only and was already signed
@@ -1583,103 +1480,18 @@ pub mod firered_vad;
 // `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
 pub mod parakeet_tdt_1_1b;
 
-// Wave C1 (2026-08-15) — aiola Whisper-Medusa-v1 runtime binder (LIB.RS RULE:
-// append at the END of the `pub mod` block with a Wave marker; do NOT
-// alphabetize — rustfmt has reordered these before and broken a commit).
+// Runtime-gap Wave 4 ASR (2026-08-22) — exact aiola Whisper-Medusa-v1
+// binder. The canonical converter removes the checkpoint's outer
+// `whisper_model.` wrapper, stamps the ordinary Whisper hparams/frontend/
+// tokenizer contract, and preserves all eleven `medusa_heads.*` modules.
+// This module owns the distinct arch so a vanilla Whisper loader cannot
+// silently omit the official module-0 residual-SiLU output transform.
 //
-// Closes a real gap: `crates/vokra-convert/src/models/whisper_medusa_v1.rs`
-// (coverage-audit wave-b, 2026-08-03) produced a GGUF stamped
-// `vokra.model.arch = "whisper-medusa-v1"` / `vokra.model.name =
-// "whisper-medusa-v1"` / `vokra.model.category = "asr"` /
-// `vokra.provenance.upstream_hf = "aiola/whisper-medusa-v1"` that a
-// workspace-wide grep proved NOTHING read back — every converted
-// Whisper-Medusa checkpoint was unloadable. This module is that consumer.
-//
-// Whisper-Medusa (`huggingface.co/aiola/whisper-medusa-v1`) is an unmodified
-// OpenAI Whisper backbone plus N Medusa speculative-decoding heads (Cai et al.
-// 2024, arXiv:2401.10774): extra LM heads each predicting one further future
-// token from the same final decoder hidden state, so a step proposes several
-// candidate continuations that the base decoder then verifies in one forward.
-// Speculation is a THROUGHPUT optimisation, not a different model — which is
-// why this binder deliberately does NOT fork the Whisper tower.
-//
-// REUSE POSTURE: the base tower loads through the existing, real
-// `whisper::WhisperAsr` path. Two facts make that work — (i) the Medusa
-// converter passes every tensor through under its verbatim upstream
-// safetensors name and `whisper::WhisperWeights` binds on exactly those
-// HF-Transformers names (`model.encoder.layers.{i}.self_attn.q_proj.weight`
-// …), so no rename layer is needed; (ii) `WhisperAsr::from_gguf` does not gate
-// on arch — the arch gate lives on `WhisperSession`, which is the same seam
-// `distil_whisper` / `kotoba_whisper` already delegate through. Do NOT "fix"
-// this by adding `whisper-medusa-v1` to `whisper::ACCEPTED_ARCHS`: that list
-// is documented as excluding this arch precisely so a bare `WhisperSession`
-// cannot bind a Medusa checkpoint and SILENTLY DROP the heads. The tower is
-// borrowed; the arch identity stays here. A test pins the exclusion.
-//
-// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
-// with BOTH tags named and the whole vanilla-Whisper-topology sibling fleet
-// enumerated (`whisper` / `crisper-whisper` / `distil-whisper` /
-// `kotoba-whisper` — those four share the tensor topology verbatim, so only
-// the arch tag can disambiguate them); a real prefix walk over the tensor
-// manifest that groups Medusa tensors per head index and refuses a malformed
-// index BY TENSOR NAME, a non-contiguous index set BY FIRST MISSING INDEX, a
-// mix of both `nn.ModuleList` spellings as ambiguous, and an artifact with no
-// Medusa tensors at all (a vanilla Whisper checkpoint mis-stamped); a
-// base-tower presence gate (heads without a Whisper encoder can never run);
-// the optional all-or-nothing `vokra.medusa.*` hyper-parameter group (absent →
-// `config()` is `None` and the checkpoint still binds, because refusing it
-// would re-open the very gap this module closes; partially stamped → loud
-// naming the missing key; `0` sentinel → loud) CROSS-CHECKED against the head
-// count actually found on disk; base Whisper tower delegation whose load
-// outcome is RECORDED rather than swallowed; and weight-license surfacing that
-// fail-closes to `LicenseClass::Unknown`.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」), two distinct gates:
-//   (1) `transcribe` / `transcribe_tokens` / `base_asr` — real when the base
-//       tower bound; otherwise `VokraError::UnsupportedOp` QUOTING the
-//       underlying whisper error. Root cause with today's converter: it is a
-//       pure tensor pass-through and stamps NEITHER the `vokra.whisper.*`
-//       hyper-parameter chunk `WhisperConfig::from_gguf` requires, NOR the
-//       `vokra.frontend.*` chunk the FR-LD-03 bit-exact front-end check
-//       requires, NOR a `vokra.tokenizer.model` blob. The tensor NAMES already
-//       line up, so the fix is METADATA, not weights: teach the converter to
-//       stamp those chunks (mirror of `models/whisper.rs`) and this binder
-//       transcribes with zero changes here. `base_status()` lets a caller
-//       check which world it is in before calling.
-//   (2) `transcribe_speculative` — ALWAYS `UnsupportedOp`, even when the base
-//       tower bound, because silently running plain decoding under a
-//       "speculative" name would misreport what the runtime did. Three
-//       blockers: no draft→verify→accept driver anywhere in
-//       `vokra_core::decode` and no tree/sparse attention mask op in
-//       `vokra-ops`; the Medusa `medusa_choices` candidate tree is recorded in
-//       NO metadata (the converter stamps no `vokra.medusa.*` at all) and a
-//       guessed tree yields a shape-valid decode that silently ACCEPTS WRONG
-//       TOKENS; and the per-head sub-module interior (residual depth,
-//       final-projection bias) is untranscribable from any source the
-//       converter records. The error states the honest fallback explicitly —
-//       since a correct speculative decode accepts exactly what plain decoding
-//       produces, `transcribe` gives the SAME output today, minus the speedup.
-//       No fabricated speculative tokens are ever emitted (FR-EX-08).
-//
-// LICENSING — UNVERIFIED, owner follow-up: the 2026-08-03 audit flagged this
-// row `要一次 (Apache-2.0 想定)` — primary source required, Apache-2.0 ASSUMED.
-// The converter's own docstring is explicit that its `apache-2.0` default is
-// the ticket-header value ("the aiola precedent") and NOT a transcription of
-// the `huggingface.co/aiola/whisper-medusa-v1` model-card front matter. This
-// binder therefore makes NO license claim: `CONVERTER_DEFAULT_LICENSE` is
-// named only as "what the converter writes absent a `--license` override", and
-// `weight_license()` merely SURFACES whatever class the artifact carries,
-// fail-closing to `Unknown`. `docs/license-audit.md` §3.1 sign-off stays BLANK
-// (owner-only per `[[feedback-license-signoff-primary-source]]` — CC does NOT
-// sign, and does not treat the converter's assumption as a sign-off).
-// Publishing a converted Whisper-Medusa GGUF stays blocked at that §3.1 gate.
-//
-// Cross-crate string handshake via duplicated `pub const ARCH =
-// "whisper-medusa-v1"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` (mirror of the
-// converter's constants, preserving the layered convention `vokra-ops →
-// nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models → GGUF
-// binder`, `vokra-convert → GGUF writer`).
+// `AsrEngine` executes that real module-0 forward. Accelerated future-token
+// draft/verify/accept remains an explicit separate unsupported API until a
+// tree-attention driver exists; it never aliases plain or module-0 decoding.
+// The pinned checkpoint and upstream source revisions, config hash, complete
+// 22-tensor head manifest, and MIT provenance are all validated fail-closed.
 pub mod whisper_medusa;
 
 // Wave C1 (2026-08-15) — runtime binder for the `firered_asr_aed_l` converter
@@ -2004,9 +1816,9 @@ pub mod canary_1b_flash;
 // whose modality-specific parameters live under a `modality_encoders.*` tree),
 // so this PCM-in surface has no manifest to reach for and will not guess one;
 // (ii) THE KALDI-FBANK WINDOW: the front-end arguments ARE stamped in full and
-// `vokra.eat.fbank_window_type` is `hanning`, but `vokra_ops::kaldi_fbank`
-// hard-codes the Povey window and exposes no selector, so every feature would
-// desync — the stamp is what makes this detectable rather than invisible;
+// `vokra.eat.fbank_window_type` is `hanning`, but the checked
+// `KaldiFbankWindow` selector currently exposes Povey and Hamming, not
+// Hanning, so every feature would desync — the stamp makes this detectable;
 // (iii) NORM ORDER UNRECONCILED: `vokra.eat.layer_norm_first` is stamped as a
 // transcribed config value, explicitly NOT as an assertion about where the
 // norms sit, while `vokra_ops::vit::ViTEncoder` is pre-norm BY CONSTRUCTION.

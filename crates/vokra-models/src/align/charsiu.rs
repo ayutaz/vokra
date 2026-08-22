@@ -1,77 +1,31 @@
-//! Charsiu — **Wav2Vec2 neural forced aligner** (real forward, 2026-07-30).
+//! Charsiu English 10 ms neural forced aligner.
 //!
-//! - Upstream: `github.com/lingjzhu/charsiu` (MIT — permissive; no
-//!   runtime-side attribution obligation).
-//! - Consumers: this module is the `charsiu` variant of the
-//!   [`super::force_align`](super) op family, exposing the same
-//!   [`AlignedToken`] output shape [`super::ctc_segmentation`] returns.
+//! The implementation is pinned to `charsiu/en_w2v2_fc_10ms` revision
+//! `e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f`. Unlike a stock wav2vec2-base
+//! CTC model, this checkpoint's last feature-convolution stride is **1**, so
+//! the total stride is 160 samples (10 ms at 16 kHz). Its encoder includes
+//! the grouped 128-tap positional convolution and uses Hugging Face's
+//! `do_stable_layer_norm=false` **post-norm** block topology.
 //!
-//! # Architecture (primary source)
-//!
-//! Charsiu is a fine-tuning of the wav2vec 2.0 CTC family on IPA phonemes
-//! for **forced alignment** (the transcript is given; the model recovers
-//! the per-phoneme frame boundaries). The upstream release
-//! (`charsiu/models/charsiu_forced_aligner.py`) instantiates a HuggingFace
-//! `Wav2Vec2ForCTC` (`transformers/src/transformers/models/wav2vec2/
-//! modeling_wav2vec2.py::Wav2Vec2ForCTC`), sends 16 kHz raw waveform
-//! through:
-//!
-//! 1. `Wav2Vec2FeatureEncoder` — the raw-waveform 7-layer strided
-//!    Conv1D stem (`total_stride=320`, output = `[T', 512]` at 50 Hz).
-//!    Implemented by [`vokra_ops::waveform_frontend()`] with
-//!    [`vokra_ops::WaveformFrontendAttrs::wav2vec2_base`].
-//! 2. `Wav2Vec2FeatureProjection` — a Linear from the stem's 512-d
-//!    output to the residual `hidden_size` (transformer width).
-//!    Implemented inline as a `[512, hidden_size]` GEMM + optional bias.
-//! 3. `Wav2Vec2Encoder` — `n_layer` pre-LayerNorm Transformer blocks
-//!    (MHA + SwiGLU-free FFN, GELU activation). Wav2Vec 2.0's config
-//!    uses `use_conformer=false` — plain Transformer blocks, no conv
-//!    positional encoder in the base charsiu variant.
-//! 4. `Wav2Vec2ForCTC.lm_head` — a single Linear from `hidden_size`
-//!    to `vocab_size` (IPA phoneme inventory + one blank token).
-//! 5. `log_softmax` — per-frame log probabilities the CTC decoder
-//!    consumes; forwarded to [`super::ctc_segmentation`] for the
-//!    monotone Viterbi walk that recovers per-phoneme time boundaries.
-//!
-//! # Weights
-//!
-//! The runtime binds real weights from a Vokra GGUF that a converter
-//! populated with:
-//! - `vokra.charsiu.hidden_size` / `n_layer` / `n_head` / `ffn_dim` /
-//!   `vocab_size` / `blank_id` / `frame_shift_sec` (transcribed
-//!   verbatim from the upstream config).
-//! - `waveform_frontend.layers.{i}.{conv_w,conv_b?,norm_gamma?,norm_beta?}`
-//!   for each of the 7 wav2vec 2.0 base stem layers (same names the
-//!   upstream state dict emits after the `feature_extractor.` prefix).
-//! - `feature_projection.{norm_gamma?,norm_beta?,linear_w,linear_b}`.
-//! - Per-encoder-block: `layer.{i}.{attn.q_proj,attn.k_proj,attn.v_proj,
-//!   attn.out_proj,attn_norm,ffn_norm,ffn_fc1,ffn_fc2}` (weight +
-//!   optional bias).
-//! - `head.{weight,bias}` — the CTC vocab projection.
-//!
-//! The scaffold [`CharsiuWeights::synthesized`] builds a deterministic
-//! [`CharsiuWeights`] from a [`CharsiuConfig`] so the shape flow and CTC
-//! decoding path can be exercised without a real HF checkpoint (SplitMix64
-//! Xavier — the omniASR-CTC / VITS-JA fixture pattern). Real-weight
-//! `from_gguf` binding lands in a follow-up wave (T29-equivalent — the
-//! upstream tensor-name manifest fetch, same posture as the other
-//! `wav2vec2_encoder`-style consumers in this crate).
-//!
-//! # Output
-//!
-//! [`Charsiu::align`] returns a `Vec<AlignedToken>` — one record per
-//! input phoneme with monotone non-overlapping time boundaries and a
-//! per-token confidence score derived from the CTC posterior along the
-//! Viterbi path (`ctc_segmentation`'s output verbatim).
+//! [`Charsiu::from_gguf`] binds the exact writer contract emitted by
+//! `vokra-convert --model charsiu`: the official 42-entry phone inventory,
+//! all stem/projection/encoder/head tensors, and the converter-folded
+//! positional-convolution weight norm. [`Charsiu::align`] reproduces the
+//! upstream silence-mask plus monotone DTW forced alignment. It returns one
+//! [`AlignedToken`] per caller-supplied non-silence phone; long model-predicted
+//! silence runs remain gaps between returned phone intervals.
 
 use std::path::Path;
 
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_backend_cpu::kernels;
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
-use vokra_ops::{ConvLayerWeights, WaveformFrontendAttrs, WaveformFrontendWeights};
+use vokra_ops::{
+    ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
+};
 
-use super::{AlignedToken, LoadError, ctc_segmentation::ctc_segmentation};
+use super::{AlignedToken, LoadError};
 
 /// The `vokra.model.arch` value a Charsiu GGUF must carry.
 ///
@@ -92,54 +46,43 @@ use super::{AlignedToken, LoadError, ctc_segmentation::ctc_segmentation};
 /// inventory used for forced alignment, so aliasing the tags would let a
 /// letter-vocab checkpoint silently produce nonsense phoneme boundaries.
 pub const EXPECTED_ARCH: &str = "charsiu";
+const EXPECTED_REVISION: &str = "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f";
+const EXPECTED_CHECKPOINT_SHA256: &str =
+    "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-/// Charsiu / wav2vec2-base-for-CTC hparams.
-///
-/// The upstream release (`charsiu/en_w2v2_fc_10ms`) is a
-/// wav2vec2-base fine-tune with the following axes (transcribed from
-/// `charsiu/models/charsiu_forced_aligner.py` and the paired HF
-/// `preprocessor_config.json` + `config.json`, fetched 2026-07-30 —
-/// CLAUDE.md「ハルシネーション厳禁」):
-///
-/// - `hidden_size = 768` (wav2vec2-base residual width).
-/// - `n_layer = 12` (wav2vec2-base transformer depth).
-/// - `n_head = 12` (wav2vec2-base MHA head count; head_dim = 64).
-/// - `ffn_dim = 3072` (wav2vec2-base FFN inner width).
-/// - `vocab_size = 42` (IPA-en inventory + `<pad>` at `blank_id = 0`
-///   in the canonical Charsiu release; downstream re-trainings may
-///   override).
-/// - `blank_id = 0`.
-/// - `sample_rate = 16000` (16 kHz mono PCM in).
-/// - `frame_shift_sec = 0.02` (50 Hz feature rate =
-///   `total_stride=320 / sample_rate=16000`).
-///
-/// [`Self::default_charsiu_en`] returns these defaults. A caller with a
-/// downstream variant (e.g. Charsiu multilingual with a wider vocab)
-/// overrides field-by-field.
+/// Config for the canonical Charsiu English frame classifier.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CharsiuConfig {
     /// Transformer residual width.
     pub hidden_size: usize,
-    /// Number of pre-LayerNorm Transformer blocks in the encoder.
+    /// Number of post-LayerNorm Transformer blocks in the encoder.
     pub n_layer: usize,
     /// MHA head count; `head_dim = hidden_size / n_head`.
     pub n_head: usize,
     /// FFN inner width.
     pub ffn_dim: usize,
-    /// Output vocabulary size (IPA phonemes + blank).
+    /// Output vocabulary size (phones + `[SIL]` / `[UNK]` / `[PAD]`).
     pub vocab_size: usize,
-    /// CTC blank id. Charsiu keeps the wav2vec2 default `blank_id = 0`.
-    pub blank_id: usize,
+    /// Model class used to identify silence runs (`[SIL]`, canonical id 0).
+    pub silence_id: usize,
+    /// Padding label id (`[PAD]`, canonical id 41). It is not a CTC blank.
+    pub pad_id: usize,
     /// Input PCM sample rate (Hz). Charsiu = 16 000.
     pub sample_rate: u32,
-    /// Per-frame time step (seconds) — matches the wav2vec2 base stem
-    /// output rate = `total_stride(320) / sample_rate(16000) = 0.02`
-    /// (50 Hz features).
+    /// Per-frame time step (canonical total stride 160 / 16 kHz = 0.01 s).
     pub frame_shift_sec: f32,
+    /// LayerNorm epsilon used by every Wav2Vec2 norm.
+    pub layer_norm_eps: f32,
+    /// Positional convolution kernel width.
+    pub pos_conv_kernel: usize,
+    /// Positional convolution group count.
+    pub pos_conv_groups: usize,
+    /// Minimum consecutive `[SIL]` argmax frames considered real silence.
+    pub silence_threshold: usize,
     /// Whether the transformer blocks carry a `Wav2Vec2NoLayerNorm`
     /// feature-projection LayerNorm. `true` for the mainline wav2vec2
     /// base + Charsiu configuration.
@@ -161,9 +104,14 @@ impl CharsiuConfig {
             n_head: 12,
             ffn_dim: 3072,
             vocab_size: 42,
-            blank_id: 0,
+            silence_id: 0,
+            pad_id: 41,
             sample_rate: 16_000,
-            frame_shift_sec: 0.02,
+            frame_shift_sec: 0.01,
+            layer_norm_eps: 1e-5,
+            pos_conv_kernel: 128,
+            pos_conv_groups: 16,
+            silence_threshold: 4,
             feature_projection_has_layer_norm: true,
             stem_conv_bias: false,
         }
@@ -192,12 +140,21 @@ impl CharsiuConfig {
                 self.frame_shift_sec,
             )));
         }
+        if !self.layer_norm_eps.is_finite() || self.layer_norm_eps <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "charsiu: layer_norm_eps must be finite and > 0 (got {})",
+                self.layer_norm_eps,
+            )));
+        }
         for (name, v) in [
             ("hidden_size", self.hidden_size),
             ("n_layer", self.n_layer),
             ("n_head", self.n_head),
             ("ffn_dim", self.ffn_dim),
             ("vocab_size", self.vocab_size),
+            ("pos_conv_kernel", self.pos_conv_kernel),
+            ("pos_conv_groups", self.pos_conv_groups),
+            ("silence_threshold", self.silence_threshold),
         ] {
             if v == 0 {
                 return Err(VokraError::InvalidArgument(format!(
@@ -211,13 +168,64 @@ impl CharsiuConfig {
                 self.hidden_size, self.n_head,
             )));
         }
-        if self.blank_id >= self.vocab_size {
+        if self.silence_id >= self.vocab_size || self.pad_id >= self.vocab_size {
             return Err(VokraError::InvalidArgument(format!(
-                "charsiu: blank_id {} must be < vocab_size {}",
-                self.blank_id, self.vocab_size,
+                "charsiu: silence_id {} and pad_id {} must both be < vocab_size {}",
+                self.silence_id, self.pad_id, self.vocab_size,
+            )));
+        }
+        if self.hidden_size % self.pos_conv_groups != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "charsiu: hidden_size {} not divisible by pos_conv_groups {}",
+                self.hidden_size, self.pos_conv_groups,
             )));
         }
         Ok(())
+    }
+}
+
+fn charsiu_stem_attrs() -> WaveformFrontendAttrs {
+    WaveformFrontendAttrs {
+        in_channels: 1,
+        layers: vec![
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 10,
+                stride: 5,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 3,
+                stride: 2,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 3,
+                stride: 2,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 3,
+                stride: 2,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 3,
+                stride: 2,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 2,
+                stride: 2,
+            },
+            ConvLayerAttrs {
+                out_channels: 512,
+                kernel: 2,
+                stride: 1,
+            },
+        ],
+        norm: Norm::GroupFirstOnly,
+        conv_bias: false,
     }
 }
 
@@ -240,14 +248,21 @@ pub struct CharsiuFeatureProjection {
     pub linear_b: Vec<f32>,
 }
 
-/// A single pre-LayerNorm Transformer encoder block (wav2vec 2.0
-/// mainline). MHA (Q/K/V projections carry bias) + FFN (fc1 → GELU →
-/// fc2, both carry bias).
+/// Weight-norm-folded grouped positional convolution.
+#[derive(Debug, Clone)]
+pub struct CharsiuPosConv {
+    /// `[hidden, hidden / groups, kernel]` in PyTorch Conv1D layout.
+    pub weight: Vec<f32>,
+    /// `[hidden]`.
+    pub bias: Vec<f32>,
+}
+
+/// A single post-LayerNorm Wav2Vec2 encoder block.
 #[derive(Debug, Clone)]
 pub struct CharsiuBlock {
-    /// `[hidden]` — attention pre-norm γ.
+    /// `[hidden]` — norm after the attention residual, γ.
     pub attn_norm_gamma: Vec<f32>,
-    /// `[hidden]` — attention pre-norm β.
+    /// `[hidden]` — norm after the attention residual, β.
     pub attn_norm_beta: Vec<f32>,
     /// `[hidden, hidden]` — Q projection weight (row-major).
     pub q_w: Vec<f32>,
@@ -265,9 +280,9 @@ pub struct CharsiuBlock {
     pub o_w: Vec<f32>,
     /// `[hidden]` — attention output projection bias.
     pub o_b: Vec<f32>,
-    /// `[hidden]` — FFN pre-norm γ.
+    /// `[hidden]` — norm after the FFN residual, γ.
     pub ffn_norm_gamma: Vec<f32>,
-    /// `[hidden]` — FFN pre-norm β.
+    /// `[hidden]` — norm after the FFN residual, β.
     pub ffn_norm_beta: Vec<f32>,
     /// `[ffn_dim, hidden]` — FFN fc1 weight.
     pub fc1_w: Vec<f32>,
@@ -289,8 +304,7 @@ pub struct CharsiuHead {
     pub bias: Vec<f32>,
 }
 
-/// Full Charsiu weight store — waveform stem + feature projection +
-/// `n_layer` encoder blocks + final norm + CTC head.
+/// Full Charsiu weight store.
 #[derive(Debug, Clone)]
 pub struct CharsiuWeights {
     /// Raw-waveform 7-layer wav2vec2-base stem.
@@ -300,12 +314,14 @@ pub struct CharsiuWeights {
     pub stem_weights: WaveformFrontendWeights,
     /// Feature projection (stem's 512-d output → residual `hidden_size`).
     pub feature_projection: CharsiuFeatureProjection,
-    /// `n_layer` pre-norm Transformer encoder blocks.
+    /// Grouped positional convolution added to projected features.
+    pub pos_conv: CharsiuPosConv,
+    /// Encoder input LayerNorm, applied after the positional residual.
+    pub encoder_input_norm_gamma: Vec<f32>,
+    /// Encoder input LayerNorm beta.
+    pub encoder_input_norm_beta: Vec<f32>,
+    /// `n_layer` post-norm Transformer encoder blocks.
     pub blocks: Vec<CharsiuBlock>,
-    /// `[hidden]` — final pre-head LayerNorm γ.
-    pub final_norm_gamma: Vec<f32>,
-    /// `[hidden]` — final pre-head LayerNorm β.
-    pub final_norm_beta: Vec<f32>,
     /// CTC head — vocab projection.
     pub head: CharsiuHead,
     /// Whether the store came from [`Self::synthesized`] (a scaffold
@@ -329,7 +345,7 @@ impl CharsiuWeights {
 
         let mut rng = SplitMix64::new(seed);
 
-        let stem_attrs = WaveformFrontendAttrs::wav2vec2_base();
+        let stem_attrs = charsiu_stem_attrs();
         // Per-layer weights matching the 7-layer stem topology. The
         // wav2vec2 base config has `conv_bias=false` and
         // `norm=GroupFirstOnly` (layer 0 group-norms, others none), so
@@ -375,7 +391,22 @@ impl CharsiuWeights {
             linear_b: vec![0.0; config.hidden_size],
         };
 
-        // n_layer pre-norm Transformer blocks.
+        let pos_conv = CharsiuPosConv {
+            weight: xavier_vec(
+                &mut rng,
+                config.hidden_size
+                    * (config.hidden_size / config.pos_conv_groups)
+                    * config.pos_conv_kernel,
+                (config.pos_conv_groups as f32
+                    / (config.hidden_size * config.pos_conv_kernel) as f32)
+                    .sqrt(),
+            ),
+            bias: vec![0.0; config.hidden_size],
+        };
+        let encoder_input_norm_gamma = vec![1.0; config.hidden_size];
+        let encoder_input_norm_beta = vec![0.0; config.hidden_size];
+
+        // n_layer post-norm Transformer blocks.
         let h = config.hidden_size;
         let ffn = config.ffn_dim;
         let attn_scale = (1.0 / h as f32).sqrt();
@@ -402,10 +433,6 @@ impl CharsiuWeights {
             })
             .collect();
 
-        // Final pre-head LayerNorm.
-        let final_norm_gamma = vec![1.0; h];
-        let final_norm_beta = vec![0.0; h];
-
         // CTC head.
         let head_scale = (1.0 / h as f32).sqrt();
         let head = CharsiuHead {
@@ -417,9 +444,10 @@ impl CharsiuWeights {
             stem_attrs,
             stem_weights,
             feature_projection,
+            pos_conv,
+            encoder_input_norm_gamma,
+            encoder_input_norm_beta,
             blocks,
-            final_norm_gamma,
-            final_norm_beta,
             head,
             is_synthesized: true,
         })
@@ -448,13 +476,13 @@ fn xavier_vec(rng: &mut SplitMix64, n: usize, scale: f32) -> Vec<f32> {
 /// plus a [`CharsiuWeights`] store (either bound from a Vokra GGUF or a
 /// scaffold fixture from [`CharsiuWeights::synthesized`]).
 ///
-/// [`Self::align`] runs the wav2vec2 CTC forward and forwards the
-/// per-frame log-probabilities to [`ctc_segmentation`] to recover the
-/// per-phoneme time boundaries.
+/// [`Self::align`] runs the canonical frame classifier, silence mask, and
+/// monotone DTW to recover per-phoneme time boundaries.
 #[derive(Debug, Clone)]
 pub struct Charsiu {
     cfg: CharsiuConfig,
     weights: CharsiuWeights,
+    vocab: Vec<String>,
 }
 
 impl Charsiu {
@@ -467,10 +495,15 @@ impl Charsiu {
     /// - [`VokraError::InvalidArgument`] from `cfg.validate_for_forward`.
     /// - [`VokraError::InvalidArgument`] naming the first shape
     ///   mismatch (feature projection, encoder blocks, head).
-    pub fn new(cfg: CharsiuConfig, weights: CharsiuWeights) -> Result<Self> {
+    pub fn new(cfg: CharsiuConfig, weights: CharsiuWeights, vocab: Vec<String>) -> Result<Self> {
         cfg.validate_for_forward()?;
         Self::validate_shapes(&cfg, &weights)?;
-        Ok(Self { cfg, weights })
+        validate_vocab(&cfg, &vocab)?;
+        Ok(Self {
+            cfg,
+            weights,
+            vocab,
+        })
     }
 
     /// Returns the resolved config.
@@ -485,63 +518,208 @@ impl Charsiu {
         self.weights.is_synthesized
     }
 
-    /// Skeleton load-error entry point kept from the pre-real scaffold.
-    /// A real Charsiu GGUF binder lands in a follow-up wave gated on the
-    /// upstream tensor-name manifest fetch (T29-equivalent, same as
-    /// omniASR-CTC / CosyVoice2 / Voxtral).
-    ///
-    /// # Arch verification (FR-EX-08)
-    ///
-    /// When `path` parses as a GGUF, its `vokra.model.arch` is checked
-    /// against [`EXPECTED_ARCH`] **before** the follow-up-wave message, so
-    /// a caller who hands a sibling wav2vec2-lineage GGUF here is told
-    /// *which* model they actually passed rather than being sent to chase
-    /// an unrelated tensor-manifest TODO. This ordering is what the real
-    /// binder will keep when it lands, so the diagnostic does not change
-    /// shape under the caller.
-    ///
-    /// # Errors
-    ///
-    /// - [`LoadError::FileNotFound`] if `path` does not exist.
-    /// - [`LoadError::Gguf`] if `path` parses as a GGUF whose
-    ///   `vokra.model.arch` is absent or is not [`EXPECTED_ARCH`].
-    /// - [`LoadError::Gguf`] otherwise, naming the follow-up wave.
+    /// Model label inventory in id order.
+    pub fn vocabulary(&self) -> &[String] {
+        &self.vocab
+    }
+
+    /// Opens and binds a Charsiu GGUF from disk.
     pub fn from_gguf(path: &Path) -> std::result::Result<Self, LoadError> {
         if !path.exists() {
             return Err(LoadError::FileNotFound(path.to_path_buf()));
         }
-        // 1. Arch check — always first for a parseable GGUF so a mis-typed
-        //    model handed here fails with a specific message instead of the
-        //    generic "binder not wired yet" note below. A file that does
-        //    not parse as a GGUF at all falls through to that note (it is
-        //    equally a refusal, and nothing is ever bound either way).
-        if let Ok(file) = GgufFile::open(path) {
-            verify_arch(&file)?;
+        let file = GgufFile::open(path)
+            .map_err(|e| LoadError::Gguf(format!("charsiu: opening {}: {e}", path.display())))?;
+        Self::from_file(&file).map_err(|e| LoadError::Gguf(e.to_string()))
+    }
+
+    /// Binds from an already-parsed GGUF, validating every metadata axis and
+    /// tensor shape before returning a usable aligner.
+    pub fn from_file(file: &GgufFile) -> Result<Self> {
+        verify_arch(file)?;
+        require_meta_string(file, "vokra.charsiu.revision", EXPECTED_REVISION)?;
+        require_meta_string(
+            file,
+            "vokra.charsiu.checkpoint_sha256",
+            EXPECTED_CHECKPOINT_SHA256,
+        )?;
+        let cfg = CharsiuConfig {
+            hidden_size: meta_u32(file, "vokra.charsiu.hidden_size")? as usize,
+            ffn_dim: meta_u32(file, "vokra.charsiu.ffn_dim")? as usize,
+            n_layer: meta_u32(file, "vokra.charsiu.n_layer")? as usize,
+            n_head: meta_u32(file, "vokra.charsiu.n_head")? as usize,
+            vocab_size: meta_u32(file, "vokra.charsiu.vocab_size")? as usize,
+            silence_id: meta_u32(file, "vokra.charsiu.silence_id")? as usize,
+            pad_id: meta_u32(file, "vokra.charsiu.pad_id")? as usize,
+            sample_rate: meta_u32(file, "vokra.charsiu.sample_rate")?,
+            frame_shift_sec: meta_f32(file, "vokra.charsiu.frame_shift_sec")?,
+            layer_norm_eps: meta_f32(file, "vokra.charsiu.layer_norm_eps")?,
+            pos_conv_kernel: meta_u32(file, "vokra.charsiu.pos_conv_kernel")? as usize,
+            pos_conv_groups: meta_u32(file, "vokra.charsiu.pos_conv_groups")? as usize,
+            silence_threshold: meta_u32(file, "vokra.charsiu.silence_threshold")? as usize,
+            feature_projection_has_layer_norm: true,
+            stem_conv_bias: false,
+        };
+        cfg.validate_for_forward()?;
+        let canonical = CharsiuConfig::default_charsiu_en();
+        if cfg != canonical {
+            return Err(VokraError::ModelLoad(format!(
+                "charsiu GGUF config {cfg:?} does not match the only implemented canonical \
+                 en_w2v2_fc_10ms config {canonical:?}"
+            )));
         }
-        Err(LoadError::Gguf(
-            "charsiu: from_gguf is not wired yet — the wav2vec2 CTC forward path exists in this \
-             module (Charsiu::align), but the upstream tensor-name manifest binder is a follow-up \
-             wave (T29-equivalent, matching omniASR-CTC / CosyVoice2). Instantiate via \
-             Charsiu::new(CharsiuConfig, CharsiuWeights) from a caller-supplied weight store."
-                .to_owned(),
-        ))
+        let vocab = read_string_array(file, "vokra.charsiu.vocab")?;
+
+        let stem_attrs = charsiu_stem_attrs();
+        let mut stem_layers = Vec::with_capacity(stem_attrs.layers.len());
+        let mut in_ch = 1usize;
+        for (i, attrs) in stem_attrs.layers.iter().enumerate() {
+            let prefix = format!("wav2vec2.feature_extractor.conv_layers.{i}");
+            let conv_w = tensor_shaped(
+                file,
+                &format!("{prefix}.conv.weight"),
+                &[attrs.out_channels, in_ch, attrs.kernel],
+            )?;
+            let (norm_gamma, norm_beta) = if i == 0 {
+                (
+                    Some(tensor_shaped(
+                        file,
+                        &format!("{prefix}.layer_norm.weight"),
+                        &[attrs.out_channels],
+                    )?),
+                    Some(tensor_shaped(
+                        file,
+                        &format!("{prefix}.layer_norm.bias"),
+                        &[attrs.out_channels],
+                    )?),
+                )
+            } else {
+                (None, None)
+            };
+            stem_layers.push(ConvLayerWeights {
+                conv_w,
+                conv_b: Vec::new(),
+                norm_gamma,
+                norm_beta,
+            });
+            in_ch = attrs.out_channels;
+        }
+        let feature_projection = CharsiuFeatureProjection {
+            norm_gamma: Some(tensor_shaped(
+                file,
+                "wav2vec2.feature_projection.layer_norm.weight",
+                &[512],
+            )?),
+            norm_beta: Some(tensor_shaped(
+                file,
+                "wav2vec2.feature_projection.layer_norm.bias",
+                &[512],
+            )?),
+            linear_w: tensor_shaped(
+                file,
+                "wav2vec2.feature_projection.projection.weight",
+                &[cfg.hidden_size, 512],
+            )?,
+            linear_b: tensor_shaped(
+                file,
+                "wav2vec2.feature_projection.projection.bias",
+                &[cfg.hidden_size],
+            )?,
+        };
+        let pos_conv = CharsiuPosConv {
+            weight: tensor_shaped(
+                file,
+                "charsiu.pos_conv.weight",
+                &[
+                    cfg.hidden_size,
+                    cfg.hidden_size / cfg.pos_conv_groups,
+                    cfg.pos_conv_kernel,
+                ],
+            )?,
+            bias: tensor_shaped(file, "charsiu.pos_conv.bias", &[cfg.hidden_size])?,
+        };
+        let encoder_input_norm_gamma = tensor_shaped(
+            file,
+            "wav2vec2.encoder.layer_norm.weight",
+            &[cfg.hidden_size],
+        )?;
+        let encoder_input_norm_beta =
+            tensor_shaped(file, "wav2vec2.encoder.layer_norm.bias", &[cfg.hidden_size])?;
+        let mut blocks = Vec::with_capacity(cfg.n_layer);
+        for i in 0..cfg.n_layer {
+            let p = format!("wav2vec2.encoder.layers.{i}");
+            let lin = |name: &str, dims: &[usize]| tensor_shaped(file, name, dims);
+            blocks.push(CharsiuBlock {
+                attn_norm_gamma: lin(&format!("{p}.layer_norm.weight"), &[cfg.hidden_size])?,
+                attn_norm_beta: lin(&format!("{p}.layer_norm.bias"), &[cfg.hidden_size])?,
+                q_w: lin(
+                    &format!("{p}.attention.q_proj.weight"),
+                    &[cfg.hidden_size, cfg.hidden_size],
+                )?,
+                q_b: lin(&format!("{p}.attention.q_proj.bias"), &[cfg.hidden_size])?,
+                k_w: lin(
+                    &format!("{p}.attention.k_proj.weight"),
+                    &[cfg.hidden_size, cfg.hidden_size],
+                )?,
+                k_b: lin(&format!("{p}.attention.k_proj.bias"), &[cfg.hidden_size])?,
+                v_w: lin(
+                    &format!("{p}.attention.v_proj.weight"),
+                    &[cfg.hidden_size, cfg.hidden_size],
+                )?,
+                v_b: lin(&format!("{p}.attention.v_proj.bias"), &[cfg.hidden_size])?,
+                o_w: lin(
+                    &format!("{p}.attention.out_proj.weight"),
+                    &[cfg.hidden_size, cfg.hidden_size],
+                )?,
+                o_b: lin(&format!("{p}.attention.out_proj.bias"), &[cfg.hidden_size])?,
+                ffn_norm_gamma: lin(&format!("{p}.final_layer_norm.weight"), &[cfg.hidden_size])?,
+                ffn_norm_beta: lin(&format!("{p}.final_layer_norm.bias"), &[cfg.hidden_size])?,
+                fc1_w: lin(
+                    &format!("{p}.feed_forward.intermediate_dense.weight"),
+                    &[cfg.ffn_dim, cfg.hidden_size],
+                )?,
+                fc1_b: lin(
+                    &format!("{p}.feed_forward.intermediate_dense.bias"),
+                    &[cfg.ffn_dim],
+                )?,
+                fc2_w: lin(
+                    &format!("{p}.feed_forward.output_dense.weight"),
+                    &[cfg.hidden_size, cfg.ffn_dim],
+                )?,
+                fc2_b: lin(
+                    &format!("{p}.feed_forward.output_dense.bias"),
+                    &[cfg.hidden_size],
+                )?,
+            });
+        }
+        let weights = CharsiuWeights {
+            stem_attrs,
+            stem_weights: WaveformFrontendWeights {
+                layers: stem_layers,
+            },
+            feature_projection,
+            pos_conv,
+            encoder_input_norm_gamma,
+            encoder_input_norm_beta,
+            blocks,
+            head: CharsiuHead {
+                weight: tensor_shaped(file, "lm_head.weight", &[cfg.vocab_size, cfg.hidden_size])?,
+                bias: tensor_shaped(file, "lm_head.bias", &[cfg.vocab_size])?,
+            },
+            is_synthesized: false,
+        };
+        Self::new(cfg, weights, vocab)
     }
 
     /// Force-aligns a phoneme sequence to a 16 kHz mono PCM buffer.
     ///
-    /// Runs the wav2vec2 stem → feature projection → n_layer encoder
-    /// blocks → CTC head forward, converts the head output to
-    /// per-frame log-probabilities, and forwards them to
-    /// [`ctc_segmentation`] together with `phonemes` (mapped to vocab
-    /// ids via the "skip the blank slot" convention in the parent
-    /// [`super::ctc_segmentation`] docs).
+    /// Runs the canonical Charsiu silence mask and monotone DTW alignment.
     ///
     /// # Arguments
     ///
     /// * `pcm` — 16 kHz mono PCM at [`CharsiuConfig::sample_rate`]. The
     ///   forward asserts `pcm.len() >= stem.total_stride()` — shorter
-    ///   inputs return an empty alignment (the parent
-    ///   `ctc_segmentation` short-input contract).
+    ///   inputs fail loudly in the waveform frontend.
     /// * `sample_rate` — must equal [`CharsiuConfig::sample_rate`];
     ///   mismatch is a loud [`VokraError::InvalidArgument`] (FR-EX-08).
     /// * `phonemes` — the transcript to align (echoed back into the
@@ -559,14 +737,51 @@ impl Charsiu {
         sample_rate: u32,
         phonemes: &[String],
     ) -> Result<Vec<AlignedToken>> {
+        if phonemes.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "charsiu align: phoneme sequence is empty".to_owned(),
+            ));
+        }
+        let mut phone_ids = Vec::with_capacity(phonemes.len());
+        for phone in phonemes {
+            let id = self.vocab.iter().position(|p| p == phone).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "charsiu align: phoneme {phone:?} is not in the embedded vocabulary"
+                ))
+            })?;
+            if id == self.cfg.silence_id || id == self.cfg.pad_id {
+                return Err(VokraError::InvalidArgument(format!(
+                    "charsiu align: transcript phoneme {phone:?} uses reserved model id {id}; \
+                     pass spoken phones only (silence is inferred from audio)"
+                )));
+            }
+            phone_ids.push(id);
+        }
+        let (logits, frames) = self.logits(pcm, sample_rate)?;
+        let probabilities = softmax(&logits, frames, self.cfg.vocab_size);
+        charsiu_forced_align(
+            &probabilities,
+            frames,
+            self.cfg.vocab_size,
+            &phone_ids,
+            self.cfg.silence_id,
+            self.cfg.silence_threshold,
+            self.cfg.frame_shift_sec,
+            phonemes,
+        )
+    }
+
+    /// Returns frame-classification logits in `[time, vocab]` order.
+    /// Exposed for independent real-checkpoint parity consumers.
+    pub fn logits(&self, pcm: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
-                "charsiu align: pcm slice is empty".to_owned(),
+                "charsiu logits: pcm slice is empty".to_owned(),
             ));
         }
         if sample_rate != self.cfg.sample_rate {
             return Err(VokraError::InvalidArgument(format!(
-                "charsiu align: sample_rate {} != config.sample_rate {} (FR-EX-08 no silent \
+                "charsiu logits: sample_rate {} != config.sample_rate {} (FR-EX-08 no silent \
                  resampling)",
                 sample_rate, self.cfg.sample_rate,
             )));
@@ -581,14 +796,7 @@ impl Charsiu {
         let feature_dim = self.weights.stem_attrs.out_channels()?;
         assert_eq!(features.len() % feature_dim, 0);
         let t_frames = features.len() / feature_dim;
-        if t_frames == 0 {
-            // The parent CTC segmenter returns an empty vec on
-            // insufficient frames; mirror that contract here for
-            // consistency (mainstream on very short clips).
-            return Ok(Vec::new());
-        }
-
-        // ---- Feature projection: [T', 512] → [T', hidden_size] -------
+        // ---- Feature projection + grouped positional conv ------------
         let mut hidden = feature_projection_forward(
             &features,
             t_frames,
@@ -596,23 +804,26 @@ impl Charsiu {
             &self.weights.feature_projection,
             self.cfg.hidden_size,
             self.cfg.feature_projection_has_layer_norm,
+            self.cfg.layer_norm_eps,
         );
-
-        // ---- n_layer Transformer blocks ------------------------------
-        for block in &self.weights.blocks {
-            transformer_block_forward(&mut hidden, t_frames, &self.cfg, block);
+        let position =
+            positional_conv_forward(&hidden, t_frames, &self.cfg, &self.weights.pos_conv)?;
+        for (value, pos) in hidden.iter_mut().zip(position) {
+            *value += pos;
         }
-
-        // ---- Final pre-head LayerNorm --------------------------------
         layer_norm_inplace(
             &mut hidden,
             t_frames,
             self.cfg.hidden_size,
-            &self.weights.final_norm_gamma,
-            &self.weights.final_norm_beta,
+            &self.weights.encoder_input_norm_gamma,
+            &self.weights.encoder_input_norm_beta,
+            self.cfg.layer_norm_eps,
         );
 
-        // ---- CTC head + log_softmax → [T', vocab_size] ---------------
+        // ---- post-norm Transformer blocks -----------------------------
+        for block in &self.weights.blocks {
+            transformer_block_forward(&mut hidden, t_frames, &self.cfg, block);
+        }
         let logits = ctc_head_forward(
             &hidden,
             t_frames,
@@ -620,17 +831,7 @@ impl Charsiu {
             &self.weights.head,
             self.cfg.vocab_size,
         );
-        let log_probs = log_softmax(&logits, t_frames, self.cfg.vocab_size);
-
-        // ---- Viterbi CTC segmentation (Kürzinger et al. 2020) -------
-        Ok(ctc_segmentation(
-            &log_probs,
-            t_frames,
-            self.cfg.vocab_size,
-            self.cfg.blank_id,
-            self.cfg.frame_shift_sec,
-            phonemes,
-        ))
+        Ok((logits, t_frames))
     }
 
     /// Validates the weight store shapes against `cfg` — every failure
@@ -675,6 +876,20 @@ impl Charsiu {
             }
         }
 
+        let want_pos = h * (h / cfg.pos_conv_groups) * cfg.pos_conv_kernel;
+        if w.pos_conv.weight.len() != want_pos || w.pos_conv.bias.len() != h {
+            return Err(VokraError::InvalidArgument(format!(
+                "charsiu: positional conv weight/bias lengths {} / {} != {want_pos} / {h}",
+                w.pos_conv.weight.len(),
+                w.pos_conv.bias.len(),
+            )));
+        }
+        if w.encoder_input_norm_gamma.len() != h || w.encoder_input_norm_beta.len() != h {
+            return Err(VokraError::InvalidArgument(format!(
+                "charsiu: encoder input norm gamma/beta must be length {h}"
+            )));
+        }
+
         if w.blocks.len() != cfg.n_layer {
             return Err(VokraError::InvalidArgument(format!(
                 "charsiu: blocks.len() {} != n_layer {}",
@@ -709,11 +924,6 @@ impl Charsiu {
                 }
             }
         }
-        if w.final_norm_gamma.len() != h || w.final_norm_beta.len() != h {
-            return Err(VokraError::InvalidArgument(format!(
-                "charsiu: final norm gamma/beta must be length {h}"
-            )));
-        }
         if w.head.weight.len() != cfg.vocab_size * h {
             return Err(VokraError::InvalidArgument(format!(
                 "charsiu: head.weight.len() {} != vocab_size ({}) * hidden_size ({h}) = {}",
@@ -740,13 +950,14 @@ impl Charsiu {
 
 /// Feature projection: `[T, 512]` → `[T, hidden]`. Applies the pre-Linear
 /// LayerNorm iff `has_layer_norm`.
-fn feature_projection_forward(
+pub(crate) fn feature_projection_forward(
     features: &[f32],
     t: usize,
     feature_dim: usize,
     fp: &CharsiuFeatureProjection,
     hidden: usize,
     has_layer_norm: bool,
+    eps: f32,
 ) -> Vec<f32> {
     let mut normed_flat: Vec<f32>;
     let input: &[f32] = if has_layer_norm {
@@ -759,7 +970,7 @@ fn feature_projection_forward(
             .norm_beta
             .as_ref()
             .expect("has_layer_norm=true implies norm_beta present");
-        layer_norm_inplace(&mut normed_flat, t, feature_dim, gamma, beta);
+        layer_norm_inplace(&mut normed_flat, t, feature_dim, gamma, beta, eps);
         &normed_flat
     } else {
         features
@@ -781,48 +992,111 @@ fn feature_projection_forward(
     out
 }
 
-/// Runs one pre-LayerNorm Transformer block in place.
+/// Grouped positional Conv1D + SamePad + exact GELU. The input/output are
+/// frame-major; the backend convolution is channel-major.
+pub(crate) fn positional_conv_forward(
+    hidden: &[f32],
+    t: usize,
+    cfg: &CharsiuConfig,
+    pos: &CharsiuPosConv,
+) -> Result<Vec<f32>> {
+    let h = cfg.hidden_size;
+    let mut channel_major = vec![0.0f32; h * t];
+    for tt in 0..t {
+        for c in 0..h {
+            channel_major[c * t + tt] = hidden[tt * h + c];
+        }
+    }
+    let padding = cfg.pos_conv_kernel / 2;
+    let raw_len = t + 2 * padding - cfg.pos_conv_kernel + 1;
+    let mut raw = vec![0.0f32; h * raw_len];
+    kernels::grouped_conv1d_f32(
+        &channel_major,
+        h,
+        t,
+        &pos.weight,
+        h,
+        cfg.pos_conv_kernel,
+        Some(&pos.bias),
+        1,
+        padding,
+        cfg.pos_conv_groups,
+        &mut raw,
+    )?;
+    let keep = if cfg.pos_conv_kernel % 2 == 0 {
+        raw_len - 1
+    } else {
+        raw_len
+    };
+    if keep != t {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu positional conv produced {keep} frame(s) for {t} input frame(s)"
+        )));
+    }
+    let mut out = vec![0.0f32; t * h];
+    for c in 0..h {
+        for tt in 0..t {
+            out[tt * h + c] = gelu_exact(raw[c * raw_len + tt]);
+        }
+    }
+    Ok(out)
+}
+
+/// Runs one post-LayerNorm Wav2Vec2 encoder block in place.
 ///
-/// Topology (matches HF `Wav2Vec2EncoderLayer`):
-/// `y = x + attn(layer_norm(x)); z = y + ffn(layer_norm(y))` with
-/// FFN = `fc2(gelu(fc1(z)))`.
+/// `y = LN1(x + attn(x)); z = LN2(y + ffn(y))`.
 fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, b: &CharsiuBlock) {
+    transformer_block_forward_with_valid_keys(hidden, t, t, cfg, b);
+}
+
+/// Wav2Vec2 post-LayerNorm block with an explicit number of valid attention
+/// keys. SmartTurn v2 right-pads raw audio to a fixed 16-second window: the
+/// padded feature rows remain queries in the upstream encoder but must never
+/// be visible as keys. Charsiu passes `valid_keys == t` through the wrapper
+/// above, so its established unmasked behaviour is unchanged.
+pub(crate) fn transformer_block_forward_with_valid_keys(
+    hidden: &mut [f32],
+    t: usize,
+    valid_keys: usize,
+    cfg: &CharsiuConfig,
+    b: &CharsiuBlock,
+) {
+    debug_assert!(valid_keys > 0 && valid_keys <= t);
     let h = cfg.hidden_size;
     let n_head = cfg.n_head;
     let head_dim = h / n_head;
     let head_scale = 1.0 / (head_dim as f32).sqrt();
 
     // -- Attention branch -----------------------------------------------
-    let mut normed = hidden.to_vec();
-    layer_norm_inplace(&mut normed, t, h, &b.attn_norm_gamma, &b.attn_norm_beta);
-
     // Q, K, V projections: [T, h] → [T, h] each.
-    let q = linear_forward(&normed, t, h, &b.q_w, &b.q_b, h);
-    let k = linear_forward(&normed, t, h, &b.k_w, &b.k_b, h);
-    let v = linear_forward(&normed, t, h, &b.v_w, &b.v_b, h);
+    let q = linear_forward(hidden, t, h, &b.q_w, &b.q_b, h);
+    let k = linear_forward(hidden, t, h, &b.k_w, &b.k_b, h);
+    let v = linear_forward(hidden, t, h, &b.v_w, &b.v_b, h);
 
     // MHA: reshape Q/K/V to [n_head, T, head_dim] and score.
     let mut attn_out = vec![0.0_f32; t * h];
-    // Work buffer for per-head [T, T] scores (reused across heads).
-    let mut scores = vec![0.0_f32; t * t];
+    // Work buffer for per-head [T query, valid_keys] scores (reused across
+    // heads). Padded SmartTurn rows are queries only; the upstream additive
+    // attention mask removes them from the key axis.
+    let mut scores = vec![0.0_f32; t * valid_keys];
     for hi in 0..n_head {
         // Compute Q_h K_h^T with the head slices interleaved in the
         // flat buffer as [T, n_head, head_dim].
         for ti in 0..t {
             let qi_base = ti * h + hi * head_dim;
-            for tj in 0..t {
+            for tj in 0..valid_keys {
                 let kj_base = tj * h + hi * head_dim;
                 let mut s = 0.0_f32;
                 for d in 0..head_dim {
                     s += q[qi_base + d] * k[kj_base + d];
                 }
-                scores[ti * t + tj] = s * head_scale;
+                scores[ti * valid_keys + tj] = s * head_scale;
             }
         }
         // softmax over each row (causal mask NOT applied — wav2vec2 CTC
         // uses full bidirectional attention).
         for ti in 0..t {
-            let row = &mut scores[ti * t..(ti + 1) * t];
+            let row = &mut scores[ti * valid_keys..(ti + 1) * valid_keys];
             let mut max_v = f32::NEG_INFINITY;
             for &v in row.iter() {
                 if v > max_v {
@@ -841,11 +1115,11 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
         }
         // A_h @ V_h → contribution to attn_out per head slice.
         for ti in 0..t {
-            let ai_row = ti * t;
+            let ai_row = ti * valid_keys;
             let out_base = ti * h + hi * head_dim;
             for d in 0..head_dim {
                 let mut acc = 0.0_f32;
-                for tj in 0..t {
+                for tj in 0..valid_keys {
                     let vj_base = tj * h + hi * head_dim;
                     acc += scores[ai_row + tj] * v[vj_base + d];
                 }
@@ -858,12 +1132,18 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
     for i in 0..(t * h) {
         hidden[i] += proj[i];
     }
+    layer_norm_inplace(
+        hidden,
+        t,
+        h,
+        &b.attn_norm_gamma,
+        &b.attn_norm_beta,
+        cfg.layer_norm_eps,
+    );
 
     // -- FFN branch ----------------------------------------------------
-    let mut normed = hidden.to_vec();
-    layer_norm_inplace(&mut normed, t, h, &b.ffn_norm_gamma, &b.ffn_norm_beta);
     let ffn = cfg.ffn_dim;
-    let mut fc1_out = linear_forward(&normed, t, h, &b.fc1_w, &b.fc1_b, ffn);
+    let mut fc1_out = linear_forward(hidden, t, h, &b.fc1_w, &b.fc1_b, ffn);
     for v in fc1_out.iter_mut() {
         *v = gelu_exact(*v);
     }
@@ -871,11 +1151,19 @@ fn transformer_block_forward(hidden: &mut [f32], t: usize, cfg: &CharsiuConfig, 
     for i in 0..(t * h) {
         hidden[i] += fc2_out[i];
     }
+    layer_norm_inplace(
+        hidden,
+        t,
+        h,
+        &b.ffn_norm_gamma,
+        &b.ffn_norm_beta,
+        cfg.layer_norm_eps,
+    );
 }
 
 /// `y = x @ W^T + b` where `x` is `[t, in_dim]`, `W` is `[out_dim,
 /// in_dim]`, `b` is `[out_dim]`.
-fn linear_forward(
+pub(crate) fn linear_forward(
     x: &[f32],
     t: usize,
     in_dim: usize,
@@ -899,9 +1187,14 @@ fn linear_forward(
 }
 
 /// LayerNorm over the last axis in place. `x` is `[t, dim]` row-major.
-/// `eps = 1e-5` (PyTorch default).
-fn layer_norm_inplace(x: &mut [f32], t: usize, dim: usize, gamma: &[f32], beta: &[f32]) {
-    const EPS: f32 = 1e-5;
+pub(crate) fn layer_norm_inplace(
+    x: &mut [f32],
+    t: usize,
+    dim: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) {
     let n = dim as f32;
     for ti in 0..t {
         let row = &mut x[ti * dim..(ti + 1) * dim];
@@ -916,7 +1209,7 @@ fn layer_norm_inplace(x: &mut [f32], t: usize, dim: usize, gamma: &[f32], beta: 
             var += d * d;
         }
         var /= n;
-        let inv_std = 1.0 / (var + EPS).sqrt();
+        let inv_std = 1.0 / (var + eps).sqrt();
         for (i, v) in row.iter_mut().enumerate() {
             *v = ((*v - mean) * inv_std) * gamma[i] + beta[i];
         }
@@ -934,8 +1227,8 @@ fn ctc_head_forward(
     linear_forward(hidden, t, h, &head.weight, &head.bias, vocab)
 }
 
-/// Per-frame log-softmax over the vocab axis.
-fn log_softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
+/// Per-frame softmax over the vocab axis.
+fn softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
     let mut out = logits.to_vec();
     for ti in 0..t {
         let row = &mut out[ti * vocab..(ti + 1) * vocab];
@@ -950,13 +1243,137 @@ fn log_softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
             *v = (*v - max_v).exp();
             sum += *v;
         }
-        let ln_sum = sum.ln();
         for v in row.iter_mut() {
-            // log_softmax = (x - max) - ln(sum exp(x - max))
-            *v = v.ln() - ln_sum;
+            *v /= sum;
         }
     }
     out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn charsiu_forced_align(
+    probabilities: &[f32],
+    frames: usize,
+    vocab: usize,
+    phone_ids: &[usize],
+    silence_id: usize,
+    silence_threshold: usize,
+    frame_shift_sec: f32,
+    phones: &[String],
+) -> Result<Vec<AlignedToken>> {
+    let mut predicted = Vec::with_capacity(frames);
+    for frame in probabilities.chunks_exact(vocab) {
+        let mut best = 0usize;
+        for i in 1..vocab {
+            if frame[i] > frame[best] {
+                best = i;
+            }
+        }
+        predicted.push(best);
+    }
+
+    // Upstream `_get_sil_mask`: a silence argmax run shorter than the
+    // threshold is treated as speech; longer runs are removed before DTW.
+    let mut is_silence = vec![false; frames];
+    let mut start = 0usize;
+    while start < frames {
+        let value = predicted[start];
+        let mut end = start + 1;
+        while end < frames && predicted[end] == value {
+            end += 1;
+        }
+        if value == silence_id && end - start >= silence_threshold {
+            is_silence[start..end].fill(true);
+        }
+        start = end;
+    }
+    let nonsil: Vec<usize> = (0..frames).filter(|&i| !is_silence[i]).collect();
+    if nonsil.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "charsiu align: no speech frames remain after the canonical silence mask".to_owned(),
+        ));
+    }
+    if nonsil.len() < phone_ids.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu align: {} non-silence frame(s) cannot align {} phoneme(s)",
+            nonsil.len(),
+            phone_ids.len()
+        )));
+    }
+
+    // `librosa.sequence.dtw(C=-cost[:, phone_ids], step_sizes_sigma=
+    // [[1,1],[1,0]])`: maximize the summed phone posterior while consuming
+    // every non-silence frame and advancing by at most one target phone.
+    let n = nonsil.len();
+    let m = phone_ids.len();
+    let mut prev = vec![f32::NEG_INFINITY; m];
+    let mut back = vec![false; n * m]; // true = predecessor was diagonal
+    prev[0] = probabilities[nonsil[0] * vocab + phone_ids[0]];
+    for i in 1..n {
+        let mut cur = vec![f32::NEG_INFINITY; m];
+        let max_j = i.min(m - 1);
+        for j in 0..=max_j {
+            let stay = prev[j];
+            let diagonal = if j > 0 {
+                prev[j - 1]
+            } else {
+                f32::NEG_INFINITY
+            };
+            if stay.is_finite() || diagonal.is_finite() {
+                let use_diagonal = diagonal >= stay;
+                let predecessor = if use_diagonal { diagonal } else { stay };
+                cur[j] = predecessor + probabilities[nonsil[i] * vocab + phone_ids[j]];
+                back[i * m + j] = use_diagonal;
+            }
+        }
+        prev = cur;
+    }
+    if !prev[m - 1].is_finite() {
+        return Err(VokraError::InvalidArgument(
+            "charsiu align: monotone DTW found no complete path".to_owned(),
+        ));
+    }
+    let mut assignments = vec![0usize; n];
+    let mut j = m - 1;
+    for i in (1..n).rev() {
+        assignments[i] = j;
+        if back[i * m + j] {
+            j -= 1;
+        }
+    }
+    assignments[0] = 0;
+    if j != 0 {
+        return Err(VokraError::InvalidArgument(
+            "charsiu align: DTW backtrack did not reach the first phone".to_owned(),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(m);
+    for target in 0..m {
+        let first = assignments
+            .iter()
+            .position(|&x| x == target)
+            .expect("complete DTW path visits every target");
+        let last = assignments
+            .iter()
+            .rposition(|&x| x == target)
+            .expect("complete DTW path visits every target");
+        let mut confidence = 0.0f32;
+        let mut count = 0usize;
+        for i in first..=last {
+            if assignments[i] == target {
+                confidence += probabilities[nonsil[i] * vocab + phone_ids[target]];
+                count += 1;
+            }
+        }
+        out.push(AlignedToken {
+            text: phones[target].clone(),
+            start_sec: nonsil[first] as f32 * frame_shift_sec,
+            end_sec: (nonsil[last] + 1) as f32 * frame_shift_sec,
+            confidence: confidence / count as f32,
+        });
+    }
+    Ok(out)
 }
 
 /// Exact erf-based GELU (`0.5 * x * (1 + erf(x / √2))`) — HF wav2vec2
@@ -964,21 +1381,15 @@ fn log_softmax(logits: &[f32], t: usize, vocab: usize) -> Vec<f32> {
 /// as [`vokra_ops::waveform_frontend()`]; kept private here so the align
 /// module has no cross-crate constraints on the ops erf.
 #[inline]
-fn gelu_exact(x: f32) -> f32 {
+pub(crate) fn gelu_exact(x: f32) -> f32 {
     0.5 * x * (1.0 + erf_as(x * core::f32::consts::FRAC_1_SQRT_2))
 }
 
-/// Rejects a GGUF whose `vokra.model.arch` is absent or is not
-/// [`EXPECTED_ARCH`].
-///
-/// A *loud* validation step (FR-EX-08). The error type here is
-/// [`LoadError`] — the align module's own load-error enum — not
-/// `VokraError`, because [`Charsiu::from_gguf`] shares its signature with
-/// [`super::force_align`]'s other loaders.
-fn verify_arch(file: &GgufFile) -> std::result::Result<(), LoadError> {
+/// Rejects a GGUF whose model architecture is absent or incompatible.
+fn verify_arch(file: &GgufFile) -> Result<()> {
     match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
         Some(a) if a == EXPECTED_ARCH => Ok(()),
-        Some(other) => Err(LoadError::Gguf(format!(
+        Some(other) => Err(VokraError::ModelLoad(format!(
             "charsiu: GGUF arch is `{other}`, expected `{EXPECTED_ARCH}`. Sibling \
              wav2vec2-lineage arch tags share this exact topology but have incompatible \
              output heads — `wav2vec2_ctc` (Meta wav2vec2 + CTC ASR head, character / \
@@ -989,11 +1400,121 @@ fn verify_arch(file: &GgufFile) -> std::result::Result<(), LoadError> {
              emit confident, meaningless phoneme boundaries (FR-EX-08 — no silent partial \
              load)."
         ))),
-        None => Err(LoadError::Gguf(format!(
+        None => Err(VokraError::ModelLoad(format!(
             "charsiu: GGUF is missing `{}` — this is not a Vokra-native Charsiu GGUF.",
             chunks::KEY_MODEL_ARCH,
         ))),
     }
+}
+
+fn require_meta_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_str)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "charsiu GGUF missing required string metadata `{key}`"
+            ))
+        })?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "charsiu GGUF `{key}` is {actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn meta_u32(file: &GgufFile, key: &str) -> Result<u32> {
+    let value = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_u64)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "charsiu GGUF missing required u32 metadata `{key}`"
+            ))
+        })?;
+    u32::try_from(value).map_err(|_| {
+        VokraError::ModelLoad(format!(
+            "charsiu GGUF metadata `{key}` = {value} overflows u32"
+        ))
+    })
+}
+
+fn meta_f32(file: &GgufFile, key: &str) -> Result<f32> {
+    match file.get(key) {
+        Some(GgufMetadataValue::F32(value)) => Ok(*value),
+        _ => Err(VokraError::ModelLoad(format!(
+            "charsiu GGUF missing required f32 metadata `{key}`"
+        ))),
+    }
+}
+
+fn read_string_array(file: &GgufFile, key: &str) -> Result<Vec<String>> {
+    let array = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_array)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "charsiu GGUF missing required Array<String> metadata `{key}`"
+            ))
+        })?;
+    if array.element_type != GgufValueType::String {
+        return Err(VokraError::ModelLoad(format!(
+            "charsiu GGUF `{key}` has element type {:?}, expected String",
+            array.element_type
+        )));
+    }
+    array
+        .values
+        .iter()
+        .enumerate()
+        .map(|(i, value)| match value {
+            GgufMetadataValue::String(value) => Ok(value.clone()),
+            _ => Err(VokraError::ModelLoad(format!(
+                "charsiu GGUF `{key}[{i}]` is not a string"
+            ))),
+        })
+        .collect()
+}
+
+fn validate_vocab(cfg: &CharsiuConfig, vocab: &[String]) -> Result<()> {
+    if vocab.len() != cfg.vocab_size {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu: vocabulary length {} != vocab_size {}",
+            vocab.len(),
+            cfg.vocab_size
+        )));
+    }
+    if vocab[cfg.silence_id] != "[SIL]" || vocab[cfg.pad_id] != "[PAD]" {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu: vocabulary special ids do not match: id {} = {:?}, id {} = {:?}",
+            cfg.silence_id, vocab[cfg.silence_id], cfg.pad_id, vocab[cfg.pad_id]
+        )));
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for phone in vocab {
+        if !unique.insert(phone) {
+            return Err(VokraError::InvalidArgument(format!(
+                "charsiu: duplicate vocabulary entry {phone:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn tensor_shaped(file: &GgufFile, name: &str, dims: &[usize]) -> Result<Vec<f32>> {
+    let info = file
+        .tensor_info(name)
+        .ok_or_else(|| VokraError::ModelLoad(format!("charsiu GGUF missing tensor `{name}`")))?;
+    let expected: Vec<u64> = dims.iter().map(|&d| d as u64).collect();
+    if info.dimensions != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "charsiu GGUF tensor `{name}` has dims {:?}, expected {expected:?}",
+            info.dimensions
+        )));
+    }
+    file.tensor_f32(name)
+        .map_err(|e| VokraError::ModelLoad(format!("charsiu GGUF reading `{name}`: {e}")))
 }
 
 /// Abramowitz & Stegun 7.1.26 erf approximation (~1e-7 error).
@@ -1029,12 +1550,24 @@ mod tests {
             n_head: 4,
             ffn_dim: 64,
             vocab_size: 8,
-            blank_id: 0,
+            silence_id: 0,
+            pad_id: 7,
             sample_rate: 16_000,
-            frame_shift_sec: 0.02,
+            frame_shift_sec: 0.01,
+            layer_norm_eps: 1e-5,
+            pos_conv_kernel: 4,
+            pos_conv_groups: 4,
+            silence_threshold: 4,
             feature_projection_has_layer_norm: true,
             stem_conv_bias: false,
         }
+    }
+
+    fn tiny_vocab() -> Vec<String> {
+        ["[SIL]", "P", "AE", "T", "K", "S", "[UNK]", "[PAD]"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
     }
 
     #[test]
@@ -1118,18 +1651,16 @@ mod tests {
     }
 
     #[test]
-    fn from_gguf_with_correct_arch_still_reports_the_unwired_binder() {
-        // The arch gate must not *replace* the loud-partial contract: a
-        // correctly-stamped GGUF still refuses, naming the follow-up wave.
+    fn from_gguf_with_correct_arch_requires_pinned_revision() {
         let mut b = vokra_core::gguf::GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
         let path = scratch_gguf("real-arch", b.to_bytes().expect("serialize"));
 
-        let err = Charsiu::from_gguf(&path).expect_err("binder is still unwired");
+        let err = Charsiu::from_gguf(&path).expect_err("metadata-only GGUF must fail");
         match &err {
             LoadError::Gguf(msg) => assert!(
-                msg.contains("from_gguf is not wired yet"),
-                "correct arch must fall through to the follow-up-wave note: {msg}",
+                msg.contains("vokra.charsiu.revision"),
+                "binder must name the first missing writer-contract key: {msg}",
             ),
             other => panic!("expected LoadError::Gguf, got {other:?}"),
         }
@@ -1137,7 +1668,7 @@ mod tests {
     }
 
     #[test]
-    fn default_config_matches_wav2vec2_base_axes() {
+    fn default_config_matches_canonical_charsiu_axes() {
         let c = CharsiuConfig::default_charsiu_en();
         assert_eq!(c.hidden_size, 768);
         assert_eq!(c.n_layer, 12);
@@ -1145,8 +1676,10 @@ mod tests {
         assert_eq!(c.ffn_dim, 3072);
         assert_eq!(c.head_dim(), 64);
         assert_eq!(c.sample_rate, 16_000);
-        assert!((c.frame_shift_sec - 0.02).abs() < 1e-9);
-        assert_eq!(c.blank_id, 0);
+        assert!((c.frame_shift_sec - 0.01).abs() < 1e-9);
+        assert_eq!(c.silence_id, 0);
+        assert_eq!(c.pad_id, 41);
+        assert_eq!(charsiu_stem_attrs().total_stride().unwrap(), 160);
         assert!(!c.stem_conv_bias);
     }
 
@@ -1176,7 +1709,7 @@ mod tests {
         let mut w = CharsiuWeights::synthesized(&cfg, 0xABCD_1234).unwrap();
         // Break the head shape and expect a loud failure.
         w.head.weight.pop();
-        let err = Charsiu::new(cfg, w).expect_err("shape mismatch must be caught");
+        let err = Charsiu::new(cfg, w, tiny_vocab()).expect_err("shape mismatch must be caught");
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
@@ -1184,7 +1717,7 @@ mod tests {
     fn synthesize_reports_scaffold_flag() {
         let cfg = tiny_for_tests();
         let w = CharsiuWeights::synthesized(&cfg, 0xDEAD_BEEF).unwrap();
-        let aligner = Charsiu::new(cfg, w).unwrap();
+        let aligner = Charsiu::new(cfg, w, tiny_vocab()).unwrap();
         assert!(aligner.is_synthesized());
     }
 
@@ -1192,9 +1725,9 @@ mod tests {
     fn align_rejects_empty_pcm() {
         let cfg = tiny_for_tests();
         let w = CharsiuWeights::synthesized(&cfg, 1).unwrap();
-        let aligner = Charsiu::new(cfg, w).unwrap();
+        let aligner = Charsiu::new(cfg, w, tiny_vocab()).unwrap();
         let err = aligner
-            .align(&[], 16_000, &["p".to_owned()])
+            .align(&[], 16_000, &["P".to_owned()])
             .expect_err("empty pcm must fail loudly");
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
@@ -1203,70 +1736,57 @@ mod tests {
     fn align_rejects_sample_rate_mismatch() {
         let cfg = tiny_for_tests();
         let w = CharsiuWeights::synthesized(&cfg, 1).unwrap();
-        let aligner = Charsiu::new(cfg, w).unwrap();
+        let aligner = Charsiu::new(cfg, w, tiny_vocab()).unwrap();
         let pcm = vec![0.0_f32; 4000];
         let err = aligner
-            .align(&pcm, 8_000, &["p".to_owned()])
+            .align(&pcm, 8_000, &["P".to_owned()])
             .expect_err("mismatched sample_rate must fail loudly");
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 
-    /// End-to-end smoke: feed 1 s of synthetic PCM through the full
-    /// stem → projection → 2-layer transformer → CTC head → segmenter
-    /// pipeline and confirm we get monotone non-overlapping boundaries
-    /// for a 3-phoneme transcript. The point is not accuracy (weights
-    /// are Xavier — the output would be meaningless on a real transcript)
-    /// but that every gate lines up shape-wise so the wiring is proven
-    /// correct.
     #[test]
-    fn align_emits_monotone_boundaries_end_to_end() {
+    fn logits_runs_canonical_stage_order_end_to_end() {
         let cfg = tiny_for_tests();
         let w = CharsiuWeights::synthesized(&cfg, 0x00C0_FFEE).unwrap();
-        let aligner = Charsiu::new(cfg, w).unwrap();
-        // Keep the PCM short so the scalar-loop forward stays snappy in
-        // debug builds. 1600 samples of 16 kHz mono → after the 7-layer
-        // wav2vec2 stem (total_stride=320) that yields 5 frames, which
-        // is exactly enough for a 3-phoneme alignment (num_frames >=
-        // tokens.len(), per ctc_segmentation's short-input contract).
+        let aligner = Charsiu::new(cfg, w, tiny_vocab()).unwrap();
         let mut pcm = vec![0.0_f32; 1_600];
         for (i, s) in pcm.iter_mut().enumerate() {
-            // A gentle triangle wave so the stem output is not degenerate.
             *s = ((i as f32 / 200.0).sin()) * 0.1;
         }
-        let phonemes: Vec<String> = ["p", "æ", "t"].iter().map(|s| s.to_string()).collect();
-        let out = aligner.align(&pcm, 16_000, &phonemes).unwrap();
-        assert_eq!(out.len(), phonemes.len(), "one AlignedToken per phoneme");
-        // Monotone non-overlapping boundaries.
-        let mut last_end = 0.0_f32;
-        for (i, tok) in out.iter().enumerate() {
-            assert!(
-                tok.start_sec >= last_end - 1e-6,
-                "token {i} start_sec {} not >= last_end {last_end}",
-                tok.start_sec,
-            );
-            assert!(
-                tok.end_sec > tok.start_sec - 1e-6,
-                "token {i} end_sec {} must be > start_sec {}",
-                tok.end_sec,
-                tok.start_sec,
-            );
-            assert!(
-                tok.confidence > 0.0 && tok.confidence <= 1.0,
-                "token {i} confidence {} not in (0, 1]",
-                tok.confidence,
-            );
-            last_end = tok.end_sec;
-        }
+        let (logits, frames) = aligner.logits(&pcm, 16_000).unwrap();
+        assert!(frames >= 3);
+        assert_eq!(logits.len(), frames * 8);
+        assert!(logits.iter().all(|x| x.is_finite()));
     }
 
-    /// A pcm too short for the stem returns an empty alignment (mirror
-    /// of ctc_segmentation's short-input contract).
+    #[test]
+    fn forced_alignment_masks_long_silence_and_returns_phone_intervals() {
+        // Six frames, vocabulary [SIL, P, AE, T]. Frames 2..=5 would be a
+        // long silence only if all four were SIL; here frames 2..=3 are a
+        // short run and therefore remain in the DTW input.
+        let probabilities = [
+            0.05, 0.90, 0.03, 0.02, // P
+            0.05, 0.80, 0.10, 0.05, // P
+            0.80, 0.05, 0.10, 0.05, // short SIL
+            0.80, 0.05, 0.10, 0.05, // short SIL
+            0.05, 0.05, 0.80, 0.10, // AE
+            0.05, 0.05, 0.10, 0.80, // T
+        ];
+        let phones = vec!["P".to_owned(), "AE".to_owned(), "T".to_owned()];
+        let out =
+            charsiu_forced_align(&probabilities, 6, 4, &[1, 2, 3], 0, 4, 0.01, &phones).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].text, "P");
+        assert!(out.windows(2).all(|w| w[0].end_sec <= w[1].start_sec));
+    }
+
+    /// PCM too short for the stem fails loudly.
     #[test]
     fn align_returns_empty_on_pcm_too_short_for_stem() {
         let cfg = tiny_for_tests();
         let w = CharsiuWeights::synthesized(&cfg, 42).unwrap();
-        let aligner = Charsiu::new(cfg, w).unwrap();
-        // Stem's total_stride = 320. A pcm with just 100 samples will
+        let aligner = Charsiu::new(cfg, w, tiny_vocab()).unwrap();
+        // Stem's total_stride = 160. A pcm with just 100 samples will
         // fail the shape gate inside `waveform_frontend` (loud), which
         // we bubble up. That is the correct posture (FR-EX-08 no silent
         // fabrication) — this test pins that behaviour so a future
@@ -1274,7 +1794,7 @@ mod tests {
         // shape-too-short.
         let short = vec![0.0_f32; 100];
         let err = aligner
-            .align(&short, 16_000, &["p".to_owned()])
+            .align(&short, 16_000, &["P".to_owned()])
             .expect_err("input too short for stem must fail loudly");
         assert!(matches!(err, VokraError::InvalidArgument(_)));
     }

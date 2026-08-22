@@ -1,7 +1,7 @@
 //! `vokra-convert` command-line entry point (M0-03, FR-TL-01).
 //!
 //! ```text
-//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|nanocodec|dac|csm|moshi|denoise|dia|zonos|kyutai-stt>
+//! vokra-convert --model <whisper|silero-vad|piper-plus|campplus|kokoro|cosyvoice2|voxtral|mimi|nanocodec|dac|csm|moshi|denoise|dia|zonos|kyutai-stt|charsiu>
 //!               --input <ckpt> [--config <side-car>] --output <out.gguf>
 //! ```
 //!
@@ -20,7 +20,9 @@ use std::process::ExitCode;
 use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
     convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
-    convert_file_licensed, convert_file_quantized, convert_moshi_file, convert_nanocodec_file,
+    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
+    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
     convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
@@ -29,12 +31,15 @@ const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
 
 USAGE:
-    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2> --input <checkpoint> --output <out.gguf>
+    vokra-convert --model <whisper|silero-vad|fsmn-vad|campplus|kokoro|voxtral|mimi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|vits-ja|styletts2|charsiu> --input <checkpoint> --output <out.gguf>
     vokra-convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-convert --model dac --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model nanocodec --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model utmos --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-convert --model <cosyvoice2|csm|moshi> --input <ckpt.safetensors> [--config <side-car>] --output <out.gguf>
+    vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
+    vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -53,6 +58,10 @@ OPTIONS:
                        config.json), csm (Sesame CSM-1B safetensors),
                        moshi (Kyutai Moshi safetensors), dia (nari-labs
                        Dia-1.6B safetensors — SoTA plan Phase 1-4),
+                       charsiu (`charsiu/en_w2v2_fc_10ms` safetensors —
+                       English Wav2Vec2 frame classifier for phone-level
+                       forced alignment; converter verifies the canonical
+                       tensor manifest and folds positional-conv weight norm),
                        zonos (Zyphra Zonos-v0.1-transformer safetensors —
                        SoTA plan Phase 1-5), kyutai-stt (Kyutai
                        STT-2.6B-EN decoder-only English streaming ASR
@@ -176,10 +185,23 @@ fn main() -> ExitCode {
         model,
         input,
         config,
+        preprocessor,
+        tokenizer,
         output,
         quant,
         license,
     } = parsed;
+
+    if !matches!(model, ModelKind::Parakeet | ModelKind::ParakeetCtc) && tokenizer.is_some() {
+        eprintln!(
+            "error: --tokenizer is only supported for --model parakeet-tdt in the standalone converter\n\n{USAGE}"
+        );
+        return ExitCode::from(2);
+    }
+    if model != ModelKind::ParakeetCtc && preprocessor.is_some() {
+        eprintln!("error: --preprocessor is only supported for --model parakeet-ctc\n\n{USAGE}");
+        return ExitCode::from(2);
+    }
 
     let result = match model {
         ModelKind::PiperPlus => {
@@ -264,6 +286,91 @@ fn main() -> ExitCode {
             // (tokenizer_spm_32k_3.model — public in the kyutai repo;
             // without it the monologue decode fails loudly, M4-06-T22).
             convert_moshi_file(&input, config.as_deref(), &output)
+        }
+        ModelKind::MoonshineTiny | ModelKind::MoonshineBase => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = config.as_deref() else {
+                eprintln!(
+                    "error: --model {} requires --config <tokenizer.json>\n\n{USAGE}",
+                    model.as_arg()
+                );
+                return ExitCode::from(2);
+            };
+            let converted = match model {
+                ModelKind::MoonshineTiny => convert_moonshine_tiny_file_with_tokenizer(
+                    &input,
+                    Some(tokenizer),
+                    &output,
+                    license.as_deref(),
+                )
+                .map(|report| report.written),
+                ModelKind::MoonshineBase => convert_moonshine_base_file_with_tokenizer(
+                    &input,
+                    Some(tokenizer),
+                    &output,
+                    license.as_deref(),
+                )
+                .map(|report| report.written),
+                _ => unreachable!("outer match restricts Moonshine variants"),
+            };
+            converted.map(|written| ConvertSummary {
+                model,
+                tensor_count: written,
+                // 4 model/category/upstream fields + 18 Moonshine fields +
+                // 4 provenance fields + the embedded tokenizer blob.
+                metadata_count: 27,
+                output_bytes: std::fs::metadata(&output)
+                    .map(|meta| meta.len())
+                    .unwrap_or(0),
+                notes: vec![
+                    "strict official Moonshine manifest validated; tokenizer.json embedded".into(),
+                ],
+            })
+        }
+        ModelKind::Parakeet => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-tdt\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if config.is_some() {
+                eprintln!(
+                    "error: --model parakeet-tdt uses --tokenizer <tokenizer.json>, not --config\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-tdt requires --tokenizer <tokenizer.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_file_with_tokenizer(&input, tokenizer, &output)
+        }
+        ModelKind::ParakeetCtc => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-ctc\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            let Some(config) = config.as_deref() else {
+                eprintln!("error: --model parakeet-ctc requires --config <config.json>\n\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let Some(preprocessor) = preprocessor.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-ctc requires --preprocessor <preprocessor_config.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-ctc requires --tokenizer <tokenizer.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_ctc_file_with_assets(&input, config, preprocessor, tokenizer, &output)
         }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {
@@ -401,6 +508,8 @@ struct Parsed {
     model: ModelKind,
     input: PathBuf,
     config: Option<PathBuf>,
+    preprocessor: Option<PathBuf>,
+    tokenizer: Option<PathBuf>,
     output: PathBuf,
     quant: Option<GgmlType>,
     license: Option<String>,
@@ -420,6 +529,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut model: Option<ModelKind> = None;
     let mut input: Option<PathBuf> = None;
     let mut config: Option<PathBuf> = None;
+    let mut preprocessor: Option<PathBuf> = None;
+    let mut tokenizer: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut license: Option<String> = None;
@@ -449,6 +560,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
             "--config" => {
                 config = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--config requires a value")?,
+                ));
+                i += 2;
+            }
+            "--preprocessor" => {
+                preprocessor = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--preprocessor requires a value")?,
+                ));
+                i += 2;
+            }
+            "--tokenizer" => {
+                tokenizer = Some(PathBuf::from(
+                    args.get(i + 1).ok_or("--tokenizer requires a value")?,
                 ));
                 i += 2;
             }
@@ -482,6 +605,8 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         model: model.ok_or("--model is required")?,
         input: input.ok_or("--input is required")?,
         config,
+        preprocessor,
+        tokenizer,
         output: output.ok_or("--output is required")?,
         quant,
         license,
@@ -2216,6 +2341,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // triple as the Phase 5 fleet + RMVPE sibling; grouped here so
         // the verify surface stays a shape-lookup.
         | ModelKind::Crepe
+        | ModelKind::Charsiu
         // 2026-07-30 license half unblock: pyannote/segmentation-3.0
         // (VAD backbone) emits the same `vokra.model.*` +
         // `vokra.provenance.*` triple + additional `vokra.pyannote.*`
@@ -2947,9 +3073,9 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         // `<none>` in an upstream_hf-only readback.
         ModelKind::FacebookDenoiser
         | ModelKind::NisqaV2Weight
-        // coverage-audit-2026-08-03 Wave A permissive continuation
-        // (2026-08-04): 2 GitHub-only entries in the permissive
-        // continuation (torchaudio_squim + ten_vad) that stamp
+        // coverage-audit-2026-08-03 Wave A continuation (TEN-VAD's license
+        // classification was corrected to RedistributionForbidden on
+        // 2026-08-22): 2 GitHub-only entries (torchaudio_squim + ten_vad) stamp
         // `vokra.provenance.upstream_url` per the NKF-AEC / RNNoise /
         // NSNet2 / facebook_denoiser precedent.
         | ModelKind::TorchaudioSquim
@@ -3333,6 +3459,24 @@ mod tests {
         .expect("valid piper args");
         assert_eq!(parsed.model, ModelKind::PiperPlus);
         assert_eq!(parsed.config, Some(PathBuf::from("c.json")));
+    }
+
+    #[test]
+    fn parses_parakeet_tokenizer_sidecar() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "parakeet-tdt",
+            "--input",
+            "model.safetensors",
+            "--tokenizer",
+            "tokenizer.json",
+            "--output",
+            "model.gguf",
+        ]))
+        .expect("valid Parakeet args");
+        assert_eq!(parsed.model, ModelKind::Parakeet);
+        assert_eq!(parsed.tokenizer, Some(PathBuf::from("tokenizer.json")));
+        assert_eq!(parsed.config, None);
     }
 
     /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind

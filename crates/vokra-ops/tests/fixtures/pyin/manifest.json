@@ -1,0 +1,30 @@
+{
+  "center": false,
+  "files": {
+    "confidence.f32.bin": {
+      "bytes": 484,
+      "sha256": "2d763d51befba51ec64d394ae9c6ae25dc0f6e3c921ae99a2fccb3b251f663dd"
+    },
+    "f0.f32.bin": {
+      "bytes": 484,
+      "sha256": "d3c3cc509cc36568181c6a60c81d360a16023d903ce1bd1eace5a57acac05b30"
+    },
+    "pcm.f32.bin": {
+      "bytes": 131072,
+      "sha256": "82290a03d32bf70267330d4f3b98a5749bfef8bac6cf2f14165901d4f32799e9"
+    },
+    "voiced.u8.bin": {
+      "bytes": 121,
+      "sha256": "c8cd8bf5088547a0c3fff39737a2fe07780ae858b9e78067cea1ad0f99e51986"
+    }
+  },
+  "fmax": 800.0,
+  "fmin": 65.0,
+  "frame_length": 2048,
+  "frames": 121,
+  "hop_length": 256,
+  "librosa_revision": "af8c839fb15317fa2712ea66e7a22da6a9267b32",
+  "librosa_version": "0.11.0",
+  "oracle": "librosa.pyin",
+  "sample_rate": 16000
+}

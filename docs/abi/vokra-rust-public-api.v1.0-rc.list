@@ -127,6 +127,15 @@ CONST vokra-ops::rnnoise::N_PITCH_BANDS|pub const N_PITCH_BANDS: usize = 6;
 CONST vokra-ops::rnnoise::N_STFT_BINS|pub const N_STFT_BINS: usize = 241;
 CONST vokra-ops::rnnoise::PITCH_BUF_SIZE|pub const PITCH_BUF_SIZE: usize = 720;
 CONST vokra-ops::rnnoise::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 48_000;
+CONST vokra-ops::ten_vad::CONTEXT_FRAMES|pub const CONTEXT_FRAMES: usize = 3;
+CONST vokra-ops::ten_vad::CONV_CHANNELS|pub const CONV_CHANNELS: usize = 16;
+CONST vokra-ops::ten_vad::FFT_SIZE|pub const FFT_SIZE: usize = 1024;
+CONST vokra-ops::ten_vad::HIDDEN_DIM|pub const HIDDEN_DIM: usize = 64;
+CONST vokra-ops::ten_vad::HOP_SIZE|pub const HOP_SIZE: usize = 256;
+CONST vokra-ops::ten_vad::LSTM0_INPUT|pub const LSTM0_INPUT: usize = 80;
+CONST vokra-ops::ten_vad::N_FEATURES|pub const N_FEATURES: usize = 41;
+CONST vokra-ops::ten_vad::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 16_000;
+CONST vokra-ops::ten_vad::WINDOW_SIZE|pub const WINDOW_SIZE: usize = 768;
 CONST vokra-ops::wpe::DEFAULT_DELAY|pub const DEFAULT_DELAY: usize = 3;
 CONST vokra-ops::wpe::DEFAULT_ITERATIONS|pub const DEFAULT_ITERATIONS: usize = 3;
 CONST vokra-ops::wpe::DEFAULT_PSD_CONTEXT|pub const DEFAULT_PSD_CONTEXT: usize = 0;
@@ -198,15 +207,18 @@ ENUM vokra-ops::flow_sampler::ForwardPass|pub enum ForwardPass {
 ENUM vokra-ops::flow_sampler::OdeSolver|pub enum OdeSolver {
 ENUM vokra-ops::flow_sampler::Schedule|pub enum Schedule {
 ENUM vokra-ops::hifigan::CalibrationStrategy|pub enum CalibrationStrategy {
+ENUM vokra-ops::hifigan::HifiGanConvPadding|pub enum HifiGanConvPadding {
 ENUM vokra-ops::hifigan::HifiGanPrecision|pub enum HifiGanPrecision {
 ENUM vokra-ops::hifigan::SpectralCheckResult|pub enum SpectralCheckResult {
 ENUM vokra-ops::itn::token::ItnParseType|pub enum ItnParseType {
+ENUM vokra-ops::kaldi_fbank::KaldiFbankWindow|pub enum KaldiFbankWindow {
 ENUM vokra-ops::nsf::NsfEntropy|pub enum NsfEntropy {
 ENUM vokra-ops::rnnoise::Activation|pub enum Activation {
 ENUM vokra-ops::rnnt_decode::RnntDecoderKind|pub enum RnntDecoderKind {
 ENUM vokra-ops::vit::GeluKind|pub enum GeluKind {
 ENUM vokra-ops::vit::PosEmbedPolicy|pub enum PosEmbedPolicy {
 ENUM vokra-ops::vit::ViTPooling|pub enum ViTPooling {
+ENUM vokra-ops::vocos::VocosIstftPadding|pub enum VocosIstftPadding {
 ENUM vokra-ops::voice_ref::VoiceRef|pub enum VoiceRef {
 ENUM vokra-ops::waveform_frontend::Norm|pub enum Norm {
 ENUM vokra-ops::wpe::StatisticsMode|pub enum StatisticsMode {
@@ -814,6 +826,7 @@ FN vokra-ops::ebranchformer::head_dim|pub fn head_dim(&self) -> usize {
 FN vokra-ops::ebranchformer::new|pub fn new(cfg: EBranchformerConfig, weights: EBranchformerWeights) -> Result<Self> {
 FN vokra-ops::encodec_rvq::encodec_rvq_decode|pub fn encodec_rvq_decode(
 FN vokra-ops::f0::pyin::beta_2_18_pdf|pub fn beta_2_18_pdf(x: f32) -> f32 {
+FN vokra-ops::f0::pyin::pyin_detailed|pub fn pyin_detailed(
 FN vokra-ops::f0::pyin::pyin|pub fn pyin(pcm: &[f32], sample_rate: u32, fmin: f32, fmax: f32) -> Result<Vec<f32>> {
 FN vokra-ops::f0::yin::yin|pub fn yin(pcm: &[f32], sample_rate: u32, fmin: f32, fmax: f32) -> Result<Vec<f32>> {
 FN vokra-ops::fft::norm_scale|pub fn norm_scale(norm: Normalization, n: usize, forward: bool) -> f32 {
@@ -832,6 +845,14 @@ FN vokra-ops::fft::real::is_empty|pub fn is_empty(&self) -> bool {
 FN vokra-ops::fft::real::len|pub fn len(&self) -> usize {
 FN vokra-ops::fft::real::new|pub fn new(n: usize) -> Self {
 FN vokra-ops::fft::real::num_bins|pub fn num_bins(&self) -> usize {
+FN vokra-ops::firered_vad::cache_frames|pub const fn cache_frames(&self) -> usize {
+FN vokra-ops::firered_vad::firered_vad_dfsmn_forward|pub fn firered_vad_dfsmn_forward(
+FN vokra-ops::firered_vad::matches|pub fn matches(&self, cfg: &FireredVadDfsmnConfig) -> bool {
+FN vokra-ops::firered_vad::official|pub const fn official() -> Self {
+FN vokra-ops::firered_vad::reset|pub fn reset(&mut self) {
+FN vokra-ops::firered_vad::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::firered_vad::validate|pub fn validate(&self, cfg: &FireredVadDfsmnConfig) -> Result<()> {
+FN vokra-ops::firered_vad::zeros|pub fn zeros(cfg: &FireredVadDfsmnConfig) -> Result<Self> {
 FN vokra-ops::flow_sampler::euler_defaults|pub fn euler_defaults(nfe: usize) -> Self {
 FN vokra-ops::flow_sampler::flow_sample|pub fn flow_sample<F>(
 FN vokra-ops::flow_sampler::is_empty|pub fn is_empty(&self) -> bool {
@@ -842,10 +863,10 @@ FN vokra-ops::frontend::mel_attrs_from_spec|pub fn mel_attrs_from_spec(spec: &Fr
 FN vokra-ops::frontend::stft_attrs_from_spec|pub fn stft_attrs_from_spec(spec: &FrontendSpec) -> Result<StftAttrs> {
 FN vokra-ops::fsmn_vad::fsmn_vad_forward|pub fn fsmn_vad_forward(
 FN vokra-ops::fsmn_vad::is_zero|pub fn is_zero(&self) -> bool {
+FN vokra-ops::fsmn_vad::left_history_frames|pub fn left_history_frames(&self) -> usize {
 FN vokra-ops::fsmn_vad::matches|pub fn matches(&self, cfg: &FsmnEncoderConfig) -> bool {
-FN vokra-ops::fsmn_vad::memory_kernel|pub fn memory_kernel(&self) -> usize {
 FN vokra-ops::fsmn_vad::reset|pub fn reset(&mut self) {
-FN vokra-ops::fsmn_vad::softmax_last_axis|pub fn softmax_last_axis(logits: &[f32], n_class: usize) -> Vec<f32> {
+FN vokra-ops::fsmn_vad::softmax_last_axis|pub fn softmax_last_axis(logits: &[f32], width: usize) -> Vec<f32> {
 FN vokra-ops::fsmn_vad::upstream_default|pub fn upstream_default() -> Self {
 FN vokra-ops::fsmn_vad::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::fsmn_vad::validate|pub fn validate(&self, cfg: &FsmnEncoderConfig) -> Result<()> {
@@ -868,6 +889,7 @@ FN vokra-ops::hifigan::delta|pub fn delta(&self) -> f32 {
 FN vokra-ops::hifigan::fp16|pub fn fp16() -> Self {
 FN vokra-ops::hifigan::fp32|pub fn fp32() -> Self {
 FN vokra-ops::hifigan::hifigan_generator_conditioned|pub fn hifigan_generator_conditioned(
+FN vokra-ops::hifigan::hifigan_generator_with_conv_padding|pub fn hifigan_generator_with_conv_padding(
 FN vokra-ops::hifigan::hifigan_generator|pub fn hifigan_generator(
 FN vokra-ops::hifigan::is_passed|pub fn is_passed(&self) -> bool {
 FN vokra-ops::hifigan::new|pub fn new() -> Self {
@@ -946,6 +968,7 @@ FN vokra-ops::itn::token::prefix|pub const fn prefix(self) -> &'static str {
 FN vokra-ops::itn::token::render|pub fn render(&self, orders: &[(&str, &[&str])]) -> String {
 FN vokra-ops::itn::token::reorder|pub fn reorder(input: &str, parse_type: ItnParseType) -> Result<String> {
 FN vokra-ops::kaldi_fbank::camplus|pub fn camplus() -> Self {
+FN vokra-ops::kaldi_fbank::kaldi_fbank_with_window|pub fn kaldi_fbank_with_window(
 FN vokra-ops::kaldi_fbank::kaldi_fbank|pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usize)> {
 FN vokra-ops::length_conditioning::length_conditioning|pub fn length_conditioning(attrs: &LengthConditioningAttrs) -> Result<u32> {
 FN vokra-ops::lm_fusion::from_arpa|pub fn from_arpa(text: &str) -> Result<Self> {
@@ -990,6 +1013,9 @@ FN vokra-ops::nsf::new|pub fn new(cfg: SourceModuleHnNSFConfig, weights: SourceM
 FN vokra-ops::nsf::out_channels|pub fn out_channels(&self) -> usize {
 FN vokra-ops::nsf::sinegen_deterministic_f32|pub fn sinegen_deterministic_f32(
 FN vokra-ops::openwakeword::openwakeword_classifier_forward|pub fn openwakeword_classifier_forward(
+FN vokra-ops::openwakeword::openwakeword_dnn_classifier_forward|pub fn openwakeword_dnn_classifier_forward(
+FN vokra-ops::openwakeword::openwakeword_embedding_forward|pub fn openwakeword_embedding_forward(
+FN vokra-ops::openwakeword::openwakeword_melspectrogram|pub fn openwakeword_melspectrogram(
 FN vokra-ops::openwakeword::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::preprocess::apply_frontend|pub fn apply_frontend(pcm: &[f32], in_rate: u32, spec: &FrontendSpec) -> Result<Vec<f32>> {
 FN vokra-ops::preprocess::dc_offset_remove|pub fn dc_offset_remove(pcm: &[f32]) -> Vec<f32> {
@@ -1042,6 +1068,11 @@ FN vokra-ops::stft::magnitude|pub fn magnitude(&self) -> Vec<f32> {
 FN vokra-ops::stft::power|pub fn power(&self) -> Vec<f32> {
 FN vokra-ops::stft::stft|pub fn stft(signal: &[f32], attrs: &StftAttrs) -> Result<Spectrogram> {
 FN vokra-ops::stft::to_interleaved|pub fn to_interleaved(&self) -> Vec<f32> {
+FN vokra-ops::ten_vad::network_forward|pub fn network_forward(
+FN vokra-ops::ten_vad::new|pub fn new() -> Self {
+FN vokra-ops::ten_vad::process_frame|pub fn process_frame(&mut self, pcm: &[f32]) -> Result<&[f32]> {
+FN vokra-ops::ten_vad::reset|pub fn reset(&mut self) {
+FN vokra-ops::ten_vad::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::vae_continuous::config|pub fn config(&self) -> &ContinuousVaeConfig {
 FN vokra-ops::vae_continuous::continuous_vae_decode|pub fn continuous_vae_decode(
 FN vokra-ops::vae_continuous::continuous_vae_encode|pub fn continuous_vae_encode(
@@ -1074,6 +1105,9 @@ FN vokra-ops::vit::vit_add_pos_embed|pub fn vit_add_pos_embed(
 FN vokra-ops::vit::vit_patch_embed|pub fn vit_patch_embed(
 FN vokra-ops::vit::vit_pool|pub fn vit_pool(
 FN vokra-ops::vit::weights|pub fn weights(&self) -> &ViTWeights {
+FN vokra-ops::vocos::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::vocos::validate|pub fn validate(&self, attrs: &VocosAttrs) -> Result<()> {
+FN vokra-ops::vocos::vocos_decode|pub fn vocos_decode(
 FN vokra-ops::voice_ref::fixed_voice|pub fn fixed_voice(name: impl Into<String>) -> Self {
 FN vokra-ops::voice_ref::reference_audio|pub fn reference_audio(pcm: Vec<f32>, sample_rate: u32) -> Result<Self> {
 FN vokra-ops::voice_ref::validate|pub fn validate(&self) -> Result<()> {
@@ -1085,6 +1119,7 @@ FN vokra-ops::waveform_frontend::predict_t_out|pub fn predict_t_out(&self, t_wav
 FN vokra-ops::waveform_frontend::total_stride|pub fn total_stride(&self) -> Result<usize> {
 FN vokra-ops::waveform_frontend::validate|pub fn validate(&self, attrs: &WaveformFrontendAttrs) -> Result<()> {
 FN vokra-ops::waveform_frontend::wav2vec2_base|pub fn wav2vec2_base() -> Self {
+FN vokra-ops::waveform_frontend::waveform_frontend_with_right_padding|pub fn waveform_frontend_with_right_padding(
 FN vokra-ops::waveform_frontend::waveform_frontend|pub fn waveform_frontend(
 FN vokra-ops::window::povey|pub fn povey(length: usize) -> Vec<f32> {
 FN vokra-ops::window::window|pub fn window(kind: Window, length: usize, symmetry: WindowSymmetry) -> Vec<f32> {
@@ -1181,6 +1216,7 @@ MOD vokra-ops::f0::pyin|pub mod pyin;
 MOD vokra-ops::f0::yin|pub mod yin;
 MOD vokra-ops::f0|pub mod f0;
 MOD vokra-ops::fft|pub mod fft;
+MOD vokra-ops::firered_vad|pub mod firered_vad;
 MOD vokra-ops::flow_sampler|pub mod flow_sampler;
 MOD vokra-ops::frontend|pub mod frontend;
 MOD vokra-ops::fsmn_vad|pub mod fsmn_vad;
@@ -1219,8 +1255,10 @@ MOD vokra-ops::rnnt_decode|pub mod rnnt_decode;
 MOD vokra-ops::snac_decode|pub mod snac_decode;
 MOD vokra-ops::snake|pub mod snake;
 MOD vokra-ops::stft|pub mod stft;
+MOD vokra-ops::ten_vad|pub mod ten_vad;
 MOD vokra-ops::vae_continuous|pub mod vae_continuous;
 MOD vokra-ops::vit|pub mod vit;
+MOD vokra-ops::vocos|pub mod vocos;
 MOD vokra-ops::voice_ref|pub mod voice_ref;
 MOD vokra-ops::waveform_frontend|pub mod waveform_frontend;
 MOD vokra-ops::window|pub mod window;
@@ -1362,6 +1400,7 @@ STRUCT vokra-ops::aec::MultiChannelAecAttrs|pub struct MultiChannelAecAttrs {
 STRUCT vokra-ops::aec::MultiChannelAec|pub struct MultiChannelAec {
 STRUCT vokra-ops::agc::AgcAttrs|pub struct AgcAttrs {
 STRUCT vokra-ops::agc::AgcState|pub struct AgcState {
+STRUCT vokra-ops::bigvgan_generator::AliasFreeActivationWeights|pub struct AliasFreeActivationWeights {
 STRUCT vokra-ops::bigvgan_generator::AmpBlock1Weights|pub struct AmpBlock1Weights {
 STRUCT vokra-ops::bigvgan_generator::AmpBlock1|pub struct AmpBlock1 {
 STRUCT vokra-ops::bigvgan_generator::BigVGanConfig|pub struct BigVGanConfig {
@@ -1394,8 +1433,13 @@ STRUCT vokra-ops::ebranchformer::EBranchformerStemWeights|pub struct EBranchform
 STRUCT vokra-ops::ebranchformer::EBranchformerWeights|pub struct EBranchformerWeights {
 STRUCT vokra-ops::ebranchformer::MergeWeights|pub struct MergeWeights {
 STRUCT vokra-ops::encodec_rvq::EncodecRvqAttrs|pub struct EncodecRvqAttrs {
+STRUCT vokra-ops::f0::pyin::PyinFrame|pub struct PyinFrame {
 STRUCT vokra-ops::fft::plan::FftPlan|pub struct FftPlan {
 STRUCT vokra-ops::fft::real::RealFftPlan|pub struct RealFftPlan {
+STRUCT vokra-ops::firered_vad::FireredVadDfsmnBlockWeights|pub struct FireredVadDfsmnBlockWeights {
+STRUCT vokra-ops::firered_vad::FireredVadDfsmnConfig|pub struct FireredVadDfsmnConfig {
+STRUCT vokra-ops::firered_vad::FireredVadDfsmnState|pub struct FireredVadDfsmnState {
+STRUCT vokra-ops::firered_vad::FireredVadDfsmnWeights|pub struct FireredVadDfsmnWeights {
 STRUCT vokra-ops::flow_sampler::FlowSamplerConfig|pub struct FlowSamplerConfig {
 STRUCT vokra-ops::flow_sampler::FlowSamplerState|pub struct FlowSamplerState {
 STRUCT vokra-ops::fsmn_vad::FsmnBlockWeights|pub struct FsmnBlockWeights {
@@ -1456,6 +1500,11 @@ STRUCT vokra-ops::nsf::SourceModuleHnNSFOutput|pub struct SourceModuleHnNSFOutpu
 STRUCT vokra-ops::nsf::SourceModuleHnNSFWeights|pub struct SourceModuleHnNSFWeights {
 STRUCT vokra-ops::nsf::SourceModuleHnNSF|pub struct SourceModuleHnNSF {
 STRUCT vokra-ops::openwakeword::OpenwakewordClassifierWeights|pub struct OpenwakewordClassifierWeights {
+STRUCT vokra-ops::openwakeword::OpenwakewordConv2dWeights|pub struct OpenwakewordConv2dWeights {
+STRUCT vokra-ops::openwakeword::OpenwakewordDenseWeights|pub struct OpenwakewordDenseWeights {
+STRUCT vokra-ops::openwakeword::OpenwakewordDnnClassifierWeights|pub struct OpenwakewordDnnClassifierWeights {
+STRUCT vokra-ops::openwakeword::OpenwakewordEmbeddingWeights|pub struct OpenwakewordEmbeddingWeights {
+STRUCT vokra-ops::openwakeword::OpenwakewordMelspecWeights|pub struct OpenwakewordMelspecWeights {
 STRUCT vokra-ops::prosody::ProsodyControl|pub struct ProsodyControl {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodecConfig|pub struct Qwen3TtsCodecConfig {
 STRUCT vokra-ops::qwen3_tts_codec::Qwen3TtsCodec|pub struct Qwen3TtsCodec {
@@ -1467,6 +1516,11 @@ STRUCT vokra-ops::snac_decode::SnacConfig|pub struct SnacConfig {
 STRUCT vokra-ops::snac_decode::SnacDecoder|pub struct SnacDecoder {
 STRUCT vokra-ops::snac_decode::SnacWeights|pub struct SnacWeights {
 STRUCT vokra-ops::stft::Spectrogram|pub struct Spectrogram {
+STRUCT vokra-ops::ten_vad::LstmWeights|pub struct LstmWeights {
+STRUCT vokra-ops::ten_vad::SeparableConvWeights|pub struct SeparableConvWeights {
+STRUCT vokra-ops::ten_vad::TenVadFrontend|pub struct TenVadFrontend {
+STRUCT vokra-ops::ten_vad::TenVadNetworkState|pub struct TenVadNetworkState {
+STRUCT vokra-ops::ten_vad::TenVadNetworkWeights|pub struct TenVadNetworkWeights {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeConfig|pub struct ContinuousVaeConfig {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeDecoderWeights|pub struct ContinuousVaeDecoderWeights {
 STRUCT vokra-ops::vae_continuous::ContinuousVaeDecoder|pub struct ContinuousVaeDecoder {
@@ -1480,6 +1534,10 @@ STRUCT vokra-ops::vit::ViTBlockWeights|pub struct ViTBlockWeights {
 STRUCT vokra-ops::vit::ViTEncoder|pub struct ViTEncoder {
 STRUCT vokra-ops::vit::ViTMlpWeights|pub struct ViTMlpWeights {
 STRUCT vokra-ops::vit::ViTWeights|pub struct ViTWeights {
+STRUCT vokra-ops::vocos::VocosAttrs|pub struct VocosAttrs {
+STRUCT vokra-ops::vocos::VocosBlockWeights|pub struct VocosBlockWeights {
+STRUCT vokra-ops::vocos::VocosNormWeights|pub struct VocosNormWeights {
+STRUCT vokra-ops::vocos::VocosWeights|pub struct VocosWeights {
 STRUCT vokra-ops::waveform_frontend::ConvLayerAttrs|pub struct ConvLayerAttrs {
 STRUCT vokra-ops::waveform_frontend::ConvLayerWeights|pub struct ConvLayerWeights {
 STRUCT vokra-ops::waveform_frontend::WaveformFrontendAttrs|pub struct WaveformFrontendAttrs {
@@ -1619,12 +1677,13 @@ USE vokra-ops::ddpm_sampler::{ BetaSchedule, DdpmSamplerConfig, PredictionType, 
 USE vokra-ops::denoise::{ DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32, denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest, }|pub use denoise::{ DeepFilterNetConfig, DenoiseModel, DenoiseTaps, TensorSpec, denoise, denoise_apply_mask_f32, denoise_skipped_checkpoint_tensors, denoise_synthesized_tensors, denoise_tensor_manifest, };
 USE vokra-ops::dispatch::{OpValue, dispatch}|pub use dispatch::{OpValue, dispatch};
 USE vokra-ops::encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode}|pub use encodec_rvq::{EncodecRvqAttrs, encodec_rvq_decode};
-USE vokra-ops::f0::pyin::pyin|pub use pyin::pyin;
+USE vokra-ops::f0::pyin::{PyinFrame, pyin, pyin_detailed}|pub use pyin::{PyinFrame, pyin, pyin_detailed};
 USE vokra-ops::f0::yin::yin|pub use yin::yin;
-USE vokra-ops::f0::{pyin, yin}|pub use f0::{pyin, yin};
+USE vokra-ops::f0::{PyinFrame, pyin, pyin_detailed, yin}|pub use f0::{PyinFrame, pyin, pyin_detailed, yin};
 USE vokra-ops::fft::plan::FftPlan|pub use plan::FftPlan;
 USE vokra-ops::fft::real::RealFftPlan|pub use real::RealFftPlan;
 USE vokra-ops::fft::vokra_core::Complex32|pub use vokra_core::Complex32;
+USE vokra-ops::firered_vad::{ FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, }|pub use firered_vad::{ FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, };
 USE vokra-ops::flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, }|pub use flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, };
 USE vokra-ops::frontend::{mel_attrs_from_spec, stft_attrs_from_spec}|pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 USE vokra-ops::fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, };
@@ -1639,7 +1698,7 @@ USE vokra-ops::itn::grammar::{ ARC_TYPE_STANDARD, FST_TYPE_VECTOR, ItnGrammarSet
 USE vokra-ops::itn::pipeline::ItnPipeline|pub use pipeline::ItnPipeline;
 USE vokra-ops::itn::rule_fallback::{RuleBasedItnOutput, rule_based_english_cardinals}|pub use rule_fallback::{RuleBasedItnOutput, rule_based_english_cardinals};
 USE vokra-ops::itn::token::{ EN_TN_ORDERS, ITN_ORDERS, ItnParseType, JA_TN_ORDERS, Token, ZH_TN_ORDERS, is_key_char, parse_tokens, reorder, }|pub use token::{ EN_TN_ORDERS, ITN_ORDERS, ItnParseType, JA_TN_ORDERS, Token, ZH_TN_ORDERS, is_key_char, parse_tokens, reorder, };
-USE vokra-ops::kaldi_fbank::{KaldiFbankOpts, kaldi_fbank}|pub use kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+USE vokra-ops::kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window}|pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank_with_window};
 USE vokra-ops::length_conditioning::length_conditioning|pub use length_conditioning::length_conditioning;
 USE vokra-ops::loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm}|pub use loudness_norm::{LoudnessNormAttrs, integrated_lufs, loudness_norm};
 USE vokra-ops::mel::mel_filterbank|pub use mel::mel_filterbank;
@@ -1648,7 +1707,7 @@ USE vokra-ops::mimi_rvq::{ CodebookTable, MimiDecoder, MimiRvqAttrs, codebook_lo
 USE vokra-ops::moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, moe_dispatch}|pub use moe_dispatch::{MoeAssignment, MoeDispatchAttrs, MoeDispatchPlan, moe_dispatch};
 USE vokra-ops::moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm}|pub use moe_expert_gemm::{MoeExpertWeights, moe_expert_gemm};
 USE vokra-ops::nsf::sinegen_deterministic_f32|pub use nsf::sinegen_deterministic_f32;
-USE vokra-ops::openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward}|pub use openwakeword::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+USE vokra-ops::openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, }|pub use openwakeword::{ OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights, OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights, openwakeword_classifier_forward, openwakeword_dnn_classifier_forward, openwakeword_embedding_forward, openwakeword_melspectrogram, };
 USE vokra-ops::preprocess::{apply_frontend, dc_offset_remove, pre_emphasis}|pub use preprocess::{apply_frontend, dc_offset_remove, pre_emphasis};
 USE vokra-ops::prosody::{ApplyProsody, ProsodyControl}|pub use prosody::{ApplyProsody, ProsodyControl};
 USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode}|pub use qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_codec_decode};
@@ -1660,7 +1719,8 @@ USE vokra-ops::snake::snake_activation_f32|pub use snake::snake_activation_f32;
 USE vokra-ops::snake::snake_beta_f32|pub use snake::snake_beta_f32;
 USE vokra-ops::stft::{Spectrogram, stft}|pub use stft::{Spectrogram, stft};
 USE vokra-ops::vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, }|pub use vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, };
+USE vokra-ops::vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, }|pub use vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, };
 USE vokra-ops::voice_ref::{VoiceRef, VoiceRefSource}|pub use voice_ref::{VoiceRef, VoiceRefSource};
 USE vokra-ops::vokra_core::Complex32|pub use vokra_core::Complex32;
-USE vokra-ops::waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, }|pub use waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, };
+USE vokra-ops::waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, waveform_frontend_with_right_padding, }|pub use waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, waveform_frontend_with_right_padding, };
 USE vokra-ops::wpe::{StatisticsMode, WpeAttrs, wpe, wpe_dereverb_pcm, wpe_dereverb_pcm_multi, wpe_mono}|pub use wpe::{StatisticsMode, WpeAttrs, wpe, wpe_dereverb_pcm, wpe_dereverb_pcm_multi, wpe_mono};

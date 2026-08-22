@@ -24,6 +24,7 @@ use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, Result, VokraError};
 
 use super::WhisperModel;
+use super::decoder::ResidualSiluLogitsAdapter;
 use super::greedy::{DEFAULT_MAX_NEW_TOKENS, greedy_decode};
 use super::tokenizer::WhisperTokenizer;
 use crate::compute::Compute;
@@ -126,6 +127,51 @@ impl WhisperAsr {
             cfg.eot,
             DEFAULT_MAX_NEW_TOKENS,
         )
+    }
+
+    /// Whisper-family greedy decode with an explicit residual-SiLU transform
+    /// inserted between the decoder's final LayerNorm and tied vocabulary
+    /// projection.  This is crate-private because the only canonical consumer
+    /// is `whisper_medusa`; exposing arbitrary output transforms would create
+    /// an unverifiable public model contract.
+    pub(crate) fn transcribe_tokens_with_output_adapter(
+        &self,
+        pcm: &[f32],
+        adapter: Arc<ResidualSiluLogitsAdapter>,
+    ) -> Result<Vec<u32>> {
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let mut state = self
+            .model
+            .decoder_with_backend(&encoder, self.backend_kind)?
+            .with_output_adapter(adapter)?;
+        let cfg = self.model.config();
+        greedy_decode(
+            &mut state,
+            &cfg.decoder_start_ids,
+            cfg.eot,
+            DEFAULT_MAX_NEW_TOKENS,
+        )
+    }
+
+    pub(crate) fn prefix_logits_with_output_adapter(
+        &self,
+        pcm: &[f32],
+        prefix: &[u32],
+        adapter: Arc<ResidualSiluLogitsAdapter>,
+    ) -> Result<Vec<f32>> {
+        if prefix.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "whisper output-adapter prefix logits require at least one token".into(),
+            ));
+        }
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let mut state = self
+            .model
+            .decoder_with_backend(&encoder, self.backend_kind)?
+            .with_output_adapter(adapter)?;
+        state.step_last(prefix)
     }
 
     /// Transcribes `pcm` with beam search, returning the best token id

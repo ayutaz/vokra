@@ -1,5 +1,10 @@
 # Remaining-work execution plan (2026-08-20)
 
+> 2026-08-21 refinement: the runtime portion of Phase C is superseded by
+> `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`. The newer audit
+> corrects the stale DeBERTa-v2 mapping item, records the public RNNoise
+> opaque-blob issue, and groups all 79 blocker rows into executable waves.
+
 This is the execution order derived from the live repository, merged PR #38, GitHub
 settings, the M5 owner checklist, and the platform-support matrix. It is a
 route map, not a completion claim. A checked historical ticket or a green
@@ -128,10 +133,11 @@ Execute in increasing cost order:
 
 Explicit non-checklist implementation holes also remain:
 
-- implement Godot `session_vad_open_stream` Object creation and add headless +
-  editor smoke evidence before claiming full runtime dispatch. The other four
-  data-bearing trampolines already have real Variant plumbing; old README /
-  crate-doc wording that called all four pending was retired in this branch;
+- ~~implement Godot `session_vad_open_stream` Object creation and add headless
+  smoke evidence~~ — **closed 2026-08-22**. The official Godot 4.7.1 gate now
+  checks the Object return, real Silero load, push/poll, interrupt drain, and
+  deterministic reset. Interactive editor demo confirmation remains a manual
+  release check rather than an implementation gap;
 - implement a real `TtsEngine::synthesize_stream` override before advertising
   incremental streaming; the trait default intentionally returns
   `UnsupportedOp`, so a one-chunk synchronous wrapper is not completion;

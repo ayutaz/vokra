@@ -81,6 +81,24 @@ pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 /// `vokra.provenance.upstream_hf` metadata key.
 pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
+const TOPOLOGY_U32: [(&str, u32); 11] = [
+    ("vokra.jasco.d_model", 1024),
+    ("vokra.jasco.num_layers", 24),
+    ("vokra.jasco.n_heads", 16),
+    ("vokra.jasco.ffn_dim", 4096),
+    ("vokra.jasco.num_codebooks", 4),
+    ("vokra.jasco.codec_frame_rate_hz", 50),
+    ("vokra.jasco.sample_rate_hz", 32_000),
+    ("vokra.jasco.text_prefix_len", 512),
+    ("vokra.jasco.chord_vocab_size", 195),
+    // Legacy key name: official conditioner consumes 128-wide EnCodec latents.
+    ("vokra.jasco.drum_vocab_size", 128),
+    // Official Euler fallback; the default adaptive solver is Dopri5.
+    ("vokra.jasco.num_flow_steps", 100),
+];
+const KEY_CFG_SCALE: &str = "vokra.jasco.cfg_scale";
+const CFG_SCALE: f32 = 5.0;
+
 /// Outcome of a JASCO 400M Chords+Drums conversion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Jasco400mChordsDrumsReport {
@@ -121,6 +139,10 @@ pub fn convert_jasco_400m_chords_drums_file(
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    for (key, value) in TOPOLOGY_U32 {
+        b.add_u32(key, value);
+    }
+    b.add_f32(KEY_CFG_SCALE, CFG_SCALE);
 
     let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
     let effective_class = LicenseClass::from_license_str(effective_spdx);
@@ -290,6 +312,17 @@ mod tests {
             file.get(KEY_PROVENANCE_UPSTREAM_HF)
                 .and_then(|v| v.as_str()),
             Some(UPSTREAM_HF)
+        );
+        for (key, expected) in TOPOLOGY_U32 {
+            assert_eq!(
+                file.get(key),
+                Some(&vokra_core::gguf::GgufMetadataValue::U32(expected)),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            file.get(KEY_CFG_SCALE),
+            Some(&vokra_core::gguf::GgufMetadataValue::F32(CFG_SCALE))
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)

@@ -6,10 +6,11 @@
 //! a HiFi-GAN generator (Kong et al. 2020, arXiv:2010.05646) trained on
 //! LibriTTS at 22 050 Hz. The upstream repo ships a torch-pickle
 //! `generator.ckpt` + `hyperparams.yaml`; callers pre-flatten to
-//! safetensors offline via a future
-//! `tools/parity/hifigan_prepare_checkpoint.py` (**not yet written** —
-//! the DAC / DFN3 / Parakeet-CTC pattern; upstream release form is
-//! torch pickle,
+//! safetensors offline via
+//! `tools/parity/hifigan_prepare_checkpoint.py`. That audited sidecar folds
+//! SpeechBrain's weight-normalized 234-tensor training representation into
+//! the exact 156 effective tensors consumed by the native binder (the DAC /
+//! DFN3 / Parakeet-CTC pattern; upstream release form is torch pickle,
 //! converter refuses to touch pickle because that would require
 //! embedding a Python interpreter and rebreaking the NFR-DS-02 zero-dep
 //! posture). Output: a GGUF carrying every float tensor verbatim under
@@ -57,11 +58,11 @@
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
+//! GGUF tensor names are the **prepared safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VibeVoice /
-//! VoxCPM / WeSpeaker / ECAPA-TDNN contract). Real-weight parity vs
-//! the upstream `speechbrain` Python pipeline is deferred to owner
-//! (`docs/license-audit.md` §3.1 sign-off queue).
+//! VoxCPM / WeSpeaker / ECAPA-TDNN contract). The prep output uses canonical
+//! `conv_pre.*`, `ups.*`, `resblocks.*`, and `conv_post.*` names after the
+//! weight-norm fold; the runtime validates that complete manifest.
 //!
 //! # No ONNX (permanent)
 //!
@@ -72,10 +73,9 @@
 //!
 //! # Loud-partial precedent
 //!
-//! Real-weight forward binding is deferred: the runtime consumer will
-//! walk the emitted tensor names and either succeed or fail loudly per
-//! FR-EX-08. Today's converter surface is
-//! byte-exact provenance + tensor-name preservation only.
+//! Real-weight forward binding is complete: the runtime consumer walks all
+//! emitted tensor names and fails loudly on any missing, extra, renamed, or
+//! wrong-shaped tensor per FR-EX-08.
 
 use std::path::Path;
 

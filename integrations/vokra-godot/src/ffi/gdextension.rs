@@ -592,8 +592,8 @@ pub type GDExtensionInterfaceMemFree = unsafe extern "C" fn(p_ptr: *mut core::ff
 // Variant type at [`crate::ffi::interface::InterfaceTable::from_proc_address`]
 // time, they return the actual per-type packer/unpacker fn pointer. We cache
 // the resolved constructors for Int, String, PackedFloat32Array, Dictionary,
-// and Object. The first four support the promoted runtime trampolines; Object
-// packing is also used by the remaining `session_vad_open_stream` work.
+// and Object. They support the promoted runtime trampolines, including Object
+// packing for `session_vad_open_stream`.
 // ---------------------------------------------------------------------------
 
 /// `variant_get_type` — reads the type tag of a Variant. Cheap, non-allocating,

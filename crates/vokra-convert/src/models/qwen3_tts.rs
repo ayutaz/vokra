@@ -2,7 +2,8 @@
 //! (SoTA plan Phase 3, 2026-07-24).
 //!
 //! Input: the upstream `Qwen/Qwen3-TTS-12Hz-0.6B-Base` release —
-//! `model.safetensors` (~0.9 GB BF16). Output: a GGUF carrying every
+//! `model.safetensors` (1,829,344,272 bytes BF16 at pinned revision
+//! `5d83992436eae1d760afd27aff78a71d676296fc`). Output: a GGUF carrying every
 //! float tensor plus the `vokra.qwen3_tts.*` and `vokra.model.*` /
 //! `vokra.provenance.*` metadata chunks the native Qwen3-TTS
 //! implementation (`crates/vokra-models/src/qwen3_tts/`) reads.
@@ -113,11 +114,9 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox contract). Real-weight
-//! binding is a follow-up wave gated on the upstream tensor-name
-//! manifest fetch; this converter passes every F32 / F16 tensor
-//! through unchanged so a future `Qwen3TtsWeights::from_gguf` can
-//! walk the same names.
+//! (the CSM / Kokoro / CosyVoice2 / Chatterbox contract). The runtime's
+//! `Qwen3TtsCheckpoint::from_gguf` binder validates the exact official
+//! 0.6B-Base 478-tensor manifest before any block can be decoded.
 //!
 //! # BF16 posture
 //!
@@ -557,7 +556,7 @@ pub(crate) fn convert_variant(
             "no float tensors passed through — this GGUF is metadata-only and \
              the runtime will refuse to bind any weights (FR-EX-08). The \
              upstream Qwen3-TTS release ships \
-             `model.safetensors` in BF16 (0.9 GB for 0.6B, ~3.8 GB for 1.7B); \
+             `model.safetensors` in BF16 (1.83 GB for 0.6B, ~3.8 GB for 1.7B); \
              the converter passes BF16 tensors through verbatim (ADR A_passthrough), \
              so a zero-write outcome here means the safetensors file itself was empty."
                 .into(),

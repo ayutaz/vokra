@@ -1,0 +1,22 @@
+{
+  "checkpoint_sha256": "6dc8a18422db7c22e951d5f72dc2afc267b942eb0b8459ac6dcc0cf412536de1",
+  "config_sha256": "7406aa4f917267640865688aa62f2337664a3abb9a49a2f204d932b53aeb6cb7",
+  "logits_file": "logits_1x42.f32.bin",
+  "logits_sha256": "6785ffc5426a71193ebe37614f434e2220853164acdf53250838762abfcef8b3",
+  "logits_shape": [
+    1,
+    42
+  ],
+  "pcm_file": "pcm_400.f32.bin",
+  "pcm_sha256": "77658830c60a39ff6269db6d3c5bd6b3a3d596e8ba4c61d3b30c7c9b27343e5c",
+  "pcm_shape": [
+    400
+  ],
+  "reference_implementation": "transformers.Wav2Vec2ForCTC",
+  "revision": "e9bf8dd314313fc57f6e4d0b5425bde4bbeac80f",
+  "sample_rate": 16000,
+  "schema": "vokra-charsiu-parity-v1",
+  "torch_version": "2.13.0",
+  "transformers_version": "5.15.0",
+  "upstream": "charsiu/en_w2v2_fc_10ms"
+}

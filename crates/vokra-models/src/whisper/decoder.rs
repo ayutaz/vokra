@@ -53,6 +53,63 @@ use crate::compute::{Compute, DecoderStepDims, DecoderStepSession};
 /// only the cache's own key/value buffers grow.
 const SELF_KV_RESERVE_HINT: usize = 64;
 
+/// Optional residual SiLU transform applied to the final decoder hidden state
+/// before the tied vocabulary projection:
+///
+/// `adapted = hidden + silu(linear(hidden))`.
+///
+/// This is the exact `MedusaResBlock` used by
+/// `aiola/whisper-medusa-v1`'s module 0.  It lives in the shared decoder so
+/// the ordinary Whisper transformer/KV implementation remains single-source;
+/// vanilla Whisper constructs no adapter and is byte-identical to the prior
+/// path.
+pub(crate) struct ResidualSiluLogitsAdapter {
+    weight: Vec<f32>,
+    bias: Vec<f32>,
+    hidden_size: usize,
+}
+
+impl ResidualSiluLogitsAdapter {
+    pub(crate) fn new(weight: Vec<f32>, bias: Vec<f32>, hidden_size: usize) -> Result<Self> {
+        let expected_weight_len = hidden_size.checked_mul(hidden_size).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "whisper residual-SiLU logits adapter hidden size {hidden_size} overflows"
+            ))
+        })?;
+        if weight.len() != expected_weight_len || bias.len() != hidden_size {
+            return Err(VokraError::ModelLoad(format!(
+                "whisper residual-SiLU logits adapter: expected weight [{hidden_size}, \
+                 {hidden_size}] and bias [{hidden_size}], got {} and {} elements",
+                weight.len(),
+                bias.len(),
+            )));
+        }
+        Ok(Self {
+            weight,
+            bias,
+            hidden_size,
+        })
+    }
+
+    fn apply_into(&self, hidden: &[f32], rows: usize, output: &mut Vec<f32>) {
+        let d = self.hidden_size;
+        resize_zeroed(output, rows * d);
+        for row in 0..rows {
+            let input = &hidden[row * d..(row + 1) * d];
+            let result = &mut output[row * d..(row + 1) * d];
+            for out in 0..d {
+                let weights = &self.weight[out * d..(out + 1) * d];
+                let mut affine = self.bias[out];
+                for (&value, &weight) in input.iter().zip(weights) {
+                    affine += value * weight;
+                }
+                let silu = affine / (1.0 + (-affine).exp());
+                result[out] = input[out] + silu;
+            }
+        }
+    }
+}
+
 /// A decoder run bound to one encoder output, holding the KV caches.
 ///
 /// Owns the model through an [`Arc`] rather than borrowing it, so the state has
@@ -86,6 +143,10 @@ pub struct DecoderState {
     block: BlockScratch,
     /// Tied-logits-head scratch; its `out` holds the last step's logits.
     logits: LogitsScratch,
+    /// Optional model-family output transform (Whisper-Medusa head 0).
+    output_adapter: Option<Arc<ResidualSiluLogitsAdapter>>,
+    /// Reused adapted-hidden scratch `[t, d]`.
+    adapted_hidden: Vec<f32>,
     /// Backend selector for the step forward (`Copy`, so [`DecoderState`] stays
     /// `Send` — it never holds a live `!Send` backend). A [`Compute`] is built
     /// from it at each step entry (M2-01 Phase 3). Metal does not yet cover the
@@ -223,9 +284,38 @@ impl DecoderState {
             h,
             block,
             logits,
+            output_adapter: None,
+            adapted_hidden: Vec::with_capacity(t_q_max * d),
             backend_kind,
             device_session,
         })
+    }
+
+    /// Installs the Whisper-Medusa module-0 output transform.
+    ///
+    /// Device-resident decoder sessions currently fuse the final projection,
+    /// so they cannot insert this model-specific transform.  Refuse them
+    /// explicitly instead of reading back and silently falling back to CPU.
+    pub(crate) fn with_output_adapter(
+        mut self,
+        adapter: Arc<ResidualSiluLogitsAdapter>,
+    ) -> Result<Self> {
+        if adapter.hidden_size != self.model.config().d_model {
+            return Err(VokraError::ModelLoad(format!(
+                "whisper output adapter hidden size {} != decoder d_model {}",
+                adapter.hidden_size,
+                self.model.config().d_model,
+            )));
+        }
+        if self.device_session.is_some() {
+            return Err(VokraError::UnsupportedOp(
+                "whisper-medusa output head is CPU-only until the device-resident decoder \
+                 session exposes a pre-projection adapter; no silent CPU fallback"
+                    .into(),
+            ));
+        }
+        self.output_adapter = Some(adapter);
+        Ok(self)
     }
 
     /// Clears the self-attention cache (the cross K/V stay valid) so a fresh
@@ -456,12 +546,20 @@ impl DecoderState {
             add_assign(&mut self.h, &self.block.block_out)?;
         }
 
-        // Final LayerNorm into the (now-free) block `ln` buffer, then the tied
-        // logits head into the logits scratch.
+        // Final LayerNorm into the (now-free) block `ln` buffer.  Vanilla
+        // Whisper projects it directly; Whisper-Medusa first applies official
+        // base-head module 0 (`h + silu(W h + b)`).
         layer_norm_into(&compute, &mut self.block.ln, &self.h, t, &w.ln_post)?;
         // Commit this step's positions once, after every layer was appended.
         self.self_kv.advance(t);
-        project_logits_into(&compute, &mut self.logits, &self.block.ln, t, cfg, w)
+        let projection_input = match &self.output_adapter {
+            Some(adapter) => {
+                adapter.apply_into(&self.block.ln, t, &mut self.adapted_hidden);
+                self.adapted_hidden.as_slice()
+            }
+            None => self.block.ln.as_slice(),
+        };
+        project_logits_into(&compute, &mut self.logits, projection_input, t, cfg, w)
     }
     // ZERO-ALLOC-END
 

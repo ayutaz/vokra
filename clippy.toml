@@ -1,0 +1,5 @@
+# Keep Clippy's machine-applicable suggestions within the workspace's declared
+# Rust compatibility floor. Several edition-2021 leaf crates do not inherit
+# `[workspace.package].rust-version`, so Clippy cannot infer this consistently
+# from Cargo metadata alone.
+msrv = "1.85"

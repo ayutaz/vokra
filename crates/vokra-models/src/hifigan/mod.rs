@@ -32,37 +32,23 @@
 //! separately-built bundles (not a method on some `HiFiGanGenerator`
 //! struct — see `SbV2Decoder`'s module docstring for the same
 //! observation); [`HiFiGan::decode`] is a thin
-//! [`hifigan_generator`] call that keeps the wrapper's surface
+//! [`vokra_ops::hifigan::hifigan_generator`] call that keeps the wrapper's surface
 //! stable even as the op grows internal knobs (INT8 opt-in, `cond`
 //! layer, etc.).
 //!
-//! # Weight-load posture: loud-partial
+//! # Weight-load posture
 //!
-//! [`HiFiGan::from_gguf`] deliberately declines to fabricate an upstream
-//! hyperparameter transcription without primary-source verification —
-//! both `hifigan_vocoder` (SpeechBrain LibriTTS 22.05 kHz) and
-//! `speecht5_hifigan` (Microsoft SpeechT5 16 kHz) walk different tensor
-//! trees (`generator.*` vs `upsampler.*` / `resblocks.*`) with different
-//! `upsample_rates` / kernel-size / MRF-branch pins, and the
-//! `resblock_dilation_sizes` outer axis + `res_block_type = V1` +
-//! `normalize_before = true` (`mean` / `scale` scalars) shape checks
-//! are all silent-wrong hazards if a value drifts from upstream. The
-//! sibling converter modules
-//! (`crates/vokra-convert/src/models/{hifigan_vocoder, speecht5_hifigan}.rs`)
-//! carry the same posture on their side of the seam ("Real-weight
-//! parity vs the upstream ... Python forward is deferred to owner"),
-//! so this binder mirrors that discipline: [`HiFiGan::from_gguf`]
-//! dispatches on `vokra.model.arch`, returns [`VokraError::ModelLoad`]
-//! on missing / unknown arch, and returns
-//! [`VokraError::NotImplemented`] on either supported arch — naming the
-//! precise blocker (owner-verified upstream config transcription +
-//! tensor-name walk) so the follow-up wave lands as a delta rather
-//! than a silent-wrong forward. This is the **loud-partial** pattern
-//! (RMVPE precedent, CLAUDE.md `docs/handoff/model-publish-and-parity-*`
-//! §"loud-partial は fake-complete より honest"): construction succeeds
-//! for hand-built bundles and for [`HiFiGan::synthesized`] test
-//! fixtures, real-weight `from_gguf` fails loudly with a message
-//! that names the tensor tree the loader will walk when the wave lands.
+//! `speecht5_hifigan` is strict and complete: the official 16 kHz config is
+//! transcribed from `microsoft/speecht5_hifigan/config.json`, all 158 tensors
+//! are name/shape checked with no extras, and learned 80-bin `mean` / `scale`
+//! normalization is applied before the shared generator. The independent
+//! fixture runs the official Transformers forward.
+//!
+//! `hifigan_vocoder` is also strict and complete. Its offline prep sidecar
+//! folds SpeechBrain's weight-normalized 234-tensor training checkpoint into
+//! the exact 156 effective tensors consumed here. The binder additionally
+//! preserves SpeechBrain's `inference_padding = 5` replicate-padding contract;
+//! this is deliberately distinct from SpeechT5's learned normalization.
 //!
 //! # Fixture posture — [`HiFiGan::synthesized`]
 //!
@@ -85,8 +71,8 @@ use vokra_core::gguf::chunks;
 use vokra_core::{Result, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
-    HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer, UpsampleStageWeights,
-    hifigan_generator,
+    HifiGanConfig, HifiGanConvPadding, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
+    UpsampleStageWeights, hifigan_generator_with_conv_padding,
 };
 
 /// `vokra.model.arch` value emitted by the SpeechBrain LibriTTS 22.05 kHz
@@ -124,7 +110,7 @@ pub struct HiFiGan {
     weights: HifiGanWeights,
     /// Shape + upsample-ladder metadata. [`decode`](Self::decode)'s
     /// `mel.len()` must equal `n_frames * attrs.n_mels`, checked inside
-    /// [`hifigan_generator`] itself.
+    /// [`vokra_ops::hifigan::hifigan_generator`] itself.
     attrs: HifiGanAttrs,
     /// Precision policy — FP32 (default) or mixed-precision FP16 with
     /// FP32 accumulator. INT8 opt-in stays gated behind
@@ -137,6 +123,85 @@ pub struct HiFiGan {
     /// frontend_spec `sample_rate` (FR-LD-03). [`Self::new`] rejects
     /// a mismatched pair.
     sample_rate: u32,
+    /// Optional per-mel normalization carried by SpeechT5 HiFi-GAN.
+    /// The standalone SpeechBrain sibling has no equivalent tensors.
+    normalization: Option<HifiGanInputNormalization>,
+    /// Number of edge-replicated mel frames applied on both sides before the
+    /// generator. SpeechBrain's public `inference()` contract uses 5;
+    /// SpeechT5 feeds the unpadded mel directly.
+    inference_padding: usize,
+    /// Boundary mode for every stride-1 Conv1d. SpeechBrain's wrapper uses
+    /// reflect; SpeechT5 and the public constructor retain zero padding.
+    conv_padding: HifiGanConvPadding,
+}
+
+#[derive(Debug, Clone)]
+struct HifiGanInputNormalization {
+    mean: Vec<f32>,
+    scale: Vec<f32>,
+}
+
+fn normalize_hifigan_mel(
+    mel: &[f32],
+    n_frames: usize,
+    n_mels: usize,
+    norm: &HifiGanInputNormalization,
+) -> Result<Vec<f32>> {
+    if mel.len() != n_mels * n_frames {
+        return Err(VokraError::InvalidArgument(format!(
+            "HiFiGan::decode: mel.len() {} != n_mels * n_frames = {} * {} = {}",
+            mel.len(),
+            n_mels,
+            n_frames,
+            n_mels * n_frames
+        )));
+    }
+    let mut normalized = Vec::with_capacity(mel.len());
+    for channel in 0..n_mels {
+        let mean = norm.mean[channel];
+        let scale = norm.scale[channel];
+        let start = channel * n_frames;
+        normalized.extend(
+            mel[start..start + n_frames]
+                .iter()
+                .map(|value| (*value - mean) / scale),
+        );
+    }
+    Ok(normalized)
+}
+
+fn replicate_pad_hifigan_mel(
+    mel: &[f32],
+    n_frames: usize,
+    n_mels: usize,
+    padding: usize,
+) -> Result<Vec<f32>> {
+    if mel.len() != n_mels * n_frames {
+        return Err(VokraError::InvalidArgument(format!(
+            "HiFiGan::decode: mel.len() {} != n_mels * n_frames = {} * {} = {}",
+            mel.len(),
+            n_mels,
+            n_frames,
+            n_mels * n_frames
+        )));
+    }
+    if n_frames == 0 {
+        return Err(VokraError::InvalidArgument(
+            "HiFiGan::decode: n_frames must be positive for replicate padding".to_owned(),
+        ));
+    }
+    if padding == 0 {
+        return Ok(mel.to_vec());
+    }
+    let padded_frames = n_frames + padding * 2;
+    let mut padded = Vec::with_capacity(n_mels * padded_frames);
+    for channel in 0..n_mels {
+        let row = &mel[channel * n_frames..(channel + 1) * n_frames];
+        padded.extend(std::iter::repeat_n(row[0], padding));
+        padded.extend_from_slice(row);
+        padded.extend(std::iter::repeat_n(row[n_frames - 1], padding));
+    }
+    Ok(padded)
 }
 
 impl HiFiGan {
@@ -168,6 +233,26 @@ impl HiFiGan {
         config: HifiGanConfig,
         sample_rate: u32,
     ) -> Result<Self> {
+        Self::new_with_preprocessing(
+            weights,
+            attrs,
+            config,
+            sample_rate,
+            None,
+            0,
+            HifiGanConvPadding::Zero,
+        )
+    }
+
+    fn new_with_preprocessing(
+        weights: HifiGanWeights,
+        attrs: HifiGanAttrs,
+        config: HifiGanConfig,
+        sample_rate: u32,
+        normalization: Option<HifiGanInputNormalization>,
+        inference_padding: usize,
+        conv_padding: HifiGanConvPadding,
+    ) -> Result<Self> {
         attrs.validate_shape()?;
         config.validate()?;
         if sample_rate != attrs.sample_rate {
@@ -176,11 +261,38 @@ impl HiFiGan {
                 attrs.sample_rate
             )));
         }
+        if let Some(norm) = normalization.as_ref() {
+            if norm.mean.len() != attrs.n_mels || norm.scale.len() != attrs.n_mels {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HiFiGan::new: normalization mean/scale lengths {}/{} != n_mels {}",
+                    norm.mean.len(),
+                    norm.scale.len(),
+                    attrs.n_mels
+                )));
+            }
+            if norm.mean.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::InvalidArgument(
+                    "HiFiGan::new: normalization mean must be finite".to_owned(),
+                ));
+            }
+            if norm
+                .scale
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+            {
+                return Err(VokraError::InvalidArgument(
+                    "HiFiGan::new: normalization scale must be positive and finite".to_owned(),
+                ));
+            }
+        }
         Ok(Self {
             weights,
             attrs,
             config,
             sample_rate,
+            normalization,
+            inference_padding,
+            conv_padding,
         })
     }
 
@@ -340,7 +452,7 @@ impl HiFiGan {
     ///
     /// # Errors
     ///
-    /// See [`hifigan_generator`]. In practice, once `self` has passed
+    /// See [`vokra_ops::hifigan::hifigan_generator`]. In practice, once `self` has passed
     /// [`Self::new`], the only reachable errors are
     /// [`VokraError::InvalidArgument`] on a `mel.len()` mismatch
     /// (caller sent the wrong `n_frames`) and
@@ -350,44 +462,47 @@ impl HiFiGan {
     ///
     /// [`hifigan_generator_conditioned`]: vokra_ops::hifigan::hifigan_generator_conditioned
     pub fn decode(&self, mel: &[f32], n_frames: usize) -> Result<Vec<f32>> {
-        hifigan_generator(mel, n_frames, &self.weights, &self.attrs, &self.config)
+        let normalized;
+        let preprocessed = if let Some(norm) = self.normalization.as_ref() {
+            normalized = normalize_hifigan_mel(mel, n_frames, self.attrs.n_mels, norm)?;
+            normalized.as_slice()
+        } else {
+            mel
+        };
+        let padded;
+        let (input, input_frames) = if self.inference_padding == 0 {
+            (preprocessed, n_frames)
+        } else {
+            padded = replicate_pad_hifigan_mel(
+                preprocessed,
+                n_frames,
+                self.attrs.n_mels,
+                self.inference_padding,
+            )?;
+            (padded.as_slice(), n_frames + self.inference_padding * 2)
+        };
+        hifigan_generator_with_conv_padding(
+            input,
+            input_frames,
+            &self.weights,
+            &self.attrs,
+            &self.config,
+            self.conv_padding,
+        )
     }
 
     /// Dispatches on the `vokra.model.arch` metadata chunk and loads a
     /// [`HiFiGan`] from a GGUF file.
     ///
-    /// # Current status — loud-partial
-    ///
-    /// This entry point is intentionally loud-partial today
-    /// (RMVPE / DFN3 Phase B precedent, CLAUDE.md
-    /// 「loud-partial は fake-complete より honest」): the arch
-    /// dispatch works (missing arch → [`VokraError::ModelLoad`],
-    /// unknown arch → [`VokraError::ModelLoad`]), but both supported
-    /// arches ([`ARCH_HIFIGAN_VOCODER`], [`ARCH_SPEECHT5_HIFIGAN`])
-    /// return [`VokraError::NotImplemented`] with a message that names
-    /// the precise blocker (owner-verified upstream config
-    /// transcription + tensor-name walk). This mirrors the sibling
-    /// converter modules' own "Real-weight parity vs the upstream
-    /// Python forward is deferred to owner" posture
-    /// (see `crates/vokra-convert/src/models/{hifigan_vocoder,
-    /// speecht5_hifigan}.rs`) — the CC side ships the binder shape and
-    /// the arch-dispatch discipline, and the follow-up wave lands the
-    /// real hyperparameter transcription + tensor-name walk as a
-    /// delta against a real upstream checkpoint rather than a
-    /// fabricated transcription.
-    ///
-    /// Hand-built [`HiFiGan::new`] and [`HiFiGan::synthesized`] work
-    /// today (they never touch this path); real-weight round-trips
-    /// through the sibling converters + this loader are the deferred
-    /// wave.
+    /// SpeechT5 HiFi-GAN binds its exact 158-tensor manifest and learned input
+    /// normalization. SpeechBrain HiFi-GAN binds its exact 156-tensor folded
+    /// manifest and applies its five-frame replicate padding.
     ///
     /// # Errors
     ///
     /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is missing,
     ///   not a UTF-8 string, or does not match either supported arch
     ///   ([`ARCH_HIFIGAN_VOCODER`] or [`ARCH_SPEECHT5_HIFIGAN`]).
-    /// - [`VokraError::NotImplemented`] on either supported arch until
-    ///   the real-weight loader wave lands.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let arch = file
             .get(chunks::KEY_MODEL_ARCH)
@@ -403,35 +518,8 @@ impl HiFiGan {
                 ))
             })?;
         match arch {
-            ARCH_HIFIGAN_VOCODER => Err(VokraError::NotImplemented(
-                "HiFiGan::from_gguf(hifigan_vocoder): real-weight loader is deferred (mirror of \
-                 the sibling converter `crates/vokra-convert/src/models/hifigan_vocoder.rs` own \
-                 \"Real-weight parity vs the upstream `speechbrain` Python pipeline is deferred \
-                 to owner\" posture). Follow-up wave will (1) transcribe SpeechBrain \
-                 `speechbrain/tts-hifigan-libritts-22050Hz` `hyperparams.yaml` verbatim into a \
-                 hard-coded HifiGanAttrs preset (upstream `upsample_rates` / \
-                 `upsample_kernel_sizes` / `resblock_kernel_sizes` / \
-                 `resblock_dilation_sizes` / `upsample_initial_channel` / `num_mels` / \
-                 `sample_rate` — CLAUDE.md 「ハルシネーション厳禁」: transcription must be \
-                 primary-source verified against the upstream file, not memorised), (2) walk \
-                 the `generator.conv_pre.*` / `generator.ups.{i}.*` / \
-                 `generator.resblocks.{stage*n_branches+branch}.convs{1,2}.{layer}.*` / \
-                 `generator.conv_post.*` tensor names into `HifiGanWeights`, (3) route through \
-                 `HiFiGan::new`. Hand-built `new` + `synthesized` fixtures work today.",
-            )),
-            ARCH_SPEECHT5_HIFIGAN => Err(VokraError::NotImplemented(
-                "HiFiGan::from_gguf(speecht5_hifigan): real-weight loader is deferred. The \
-                 SpeechT5 tensor tree is intentionally distinct from `hifigan_vocoder` — the \
-                 HF-transformers `SpeechT5HifiGan` class emits `upsampler.{i}.*` / \
-                 `resblocks.{i}.*` / `conv_pre.*` / `conv_post.*` (no `generator.` prefix) plus \
-                 scalar `mean` / `scale` tensors for `normalize_before = true`, with \
-                 `upsample_rates = [4, 4, 4, 4]` / `upsample_kernel_sizes = [8, 8, 8, 8]` / \
-                 16 kHz vs SpeechBrain's 22.05 kHz recipe. Silently sharing an arch tag would \
-                 mis-route dispatch (see the converter module's own FR-EX-08 rationale in \
-                 `crates/vokra-convert/src/models/speecht5_hifigan.rs`). Follow-up wave will \
-                 transcribe `microsoft/speecht5_hifigan` `config.json` verbatim + wire the \
-                 `mean` / `scale` pre-network normalisation the sibling arch does not carry.",
-            )),
+            ARCH_HIFIGAN_VOCODER => load_speechbrain_hifigan(file),
+            ARCH_SPEECHT5_HIFIGAN => load_speecht5_hifigan(file),
             other => Err(VokraError::ModelLoad(format!(
                 "HiFiGan::from_gguf: unsupported `vokra.model.arch` = {other:?}. This binder \
                  accepts only {ARCH_HIFIGAN_VOCODER:?} (SpeechBrain LibriTTS 22.05 kHz) and \
@@ -441,6 +529,333 @@ impl HiFiGan {
             ))),
         }
     }
+}
+
+fn speecht5_hifigan_attrs() -> HifiGanAttrs {
+    HifiGanAttrs {
+        n_mels: 80,
+        initial_channel: 512,
+        upsample_rates: vec![4, 4, 4, 4],
+        upsample_kernel_sizes: vec![8, 8, 8, 8],
+        resblock_kernel_sizes: vec![3, 7, 11],
+        resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
+        sample_rate: 16_000,
+        leaky_relu_slope: 0.1,
+        res_block_type: ResBlockType::V1,
+    }
+}
+
+fn speechbrain_hifigan_attrs() -> HifiGanAttrs {
+    HifiGanAttrs {
+        n_mels: 80,
+        initial_channel: 512,
+        upsample_rates: vec![8, 8, 2, 2],
+        upsample_kernel_sizes: vec![16, 16, 4, 4],
+        resblock_kernel_sizes: vec![3, 7, 11],
+        resblock_dilation_sizes: vec![vec![1, 3, 5], vec![1, 3, 5], vec![1, 3, 5]],
+        sample_rate: 22_050,
+        leaky_relu_slope: 0.1,
+        res_block_type: ResBlockType::V1,
+    }
+}
+
+fn load_hifigan_tensor(
+    file: &GgufFile,
+    name: &str,
+    expected_shape: &[usize],
+    expected_names: &mut std::collections::BTreeSet<String>,
+) -> Result<Vec<f32>> {
+    let info = file.tensor_info(name).ok_or_else(|| {
+        VokraError::ModelLoad(format!("HiFiGan: required tensor `{name}` is missing"))
+    })?;
+    let actual_shape: Vec<usize> = info.dimensions.iter().map(|&dim| dim as usize).collect();
+    if actual_shape != expected_shape {
+        return Err(VokraError::ModelLoad(format!(
+            "HiFiGan: tensor `{name}` shape {actual_shape:?}, expected {expected_shape:?}"
+        )));
+    }
+    expected_names.insert(name.to_owned());
+    file.tensor_f32(name).map_err(|error| {
+        VokraError::ModelLoad(format!("HiFiGan: tensor `{name}` decode failed: {error}"))
+    })
+}
+
+fn load_speechbrain_hifigan(file: &GgufFile) -> Result<HiFiGan> {
+    use std::collections::BTreeSet;
+
+    let attrs = speechbrain_hifigan_attrs();
+    let mut expected_names = BTreeSet::new();
+    let conv_pre_weight = load_hifigan_tensor(
+        file,
+        "conv_pre.weight",
+        &[attrs.initial_channel, attrs.n_mels, 7],
+        &mut expected_names,
+    )?;
+    let conv_pre_bias = load_hifigan_tensor(
+        file,
+        "conv_pre.bias",
+        &[attrs.initial_channel],
+        &mut expected_names,
+    )?;
+
+    let mut upsample_weights = Vec::with_capacity(attrs.n_upsample_stages());
+    let mut mrf_stage_weights = Vec::with_capacity(attrs.n_upsample_stages());
+    for stage in 0..attrs.n_upsample_stages() {
+        let in_ch = attrs.initial_channel >> stage;
+        let out_ch = attrs.initial_channel >> (stage + 1);
+        let kernel = attrs.upsample_kernel_sizes[stage];
+        upsample_weights.push(UpsampleStageWeights {
+            weight: load_hifigan_tensor(
+                file,
+                &format!("ups.{stage}.weight"),
+                &[in_ch, out_ch, kernel],
+                &mut expected_names,
+            )?,
+            bias: load_hifigan_tensor(
+                file,
+                &format!("ups.{stage}.bias"),
+                &[out_ch],
+                &mut expected_names,
+            )?,
+            in_ch,
+            out_ch,
+            kernel,
+            stride: attrs.upsample_rates[stage],
+        });
+
+        let mut branches = Vec::with_capacity(attrs.n_mrf_branches());
+        for branch in 0..attrs.n_mrf_branches() {
+            let block = stage * attrs.n_mrf_branches() + branch;
+            let kernel = attrs.resblock_kernel_sizes[branch];
+            let mut layers = Vec::with_capacity(attrs.resblock_dilation_sizes[branch].len());
+            for (layer, &dilation) in attrs.resblock_dilation_sizes[branch].iter().enumerate() {
+                let conv1 = format!("resblocks.{block}.convs1.{layer}");
+                let conv2 = format!("resblocks.{block}.convs2.{layer}");
+                layers.push(ResBlockLayer {
+                    weight: load_hifigan_tensor(
+                        file,
+                        &format!("{conv1}.weight"),
+                        &[out_ch, out_ch, kernel],
+                        &mut expected_names,
+                    )?,
+                    bias: load_hifigan_tensor(
+                        file,
+                        &format!("{conv1}.bias"),
+                        &[out_ch],
+                        &mut expected_names,
+                    )?,
+                    weight_c2: Some(load_hifigan_tensor(
+                        file,
+                        &format!("{conv2}.weight"),
+                        &[out_ch, out_ch, kernel],
+                        &mut expected_names,
+                    )?),
+                    bias_c2: Some(load_hifigan_tensor(
+                        file,
+                        &format!("{conv2}.bias"),
+                        &[out_ch],
+                        &mut expected_names,
+                    )?),
+                    dilation,
+                    kernel,
+                    channels: out_ch,
+                });
+            }
+            branches.push(MrfBranchWeights { layers });
+        }
+        mrf_stage_weights.push(branches);
+    }
+
+    let last_channels = attrs.initial_channel >> attrs.n_upsample_stages();
+    let conv_post_weight = load_hifigan_tensor(
+        file,
+        "conv_post.weight",
+        &[1, last_channels, 7],
+        &mut expected_names,
+    )?;
+    let conv_post_bias = load_hifigan_tensor(file, "conv_post.bias", &[1], &mut expected_names)?;
+
+    let actual_names: BTreeSet<String> = file
+        .tensors()
+        .iter()
+        .map(|info| info.name.clone())
+        .collect();
+    if actual_names != expected_names {
+        let missing: Vec<&String> = expected_names.difference(&actual_names).take(4).collect();
+        let extra: Vec<&String> = actual_names.difference(&expected_names).take(4).collect();
+        return Err(VokraError::ModelLoad(format!(
+            "HiFiGan::from_gguf(hifigan_vocoder): tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected_names.len(),
+            actual_names.len()
+        )));
+    }
+
+    let weights = HifiGanWeights {
+        conv_pre_weight,
+        conv_pre_bias,
+        conv_pre_kernel: 7,
+        upsample_weights,
+        mrf_stage_weights,
+        conv_post_weight,
+        conv_post_bias,
+        conv_post_kernel: 7,
+        cond: None,
+    };
+    HiFiGan::new_with_preprocessing(
+        weights,
+        attrs,
+        HifiGanConfig::fp32(),
+        22_050,
+        None,
+        5,
+        HifiGanConvPadding::Reflect,
+    )
+    .map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "HiFiGan::from_gguf(hifigan_vocoder): loaded tensor tree failed validation: {error}"
+        ))
+    })
+}
+
+fn load_speecht5_hifigan(file: &GgufFile) -> Result<HiFiGan> {
+    use std::collections::BTreeSet;
+
+    let attrs = speecht5_hifigan_attrs();
+    let mut expected_names = BTreeSet::new();
+    let conv_pre_weight = load_hifigan_tensor(
+        file,
+        "conv_pre.weight",
+        &[attrs.initial_channel, attrs.n_mels, 7],
+        &mut expected_names,
+    )?;
+    let conv_pre_bias = load_hifigan_tensor(
+        file,
+        "conv_pre.bias",
+        &[attrs.initial_channel],
+        &mut expected_names,
+    )?;
+
+    let mut upsample_weights = Vec::with_capacity(attrs.n_upsample_stages());
+    let mut mrf_stage_weights = Vec::with_capacity(attrs.n_upsample_stages());
+    for stage in 0..attrs.n_upsample_stages() {
+        let in_ch = attrs.initial_channel >> stage;
+        let out_ch = attrs.initial_channel >> (stage + 1);
+        let kernel = attrs.upsample_kernel_sizes[stage];
+        upsample_weights.push(UpsampleStageWeights {
+            weight: load_hifigan_tensor(
+                file,
+                &format!("upsampler.{stage}.weight"),
+                &[in_ch, out_ch, kernel],
+                &mut expected_names,
+            )?,
+            bias: load_hifigan_tensor(
+                file,
+                &format!("upsampler.{stage}.bias"),
+                &[out_ch],
+                &mut expected_names,
+            )?,
+            in_ch,
+            out_ch,
+            kernel,
+            stride: attrs.upsample_rates[stage],
+        });
+
+        let mut branches = Vec::with_capacity(attrs.n_mrf_branches());
+        for branch in 0..attrs.n_mrf_branches() {
+            let block = stage * attrs.n_mrf_branches() + branch;
+            let kernel = attrs.resblock_kernel_sizes[branch];
+            let mut layers = Vec::with_capacity(attrs.resblock_dilation_sizes[branch].len());
+            for (layer, &dilation) in attrs.resblock_dilation_sizes[branch].iter().enumerate() {
+                let conv1 = format!("resblocks.{block}.convs1.{layer}");
+                let conv2 = format!("resblocks.{block}.convs2.{layer}");
+                layers.push(ResBlockLayer {
+                    weight: load_hifigan_tensor(
+                        file,
+                        &format!("{conv1}.weight"),
+                        &[out_ch, out_ch, kernel],
+                        &mut expected_names,
+                    )?,
+                    bias: load_hifigan_tensor(
+                        file,
+                        &format!("{conv1}.bias"),
+                        &[out_ch],
+                        &mut expected_names,
+                    )?,
+                    weight_c2: Some(load_hifigan_tensor(
+                        file,
+                        &format!("{conv2}.weight"),
+                        &[out_ch, out_ch, kernel],
+                        &mut expected_names,
+                    )?),
+                    bias_c2: Some(load_hifigan_tensor(
+                        file,
+                        &format!("{conv2}.bias"),
+                        &[out_ch],
+                        &mut expected_names,
+                    )?),
+                    dilation,
+                    kernel,
+                    channels: out_ch,
+                });
+            }
+            branches.push(MrfBranchWeights { layers });
+        }
+        mrf_stage_weights.push(branches);
+    }
+
+    let last_channels = attrs.initial_channel >> attrs.n_upsample_stages();
+    let conv_post_weight = load_hifigan_tensor(
+        file,
+        "conv_post.weight",
+        &[1, last_channels, 7],
+        &mut expected_names,
+    )?;
+    let conv_post_bias = load_hifigan_tensor(file, "conv_post.bias", &[1], &mut expected_names)?;
+    let normalization = HifiGanInputNormalization {
+        mean: load_hifigan_tensor(file, "mean", &[attrs.n_mels], &mut expected_names)?,
+        scale: load_hifigan_tensor(file, "scale", &[attrs.n_mels], &mut expected_names)?,
+    };
+
+    let actual_names: BTreeSet<String> = file
+        .tensors()
+        .iter()
+        .map(|info| info.name.clone())
+        .collect();
+    if actual_names != expected_names {
+        let missing: Vec<&String> = expected_names.difference(&actual_names).take(4).collect();
+        let extra: Vec<&String> = actual_names.difference(&expected_names).take(4).collect();
+        return Err(VokraError::ModelLoad(format!(
+            "HiFiGan::from_gguf(speecht5_hifigan): tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected_names.len(),
+            actual_names.len()
+        )));
+    }
+
+    let weights = HifiGanWeights {
+        conv_pre_weight,
+        conv_pre_bias,
+        conv_pre_kernel: 7,
+        upsample_weights,
+        mrf_stage_weights,
+        conv_post_weight,
+        conv_post_bias,
+        conv_post_kernel: 7,
+        cond: None,
+    };
+    HiFiGan::new_with_preprocessing(
+        weights,
+        attrs,
+        HifiGanConfig::fp32(),
+        16_000,
+        Some(normalization),
+        0,
+        HifiGanConvPadding::Zero,
+    )
+    .map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "HiFiGan::from_gguf(speecht5_hifigan): loaded tensor tree failed validation: {error}"
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -687,46 +1102,87 @@ mod tests {
         }
     }
 
-    /// `arch = hifigan_vocoder` must reach the loud-partial arm — the
-    /// real-weight loader is deferred, so the caller gets a
-    /// [`VokraError::NotImplemented`] that names the SpeechBrain
-    /// hyperparams source + tensor-name walk. FR-EX-08.
+    /// `arch = hifigan_vocoder` now enters the strict 156-tensor folded
+    /// manifest walk. A metadata-only file must fail at the first tensor.
     #[test]
-    fn from_gguf_hifigan_vocoder_returns_not_implemented() {
+    fn from_gguf_hifigan_vocoder_requires_real_tensor_manifest() {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH_HIFIGAN_VOCODER);
         let bytes = b.to_bytes().expect("build hifigan_vocoder-arch GGUF");
         let file = GgufFile::parse(bytes).expect("parse GGUF");
         let Err(err) = HiFiGan::from_gguf(&file) else {
-            panic!("expected NotImplemented for deferred hifigan_vocoder loader");
+            panic!("metadata-only SpeechBrain HiFi-GAN must not bind");
         };
         match err {
-            VokraError::NotImplemented(msg) => {
-                assert!(msg.contains("hifigan_vocoder"));
-                assert!(msg.contains("speechbrain"));
+            VokraError::ModelLoad(msg) => {
+                assert!(msg.contains("conv_pre.weight"));
+                assert!(msg.contains("missing"));
             }
-            other => panic!("expected NotImplemented for deferred loader, got: {other}"),
+            other => panic!("expected strict tensor ModelLoad error, got: {other}"),
         }
     }
 
-    /// `arch = speecht5_hifigan` must reach the other loud-partial
-    /// arm — the SpeechT5 tensor topology is intentionally distinct
-    /// (no `generator.` prefix, `mean` / `scale` scalars, 16 kHz).
+    /// `arch = speecht5_hifigan` now enters the strict 158-tensor walk.
+    /// A metadata-only file must therefore fail on the first required
+    /// tensor, not return the old deferred-loader error.
     #[test]
-    fn from_gguf_speecht5_hifigan_returns_not_implemented() {
+    fn from_gguf_speecht5_hifigan_requires_real_tensor_manifest() {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH_SPEECHT5_HIFIGAN);
         let bytes = b.to_bytes().expect("build speecht5_hifigan-arch GGUF");
         let file = GgufFile::parse(bytes).expect("parse GGUF");
         let Err(err) = HiFiGan::from_gguf(&file) else {
-            panic!("expected NotImplemented for deferred speecht5_hifigan loader");
+            panic!("metadata-only SpeechT5 HiFi-GAN must not bind");
         };
         match err {
-            VokraError::NotImplemented(msg) => {
-                assert!(msg.contains("speecht5_hifigan"));
-                assert!(msg.contains("upsampler"));
+            VokraError::ModelLoad(msg) => {
+                assert!(msg.contains("conv_pre.weight"));
+                assert!(msg.contains("missing"));
             }
-            other => panic!("expected NotImplemented for deferred loader, got: {other}"),
+            other => panic!("expected strict tensor ModelLoad error, got: {other}"),
         }
+    }
+
+    #[test]
+    fn speecht5_normalization_is_per_mel_channel_in_channel_major_layout() {
+        let norm = HifiGanInputNormalization {
+            mean: vec![1.0, -2.0],
+            scale: vec![2.0, 4.0],
+        };
+        let normalized = normalize_hifigan_mel(&[1.0, 3.0, -2.0, 6.0], 2, 2, &norm)
+            .expect("valid channel-major mel");
+        assert_eq!(normalized, vec![0.0, 1.0, 0.0, 2.0]);
+
+        let err = normalize_hifigan_mel(&[0.0; 3], 2, 2, &norm).unwrap_err();
+        assert!(err.to_string().contains("mel.len() 3"));
+    }
+
+    #[test]
+    fn speechbrain_replicate_padding_preserves_channel_major_rows() {
+        let padded = replicate_pad_hifigan_mel(&[1.0, 2.0, 10.0, 20.0], 2, 2, 2)
+            .expect("valid channel-major mel");
+        assert_eq!(
+            padded,
+            vec![
+                1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0
+            ]
+        );
+        assert!(
+            replicate_pad_hifigan_mel(&[], 0, 2, 5)
+                .unwrap_err()
+                .to_string()
+                .contains("n_frames must be positive")
+        );
+    }
+
+    #[test]
+    fn speechbrain_attrs_match_pinned_hyperparams() {
+        let attrs = speechbrain_hifigan_attrs();
+        assert_eq!(attrs.n_mels, 80);
+        assert_eq!(attrs.initial_channel, 512);
+        assert_eq!(attrs.upsample_rates, [8, 8, 2, 2]);
+        assert_eq!(attrs.upsample_kernel_sizes, [16, 16, 4, 4]);
+        assert_eq!(attrs.total_upsample_factor(), 256);
+        assert_eq!(attrs.sample_rate, 22_050);
     }
 }

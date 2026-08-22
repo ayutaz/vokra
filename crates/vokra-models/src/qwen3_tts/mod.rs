@@ -95,8 +95,10 @@
 //!   `model.safetensors`, `preprocessor_config.json`, `tokenizer_config.json`,
 //!   `vocab.json`, and the `speech_tokenizer/` submodule
 //!   (`config.json` + `configuration.json` + `model.safetensors` +
-//!   `preprocessor_config.json`). The BF16 model is ~0.9 GB
-//!   (README-declared).
+//!   `preprocessor_config.json`). At pinned Hub revision
+//!   `5d83992436eae1d760afd27aff78a71d676296fc`, the main BF16
+//!   `model.safetensors` is 1,829,344,272 bytes; the separately loaded
+//!   speech-tokenizer directory is another ~682 MB.
 //!
 //! # What lands in this Phase 3 slice
 //!
@@ -138,6 +140,13 @@
 
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
+
+mod bound;
+
+pub use bound::{
+    Qwen3TtsBoundBlockWeights, Qwen3TtsCheckpoint, qwen3_tts_code_predictor_block_forward,
+    qwen3_tts_talker_block_forward,
+};
 
 // ---------------------------------------------------------------------------
 // Public seam re-exports — shared with the codec primitive
@@ -203,7 +212,8 @@ pub const QWEN3_TTS_NUM_CODE_GROUPS: u32 = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Qwen3TtsVariant {
     /// `Qwen/Qwen3-TTS-12Hz-0.6B-Base` — the anchor 0.6B release
-    /// (~0.9 GB BF16 safetensors). Talker: `hidden_dim=1024`,
+    /// (1,829,344,272-byte BF16 safetensors at the pinned revision). Talker:
+    /// `hidden_dim=1024`,
     /// `n_layer=28`, GQA `16 Q ÷ 8 KV × head_dim=128`,
     /// SwiGLU `ffn_dim=3072`, `text_vocab_size=151936`,
     /// `max_position_embeddings=32768`. Primary source =
@@ -785,15 +795,18 @@ impl Qwen3TtsConfig {
 }
 
 // ---------------------------------------------------------------------------
-// Weights (scaffold — real binding delegates to a follow-up wave)
+// Legacy synthetic weights (shape tests only; not the real checkpoint)
 // ---------------------------------------------------------------------------
 
-/// Qwen3-TTS talker weight store scaffold.
+/// Historical Qwen3-TTS synthetic talker weight store.
 ///
-/// Carries the token embedding, LM backbone stack, speaker projection
-/// and text-encoder projection. `q_bias` / `k_bias` / `v_bias` are
-/// allocated (Qwen3 keeps attention biases like Qwen2, per the model
-/// family) so a real binding walks the same slots.
+/// This type is retained for deterministic allocation/shape tests and public
+/// API compatibility. It does **not** describe the inspected upstream
+/// checkpoint: the real model has bias-free attention plus per-head `q_norm`
+/// / `k_norm`, a `[151936, 2048]` text embedding followed by a two-layer
+/// biased text projection, one codec embedding/head, and a separate ECAPA
+/// speaker encoder. Production artifacts bind through
+/// [`Qwen3TtsCheckpoint`]; do not construct this type from safetensors names.
 #[derive(Debug, Clone)]
 pub struct Qwen3TtsTalkerWeights {
     /// Text-token embedding: `[text_vocab_size, hidden_dim]` (Qwen3
@@ -815,9 +828,11 @@ pub struct Qwen3TtsTalkerWeights {
     pub final_norm: Vec<f32>,
 }
 
-/// Per-transformer-block weights for the talker (GQA self-attention +
-/// SwiGLU FFN, the Qwen3 block topology — same op set as Qwen2, only
-/// wider head split + rope base).
+/// Historical synthetic per-block weights.
+///
+/// The bias vectors here are fixture-only. Real Qwen3-TTS blocks use
+/// [`Qwen3TtsBoundBlockWeights`] with bias-free projections and per-head Q/K
+/// normalization.
 #[derive(Debug, Clone)]
 pub struct Qwen3TtsBlockWeights {
     /// Self-attention pre-norm γ, shape `[hidden_dim]`.
@@ -851,8 +866,11 @@ pub struct Qwen3TtsBlockWeights {
     pub ffn_down: Vec<f32>,
 }
 
-/// Qwen3-TTS code-predictor weight store scaffold (the 5-layer parallel
-/// head — same block topology as the talker, just smaller).
+/// Historical synthetic code-predictor weight store.
+///
+/// The real checkpoint has fifteen distinct residual codec embeddings and
+/// fifteen LM heads (`num_code_groups - 1`), represented by the strict
+/// checkpoint manifest rather than this flattened fixture field.
 #[derive(Debug, Clone)]
 pub struct Qwen3TtsCodePredictorWeights {
     /// Per-layer transformer block weights. Length = `n_layer`.
@@ -1631,7 +1649,7 @@ mod tests {
         let _ = c_syn;
 
         let real = Qwen3TtsConfig::qwen3_tts_0_6b_base();
-        // Real Qwen3-TTS-0.6B is ~0.9 GB in BF16; the synthesized fixture
+        // Real Qwen3-TTS-0.6B is 1.83 GB in BF16; the synthesized fixture
         // would allocate ~3.5 GB in F32. Instead of running that here, we
         // build the fixture against the tiny group-aligned codec via a
         // config whose block dims are tiny but whose num_code_groups

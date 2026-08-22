@@ -627,6 +627,117 @@ pub fn conv1d_f32_on(
     )
 }
 
+/// Grouped 1-D convolution composed from the dispatched dense
+/// [`conv1d_f32`] kernel.
+///
+/// Layout is PyTorch-compatible: `input = [in_ch, in_len]`, `weight =
+/// [out_ch, in_ch / groups, kernel]`, and `out = [out_ch, out_len]`.
+/// Each group is a contiguous channel slab, so no input or weight copy is
+/// needed. `groups == 1` is bit-identical to [`conv1d_f32`].
+///
+/// # Errors
+///
+/// Returns [`VokraError::InvalidArgument`] for a zero or indivisible group
+/// count, mismatched buffers, or invalid convolution extents.
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+pub fn grouped_conv1d_f32(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    groups: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    let fail = |what: String| {
+        Err(VokraError::InvalidArgument(format!(
+            "grouped_conv1d: {what}"
+        )))
+    };
+    if groups == 0 {
+        return fail("groups must be > 0".into());
+    }
+    if in_ch % groups != 0 || out_ch % groups != 0 {
+        return fail(format!(
+            "in_ch {in_ch} and out_ch {out_ch} must both be divisible by groups {groups}"
+        ));
+    }
+    if stride == 0 || kernel == 0 {
+        return fail(format!(
+            "stride and kernel must be > 0 (got {stride} / {kernel})"
+        ));
+    }
+    let in_per = in_ch / groups;
+    let out_per = out_ch / groups;
+    let weight_len = out_ch
+        .checked_mul(in_per)
+        .and_then(|n| n.checked_mul(kernel))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("grouped_conv1d weight extent overflow".into())
+        })?;
+    if weight.len() != weight_len {
+        return fail(format!(
+            "weight length {} != out_ch × (in_ch / groups) × kernel = {}",
+            weight.len(),
+            weight_len
+        ));
+    }
+    if let Some(b) = bias {
+        if b.len() != out_ch {
+            return fail(format!("bias length {} != out_ch {out_ch}", b.len()));
+        }
+    }
+    let input_len = in_ch.checked_mul(in_len).ok_or_else(|| {
+        VokraError::InvalidArgument("grouped_conv1d input extent overflow".into())
+    })?;
+    if input.len() != input_len {
+        return fail(format!(
+            "input length {} != in_ch × in_len = {}",
+            input.len(),
+            input_len
+        ));
+    }
+    let padded =
+        in_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("grouped_conv1d padding overflow".into())
+            })?)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("grouped_conv1d padded length overflow".into())
+            })?;
+    if padded < kernel {
+        return fail(format!(
+            "padded input length {padded} is shorter than kernel {kernel}"
+        ));
+    }
+    let out_len = (padded - kernel) / stride + 1;
+    let output_len = out_ch.checked_mul(out_len).ok_or_else(|| {
+        VokraError::InvalidArgument("grouped_conv1d output extent overflow".into())
+    })?;
+    if out.len() != output_len {
+        return fail(format!(
+            "out length {} != out_ch × out_len = {}",
+            out.len(),
+            output_len
+        ));
+    }
+
+    for g in 0..groups {
+        let in_slice = &input[g * in_per * in_len..(g + 1) * in_per * in_len];
+        let w_slice = &weight[g * out_per * in_per * kernel..(g + 1) * out_per * in_per * kernel];
+        let b_slice = bias.map(|b| &b[g * out_per..(g + 1) * out_per]);
+        let out_slice = &mut out[g * out_per * out_len..(g + 1) * out_per * out_len];
+        conv1d_f32(
+            in_slice, in_per, in_len, w_slice, out_per, kernel, b_slice, stride, padding, out_slice,
+        )?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
 fn conv1d_dispatch(
     force: Option<IsaPath>,
@@ -836,6 +947,29 @@ mod tests {
         let mut out = [0.0; 2];
         conv1d_f32(&input, 2, 4, &weight, 1, 2, None, 2, 0, &mut out).unwrap();
         assert_eq!(out, [33.0, 77.0]);
+    }
+
+    #[test]
+    fn grouped_conv1d_keeps_channel_groups_isolated() {
+        // Two single-channel groups, kernel width 2.  Output channel 0 sees
+        // only input channel 0 with weight [1, 1]; output channel 1 sees only
+        // input channel 1 with weight [2, -1].
+        let input = [1.0, 2.0, 3.0, 10.0, 20.0, 40.0];
+        let weight = [1.0, 1.0, 2.0, -1.0];
+        let bias = [0.5, -0.5];
+        let mut out = [0.0; 4];
+        grouped_conv1d_f32(&input, 2, 3, &weight, 2, 2, Some(&bias), 1, 0, 2, &mut out).unwrap();
+        assert_eq!(out, [3.5, 5.5, -0.5, -0.5]);
+    }
+
+    #[test]
+    fn grouped_conv1d_rejects_invalid_groups_and_extent_overflow() {
+        let mut out = [0.0; 1];
+        assert!(grouped_conv1d_f32(&[1.0], 1, 1, &[1.0], 1, 1, None, 1, 0, 0, &mut out).is_err());
+        assert!(
+            grouped_conv1d_f32(&[1.0], 1, usize::MAX, &[1.0], 1, 1, None, 1, 0, 1, &mut out)
+                .is_err()
+        );
     }
 
     #[test]

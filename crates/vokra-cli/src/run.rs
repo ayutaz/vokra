@@ -12,9 +12,11 @@
 
 use std::process::ExitCode;
 
-use vokra_core::Session;
+use vokra_core::engines::KwsEngine;
+use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
+use crate::runtime_contracts::{MimiCodesV1, parse_ct_punc_tsv, sha256};
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
@@ -24,17 +26,35 @@ USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
                   [--backend cpu|metal|cuda] [--beam-size <N>] [--length-penalty <α>]
                   [--no-repeat-ngram <N>] [--fixture-tokenizer] [--interrupt-after <N>]
-                  [--deterministic]
+                  [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
+    vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
+    vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
+    vokra-cli run --model <fcpe.gguf> --input <in.wav>
+    vokra-cli run --model <crepe.gguf> --input <in.wav>
+    vokra-cli run --model <charsiu.gguf> --input <in.wav> --text \"P AE T\" \
+                  [--output <alignment.tsv>]
+    vokra-cli run --model <wetextprocessing.gguf> --text <string>
+    vokra-cli run --model <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav> \
+                  [--output <clean.wav>]
+    vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv> [--output <restored.txt>]
+    vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
+    vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
+    vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
+    vokra-cli run --model <vocos.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
@@ -46,21 +66,34 @@ OPTIONS:
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 denoise, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
-                                path, FR-OP-60)
+                                path, FR-OP-60). For NKF-AEC this is the mic
+                                signal and must be paired with --far-end.
+                                For Mimi encode it is a mono WAV; for Mimi
+                                decode it is a `VKRMCODE` v1 code container.
+                                For BigVGAN, both HiFi-GAN variants, and Vocos
+                                it is raw little-endian f32 feature data in
+                                channel-major `[channels, frames]` order;
+                                frames are derived exactly from length.
+    --far-end <path>            nkf_aec only: sample-aligned far-end/reference
+                                mono WAV. It must have exactly the same sample
+                                rate and sample count as --input; no trim,
+                                repeat, channel mixing, or resampling is done.
     --backend <name>            cpu | metal | cuda — backend for the model's hot
                                 ops [default cpu]. Mirrors `bench --backend`:
                                 honored by the whisper / voxtral ASR, kokoro TTS
                                 and speaker (CAM++) paths. VAD, piper-plus TTS
-                                and the CSM / Moshi S2S engines run on the CPU
-                                only, so a non-CPU --backend for them is a loud
-                                error rather than a silent CPU run (FR-EX-08).
+                                Parakeet-TDT ASR, and the CSM / Moshi S2S
+                                engines run on the CPU only, so a non-CPU
+                                --backend for them is a loud error rather than
+                                a silent CPU run (FR-EX-08).
                                 For the honoring paths, metal/cuda need the CLI
                                 built with that feature — an unavailable backend
                                 fails loudly at inference, never silently on CPU.
     --compare <path>            speaker (campplus) only: second WAV; prints the
                                 cosine similarity of the two 192-d embeddings
                                 (speaker_verify, FR-OP-81)
-    --text <string>             text to synthesize (TTS) / the reply text CSM
+    --text <string>             text to synthesize (TTS) / normalize
+                                (wetextprocessing) / the reply text CSM
                                 speaks (S2S — caller-supplied, the model does
                                 not generate text). For `kokoro` this is
                                 PHONEME content, not graphemes: either a misaki
@@ -70,6 +103,11 @@ OPTIONS:
                                 ids only, sentinels are added). Kokoro has no
                                 G2P bridge in-tree, so unmappable input is an
                                 error rather than a silent drop.
+                                For Charsiu this is an exact, whitespace-
+                                delimited sequence from the GGUF's official
+                                phone vocabulary (for example `SH IY`); no G2P,
+                                case folding, or unknown-token substitution is
+                                inferred.
     --voice <name>              kokoro only: voice name from the GGUF's
                                 vokra.kokoro.voice_names. The name resolves,
                                 but mapping it to a style row is NOT
@@ -83,8 +121,24 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for the TTS / S2S / denoise output
-                                (optional)
+    --output <path>             WAV file for audio-producing tasks. Charsiu
+                                writes alignment TSV; CT-Punc
+                                writes exact UTF-8 restored text when present.
+                                Mimi requires it: code container for encode,
+                                WAV for decode. Vocoders write waveform WAV.
+    --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
+                                side-car. Each record is `<u32 id><TAB><token>`;
+                                tokens allow literal Unicode plus `\\`, `\t`,
+                                `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
+                                caller token strings paired with the exact ids
+                                passed to the model; no tokenizer is inferred.
+    --codec-mode <mode>         mimi only: `encode` (mono WAV -> portable
+                                code container) or `decode` (container -> WAV).
+                                The v1 container pins time-major `[frame,cb]`
+                                order, u32 little-endian codes, mono rate,
+                                frame rate, topology, and codebook SHA-256.
+    --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
+                                condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
                                 --word-timestamps, for `whisper`. An arch whose
@@ -172,17 +226,28 @@ struct RunArgs {
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
+    /// CT-Punc-only versioned TSV pairing token ids and escaped UTF-8 tokens.
+    tokens: Option<String>,
+    /// Standalone Mimi direction. Required on the `mimi` arch and rejected
+    /// everywhere else.
+    codec_mode: Option<CodecMode>,
+    /// Vocos Encodec AdaLayerNorm condition (`0..4`).
+    bandwidth_id: Option<usize>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
-    /// Honored by the whisper / voxtral ASR, kokoro TTS and speaker (CAM++)
-    /// paths, whose dispatch binds `.with_backend(...)`. The VAD, piper-plus
-    /// TTS and CSM / Moshi S2S engines are not backend-parameterised, so a
-    /// non-CPU backend for them is rejected loudly in `main` rather than run
-    /// silently on the CPU (FR-EX-08). For the honoring paths an *unavailable*
-    /// backend still fails loudly at inference, never silently on CPU.
+    /// Honored by whisper / voxtral ASR, kokoro TTS, speaker (CAM++), and the
+    /// standalone Mimi codec, whose dispatch binds `.with_backend(...)`. The
+    /// VAD, piper-plus TTS and CSM / Moshi S2S engines are not
+    /// backend-parameterised, so a non-CPU backend for them is rejected loudly
+    /// in `main` rather than run silently on the CPU (FR-EX-08). For the
+    /// honoring paths an *unavailable* backend still fails loudly at
+    /// inference, never silently on CPU.
     backend: vokra_core::BackendKind,
     /// Speaker (campplus) only: second WAV for the cosine-similarity
     /// comparison. Any other task rejects the flag loudly (FR-EX-08).
     compare: Option<String>,
+    /// NKF-AEC only: the far-end/reference WAV paired sample-for-sample with
+    /// `input`. Rejected on every other task.
+    far_end: Option<String>,
     /// Beam-search width (default 1 = greedy). Only honored for `voxtral`
     /// arch — other archs error out on `> 1` rather than silently ignoring
     /// (FR-EX-08).
@@ -242,13 +307,35 @@ struct RunArgs {
     speaker_embedding: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodecMode {
+    Encode,
+    Decode,
+}
+
+impl CodecMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "encode" => Ok(Self::Encode),
+            "decode" => Ok(Self::Decode),
+            other => Err(format!(
+                "unknown --codec-mode `{other}` (expected encode or decode)"
+            )),
+        }
+    }
+}
+
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
+    let mut tokens: Option<String> = None;
+    let mut codec_mode: Option<CodecMode> = None;
+    let mut bandwidth_id: Option<usize> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
     let mut compare: Option<String> = None;
+    let mut far_end: Option<String> = None;
     // Beam-search defaults: greedy (beam_size = 1). Length-penalty 0.6 is
     // only meaningful when beam_size > 1; the default is arbitrary but
     // matches `voxtral::BeamConfig::with_beam_size` so the same value flows
@@ -291,6 +378,30 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 output = Some(args.get(i + 1).ok_or("--output requires a value")?.clone());
                 i += 2;
             }
+            "--tokens" => {
+                tokens = Some(args.get(i + 1).ok_or("--tokens requires a path")?.clone());
+                i += 2;
+            }
+            "--codec-mode" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--codec-mode requires encode or decode")?;
+                codec_mode = Some(CodecMode::parse(value)?);
+                i += 2;
+            }
+            "--bandwidth-id" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--bandwidth-id requires an integer in 0..3")?;
+                let parsed: usize = value
+                    .parse()
+                    .map_err(|error| format!("--bandwidth-id must be an integer: {error}"))?;
+                if parsed >= 4 {
+                    return Err(format!("--bandwidth-id must be in 0..3 (got {parsed})"));
+                }
+                bandwidth_id = Some(parsed);
+                i += 2;
+            }
             "--backend" => {
                 let v = args.get(i + 1).ok_or("--backend requires a value")?;
                 backend = crate::bench::parse_backend(v)?;
@@ -298,6 +409,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--compare" => {
                 compare = Some(args.get(i + 1).ok_or("--compare requires a value")?.clone());
+                i += 2;
+            }
+            "--far-end" => {
+                far_end = Some(args.get(i + 1).ok_or("--far-end requires a value")?.clone());
                 i += 2;
             }
             "--beam-size" => {
@@ -438,8 +553,12 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         input,
         text,
         output,
+        tokens,
+        codec_mode,
+        bandwidth_id,
         backend,
         compare,
+        far_end,
         beam_size,
         length_penalty,
         no_repeat_ngram,
@@ -497,9 +616,22 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // non-CPU `--backend` would be a silent CPU run for them — same class
         // of gap as VAD / piper-plus / CSM / Moshi above.
         ModelTask::VadFsmn => Some("VAD (FSMN)"),
-        ModelTask::Denoise => Some("NSNet2 speech enhancement"),
+        ModelTask::VadFirered => Some("VAD (FireRedVAD)"),
+        ModelTask::VadTen => Some("VAD (TEN-VAD)"),
+        ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
+        ModelTask::SmartTurn => Some("SmartTurn v2 semantic endpointing"),
+        ModelTask::Denoise => Some("NSNet2 / RNNoise speech enhancement"),
         ModelTask::Segment => Some("pyannote speaker segmentation"),
         ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
+        ModelTask::F0Fcpe => Some("FCPE F0 (pitch) extraction"),
+        ModelTask::F0Crepe => Some("CREPE F0 (pitch) extraction"),
+        ModelTask::AlignCharsiu => Some("Charsiu forced alignment"),
+        ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
+        ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
+        ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
+        ModelTask::VocoderBigVgan => Some("BigVGAN neural vocoder"),
+        ModelTask::VocoderHifiGan => Some("HiFi-GAN neural vocoder"),
+        ModelTask::VocoderVocos => Some("Vocos neural vocoder"),
         ModelTask::Tts => Some("piper-plus TTS"),
         ModelTask::S2s => Some("CSM speech-to-speech"),
         ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
@@ -512,7 +644,11 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // a non-CPU backend reaches the hot ops (and an unavailable one fails
         // loudly at inference — the existing FR-EX-08 posture). The guard must
         // NOT fire for these.
-        ModelTask::Asr | ModelTask::AsrVoxtral | ModelTask::TtsKokoro | ModelTask::Speaker => None,
+        ModelTask::Asr
+        | ModelTask::AsrVoxtral
+        | ModelTask::TtsKokoro
+        | ModelTask::Speaker
+        | ModelTask::MimiCodec => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -540,6 +676,32 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             "run: --compare is only supported for the speaker (campplus) arch — \
              it compares two speaker embeddings (FR-OP-81)"
                 .to_owned(),
+        );
+    }
+    if a.far_end.is_some() && task != ModelTask::AecNkf {
+        return Err(
+            "run: --far-end is only supported for the nkf_aec arch — it is the \
+             sample-aligned far-end/reference stream paired with the --input mic WAV"
+                .to_owned(),
+        );
+    }
+    if a.tokens.is_some() && task != ModelTask::CtPunc {
+        return Err(
+            "run: --tokens is only supported for the ct_punc arch — it supplies the \
+             versioned, paired token-string/token-id input to CtPunc::restore"
+                .to_owned(),
+        );
+    }
+    if a.codec_mode.is_some() && task != ModelTask::MimiCodec {
+        return Err(
+            "run: --codec-mode is only supported for the standalone mimi arch — use \
+             `--codec-mode encode|decode` with its portable code container"
+                .to_owned(),
+        );
+    }
+    if a.bandwidth_id.is_some() && task != ModelTask::VocoderVocos {
+        return Err(
+            "run: --bandwidth-id is only supported for the vocos encodec_24khz variant".to_owned(),
         );
     }
     // `--word-timestamps` is a Whisper-only surface (cross-attention DTW,
@@ -619,21 +781,21 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // `--backend metal|cuda|vulkan` reaches the model's hot ops only on the
     // arches whose `run` dispatch binds the concrete engine
     // `.with_backend(...)`: the Whisper / Voxtral ASR paths, the Kokoro TTS
-    // path, and the speaker (CAM++) encoder. The VAD (Silero), piper-plus TTS,
-    // and both S2S engines (CSM / Moshi) bind without a backend and run on the
-    // CPU regardless. A non-CPU `--backend` for one of them would be a silent
-    // no-op — the model would run on the CPU while the caller believes the GPU
-    // is in use. Reject it loudly rather than misreport where the model ran
-    // (FR-EX-08), mirroring the per-arch flag rejections above. (The honoring
-    // arches keep their existing posture: an *unavailable* backend there fails
-    // loudly at inference, never on CPU.)
+    // path, speaker (CAM++) encoder, and standalone Mimi codec. The VAD
+    // (Silero), piper-plus TTS, and both S2S engines (CSM / Moshi) bind without
+    // a backend and run on the CPU regardless. A non-CPU `--backend` for one
+    // of them would be a silent no-op — the model would run on the CPU while
+    // the caller believes the GPU is in use. Reject it loudly rather than
+    // misreport where the model ran (FR-EX-08), mirroring the per-arch flag
+    // rejections above. (The honoring arches keep their existing posture: an
+    // *unavailable* backend there fails loudly at inference, never on CPU.)
     if a.backend != vokra_core::BackendKind::Cpu {
         if let Some(engine_label) = cpu_only_engine_label(task) {
             return Err(format!(
                 "run: --backend {backend} is not supported for this model — the \
                  {engine_label} engine runs on the CPU regardless (its dispatch is not \
-                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, and \
-                 speaker (campplus) paths honor --backend; a non-CPU backend here would \
+                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, \
+                 speaker (campplus), and standalone Mimi paths honor --backend; a non-CPU backend here would \
                  silently run on the CPU (FR-EX-08). Re-run with --backend cpu (or omit it).",
                 backend = backend_flag_name(a.backend),
             ));
@@ -644,7 +806,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         // FSMN-VAD (Wave G) shares this arm verbatim: its binder implements
         // the same `VadEngine` trait Silero does and the dispatch injects it
         // into the same session slot, so the Silero path stays byte-identical.
-        ModelTask::Vad | ModelTask::VadFsmn => {
+        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered | ModelTask::VadTen => {
             let path = a
                 .input
                 .as_deref()
@@ -742,6 +904,42 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::F0Rmvpe => {
             run_f0_rmvpe(&a)?;
+        }
+        ModelTask::F0Fcpe => {
+            run_f0_fcpe(&a)?;
+        }
+        ModelTask::F0Crepe => {
+            run_f0_crepe(&a)?;
+        }
+        ModelTask::AlignCharsiu => {
+            run_charsiu_align(&session, &a)?;
+        }
+        ModelTask::TextNormalize => {
+            run_text_normalize(&session, &a)?;
+        }
+        ModelTask::KwsOpenwakeword => {
+            run_openwakeword(&session, &a)?;
+        }
+        ModelTask::SmartTurn => {
+            run_smart_turn(&session, &a)?;
+        }
+        ModelTask::AecNkf => {
+            run_nkf_aec(&session, &a)?;
+        }
+        ModelTask::CtPunc => {
+            run_ct_punc(&session, &a)?;
+        }
+        ModelTask::MimiCodec => {
+            run_mimi_codec(&session, &a)?;
+        }
+        ModelTask::VocoderBigVgan => {
+            run_bigvgan(&session, &a)?;
+        }
+        ModelTask::VocoderHifiGan => {
+            run_hifigan(&session, &a)?;
+        }
+        ModelTask::VocoderVocos => {
+            run_vocos(&session, &a)?;
         }
         // `mel-frontend` is a bench-only task (M2-04-T11) — it isolates the
         // Whisper log-mel path so the fused / unfused RTF isn't polluted by
@@ -1112,7 +1310,7 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The NSNet2 speech-enhancement path (Wave G, 2026-08-15).
+/// The native NSNet2 / RNNoise speech-enhancement path.
 ///
 /// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
 /// to `--output` (or its duration is reported when the flag is absent, the
@@ -1129,32 +1327,59 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
 /// rate, so feeding a 44.1/48 kHz clip through it would emit plausible-sounding
 /// but wrong audio with no diagnostic.
 fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
-    use vokra_models::nsnet2::Nsnet2V1;
-
     let path = a
         .input
         .as_deref()
         .ok_or("run (denoise): --input <in.wav> is required")?;
-    let model = Nsnet2V1::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
-    let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
-    if clip.sample_rate != rate {
-        return Err(format!(
-            "run (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 STFT \
-             front-end is fixed at the rate the model was trained on), got {} Hz — \
-             resample offline first (FR-EX-08: never a silent resample)",
-            clip.sample_rate
-        ));
-    }
-    let out = model
-        .denoise_pcm(&clip.samples)
-        .map_err(|e| e.to_string())?;
+    let arch = session
+        .gguf()
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|value| value.as_str())
+        .ok_or("run (denoise): GGUF is missing `vokra.model.arch`")?;
+    let (rate, out) = match arch {
+        "nsnet2" => {
+            let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let rate = model.config().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .denoise_pcm(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
+        "rnnoise" => {
+            let model = vokra_models::rnnoise::RnnoiseV02::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let rate = vokra_models::rnnoise::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .denoise_pcm(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
+        other => {
+            return Err(format!(
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+            ));
+        }
+    };
     println!(
         "denoise: {} in -> {} out samples @ {rate} Hz",
         clip.samples.len(),
         out.len()
     );
     emit_audio("denoise", &out, rate, a.output.as_deref())
+}
+
+fn denoise_rate_error(path: &str, arch: &str, expected: u32, actual: u32) -> String {
+    format!(
+        "run (denoise): {path}: arch `{arch}` expects a {expected} Hz mono WAV, got {actual} Hz — resample offline first (FR-EX-08: never a silent resample)"
+    )
 }
 
 /// The pyannote `segmentation-3.0` speaker-segmentation path (Wave G).
@@ -1255,17 +1480,640 @@ fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
     let track = model
         .extract_real(&clip.samples, clip.sample_rate)
         .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, rate);
+    Ok(())
+}
+
+fn run_f0_fcpe(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::f0::fcpe::FCPE;
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (f0): --input <in.wav> is required")?;
+    let model = FCPE::from_gguf(std::path::Path::new(&a.model)).map_err(|e| e.to_string())?;
+    let rate = model.config().sample_rate;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (f0): {path}: expected a {rate} Hz mono WAV (the FCPE mel front-end is \
+             fixed at the rate in `vokra.f0.fcpe.*`), got {} Hz — resample offline first \
+             (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let track = model
+        .extract_real(&clip.samples, clip.sample_rate)
+        .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, rate);
+    Ok(())
+}
+
+fn run_f0_crepe(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::f0::crepe::{CREPE, NATIVE_SAMPLE_RATE};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (f0): --input <in.wav> is required")?;
+    let model = CREPE::from_gguf(std::path::Path::new(&a.model)).map_err(|e| e.to_string())?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != NATIVE_SAMPLE_RATE {
+        return Err(format!(
+            "run (f0): {path}: expected a {NATIVE_SAMPLE_RATE} Hz mono WAV (CREPE's \
+             1024-sample frame and cent grid are anchored to that rate), got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let track = model
+        .extract_real(&clip.samples, clip.sample_rate)
+        .map_err(|e| e.to_string())?;
+    emit_f0_track(&track, model.config().hop, NATIVE_SAMPLE_RATE);
+    Ok(())
+}
+
+/// Charsiu's paired audio/phone-sequence route.
+///
+/// The phone transcript is deliberately accepted only as exact, whitespace-
+/// delimited labels from the GGUF vocabulary.  G2P, case folding and unknown
+/// substitution would all change the alignment contract, so they remain
+/// explicit caller-side steps.
+fn run_charsiu_align(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (charsiu): --input <in.wav> is required")?;
+    let phone_text = a
+        .text
+        .as_deref()
+        .ok_or("run (charsiu): --text \"P AE T\" is required")?;
+    let phones: Vec<String> = phone_text
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect();
+    if phones.is_empty() {
+        return Err("run (charsiu): --text must contain at least one phone label".to_owned());
+    }
+
+    let model = vokra_models::align::charsiu::Charsiu::from_file(session.gguf())
+        .map_err(|e| e.to_string())?;
+    let clip = wav::read_wav(path)?;
+    let expected_rate = model.config().sample_rate;
+    if clip.sample_rate != expected_rate {
+        return Err(format!(
+            "run (charsiu): {path}: expected a {expected_rate} Hz mono WAV, got {} Hz — \
+             resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let aligned = model
+        .align(&clip.samples, clip.sample_rate, &phones)
+        .map_err(|e| e.to_string())?;
+
+    let mut tsv =
+        String::from("vokra-charsiu-alignment-tsv-v1\nphone\tstart_sec\tend_sec\tconfidence\n");
+    for token in &aligned {
+        use std::fmt::Write as _;
+        writeln!(
+            tsv,
+            "{}\t{:.6}\t{:.6}\t{:.6}",
+            token.text, token.start_sec, token.end_sec, token.confidence
+        )
+        .expect("writing to a String cannot fail");
+    }
+    match a.output.as_deref() {
+        Some(out) => {
+            std::fs::write(out, tsv)
+                .map_err(|e| format!("run (charsiu): cannot write {out}: {e}"))?;
+            println!("charsiu: wrote {} aligned phone(s) -> {out}", aligned.len());
+        }
+        None => print!("{tsv}"),
+    }
+    Ok(())
+}
+
+/// Shared renderer for all three checkpoint-backed F0 estimators.
+fn emit_f0_track(track: &[vokra_models::f0::F0Frame], hop: u32, rate: u32) {
     let voiced = track.iter().filter(|f| f.voiced).count();
     println!(
         "f0: {} frames, voiced_frames={voiced}, hop={} @ {rate} Hz",
         track.len(),
-        model.config().hop
+        hop
     );
-    for frame in &track {
+    for frame in track {
         println!(
             "{:.4}\t{:.3}\t{}\t{:.4}",
             frame.time_sec, frame.hz, frame.voiced, frame.confidence
         );
+    }
+}
+
+fn run_text_normalize(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (wetextprocessing): --text <string> is required")?;
+    let model = vokra_models::wetextprocessing::WeTextProcessing::from_gguf(session.gguf())
+        .map_err(|e| e.to_string())?;
+    let normalized = model.normalize(text).map_err(|e| e.to_string())?;
+    println!("normalize: {normalized}");
+    Ok(())
+}
+
+/// CT-Punc's versioned paired-input route.
+///
+/// Token strings and ids are read from one TSV record stream so they cannot
+/// acquire different lengths through two independently parsed flags. The
+/// binder still validates vocabulary range and emits exactly one label per
+/// record. `--output` is exact UTF-8 restored text with no diagnostic prefix;
+/// stdout uses a labelled human-readable line when no file is requested.
+fn run_ct_punc(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.text.is_some() {
+        return Err(
+            "run (ct_punc): use --tokens <tokens.tsv>; --input/--text cannot preserve the \
+             required caller-supplied token-string/token-id pairing"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .tokens
+        .as_deref()
+        .ok_or("run (ct_punc): --tokens <tokens.tsv> is required")?;
+    let input = std::fs::read_to_string(path)
+        .map_err(|e| format!("run (ct_punc): --tokens {path}: {e}"))?;
+    let paired = parse_ct_punc_tsv(&input)?;
+    debug_assert_eq!(paired.tokens.len(), paired.token_ids.len());
+    let tokens: Vec<&str> = paired.tokens.iter().map(String::as_str).collect();
+    let model =
+        vokra_models::ct_punc::CtPunc::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let restored = model
+        .restore(&tokens, &paired.token_ids)
+        .map_err(|e| e.to_string())?;
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, restored.as_bytes())
+            .map_err(|e| format!("run (ct_punc): --output {output}: {e}"))?;
+        eprintln!(
+            "ct_punc: restored {} paired tokens -> {output}",
+            paired.tokens.len()
+        );
+    } else {
+        println!("ct_punc: {restored}");
+    }
+    Ok(())
+}
+
+/// Standalone Mimi encode/decode using the portable `VKRMCODE` v1 contract.
+fn run_mimi_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::codec::MimiCodecGguf;
+    use vokra_models::mimi::{MimiEncoder, MimiNeuralConfig, MimiNeuralDecoder};
+    use vokra_ops::{MimiRvqAttrs, mimi_rvq_decode};
+
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (mimi): --text/--tokens are not codec inputs; use --input plus \
+             --codec-mode encode|decode"
+                .to_owned(),
+        );
+    }
+    let mode = a
+        .codec_mode
+        .ok_or("run (mimi): --codec-mode encode|decode is required")?;
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (mimi): --input <wav|codes.vmc> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (mimi): --output <codes.vmc|wav> is required")?;
+
+    // The standalone route is a model-load boundary just like Moshi's
+    // `with_mimi_gguf`: enforce the provenance gate and surface CC-BY
+    // attribution before binding any learned tensors.
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|e| e.to_string())?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+
+    let cfg = MimiNeuralConfig::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    cfg.validate().map_err(|e| e.to_string())?;
+    let codec = MimiCodecGguf::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let n_q = cfg.quantizer.n_q;
+    if codec.attrs.n_codebooks < n_q {
+        return Err(format!(
+            "run (mimi): effective table GGUF has {} codebooks but the neural config requires {n_q}",
+            codec.attrs.n_codebooks
+        ));
+    }
+    if codec.attrs.codebook_size != cfg.quantizer.bins {
+        return Err(format!(
+            "run (mimi): effective table codebook_size {} != neural quantizer bins {}",
+            codec.attrs.codebook_size, cfg.quantizer.bins
+        ));
+    }
+    let table_bytes = session
+        .gguf()
+        .tensor_data("vokra.mimi.codebook_tables")
+        .ok_or("run (mimi): GGUF tensor `vokra.mimi.codebook_tables` has no data")?;
+    let model_sha256 = sha256(table_bytes);
+    let hop = cfg.frame_hop_samples().map_err(|e| e.to_string())?;
+
+    match mode {
+        CodecMode::Encode => {
+            let clip = wav::read_wav(input_path)
+                .map_err(|e| format!("run (mimi encode): {input_path}: {e}"))?;
+            if clip.sample_rate != cfg.sample_rate {
+                return Err(format!(
+                    "run (mimi encode): {input_path} is {} Hz, model requires {} Hz — \
+                     resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate, cfg.sample_rate
+                ));
+            }
+            if clip.samples.is_empty() || clip.samples.len() % hop != 0 {
+                return Err(format!(
+                    "run (mimi encode): input has {} samples; v1 requires a positive exact \
+                     multiple of the model frame hop {hop} (no implicit pad/trim)",
+                    clip.samples.len()
+                ));
+            }
+            let encoder = MimiEncoder::from_gguf(session.gguf(), &cfg)
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend);
+            let codes = encoder
+                .encode_all(&clip.samples)
+                .map_err(|e| e.to_string())?;
+            let n_frames = codes.len() / n_q;
+            let container = MimiCodesV1 {
+                sample_rate: cfg.sample_rate,
+                frame_rate_mhz: cfg.frame_rate_mhz,
+                n_codebooks: u32::try_from(n_q)
+                    .map_err(|_| "run (mimi encode): n_codebooks exceeds u32")?,
+                codebook_size: u32::try_from(cfg.quantizer.bins)
+                    .map_err(|_| "run (mimi encode): codebook_size exceeds u32")?,
+                feature_dimension: u32::try_from(codec.attrs.d_model)
+                    .map_err(|_| "run (mimi encode): feature dimension exceeds u32")?,
+                n_frames: u64::try_from(n_frames)
+                    .map_err(|_| "run (mimi encode): frame count exceeds u64")?,
+                pcm_samples: u64::try_from(clip.samples.len())
+                    .map_err(|_| "run (mimi encode): sample count exceeds u64")?,
+                model_sha256,
+                codes,
+            };
+            let bytes = container.to_bytes()?;
+            std::fs::write(output_path, bytes)
+                .map_err(|e| format!("run (mimi encode): --output {output_path}: {e}"))?;
+            println!(
+                "mimi encode: {} samples -> {} frames x {} codebooks -> {output_path}",
+                clip.samples.len(),
+                n_frames,
+                n_q
+            );
+        }
+        CodecMode::Decode => {
+            let decoder = MimiNeuralDecoder::from_gguf(session.gguf(), &cfg)
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend);
+            if codec.attrs.d_model != decoder.expected_feature_dim() {
+                return Err(format!(
+                    "run (mimi decode): effective table feature dimension {} != neural decoder input {}",
+                    codec.attrs.d_model,
+                    decoder.expected_feature_dim()
+                ));
+            }
+            let bytes = std::fs::read(input_path)
+                .map_err(|e| format!("run (mimi decode): {input_path}: {e}"))?;
+            let container = MimiCodesV1::from_bytes(&bytes)?;
+            validate_mimi_codes_for_model(&container, &cfg, &codec, model_sha256, hop)?;
+            let n_frames = usize::try_from(container.n_frames)
+                .map_err(|_| "run (mimi decode): frame count does not fit this host")?;
+            let attrs = MimiRvqAttrs {
+                n_codebooks: n_q,
+                codebook_size: codec.attrs.codebook_size,
+                d_model: codec.attrs.d_model,
+            };
+            let features =
+                mimi_rvq_decode(&container.codes, n_frames, &codec.tables[..n_q], &attrs)
+                    .map_err(|e| e.to_string())?;
+            let pcm = decoder.decode_all(&features).map_err(|e| e.to_string())?;
+            let expected_samples = usize::try_from(container.pcm_samples)
+                .map_err(|_| "run (mimi decode): PCM sample count does not fit this host")?;
+            if pcm.len() != expected_samples {
+                return Err(format!(
+                    "run (mimi decode): decoder emitted {} samples, container declares {expected_samples}",
+                    pcm.len()
+                ));
+            }
+            wav::write_wav(output_path, &pcm, cfg.sample_rate)
+                .map_err(|e| format!("run (mimi decode): --output {output_path}: {e}"))?;
+            println!(
+                "mimi decode: {} frames x {} codebooks -> {} samples @ {} Hz -> {output_path}",
+                n_frames,
+                n_q,
+                pcm.len(),
+                cfg.sample_rate
+            );
+        }
+    }
+    Ok(())
+}
+
+/// BigVGAN's explicit mel-file CLI contract. The raw input is channel-major
+/// `[n_mels, frames]` little-endian f32; no header, transpose, padding, or
+/// inferred normalization is applied.
+fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
+        return Err(
+            "run (bigvgan): --text/--tokens/--codec-mode are not vocoder inputs; pass a raw channel-major mel file with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (bigvgan): --input <mel.f32> is required")?;
+    let model = vokra_models::bigvgan::BigVGan::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let n_mels = model.config().in_channels as usize;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (bigvgan): --input {input_path}: {error}"))?;
+    let (mel, frames) = parse_vocoder_feature_bytes(&bytes, n_mels, input_path, "bigvgan")?;
+    let pcm = model
+        .decode(&mel, frames)
+        .map_err(|error| error.to_string())?;
+    emit_audio(
+        "bigvgan",
+        &pcm,
+        model.variant().sample_rate(),
+        a.output.as_deref(),
+    )
+}
+
+/// Both standalone HiFi-GAN variants use the same explicit file layout as
+/// BigVGAN. The strict model binder applies variant-owned preprocessing
+/// (SpeechT5 mean/scale normalization or SpeechBrain replicate padding); the
+/// CLI does not infer or duplicate it.
+fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const TASK: &str = "hifigan";
+    if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
+        return Err(
+            "run (hifigan): --text/--tokens/--codec-mode are not vocoder inputs; pass a raw channel-major mel file with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (hifigan): --input <mel.f32> is required")?;
+    let model = vokra_models::hifigan::HiFiGan::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let n_mels = model.attrs().n_mels;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (hifigan): --input {input_path}: {error}"))?;
+    let (mel, frames) = parse_vocoder_feature_bytes(&bytes, n_mels, input_path, TASK)?;
+    let pcm = model
+        .decode(&mel, frames)
+        .map_err(|error| error.to_string())?;
+    let variant = match model.sample_rate() {
+        16_000 => "speecht5_hifigan",
+        22_050 => "hifigan_vocoder",
+        _ => TASK,
+    };
+    emit_audio(variant, &pcm, model.sample_rate(), a.output.as_deref())
+}
+
+/// Vocos' explicit raw-feature contract. Encodec features are assumed to have
+/// already been produced by the matching Encodec quantizer; this runtime does
+/// not bundle or silently substitute that neural frontend.
+fn run_vocos(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
+        return Err(
+            "run (vocos): --text/--tokens/--codec-mode are not vocoder inputs; pass raw channel-major features with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (vocos): --input <features.f32> is required")?;
+    let model =
+        vokra_models::vocos::Vocos::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (vocos): --input {input_path}: {error}"))?;
+    let (features, frames) =
+        parse_vocoder_feature_bytes(&bytes, model.config().n_input, input_path, "vocos")?;
+    let pcm = match model.variant() {
+        vokra_models::vocos::VocosVariant::Mel24khz => {
+            if a.bandwidth_id.is_some() {
+                return Err(
+                    "run (vocos): --bandwidth-id is invalid for mel_24khz (plain LayerNorm)"
+                        .to_owned(),
+                );
+            }
+            model.decode(&features, frames)
+        }
+        vokra_models::vocos::VocosVariant::Encodec24khz => {
+            let bandwidth_id = a.bandwidth_id.ok_or(
+                "run (vocos): encodec_24khz requires --bandwidth-id <0..3> (1.5/3.0/6.0/12.0 kbps)",
+            )?;
+            model.decode_with_bandwidth(&features, frames, bandwidth_id)
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    emit_audio("vocos", &pcm, model.sample_rate(), a.output.as_deref())
+}
+
+fn parse_vocoder_feature_bytes(
+    bytes: &[u8],
+    n_mels: usize,
+    input_path: &str,
+    task: &str,
+) -> Result<(Vec<f32>, usize), String> {
+    if bytes.len() % 4 != 0 {
+        return Err(format!(
+            "run ({task}): {input_path} has {} bytes, not a whole number of little-endian f32 values",
+            bytes.len()
+        ));
+    }
+    let mel: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+    if mel.is_empty() || mel.len() % n_mels != 0 {
+        return Err(format!(
+            "run ({task}): {input_path} contains {} floats; expected a positive exact multiple of channels={n_mels} in channel-major [channels, frames] order",
+            mel.len(),
+        ));
+    }
+    if let Some((index, value)) = mel
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(format!(
+            "run ({task}): {input_path} mel[{index}] is non-finite ({value})"
+        ));
+    }
+    let frames = mel.len() / n_mels;
+    Ok((mel, frames))
+}
+
+fn validate_mimi_codes_for_model(
+    codes: &MimiCodesV1,
+    cfg: &vokra_models::mimi::MimiNeuralConfig,
+    codec: &vokra_models::codec::MimiCodecGguf,
+    model_sha256: [u8; 32],
+    hop: usize,
+) -> Result<(), String> {
+    let expected_n_q = u32::try_from(cfg.quantizer.n_q)
+        .map_err(|_| "run (mimi decode): model n_codebooks exceeds u32")?;
+    let expected_bins = u32::try_from(cfg.quantizer.bins)
+        .map_err(|_| "run (mimi decode): model codebook_size exceeds u32")?;
+    let expected_dim = u32::try_from(codec.attrs.d_model)
+        .map_err(|_| "run (mimi decode): model feature dimension exceeds u32")?;
+    if codes.sample_rate != cfg.sample_rate
+        || codes.frame_rate_mhz != cfg.frame_rate_mhz
+        || codes.n_codebooks != expected_n_q
+        || codes.codebook_size != expected_bins
+        || codes.feature_dimension != expected_dim
+    {
+        return Err(format!(
+            "run (mimi decode): container/model contract mismatch: container \
+             rate={} frame_rate_mhz={} n_q={} bins={} dim={}, model \
+             rate={} frame_rate_mhz={} n_q={} bins={} dim={}",
+            codes.sample_rate,
+            codes.frame_rate_mhz,
+            codes.n_codebooks,
+            codes.codebook_size,
+            codes.feature_dimension,
+            cfg.sample_rate,
+            cfg.frame_rate_mhz,
+            expected_n_q,
+            expected_bins,
+            expected_dim
+        ));
+    }
+    if codes.model_sha256 != model_sha256 {
+        return Err(format!(
+            "run (mimi decode): codebook SHA-256 mismatch (container {}, model {}); \
+             codes must be decoded by the exact effective codebook tables that encoded them",
+            hex_digest(&codes.model_sha256),
+            hex_digest(&model_sha256)
+        ));
+    }
+    let frames = usize::try_from(codes.n_frames)
+        .map_err(|_| "run (mimi decode): frame count does not fit this host")?;
+    let expected_pcm = frames
+        .checked_mul(hop)
+        .ok_or("run (mimi decode): frame count overflows PCM length")?;
+    let expected_pcm_u64 = u64::try_from(expected_pcm)
+        .map_err(|_| "run (mimi decode): PCM sample count exceeds u64")?;
+    if codes.pcm_samples != expected_pcm_u64 {
+        return Err(format!(
+            "run (mimi decode): container pcm_samples {} != n_frames {} * model hop {hop} = {expected_pcm}",
+            codes.pcm_samples, frames
+        ));
+    }
+    Ok(())
+}
+
+fn hex_digest(digest: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for &b in digest {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn run_nkf_aec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let mic_path = a
+        .input
+        .as_deref()
+        .ok_or("run (nkf_aec): --input <mic.wav> is required")?;
+    let far_path = a
+        .far_end
+        .as_deref()
+        .ok_or("run (nkf_aec): --far-end <reference.wav> is required")?;
+    let mic = wav::read_wav(mic_path).map_err(|e| format!("{mic_path}: {e}"))?;
+    let far = wav::read_wav(far_path).map_err(|e| format!("{far_path}: {e}"))?;
+    validate_aec_pair(mic_path, &mic, far_path, &far)?;
+
+    let model =
+        vokra_models::aec::nkf_aec::NkfAec::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let cfg = model.config();
+    if mic.sample_rate != cfg.sample_rate {
+        return Err(format!(
+            "run (nkf_aec): input pair is {} Hz, but this checkpoint is fixed at {} Hz — \
+             resample both WAVs offline first (FR-EX-08: never a silent resample)",
+            mic.sample_rate, cfg.sample_rate
+        ));
+    }
+
+    let mut stream = model
+        .open_stream(mic.sample_rate)
+        .map_err(|e| e.to_string())?;
+    let mut cleaned = stream
+        .push_paired(&mic.samples, &far.samples)
+        .map_err(|e| e.to_string())?;
+
+    // Offline `run` promises one output sample per paired input sample. The
+    // streaming engine commits only samples no future center=false STFT frame
+    // can change, so zero-extend both streams just far enough to flush the OLA
+    // tail, then discard the synthetic extension from the returned waveform.
+    if !mic.samples.is_empty() {
+        let frames = mic.samples.len().div_ceil(cfg.hop);
+        let required_total = (frames - 1)
+            .checked_mul(cfg.hop)
+            .and_then(|n| n.checked_add(cfg.n_fft))
+            .ok_or("run (nkf_aec): input length overflows the offline flush geometry")?;
+        let pad = required_total.saturating_sub(mic.samples.len());
+        if pad > 0 {
+            let zeros = vec![0.0f32; pad];
+            cleaned.extend(
+                stream
+                    .push_paired(&zeros, &zeros)
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+        if cleaned.len() < mic.samples.len() {
+            return Err(format!(
+                "run (nkf_aec): offline flush committed only {} of {} samples — refusing \
+                 to pad a model output silently",
+                cleaned.len(),
+                mic.samples.len()
+            ));
+        }
+        cleaned.truncate(mic.samples.len());
+    }
+
+    emit_audio("aec", &cleaned, mic.sample_rate, a.output.as_deref())
+}
+
+fn validate_aec_pair(
+    mic_path: &str,
+    mic: &wav::Wav,
+    far_path: &str,
+    far: &wav::Wav,
+) -> Result<(), String> {
+    if mic.sample_rate != far.sample_rate {
+        return Err(format!(
+            "run (nkf_aec): sample-rate mismatch: --input {mic_path} is {} Hz, but \
+             --far-end {far_path} is {} Hz; the streams must be sample-aligned and Vokra \
+             never resamples silently",
+            mic.sample_rate, far.sample_rate
+        ));
+    }
+    if mic.samples.len() != far.samples.len() {
+        return Err(format!(
+            "run (nkf_aec): sample-count mismatch: --input {mic_path} has {} samples, but \
+             --far-end {far_path} has {}; no trim/repeat is allowed for an AEC reference",
+            mic.samples.len(),
+            far.samples.len()
+        ));
     }
     Ok(())
 }
@@ -1396,6 +2244,58 @@ fn run_sbv2(session: &Session, a: &RunArgs) -> Result<(), String> {
 fn run_vad(session: &Session, pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>, String> {
     let mut handle = session.open_vad_stream().map_err(|e| e.to_string())?;
     handle.push_pcm(pcm, sample_rate).map_err(|e| e.to_string())
+}
+
+fn run_openwakeword(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (KWS): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != 16_000 {
+        return Err(format!(
+            "run (KWS): {path}: expected 16000 Hz mono WAV, got {} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    let mut model = vokra_models::kws::openwakeword::OpenwakewordSession::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let predictions = model
+        .push_pcm16k(&clip.samples)
+        .map_err(|error| error.to_string())?;
+    let mut detections = 0usize;
+    for (name, probability) in &predictions {
+        if *probability >= 0.5 {
+            println!("kws: wakeword={name} probability={probability:.6}");
+            detections += 1;
+        }
+    }
+    let heads = model.wakeword_names().len();
+    let chunks = predictions.len().checked_div(heads).unwrap_or_default();
+    println!("kws: {chunks} chunks, detections={detections}, threshold=0.500000");
+    Ok(())
+}
+
+/// Scores one complete utterance with SmartTurn v2. The single scalar output
+/// is intentionally not broadcast into the VAD frame contract.
+fn run_smart_turn(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (smart-turn): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::smart_turn::SmartTurn::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let prediction = model
+        .predict_endpoint(&clip.samples, clip.sample_rate)
+        .map_err(|error| error.to_string())?;
+    let probability = prediction.completion_probability();
+    println!(
+        "smart-turn: completion_probability={probability:.6} is_complete={} threshold={:.6}",
+        prediction.is_complete(vokra_models::smart_turn::DEFAULT_COMPLETION_THRESHOLD),
+        vokra_models::smart_turn::DEFAULT_COMPLETION_THRESHOLD,
+    );
+    Ok(())
 }
 
 /// Transcribes the clip and returns the recognized text.
@@ -1855,6 +2755,108 @@ mod tests {
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
     }
 
+    #[test]
+    fn parses_wave2_ct_punc_and_mimi_contract_flags() {
+        let ct = parse_args(&args(&[
+            "--model",
+            "ct.gguf",
+            "--tokens",
+            "tokens.tsv",
+            "--output",
+            "restored.txt",
+        ]))
+        .expect("CT-Punc flags parse");
+        assert_eq!(ct.tokens.as_deref(), Some("tokens.tsv"));
+        assert_eq!(ct.codec_mode, None);
+
+        for (value, expected) in [("encode", CodecMode::Encode), ("decode", CodecMode::Decode)] {
+            let mimi = parse_args(&args(&[
+                "--model",
+                "mimi.gguf",
+                "--codec-mode",
+                value,
+                "--input",
+                "input.bin",
+                "--output",
+                "output.bin",
+            ]))
+            .expect("Mimi mode parses");
+            assert_eq!(mimi.codec_mode, Some(expected));
+        }
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "mimi.gguf",
+                "--codec-mode",
+                "roundtrip"
+            ]))
+            .err()
+            .unwrap()
+            .contains("expected encode or decode")
+        );
+        assert!(
+            parse_args(&args(&["--model", "ct.gguf", "--tokens"]))
+                .err()
+                .unwrap()
+                .contains("--tokens requires a path")
+        );
+    }
+
+    #[test]
+    fn mimi_container_is_bound_to_exact_model_contract() {
+        use vokra_models::codec::MimiCodecGguf;
+        use vokra_models::mimi::MimiNeuralConfig;
+        use vokra_ops::MimiRvqAttrs;
+
+        let cfg = MimiNeuralConfig::tiny_for_tests();
+        let hop = cfg.frame_hop_samples().unwrap();
+        let codec = MimiCodecGguf {
+            attrs: MimiRvqAttrs {
+                n_codebooks: cfg.quantizer.n_q,
+                codebook_size: cfg.quantizer.bins,
+                d_model: cfg.transformer.d_model,
+            },
+            // Contract validation reads topology only; RVQ math is exercised
+            // by vokra-ops and the real-weight VAST lane.
+            tables: Vec::new(),
+        };
+        let digest = sha256(b"exact effective tables");
+        let mut codes = MimiCodesV1 {
+            sample_rate: cfg.sample_rate,
+            frame_rate_mhz: cfg.frame_rate_mhz,
+            n_codebooks: u32::try_from(cfg.quantizer.n_q).unwrap(),
+            codebook_size: u32::try_from(cfg.quantizer.bins).unwrap(),
+            feature_dimension: u32::try_from(codec.attrs.d_model).unwrap(),
+            n_frames: 2,
+            pcm_samples: u64::try_from(2 * hop).unwrap(),
+            model_sha256: digest,
+            codes: vec![0; 2 * cfg.quantizer.n_q],
+        };
+
+        validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop).unwrap();
+
+        codes.model_sha256[0] ^= 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("SHA-256 mismatch")
+        );
+        codes.model_sha256 = digest;
+        codes.n_codebooks += 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("contract mismatch")
+        );
+        codes.n_codebooks -= 1;
+        codes.pcm_samples += 1;
+        assert!(
+            validate_mimi_codes_for_model(&codes, &cfg, &codec, digest, hop)
+                .unwrap_err()
+                .contains("pcm_samples")
+        );
+    }
+
     /// Task 38: `--bert-ja` / `--bert-en` parse into `RunArgs`, are absent by
     /// default, and each requires a value.
     #[test]
@@ -2078,6 +3080,52 @@ mod tests {
                 .unwrap(),
             "--compare requires a value"
         );
+    }
+
+    #[test]
+    fn parses_far_end_flag_and_rejects_dangling_far_end() {
+        let a = parse_args(&args(&[
+            "--model",
+            "nkf.gguf",
+            "--input",
+            "mic.wav",
+            "--far-end",
+            "ref.wav",
+        ]))
+        .expect("valid");
+        assert_eq!(a.far_end.as_deref(), Some("ref.wav"));
+        assert_eq!(
+            parse_args(&args(&["--model", "nkf.gguf", "--far-end"]))
+                .err()
+                .unwrap(),
+            "--far-end requires a value"
+        );
+    }
+
+    #[test]
+    fn aec_pair_contract_rejects_rate_and_length_mismatch() {
+        let mic = wav::Wav {
+            sample_rate: 16_000,
+            samples: vec![0.0; 320],
+        };
+        let same = mic.clone();
+        validate_aec_pair("mic.wav", &mic, "ref.wav", &same).expect("aligned pair");
+
+        let wrong_rate = wav::Wav {
+            sample_rate: 48_000,
+            samples: vec![0.0; 320],
+        };
+        let err = validate_aec_pair("mic.wav", &mic, "ref.wav", &wrong_rate).unwrap_err();
+        assert!(err.contains("sample-rate mismatch"), "{err}");
+        assert!(err.contains("16000") && err.contains("48000"), "{err}");
+
+        let wrong_len = wav::Wav {
+            sample_rate: 16_000,
+            samples: vec![0.0; 319],
+        };
+        let err = validate_aec_pair("mic.wav", &mic, "ref.wav", &wrong_len).unwrap_err();
+        assert!(err.contains("sample-count mismatch"), "{err}");
+        assert!(err.contains("320") && err.contains("319"), "{err}");
     }
 
     // ---- P2 cc-10 / cc-19: voxtral route + whisper word timestamps -------
@@ -2423,6 +3471,7 @@ mod tests {
             "USAGE lists the backend names"
         );
         assert!(USAGE.contains("--compare"), "USAGE lists --compare");
+        assert!(USAGE.contains("--far-end"), "USAGE lists --far-end");
         assert!(USAGE.contains("speaker"), "USAGE mentions the speaker task");
         assert!(USAGE.contains("campplus"), "USAGE names the campplus arch");
         // P2 cc-10 / cc-19 surface.
@@ -2433,6 +3482,14 @@ mod tests {
         assert!(USAGE.contains("--language"), "USAGE lists --language");
         assert!(USAGE.contains("--bare-prompt"), "USAGE lists --bare-prompt");
         assert!(USAGE.contains("voxtral"), "USAGE names the voxtral arch");
+        assert!(USAGE.contains("wetextprocessing"));
+        assert!(USAGE.contains("nkf_aec"));
+        assert!(USAGE.contains("fcpe.gguf"));
+        assert!(USAGE.contains("crepe.gguf"));
+        assert!(USAGE.contains("ct-punc.gguf"));
+        assert!(USAGE.contains("vokra-ct-punc-tsv-v1"));
+        assert!(USAGE.contains("--codec-mode encode"));
+        assert!(USAGE.contains("VKRMCODE"));
     }
 
     /// `--compare` on a non-speaker arch is an explicit contract error
@@ -2452,6 +3509,33 @@ mod tests {
             err.contains("--compare is only supported for the speaker"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn far_end_on_non_aec_arch_is_rejected() {
+        let err = main(&args(&[
+            "--model",
+            &silero_fixture(),
+            "--input",
+            "unused.wav",
+            "--far-end",
+            "reference.wav",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--far-end is only supported for the nkf_aec arch"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn wave2_contract_flags_are_rejected_off_their_arches() {
+        let model = silero_fixture();
+        let err = main(&args(&["--model", &model, "--tokens", "tokens.tsv"])).unwrap_err();
+        assert!(err.contains("--tokens is only supported for the ct_punc arch"));
+
+        let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
+        assert!(err.contains("--codec-mode is only supported for the standalone mimi arch"));
     }
 
     /// A campplus-arch GGUF whose tensors do not bind fails loudly at the
@@ -3048,6 +4132,10 @@ mod tests {
         // Silent-ignore engines → guard fires (named label).
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), Some("VAD (Silero)"));
         assert_eq!(
+            cpu_only_engine_label(ModelTask::VadFirered),
+            Some("VAD (FireRedVAD)")
+        );
+        assert_eq!(
             cpu_only_engine_label(ModelTask::Tts),
             Some("piper-plus TTS")
         );
@@ -3063,15 +4151,56 @@ mod tests {
             cpu_only_engine_label(ModelTask::Sbv2),
             Some("SBV2 (Style-Bert-VITS2 v2) TTS")
         );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::CtPunc),
+            Some("CT-Punc punctuation restoration")
+        );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VocoderBigVgan),
+            Some("BigVGAN neural vocoder")
+        );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VocoderHifiGan),
+            Some("HiFi-GAN neural vocoder")
+        );
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VocoderVocos),
+            Some("Vocos neural vocoder")
+        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
+    }
+
+    #[test]
+    fn vocoder_feature_bytes_enforce_shape_and_finite_contract() {
+        let bytes: Vec<u8> = [0.25_f32, -0.5, 1.0, 2.0]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let (mel, frames) =
+            parse_vocoder_feature_bytes(&bytes, 2, "mel.f32", "test-vocoder").unwrap();
+        assert_eq!(mel, vec![0.25, -0.5, 1.0, 2.0]);
+        assert_eq!(frames, 2);
+
+        let err =
+            parse_vocoder_feature_bytes(&bytes[..bytes.len() - 1], 2, "short.f32", "test-vocoder")
+                .unwrap_err();
+        assert!(err.contains("whole number"), "{err}");
+
+        let nan = f32::NAN.to_le_bytes();
+        let err = parse_vocoder_feature_bytes(&nan, 1, "nan.f32", "test-vocoder").unwrap_err();
+        assert!(err.contains("non-finite"), "{err}");
+
+        let err = parse_vocoder_feature_bytes(&bytes, 3, "shape.f32", "test-vocoder").unwrap_err();
+        assert!(err.contains("exact multiple of channels=3"), "{err}");
     }
 
     /// (a) `--backend metal` on the silero VAD arch is a loud FR-EX-08 error

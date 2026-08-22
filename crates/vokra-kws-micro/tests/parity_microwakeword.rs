@@ -309,9 +309,9 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
         features::WINDOW_SAMPLES,
     );
     let pcm: Vec<i16> = pcm_bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
+        // Exact byte length is asserted above; `chunks` keeps this fixture
+        // reader compatible with the workspace's Rust 1.85 MSRV.
+        .chunks(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
 
@@ -331,9 +331,8 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
         features::N_MELS,
     );
     let features_ref: Vec<f32> = ref_bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
+        // Exact byte length is asserted above; see the PCM reader above.
+        .chunks(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
 

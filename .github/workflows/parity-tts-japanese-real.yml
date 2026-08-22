@@ -3,7 +3,7 @@
 #
 # Membership (see docs/tickets/sota-coverage-plan-…):
 #
-#   * irodori  → Aratako/Irodori-TTS-500M-v3      (MIT / MIT, pinned SHA below)
+#   * irodori  → vokra/irodori-tts-500m-v3         (MIT / MIT, pinned SHA below)
 #     ─ Rectified-Flow DiT + Semantic-DACVAE-Japanese-32dim decoder, 48 kHz.
 #     ─ ⚠ HF slug correction: the SoTA plan originally named
 #       `Irodori-tech/Irodori-TTS-500M-v3`, which returns HTTP 401 on
@@ -39,11 +39,8 @@
 # env-gated: `VOKRA_<ARCH>_GGUF` toggles the shape/metadata leg on, and
 # `VOKRA_<ARCH>_REFDIR` additionally toggles the byte-level reference
 # comparison (atol = 0.01, NFR-QL-01). This workflow's job is to (a) fetch
-# the pinned upstream release where allowed (irodori only), (b) build
-# vokra-cli, (c) convert to GGUF, (d) run the harness with the env vars
-# pointing at the just-built GGUF — so the moment either weight-binding
-# wave (T29-equivalent per each module rustdoc) lands, or the owner drops
-# a reference dump, the leg fires.
+# the pinned official Vokra GGUF where allowed (irodori only), (b) verify its
+# SHA-256, and (c) run the strict 637-tensor binder plus real layer harness.
 #
 # Design (mirrors parity-kokoro-real.yml + parity-tts-continuous-vae-real.yml):
 #
@@ -119,8 +116,11 @@ on:
       - "crates/vokra-models/src/compute.rs"
       - "crates/vokra-models/src/irodori/**"
       - "crates/vokra-models/src/vits_ja/**"
+      - "crates/vokra-models/tests/fixtures/irodori/**"
+      - "crates/vokra-models/tests/parity_irodori_text_block.rs"
       - "crates/vokra-models/tests/parity_tts_japanese.rs"
       - "crates/vokra-ops/**"
+      - "tools/parity/irodori_text_block_dump_reference.py"
 
 concurrency:
   group: parity-tts-japanese-real-${{ github.ref }}
@@ -130,15 +130,11 @@ permissions:
   contents: read
 
 env:
-  # Pinned upstream revisions (fetched 2026-07-25 via huggingface.co/api/models).
-  # A drift here is an ::warning:: below, not a hard fail — Vokra does not own
-  # byte-identity of the upstream publish.
-  #
-  # irodori pin verified 2026-07-25 via
-  #   `curl huggingface.co/api/models/Aratako/Irodori-TTS-500M-v3`
-  #   → sha=236c1e56591279fc24e3c1bf6609fc06e48dde28, license=mit.
-  IRODORI_REPO: Aratako/Irodori-TTS-500M-v3
-  IRODORI_REVISION: 236c1e56591279fc24e3c1bf6609fc06e48dde28
+  # Official Vokra artifact pin verified 2026-08-21 via the HF model API.
+  IRODORI_REPO: vokra/irodori-tts-500m-v3
+  IRODORI_REVISION: 28e3efaf41f0890784d88f4744c34269e80bdd41
+  IRODORI_FILENAME: irodori-tts-500m-v3.gguf
+  IRODORI_GGUF_SHA256: b64d970cf6a7b7cb81579147fa4b661761ee2c224c8da542926dc764fe04e09e
   # vits_ja pin is INTENTIONALLY unpinned: the HF mirror
   # `espnet/kan-bayashi_jsut_vits` returns HTTP 401 (gated / removed from
   # public listing) and the JSUT corpus terms forbid re-distribution of
@@ -297,26 +293,17 @@ jobs:
           path: ${{ env.HF_HOME }}
           key: tts-japanese-${{ matrix.arch }}-${{ steps.pins.outputs.revision }}-v1
 
-      - name: Provision parity venv (torch + safetensors + huggingface_hub)
+      - name: Provision parity venv (huggingface_hub only)
         if: steps.pins.outputs.auto_fetch == 'true'
         run: |
           set -euo pipefail
           uv venv --python 3.12 "${PARITY_VENV}"
-          # torch CPU keeps the runner lean; the conversion path is
-          # deterministic and never spins up a CUDA kernel.
           uv pip install --python "${PARITY_VENV}/bin/python" \
-            --index-url https://download.pytorch.org/whl/cpu \
-            'torch==2.9.1'
-          uv pip install --python "${PARITY_VENV}/bin/python" \
-            'numpy>=2,<3' \
-            'safetensors>=0.4' \
             'huggingface_hub>=0.36'
           uv pip install --python "${PARITY_VENV}/bin/python" 'hf_transfer>=0.1.9' || true
           uv run --no-project --python "${PARITY_VENV}/bin/python" python - <<'PY'
-          import torch, numpy, safetensors, huggingface_hub
-          print(f"parity venv: torch={torch.__version__} numpy={numpy.__version__} "
-                f"safetensors={safetensors.__version__} "
-                f"huggingface_hub={huggingface_hub.__version__}")
+          import huggingface_hub
+          print(f"parity venv: huggingface_hub={huggingface_hub.__version__}")
           PY
 
       # snapshot_download @ pinned SHA. Advisory posture: a SHA mismatch is
@@ -346,15 +333,12 @@ jobs:
           from huggingface_hub import snapshot_download
           repo = os.environ['REPO']
           rev = os.environ['REVISION']
-          # Only pull safetensors + config.json — no README / demo audio.
+          # Pull only the already-gated Vokra artifact — no upstream training
+          # checkpoint, README, or demo audio.
           local = snapshot_download(
               repo_id=repo,
               revision=rev,
-              allow_patterns=[
-                  '*.safetensors',
-                  '*.safetensors.index.json',
-                  'config.json',
-              ],
+              allow_patterns=['*.gguf'],
           )
           print(f'snapshot: {local}')
           ")"
@@ -374,99 +358,48 @@ jobs:
             du -sh "${CKPT_DIR}" 2>/dev/null || true
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build vokra-cli (release)
-        run: cargo build --release -p vokra-cli
-
-      # Pick the primary safetensors input for the converter. Multi-shard
-      # releases surface here as a sharded pack; the converter takes a
-      # single safetensors file today (BF16 pre-widening is a follow-up).
-      # If a sharded release is detected AND no `model.safetensors` exists
-      # at the root, this step surfaces a loud NOTE.
-      - name: Select safetensors input for converter
+      - name: Select pinned Vokra GGUF
         id: input
         if: steps.pins.outputs.auto_fetch == 'true'
-        env:
-          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           if [ -z "${CKPT_DIR:-}" ]; then
             echo "::error::CKPT_DIR not set — the snapshot_download step failed"
             exit 1
           fi
-          if [ -f "${CKPT_DIR}/model.safetensors" ]; then
-            echo "input=${CKPT_DIR}/model.safetensors" >> "$GITHUB_OUTPUT"
-            echo "sharded=false" >> "$GITHUB_OUTPUT"
-            echo "primary safetensors: ${CKPT_DIR}/model.safetensors"
-          else
-            SHARDS=$(find "${CKPT_DIR}" -maxdepth 1 -type f \
-              -name '*.safetensors' -print | LC_ALL=C sort | head -1 || true)
-            if [ -z "${SHARDS}" ]; then
-              echo "::error::no *.safetensors under ${CKPT_DIR} — snapshot pattern miss?"
-              exit 1
-            fi
-            echo "input=${SHARDS}" >> "$GITHUB_OUTPUT"
-            echo "sharded=true" >> "$GITHUB_OUTPUT"
-            {
-              echo "### ${ARCH}: sharded safetensors detected"
-              echo ""
-              echo "No \`model.safetensors\` at the release root — using the first shard"
-              echo "(\`${SHARDS}\`) as the converter input. The T29-equivalent full-checkpoint"
-              echo "walk (multi-shard aggregation + BF16 pre-widen) is a follow-up wave."
-              echo "The parity leg here will exercise the SHARD's tensor subset only;"
-              echo "the reader / metadata / synthesize-refusal assertions still fire."
-            } >> "$GITHUB_STEP_SUMMARY"
+          GGUF="${CKPT_DIR}/${IRODORI_FILENAME}"
+          if [ ! -f "${GGUF}" ]; then
+            echo "::error::pinned GGUF missing: ${GGUF}"
+            exit 1
           fi
+          echo "input=${GGUF}" >> "$GITHUB_OUTPUT"
+          echo "official Vokra GGUF: ${GGUF}"
 
-      - name: Convert to GGUF (vokra-cli convert --model ${{ steps.pins.outputs.cli_model }})
+      - name: Verify pinned Vokra GGUF
         id: convert
         if: steps.pins.outputs.auto_fetch == 'true'
         env:
           ARCH: ${{ matrix.arch }}
-          CLI_MODEL: ${{ steps.pins.outputs.cli_model }}
           INPUT: ${{ steps.input.outputs.input }}
         run: |
           set -euo pipefail
-          OUT="${RUNNER_TEMP}/${ARCH}.gguf"
-          set +e
-          ./target/release/vokra-cli convert \
-            --model "${CLI_MODEL}" \
-            --input "${INPUT}" \
-            --output "${OUT}" \
-            2>&1 | tee "${RUNNER_TEMP}/convert-log.txt"
-          CONVERT_EXIT=${PIPESTATUS[0]}
-          set -e
-          if [ "${CONVERT_EXIT}" -ne 0 ]; then
-            # The BF16 unwidened source path prints a loud "no float tensors
-            # passed through" note; the converter still exits non-zero
-            # because the metadata-only GGUF is not useful.
-            {
-              echo "### ${ARCH}: conversion FAILED"
-              echo ""
-              echo '```'
-              tail -c 4096 "${RUNNER_TEMP}/convert-log.txt"
-              echo '```'
-              echo ""
-              echo "**Likely cause**: the upstream release is BF16 and the F32/F16"
-              echo "pass-through arm does not widen it. Pre-widen offline (the"
-              echo "CSM / Kokoro / VoxCPM recipe) or wait for the streaming BF16"
-              echo "pass-through path to land (T29-equivalent, per each converter's"
-              echo "rustdoc)."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "converted=false" >> "$GITHUB_OUTPUT"
-            echo "gguf=" >> "$GITHUB_OUTPUT"
-            exit "${CONVERT_EXIT}"
+          ACTUAL_SHA256="$(sha256sum "${INPUT}" | awk '{print $1}')"
+          if [ "${ACTUAL_SHA256}" != "${IRODORI_GGUF_SHA256}" ]; then
+            echo "::error::${ARCH} SHA-256 ${ACTUAL_SHA256} != pinned ${IRODORI_GGUF_SHA256}"
+            exit 1
           fi
           echo "converted=true" >> "$GITHUB_OUTPUT"
-          echo "gguf=${OUT}" >> "$GITHUB_OUTPUT"
+          echo "gguf=${INPUT}" >> "$GITHUB_OUTPUT"
           {
-            echo "### ${ARCH}: conversion OK"
+            echo "### ${ARCH}: official GGUF verified"
             echo ""
-            echo "- Output: \`${OUT}\`"
-            echo "- Size: $(wc -c < "${OUT}" | numfmt --to=iec)"
+            echo "- Artifact: \`${INPUT}\`"
+            echo "- SHA-256: \`${ACTUAL_SHA256}\`"
+            echo "- Size: $(wc -c < "${INPUT}" | numfmt --to=iec)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Run the parity harness. For irodori, VOKRA_IRODORI_GGUF points
-      # at the just-built GGUF (real shape + metadata + synthesize-refusal
+      # at the pinned GGUF (strict manifest + real text layer
       # legs fire). For vits_ja, VOKRA_VITS_JA_GGUF is intentionally
       # unset (the harness honest-skips with a loud NOTE); the family's
       # sanity tests still run either way.
@@ -479,7 +412,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${AUTO_FETCH}" = "true" ]; then
-            # irodori path — env-inject the GGUF path the harness reads.
+            # irodori path — env-inject the verified GGUF path the harness reads.
             # `env` avoids dynamic-var syntax pitfalls in `bash`.
             env "${ENV_GGUF}=${GGUF}" \
               cargo test --release -p vokra-models \
@@ -516,6 +449,5 @@ jobs:
           path: |
             ${{ runner.temp }}/convert-log.txt
             ${{ runner.temp }}/parity-*.txt
-            ${{ runner.temp }}/${{ matrix.arch }}.gguf
           retention-days: 7
           if-no-files-found: warn

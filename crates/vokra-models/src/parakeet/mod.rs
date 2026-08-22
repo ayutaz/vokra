@@ -36,11 +36,13 @@
 //!   - `decoder_hidden_size` = 640,
 //!   - `num_decoder_layers` = 2.
 //! - **TDT / joint / vocab**:
-//!   - `vocab_size` = 8193 (**8192 pieces + 1 blank**),
+//!   - `vocab_size` = 8193 (**8192 BPE pieces + 1 blank**),
 //!   - `blank_token_id` = 8192 (blank at the tail of the head — the
 //!     NeMo-canonical convention that matches [`vokra_ops::rnnt_decode()`]'s
 //!     `blank_id = vocab_size` default),
 //!   - `pad_token_id` = 2,
+//!   - `eos_token_id` = 3 and `decoder_start_token_id` = 8192 from the
+//!     released `generation_config.json`,
 //!   - `durations` = `[0, 1, 2, 3, 4]` (5 TDT duration bins),
 //!   - `max_symbols_per_step` = 10 (zero-duration emission cap — NeMo
 //!     greedy default; the same value drives
@@ -56,47 +58,39 @@
 //!   [`vokra_core::LicenseClass::AttributionRequired`] so the M2-13 gate
 //!   passes commercially *and* the FR-MD-09 attribution surface activates.
 //!
-//! # Boundary — Conformer / RNN-T decoder ops consumed, never re-implemented
+//! # Runtime boundary
 //!
-//! Parakeet reuses two shared Vokra primitives instead of duplicating them:
-//!
-//! - **Encoder body**: [`vokra_ops::conformer`] — the Conformer /
-//!   FastConformer encoder covers both variants via
-//!   `ConvSubsampleKind::Stacking { factor: 8 }` (matches
-//!   `subsampling_factor=8`). The primitive was authored for exactly this
-//!   family (its module docs list `parakeet` as the first consumer).
-//! - **TDT decoding**: [`vokra_ops::rnnt_decode()`] — the primitive covers
-//!   greedy / beam / TDT with the exact NeMo semantics
-//!   (`durations = [0..=4]`, `blank_id = vocab_size`, `max_symbols_per_step
-//!   = 10`).
-//!
-//! # What lands in this Phase 2 slice
-//!
-//! - [`ParakeetConfig`] — every hparam transcribed from the primary
-//!   source (no hardcoded fabrication; sample-rate is inherited from the
-//!   preprocessor, documented on the field).
-//! - [`ParakeetWeights`] — a scaffold weight store with a deterministic
-//!   [`ParakeetWeights::synthesized`] fixture (SplitMix64 + Xavier) so
-//!   shape / dtype / size flow can be exercised without the real HF
-//!   checkpoint. Real-checkpoint parity is a follow-up wave gated on the
-//!   real-checkpoint tensor-name manifest (T29-equivalent — the Moshi /
-//!   CSM / Zonos / Kyutai STT pattern).
-//! - [`ParakeetAsr`] — engine handle carrying config + weights.
-//!   [`ParakeetAsr::transcribe`] returns [`VokraError::NotImplemented`]
-//!   until real weights are bound (the real forward — 128-bin log-mel →
-//!   FastConformer encoder → 640-dim RNN-T prediction net → joint →
-//!   `rnnt_decode(Tdt { duration_bins: [0..=4] })` → SentencePiece
-//!   detokenize — is a follow-up wave gated on the real-checkpoint tensor
-//!   manifest).
+//! [`ParakeetAsr::from_gguf`] strictly validates the official 699 inference
+//! tensors (the 24 training-only BatchNorm counters are intentionally absent)
+//! and binds the complete inference graph. The native path implements the
+//! released 128-bin log-mel frontend, three-stage depthwise-separable Conv2D
+//! subsampler, 24 relative-position FastConformer blocks with eval BatchNorm,
+//! recurrent two-layer LSTM prediction state, duration-aware greedy TDT
+//! decoding, EOS termination, and the embedded official BPE + Metaspace
+//! tokenizer. [`ParakeetAsr::tdt_head_step`] remains an independently testable
+//! decoder/head parity seam. The deterministic
+//! [`ParakeetWeights::synthesized`] store remains only for shape and
+//! negative-path tests.
 //!
 //! # No ONNX (permanent)
 //!
 //! Parakeet ships as safetensors / a Python pipeline; the pipeline is
-//! re-implemented natively in `vokra-models/src/parakeet/` (whisper.cpp
-//! 型, CLAUDE.md 設計判断 4). This module never touches ONNX.
+//! re-implemented natively in `vokra-models/src/parakeet/`. This module never
+//! touches ONNX.
 
+mod tokenizer;
+
+pub use tokenizer::ParakeetTokenizer;
+
+use std::collections::BTreeSet;
+
+use vokra_backend_cpu::kernels;
+use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::ir::graph::{MelAttrs, Normalization, PadMode, StftAttrs, Window, WindowSymmetry};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{Result, VokraError};
+use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
+use vokra_ops::mel::MelFilterbank;
+use vokra_ops::stft::stft;
 
 /// `vokra.model.arch` a Parakeet GGUF must carry. Written by
 /// `vokra-convert::models::parakeet::ARCH`; the compliance registry
@@ -110,6 +104,33 @@ pub const EXPECTED_ARCH: &str = "parakeet-tdt";
 /// PCM sample rate Parakeet expects. Not written in the upstream
 /// `config.json`; taken from the model card (16 kHz mono `.wav` / `.flac`).
 pub const PARAKEET_SAMPLE_RATE: u32 = 16_000;
+
+const KEY_SAMPLE_RATE: &str = "vokra.parakeet.sample_rate";
+const KEY_ENC_N_LAYER: &str = "vokra.parakeet.arch.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.parakeet.arch.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.parakeet.arch.encoder.n_head";
+const KEY_ENC_N_HEAD_KV: &str = "vokra.parakeet.arch.encoder.n_head_kv";
+const KEY_ENC_FFN_DIM: &str = "vokra.parakeet.arch.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.parakeet.arch.encoder.conv_kernel_size";
+const KEY_ENC_IN_DIM: &str = "vokra.parakeet.arch.encoder.in_dim";
+const KEY_ENC_SUBSAMPLING_FACTOR: &str = "vokra.parakeet.arch.encoder.subsampling_factor";
+const KEY_ENC_SUB_CONV_KERNEL: &str = "vokra.parakeet.arch.encoder.subsampling_conv_kernel_size";
+const KEY_ENC_SUB_CONV_STRIDE: &str = "vokra.parakeet.arch.encoder.subsampling_conv_stride";
+const KEY_ENC_SUB_CONV_CHANNELS: &str = "vokra.parakeet.arch.encoder.subsampling_conv_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.parakeet.arch.encoder.max_position_embeddings";
+const KEY_ENC_ATTN_BIAS: &str = "vokra.parakeet.arch.encoder.attention_bias";
+const KEY_ENC_CONV_BIAS: &str = "vokra.parakeet.arch.encoder.convolution_bias";
+const KEY_ENC_SCALE_INPUT: &str = "vokra.parakeet.arch.encoder.scale_input";
+const KEY_DEC_N_LAYER: &str = "vokra.parakeet.arch.decoder.n_layer";
+const KEY_DEC_D_MODEL: &str = "vokra.parakeet.arch.decoder.d_model";
+const KEY_JOINT_VOCAB_SIZE: &str = "vokra.parakeet.joint.vocab_size";
+const KEY_JOINT_BLANK_ID: &str = "vokra.parakeet.joint.blank_token_id";
+const KEY_JOINT_PAD_ID: &str = "vokra.parakeet.joint.pad_token_id";
+const KEY_JOINT_EOS_ID: &str = "vokra.parakeet.joint.eos_token_id";
+const KEY_JOINT_MAX_SYMBOLS_PER_STEP: &str = "vokra.parakeet.joint.max_symbols_per_step";
+const KEY_JOINT_ACT: &str = "vokra.parakeet.joint.hidden_act";
+const KEY_N_DURATIONS: &str = "vokra.parakeet.joint.n_durations";
+const PREFIX_DURATION: &str = "vokra.parakeet.joint.duration.";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -209,7 +230,7 @@ pub struct ParakeetDecoderConfig {
 /// `blank_token_id`, `max_symbols_per_step`, top-level `hidden_act`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParakeetJointConfig {
-    /// `vocab_size` — 8193 (8192 SentencePiece pieces + 1 blank at
+    /// `vocab_size` — 8193 (8192 BPE pieces + 1 blank at
     /// index 8192). The vocabulary head therefore has width
     /// `vocab_size` (blank inclusive) — this matches
     /// [`vokra_ops::rnnt_decode::RnntAttrs::vocab_size`]'s "excluding
@@ -220,9 +241,12 @@ pub struct ParakeetJointConfig {
     /// = `vocab_size` (NeMo default) when the ops-side `vocab_size` is
     /// `8192`.
     pub blank_token_id: u32,
-    /// `pad_token_id` — 2 (SentencePiece pad; never a decoder emission —
+    /// `pad_token_id` — 2 (tokenizer pad; never a decoder emission —
     /// tokens are consumed at the prediction-network input).
     pub pad_token_id: u32,
+    /// `eos_token_id` — 3 from the official `generation_config.json`.
+    /// Greedy generation stops before adding this id to the transcript.
+    pub eos_token_id: u32,
     /// `durations` — TDT duration bins in head-output order,
     /// `[0, 1, 2, 3, 4]`. Zero-duration is a legal emission but repeated
     /// zero-only emissions are capped by [`Self::max_symbols_per_step`].
@@ -283,12 +307,71 @@ impl ParakeetConfig {
                 vocab_size: 8193,
                 blank_token_id: 8192,
                 pad_token_id: 2,
+                eos_token_id: 3,
                 durations: vec![0, 1, 2, 3, 4],
                 max_symbols_per_step: 10,
                 joint_act: "relu".to_owned(),
             },
             sample_rate: PARAKEET_SAMPLE_RATE,
         }
+    }
+
+    /// Reads the complete converter-written metadata contract and rejects any
+    /// missing, mistyped, or non-canonical axis. This binder targets the one
+    /// audited `nvidia/parakeet-tdt-0.6b-v3` release; accepting a shape-like
+    /// sibling here would route different FastConformer weights through the
+    /// wrong decoder.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let n_durations = required_u32(file, KEY_N_DURATIONS)? as usize;
+        let mut durations = Vec::with_capacity(n_durations);
+        for index in 0..n_durations {
+            durations.push(required_u32(file, &format!("{PREFIX_DURATION}{index}"))?);
+        }
+        let config = Self {
+            encoder: ParakeetEncoderConfig {
+                n_layer: required_u32(file, KEY_ENC_N_LAYER)? as usize,
+                d_model: required_u32(file, KEY_ENC_D_MODEL)? as usize,
+                n_head: required_u32(file, KEY_ENC_N_HEAD)? as usize,
+                n_head_kv: required_u32(file, KEY_ENC_N_HEAD_KV)? as usize,
+                ffn_dim: required_u32(file, KEY_ENC_FFN_DIM)? as usize,
+                conv_kernel_size: required_u32(file, KEY_ENC_CONV_KERNEL)? as usize,
+                in_dim: required_u32(file, KEY_ENC_IN_DIM)? as usize,
+                subsampling_factor: required_u32(file, KEY_ENC_SUBSAMPLING_FACTOR)? as usize,
+                subsampling_conv_kernel_size: required_u32(file, KEY_ENC_SUB_CONV_KERNEL)? as usize,
+                subsampling_conv_stride: required_u32(file, KEY_ENC_SUB_CONV_STRIDE)? as usize,
+                subsampling_conv_channels: required_u32(file, KEY_ENC_SUB_CONV_CHANNELS)? as usize,
+                max_position_embeddings: required_u32(file, KEY_ENC_MAX_POS)? as usize,
+                attention_bias: required_bool_u32(file, KEY_ENC_ATTN_BIAS)?,
+                convolution_bias: required_bool_u32(file, KEY_ENC_CONV_BIAS)?,
+                scale_input: required_bool_u32(file, KEY_ENC_SCALE_INPUT)?,
+            },
+            decoder: ParakeetDecoderConfig {
+                n_layer: required_u32(file, KEY_DEC_N_LAYER)? as usize,
+                d_model: required_u32(file, KEY_DEC_D_MODEL)? as usize,
+            },
+            joint: ParakeetJointConfig {
+                vocab_size: required_u32(file, KEY_JOINT_VOCAB_SIZE)? as usize,
+                blank_token_id: required_u32(file, KEY_JOINT_BLANK_ID)?,
+                pad_token_id: required_u32(file, KEY_JOINT_PAD_ID)?,
+                // Older converter output predates the explicit generation
+                // metadata but targets this same audited checkpoint.
+                eos_token_id: optional_u32(file, KEY_JOINT_EOS_ID)?.unwrap_or(3),
+                durations,
+                max_symbols_per_step: required_u32(file, KEY_JOINT_MAX_SYMBOLS_PER_STEP)? as usize,
+                joint_act: required_string(file, KEY_JOINT_ACT)?.to_owned(),
+            },
+            sample_rate: required_u32(file, KEY_SAMPLE_RATE)?,
+        };
+        config.validate_for_forward().map_err(|error| {
+            VokraError::ModelLoad(format!("ParakeetConfig::from_gguf: {error}"))
+        })?;
+        let canonical = Self::parakeet_tdt_0_6b_v3();
+        if config != canonical {
+            return Err(VokraError::ModelLoad(format!(
+                "ParakeetConfig::from_gguf: metadata axes do not match the audited Parakeet-TDT-0.6B-v3 contract; found {config:?}, expected {canonical:?}"
+            )));
+        }
+        Ok(config)
     }
 
     /// Miniature well-formed config for shape / stability tests. Dims are
@@ -324,6 +407,7 @@ impl ParakeetConfig {
                 vocab_size: 5,
                 blank_token_id: 4,
                 pad_token_id: 0,
+                eos_token_id: 3,
                 durations: vec![0, 1, 2],
                 max_symbols_per_step: 4,
                 joint_act: "relu".to_owned(),
@@ -426,6 +510,17 @@ impl ParakeetConfig {
                 self.joint.pad_token_id, self.joint.vocab_size,
             )));
         }
+        if (self.joint.eos_token_id as usize) >= self.joint.vocab_size {
+            return Err(VokraError::InvalidArgument(format!(
+                "parakeet-tdt config: eos_token_id={} must be < vocab_size={}",
+                self.joint.eos_token_id, self.joint.vocab_size,
+            )));
+        }
+        if self.joint.eos_token_id == self.joint.blank_token_id {
+            return Err(VokraError::InvalidArgument(
+                "parakeet-tdt config: eos_token_id must differ from blank_token_id".to_owned(),
+            ));
+        }
         if self.joint.durations.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "parakeet-tdt config: joint.durations must be non-empty \
@@ -465,6 +560,48 @@ impl ParakeetConfig {
     pub fn ops_vocab_size(&self) -> usize {
         self.joint.vocab_size.saturating_sub(1)
     }
+}
+
+fn required_u32(file: &GgufFile, key: &str) -> Result<u32> {
+    match file.get(key) {
+        Some(vokra_core::gguf::GgufMetadataValue::U32(value)) => Ok(*value),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "ParakeetConfig::from_gguf: `{key}` must be u32, found {other:?}"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "ParakeetConfig::from_gguf: missing required metadata `{key}`"
+        ))),
+    }
+}
+
+fn optional_u32(file: &GgufFile, key: &str) -> Result<Option<u32>> {
+    match file.get(key) {
+        Some(vokra_core::gguf::GgufMetadataValue::U32(value)) => Ok(Some(*value)),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "ParakeetConfig::from_gguf: `{key}` must be u32, found {other:?}"
+        ))),
+        None => Ok(None),
+    }
+}
+
+fn required_bool_u32(file: &GgufFile, key: &str) -> Result<bool> {
+    match required_u32(file, key)? {
+        0 => Ok(false),
+        1 => Ok(true),
+        value => Err(VokraError::ModelLoad(format!(
+            "ParakeetConfig::from_gguf: `{key}` must be boolean u32 0/1, found {value}"
+        ))),
+    }
+}
+
+fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
+    file.get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "ParakeetConfig::from_gguf: missing or non-string metadata `{key}`"
+            ))
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -686,6 +823,428 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Official real-weight binder
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ParakeetBoundLstmLayer {
+    w_ih: Vec<f32>,
+    w_hh: Vec<f32>,
+    b_ih: Vec<f32>,
+    b_hh: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParakeetBoundSubsampling {
+    pub(crate) conv0_w: Vec<f32>,
+    pub(crate) conv0_b: Vec<f32>,
+    pub(crate) depthwise_w: [Vec<f32>; 2],
+    pub(crate) depthwise_b: [Vec<f32>; 2],
+    /// `[in_channels, out_channels]`, transposed once at bind time for GEMM.
+    pub(crate) pointwise_w_t: [Vec<f32>; 2],
+    pub(crate) pointwise_b: [Vec<f32>; 2],
+    /// `[channels * frequency, d_model]`, transposed once at bind time.
+    pub(crate) linear_w_t: Vec<f32>,
+    pub(crate) linear_b: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParakeetBoundNorm {
+    pub(crate) weight: Vec<f32>,
+    pub(crate) bias: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParakeetBoundEncoderBlock {
+    pub(crate) ff1_w1_t: Vec<f32>,
+    pub(crate) ff1_b1: Option<Vec<f32>>,
+    pub(crate) ff1_w2_t: Vec<f32>,
+    pub(crate) ff1_b2: Option<Vec<f32>>,
+    pub(crate) ff2_w1_t: Vec<f32>,
+    pub(crate) ff2_b1: Option<Vec<f32>>,
+    pub(crate) ff2_w2_t: Vec<f32>,
+    pub(crate) ff2_b2: Option<Vec<f32>>,
+    pub(crate) norm_ff1: ParakeetBoundNorm,
+    pub(crate) norm_attn: ParakeetBoundNorm,
+    pub(crate) norm_conv: ParakeetBoundNorm,
+    pub(crate) norm_ff2: ParakeetBoundNorm,
+    pub(crate) norm_out: ParakeetBoundNorm,
+    pub(crate) q_w_t: Vec<f32>,
+    pub(crate) q_b: Option<Vec<f32>>,
+    pub(crate) k_w_t: Vec<f32>,
+    pub(crate) k_b: Option<Vec<f32>>,
+    pub(crate) v_w_t: Vec<f32>,
+    pub(crate) v_b: Option<Vec<f32>>,
+    pub(crate) o_w_t: Vec<f32>,
+    pub(crate) o_b: Option<Vec<f32>>,
+    pub(crate) relative_k_w_t: Vec<f32>,
+    pub(crate) bias_u: Vec<f32>,
+    pub(crate) bias_v: Vec<f32>,
+    pub(crate) conv_pw1_w_t: Vec<f32>,
+    pub(crate) conv_pw1_b: Option<Vec<f32>>,
+    pub(crate) conv_dw_w: Vec<f32>,
+    pub(crate) conv_dw_b: Option<Vec<f32>>,
+    pub(crate) conv_bn_weight: Vec<f32>,
+    pub(crate) conv_bn_bias: Vec<f32>,
+    pub(crate) conv_bn_mean: Vec<f32>,
+    pub(crate) conv_bn_var: Vec<f32>,
+    pub(crate) conv_pw2_w_t: Vec<f32>,
+    pub(crate) conv_pw2_b: Option<Vec<f32>>,
+}
+
+/// All 699 official inference tensors, decoded into the exact released
+/// Conv2D-subsampler + relative-position FastConformer + TDT topology.
+#[derive(Debug, Clone)]
+struct ParakeetBoundWeights {
+    tensor_count: usize,
+    subsampling: ParakeetBoundSubsampling,
+    encoder: Vec<ParakeetBoundEncoderBlock>,
+    encoder_projector_w: Vec<f32>,
+    encoder_projector_b: Vec<f32>,
+    embedding: Vec<f32>,
+    lstm: Vec<ParakeetBoundLstmLayer>,
+    decoder_projector_w: Vec<f32>,
+    decoder_projector_b: Vec<f32>,
+    joint_head_w: Vec<f32>,
+    joint_head_b: Vec<f32>,
+}
+
+#[derive(Debug, Clone)]
+enum ParakeetWeightStore {
+    Synthesized(Box<ParakeetWeights>),
+    Bound(Box<ParakeetBoundWeights>),
+}
+
+fn expected_real_manifest(config: &ParakeetConfig) -> Vec<(String, Vec<usize>)> {
+    let enc = &config.encoder;
+    let dec = &config.decoder;
+    let channels = enc.subsampling_conv_channels;
+    let kernel = enc.subsampling_conv_kernel_size;
+    let stride = enc.subsampling_conv_stride;
+    let mut num_subsample_layers = 0usize;
+    let mut factor = enc.subsampling_factor;
+    while factor > 1 {
+        num_subsample_layers += 1;
+        factor /= 2;
+    }
+    let mut manifest = Vec::with_capacity(699);
+    manifest.push((
+        "encoder.subsampling.layers.0.weight".to_owned(),
+        vec![channels, 1, kernel, kernel],
+    ));
+    manifest.push((
+        "encoder.subsampling.layers.0.bias".to_owned(),
+        vec![channels],
+    ));
+    for stage in 1..num_subsample_layers {
+        let depthwise_index = 2 + (stage - 1) * 3;
+        let pointwise_index = depthwise_index + 1;
+        manifest.push((
+            format!("encoder.subsampling.layers.{depthwise_index}.weight"),
+            vec![channels, 1, kernel, kernel],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{depthwise_index}.bias"),
+            vec![channels],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{pointwise_index}.weight"),
+            vec![channels, channels, 1, 1],
+        ));
+        manifest.push((
+            format!("encoder.subsampling.layers.{pointwise_index}.bias"),
+            vec![channels],
+        ));
+    }
+    let padding = (kernel - 1) / 2;
+    let mut out_frequency = enc.in_dim;
+    for _ in 0..num_subsample_layers {
+        out_frequency = (out_frequency + 2 * padding - kernel) / stride + 1;
+    }
+    manifest.push((
+        "encoder.subsampling.linear.weight".to_owned(),
+        vec![enc.d_model, channels * out_frequency],
+    ));
+    manifest.push((
+        "encoder.subsampling.linear.bias".to_owned(),
+        vec![enc.d_model],
+    ));
+
+    for layer in 0..enc.n_layer {
+        let prefix = format!("encoder.layers.{layer}");
+        for branch in ["feed_forward1", "feed_forward2"] {
+            manifest.push((
+                format!("{prefix}.{branch}.linear1.weight"),
+                vec![enc.ffn_dim, enc.d_model],
+            ));
+            manifest.push((
+                format!("{prefix}.{branch}.linear2.weight"),
+                vec![enc.d_model, enc.ffn_dim],
+            ));
+        }
+        for norm in [
+            "norm_feed_forward1",
+            "norm_self_att",
+            "norm_conv",
+            "norm_feed_forward2",
+            "norm_out",
+        ] {
+            manifest.push((format!("{prefix}.{norm}.weight"), vec![enc.d_model]));
+            manifest.push((format!("{prefix}.{norm}.bias"), vec![enc.d_model]));
+        }
+        for projection in ["q_proj", "k_proj", "v_proj", "o_proj", "relative_k_proj"] {
+            manifest.push((
+                format!("{prefix}.self_attn.{projection}.weight"),
+                vec![enc.d_model, enc.d_model],
+            ));
+        }
+        manifest.push((
+            format!("{prefix}.self_attn.bias_u"),
+            vec![enc.n_head, enc.head_dim()],
+        ));
+        manifest.push((
+            format!("{prefix}.self_attn.bias_v"),
+            vec![enc.n_head, enc.head_dim()],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv1.weight"),
+            vec![2 * enc.d_model, enc.d_model, 1],
+        ));
+        manifest.push((
+            format!("{prefix}.conv.depthwise_conv.weight"),
+            vec![enc.d_model, 1, enc.conv_kernel_size],
+        ));
+        for stat in ["weight", "bias", "running_mean", "running_var"] {
+            manifest.push((format!("{prefix}.conv.norm.{stat}"), vec![enc.d_model]));
+        }
+        manifest.push((
+            format!("{prefix}.conv.pointwise_conv2.weight"),
+            vec![enc.d_model, enc.d_model, 1],
+        ));
+    }
+
+    manifest.push((
+        "encoder_projector.weight".to_owned(),
+        vec![dec.d_model, enc.d_model],
+    ));
+    manifest.push(("encoder_projector.bias".to_owned(), vec![dec.d_model]));
+    manifest.push((
+        "decoder.embedding.weight".to_owned(),
+        vec![config.joint.vocab_size, dec.d_model],
+    ));
+    for layer in 0..dec.n_layer {
+        manifest.push((
+            format!("decoder.lstm.weight_ih_l{layer}"),
+            vec![4 * dec.d_model, dec.d_model],
+        ));
+        manifest.push((
+            format!("decoder.lstm.weight_hh_l{layer}"),
+            vec![4 * dec.d_model, dec.d_model],
+        ));
+        manifest.push((
+            format!("decoder.lstm.bias_ih_l{layer}"),
+            vec![4 * dec.d_model],
+        ));
+        manifest.push((
+            format!("decoder.lstm.bias_hh_l{layer}"),
+            vec![4 * dec.d_model],
+        ));
+    }
+    manifest.push((
+        "decoder.decoder_projector.weight".to_owned(),
+        vec![dec.d_model, dec.d_model],
+    ));
+    manifest.push((
+        "decoder.decoder_projector.bias".to_owned(),
+        vec![dec.d_model],
+    ));
+    let joint_width = config.joint.vocab_size + config.joint.durations.len();
+    manifest.push((
+        "joint.head.weight".to_owned(),
+        vec![joint_width, dec.d_model],
+    ));
+    manifest.push(("joint.head.bias".to_owned(), vec![joint_width]));
+    manifest
+}
+
+pub(crate) fn transpose_out_in(weight: Vec<f32>, output: usize, input: usize) -> Vec<f32> {
+    debug_assert_eq!(weight.len(), output * input);
+    let mut transposed = vec![0.0; weight.len()];
+    for out in 0..output {
+        for inner in 0..input {
+            transposed[inner * output + out] = weight[out * input + inner];
+        }
+    }
+    transposed
+}
+
+fn load_bound_weights(file: &GgufFile, config: &ParakeetConfig) -> Result<ParakeetBoundWeights> {
+    let manifest = expected_real_manifest(config);
+    let expected_names: BTreeSet<String> = manifest.iter().map(|(name, _)| name.clone()).collect();
+    for (name, expected_shape) in &manifest {
+        let info = file.tensor_info(name).ok_or_else(|| {
+            VokraError::ModelLoad(format!("Parakeet-TDT: required tensor `{name}` is missing"))
+        })?;
+        let actual_shape: Vec<usize> = info.dimensions.iter().map(|&dim| dim as usize).collect();
+        if &actual_shape != expected_shape {
+            return Err(VokraError::ModelLoad(format!(
+                "Parakeet-TDT: tensor `{name}` shape {actual_shape:?}, expected {expected_shape:?}"
+            )));
+        }
+    }
+    let actual_names: BTreeSet<String> = file
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.clone())
+        .collect();
+    if actual_names != expected_names {
+        let missing: Vec<&String> = expected_names.difference(&actual_names).take(4).collect();
+        let extra: Vec<&String> = actual_names.difference(&expected_names).take(4).collect();
+        return Err(VokraError::ModelLoad(format!(
+            "Parakeet-TDT: tensor manifest mismatch (expected {}, found {}); missing={missing:?}, extra={extra:?}",
+            expected_names.len(),
+            actual_names.len(),
+        )));
+    }
+
+    let tensor = |name: &str| -> Result<Vec<f32>> {
+        file.tensor_f32(name).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "Parakeet-TDT: tensor `{name}` decode failed: {error}"
+            ))
+        })
+    };
+    let enc = &config.encoder;
+    let channels = enc.subsampling_conv_channels;
+    let kernel = enc.subsampling_conv_kernel_size;
+    let mut out_frequency = enc.in_dim;
+    for _ in 0..3 {
+        out_frequency =
+            (out_frequency + 2 * ((kernel - 1) / 2) - kernel) / enc.subsampling_conv_stride + 1;
+    }
+    let subsampling = ParakeetBoundSubsampling {
+        conv0_w: tensor("encoder.subsampling.layers.0.weight")?,
+        conv0_b: tensor("encoder.subsampling.layers.0.bias")?,
+        depthwise_w: [
+            tensor("encoder.subsampling.layers.2.weight")?,
+            tensor("encoder.subsampling.layers.5.weight")?,
+        ],
+        depthwise_b: [
+            tensor("encoder.subsampling.layers.2.bias")?,
+            tensor("encoder.subsampling.layers.5.bias")?,
+        ],
+        pointwise_w_t: [
+            transpose_out_in(
+                tensor("encoder.subsampling.layers.3.weight")?,
+                channels,
+                channels,
+            ),
+            transpose_out_in(
+                tensor("encoder.subsampling.layers.6.weight")?,
+                channels,
+                channels,
+            ),
+        ],
+        pointwise_b: [
+            tensor("encoder.subsampling.layers.3.bias")?,
+            tensor("encoder.subsampling.layers.6.bias")?,
+        ],
+        linear_w_t: transpose_out_in(
+            tensor("encoder.subsampling.linear.weight")?,
+            enc.d_model,
+            channels * out_frequency,
+        ),
+        linear_b: tensor("encoder.subsampling.linear.bias")?,
+    };
+
+    let norm = |prefix: &str, name: &str| -> Result<ParakeetBoundNorm> {
+        Ok(ParakeetBoundNorm {
+            weight: tensor(&format!("{prefix}.{name}.weight"))?,
+            bias: tensor(&format!("{prefix}.{name}.bias"))?,
+        })
+    };
+    let mut encoder = Vec::with_capacity(enc.n_layer);
+    for layer in 0..enc.n_layer {
+        let prefix = format!("encoder.layers.{layer}");
+        let ff = |branch: &str, linear: usize, output: usize, input: usize| {
+            tensor(&format!("{prefix}.{branch}.linear{linear}.weight"))
+                .map(|weight| transpose_out_in(weight, output, input))
+        };
+        let projection = |name: &str| {
+            tensor(&format!("{prefix}.self_attn.{name}.weight"))
+                .map(|weight| transpose_out_in(weight, enc.d_model, enc.d_model))
+        };
+        encoder.push(ParakeetBoundEncoderBlock {
+            ff1_w1_t: ff("feed_forward1", 1, enc.ffn_dim, enc.d_model)?,
+            ff1_b1: None,
+            ff1_w2_t: ff("feed_forward1", 2, enc.d_model, enc.ffn_dim)?,
+            ff1_b2: None,
+            ff2_w1_t: ff("feed_forward2", 1, enc.ffn_dim, enc.d_model)?,
+            ff2_b1: None,
+            ff2_w2_t: ff("feed_forward2", 2, enc.d_model, enc.ffn_dim)?,
+            ff2_b2: None,
+            norm_ff1: norm(&prefix, "norm_feed_forward1")?,
+            norm_attn: norm(&prefix, "norm_self_att")?,
+            norm_conv: norm(&prefix, "norm_conv")?,
+            norm_ff2: norm(&prefix, "norm_feed_forward2")?,
+            norm_out: norm(&prefix, "norm_out")?,
+            q_w_t: projection("q_proj")?,
+            q_b: None,
+            k_w_t: projection("k_proj")?,
+            k_b: None,
+            v_w_t: projection("v_proj")?,
+            v_b: None,
+            o_w_t: projection("o_proj")?,
+            o_b: None,
+            relative_k_w_t: projection("relative_k_proj")?,
+            bias_u: tensor(&format!("{prefix}.self_attn.bias_u"))?,
+            bias_v: tensor(&format!("{prefix}.self_attn.bias_v"))?,
+            conv_pw1_w_t: transpose_out_in(
+                tensor(&format!("{prefix}.conv.pointwise_conv1.weight"))?,
+                2 * enc.d_model,
+                enc.d_model,
+            ),
+            conv_pw1_b: None,
+            conv_dw_w: tensor(&format!("{prefix}.conv.depthwise_conv.weight"))?,
+            conv_dw_b: None,
+            conv_bn_weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
+            conv_bn_bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
+            conv_bn_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
+            conv_bn_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            conv_pw2_w_t: transpose_out_in(
+                tensor(&format!("{prefix}.conv.pointwise_conv2.weight"))?,
+                enc.d_model,
+                enc.d_model,
+            ),
+            conv_pw2_b: None,
+        });
+    }
+
+    let mut lstm = Vec::with_capacity(config.decoder.n_layer);
+    for layer in 0..config.decoder.n_layer {
+        lstm.push(ParakeetBoundLstmLayer {
+            w_ih: tensor(&format!("decoder.lstm.weight_ih_l{layer}"))?,
+            w_hh: tensor(&format!("decoder.lstm.weight_hh_l{layer}"))?,
+            b_ih: tensor(&format!("decoder.lstm.bias_ih_l{layer}"))?,
+            b_hh: tensor(&format!("decoder.lstm.bias_hh_l{layer}"))?,
+        });
+    }
+    Ok(ParakeetBoundWeights {
+        tensor_count: manifest.len(),
+        subsampling,
+        encoder,
+        encoder_projector_w: tensor("encoder_projector.weight")?,
+        encoder_projector_b: tensor("encoder_projector.bias")?,
+        embedding: tensor("decoder.embedding.weight")?,
+        lstm,
+        decoder_projector_w: tensor("decoder.decoder_projector.weight")?,
+        decoder_projector_b: tensor("decoder.decoder_projector.bias")?,
+        joint_head_w: tensor("joint.head.weight")?,
+        joint_head_b: tensor("joint.head.bias")?,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
 
@@ -699,7 +1258,9 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 #[derive(Debug, Clone)]
 pub struct ParakeetAsr {
     cfg: ParakeetConfig,
-    weights: ParakeetWeights,
+    weights: ParakeetWeightStore,
+    tokenizer: Option<ParakeetTokenizer>,
+    weight_license: LicenseClass,
 }
 
 impl ParakeetAsr {
@@ -853,7 +1414,52 @@ impl ParakeetAsr {
             }
         }
 
-        Ok(Self { cfg, weights })
+        Ok(Self {
+            cfg,
+            weights: ParakeetWeightStore::Synthesized(Box::new(weights)),
+            tokenizer: None,
+            weight_license: LicenseClass::Unknown,
+        })
+    }
+
+    /// Strictly binds the audited official 699-tensor GGUF. The converter's
+    /// metadata axes and every tensor name/shape must match; the 24 training-
+    /// only BatchNorm counters stripped before conversion are intentionally
+    /// absent. Decoder/LSTM/projector/head tensors are decoded for the real
+    /// [`Self::tdt_head_step`] numerical consumer.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let arch = file
+            .get(chunks::KEY_MODEL_ARCH)
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "ParakeetAsr::from_gguf: missing or non-string `{}`",
+                    chunks::KEY_MODEL_ARCH
+                ))
+            })?;
+        if arch != EXPECTED_ARCH {
+            return Err(VokraError::ModelLoad(format!(
+                "ParakeetAsr::from_gguf: arch {arch:?}, expected {EXPECTED_ARCH:?}; Parakeet-CTC and Parakeet-TDT-1.1B use different heads/axes"
+            )));
+        }
+        let cfg = ParakeetConfig::from_gguf(file)?;
+        let weights = load_bound_weights(file, &cfg)?;
+        let tokenizer = if file.get(tokenizer::KEY_TOKENIZER_JSON).is_some() {
+            Some(ParakeetTokenizer::from_gguf(file, cfg.joint.vocab_size)?)
+        } else {
+            None
+        };
+        let weight_license = file
+            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
+            .and_then(|value| value.as_str())
+            .and_then(LicenseClass::from_class_str)
+            .unwrap_or(LicenseClass::Unknown);
+        Ok(Self {
+            cfg,
+            weights: ParakeetWeightStore::Bound(Box::new(weights)),
+            tokenizer,
+            weight_license,
+        })
     }
 
     /// The resolved configuration.
@@ -867,32 +1473,145 @@ impl ParakeetAsr {
     /// checkpoint).
     #[must_use]
     pub fn is_synthesized(&self) -> bool {
-        self.weights.is_synthesized
+        match &self.weights {
+            ParakeetWeightStore::Synthesized(weights) => weights.is_synthesized,
+            ParakeetWeightStore::Bound(_) => false,
+        }
     }
 
-    /// Transcribes a mono `f32` PCM slice at [`Self::config`]'s sample
-    /// rate.
+    /// Weight-license class surfaced from GGUF provenance. Missing metadata
+    /// remains `Unknown` so the outer compliance gate fails closed.
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    /// Exact number of official inference tensors validated by the binder.
+    #[must_use]
+    pub fn tensor_count(&self) -> usize {
+        match &self.weights {
+            ParakeetWeightStore::Synthesized(_) => 0,
+            ParakeetWeightStore::Bound(weights) => weights.tensor_count,
+        }
+    }
+
+    /// Whether the converter embedded the official BPE + Metaspace tokenizer.
+    #[must_use]
+    pub const fn has_tokenizer(&self) -> bool {
+        self.tokenizer.is_some()
+    }
+
+    /// Runs one real zero-state prediction-network + combined TDT-head step.
     ///
-    /// This is the primary PCM → text entry point. **Real weights
-    /// required**: synthesized-weight builds cannot produce meaningful
-    /// text (they would be noise or a hallucinated fixed sequence), so
-    /// this returns [`VokraError::NotImplemented`] naming the blocker.
-    /// Callers verify the shape flow through [`ParakeetAsr::new`] +
-    /// [`ParakeetWeights::synthesized`] today; a follow-up wave binds the
-    /// real HF checkpoint tensor names and wires the forward.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] if `pcm` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// `encoder_hidden` is one FastConformer output row before the official
+    /// `encoder_projector` (`[1024]` for 0.6B-v3). This independently
+    /// executable subgraph proves that the decoder-side real weights are not
+    /// merely name-scanned while the PCM/encoder path remains loud-partial.
+    pub fn tdt_head_step(&self, encoder_hidden: &[f32], token_id: u32) -> Result<Vec<f32>> {
+        let ParakeetWeightStore::Bound(weights) = &self.weights else {
+            return Err(VokraError::NotImplemented(
+                "ParakeetAsr::tdt_head_step requires a real GGUF-bound checkpoint",
+            ));
+        };
+        if encoder_hidden.len() != self.cfg.encoder.d_model {
+            return Err(VokraError::InvalidArgument(format!(
+                "ParakeetAsr::tdt_head_step: encoder_hidden len {}, expected {}",
+                encoder_hidden.len(),
+                self.cfg.encoder.d_model
+            )));
+        }
+        if token_id as usize >= self.cfg.joint.vocab_size {
+            return Err(VokraError::InvalidArgument(format!(
+                "ParakeetAsr::tdt_head_step: token_id {token_id} outside 0..{}",
+                self.cfg.joint.vocab_size
+            )));
+        }
+        let hidden = self.cfg.decoder.d_model;
+        let mut encoder_projected = vec![0.0; hidden];
+        linear_into(
+            encoder_hidden,
+            &weights.encoder_projector_w,
+            &weights.encoder_projector_b,
+            hidden,
+            &mut encoder_projected,
+        )?;
+        let embed_offset = token_id as usize * hidden;
+        let mut decoder = weights.embedding[embed_offset..embed_offset + hidden].to_vec();
+        for layer in &weights.lstm {
+            decoder = lstm_zero_state_step(&decoder, layer, hidden)?;
+        }
+        let mut decoder_projected = vec![0.0; hidden];
+        linear_into(
+            &decoder,
+            &weights.decoder_projector_w,
+            &weights.decoder_projector_b,
+            hidden,
+            &mut decoder_projected,
+        )?;
+        for index in 0..hidden {
+            decoder_projected[index] =
+                (decoder_projected[index] + encoder_projected[index]).max(0.0);
+        }
+        let output_dim = weights.joint_head_b.len();
+        let mut logits = vec![0.0; output_dim];
+        linear_into(
+            &decoder_projected,
+            &weights.joint_head_w,
+            &weights.joint_head_b,
+            output_dim,
+            &mut logits,
+        )?;
+        Ok(logits)
+    }
+
+    /// Runs the official 128-bin log-mel frontend, depthwise-separable Conv2D
+    /// subsampler and 24-block relative-position FastConformer encoder.
+    /// The returned buffer is row-major `[encoder_frames, 1024]` before the
+    /// TDT `encoder_projector`.
+    pub fn encode_pcm(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let ParakeetWeightStore::Bound(weights) = &self.weights else {
+            return Err(VokraError::NotImplemented(
+                "ParakeetAsr::encode_pcm requires a real GGUF-bound checkpoint",
+            ));
+        };
+        let (features, frames) =
+            parakeet_logmel(pcm, self.cfg.sample_rate, self.cfg.encoder.in_dim)?;
+        let (mut hidden, encoded_frames) = subsampling_forward(
+            &features,
+            frames,
+            self.cfg.encoder.in_dim,
+            &weights.subsampling,
+            &self.cfg.encoder,
+        )?;
+        if self.cfg.encoder.scale_input {
+            let scale = (self.cfg.encoder.d_model as f32).sqrt();
+            for value in &mut hidden {
+                *value *= scale;
+            }
+        }
+        let positions = relative_positions(encoded_frames, self.cfg.encoder.d_model);
+        for block in &weights.encoder {
+            conformer_block_forward(
+                &mut hidden,
+                encoded_frames,
+                block,
+                &positions,
+                &self.cfg.encoder,
+            )?;
+        }
+        Ok((hidden, encoded_frames))
+    }
+
+    /// Transcribes 16 kHz mono `f32` PCM into emitted non-blank TDT token ids.
+    /// Repeated token ids are retained; TDT is not CTC and must not collapse
+    /// adjacent equal emissions.
     pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "parakeet transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        if self.weights.is_synthesized {
+        if matches!(&self.weights, ParakeetWeightStore::Synthesized(_)) {
             return Err(VokraError::NotImplemented(
                 "parakeet transcribe: this engine holds synthesized weights \
                  (deterministic fixture from ParakeetWeights::synthesized) — \
@@ -900,24 +1619,686 @@ impl ParakeetAsr {
                  not a real transcript. Bind real Parakeet-TDT-0.6B-v3 \
                  weights (CC-BY 4.0, nvidia/parakeet-tdt-0.6b-v3) before \
                  invoking transcribe. The shape flow (config validation, \
-                 weight-store construction, PCM boundary check) is exercised \
-                 through ParakeetAsr::new; the real-checkpoint tensor-name \
-                 manifest lands in a follow-up wave (T29-equivalent — the \
-                 Moshi / CSM / Zonos / Kyutai STT pattern).",
+                 weight-store construction, PCM boundary check) remains \
+                 available through ParakeetAsr::new; the real checkpoint path \
+                 is ParakeetAsr::from_gguf.",
             ));
         }
-        Err(VokraError::NotImplemented(
-            "parakeet transcribe: real weights are bound but the log-mel \
-             front-end → FastConformer encoder (vokra_ops::conformer) → \
-             RNN-T prediction net → joint → rnnt_decode(Tdt { \
-             duration_bins: joint.durations }) → SentencePiece detokenize \
-             forward path has not landed yet. Follow-up wave: wire \
-             ParakeetWeights to vokra_ops::conformer::ConformerEncoder + a \
-             per-frame prediction-net step + the rnnt_decode TDT path with \
-             blank_id = joint.blank_token_id and max_symbols_per_step = \
-             joint.max_symbols_per_step.",
-        ))
+        let ParakeetWeightStore::Bound(weights) = &self.weights else {
+            unreachable!("synthesized branch returned above")
+        };
+        let (encoder, frames) = self.encode_pcm(pcm)?;
+        let hidden = self.cfg.decoder.d_model;
+        let mut projected = vec![0.0; frames * hidden];
+        for frame in 0..frames {
+            linear_into(
+                &encoder[frame * self.cfg.encoder.d_model..(frame + 1) * self.cfg.encoder.d_model],
+                &weights.encoder_projector_w,
+                &weights.encoder_projector_b,
+                hidden,
+                &mut projected[frame * hidden..(frame + 1) * hidden],
+            )?;
+        }
+
+        let mut state = ParakeetDecoderState::new(self.cfg.decoder.n_layer, hidden);
+        decoder_step(self.cfg.joint.blank_token_id, weights, hidden, &mut state)?;
+        let mut tokens = Vec::new();
+        let mut frame = 0usize;
+        let max_steps = frames
+            .checked_mul(self.cfg.joint.max_symbols_per_step)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "parakeet transcribe: decode step bound overflow".to_owned(),
+                )
+            })?;
+        let mut steps = 0usize;
+        let vocab = self.cfg.joint.vocab_size;
+        while frame < frames && steps < max_steps {
+            let mut joint = vec![0.0; hidden];
+            for index in 0..hidden {
+                joint[index] =
+                    (projected[frame * hidden + index] + state.projected[index]).max(0.0);
+            }
+            let mut logits = vec![0.0; weights.joint_head_b.len()];
+            linear_into(
+                &joint,
+                &weights.joint_head_w,
+                &weights.joint_head_b,
+                logits.len(),
+                &mut logits,
+            )?;
+            let token = argmax_finite(&logits[..vocab], "Parakeet TDT token logits")? as u32;
+            let duration_index = argmax_finite(&logits[vocab..], "Parakeet TDT duration logits")?;
+            let mut duration = self.cfg.joint.durations[duration_index] as usize;
+            if token == self.cfg.joint.eos_token_id {
+                break;
+            } else if token == self.cfg.joint.blank_token_id {
+                if duration == 0 {
+                    duration = 1;
+                }
+            } else {
+                tokens.push(token);
+                decoder_step(token, weights, hidden, &mut state)?;
+            }
+            frame = frame.saturating_add(duration);
+            steps += 1;
+        }
+        Ok(tokens)
     }
+}
+
+impl AsrEngine for ParakeetAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        let ids = ParakeetAsr::transcribe(self, pcm)?;
+        let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "Parakeet ASR: `{}` is absent; reconvert with `--tokenizer tokenizer.json`",
+                tokenizer::KEY_TOKENIZER_JSON
+            ))
+        })?;
+        let text = tokenizer.decode(
+            &ids,
+            self.cfg.joint.blank_token_id,
+            self.cfg.joint.pad_token_id,
+            self.cfg.joint.eos_token_id,
+        )?;
+        Ok(Transcription::new(text))
+    }
+
+    fn backend(&self) -> BackendKind {
+        BackendKind::Cpu
+    }
+}
+
+#[derive(Debug)]
+struct ParakeetDecoderState {
+    hidden: Vec<Vec<f32>>,
+    cell: Vec<Vec<f32>>,
+    projected: Vec<f32>,
+}
+
+impl ParakeetDecoderState {
+    fn new(layers: usize, hidden: usize) -> Self {
+        Self {
+            hidden: vec![vec![0.0; hidden]; layers],
+            cell: vec![vec![0.0; hidden]; layers],
+            projected: vec![0.0; hidden],
+        }
+    }
+}
+
+fn decoder_step(
+    token: u32,
+    weights: &ParakeetBoundWeights,
+    hidden: usize,
+    state: &mut ParakeetDecoderState,
+) -> Result<()> {
+    let offset = token as usize * hidden;
+    let mut input = weights.embedding[offset..offset + hidden].to_vec();
+    for (layer_index, layer) in weights.lstm.iter().enumerate() {
+        let mut gates = vec![0.0; 4 * hidden];
+        kernels::gemv_f32(
+            4 * hidden,
+            hidden,
+            &layer.w_ih,
+            &input,
+            Some(&layer.b_ih),
+            &mut gates,
+        )?;
+        let mut recurrent = vec![0.0; 4 * hidden];
+        kernels::gemv_f32(
+            4 * hidden,
+            hidden,
+            &layer.w_hh,
+            &state.hidden[layer_index],
+            Some(&layer.b_hh),
+            &mut recurrent,
+        )?;
+        let mut next = vec![0.0; hidden];
+        for index in 0..hidden {
+            let input_gate = sigmoid_f32(gates[index] + recurrent[index]);
+            let forget_gate = sigmoid_f32(gates[hidden + index] + recurrent[hidden + index]);
+            let candidate = (gates[2 * hidden + index] + recurrent[2 * hidden + index]).tanh();
+            let output_gate =
+                sigmoid_f32(gates[3 * hidden + index] + recurrent[3 * hidden + index]);
+            let cell = forget_gate * state.cell[layer_index][index] + input_gate * candidate;
+            state.cell[layer_index][index] = cell;
+            next[index] = output_gate * cell.tanh();
+        }
+        state.hidden[layer_index].clone_from(&next);
+        input = next;
+    }
+    linear_into(
+        &input,
+        &weights.decoder_projector_w,
+        &weights.decoder_projector_b,
+        hidden,
+        &mut state.projected,
+    )
+}
+
+pub(crate) fn parakeet_logmel(
+    pcm: &[f32],
+    sample_rate: u32,
+    n_mels: usize,
+) -> Result<(Vec<f32>, usize)> {
+    const N_FFT: usize = 512;
+    const HOP: usize = 160;
+    const WIN: usize = 400;
+    const PREEMPHASIS: f32 = 0.97;
+    const LOG_GUARD: f32 = 1.0 / 16_777_216.0;
+    const EPSILON: f32 = 1e-5;
+
+    let frames = pcm.len() / HOP;
+    if frames < 2 {
+        return Err(VokraError::InvalidArgument(format!(
+            "parakeet transcribe: PCM has {} samples; at least {} are required for two normalized feature frames",
+            pcm.len(),
+            2 * HOP
+        )));
+    }
+    let mut emphasized = vec![0.0; pcm.len()];
+    emphasized[0] = pcm[0];
+    for index in 1..pcm.len() {
+        emphasized[index] = pcm[index] - PREEMPHASIS * pcm[index - 1];
+    }
+    let attrs = StftAttrs {
+        n_fft: N_FFT,
+        hop_length: HOP,
+        win_length: WIN,
+        window: Window::Hann,
+        window_symmetry: WindowSymmetry::Symmetric,
+        center: true,
+        pad_mode: PadMode::Constant,
+        normalization: Normalization::Backward,
+        causal: false,
+        real_input: true,
+    };
+    let spectrum = stft(&emphasized, &attrs)?;
+    if spectrum.frames < frames {
+        return Err(VokraError::InvalidArgument(
+            "parakeet frontend: STFT returned fewer frames than the valid attention mask"
+                .to_owned(),
+        ));
+    }
+    let bins = N_FFT / 2 + 1;
+    let mut power = vec![0.0; frames * bins];
+    for (index, value) in power.iter_mut().enumerate() {
+        *value = spectrum.re[index] * spectrum.re[index] + spectrum.im[index] * spectrum.im[index];
+    }
+    let mel = MelFilterbank::new(&MelAttrs::new(sample_rate, N_FFT, n_mels));
+    let mut features = mel.apply(&power, frames);
+    for value in &mut features {
+        *value = (*value + LOG_GUARD).ln();
+    }
+    for channel in 0..n_mels {
+        let mut mean = 0.0f32;
+        for frame in 0..frames {
+            mean += features[frame * n_mels + channel];
+        }
+        mean /= frames as f32;
+        let mut variance = 0.0f32;
+        for frame in 0..frames {
+            let delta = features[frame * n_mels + channel] - mean;
+            variance += delta * delta;
+        }
+        variance /= (frames - 1) as f32;
+        let std = variance.sqrt();
+        for frame in 0..frames {
+            let index = frame * n_mels + channel;
+            features[index] = (features[index] - mean) / (std + EPSILON);
+        }
+    }
+    Ok((features, frames))
+}
+
+fn conv_output_size(input: usize, kernel: usize, stride: usize, padding: usize) -> usize {
+    (input + 2 * padding - kernel) / stride + 1
+}
+
+pub(crate) fn subsampling_forward(
+    input: &[f32],
+    frames: usize,
+    frequency: usize,
+    weights: &ParakeetBoundSubsampling,
+    config: &ParakeetEncoderConfig,
+) -> Result<(Vec<f32>, usize)> {
+    let channels = config.subsampling_conv_channels;
+    let kernel = config.subsampling_conv_kernel_size;
+    let stride = config.subsampling_conv_stride;
+    let padding = (kernel - 1) / 2;
+    let mut time = conv_output_size(frames, kernel, stride, padding);
+    let mut freq = conv_output_size(frequency, kernel, stride, padding);
+    let mut value = vec![0.0; channels * time * freq];
+    for channel in 0..channels {
+        for out_t in 0..time {
+            for out_f in 0..freq {
+                let mut sum = weights.conv0_b[channel];
+                for kernel_t in 0..kernel {
+                    let source_t = out_t * stride + kernel_t;
+                    if source_t < padding || source_t - padding >= frames {
+                        continue;
+                    }
+                    for kernel_f in 0..kernel {
+                        let source_f = out_f * stride + kernel_f;
+                        if source_f < padding || source_f - padding >= frequency {
+                            continue;
+                        }
+                        sum += input[(source_t - padding) * frequency + source_f - padding]
+                            * weights.conv0_w[(channel * kernel + kernel_t) * kernel + kernel_f];
+                    }
+                }
+                value[(channel * time + out_t) * freq + out_f] = sum.max(0.0);
+            }
+        }
+    }
+
+    for stage in 0..2 {
+        let next_time = conv_output_size(time, kernel, stride, padding);
+        let next_freq = conv_output_size(freq, kernel, stride, padding);
+        let mut depthwise = vec![0.0; channels * next_time * next_freq];
+        for channel in 0..channels {
+            for out_t in 0..next_time {
+                for out_f in 0..next_freq {
+                    let mut sum = weights.depthwise_b[stage][channel];
+                    for kernel_t in 0..kernel {
+                        let source_t = out_t * stride + kernel_t;
+                        if source_t < padding || source_t - padding >= time {
+                            continue;
+                        }
+                        for kernel_f in 0..kernel {
+                            let source_f = out_f * stride + kernel_f;
+                            if source_f < padding || source_f - padding >= freq {
+                                continue;
+                            }
+                            sum += value
+                                [(channel * time + source_t - padding) * freq + source_f - padding]
+                                * weights.depthwise_w[stage]
+                                    [(channel * kernel + kernel_t) * kernel + kernel_f];
+                        }
+                    }
+                    depthwise[(channel * next_time + out_t) * next_freq + out_f] = sum;
+                }
+            }
+        }
+        let positions = next_time * next_freq;
+        let mut spatial = vec![0.0; positions * channels];
+        for channel in 0..channels {
+            for position in 0..positions {
+                spatial[position * channels + channel] = depthwise[channel * positions + position];
+            }
+        }
+        let mut projected = vec![0.0; positions * channels];
+        kernels::gemm_f32(
+            positions,
+            channels,
+            channels,
+            &spatial,
+            &weights.pointwise_w_t[stage],
+            Some(&weights.pointwise_b[stage]),
+            &mut projected,
+        )?;
+        for entry in &mut projected {
+            *entry = entry.max(0.0);
+        }
+        value = vec![0.0; channels * positions];
+        for channel in 0..channels {
+            for position in 0..positions {
+                value[channel * positions + position] = projected[position * channels + channel];
+            }
+        }
+        time = next_time;
+        freq = next_freq;
+    }
+
+    let projection_in = channels * freq;
+    let mut flattened = vec![0.0; time * projection_in];
+    for out_t in 0..time {
+        for channel in 0..channels {
+            for out_f in 0..freq {
+                flattened[out_t * projection_in + channel * freq + out_f] =
+                    value[(channel * time + out_t) * freq + out_f];
+            }
+        }
+    }
+    let mut output = vec![0.0; time * config.d_model];
+    kernels::gemm_f32(
+        time,
+        config.d_model,
+        projection_in,
+        &flattened,
+        &weights.linear_w_t,
+        Some(&weights.linear_b),
+        &mut output,
+    )?;
+    Ok((output, time))
+}
+
+pub(crate) fn relative_positions(frames: usize, width: usize) -> Vec<f32> {
+    let count = 2 * frames - 1;
+    let mut output = vec![0.0; count * width];
+    for position_index in 0..count {
+        let position = (frames - 1) as isize - position_index as isize;
+        for pair in 0..width / 2 {
+            let exponent = (2 * pair) as f32 / width as f32;
+            let frequency = 1.0f32 / 10_000.0f32.powf(exponent);
+            let angle = position as f32 * frequency;
+            output[position_index * width + 2 * pair] = angle.sin();
+            output[position_index * width + 2 * pair + 1] = angle.cos();
+        }
+    }
+    output
+}
+
+fn layer_norm(input: &[f32], rows: usize, norm: &ParakeetBoundNorm) -> Result<Vec<f32>> {
+    let width = norm.weight.len();
+    let mut output = vec![0.0; input.len()];
+    kernels::layer_norm_f32(
+        input,
+        &mut output,
+        rows,
+        width,
+        &norm.weight,
+        &norm.bias,
+        1e-5,
+    )?;
+    Ok(output)
+}
+
+struct FeedForwardWeights<'a> {
+    w1_t: &'a [f32],
+    b1: Option<&'a [f32]>,
+    w2_t: &'a [f32],
+    b2: Option<&'a [f32]>,
+}
+
+fn feed_forward(
+    input: &[f32],
+    frames: usize,
+    width: usize,
+    inner: usize,
+    weights: FeedForwardWeights<'_>,
+) -> Result<Vec<f32>> {
+    let mut expanded = vec![0.0; frames * inner];
+    kernels::gemm_f32(
+        frames,
+        inner,
+        width,
+        input,
+        weights.w1_t,
+        weights.b1,
+        &mut expanded,
+    )?;
+    for value in &mut expanded {
+        *value *= sigmoid_f32(*value);
+    }
+    let mut output = vec![0.0; frames * width];
+    kernels::gemm_f32(
+        frames,
+        width,
+        inner,
+        &expanded,
+        weights.w2_t,
+        weights.b2,
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+fn attention_forward(
+    input: &[f32],
+    positions: &[f32],
+    frames: usize,
+    block: &ParakeetBoundEncoderBlock,
+    config: &ParakeetEncoderConfig,
+) -> Result<Vec<f32>> {
+    let width = config.d_model;
+    let heads = config.n_head;
+    let head_dim = config.head_dim();
+    let project = |weight: &[f32], bias: Option<&[f32]>| -> Result<Vec<f32>> {
+        let mut output = vec![0.0; frames * width];
+        kernels::gemm_f32(frames, width, width, input, weight, bias, &mut output)?;
+        Ok(output)
+    };
+    let q = project(&block.q_w_t, block.q_b.as_deref())?;
+    let k = project(&block.k_w_t, block.k_b.as_deref())?;
+    let v = project(&block.v_w_t, block.v_b.as_deref())?;
+    let position_count = 2 * frames - 1;
+    let mut relative_k = vec![0.0; position_count * width];
+    kernels::gemm_f32(
+        position_count,
+        width,
+        width,
+        positions,
+        &block.relative_k_w_t,
+        None,
+        &mut relative_k,
+    )?;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut scores = vec![0.0; heads * frames * frames];
+    for head in 0..heads {
+        for query in 0..frames {
+            for key in 0..frames {
+                let relative = frames - 1 - query + key;
+                let mut content = 0.0f32;
+                let mut positional = 0.0f32;
+                for dim in 0..head_dim {
+                    let hidden_index = head * head_dim + dim;
+                    let query_value = q[query * width + hidden_index];
+                    content +=
+                        (query_value + block.bias_u[hidden_index]) * k[key * width + hidden_index];
+                    positional += (query_value + block.bias_v[hidden_index])
+                        * relative_k[relative * width + hidden_index];
+                }
+                scores[(head * frames + query) * frames + key] = (content + positional) * scale;
+            }
+        }
+    }
+    let mut probabilities = vec![0.0; scores.len()];
+    kernels::softmax_f32(&scores, &mut probabilities, heads * frames, frames)?;
+    let mut context = vec![0.0; frames * width];
+    for query in 0..frames {
+        for head in 0..heads {
+            for dim in 0..head_dim {
+                let hidden_index = head * head_dim + dim;
+                let mut sum = 0.0f32;
+                for key in 0..frames {
+                    sum += probabilities[(head * frames + query) * frames + key]
+                        * v[key * width + hidden_index];
+                }
+                context[query * width + hidden_index] = sum;
+            }
+        }
+    }
+    let mut output = vec![0.0; frames * width];
+    kernels::gemm_f32(
+        frames,
+        width,
+        width,
+        &context,
+        &block.o_w_t,
+        block.o_b.as_deref(),
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+fn convolution_forward(
+    input: &[f32],
+    frames: usize,
+    block: &ParakeetBoundEncoderBlock,
+    config: &ParakeetEncoderConfig,
+) -> Result<Vec<f32>> {
+    let width = config.d_model;
+    let mut doubled = vec![0.0; frames * 2 * width];
+    kernels::gemm_f32(
+        frames,
+        2 * width,
+        width,
+        input,
+        &block.conv_pw1_w_t,
+        block.conv_pw1_b.as_deref(),
+        &mut doubled,
+    )?;
+    let mut gated = vec![0.0; frames * width];
+    for frame in 0..frames {
+        for channel in 0..width {
+            gated[frame * width + channel] = doubled[frame * 2 * width + channel]
+                * sigmoid_f32(doubled[frame * 2 * width + width + channel]);
+        }
+    }
+    let kernel = config.conv_kernel_size;
+    let padding = (kernel - 1) / 2;
+    let mut convolved = vec![0.0; gated.len()];
+    for frame in 0..frames {
+        for channel in 0..width {
+            let mut sum = block.conv_dw_b.as_ref().map_or(0.0, |bias| bias[channel]);
+            for tap in 0..kernel {
+                let source = frame + tap;
+                if source >= padding && source - padding < frames {
+                    sum += gated[(source - padding) * width + channel]
+                        * block.conv_dw_w[channel * kernel + tap];
+                }
+            }
+            let normalized = (sum - block.conv_bn_mean[channel])
+                / (block.conv_bn_var[channel] + 1e-5).sqrt()
+                * block.conv_bn_weight[channel]
+                + block.conv_bn_bias[channel];
+            convolved[frame * width + channel] = normalized * sigmoid_f32(normalized);
+        }
+    }
+    let mut output = vec![0.0; convolved.len()];
+    kernels::gemm_f32(
+        frames,
+        width,
+        width,
+        &convolved,
+        &block.conv_pw2_w_t,
+        block.conv_pw2_b.as_deref(),
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+pub(crate) fn conformer_block_forward(
+    hidden: &mut [f32],
+    frames: usize,
+    block: &ParakeetBoundEncoderBlock,
+    positions: &[f32],
+    config: &ParakeetEncoderConfig,
+) -> Result<()> {
+    let width = config.d_model;
+    let normalized = layer_norm(hidden, frames, &block.norm_ff1)?;
+    let ff1 = feed_forward(
+        &normalized,
+        frames,
+        width,
+        config.ffn_dim,
+        FeedForwardWeights {
+            w1_t: &block.ff1_w1_t,
+            b1: block.ff1_b1.as_deref(),
+            w2_t: &block.ff1_w2_t,
+            b2: block.ff1_b2.as_deref(),
+        },
+    )?;
+    for (value, branch) in hidden.iter_mut().zip(ff1) {
+        *value += 0.5 * branch;
+    }
+    let normalized = layer_norm(hidden, frames, &block.norm_attn)?;
+    let attention = attention_forward(&normalized, positions, frames, block, config)?;
+    for (value, branch) in hidden.iter_mut().zip(attention) {
+        *value += branch;
+    }
+    let normalized = layer_norm(hidden, frames, &block.norm_conv)?;
+    let convolution = convolution_forward(&normalized, frames, block, config)?;
+    for (value, branch) in hidden.iter_mut().zip(convolution) {
+        *value += branch;
+    }
+    let normalized = layer_norm(hidden, frames, &block.norm_ff2)?;
+    let ff2 = feed_forward(
+        &normalized,
+        frames,
+        width,
+        config.ffn_dim,
+        FeedForwardWeights {
+            w1_t: &block.ff2_w1_t,
+            b1: block.ff2_b1.as_deref(),
+            w2_t: &block.ff2_w2_t,
+            b2: block.ff2_b2.as_deref(),
+        },
+    )?;
+    for (value, branch) in hidden.iter_mut().zip(ff2) {
+        *value += 0.5 * branch;
+    }
+    let normalized = layer_norm(hidden, frames, &block.norm_out)?;
+    hidden.copy_from_slice(&normalized);
+    Ok(())
+}
+
+fn argmax_finite(values: &[f32], label: &str) -> Result<usize> {
+    let mut best = None;
+    for (index, &value) in values.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(VokraError::InvalidArgument(format!(
+                "{label}: non-finite value at index {index}: {value}"
+            )));
+        }
+        if best.is_none_or(|(_, current)| value > current) {
+            best = Some((index, value));
+        }
+    }
+    best.map(|(index, _)| index)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: empty axis")))
+}
+
+fn linear_into(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    output_dim: usize,
+    output: &mut [f32],
+) -> Result<()> {
+    kernels::gemv_f32(output_dim, input.len(), weight, input, Some(bias), output)
+}
+
+fn lstm_zero_state_step(
+    input: &[f32],
+    weights: &ParakeetBoundLstmLayer,
+    hidden: usize,
+) -> Result<Vec<f32>> {
+    debug_assert_eq!(weights.w_hh.len(), 4 * hidden * hidden);
+    let bias = weights
+        .b_ih
+        .iter()
+        .zip(&weights.b_hh)
+        .map(|(input, recurrent)| input + recurrent)
+        .collect::<Vec<_>>();
+    let mut gates = vec![0.0f32; 4 * hidden];
+    // The recurrent term is exactly zero for this parity consumer's initial
+    // state, but the strict binder still validates and loads `w_hh` so it
+    // cannot disappear from the checkpoint contract.
+    kernels::gemv_f32(
+        4 * hidden,
+        hidden,
+        &weights.w_ih,
+        input,
+        Some(&bias),
+        &mut gates,
+    )?;
+    let mut output = vec![0.0f32; hidden];
+    for index in 0..hidden {
+        let input_gate = sigmoid_f32(gates[index]);
+        let candidate = gates[2 * hidden + index].tanh();
+        let output_gate = sigmoid_f32(gates[3 * hidden + index]);
+        let cell = input_gate * candidate;
+        output[index] = output_gate * cell.tanh();
+    }
+    Ok(output)
+}
+
+#[inline]
+fn sigmoid_f32(value: f32) -> f32 {
+    1.0 / (1.0 + (-value).exp())
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +2308,63 @@ impl ParakeetAsr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+    fn canonical_metadata_file() -> GgufFile {
+        let config = ParakeetConfig::parakeet_tdt_0_6b_v3();
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        builder.add_u32(KEY_SAMPLE_RATE, config.sample_rate);
+        builder.add_u32(KEY_ENC_N_LAYER, config.encoder.n_layer as u32);
+        builder.add_u32(KEY_ENC_D_MODEL, config.encoder.d_model as u32);
+        builder.add_u32(KEY_ENC_N_HEAD, config.encoder.n_head as u32);
+        builder.add_u32(KEY_ENC_N_HEAD_KV, config.encoder.n_head_kv as u32);
+        builder.add_u32(KEY_ENC_FFN_DIM, config.encoder.ffn_dim as u32);
+        builder.add_u32(KEY_ENC_CONV_KERNEL, config.encoder.conv_kernel_size as u32);
+        builder.add_u32(KEY_ENC_IN_DIM, config.encoder.in_dim as u32);
+        builder.add_u32(
+            KEY_ENC_SUBSAMPLING_FACTOR,
+            config.encoder.subsampling_factor as u32,
+        );
+        builder.add_u32(
+            KEY_ENC_SUB_CONV_KERNEL,
+            config.encoder.subsampling_conv_kernel_size as u32,
+        );
+        builder.add_u32(
+            KEY_ENC_SUB_CONV_STRIDE,
+            config.encoder.subsampling_conv_stride as u32,
+        );
+        builder.add_u32(
+            KEY_ENC_SUB_CONV_CHANNELS,
+            config.encoder.subsampling_conv_channels as u32,
+        );
+        builder.add_u32(
+            KEY_ENC_MAX_POS,
+            config.encoder.max_position_embeddings as u32,
+        );
+        builder.add_u32(KEY_ENC_ATTN_BIAS, u32::from(config.encoder.attention_bias));
+        builder.add_u32(
+            KEY_ENC_CONV_BIAS,
+            u32::from(config.encoder.convolution_bias),
+        );
+        builder.add_u32(KEY_ENC_SCALE_INPUT, u32::from(config.encoder.scale_input));
+        builder.add_u32(KEY_DEC_N_LAYER, config.decoder.n_layer as u32);
+        builder.add_u32(KEY_DEC_D_MODEL, config.decoder.d_model as u32);
+        builder.add_u32(KEY_JOINT_VOCAB_SIZE, config.joint.vocab_size as u32);
+        builder.add_u32(KEY_JOINT_BLANK_ID, config.joint.blank_token_id);
+        builder.add_u32(KEY_JOINT_PAD_ID, config.joint.pad_token_id);
+        builder.add_u32(KEY_JOINT_EOS_ID, config.joint.eos_token_id);
+        builder.add_u32(
+            KEY_JOINT_MAX_SYMBOLS_PER_STEP,
+            config.joint.max_symbols_per_step as u32,
+        );
+        builder.add_string(KEY_JOINT_ACT, &config.joint.joint_act);
+        builder.add_u32(KEY_N_DURATIONS, config.joint.durations.len() as u32);
+        for (index, duration) in config.joint.durations.iter().enumerate() {
+            builder.add_u32(&format!("{PREFIX_DURATION}{index}"), *duration);
+        }
+        GgufFile::parse(builder.to_bytes().expect("serialize metadata")).expect("parse metadata")
+    }
 
     /// Every hparam matches the primary source
     /// (`huggingface.co/nvidia/parakeet-tdt-0.6b-v3/raw/main/config.json`)
@@ -1101,6 +2539,22 @@ mod tests {
     fn config_pad_out_of_range_is_rejected() {
         let mut c = ParakeetConfig::tiny_for_tests();
         c.joint.pad_token_id = c.joint.vocab_size as u32;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn config_eos_out_of_range_or_blank_is_rejected() {
+        let mut c = ParakeetConfig::tiny_for_tests();
+        c.joint.eos_token_id = c.joint.vocab_size as u32;
+        assert!(matches!(
+            c.validate_for_forward(),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        let mut c = ParakeetConfig::tiny_for_tests();
+        c.joint.eos_token_id = c.joint.blank_token_id;
         assert!(matches!(
             c.validate_for_forward(),
             Err(VokraError::InvalidArgument(_))
@@ -1375,5 +2829,43 @@ mod tests {
     fn sample_rate_matches_model_card_boundary() {
         // 16 kHz — per the model card (`.wav` / `.flac` mono @ 16 kHz).
         assert_eq!(PARAKEET_SAMPLE_RATE, 16_000);
+    }
+
+    #[test]
+    fn canonical_metadata_round_trips_through_strict_reader() {
+        let file = canonical_metadata_file();
+        assert_eq!(
+            ParakeetConfig::from_gguf(&file).expect("canonical config"),
+            ParakeetConfig::parakeet_tdt_0_6b_v3()
+        );
+    }
+
+    #[test]
+    fn official_inference_manifest_is_exactly_699_unique_float_tensors() {
+        let manifest = expected_real_manifest(&ParakeetConfig::parakeet_tdt_0_6b_v3());
+        let names: BTreeSet<&str> = manifest.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(manifest.len(), 699);
+        assert_eq!(names.len(), manifest.len());
+        assert!(names.contains("encoder.layers.0.self_attn.bias_u"));
+        assert!(names.contains("encoder.layers.23.conv.norm.running_var"));
+        assert!(names.contains("joint.head.weight"));
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.ends_with("num_batches_tracked")),
+            "24 training-only BatchNorm counters are intentionally stripped"
+        );
+    }
+
+    #[test]
+    fn strict_bind_rejects_metadata_only_artifact_at_first_missing_tensor() {
+        let file = canonical_metadata_file();
+        let error = ParakeetAsr::from_gguf(&file).expect_err("weights are required");
+        assert!(
+            error
+                .to_string()
+                .contains("encoder.subsampling.layers.0.weight"),
+            "error names first required tensor: {error}"
+        );
     }
 }

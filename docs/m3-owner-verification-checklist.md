@@ -87,7 +87,7 @@ M3-02（Vulkan バックエンド）完成後の owner runbook = **`docs/m3-18-a
 
 M3-11 完成後の owner runbook = **`docs/m3-11-godot-demo-handover.md` を CC 側で land 済（2026-07-11）**。ClassDB 登録・export template 設定・結果報告テンプレートを規定。
 
-> **2026-08-20 再訂正**: 旧5 trampoline + `load`の`TODO(M3-18)`は解消済みだが、その後追加された`session_vad_open_stream`はint引数検証後に`report_pending`へ進み、実`VokraStream::open`とGodot object wrappingが未実装。よってM3-11全体をruntime dispatch 100%とは扱わない。残作業は既存demoの実editor確認、VAD stream生成実装、対応headless/editor smoke、その後のT20 close PR。
+> **2026-08-22 再訂正**: 旧5 trampoline + `load`に加え、`session_vad_open_stream` の実 `VokraStream::open`、Godot Object wrapping、ClassDB Object return を実装済み。公式 Godot 4.7.1 headless で実 Silero GGUF の push/poll/interrupt/reset も PASS。残作業は既存 ASR/TTS demo の実 editor/各 export target 確認であり、VAD runtime の実装穴ではない。
 
 1. Godot Editor で新規プロジェクト作成 → `vokra-godot.gdextension` を addon として import。
 2. GDScript から `Vokra.load_model()` / `Vokra.transcribe()` などの API を呼ぶデモシーンを作成。

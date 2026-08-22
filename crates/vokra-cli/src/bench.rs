@@ -35,6 +35,46 @@ const REGRESSION_THRESHOLD: f64 = 0.05;
 /// Default utterance for TTS bench when `--text` is not supplied.
 const DEFAULT_BENCH_TEXT: &str = "the quick brown fox jumps over the lazy dog";
 
+enum DenoiseBenchModel {
+    Nsnet2(vokra_models::nsnet2::Nsnet2V1),
+    Rnnoise(vokra_models::rnnoise::RnnoiseV02),
+}
+
+impl DenoiseBenchModel {
+    fn bind(gguf: &vokra_core::gguf::GgufFile) -> Result<Self, String> {
+        let arch = gguf
+            .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+            .and_then(|value| value.as_str())
+            .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
+        match arch {
+            "nsnet2" => vokra_models::nsnet2::Nsnet2V1::from_gguf(gguf)
+                .map(Self::Nsnet2)
+                .map_err(|error| error.to_string()),
+            "rnnoise" => vokra_models::rnnoise::RnnoiseV02::from_gguf(gguf)
+                .map(Self::Rnnoise)
+                .map_err(|error| error.to_string()),
+            other => Err(format!(
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+            )),
+        }
+    }
+
+    fn sample_rate(&self) -> u32 {
+        match self {
+            Self::Nsnet2(model) => model.config().sample_rate,
+            Self::Rnnoise(_) => vokra_models::rnnoise::SAMPLE_RATE,
+        }
+    }
+
+    fn denoise_pcm(&self, pcm: &[f32]) -> Result<Vec<f32>, String> {
+        match self {
+            Self::Nsnet2(model) => model.denoise_pcm(pcm),
+            Self::Rnnoise(model) => model.denoise_pcm(pcm),
+        }
+        .map_err(|error| error.to_string())
+    }
+}
+
 /// Output serialization format for the bench report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -574,11 +614,30 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::SmartTurn => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (smart-turn): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let sample_rate = clip.sample_rate;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::smart_turn::SmartTurn::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .predict_endpoint(&pcm, sample_rate)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("smart-turn", audio_seconds, samples)
+        }
         // Wave G (2026-08-15): FSMN-VAD shares this arm verbatim — its binder
         // implements the same `VadEngine` trait Silero does and is injected
         // into the same session slot, so the Silero measurement path is
         // untouched.
-        ModelTask::Vad | ModelTask::VadFsmn => {
+        ModelTask::Vad | ModelTask::VadFsmn | ModelTask::VadFirered | ModelTask::VadTen => {
             let path = args
                 .input
                 .as_deref()
@@ -602,22 +661,24 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 .input
                 .as_deref()
                 .ok_or("bench (denoise): --input <in.wav> is required")?;
-            let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?;
-            let rate = model.config().sample_rate;
             let clip = wav::read_wav(path)?;
+            let arch = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str())
+                .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
+            let model = DenoiseBenchModel::bind(session.gguf())?;
+            let rate = model.sample_rate();
             if clip.sample_rate != rate {
                 return Err(format!(
-                    "bench (denoise): {path}: expected a {rate} Hz mono WAV (the NSNet2 \
-                     STFT front-end is fixed at the trained rate), got {} Hz — resample \
-                     offline first (FR-EX-08: never a silent resample)",
+                    "bench (denoise): {path}: arch `{arch}` expects a {rate} Hz mono WAV, got {} Hz — resample offline first (FR-EX-08: never a silent resample)",
                     clip.sample_rate
                 ));
             }
             let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
             let pcm = clip.samples;
             let samples = time_iters(args.warmup, args.iters, || {
-                model.denoise_pcm(&pcm).map_err(|e| e.to_string())?;
+                model.denoise_pcm(&pcm)?;
                 Ok(())
             })?;
             ("denoise", audio_seconds, samples)
@@ -642,12 +703,74 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         // settled window definition (hop vs. centered-STFT frame count) before
         // the number means anything comparable. No bench arm rather than a
         // number whose denominator is undefined (FR-EX-08).
-        ModelTask::F0Rmvpe => {
+        ModelTask::F0Rmvpe | ModelTask::F0Fcpe | ModelTask::F0Crepe => {
             return Err(
-                "bench: arch `rmvpe` has no bench task yet — the F0 RTF denominator (hop \
+                "bench: checkpoint-backed F0 arches have no bench task yet — the F0 RTF denominator (hop \
                  timebase vs. centered-STFT frame count) is not settled, so the number \
                  would not be comparable across extractors. Use `vokra-cli run --model \
-                 <rmvpe.gguf> --input <in.wav>` for the pitch track itself"
+                 <f0.gguf> --input <in.wav>` for the pitch track itself"
+                    .to_owned(),
+            );
+        }
+        ModelTask::AlignCharsiu => {
+            return Err(
+                "bench: arch `charsiu` requires paired audio and an exact phone sequence; \
+                 no alignment timing contract is defined yet — use `vokra-cli run --model \
+                 <charsiu.gguf> --input <in.wav> --text \"P AE T\"`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TextNormalize => {
+            return Err(
+                "bench: arch `wetextprocessing` has no audio RTF task — use `vokra-cli \
+                 run --model <wetext.gguf> --text <string>` for normalization"
+                    .to_owned(),
+            );
+        }
+        ModelTask::KwsOpenwakeword => {
+            return Err(
+                "bench: arch `openwakeword_op` has no settled streaming reset/timing contract yet — use `vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>` for real KWS inference"
+                    .to_owned(),
+            );
+        }
+        ModelTask::AecNkf => {
+            return Err(
+                "bench: arch `nkf_aec` requires paired mic/far-end WAVs, but bench has no \
+                 paired-input timing contract yet — use `vokra-cli run --model \
+                 <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::CtPunc => {
+            return Err(
+                "bench: arch `ct_punc` has a paired token/id text contract, not an audio \
+                 RTF task — use `vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::MimiCodec => {
+            return Err(
+                "bench: arch `mimi` uses explicit encode/decode modes and a versioned code \
+                 container; no standalone codec benchmark contract is defined yet — use \
+                 `vokra-cli run --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::VocoderBigVgan => {
+            return Err(
+                "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::VocoderHifiGan => {
+            return Err(
+                "bench: arch `speecht5_hifigan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::VocoderVocos => {
+            return Err(
+                "bench: arch `vocos` consumes feature frames rather than timed PCM; no feature-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <vocos.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]`"
                     .to_owned(),
             );
         }

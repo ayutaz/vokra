@@ -1,38 +1,24 @@
 //! openWakeWord (`dscripka/openWakeWord`, Apache-2.0 code) — runtime
 //! binder for the `openwakeword_op` converter arch (2026-08-05).
 //!
-//! # Runtime layout (mirror of FSMN-VAD / Silero VAD)
+//! # Native v0.5.1 runtime layout
 //!
 //! ```text
 //! PCM (16 kHz mono f32)
-//!   -> `vokra_ops::stft` (n_fft=1024, hop=160, win=1024, Hann, center)
-//!   -> `vokra_ops::mel_filterbank` (n_mels=32, HTK scale, Slaney norm)
-//!   -> per-frame log(mel + eps)
-//!   -> rolling `window_frames` (=76) melspec buffer
-//!   -> Google `speech_embedding` extractor  ← **loud-partial**
-//!      (frozen upstream Google TFLite, no primary-source Python
-//!       reference us to transcribe with confidence; the runtime
-//!       returns [`VokraError::UnsupportedOp`] until the owner-provisioned
-//!       real-weight GGUF is bound via the env-gate parity harness)
+//!   -> learned 512-sample real/imag DFT Conv1d (stride 160)
+//!   -> 257x32 learned mel projection + dB clipping + `/10 + 2`
+//!   -> rolling 76x32 melspec buffer
+//!   -> official 20-convolution speech embedding CNN
 //!   -> shared 96-d embedding
-//!   -> per-wake-word MLP classifier  (`vokra_ops::openwakeword_classifier_forward`,
-//!      **real, unit-tested**)
+//!   -> rolling 16x96 embedding window
+//!   -> per-wake-word execution-order DNN + final sigmoid
 //!   -> per-wake-word probability ∈ [0, 1]
 //! ```
 //!
-//! # Loud-partial pattern (RMVPE precedent)
-//!
-//! The runtime `from_gguf` path binds real config + real per-wake-word
-//! classifier weights. The mel front-end is real. The
-//! [`EmbeddingExtractor::forward`] step is a **loud-partial**:
-//! [`VokraError::UnsupportedOp`] with an owner-facing message pointing
-//! at the env-gated parity harness (`crates/vokra-models/tests/parity_openwakeword.rs`,
-//! `VOKRA_OPENWAKEWORD_REAL_GGUF`). This mirrors the RMVPE `extract_real`
-//! posture: the surrounding scaffold is real and lands today so the
-//! parity harness can flip the switch the moment the real embedding
-//! weight tensors ship, and no downstream caller can accidentally see a
-//! silent `0.0` probability masquerading as a real prediction
-//! (FR-EX-08).
+//! The native path is selected by
+//! `classifier_format = "dnn-relu-sigmoid-v1"`. Older synthetic GGUFs
+//! without that additive key retain the two-layer classifier-only
+//! compatibility API and its loud `UnsupportedOp` streaming behavior.
 //!
 //! # `vokra.openwakeword.*` chunk group
 //!
@@ -51,7 +37,13 @@
 //!   `n_wakewords`): human-readable per-wake-word names in the order
 //!   the classifier weights are indexed.
 //!
-//! All seven are required and validated loudly at load time (FR-EX-08):
+//! The seven original keys remain required and validated loudly at load time.
+//! Native artifacts additionally require `classifier_format`,
+//! `classifier_input_frames`, `classifier_layer_counts`, and
+//! `predict_chunk_samples`; the fixed v0.5.1 axes are refused if changed.
+//! This prevents a differently-shaped fork from silently entering the
+//! transcribed topology.
+//!
 //! [`OpenwakewordConfig::from_gguf`] errors with
 //! [`VokraError::ModelLoad`] on any absent key, and
 //! [`OpenwakewordConfig::validate`] then refuses a `0` sentinel on every
@@ -59,13 +51,14 @@
 //!
 //! # Tensors (NOT part of the chunk group above)
 //!
+//! - `openwakeword.classifier.{i}.linear.{j}.{weight,bias}`:
+//!   native execution-order dense layers.
 //! - `openwakeword.classifier.{i}.linear{1,2}.{weight,bias}`:
-//!   per-wake-word MLP weights, `i` in `0..n_wakewords`. Read through
+//!   legacy classifier-only compatibility tensors. All are read through
 //!   `GgufFile::tensor_f32`, so F32 / F16 / BF16 all bind (BF16 widens
 //!   losslessly at load).
-//! - `openwakeword.embedding.*`: the shared Google `speech_embedding`
-//!   extractor weights, when present. Currently unread — see the
-//!   loud-partial section above.
+//! - `openwakeword.melspec.{dft_real,dft_imag,mel}` and
+//!   `openwakeword.embedding.conv.{0..19}.*`: required native frontend.
 //!
 //! These names carry **no `vokra.` prefix** — they are tensor names, not
 //! metadata keys, and the canonical spellings are the
@@ -80,7 +73,8 @@
 //! `vokra-cli convert --model openwakeword-op --config <config.json>`
 //! (`crates/vokra-convert/src/models/openwakeword_op.rs`). The `--config`
 //! side-car is required because `wakeword_names` cannot be derived from
-//! the tensors; the other six keys the converter derives or mirrors. The
+//! the tensors. The v0.5.1 preparation script derives the DNN topology from
+//! ONNX graph order and includes the learned frontend weights. The
 //! two halves are held together by
 //! `crates/vokra-models/tests/openwakeword_convert_bind.rs`, which runs
 //! that converter into this binder — added after a 2026-08-15 audit found
@@ -99,7 +93,14 @@ use std::sync::Arc;
 use vokra_core::engines::KwsEngine;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType};
 use vokra_core::{Result, VokraError};
-use vokra_ops::{OpenwakewordClassifierWeights, openwakeword_classifier_forward};
+use vokra_ops::{
+    OpenwakewordClassifierWeights, OpenwakewordConv2dWeights, OpenwakewordDenseWeights,
+    OpenwakewordDnnClassifierWeights, OpenwakewordEmbeddingWeights, OpenwakewordMelspecWeights,
+    openwakeword_classifier_forward, openwakeword_dnn_classifier_forward,
+    openwakeword_melspectrogram,
+};
+
+use crate::compute::Compute;
 
 #[cfg(test)]
 mod tests;
@@ -141,6 +142,17 @@ pub const KEY_SAMPLE_RATE: &str = "vokra.openwakeword.sample_rate";
 pub const KEY_HOP_SAMPLES: &str = "vokra.openwakeword.hop_samples";
 /// GGUF metadata key: per-wake-word names (`Array<String>`).
 pub const KEY_WAKEWORD_NAMES: &str = "vokra.openwakeword.wakeword_names";
+/// GGUF metadata key: classifier tensor topology identifier (string).
+pub const KEY_CLASSIFIER_FORMAT: &str = "vokra.openwakeword.classifier_format";
+/// GGUF metadata key: rolling embedding frames consumed per prediction (u32).
+pub const KEY_CLASSIFIER_INPUT_FRAMES: &str = "vokra.openwakeword.classifier_input_frames";
+/// GGUF metadata key: dense-layer count for each wake-word (`Array<U32>`).
+pub const KEY_CLASSIFIER_LAYER_COUNTS: &str = "vokra.openwakeword.classifier_layer_counts";
+/// GGUF metadata key: PCM samples consumed per prediction (u32).
+pub const KEY_PREDICT_CHUNK_SAMPLES: &str = "vokra.openwakeword.predict_chunk_samples";
+
+const CLASSIFIER_FORMAT_DNN: &str = "dnn-relu-sigmoid-v1";
+const CLASSIFIER_FORMAT_LEGACY: &str = "legacy-two-layer-v1";
 
 /// Formats a per-wake-word classifier tensor name for the first linear
 /// layer weight (row-major `[hidden_dim, embedding_dim]`).
@@ -163,6 +175,16 @@ pub fn tensor_classifier_linear2_bias(idx: usize) -> String {
     format!("openwakeword.classifier.{idx}.linear2.bias")
 }
 
+/// Formats an execution-order DNN weight tensor name.
+pub fn tensor_classifier_dnn_weight(idx: usize, layer: usize) -> String {
+    format!("openwakeword.classifier.{idx}.linear.{layer}.weight")
+}
+
+/// Formats an execution-order DNN bias tensor name.
+pub fn tensor_classifier_dnn_bias(idx: usize, layer: usize) -> String {
+    format!("openwakeword.classifier.{idx}.linear.{layer}.bias")
+}
+
 /// openWakeWord runtime config (transcribed verbatim from
 /// `vokra.openwakeword.*` at load time).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +203,14 @@ pub struct OpenwakewordConfig {
     pub hop_samples: usize,
     /// Per-wake-word names, one per classifier, in weight-index order.
     pub wakeword_names: Vec<String>,
+    /// Classifier tensor topology identifier.
+    pub classifier_format: String,
+    /// Embedding frames flattened into a native DNN head.
+    pub classifier_input_frames: usize,
+    /// Dense-layer count for each wake-word.
+    pub classifier_layer_counts: Vec<usize>,
+    /// PCM samples consumed per emitted prediction.
+    pub predict_chunk_samples: usize,
 }
 
 impl OpenwakewordConfig {
@@ -211,6 +241,48 @@ impl OpenwakewordConfig {
                 self.n_wakewords
             )));
         }
+        if self.classifier_format != CLASSIFIER_FORMAT_LEGACY
+            && self.classifier_format != CLASSIFIER_FORMAT_DNN
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "openwakeword config: unsupported classifier_format `{}`",
+                self.classifier_format
+            )));
+        }
+        if self.classifier_input_frames == 0 || self.predict_chunk_samples == 0 {
+            return Err(VokraError::InvalidArgument(
+                "openwakeword config: classifier_input_frames and predict_chunk_samples must be > 0"
+                    .to_owned(),
+            ));
+        }
+        if self.classifier_layer_counts.len() != self.n_wakewords
+            || self.classifier_layer_counts.contains(&0)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "openwakeword config: classifier_layer_counts {:?} does not describe {}/non-empty classifiers",
+                self.classifier_layer_counts, self.n_wakewords
+            )));
+        }
+        if self.classifier_format == CLASSIFIER_FORMAT_DNN
+            && (self.embedding_dim != 96
+                || self.window_frames != 76
+                || self.mel_bins != 32
+                || self.sample_rate != 16_000
+                || self.hop_samples != 160
+                || self.classifier_input_frames != 16
+                || self.predict_chunk_samples != 1_280)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "openwakeword native v0.5.1 topology requires embedding/window/mel/rate/hop/input/chunk = 96/76/32/16000/160/16/1280, got {}/{}/{}/{}/{}/{}/{}",
+                self.embedding_dim,
+                self.window_frames,
+                self.mel_bins,
+                self.sample_rate,
+                self.hop_samples,
+                self.classifier_input_frames,
+                self.predict_chunk_samples
+            )));
+        }
         Ok(())
     }
 
@@ -236,6 +308,27 @@ impl OpenwakewordConfig {
         let sample_rate = get_u32(KEY_SAMPLE_RATE)?;
         let hop_samples = get_u32(KEY_HOP_SAMPLES)? as usize;
         let wakeword_names = read_string_array(gguf, KEY_WAKEWORD_NAMES)?;
+        let classifier_format = gguf
+            .get(KEY_CLASSIFIER_FORMAT)
+            .and_then(|value| value.as_str())
+            .unwrap_or(CLASSIFIER_FORMAT_LEGACY)
+            .to_owned();
+        let classifier_input_frames = gguf
+            .get(KEY_CLASSIFIER_INPUT_FRAMES)
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1) as usize;
+        let predict_chunk_samples = gguf
+            .get(KEY_PREDICT_CHUNK_SAMPLES)
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1_280) as usize;
+        let classifier_layer_counts = if classifier_format == CLASSIFIER_FORMAT_DNN {
+            read_u32_array(gguf, KEY_CLASSIFIER_LAYER_COUNTS)?
+                .into_iter()
+                .map(|value| value as usize)
+                .collect()
+        } else {
+            vec![2; n_wakewords]
+        };
 
         let cfg = Self {
             n_wakewords,
@@ -245,6 +338,10 @@ impl OpenwakewordConfig {
             sample_rate,
             hop_samples,
             wakeword_names,
+            classifier_format,
+            classifier_input_frames,
+            classifier_layer_counts,
+            predict_chunk_samples,
         };
         cfg.validate()?;
         Ok(cfg)
@@ -286,6 +383,173 @@ fn read_string_array(gguf: &GgufFile, key: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+fn read_u32_array(gguf: &GgufFile, key: &str) -> Result<Vec<u32>> {
+    let value = gguf.get(key).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "openwakeword GGUF missing required Array<U32> metadata `{key}`"
+        ))
+    })?;
+    let array = value.as_array().ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "openwakeword GGUF metadata `{key}` is not an array"
+        ))
+    })?;
+    if array.element_type != GgufValueType::U32 {
+        return Err(VokraError::ModelLoad(format!(
+            "openwakeword GGUF metadata `{key}` has element_type {:?}, expected U32",
+            array.element_type
+        )));
+    }
+    array
+        .values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| match value {
+            GgufMetadataValue::U32(value) => Ok(*value),
+            other => Err(VokraError::ModelLoad(format!(
+                "openwakeword GGUF metadata `{key}[{index}]` is not U32 (got {:?})",
+                other.value_type()
+            ))),
+        })
+        .collect()
+}
+
+fn model_load_from_invalid(error: VokraError) -> VokraError {
+    match error {
+        VokraError::InvalidArgument(message) => VokraError::ModelLoad(message),
+        other => other,
+    }
+}
+
+fn native_embedding_forward(
+    weights: &OpenwakewordEmbeddingWeights,
+    melspec: &[f32],
+) -> Result<Vec<f32>> {
+    weights.validate()?;
+    if melspec.len() != 76 * 32 {
+        return Err(VokraError::InvalidArgument(format!(
+            "openwakeword embedding input has {} elements, expected {}",
+            melspec.len(),
+            76 * 32
+        )));
+    }
+    type EmbeddingLayerLayout = (usize, usize, Option<(usize, usize)>);
+    const LAYOUT: [EmbeddingLayerLayout; 20] = [
+        (0, 1, None),
+        (0, 1, None),
+        (0, 0, Some((2, 2))),
+        (0, 1, None),
+        (0, 0, None),
+        (0, 1, None),
+        (0, 0, Some((1, 2))),
+        (0, 1, None),
+        (0, 0, None),
+        (0, 1, None),
+        (0, 0, Some((2, 2))),
+        (0, 1, None),
+        (0, 0, None),
+        (0, 1, None),
+        (0, 0, Some((1, 2))),
+        (0, 1, None),
+        (0, 0, None),
+        (0, 1, None),
+        (0, 0, Some((2, 2))),
+        (0, 0, None),
+    ];
+    let compute = Compute::cpu();
+    let mut value = melspec.to_vec();
+    let (mut height, mut width) = (76usize, 32usize);
+    for (index, (conv, (pad_h, pad_w, pool))) in weights.convs.iter().zip(LAYOUT).enumerate() {
+        let padded_h = height + 2 * pad_h;
+        let padded_w = width + 2 * pad_w;
+        let out_h = padded_h - conv.kernel_h + 1;
+        let out_w = padded_w - conv.kernel_w + 1;
+        let columns = out_h * out_w;
+        let patch = conv.in_channels * conv.kernel_h * conv.kernel_w;
+        let mut im2col = vec![0.0; patch * columns];
+        for input_channel in 0..conv.in_channels {
+            for kernel_y in 0..conv.kernel_h {
+                for kernel_x in 0..conv.kernel_w {
+                    let row = (input_channel * conv.kernel_h + kernel_y) * conv.kernel_w + kernel_x;
+                    for out_y in 0..out_h {
+                        let source_y = out_y + kernel_y;
+                        if source_y < pad_h || source_y - pad_h >= height {
+                            continue;
+                        }
+                        for out_x in 0..out_w {
+                            let source_x = out_x + kernel_x;
+                            if source_x < pad_w || source_x - pad_w >= width {
+                                continue;
+                            }
+                            im2col[row * columns + out_y * out_w + out_x] =
+                                value[(input_channel * height + source_y - pad_h) * width
+                                    + source_x
+                                    - pad_w];
+                        }
+                    }
+                }
+            }
+        }
+        let mut next = vec![0.0; conv.out_channels * columns];
+        compute.gemm_f32(
+            conv.out_channels,
+            columns,
+            patch,
+            &conv.weight,
+            &im2col,
+            None,
+            &mut next,
+        )?;
+        if let Some(bias) = &conv.bias {
+            for (channel, plane) in next.chunks_exact_mut(columns).enumerate() {
+                for cell in plane {
+                    *cell += bias[channel];
+                }
+            }
+        }
+        value = next;
+        height = out_h;
+        width = out_w;
+        if index != 19 {
+            for cell in &mut value {
+                let leaky = if *cell >= 0.0 { *cell } else { *cell * 0.2 };
+                *cell = leaky.max(-0.4);
+            }
+        }
+        if let Some((pool_h, pool_w)) = pool {
+            let pooled_h = height / pool_h;
+            let pooled_w = width / pool_w;
+            let mut pooled = vec![f32::NEG_INFINITY; conv.out_channels * pooled_h * pooled_w];
+            for channel in 0..conv.out_channels {
+                for out_y in 0..pooled_h {
+                    for out_x in 0..pooled_w {
+                        let mut maximum = f32::NEG_INFINITY;
+                        for kernel_y in 0..pool_h {
+                            for kernel_x in 0..pool_w {
+                                maximum = maximum.max(
+                                    value[(channel * height + out_y * pool_h + kernel_y) * width
+                                        + out_x * pool_w
+                                        + kernel_x],
+                                );
+                            }
+                        }
+                        pooled[(channel * pooled_h + out_y) * pooled_w + out_x] = maximum;
+                    }
+                }
+            }
+            value = pooled;
+            height = pooled_h;
+            width = pooled_w;
+        }
+    }
+    if height != 1 || width != 1 || value.len() != 96 {
+        return Err(VokraError::InvalidArgument(format!(
+            "openwakeword embedding topology ended at [96,{height},{width}]"
+        )));
+    }
+    Ok(value)
+}
+
 /// Bound per-wake-word classifier bundle: one
 /// [`OpenwakewordClassifierWeights`] per wake-word (name + weights).
 #[derive(Debug, Clone)]
@@ -296,7 +560,22 @@ pub struct BoundClassifier {
     pub weights: OpenwakewordClassifierWeights,
 }
 
-/// Loud-partial embedding extractor.
+/// Bound official variable-depth DNN head.
+#[derive(Debug, Clone)]
+pub struct BoundDnnClassifier {
+    /// Wake-word display name.
+    pub name: String,
+    /// Execution-order DNN weights.
+    pub weights: OpenwakewordDnnClassifierWeights,
+}
+
+#[derive(Debug, Clone)]
+struct NativeOpenwakewordWeights {
+    melspec: OpenwakewordMelspecWeights,
+    embedding: OpenwakewordEmbeddingWeights,
+}
+
+/// Legacy classifier-only embedding extractor compatibility facade.
 ///
 /// The upstream openWakeWord embedding is produced by the frozen Google
 /// `speech_embedding` TFLite (Apache-2.0), whose weight tensors are not
@@ -308,13 +587,12 @@ pub struct BoundClassifier {
 /// [`Self::forward`] returns
 /// [`VokraError::UnsupportedOp`] with owner-flip instructions.
 ///
-/// When the owner-provisioned real bundle ships, the runtime binder
-/// (this module's [`OpenwakewordSession::from_gguf`]) sets the flag and
-/// wires the real forward — no other API change needed.
+/// Native DNN artifacts use the private bound CNN path directly. This public
+/// type remains so older callers and classifier-only fixtures retain their
+/// explicit loud-partial contract.
 #[derive(Debug, Clone)]
 pub struct EmbeddingExtractor {
-    /// Set to `true` once real Google `speech_embedding` weights bind
-    /// (currently: never — see the module docs).
+    /// Capability indicator retained for source compatibility.
     pub has_real_embedding_weights: bool,
     /// Emit width (== `OpenwakewordConfig::embedding_dim`, cached for
     /// the forward's dimension check).
@@ -364,23 +642,16 @@ impl EmbeddingExtractor {
 pub struct OpenwakewordSession {
     cfg: OpenwakewordConfig,
     classifiers: Arc<Vec<BoundClassifier>>,
+    dnn_classifiers: Arc<Vec<BoundDnnClassifier>>,
     embedding: EmbeddingExtractor,
-    /// Rolling melspec buffer, row-major
-    /// `[<= window_frames, mel_bins]`. Grows chunk-by-chunk under
-    /// [`Self::push_pcm16k`] and slides forward by `hop_samples` worth
-    /// of frames once the window fills. Currently unread — the
-    /// loud-partial gate fires before the STFT+mel pipeline runs — but
-    /// kept as a struct field so the follow-up wave that lights up the
-    /// embedding extractor does not have to reshape the session type
-    /// (it just drops the pre-forward loud-partial and starts consuming
-    /// this buffer).
-    #[allow(dead_code)]
+    native_weights: Option<Arc<NativeOpenwakewordWeights>>,
+    /// Rolling native melspectrogram buffer.
     melspec_buffer: Vec<f32>,
-    /// Rolling raw-PCM tail (samples not yet consumed into a mel
-    /// frame). Prevents `push_pcm16k` from discarding samples across
-    /// call boundaries. Same follow-up-wave posture as `melspec_buffer`.
-    #[allow(dead_code)]
+    /// PCM not yet forming a complete 1280-sample prediction chunk.
     pending_pcm: Vec<f32>,
+    raw_context: Vec<f32>,
+    embedding_buffer: Vec<f32>,
+    predictions_emitted: usize,
 }
 
 impl OpenwakewordSession {
@@ -414,6 +685,9 @@ impl OpenwakewordSession {
         }
 
         let cfg = OpenwakewordConfig::from_gguf(gguf)?;
+        if cfg.classifier_format == CLASSIFIER_FORMAT_DNN {
+            return Self::from_native_gguf(gguf, cfg);
+        }
 
         let mut classifiers = Vec::with_capacity(cfg.n_wakewords);
         for i in 0..cfg.n_wakewords {
@@ -518,12 +792,8 @@ impl OpenwakewordSession {
         }
 
         let embedding = EmbeddingExtractor {
-            // No real Google speech_embedding weights bind in the
-            // current landing — every real deploy triggers the
-            // loud-partial UnsupportedOp path. When the owner-
-            // provisioned bundle wires, this flag flips inside
-            // `from_gguf` based on the presence of a
-            // `vokra.openwakeword.embedding.*` tensor group.
+            // Legacy classifier-only GGUFs have no canonical native
+            // frontend tensor group and retain the loud-partial contract.
             has_real_embedding_weights: false,
             embedding_dim: cfg.embedding_dim,
         };
@@ -531,9 +801,160 @@ impl OpenwakewordSession {
         Ok(Self {
             cfg,
             classifiers: Arc::new(classifiers),
+            dnn_classifiers: Arc::new(Vec::new()),
             embedding,
+            native_weights: None,
             melspec_buffer: Vec::new(),
             pending_pcm: Vec::new(),
+            raw_context: Vec::new(),
+            embedding_buffer: Vec::new(),
+            predictions_emitted: 0,
+        })
+    }
+
+    fn from_native_gguf(gguf: &GgufFile, cfg: OpenwakewordConfig) -> Result<Self> {
+        let bind = |name: &str, expected: &[u64]| -> Result<Vec<f32>> {
+            let info = gguf.tensor_info(name).ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "openwakeword: required native tensor `{name}` is missing"
+                ))
+            })?;
+            if info.dimensions.as_slice() != expected {
+                return Err(VokraError::ModelLoad(format!(
+                    "openwakeword: tensor `{name}` dims {:?}, expected {expected:?}",
+                    info.dimensions
+                )));
+            }
+            gguf.tensor_f32(name).map_err(|error| {
+                VokraError::ModelLoad(format!(
+                    "openwakeword: tensor `{name}` load failed: {error}"
+                ))
+            })
+        };
+
+        let melspec = OpenwakewordMelspecWeights {
+            dft_real: bind("openwakeword.melspec.dft_real", &[257, 512])?,
+            dft_imag: bind("openwakeword.melspec.dft_imag", &[257, 512])?,
+            mel: bind("openwakeword.melspec.mel", &[257, 32])?,
+        };
+        melspec.validate().map_err(model_load_from_invalid)?;
+
+        const CONVS: [(usize, usize, usize, usize); 20] = [
+            (1, 24, 3, 3),
+            (24, 24, 1, 3),
+            (24, 24, 3, 1),
+            (24, 48, 1, 3),
+            (48, 48, 3, 1),
+            (48, 48, 1, 3),
+            (48, 48, 3, 1),
+            (48, 72, 1, 3),
+            (72, 72, 3, 1),
+            (72, 72, 1, 3),
+            (72, 72, 3, 1),
+            (72, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 1, 3),
+            (96, 96, 3, 1),
+            (96, 96, 3, 1),
+        ];
+        let mut convs = Vec::with_capacity(CONVS.len());
+        for (index, (input, output, kh, kw)) in CONVS.into_iter().enumerate() {
+            let weight_name = format!("openwakeword.embedding.conv.{index}.weight");
+            let weight = bind(
+                &weight_name,
+                &[output as u64, input as u64, kh as u64, kw as u64],
+            )?;
+            let bias_name = format!("openwakeword.embedding.conv.{index}.bias");
+            let bias = if index == 19 {
+                if gguf.tensor_info(&bias_name).is_some() {
+                    return Err(VokraError::ModelLoad(format!(
+                        "openwakeword: final embedding convolution must not carry `{bias_name}`"
+                    )));
+                }
+                None
+            } else {
+                Some(bind(&bias_name, &[output as u64])?)
+            };
+            convs.push(OpenwakewordConv2dWeights {
+                in_channels: input,
+                out_channels: output,
+                kernel_h: kh,
+                kernel_w: kw,
+                weight,
+                bias,
+            });
+        }
+        let embedding_weights = OpenwakewordEmbeddingWeights { convs };
+        embedding_weights
+            .validate()
+            .map_err(model_load_from_invalid)?;
+
+        let mut dnn_classifiers = Vec::with_capacity(cfg.n_wakewords);
+        for (classifier, &layer_count) in cfg.classifier_layer_counts.iter().enumerate() {
+            let mut input_dim = cfg.classifier_input_frames * cfg.embedding_dim;
+            let mut layers = Vec::with_capacity(layer_count);
+            for layer in 0..layer_count {
+                let weight_name = tensor_classifier_dnn_weight(classifier, layer);
+                let info = gguf.tensor_info(&weight_name).ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "openwakeword: required DNN tensor `{weight_name}` is missing"
+                    ))
+                })?;
+                if info.dimensions.len() != 2
+                    || info.dimensions[1] != input_dim as u64
+                    || info.dimensions[0] == 0
+                {
+                    return Err(VokraError::ModelLoad(format!(
+                        "openwakeword: tensor `{weight_name}` dims {:?}, expected [out, {input_dim}]",
+                        info.dimensions
+                    )));
+                }
+                let output_dim = info.dimensions[0] as usize;
+                let bias_name = tensor_classifier_dnn_bias(classifier, layer);
+                layers.push(OpenwakewordDenseWeights {
+                    input_dim,
+                    output_dim,
+                    weight: bind(&weight_name, &[output_dim as u64, input_dim as u64])?,
+                    bias: bind(&bias_name, &[output_dim as u64])?,
+                });
+                input_dim = output_dim;
+            }
+            let weights = OpenwakewordDnnClassifierWeights {
+                input_frames: cfg.classifier_input_frames,
+                embedding_dim: cfg.embedding_dim,
+                layers,
+            };
+            weights.validate().map_err(model_load_from_invalid)?;
+            dnn_classifiers.push(BoundDnnClassifier {
+                name: cfg.wakeword_names[classifier].clone(),
+                weights,
+            });
+        }
+
+        let embedding = EmbeddingExtractor {
+            has_real_embedding_weights: true,
+            embedding_dim: cfg.embedding_dim,
+        };
+        let melspec_buffer = vec![1.0; cfg.window_frames * cfg.mel_bins];
+        let embedding_buffer = vec![0.0; cfg.classifier_input_frames * cfg.embedding_dim];
+        Ok(Self {
+            cfg,
+            classifiers: Arc::new(Vec::new()),
+            dnn_classifiers: Arc::new(dnn_classifiers),
+            embedding,
+            native_weights: Some(Arc::new(NativeOpenwakewordWeights {
+                melspec,
+                embedding: embedding_weights,
+            })),
+            melspec_buffer,
+            pending_pcm: Vec::new(),
+            raw_context: Vec::new(),
+            embedding_buffer,
+            predictions_emitted: 0,
         })
     }
 
@@ -551,6 +972,12 @@ impl OpenwakewordSession {
     /// Returns the bound per-wake-word classifiers.
     pub fn classifiers(&self) -> &[BoundClassifier] {
         &self.classifiers
+    }
+
+    /// Returns official execution-order DNN classifiers, if this is a
+    /// native v0.5.1 artifact.
+    pub fn dnn_classifiers(&self) -> &[BoundDnnClassifier] {
+        &self.dnn_classifiers
     }
 }
 
@@ -571,50 +998,66 @@ impl KwsEngine for OpenwakewordSession {
                 self.cfg.sample_rate
             )));
         }
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "openwakeword: input PCM contains a non-finite sample".to_owned(),
+            ));
+        }
 
-        // Fast-path the loud-partial BEFORE any buffering: a caller
-        // that swallows `UnsupportedOp` in a retry loop would otherwise
-        // grow `pending_pcm` without bound. The buffer only ever holds
-        // consumable data (never `UnsupportedOp`-poisoned bytes).
-        //
-        // Once `has_real_embedding_weights` flips, the real streaming
-        // pipeline below lights up:
-        //   1. `vokra_ops::stft` on `pending_pcm`
-        //   2. `vokra_ops::mel_filterbank` → per-frame log(mel+eps)
-        //   3. slide the rolling melspec buffer forward
-        //   4. once the buffer has `window_frames` rows, run the
-        //      embedding extractor and every classifier once.
-        //
-        // Steps 1-3 are real front-end plumbing (`vokra_ops::stft` /
-        // `mel_filterbank` are already unit-tested in vokra-ops). Step 4
-        // is the loud-partial: `EmbeddingExtractor::forward` returns
-        // `UnsupportedOp` until the owner-provisioned Google
-        // speech_embedding bundle wires.
-        if !self.embedding.has_real_embedding_weights {
+        let Some(native) = self.native_weights.clone() else {
             let embedding = vec![0.0f32; self.cfg.embedding_dim];
-            // Force the loud-partial error to fire on the very first
-            // push — never silently return an empty Vec that a caller
-            // could mistake for "no wake-word yet".
             self.embedding.forward(&embedding)?;
             unreachable!(
                 "embedding.forward must return UnsupportedOp when the real \
                           bundle is unbound (FR-EX-08 honest pending)"
             );
-        }
+        };
         self.pending_pcm.extend_from_slice(samples);
+        let mut output = Vec::new();
+        while self.pending_pcm.len() >= self.cfg.predict_chunk_samples {
+            let chunk = self
+                .pending_pcm
+                .drain(..self.cfg.predict_chunk_samples)
+                .collect::<Vec<_>>();
+            let mut pcm16 = Vec::with_capacity(self.raw_context.len() + chunk.len());
+            pcm16.extend_from_slice(&self.raw_context);
+            pcm16.extend(
+                chunk
+                    .iter()
+                    .map(|sample| (sample * 32_768.0).round().clamp(-32_768.0, 32_767.0)),
+            );
 
-        // Real streaming path (activates when
-        // `has_real_embedding_weights` is `true`). Wire this branch
-        // in the follow-up wave that lands the real embedding
-        // extractor + fills `melspec_buffer` from the STFT + mel
-        // filterbank. Today this line is unreachable (see above); it is
-        // kept as an explicit `UnsupportedOp` rather than an empty
-        // `Ok(Vec::new())` so a future partial-wire cannot regress into
-        // a silent no-op.
-        Err(VokraError::UnsupportedOp(
-            "openwakeword real streaming path unreached — see EmbeddingExtractor::forward"
-                .to_owned(),
-        ))
+            let mel = openwakeword_melspectrogram(&native.melspec, &pcm16)?;
+            self.melspec_buffer.extend_from_slice(&mel);
+            let mel_capacity = self.cfg.window_frames * self.cfg.mel_bins;
+            if self.melspec_buffer.len() > mel_capacity {
+                let excess = self.melspec_buffer.len() - mel_capacity;
+                self.melspec_buffer.drain(..excess);
+            }
+            let embedding = native_embedding_forward(&native.embedding, &self.melspec_buffer)?;
+            self.embedding_buffer.extend_from_slice(&embedding);
+            let embedding_capacity = self.cfg.classifier_input_frames * self.cfg.embedding_dim;
+            if self.embedding_buffer.len() > embedding_capacity {
+                let excess = self.embedding_buffer.len() - embedding_capacity;
+                self.embedding_buffer.drain(..excess);
+            }
+
+            for classifier in self.dnn_classifiers.iter() {
+                let mut probability = openwakeword_dnn_classifier_forward(
+                    &classifier.weights,
+                    &self.embedding_buffer,
+                )?;
+                if self.predictions_emitted < 5 {
+                    probability = 0.0;
+                }
+                output.push((classifier.name.clone(), probability));
+            }
+            self.predictions_emitted += 1;
+            self.raw_context.clear();
+            self.raw_context
+                .extend_from_slice(&pcm16[pcm16.len().saturating_sub(3 * self.cfg.hop_samples)..]);
+        }
+        Ok(output)
     }
 }
 

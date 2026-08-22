@@ -510,6 +510,38 @@ pub fn waveform_frontend(
     attrs: &WaveformFrontendAttrs,
     weights: &WaveformFrontendWeights,
 ) -> Result<Vec<f32>> {
+    waveform_frontend_impl(waveform, None, attrs, weights)
+}
+
+/// Runs [`waveform_frontend`] while evaluating the first-layer GroupNorm
+/// statistics as if every input channel were right-padded with zeros to
+/// `padded_time` samples.
+///
+/// Wav2Vec2 processors commonly normalize the real samples and then pad the
+/// waveform to a fixed window. For `feat_extract_norm = "group"`, the padded
+/// first-convolution frames participate in GroupNorm even though downstream
+/// consumers may need only the valid output prefix. This entry point preserves
+/// those statistics without materializing or convolving the all-zero tail.
+/// The returned feature length is still determined by the unpadded waveform.
+///
+/// `padded_time` is the per-channel time length and must be at least the
+/// waveform's current per-channel length. Padding has no numerical effect for
+/// [`Norm::LayerAll`] or [`Norm::None`], but the same validation is applied.
+pub fn waveform_frontend_with_right_padding(
+    waveform: &[f32],
+    padded_time: usize,
+    attrs: &WaveformFrontendAttrs,
+    weights: &WaveformFrontendWeights,
+) -> Result<Vec<f32>> {
+    waveform_frontend_impl(waveform, Some(padded_time), attrs, weights)
+}
+
+fn waveform_frontend_impl(
+    waveform: &[f32],
+    padded_time: Option<usize>,
+    attrs: &WaveformFrontendAttrs,
+    weights: &WaveformFrontendWeights,
+) -> Result<Vec<f32>> {
     weights.validate(attrs)?;
 
     let in_ch0 = attrs.in_channels;
@@ -520,6 +552,12 @@ pub fn waveform_frontend(
         )));
     }
     let t_wave = waveform.len() / in_ch0;
+    let padded_time = padded_time.unwrap_or(t_wave);
+    if padded_time < t_wave {
+        return Err(VokraError::InvalidArgument(format!(
+            "waveform_frontend: padded_time {padded_time} is shorter than waveform time {t_wave}",
+        )));
+    }
     // Trigger the shape gate early — the loop below re-derives `t_out`
     // per layer, but running `predict_t_out` first surfaces the loud
     // "input too short" message from a single call site.
@@ -583,7 +621,49 @@ pub fn waveform_frontend(
             // GroupNorm(num_groups=out_ch, num_channels=out_ch, affine=True)
             // — each channel is its own group, i.e. InstanceNorm
             // topology: reduce along the time axis per channel.
-            group_norm_per_channel(&mut out, out_ch, t_out, gamma, beta);
+            if i == 0 && padded_time > t_wave {
+                let padded_t_out = (padded_time - k) / s + 1;
+                let affected_t_out = t_wave.div_ceil(s).min(padded_t_out);
+                let tail_t = affected_t_out.saturating_sub(t_out);
+                let mut tail = vec![0.0_f32; out_ch * tail_t];
+                for oc in 0..out_ch {
+                    let bias = if attrs.conv_bias { lw.conv_b[oc] } else { 0.0 };
+                    let w_base = oc * in_ch * k;
+                    for tail_index in 0..tail_t {
+                        let t_o = t_out + tail_index;
+                        let start = t_o * s;
+                        let mut acc = bias;
+                        for ic in 0..in_ch {
+                            let in_row = ic * t_in;
+                            let w_row = w_base + ic * k;
+                            for kk in 0..k {
+                                let input_index = start + kk;
+                                if input_index < t_in {
+                                    acc += cur[in_row + input_index] * lw.conv_w[w_row + kk];
+                                }
+                            }
+                        }
+                        tail[oc * tail_t + tail_index] = acc;
+                    }
+                }
+                group_norm_per_channel_right_padded(
+                    &mut out,
+                    out_ch,
+                    t_out,
+                    &tail,
+                    tail_t,
+                    padded_t_out,
+                    if attrs.conv_bias {
+                        Some(&lw.conv_b)
+                    } else {
+                        None
+                    },
+                    gamma,
+                    beta,
+                );
+            } else {
+                group_norm_per_channel(&mut out, out_ch, t_out, gamma, beta);
+            }
         }
 
         // ---- 3. GELU (exact erf-based) ---------------------------------
@@ -678,6 +758,57 @@ fn group_norm_per_channel(buf: &mut [f32], c: usize, t: usize, gamma: &[f32], be
         let b = beta[ci];
         for v in row.iter_mut() {
             *v = g * (*v - mean) * inv_std + b;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn group_norm_per_channel_right_padded(
+    buf: &mut [f32],
+    c: usize,
+    t: usize,
+    tail: &[f32],
+    tail_t: usize,
+    padded_t: usize,
+    conv_bias: Option<&[f32]>,
+    gamma: &[f32],
+    beta: &[f32],
+) {
+    const EPS: f32 = 1e-5;
+    let n = padded_t as f32;
+    let constant_tail_t = padded_t - t - tail_t;
+    for ci in 0..c {
+        let row = &mut buf[ci * t..(ci + 1) * t];
+        let partial_tail = &tail[ci * tail_t..(ci + 1) * tail_t];
+        let constant = conv_bias.map_or(0.0, |bias| bias[ci]);
+        let mut mean = row.iter().copied().sum::<f32>();
+        mean += partial_tail.iter().copied().sum::<f32>();
+        mean += constant * constant_tail_t as f32;
+        mean /= n;
+
+        let mut variance = row
+            .iter()
+            .map(|&value| {
+                let delta = value - mean;
+                delta * delta
+            })
+            .sum::<f32>();
+        variance += partial_tail
+            .iter()
+            .map(|&value| {
+                let delta = value - mean;
+                delta * delta
+            })
+            .sum::<f32>();
+        let constant_delta = constant - mean;
+        variance += constant_delta * constant_delta * constant_tail_t as f32;
+        variance /= n;
+
+        let inv_std = 1.0 / (variance + EPS).sqrt();
+        let g = gamma[ci];
+        let b = beta[ci];
+        for value in row {
+            *value = g * (*value - mean) * inv_std + b;
         }
     }
 }
@@ -963,6 +1094,55 @@ mod tests {
         for &v in out.iter() {
             assert_eq!(v, 0.0);
         }
+    }
+
+    #[test]
+    fn right_padding_group_norm_matches_materialized_zero_tail() {
+        let attrs = WaveformFrontendAttrs {
+            in_channels: 1,
+            layers: vec![ConvLayerAttrs {
+                out_channels: 2,
+                kernel: 3,
+                stride: 2,
+            }],
+            norm: Norm::GroupFirstOnly,
+            conv_bias: true,
+        };
+        let weights = WaveformFrontendWeights {
+            layers: vec![ConvLayerWeights {
+                conv_w: vec![0.5, -0.25, 0.75, -0.3, 0.2, 0.4],
+                conv_b: vec![0.1, -0.2],
+                norm_gamma: Some(vec![1.2, 0.8]),
+                norm_beta: Some(vec![-0.1, 0.3]),
+            }],
+        };
+        let waveform = vec![0.4, -0.2, 0.7, 0.1, -0.5];
+        let mut materialized = waveform.clone();
+        materialized.resize(9, 0.0);
+
+        let expected = waveform_frontend(&materialized, &attrs, &weights).unwrap();
+        let actual = waveform_frontend_with_right_padding(&waveform, 9, &attrs, &weights).unwrap();
+        assert_eq!(actual.len(), 4);
+        for frame in 0..2 {
+            for channel in 0..2 {
+                let expected_value = expected[frame * 2 + channel];
+                let actual_value = actual[frame * 2 + channel];
+                assert!(
+                    (actual_value - expected_value).abs() < 1e-6,
+                    "frame={frame} channel={channel} actual={actual_value} expected={expected_value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn right_padding_rejects_a_shorter_logical_window() {
+        let attrs = WaveformFrontendAttrs::wav2vec2_base();
+        let weights = synthesize_weights(&attrs);
+        let waveform = vec![0.0_f32; 400];
+        let error = waveform_frontend_with_right_padding(&waveform, 399, &attrs, &weights)
+            .expect_err("shorter right-padding window must fail");
+        assert!(format!("{error:?}").contains("padded_time 399 is shorter"));
     }
 
     #[test]

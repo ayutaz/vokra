@@ -83,9 +83,10 @@
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VibeVoice /
 //! VoxCPM / WeSpeaker / ECAPA-TDNN / hifigan_vocoder contract).
-//! Real-weight parity vs the upstream `transformers.SpeechT5HifiGan`
-//! Python forward is deferred to owner (`docs/license-audit.md` §3.1
-//! sign-off queue).
+//! The strict runtime binder consumes the official 158-tensor manifest,
+//! including learned `mean` / `scale`, and is checked against the official
+//! `transformers.SpeechT5HifiGan` Python forward by
+//! `parity_speecht5_hifigan_real.rs`.
 //!
 //! # No ONNX (permanent)
 //!
@@ -95,12 +96,11 @@
 //! shared HiFi-GAN family loader) when the vocoder lands
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 //!
-//! # Loud-partial precedent
+//! # Strict runtime consumer
 //!
-//! Real-weight forward binding is deferred: the runtime consumer will
-//! walk the emitted tensor names and either succeed or fail loudly per
-//! FR-EX-08. Today's converter surface is byte-exact provenance +
-//! tensor-name preservation only.
+//! `vokra-models::hifigan::HiFiGan::from_gguf` rejects missing, extra,
+//! renamed, or wrong-shaped tensors. This converter retains upstream names so
+//! convert → bind is a direct manifest handshake rather than an alias map.
 
 use std::path::Path;
 
