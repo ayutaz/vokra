@@ -61,16 +61,15 @@ fn compare(label: &str, actual: &[f32], expected: &[f32], max_bound: f32, mean_b
 
 #[test]
 fn real_parakeet_ctc_pcm_encoder_logits_tokens_and_text_match_official() {
-    let (Ok(gguf), Ok(reference_dir)) = (
-        std::env::var("VOKRA_PARAKEET_CTC_GGUF"),
-        std::env::var("VOKRA_PARAKEET_CTC_REFERENCE_DIR"),
-    ) else {
-        eprintln!(
-            "skipping Parakeet-CTC real parity: set VOKRA_PARAKEET_CTC_GGUF and VOKRA_PARAKEET_CTC_REFERENCE_DIR"
-        );
+    let Ok(gguf) = std::env::var("VOKRA_PARAKEET_CTC_GGUF") else {
+        eprintln!("skipping Parakeet-CTC real parity: set VOKRA_PARAKEET_CTC_GGUF");
         return;
     };
-    let reference_dir = Path::new(&reference_dir);
+    let reference_dir = std::env::var("VOKRA_PARAKEET_CTC_REFERENCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parakeet_ctc")
+        });
     let file = GgufFile::open(gguf).expect("open Parakeet-CTC GGUF");
     let model = ParakeetCtcAsr::from_gguf(&file).expect("strict Parakeet-CTC bind");
     assert_eq!(model.bound_tensor_count(), Some(1_652));
@@ -79,6 +78,7 @@ fn real_parakeet_ctc_pcm_encoder_logits_tokens_and_text_match_official() {
     let pcm = read_f32(&reference_dir.join("pcm.f32"));
     let expected_encoder = read_f32(&reference_dir.join("encoder.f32"));
     let expected_logits = read_f32(&reference_dir.join("logits.f32"));
+    let expected_raw_argmax = read_u32(&reference_dir.join("raw_argmax.u32"));
     let expected_tokens = read_u32(&reference_dir.join("tokens.u32"));
     let expected_text = std::fs::read_to_string(reference_dir.join("text.txt"))
         .expect("read text fixture")
@@ -86,13 +86,27 @@ fn real_parakeet_ctc_pcm_encoder_logits_tokens_and_text_match_official() {
         .to_owned();
 
     let (encoder, frames) = model.encode_pcm(&pcm).expect("native encoder");
-    assert_eq!(frames, 13, "one-second fixture encoder frame count");
+    assert_eq!(
+        frames,
+        expected_encoder.len() / model.config().encoder.d_model,
+        "fixture encoder frame count"
+    );
     compare(
         "encoder",
         &encoder,
         &expected_encoder,
         ENCODER_MAX_ABS_BOUND,
         ENCODER_MEAN_ABS_BOUND,
+    );
+    let head_from_reference_encoder = model
+        .logits(&expected_encoder, frames)
+        .expect("native CTC head on reference encoder");
+    compare(
+        "head_from_reference_encoder",
+        &head_from_reference_encoder,
+        &expected_logits,
+        LOGITS_MAX_ABS_BOUND,
+        LOGITS_MEAN_ABS_BOUND,
     );
     let logits = model.logits(&encoder, frames).expect("native CTC head");
     compare(
@@ -102,6 +116,17 @@ fn real_parakeet_ctc_pcm_encoder_logits_tokens_and_text_match_official() {
         LOGITS_MAX_ABS_BOUND,
         LOGITS_MEAN_ABS_BOUND,
     );
+    let actual_raw_argmax = logits
+        .chunks_exact(model.config().head.vocab_size)
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .max_by(|left, right| left.1.total_cmp(right.1))
+                .map(|(index, _)| index as u32)
+                .expect("non-empty CTC logits row")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual_raw_argmax, expected_raw_argmax, "raw CTC argmax ids");
     assert_eq!(
         model.transcribe_tokens(&pcm).expect("native CTC decode"),
         expected_tokens,

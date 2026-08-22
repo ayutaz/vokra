@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import struct
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +48,24 @@ def write_wav_f32(path: Path, pcm: torch.Tensor) -> None:
     )
 
 
+def read_pcm16_wav(path: Path) -> torch.Tensor:
+    with wave.open(str(path), "rb") as stream:
+        if (
+            stream.getnchannels() != 1
+            or stream.getframerate() != SAMPLE_RATE
+            or stream.getsampwidth() != 2
+            or stream.getcomptype() != "NONE"
+        ):
+            raise SystemExit(
+                f"{path}: expected 16 kHz mono PCM16 WAV, got "
+                f"channels={stream.getnchannels()} rate={stream.getframerate()} "
+                f"width={stream.getsampwidth()} compression={stream.getcomptype()}"
+            )
+        payload = stream.readframes(stream.getnframes())
+    pcm = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
+    return torch.from_numpy(pcm)
+
+
 def collapse_ctc(sequence: list[int], blank: int) -> list[int]:
     output: list[int] = []
     previous = blank
@@ -61,16 +80,30 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--audio",
+        type=Path,
+        help="Use a redistributable 16 kHz mono PCM16 WAV instead of the deterministic tone",
+    )
     args = parser.parse_args()
 
     torch.set_num_threads(1)
     torch.manual_seed(0)
-    time = torch.arange(SAMPLE_RATE, dtype=torch.float32) / SAMPLE_RATE
-    pcm = (
-        0.12 * torch.sin(2.0 * torch.pi * 220.0 * time)
-        + 0.04 * torch.sin(2.0 * torch.pi * 440.0 * time)
-        + 0.01 * torch.cos(2.0 * torch.pi * 37.0 * time)
-    )
+    if args.audio is not None:
+        pcm = read_pcm16_wav(args.audio)
+        input_kind = "redistributable-wav"
+        input_sha256 = hashlib.sha256(args.audio.read_bytes()).hexdigest()
+    else:
+        time = torch.arange(SAMPLE_RATE, dtype=torch.float32) / SAMPLE_RATE
+        pcm = (
+            0.12 * torch.sin(2.0 * torch.pi * 220.0 * time)
+            + 0.04 * torch.sin(2.0 * torch.pi * 440.0 * time)
+            + 0.01 * torch.cos(2.0 * torch.pi * 37.0 * time)
+        )
+        input_kind = "deterministic-three-tone"
+        input_sha256 = hashlib.sha256(
+            pcm.numpy().astype("<f4", copy=False).tobytes()
+        ).hexdigest()
     processor = AutoProcessor.from_pretrained(args.checkpoint, local_files_only=True)
     model = ParakeetForCTC.from_pretrained(
         args.checkpoint,
@@ -96,7 +129,7 @@ def main() -> int:
     raw_sequence = [int(value) for value in raw_sequence[:valid_encoder]]
     blank = int(model.config.pad_token_id)
     tokens = collapse_ctc(raw_sequence, blank)
-    official_text = processor.tokenizer.decode(
+    official_text = processor.decode(
         raw_sequence,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
@@ -122,7 +155,9 @@ def main() -> int:
         "transformers": transformers.__version__,
         "torch": torch.__version__,
         "sample_rate": SAMPLE_RATE,
-        "sample_count": SAMPLE_RATE,
+        "sample_count": len(pcm),
+        "input_kind": input_kind,
+        "input_sha256": input_sha256,
         "input_feature_shape": list(inputs.input_features.shape),
         "valid_feature_frames": valid_features,
         "subsampled_shape": list(subsampled_unscaled.shape),

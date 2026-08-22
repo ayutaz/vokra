@@ -17,8 +17,8 @@ At the baseline, the 79 unrouted runtime rows were partitioned as follows:
 | `NeedsPairedInput` | 1 | 0 | 0 | 0 | The CLI has no honest two-audio-input contract |
 | `NoCliShapedOutput` | 2 | 2 | 0 | 0 | Input/output serialization must be specified first |
 | `NoGgufLoader` | 17 | 17 | 17 | 0 | No real artifact can be bound, even if a constructor/forward exists |
-| `LoudPartialForward` | 56 | 56 | 56 | 62 | Loading can succeed, but the named forward stops explicitly |
-| **Total** | **79** | **75** | **73** | **62** | `BOUND_ARCHES` registry rows |
+| `LoudPartialForward` | 56 | 56 | 56 | 60 | Loading can succeed, but the named forward stops explicitly |
+| **Total** | **79** | **75** | **73** | **60** | `BOUND_ARCHES` registry rows |
 
 Wave 1 on `feat/runtime-gap-closure-2026-08-21` closes the four low-cost CLI
 registry rows and implements the separate Godot VAD Object-return gap:
@@ -509,14 +509,14 @@ Use the `add-speech-model`, `numerical-parity`, and `license-audit` repository
 skills when implementing these waves. Any artifact set of at least 2 GB and
 every compiling/testing `vokra-models` Cargo command belongs on VAST.
 
-## Wave 4 — 62 partial forwards
+## Wave 4 — 60 partial forwards
 
 The exact rows are grouped below to expose shared work without treating a
 family as one completion checkbox.
 
 | Family | Count | Rows |
 |---|---:|---|
-| ASR / speech transcription | 12 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-ctc`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall`, `whisper-medusa-v1` |
+| ASR / speech transcription | 10 | `canary`, `canary-1b-flash`, `canary-qwen`, `firered_asr_aed_l`, `gigaam_multilingual`, `kyutai-stt`, `omniasr-ctc`, `parakeet-tdt-1_1b`, `sber_gigaam_v3`, `sensevoicesmall` |
 | TTS / speech-to-speech | 17 | `chattts`, `chatterbox`, `chatterbox_nano`, `chatterbox_turbo`, `cosyvoice2`, `cosyvoice3`, `dia`, `diffsinger`, `irodori-tts`, `llama_omni2`, `qwen3_tts`, `styletts2`, `vibevoice`, `vits-ja`, `voila`, `voxcpm2`, `zonos` |
 | Music generation/transcription | 6 | `audiogen`, `audioldm2`, `beat-this`, `jasco_400m_chords_drums`, `mt3`, `musicgen` |
 | Enhancement / separation / AEC | 8 | `audiosr`, `conv_tasnet`, `demucs`, `dtln_aec`, `facebook_denoiser`, `gtcrn`, `sepformer`, `storm` |
@@ -639,6 +639,51 @@ The independent reference script directly executed FunASR commit
 measured full-posterior max absolute error `8.344650269e-7` and one-shot plus
 173-sample streaming PCM score error `1.370906830e-6`; the committed gates are
 `2e-6` and `5e-6`. No weight was uploaded or published.
+
+## Parakeet CTC closure — native ASR and real parity complete
+
+The old metadata-only scaffold is replaced by a strict converter and native
+runtime tied to authenticated `nvidia/parakeet-ctc-1.1b` revision
+`20e63a0fed6aedba145b74b826dbd41df0941730`. The source checkpoint SHA-256 is
+`57e0bc26772f3360b7ae0c087f184364179906674d08fc8b71d48a54d4f52145`;
+config, preprocessor and tokenizer hashes are pinned separately. The official
+file contains 1,652 F32 inference tensors and 42 scalar I64
+`num_batches_tracked` counters. The auditable preparer removed exactly one
+eval-inert counter for each encoder layer 0..41 and produced a
+4,250,693,988-byte safetensors file with SHA-256
+`2e1cf9928eb64a133d3eec98ba50ee0be101394ff72cd8e20dcf3c932bec46f5`.
+
+The converter requires the exact 1,652-tensor manifest and all three official
+sidecars, embeds the BPE + Metaspace tokenizer, and stamps 34 metadata keys.
+The resulting GGUF is 4,251,045,248 bytes with SHA-256
+`8cbe063dc66b5395c2c5b352f34b2864cbd933fc4637f2a6a10455a2e2313f6d`.
+The loader rechecks the checkpoint/source revisions, every sidecar hash,
+tokenizer ids, tensor name/shape, topology axis and CC-BY-4.0 provenance
+before binding. Metadata-only and stale artifacts fail closed.
+
+The native CPU forward implements the official pre-emphasis, symmetric-Hann
+80-bin Slaney log-mel frontend, three-stage Conv2D subsampler,
+`scale_input = sqrt(1024)`, 42 relative-position FastConformer blocks with the
+checkpoint's linear/attention/convolution biases, eval BatchNorm, kernel-1 CTC
+head, greedy repeat/blank folding and tokenizer decode. Unsupported non-CPU
+backends return an explicit error; no silent fallback exists.
+
+The independent fixture imports pinned Transformers 5.15.0 directly and uses
+the existing Public Domain JFK WAV (SHA-256 `58adb4ea…53f`) rather than a
+synthetic self-reference. Across 138 encoder frames, VAST instance `48335615`
+measured encoder max/mean absolute error `2.574920654e-5 / 1.575474698e-6`,
+CTC-head error from the upstream encoder `1.525878906e-4 / 2.181897435e-5`,
+and complete native PCM logits `2.670288086e-4 / 3.449702854e-5`. The
+predeclared encoder `2e-4 / 2e-5` and logits `1e-3 / 1e-4` bounds were not
+widened. All 138 raw argmax ids, 26 collapsed tokens and the complete official
+transcript matched exactly. The release CLI printed the same transcript from
+the generated GGUF and WAV. Fixtures, hashes, environment and the diagnostic
+low-energy-tone investigation are committed under
+`crates/vokra-models/tests/fixtures/parakeet_ctc/`.
+
+This removes `parakeet-ctc` from `BOUND_ARCHES`; the live registry now has 60
+rows. No checkpoint, GGUF or replacement artifact was uploaded or published
+by this runtime work.
 
 ## Whisper-Medusa-v1 closure — native ASR and real parity complete
 

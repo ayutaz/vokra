@@ -392,6 +392,27 @@ weight provenance are not conflated. No official weight is bundled in this
 repository.
 
 --------------------------------------------------------------------------
+15. NVIDIA Parakeet-CTC-1.1B — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+Vokra's strict converter and native ASR runtime target the authenticated
+`nvidia/parakeet-ctc-1.1b` release. The model weights are distributed by
+NVIDIA under the Creative Commons Attribution 4.0 International license.
+Commercial use is permitted; attribution is required.
+
+  NVIDIA Parakeet-CTC-1.1B
+  Copyright (c) NVIDIA CORPORATION
+  Licensed under CC-BY 4.0
+  Source: https://huggingface.co/nvidia/parakeet-ctc-1.1b
+
+The converter embeds this notice in `vokra.provenance.attribution` and stamps
+the canonical `attribution-required` weight class. The runtime is a native,
+zero-dependency Rust implementation and does not bundle or link NVIDIA CUDA,
+cuDNN, PyTorch, Transformers, ONNX Runtime, Python, or upstream source code.
+Transformers is used only as the pinned offline reference oracle that produced
+the committed numerical fixtures. This runtime change did not upload or
+replace any model artifact.
+
+--------------------------------------------------------------------------
 9. Maintaining this file
 --------------------------------------------------------------------------
 
