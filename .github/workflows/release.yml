@@ -359,6 +359,9 @@ jobs:
           cp target/release/libvokra.so \
             bindings/unity/com.vokra.unity/Plugins/Linux/x86_64/libvokra.so
 
+      - name: Set up Android SDK / NDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+
       - name: Build Android arm64-v8a vokra-capi via scripts/build-android.sh
         env:
           # ubuntu-latest ships the NDK under $ANDROID_NDK_ROOT; forward it
