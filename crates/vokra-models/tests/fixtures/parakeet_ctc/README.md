@@ -13,8 +13,7 @@ extractor, subsampler, encoder and CTC head, and decodes through the official
   `20e63a0fed6aedba145b74b826dbd41df0941730`
 - pinned Transformers source revision:
   `d56c55bf564ddb176759eb6ec199442682564916`
-- tokenizer SHA-256:
-  `f3f1dd45c3889ed2b5bf67180caf05f51d7d7e4948c20e5f24d8c24df9cc47aa`
+- tokenizer SHA-256: `f3f1dd45c3889ed2b5bf67180caf05f51d7d7e4948c20e5f24d8c24df9cc47aa`
 - audio: `tests/fixtures/audio/jfk-30s.wav`, the existing Public Domain
   LibriVox JFK fixture documented in that directory's README
 - audio SHA-256:

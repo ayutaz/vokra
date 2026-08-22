@@ -163,7 +163,13 @@ regexes = [
   # across docs/*.md, converters, parity preparers, publish scripts, and
   # .github/pins.yaml.  Requiring the `_SHA256`/`sha256` identifier plus an
   # exact 64-hex value keeps this narrower than a bare high-entropy allowlist.
-  '''(?i)\b(?:[a-z][a-z0-9_]*_)?sha-?256\s*[:=]\s*['"]?[a-f0-9]{64}['"]?''',
+  '''(?i)\b(?:[a-z][a-z0-9_]*_)?sha-?256['"]?\s*[:=]\s*[`'"]?[a-f0-9]{64}[`'"]?''',
+
+  # Entries inside a manifest-style SHA256 mapping may use the artifact name
+  # as the key instead of repeating `sha256` on every line.  Keep this scoped
+  # to tokenizer.json plus an exact SHA-256 value; a generic quoted key/value
+  # allowlist would hide real credentials.
+  '''(?i)['"]tokenizer\.json['"]\s*:\s*['"][a-f0-9]{64}['"]''',
 
   # `hf_revision: <40-hex>` — Hugging Face commit-sha pin (pins.yaml +
   # every parity-*-real.yml workflow env: block).
