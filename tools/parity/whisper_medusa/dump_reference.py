@@ -47,6 +47,22 @@ def isolate_training_only_utils(package: Path) -> None:
     sys.modules[name] = module
 
 
+def install_transformers_compat() -> None:
+    """Restore a removed, import-only Transformers 4.49 re-export.
+
+    The pinned upstream ``models/model.py`` imports
+    ``NEED_SETUP_CACHE_CLASSES_MAPPING`` from ``generation.utils`` but never
+    reads it. Transformers 5 removed that internal re-export. Supplying the
+    original module attribute as an empty mapping keeps the exact upstream
+    source importable without changing its model equations or forward path.
+    """
+
+    from transformers.generation import utils as generation_utils  # noqa: PLC0415
+
+    if not hasattr(generation_utils, "NEED_SETUP_CACHE_CLASSES_MAPPING"):
+        generation_utils.NEED_SETUP_CACHE_CLASSES_MAPPING = {}
+
+
 def write_f32(path: Path, tensor: torch.Tensor) -> None:
     tensor.detach().float().cpu().contiguous().numpy().astype("<f4").tofile(path)
 
@@ -78,8 +94,42 @@ def main() -> None:
         )
     sys.path.insert(0, str(args.source_parent))
     isolate_training_only_utils(package)
+    install_transformers_compat()
     from whisper_medusa.models import WhisperMedusaModel  # noqa: PLC0415
+    from whisper_medusa.models.model import (  # noqa: PLC0415
+        Whisper2MedusaHeadsConditionalGeneration,
+    )
     from whisper_medusa.utils import config_and_args  # noqa: PLC0415
+
+    # Transformers 4.49 instantiated the outer model eagerly on CPU unless
+    # low_cpu_mem_usage was requested. Transformers 5 always instantiates the
+    # outer model under a meta-device context, but the pinned upstream
+    # constructor performs a nested Whisper `from_pretrained`, which is
+    # intentionally rejected under that context. Keep the upstream class and
+    # checkpoint loader, but restore its former eager CPU boundary for that
+    # nested call only.
+    nested_from_pretrained = (
+        Whisper2MedusaHeadsConditionalGeneration.from_pretrained.__func__
+    )
+
+    @classmethod
+    def eager_nested_from_pretrained(cls, *model_args, **model_kwargs):
+        with torch.device("cpu"):
+            return nested_from_pretrained(cls, *model_args, **model_kwargs)
+
+    Whisper2MedusaHeadsConditionalGeneration.from_pretrained = (
+        eager_nested_from_pretrained
+    )
+    # The pinned wrapper predates Transformers 5's per-instance tied-weight
+    # map. Its checkpoint intentionally omits `proj_out.weight`: canonical
+    # Whisper ties that projection to the decoder token embedding. Prefix the
+    # official Whisper mapping through the wrapper so the v5 loader neither
+    # initializes random logits nor rejects the old class shape.
+    WhisperMedusaModel.all_tied_weights_keys = {
+        "whisper_model.proj_out.weight": (
+            "whisper_model.model.decoder.embed_tokens.weight"
+        )
+    }
 
     model_source = Path(inspect.getsourcefile(WhisperMedusaModel) or "").resolve()
     config_source = Path(inspect.getsourcefile(config_and_args) or "").resolve()
@@ -98,7 +148,8 @@ def main() -> None:
     device = torch.device(selected_device)
     torch.manual_seed(0)
     model = WhisperMedusaModel.from_pretrained(
-        args.model_dir, local_files_only=True
+        args.model_dir,
+        local_files_only=True,
     ).eval().to(device)
     processor = WhisperProcessor.from_pretrained(args.model_dir, local_files_only=True)
     pcm = deterministic_pcm()
@@ -154,6 +205,11 @@ def main() -> None:
         "model_source": str(model_source.relative_to(args.source_parent.resolve())),
         "config_source": str(config_source.relative_to(args.source_parent.resolve())),
         "training_utils_init": "bypassed; model/config modules are exact upstream files",
+        "transformers_compat": [
+            "restore unused 4.49 NEED_SETUP_CACHE_CLASSES_MAPPING re-export",
+            "nested Whisper from_pretrained uses the former eager CPU boundary",
+            "outer wrapper declares canonical tied proj_out/token embedding mapping",
+        ],
         "python": platform.python_version(),
         "torch": torch.__version__,
         "transformers": __import__("transformers").__version__,
