@@ -1,116 +1,114 @@
-# Vokra documentation map
+# Vokra documentation
 
-**Current-state review:** 2026-08-20
-**Repository baseline:** PR #38 branch at `c693194`, based on `main` `6d64fdf`
+**Current-state review:** 2026-08-22
 
-This page explains which documents describe current behavior and which are
-dated evidence. A dated benchmark, ADR, plan, or handoff remains true for the
-commit and environment it names; its old branch, test count, ABI count, or
-“next step” is not automatically a current instruction.
+**Reviewed baseline:** `main` at `42af7a90`
 
-## Current sources
+This directory contains public guides, generated-surface pointers, design
+decisions, validation evidence, and dated engineering records. Start with the
+guides below; use handoff and benchmark files only for the commit and
+environment they name.
 
-| Need | Authoritative source |
+## Start here
+
+| Need | Document |
 |---|---|
-| Repository invariants and agent operation | [`AGENTS.md`](../AGENTS.md) |
-| Contributor workflow and local/VAST boundary | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
-| User-facing capabilities and model roster | [`README.md`](../README.md) / [日本語](../README.ja.md) |
-| Build and first run | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
-| Architecture and crate layout | [Architecture](architecture.md) / [日本語](architecture.ja.md) |
-| C ABI and CLI surface | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
-| Backend behavior | [Backend guide](backend-guide.md) / [日本語](backend-guide.ja.md) |
-| Model and dependency decisions | [Licence audit](license-audit.md) |
-| Deployment law and policy | [Legal compliance](legal-compliance.md) |
-| Current M5 actions | [M5 owner checklist](m5-owner-verification-checklist.md) |
-| Ordered remaining-work plan | [2026-08-20 execution plan](handoff/remaining-work-plan-2026-08-20.md) |
-| 2026-08-18 Git/VAST/session reconciliation | [Codex operations handoff](handoff/codex-operations-2026-08-18.md) |
-| 2026-08-18 workflow Python migration | [Workflow Python/uv migration](handoff/workflow-python-uv-migration-2026-08-18.md) |
+| Install, build, and first inference | [Getting started](getting-started.md) / [日本語](getting-started.ja.md) |
+| Desktop command line | [CLI tutorial](tutorials/cli.md) / [日本語](tutorials/cli.ja.md) |
+| Rust, C, and binding surfaces | [API reference](api-reference.md) / [日本語](api-reference.ja.md) |
+| Runtime and crate design | [Architecture](architecture.md) / [日本語](architecture.ja.md) |
+| CPU and accelerator behavior | [Backend guide](backend-guide.md) / [日本語](backend-guide.ja.md) |
+| Move from ONNX Runtime, whisper.cpp, or sherpa-onnx | [Migration guide](migration-guide.md) / [日本語](migration-guide.ja.md) |
+| Platform examples | [`tutorials/`](tutorials/) |
+| Contributor workflow | [`CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| Community conduct | [Code of Conduct](../CODE_OF_CONDUCT.md) / [日本語](../CODE_OF_CONDUCT.ja.md) |
+| Vulnerability reporting | [Security Policy](../SECURITY.md) / [日本語](../SECURITY.ja.md) |
+| Model and dependency licensing | [Licence audit](license-audit.md) |
+| Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
+| C ABI changes | [ABI changelog](abi-changelog.md) |
+| Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
 
-The product-planning set (`requirements.md`, `system-requirements.md`,
-`deliverables.md`, and `milestones.md`) and `CLAUDE.md` are intentionally
-`gitignore-local`; they are available in the maintainer workspace but are not
-links that a public clone can resolve.
+Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
+and the server in English and Japanese under [`tutorials/`](tutorials/).
 
-The generated source or checker wins when a human-readable page disagrees
-with it: `include/vokra.h` for the C ABI, `vokra-cli convert --help` for
-model-kind dispatch, model manifests for implementation coverage, and the
-publication scripts for release gates.
+## Reading model status correctly
 
-## Current repository state
+Model support has separate stages: offline conversion, GGUF binding, native
+forward execution, independent numerical parity, and publication. A model at
+one stage must not be described as complete at a later stage.
 
-- `main` and `origin/main` are synchronized at `6d64fdf`; PR #38 is the only
-  active feature branch and is based directly on that commit.
-- The retired audit branch was not merged wholesale. PR #29 carried the audit
-  work, PR #32 carried the Codex migration, and PR #37 carried the remaining
-  Claude compatibility delta.
-- The generated C header currently has 48 `vokra_*` functions. References
-  to 33 functions in dated M4/M5 reports are historical snapshots.
-- M5 is not complete and the C ABI is not frozen. The live checklist has
-  42 checked and 36 literal unchecked boxes plus prose-only GA gates in §0;
-  unchecked actions are not equivalent to missing implementations.
-- The official-zoo reality gate currently accepts 20 advertised rows and
-  reports no declared implementation gaps.
+Use the live sources for current answers:
 
-## Living plans versus implementation evidence
+- `vokra-cli convert --help` lists accepted converter identifiers;
+- `vokra-cli run --help` lists CLI-routed inputs, outputs, and backends;
+- [`crates/vokra-cli/src/engine.rs`](../crates/vokra-cli/src/engine.rs) records
+  routed architectures and explicit deferred operations;
+- the [Vokra model hub](https://huggingface.co/vokra) contains only published
+  artifacts and their model cards;
+- parity tests and fixtures provide architecture-specific numerical evidence.
 
-`requirements.md`, `system-requirements.md`, `deliverables.md`, and
-`milestones.md` are living product/planning documents. They describe target
-scope and acceptance conditions; a target row is not proof that the
-implementation or real-hardware verification is complete. Current completion
-evidence comes from source, generated surfaces, green checks, parity reports,
-and the owner checklists.
+The generated source or checker wins when prose disagrees with it:
+[`include/vokra.h`](../include/vokra.h) for the C ABI, the generated Python
+prototype table for Python FFI coverage, model manifests for tensor contracts,
+and the publication scripts for release eligibility.
 
-The following directories are primarily dated records:
+## Current release posture
+
+The workspace version is `0.1.0-alpha.0`. Rust APIs, the C ABI, GGUF metadata,
+and the model roster remain pre-1.0 and may change. The C header and Python
+prototype table are checked for exact function-set equality; documentation
+therefore avoids copying a function count that would drift on the next ABI
+addition.
+
+The default runtime keeps the root `Cargo.lock` first-party-only. GPU and NPU
+features are opt-in, and unsupported operations must fail explicitly instead
+of silently running on CPU. Model licences remain separate from the
+Apache-2.0 source licence; consult the licence audit and each model card before
+redistribution.
+
+## Current sources versus dated records
+
+The following directories preserve useful evidence but are not live status
+pages:
 
 - `handoff/` — branch- or campaign-specific transfer notes;
-- `bench-baselines/` and `benchmarks/` — measurements for named hardware,
-  commit, flags, and fixtures;
+- `bench-baselines/`, `benchmarks/`, and `perf/` — measurements for named
+  hardware, commits, flags, and fixtures;
 - `adr/` — decisions at the status and date written;
-- `_research/` — initial 2026-07 research snapshots;
-- `superpowers/` — implementation plans/specifications, not live status.
+- `_research/` — initial research snapshots;
+- `superpowers/` — implementation plans and specifications.
 
-Do not rewrite measured results to match a newer branch. Add a supersession
-note or a newer report when disposition changes.
-
-Some planning sections still cite the former `CLAUDE.md` project chronicle
-as the source of a 2026-07 estimate or decision. Those citations mean the
-version committed at that date, not the current compatibility entry point.
-They are historical provenance. Public-clone instructions come from
-`AGENTS.md`, the tracked guides, and this map; maintainers also reconcile
-them with the `gitignore-local` living requirements in their workspace.
+Do not rewrite old measurements or historical test counts to resemble a new
+head. Add a supersession note or a newer report. Local maintainer planning
+files may be intentionally gitignored; public instructions come from
+`AGENTS.md`, `CONTRIBUTING.md`, the tracked guides, and repository checks.
 
 ## Documentation conventions
 
-- Commands intended to be run today use uv for Python. Historical prose may
-  mention an old pip incident, but executable recipes must use `uv run`,
-  `uv sync`, or `uv add`.
-- On the maintainer Mac, aggregate model artefacts of 2 GB or more,
-  workspace-wide Cargo, and every compiling/testing/checking
-  `-p vokra-models` command run on VAST. Public examples use focused package
-  commands where possible.
-- English/Japanese twins are maintained for the public entry guides and
-  platform tutorials. Audit, legal, benchmark, ADR, and handoff records may
-  intentionally have one language only; the repository does not promise a
-  translation for every top-level Markdown file.
-- Links to absent private tickets are valid only when explicitly labelled
-  `gitignore-local` or historical.
-- Never copy credentials into documentation. Tokens belong in ephemeral
-  environment variables and an exposed credential must be rotated.
+- Executable Python recipes use Python 3.12 through `uv run` or `uv sync`.
+- Public entry guides and platform tutorials keep English/Japanese twins.
+  Audits, ADRs, benchmarks, and dated handoffs may be single-language.
+- Large-model conversion and workspace-scale verification follow the VAST
+  workflow; user-facing focused build examples remain valid on normal hosts.
+- Credentials never belong in documentation or committed command examples.
 
 ## Lightweight validation
 
-These checks do not compile the workspace or `vokra-models`:
+These checks validate documentation without compiling the workspace or
+`vokra-models`:
 
 ```sh
+uv run --no-project --python 3.12 python \
+  tools/docs/check_doc_examples.py --self-test
+uv run --no-project --python 3.12 python \
+  tools/docs/check_doc_examples.py
+scripts/check-doc-references.sh --self-test
 scripts/check-doc-references.sh
 scripts/check-runbook-path-citations.sh
 scripts/check-community-docs.sh
-scripts/publish/check-catalog-reality.sh
 scripts/check-workflow-hygiene.sh
 git diff --check
 ```
 
-`check-community-docs.sh` currently reports a deliberate pending state for
-four contact-dependent files (`CODE_OF_CONDUCT{,.ja}.md` and
-`SECURITY{,.ja}.md`) until X-05-T04 supplies owner contact points. That is an
-explicit owner dependency, not a broken-link result.
+`check-community-docs.sh` requires the English/Japanese Code of Conduct and
+Security Policy pairs and validates their relative links and heading parity.

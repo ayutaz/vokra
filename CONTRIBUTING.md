@@ -4,6 +4,10 @@ Thank you for considering a contribution. Vokra is developed fully in the
 open, and every change — including changes by the maintainer — goes through
 the same pull-request and CI pipeline described below.
 
+Participation follows the [Code of Conduct](CODE_OF_CONDUCT.md). Security
+vulnerabilities use the private process in [SECURITY.md](SECURITY.md), never a
+public issue. Neither policy publishes a personal contact address.
+
 The design documents under `docs/` define requirements and scope; public entry
 guides have English/Japanese twins while audit and handoff records may be
 single-language. Requirement IDs (BR / FR / NFR) referenced below are indexed
@@ -21,8 +25,8 @@ in `docs/requirement-ids.md` and its Japanese twin.
 
 ## 2. CI required checks
 
-As verified through the GitHub branch-protection API on 2026-08-20, every PR
-must pass **15 required status contexts**:
+As re-verified through the GitHub branch-protection API on 2026-08-22, every
+PR must pass **16 required status contexts**:
 
 | Check | What it runs |
 |---|---|
@@ -36,21 +40,23 @@ must pass **15 required status contexts**:
 | `dependency-review` | dependency license/vulnerability review plus OpenSSF Scorecard visibility for changed dependencies |
 | `documentation-links` | lychee link validation for the public documentation surface |
 | `CodeQL` | GitHub CodeQL Rust `security-extended` analysis |
+| `gitleaks` | Secret scanning over the working tree; a nightly companion scans full history |
 | `pins.yaml ↔ workflow sync` | Bidirectional consistency between `.github/pins.yaml` and workflow pin literals |
 
 Run lightweight equivalents locally and use CI or an adequately sized remote
 host for the complete matrix. On the maintainer's 16 GB Mac, workspace-wide
 Cargo and every `-p vokra-models` Cargo invocation are VAST-only. Ten core
-contexts live in `.github/workflows/ci.yml`; the four security contexts live
-in `.github/workflows/ci-security.yml` and `.github/workflows/codeql.yml`, and
-the pin-catalog context lives in `.github/workflows/pins-sync-check.yml`.
+contexts live in `.github/workflows/ci.yml`; five security contexts live in
+`.github/workflows/ci-security.yml`, `.github/workflows/codeql.yml`, and
+`.github/workflows/secret-scan.yml`; the pin-catalog context lives in
+`.github/workflows/pins-sync-check.yml`.
 The advisory checks were split out on 2026-07-23 into
 `.github/workflows/ci-quality.yml` (lint / audit / doc-drift / API-compat) and
 `.github/workflows/ci-platform.yml` (platform build targets / GPU backends /
 regression gate). `.github/workflows/README.md` is the index of which job lives
 where.
 
-Beyond the 15 required contexts, CI also runs a **`gpu-backends`** job
+Beyond the 16 required contexts, CI also runs a **`gpu-backends`** job
 (in `.github/workflows/ci-platform.yml`) that
 keeps the optional `metal` / `cuda` GPU backends compiling and lint-clean
 (`cargo build`/`clippy`/`test -p vokra-models -p vokra-cli --features

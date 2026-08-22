@@ -31,7 +31,7 @@ code and into the runtime.
 |---|---|
 | `Ort::Session(env, "model.onnx", ...)` | `vokra_session_create_from_file("model.gguf", &s)` |
 | `session.Run(inputs, outputs)` | `vokra_asr_transcribe(s, pcm, n, sr, &out)` (task auto-selected from `vokra.model.arch`) |
-| `SessionOptions::SetExecutionProviderCUDA(...)` | `vokra_session_set_backend(s, VOKRA_BACKEND_CUDA)` (build with `--features cuda`) |
+| `SessionOptions::SetExecutionProviderCUDA(...)` | Get an opaque options handle from `vokra_session_options_create()`, call `vokra_session_options_set_backend(..., VOKRA_BACKEND_CUDA)`, pass it to `vokra_session_create_from_file_with_options(...)`, then call `vokra_session_options_destroy(...)` (build with `--features cuda`) |
 | Custom op registration | The op is either first-class already or reported as an explicit error |
 | `sherpa_onnx_offline_recognizer_*` | `vokra_session_create_from_file` (Whisper GGUF) + `vokra_asr_transcribe` |
 | `sherpa_onnx_online_recognizer_*` | `vokra_stream_open` + `vokra_stream_push_pcm` + `vokra_stream_poll` |
@@ -125,7 +125,7 @@ Quantization presets available: `--quantize q4_k` / `q5_k` / `q6_k`
 ## 4. From `faster-whisper` (Python)
 
 The source Python package now exposes `Session` and its generated `ctypes`
-table covers all 48 current C functions. It remains an unpublished pre-1.0
+table covers the complete current C function set. It remains an unpublished pre-1.0
 surface: the four native wheels must pass final-head CI, and no PyPI/TestPyPI
 destination has been authorized. See the
 [binding status](../bindings/python/README.md). Source-checkout evaluation is

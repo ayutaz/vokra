@@ -30,7 +30,7 @@
 |---|---|
 | `Ort::Session(env, "model.onnx", ...)` | `vokra_session_create_from_file("model.gguf", &s)` |
 | `session.Run(inputs, outputs)` | `vokra_asr_transcribe(s, pcm, n, sr, &out)`（`vokra.model.arch` からタスク自動選択） |
-| `SessionOptions::SetExecutionProviderCUDA(...)` | `vokra_session_set_backend(s, VOKRA_BACKEND_CUDA)`（`--features cuda` でビルド） |
+| `SessionOptions::SetExecutionProviderCUDA(...)` | `vokra_session_options_create()` で opaque options handle を取得し、`vokra_session_options_set_backend(..., VOKRA_BACKEND_CUDA)` を呼び、`vokra_session_create_from_file_with_options(...)` に渡した後で `vokra_session_options_destroy(...)` を呼ぶ（`--features cuda` でビルド） |
 | Custom op 登録 | すでに第一級化されているか、明示エラーで拒否 |
 | `sherpa_onnx_offline_recognizer_*` | `vokra_session_create_from_file`（Whisper GGUF）+ `vokra_asr_transcribe` |
 | `sherpa_onnx_online_recognizer_*` | `vokra_stream_open` + `vokra_stream_push_pcm` + `vokra_stream_poll` |
@@ -123,7 +123,7 @@ vokra-cli convert --model whisper \
 ## 4. `faster-whisper`（Python）から
 
 source Python packageは`Session`をexportし、生成済み`ctypes` tableも現行C
-headerの48 functionsをすべて覆います。ただし未公開のpre-1.0 surfaceです。
+header の現行 function set をすべて覆います。ただし未公開の pre-1.0 surface です。
 4 native wheelsのfinal-head CIとPyPI/TestPyPI公開先の明示承認は未完了です。
 [binding status](../bindings/python/README.md)を参照してください。source checkout
 での評価は可能ですが、特定versionが公開・検証されるまではproductionの

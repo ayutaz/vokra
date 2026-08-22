@@ -271,6 +271,31 @@ answer.
 
 ### Changed
 
+#### OSS release documentation (2026-08-22)
+
+- Reworked the English and Japanese root READMEs into compact release entry
+  pages: alpha status, core guarantees, a current Whisper quick start, honest
+  model/backend maturity, primary documentation links, and licensing are kept;
+  internal progress inventories and duplicated model rosters moved out of the
+  entry path.
+- Corrected the quick-start CLI contract to use the required `run --model`
+  flag and corrected the migration guide to use construction-time
+  `vokra_session_options_set_backend` plus
+  `vokra_session_create_from_file_with_options` instead of the nonexistent
+  mutable `vokra_session_set_backend` API.
+- Added both root READMEs to documentation example and relative-link checks,
+  including regression fixtures that reject positional `run model.gguf` and
+  unsupported `run --model=model.gguf` examples. Current Python/C-ABI
+  documentation now describes exact generated surface equality instead of
+  copying a function count that can drift.
+- Added compact English/Japanese Code of Conduct and Security Policy pairs.
+  Security reports use GitHub Private Vulnerability Reporting exclusively;
+  no email or personal enforcement contact is published. The contributor
+  funnel gate now treats all four policy files as required and validates their
+  links and structural parity instead of reporting an owner-dependent pending
+  state. Contributor and governance guidance now reflects the 16 required
+  branch-protection contexts, including `gitleaks`.
+
 #### Real-weight verification + HF publication (2026-07-22 / -23)
 
 - **`NOTICE` §1 (BigVGAN)**: replaced the "NVIDIA SCL-NC → scratch

@@ -2,7 +2,14 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**Implementation baseline (reconciled 2026-08-18)**: the M5 implementation waves and subsequent audit/parity follow-ups are on `main` through `6d64fdf` (PR #37). This checklist is the remaining action ledger feeding the **v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The branch/PR history and current operating rules are summarized in `docs/handoff/codex-operations-2026-08-18.md`.
+**Implementation baseline (reconciled 2026-08-22)**: the M5 implementation
+waves, release-surface work, and runtime-gap closure are on `main` through
+`42af7a90` (PR #44). This checklist is the remaining action ledger feeding the
+**v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration
+and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The
+2026-08-18 branch/operation history remains in
+`docs/handoff/codex-operations-2026-08-18.md`; the later runtime evidence is in
+`docs/handoff/runtime-gap-execution-plan-2026-08-21.md`.
 
 **2026-08-10 addendum (SBV2 v2 4-Blocker + Blocker 2c residual + ZH BERT publish + H100 FA v3 bakeoff; PR #27 merged 2026-08-11)**: the following is the pre-merge wave ledger from branch `feat/sbv2-voxtral-real-verify-2026-08-06` (then 18 commits ahead of `origin/main`, tip `8d469eb`). PR #27 merged as `0937ef874495465bdadf18d5511f14e6e2a0ab71`; the follow-up audit PR #29 merged as `8e048d8afd95d7d26bfa5121eef7533178b854d1` on 2026-08-17.
 - **Wave 1** (2026-08-10, 9 commits `16a8410..9cb4d52`): SBV2 4 Blockers closed — Blocker 5 (SentencePiece proto parser + WordPiece + DeBERTa v2/v3 sibling tokenizer discovery, `cb2cd7b`/`e7dc2e4`/`7242f94`), Blocker 3 (`SbV2Model::speaker_projection()` accessor, `1a90e0d`), Blocker 2b (TDD-hardening 3 commits: flow rename table + metadata-key contract + converter spelling, `296dba1`/`672ef5b`/`922d3f5`), Blocker 2c Wave 1 (rational-quadratic spline math primitive, `f1b7815`).

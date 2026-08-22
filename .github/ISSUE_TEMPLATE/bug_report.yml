@@ -24,9 +24,8 @@ body:
         Two quick notes before you start:
 
         - If this is a **security vulnerability**, please do not file it here.
-          Reporting instructions are being finalised; until they are published,
-          contact the maintainer through the repository's GitHub profile rather
-          than opening a public issue.
+          Use [GitHub Private Vulnerability Reporting](https://github.com/ayutaz/vokra/security/advisories/new).
+          The project does not publish an email reporting address.
         - If you are unsure whether it is a bug, the *Question* form is fine —
           nobody will mind.
 

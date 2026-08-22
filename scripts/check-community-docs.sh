@@ -23,36 +23,12 @@
 #       absolute URLs (a relative link is unreliable in a rendered PR or
 #       issue body), which would otherwise put them outside link checking.
 #
-# PENDING vs DRIFT — and why this script has a third exit code
-#   CODE_OF_CONDUCT.md and SECURITY.md are deliberately NOT landed yet. Their
-#   enforcement / vulnerability-reporting contact points are undecided
-#   (X-05-T04, owner), and publishing a reporting channel that does not reach
-#   anybody is worse than publishing none: it converts a would-be private
-#   report into either a public issue or silence. Vokra ships a C ABI, raw FFI
-#   and nine `unsafe`-permitted crates, so that matters here.
-#
-#   Collapsing "blocked on an owner decision" into the same FAIL as "somebody
-#   broke a link" would produce a permanently red check, and a permanently red
-#   check is one people learn to ignore — which would then hide real drift.
-#   Reporting them as OK would be worse: the gap would be forgotten.
-#
-#   So they are reported as PENDING and get their own exit code. When the
-#   contacts are decided, drop the drafts prepared under docs/tickets/m5/
-#   into place and it turns 0. Do not add a bypass for the pending set.
-#
-#   CI wiring (revised 2026-07-20, wave 1 integration)
-#     This block previously concluded "this script is therefore NOT wired into
-#     CI", on the reasoning above: wiring it would make CI permanently red
-#     until T04, and a permanently red check is one people learn to ignore.
-#     That reasoning is sound but it was choosing between only two options —
-#     wire it (permanently red) or leave it out. There is a third: wire it and
-#     let the *exit code* carry the distinction. Leg (a) is the only pending
-#     one; legs (b)-(f) check real drift (dead links, en/ja twins, missing
-#     SSOT targets) and, unwired, nothing enforced them at all — which is the
-#     very defect class X-08 exists to close (a gate that never runs is not a
-#     gate). So the CI step treats exit 3 as a pass that annotates PENDING and
-#     exit 1 as a failure. The original concern is preserved: the check is not
-#     permanently red, so it does not train people to ignore it.
+# COMMUNITY POLICY STATUS
+#   X-05-T04 was resolved on 2026-08-22: the project publishes no personal
+#   contact address. Security reports use GitHub Private Vulnerability
+#   Reporting; conduct moderation uses GitHub's platform controls. The four
+#   English/Japanese policy files are now ordinary required inputs. Missing,
+#   empty, one-sided, or link-broken policy files are drift and fail this gate.
 #
 # MODES
 #   scripts/check-community-docs.sh              verify (default)
@@ -71,7 +47,6 @@
 # EXIT CODES
 #   0  everything green
 #   1  drift — something that should hold right now is broken
-#   3  pending only — the X-05-T04 files are absent, everything else is green
 #   2  usage / setup error
 
 set -euo pipefail
@@ -79,7 +54,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
-    sed -n '3,63p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '3,50p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 analyze() {
@@ -96,16 +71,12 @@ REQUIRED = [
     ".github/ISSUE_TEMPLATE/bug_report.yml",
     ".github/ISSUE_TEMPLATE/question.yml",
     ".github/ISSUE_TEMPLATE/config.yml",
-    "docs/good-first-tasks.md",
-    "docs/good-first-tasks.ja.md",
-]
-
-# ---- blocked on X-05-T04 (owner): contact points undecided ---------------
-PENDING = [
     "CODE_OF_CONDUCT.md",
     "CODE_OF_CONDUCT.ja.md",
     "SECURITY.md",
     "SECURITY.ja.md",
+    "docs/good-first-tasks.md",
+    "docs/good-first-tasks.ja.md",
 ]
 
 ISSUE_FORMS = [
@@ -120,6 +91,10 @@ LINK_DOCS = [
     "README.md",
     "README.ja.md",
     "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "CODE_OF_CONDUCT.ja.md",
+    "SECURITY.md",
+    "SECURITY.ja.md",
     "docs/good-first-tasks.md",
     "docs/good-first-tasks.ja.md",
     "docs/governance/quarterly-reviews/README.md",
@@ -129,11 +104,9 @@ LINK_DOCS = [
 
 # ---- en/ja twins that must stay structurally in step ---------------------
 TWINS = [
-    ("docs/good-first-tasks.md", "docs/good-first-tasks.ja.md"),
-]
-PENDING_TWINS = [
     ("CODE_OF_CONDUCT.md", "CODE_OF_CONDUCT.ja.md"),
     ("SECURITY.md", "SECURITY.ja.md"),
+    ("docs/good-first-tasks.md", "docs/good-first-tasks.ja.md"),
 ]
 
 # ---- leg (e): the SSOT targets CONTRIBUTING points the reader at ---------
@@ -199,9 +172,6 @@ if mode == "list":
     print("required :")
     for rel in REQUIRED:
         print(f"  {'OK ' if read(rel) else 'MISS'}  {rel}")
-    print("pending (X-05-T04, owner):")
-    for rel in PENDING:
-        print(f"  {'OK ' if read(rel) else 'PEND'}  {rel}")
     print("link-scanned documents:")
     for rel in LINK_DOCS:
         print(f"  {'OK ' if read(rel) else 'MISS'}  {rel}")
@@ -211,7 +181,6 @@ if mode == "list":
     sys.exit(0)
 
 drift = []
-pending = []
 
 
 def fail(leg, msg, items=()):
@@ -235,17 +204,6 @@ if empty:
     fail("a", f"{len(empty)} required community file(s) empty", empty)
 if not missing and not empty:
     print(f"[a] OK — {len(REQUIRED)} required community file(s) present")
-
-for rel in PENDING:
-    if read(rel) is None:
-        pending.append(rel)
-if pending:
-    print(
-        f"[a] PENDING — {len(pending)} file(s) intentionally not landed until "
-        "X-05-T04 (owner) fixes the contact points:"
-    )
-    for rel in sorted(pending):
-        print(f"        {rel}")
 
 # ---- leg (b) --------------------------------------------------------------
 form_problems = []
@@ -295,12 +253,6 @@ if twin_problems:
 else:
     print(f"[d] OK — {len(TWINS)} en/ja twin pair(s) in step")
 
-for en, ja in PENDING_TWINS:
-    if read(en) is None and read(ja) is None:
-        continue
-    if (read(en) is None) != (read(ja) is None):
-        fail("d", f"pending pair landed one-sided: {en} / {ja}")
-
 # ---- leg (e) --------------------------------------------------------------
 ssot_missing = [rel for rel in SSOT_TARGETS if read(rel) is None]
 if ssot_missing:
@@ -341,12 +293,6 @@ if drift:
         file=sys.stderr,
     )
     sys.exit(1)
-if pending:
-    print(
-        f"check-community-docs: PENDING — {len(pending)} file(s) await "
-        "X-05-T04 (owner). Everything else is green."
-    )
-    sys.exit(3)
 print("check-community-docs: OK (all legs pass)")
 sys.exit(0)
 PY
@@ -379,6 +325,10 @@ YML
         printf '# readme\n' >"$dir/README.md"
         printf '# readme ja\n' >"$dir/README.ja.md"
         printf '# contributing\n[g](docs/good-first-tasks.md)\n' >"$dir/CONTRIBUTING.md"
+        printf '# conduct\n\n## rules\n[s](SECURITY.md)\n' >"$dir/CODE_OF_CONDUCT.md"
+        printf '# conduct ja\n\n## rules\n[s](SECURITY.ja.md)\n' >"$dir/CODE_OF_CONDUCT.ja.md"
+        printf '# security\n\n## report\n[c](CODE_OF_CONDUCT.md)\n' >"$dir/SECURITY.md"
+        printf '# security ja\n\n## report\n[c](CODE_OF_CONDUCT.ja.md)\n' >"$dir/SECURITY.ja.md"
         printf '# reviews\n' >"$dir/docs/governance/quarterly-reviews/README.md"
         printf '# go/no-go\n' >"$dir/docs/governance/vokra-go-nogo-v0.5.md"
         printf '# exit paths\n' >"$dir/docs/governance/exit-path-playbook.md"
@@ -388,27 +338,26 @@ YML
 
     _rc() { analyze "$1" verify >/dev/null 2>&1; echo $?; }
 
-    # (1) healthy tree with the pending pair absent -> exit 3, not 0 and not 1
-    local d="$tmproot/pending"
+    # (1) a complete contributor funnel -> green
+    local d="$tmproot/complete"
     _scaffold "$d"
-    if [ "$(_rc "$d")" != "3" ]; then
-        echo "self-test FAILED: absent CoC/SECURITY should be PENDING (exit 3)" >&2
-        rc=1
-    fi
-
-    # (2) the pending pair landed -> fully green
-    d="$tmproot/complete"
-    _scaffold "$d"
-    for f in CODE_OF_CONDUCT SECURITY; do
-        printf '# %s\n' "$f" >"$d/$f.md"
-        printf '# %s ja\n' "$f" >"$d/$f.ja.md"
-    done
     if [ "$(_rc "$d")" != "0" ]; then
         echo "self-test FAILED: a complete tree should exit 0" >&2
         rc=1
     fi
 
-    # (3) a required file missing -> drift (1), and drift must WIN over pending
+    # (2) community policies are required, not an announced pending state
+    d="$tmproot/missing-policies"
+    _scaffold "$d"
+    for f in CODE_OF_CONDUCT SECURITY; do
+        rm "$d/$f.md" "$d/$f.ja.md"
+    done
+    if [ "$(_rc "$d")" != "1" ]; then
+        echo "self-test FAILED: absent community policies should be drift" >&2
+        rc=1
+    fi
+
+    # (3) any required file missing -> drift (1)
     d="$tmproot/missing"
     _scaffold "$d"
     rm "$d/.github/PULL_REQUEST_TEMPLATE.md"
@@ -431,7 +380,7 @@ YML
     _scaffold "$d"
     printf '[x](https://example.com) [y](#section) [z](mailto:a@b.c)\n' \
         >>"$d/CONTRIBUTING.md"
-    if [ "$(_rc "$d")" != "3" ]; then
+    if [ "$(_rc "$d")" != "0" ]; then
         echo "self-test FAILED: external/anchor links must not count as broken" >&2
         rc=1
     fi
@@ -468,17 +417,17 @@ YML
     d="$tmproot/fence"
     _scaffold "$d"
     printf '\n```\n# not a heading\n```\n' >>"$d/docs/good-first-tasks.md"
-    if [ "$(_rc "$d")" != "3" ]; then
+    if [ "$(_rc "$d")" != "0" ]; then
         echo "self-test FAILED: a fenced '#' line must not count as a heading" >&2
         rc=1
     fi
 
-    # (10) landing only one side of a pending pair is drift, not pending
-    d="$tmproot/halfpend"
+    # (10) removing one side of a required en/ja policy pair is drift
+    d="$tmproot/half-policy"
     _scaffold "$d"
-    printf '# security\n' >"$d/SECURITY.md"
+    rm "$d/SECURITY.ja.md"
     if [ "$(_rc "$d")" != "1" ]; then
-        echo "self-test FAILED: a one-sided pending pair should be drift" >&2
+        echo "self-test FAILED: a one-sided policy pair should be drift" >&2
         rc=1
     fi
 
@@ -500,7 +449,7 @@ YML
     _scaffold "$d"
     printf '[x](https://github.com/ayutaz/vokra/blob/main/CONTRIBUTING.md)\n' \
         >>"$d/.github/PULL_REQUEST_TEMPLATE.md"
-    if [ "$(_rc "$d")" != "3" ]; then
+    if [ "$(_rc "$d")" != "0" ]; then
         echo "self-test FAILED: a resolving in-repo URL must not be flagged" >&2
         rc=1
     fi
