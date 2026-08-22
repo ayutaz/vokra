@@ -76,9 +76,7 @@ fn read_f32(path: &PathBuf) -> Vec<f32> {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     assert_eq!(bytes.len() % 4, 0, "{path:?} not a raw f32 file");
     bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
+        .chunks(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
 }
@@ -87,9 +85,7 @@ fn read_i64_as_u32(path: &PathBuf) -> Vec<u32> {
     let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
     assert_eq!(bytes.len() % 8, 0, "{path:?} not a raw int64 file");
     bytes
-        .as_chunks::<8>()
-        .0
-        .iter()
+        .chunks(8)
         .map(|c| {
             let v = i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
             assert!(
