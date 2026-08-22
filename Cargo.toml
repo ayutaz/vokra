@@ -28,7 +28,7 @@ rust-version = "1.85"
 # NFR-LC-01: the whole runtime is Apache-2.0.
 license = "Apache-2.0"
 # crates.io listing metadata (X-07-T09, NFR-DS-03 "Cargo crate"). Inherited by
-# the 15-crate publish set via `<field>.workspace = true` in each crate header;
+# the 18-crate publish set via `<field>.workspace = true` in each crate header;
 # the excluded crates (vokra-eval + the tests/parity / tests/wasm-harness
 # harnesses) do NOT inherit these and stay `publish = false`. `documentation`
 # is intentionally left UNSET so crates.io auto-links each crate to its own
@@ -41,7 +41,7 @@ keywords = ["audio", "speech", "inference", "tts", "asr"]
 categories = ["multimedia::audio", "science", "api-bindings"]
 # Default is NOT publishable: the workspace-level `publish = false` guards
 # against accidental publishes of any NEW crate (crates.io is an immutable
-# index — a mistaken publish is unrecoverable). Only the 15 crates in the
+# index — a mistaken publish is unrecoverable). Only the 18 crates in the
 # publish closure override this with an explicit `publish = true`; the closure
 # (topological set) is derived mechanically by
 # tools/release/crates_publish_order.py and fixed in the ADR.

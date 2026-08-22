@@ -1136,7 +1136,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # X-07-T11: crates.io publish dry-run (NFR-DS-03 "Cargo crate", token-free).
   #
-  # Validates that the 15-crate publish set (topological closure of vokra-capi +
+  # Validates that the 18-crate publish set (topological closure of vokra-capi +
   # vokra-cli, derived by tools/release/crates_publish_order.py) packages
   # cleanly, WITHOUT contacting the registry for a real publish. Runs on tag AND
   # workflow_dispatch (no upload, so no gating needed).
@@ -1146,7 +1146,7 @@ jobs:
   # the graph LEAF (vokra-core, no path deps) can fully dry-run before the first
   # real publish — every downstream crate fails with "no matching package named
   # vokra-* found" until its deps are actually on the registry. The pre-publish
-  # package-ability gate for ALL 15 crates is therefore `cargo package --list`
+  # package-ability gate for ALL 18 crates is therefore `cargo package --list`
   # (uses local path deps, no registry); the downstream publish chain is
   # validated end-to-end incrementally by crates-io-publish (owner, T12/T14).
   #
@@ -1210,7 +1210,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # X-07-T12: crates.io real publish (NFR-MT-08 CD auto-publish, NFR-LC-02).
   #
-  # Publishes the 15-crate set in topological order (deps before dependents) on
+  # Publishes the 18-crate set in topological order (deps before dependents) on
   # tag push, gated on secrets.CRATES_IO_TOKEN. Token absent = honest ::notice::
   # skip (the OPENUPM_TOKEN / NPM_TOKEN idiom) — the GitHub Release assets remain
   # the baseline channel and the owner opts into crates.io in X-07-T14. crates.io
