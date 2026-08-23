@@ -8,17 +8,19 @@ follows [SemVer](https://semver.org/spec/v2.0.0.html).
 requirement IF-01). Every pre-1.0 release may change the C ABI without
 deprecation windows. Here "v1.0" means the **v1.0 GA** tag (M5 close, WP
 M5-13); the **v1.0-rc** prerelease (`1.0.0-rc.N`, M4) is still pre-1.0 and
-therefore not frozen — see the `[1.0.0-rc.1]` ABI-policy notes below.
+therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
-This section accumulates **all** untagged feature deltas — **v0.5 (M2) +
-v0.9 (M3) + v1.0-rc (M4) + real-weight verify / HF publication (post-M5)**
-— that roll into `[1.0.0-rc.1]`. CC-side implementation is complete for
-the WPs listed below; owner-side verification (real-device RTF / GPU /
-NPU measurement, real-weight parity flip-the-switch, license sign-off,
-PyPI / Unity / npm / CDN provisioning) is tracked in the per-milestone
-owner checklists (`docs/m2-owner-verification-checklist.md`,
+## [0.1.0] — 2026-08-23
+
+This first tagged release includes the source-publication baseline plus the
+subsequently implemented v0.5 (M2), v0.9 (M3), v1.0-rc (M4), and real-weight
+verification / HF publication work. Owner-side verification
+(real-device RTF / GPU / NPU measurement, real-weight parity
+flip-the-switch, license sign-off, PyPI / Unity / npm / CDN provisioning) is
+tracked in the per-milestone owner checklists
+(`docs/m2-owner-verification-checklist.md`,
 `docs/m3-owner-verification-checklist.md`,
 `docs/m4-owner-verification-checklist.md`,
 `docs/m5-owner-verification-checklist.md`). Added entries are grouped by
@@ -814,15 +816,14 @@ failure mode this project treats as worse than a crash:
   `wyoming` 1.10.0 client now round-trips the canonical JFK transcript
   byte-identically to the HTTP route.
 
-## [1.0.0-rc.1]
+### Planned v1.0.0-rc.1 ABI policy
 
-First v1.0 release candidate (semver prerelease `1.0.0-rc.1`). The feature
-deltas for v0.5 (M2) / v0.9 (M3) / v1.0-rc (M4) accrue in `[Unreleased]`
-above and are rolled into this section by the M4 tag-preparation step (the
-v1.0-rc tag is an owner milestone decision, not WP M4-12). This section was
-added by **M4-12** to record the **ABI policy for the rc window**.
+The first v1.0 release candidate will use the semver prerelease
+`1.0.0-rc.1`. This note was added by **M4-12** to record the **ABI policy for
+the future rc window**; creating that rc tag remains a separate owner
+milestone decision.
 
-### ABI policy (v1.0-rc)
+#### ABI policy (v1.0-rc)
 
 - **Not frozen.** The C ABI (`include/vokra.h`) and the `vokra.*` GGUF
   metadata schema are a semver **prerelease** surface at `1.0.0-rc.N`; they
@@ -856,13 +857,14 @@ added by **M4-12** to record the **ABI policy for the rc window**.
   section that names these tiers in the header is added at the M5-13 freeze
   (`docs/handoff/m4-12.md` §(e)-1).
 
-## [0.1.0] — 2026-07-04
+### Initial source-publication baseline (2026-07-04)
 
-Initial public release. **v0.1 spike + v0.1 MVP** implementations
-complete; repository made public on 2026-07-04 with CI quality gates
-enforced (`.github/workflows/ci.yml`).
+The repository became public on 2026-07-04 with the **v0.1 spike + v0.1 MVP**
+implementation baseline and CI quality gates enforced
+(`.github/workflows/ci.yml`). No Git tag or GitHub Release was created then;
+this baseline is therefore included in the first tagged release.
 
-### Added
+#### Added
 
 - **Rust Cargo workspace** with 12 crates (`vokra-core` / `-ops` /
   `-backend-cpu` / `-backend-metal` / `-backend-cuda` / `-models` /
@@ -897,5 +899,4 @@ enforced (`.github/workflows/ci.yml`).
   audit, iOS build, Python wheel build, license audit, GPU backends.
 
 [Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
-[1.0.0-rc.1]: https://github.com/ayutaz/vokra/releases/tag/v1.0.0-rc.1
 [0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0

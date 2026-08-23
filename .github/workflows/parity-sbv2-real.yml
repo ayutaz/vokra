@@ -583,6 +583,7 @@ jobs:
           RUN_ZH: ${{ needs.setup.outputs.run_zh }}
         run: |
           set -euo pipefail
+          sidecar_failed=0
           verify_sidecar() {
             local artifact="$1"
             local sidecar="$2"
@@ -590,14 +591,16 @@ jobs:
             expected="$(awk 'NF && $1 !~ /^#/ { print $1; exit }' "$sidecar")"
             if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]]; then
               echo "::error::${sidecar} has no valid lowercase SHA-256 record"
-              return 1
+              sidecar_failed=1
+              return
             fi
             actual="$(sha256sum "$artifact" | awk '{ print $1 }')"
             if [ "$actual" != "$expected" ]; then
               echo "::error::SHA-256 mismatch for ${artifact}: got ${actual}, expected ${expected}"
-              return 1
+              sidecar_failed=1
+            else
+              echo "SHA-256 OK: ${artifact} = ${actual}"
             fi
-            echo "SHA-256 OK: ${artifact} = ${actual}"
           }
 
           verify_sidecar \
@@ -613,6 +616,9 @@ jobs:
             verify_sidecar \
               "$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf" \
               "$FIXTURE_DIR/chinese-roberta-wwm-ext-large.gguf.sha256"
+          fi
+          if [ "$sidecar_failed" -ne 0 ]; then
+            exit 1
           fi
 
       - name: Regenerate reference dump (sbv2_dump_reference.py --do-dump)

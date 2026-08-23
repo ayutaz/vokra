@@ -27,9 +27,9 @@ respected when requested.
 
 ## Supported versions
 
-Vokra is currently a `0.1.0-alpha.0` source-first preview. Security fixes are
-made on the current development line. Older commits, private builds, and
-unreleased snapshots do not receive backports.
+Vokra `0.1.0` is prepared as the first tagged release. Security fixes are made
+on the current development line. Older commits, private builds, and unreleased
+snapshots do not receive backports.
 
 ## In scope
 
