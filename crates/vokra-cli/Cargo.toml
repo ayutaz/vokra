@@ -39,6 +39,10 @@ vokra-mmap.workspace = true
 [features]
 metal = ["vokra-models/metal"]
 cuda = ["vokra-models/cuda"]
+# Whole-submodel NPU delegates. Both edges are optional, first-party, and off
+# by default; enabling them does not add an external package to Cargo.lock.
+coreml = ["vokra-models/coreml"]
+qnn = ["vokra-models/qnn"]
 # M4-15-T02: CPU + Vulkan-only build target (`--no-default-features
 # --features vulkan`, ADR M4-15 §(a)). Symmetric with `metal` / `cuda` above;
 # `bench --backend vulkan` already parses to `BackendKind::Vulkan`. The

@@ -250,6 +250,27 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-24 — 1.0.0-rc.1-dev (NPU whole-submodel delegate surface — Rust only, C ABI NO-GO)
+
+M5-01 adds an explicit Rust execution boundary for delegates that own a whole
+model subgraph rather than individual Vokra operators. The first implementation
+executes Whisper's complete audio encoder through a hash-bound CoreML sidecar.
+The real Apple M1 bakeoff recorded 99.63% estimated-cost ANE placement, but
+failed both CPU-oracle parity and the 2x speed criterion; therefore no delegate
+selector, enum value, or other symbol is added to `include/vokra.h`. QNN remains
+SDK/Hexagon-gated and likewise has no C value. This NO-GO is recoverable through
+an additive minor-version API after both acceptance gates are met.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-core::backend` | `DelegateSubmodel` | Added | `#[non_exhaustive] pub enum DelegateSubmodel { WhisperEncoder }` | Names the indivisible model-owned graph boundary without pretending the CoreML/QNN delegate has per-op coverage. | no | (TBD) |
+| `vokra-core::backend` | `DelegateBackend` | Added | `pub trait DelegateBackend { fn delegate_name(&self) -> &str; fn supports_submodel(&self, DelegateSubmodel) -> bool; fn execute_submodel(&self, DelegateSubmodel, &[&Tensor]) -> Result<Vec<Tensor>>; }` | Carries real tensor data through a declared complete submodel and requires unsupported boundaries to fail instead of silently running CPU. | no | (TBD) |
+
+**C ABI decision for this run:** CoreML = **NO-GO**; QNN = **INSUFFICIENT
+DATA** because no approved SDK/runtime, executable graph, or Hexagon target is
+available; combined v1.0 delegate-selector decision = **NO-GO**.
+`include/vokra.h` and the C symbol snapshot are intentionally unchanged.
+
 ### 2026-08-21 — 1.0.0-rc.1-dev (runtime gap closure wave)
 
 Additive GGUF wire schema and Rust/CLI surface; the C ABI is untouched.  The

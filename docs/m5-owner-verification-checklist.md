@@ -35,7 +35,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
 | Scope | Current state | Remaining done-condition / route |
 |---|---|---|
-| M5-01 / M5-02 | Delegate selection/probe scaffolds and bakeoff tooling landed; both backends still advertise zero executable ops | Implement the selected CoreML/QNN delegate graph paths, then capture real ANE + Hexagon placement/RTF, record two verdicts, and make the M5-13 C-export decision (§1.5; 9 literal boxes) |
+| M5-01 / M5-02 | CoreML now executes the complete Whisper encoder submodel; its 2026-08-24 M1 bakeoff recorded 99.63% ANE placement but parity and 2x speed FAIL. QNN remains an SDK-gated zero-op scaffold. | Implement the QNN delegate graph, capture the Hexagon result, then combine its verdict with the recorded CoreML NO-GO for the M5-13 C-export decision (§1.5). |
 | M5-03 | ADR **Accepted**; `vokra-vad-micro`, cross-build, host differential, and memory budget landed | Real Cortex-M55/FVP run plus Tier-3/Helium investment decision (§2.2/§2.3) |
 | M5-04 | Static-link and no-dynamic-load gate landed | Console NDA, real SDK triple build, and ADR ratification (§4) |
 | M5-05 | ADR option (ii) **Accepted**; `f0_extract` placement = core / M5-16; naming migration applied | Legal sufficiency, consent trust root, separate-repository publication, and RVC/GPT-SoVITS sign-off (§3) |
@@ -85,8 +85,8 @@ The freeze machinery is landed (`abi-diff.sh --gate`, proven to fail on a blocki
 
 ## 1.5 NPU bakeoff (M5-01 CoreML/ANE + M5-02 QNN/Hexagon)
 
-- **(a)**: first land executable delegate graph/submodel paths, then run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19. The current scaffolds deliberately report `supports = false` for every op; non-empty graphs return `UnsupportedOp` and empty-graph `execute` returns `NotImplemented`, so a placement-only probe cannot produce a valid bakeoff yet.
-- **(b)**: implementation needs the ratified CoreML model-supply ADR and the SDK-gated QNN graph API transcription; measurement then needs real ANE / Hexagon silicon. This machine has neither an NPU bakeoff rig nor the QNN delegate runtime.
+- **(a)**: first land executable delegate graph/submodel paths, then run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19. The CoreML complete-Whisper-encoder path and its M1 result are now recorded in `docs/handoff/m5-01-coreml-bakeoff-2026-08-24.md`; QNN still deliberately reports zero executable ops until its official SDK ABI is transcribed.
+- **(b)**: QNN implementation needs the SDK-gated graph API transcription and its measurement needs real Hexagon silicon. The current Apple M1 machine supplied the CoreML/ANE result but has neither the Qualcomm SDK/runtime nor a Snapdragon/Hexagon target.
 - **(c)**: spec M5-01-T24 / M5-02-T12 (gitignore-local); runbook is the sub-sections below.
 - **(d)**: a `PASS` / `FAIL` / `INSUFFICIENT DATA` verdict vs the 2× bar is recorded for each delegate in the sibling template files.
 
@@ -106,11 +106,27 @@ CC has landed the CC-actionable prep (WP-15) for owner NPU bakeoff. No hardware 
 - `tools/parity/provision-h100.sh` — H100 provisioning script for the M4-07 FA v3 bench, sibling of `scripts/publish/vast-ai/provision.sh`; includes a Hopper compute-cap gate (exit 1 if < 9.0).
 - `docs/handoff/m5-01-coreml-bakeoff-template.md` — CoreML/ANE bakeoff report template.
 - `docs/handoff/m5-02-qnn-bakeoff-template.md` — QNN/Hexagon bakeoff report template.
+- `tools/coreml/generate_whisper_encoder.py` — strict offline GGUF to CoreML
+  MLProgram converter for the complete Whisper encoder.
+- `tools/coreml/check_placement.sh` — official `MLComputePlan` estimated-cost
+  placement gate (constants remain visible but contribute zero cost).
+- `vokra-cli npu-bakeoff` — release-only alternating CPU/delegate exact-submodel
+  harness that reuses one process, model, input feature tensor, and delegate
+  session while enforcing parity and the 2x threshold.
 
 ### 1.5.3 Owner runbook (per delegate)
 
 Run this loop once per delegate (CoreML then QNN). Both loops end with a
 recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
+
+**CoreML 2026-08-24 protocol note:** the completed M5-01 run uses the exact
+delegated Whisper-encoder unit rather than separate whole-ASR CLI processes.
+Its alternating same-session samples satisfy the baseline-discipline intent
+more directly. Because the measured encoder-only ratio is 1.422828x, it is an
+upper bound on the full hybrid-ASR ratio: adding the same non-negative CPU
+decoder time to numerator and denominator can only move the ratio toward 1x.
+The clean encoder-only FAIL therefore decides the 2x question without a
+second whole-ASR RTF capture. See the dated report for the proof and raw data.
 
 **Prep**
 1. Wire up a **placement probe** for the delegate — a shell wrapper that
@@ -153,15 +169,22 @@ recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
 
 ### 1.5.4 Bakeoff checklist
 
-- [ ] CoreML delegate graph/submodel execution and placement probe (Xcode Instruments MLModel trace wrapper) are wired up + emit the expected JSON.
-- [ ] CoreML baseline captured (`cpu`, N=10, CV ≤ 0.20).
-- [ ] CoreML NPU captured (`coreml`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
-- [ ] CoreML verdict recorded in `docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`.
+- [x] CoreML complete-Whisper-encoder submodel execution and official
+  `MLComputePlan` estimated-cost placement probe are wired up.
+- [x] CoreML same-session CPU encoder baseline captured (`N=10`, CV
+  `0.148269320`).
+- [x] CoreML same-session delegate encoder captured (`N=10`, CV
+  `0.131539500`, ANE estimated-cost placement `0.996281551`).
+- [x] CoreML FAIL / C ABI NO-GO recorded in
+  `docs/handoff/m5-01-coreml-bakeoff-2026-08-24.md`.
 - [ ] QNN graph construction/execution and placement probe (`qnn-net-run --profiling_option=op` wrapper) are wired up + emit the expected JSON.
 - [ ] QNN baseline captured (`cpu`, N=10, CV ≤ 0.20).
 - [ ] QNN NPU captured (`qnn`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
-- [ ] QNN verdict recorded in `docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`.
-- [ ] Both verdicts fed into §1.3 T19 (GO/NO-GO on the delegate selector C-ABI symbol).
+- [x] QNN prerequisite verdict recorded as `INSUFFICIENT DATA` in
+  `docs/handoff/m5-02-qnn-bakeoff-2026-08-24.md`; no performance number was
+  fabricated without SDK/runtime/Hexagon hardware.
+- [x] CoreML FAIL plus QNN INSUFFICIENT DATA fed into §1.3 T19: NPU delegate
+  selector C ABI = **NO-GO** for v1.0.
 
 ---
 

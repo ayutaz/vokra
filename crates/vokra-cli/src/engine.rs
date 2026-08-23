@@ -24,6 +24,9 @@ use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::whisper::WhisperAsr;
 use vokra_models::whisper_medusa::WhisperMedusa;
 
+#[cfg(feature = "coreml")]
+use vokra_models::whisper::CoreMlArtifact;
+
 /// The task a loaded model performs (selected by its architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -400,6 +403,23 @@ const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 /// aiola Whisper-Medusa-v1 official module-0 ASR forward.
 const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
 
+#[cfg(feature = "coreml")]
+fn resolve_coreml_whisper_artifact(
+    path: &str,
+    arch: &str,
+    n_mels: usize,
+    n_audio_ctx: usize,
+    d_model: usize,
+) -> Result<CoreMlArtifact, String> {
+    CoreMlArtifact::from_whisper_sidecar(
+        path,
+        arch,
+        [1, n_mels, vokra_models::whisper::mel::N_FRAMES],
+        [1, n_audio_ctx, d_model],
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
 #[cfg(test)]
@@ -457,6 +477,13 @@ pub(crate) fn load_session_with_backend_and_mimi(
         .ok_or_else(|| format!("GGUF is missing the `{KEY_MODEL_ARCH}` metadata key"))?
         .to_owned();
 
+    if backend == BackendKind::CoreMl && !cfg!(feature = "coreml") {
+        return Err(
+            "CoreML backend selected but vokra-cli was built without `--features coreml`; the CPU backend is never selected implicitly"
+                .to_owned(),
+        );
+    }
+
     if mimi.is_some() && arch != ARCH_MOSHI {
         return Err(format!(
             "--mimi is only supported on arch `{ARCH_MOSHI}` (got `{arch}`); the \
@@ -478,9 +505,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
             if matches!(hint, Some(TaskHint::MelFrontend)) {
                 return Ok((session, ModelTask::MelFrontend));
             }
-            let asr = WhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let mut asr = WhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            if backend == BackendKind::CoreMl {
+                let config = asr.model().config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr = asr
+                    .with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?;
+            }
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         // distil-whisper / kotoba-whisper (Wave I): the same `ModelTask::Asr`
@@ -503,9 +543,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_DISTIL_WHISPER}`)"
                 ));
             }
-            let asr = DistilWhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let mut asr = DistilWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            if backend == BackendKind::CoreMl {
+                let config = asr.config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr = asr
+                    .with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?;
+            }
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_KOTOBA_WHISPER => {
@@ -515,9 +568,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_KOTOBA_WHISPER}`)"
                 ));
             }
-            let asr = KotobaWhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let mut asr = KotobaWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            if backend == BackendKind::CoreMl {
+                let config = asr.config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr = asr
+                    .with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?;
+            }
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_MOONSHINE => {

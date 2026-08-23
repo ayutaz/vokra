@@ -1,0 +1,15 @@
+format=vokra-qnn-prerequisite-probe-v1
+date_utc=2026-08-23
+host_model=iMac21,1
+host_soc=Apple_M1
+qnn_sdk_root=UNSET
+qnn_interface_header=NOT_FOUND
+qnn_net_run=NOT_FOUND
+qnn_context_binary_generator=NOT_FOUND
+qnn_runtime=NOT_PROBED_OFF_TARGET
+hexagon_hardware=NOT_PRESENT
+delegate_graph_execution=NOT_IMPLEMENTED
+cpu_baseline=NOT_RUN_NO_MATCHED_HEXAGON_HOST
+placement=NOT_RUN
+speedup=NOT_RUN
+verdict=INSUFFICIENT_DATA

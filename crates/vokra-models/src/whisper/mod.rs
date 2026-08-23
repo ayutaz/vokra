@@ -85,10 +85,15 @@ pub use session::WhisperSession;
 pub use tokenizer::WhisperTokenizer;
 pub use weights::{QuantBindReport, WhisperLoadOptions, WhisperWeights};
 
+#[cfg(feature = "coreml")]
+pub use vokra_backend_coreml::{CoreMlArtifact, CoreMlBackend, CoreMlComputePrecision};
+
 use std::sync::Arc;
 
 use vokra_core::gguf::{GgufFile, chunks};
-use vokra_core::{BackendKind, FrontendPolicy, Result, VokraError};
+use vokra_core::{
+    BackendKind, DelegateBackend, DelegateSubmodel, FrontendPolicy, Result, Tensor, VokraError,
+};
 
 use crate::compute::{Compute, HotOp};
 use encoder::EncoderOutput;
@@ -202,6 +207,41 @@ pub struct WhisperModel {
     weights: WhisperWeights,
 }
 
+/// Same-model, same-feature CPU/delegate Whisper encoder measurement.
+///
+/// `cpu_seconds` and `delegate_seconds` contain one sample per measured
+/// iteration. Model loading, delegate compilation, and log-mel extraction are
+/// excluded: callers bind one delegate session first, this helper warms both
+/// paths, then alternates their order to reduce thermal/order bias. Numerical
+/// error is accumulated across every measured output element and iteration.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhisperEncoderBakeoff {
+    /// Delegate identity reported by [`DelegateBackend::delegate_name`].
+    pub delegate_name: String,
+    /// Timed Rust CPU encoder samples, in seconds.
+    pub cpu_seconds: Vec<f64>,
+    /// Timed delegate encoder samples, in seconds.
+    pub delegate_seconds: Vec<f64>,
+    /// Largest absolute CPU/delegate output difference across all iterations.
+    pub max_abs_error: f32,
+    /// Mean absolute CPU/delegate output difference across all iterations.
+    pub mean_abs_error: f64,
+    /// Total output values compared (`n_audio_ctx * d_model * iterations`).
+    pub compared_values: usize,
+    /// Comparison tolerance supplied by the caller.
+    pub comparison_atol: f32,
+    /// Number of compared values whose absolute error exceeded `comparison_atol`.
+    pub values_over_atol: usize,
+    /// Measured iteration containing the maximum error.
+    pub max_error_iteration: usize,
+    /// Flat `[n_audio_ctx, d_model]` index containing the maximum error.
+    pub max_error_index: usize,
+    /// CPU oracle value at `max_error_index`.
+    pub max_error_cpu_value: f32,
+    /// Delegate value at `max_error_index`.
+    pub max_error_delegate_value: f32,
+}
+
 impl WhisperModel {
     /// Loads config (`vokra.whisper.*`) and every weight tensor from `file`.
     ///
@@ -288,6 +328,205 @@ impl WhisperModel {
         )
     }
 
+    /// Executes the complete Whisper encoder through a declared submodel
+    /// delegate and validates its data contract before exposing the result to
+    /// the decoder.
+    ///
+    /// This is intentionally separate from [`Compute`]'s per-op surface. The
+    /// delegate must claim and execute [`DelegateSubmodel::WhisperEncoder`] as
+    /// one indivisible graph. Missing support, wrong arity, wrong shape, or a
+    /// non-f32 output is an explicit error; this method never falls back to the
+    /// Rust CPU encoder.
+    pub fn encode_with_delegate(
+        &self,
+        delegate: &dyn DelegateBackend,
+        log_mel: &[f32],
+        n_frames: usize,
+    ) -> Result<EncoderOutput> {
+        let expected_frames = self.config.n_audio_ctx.checked_mul(2).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "whisper delegate input frame count overflows usize".to_owned(),
+            )
+        })?;
+        if n_frames != expected_frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "whisper delegate requires the fixed full encoder window of {expected_frames} frames, got {n_frames}"
+            )));
+        }
+        let expected_input_len = self.config.n_mels.checked_mul(n_frames).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "whisper delegate input element count overflows usize".to_owned(),
+            )
+        })?;
+        if log_mel.len() != expected_input_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "whisper delegate log-mel len {} != n_mels*n_frames {expected_input_len}",
+                log_mel.len()
+            )));
+        }
+        if !delegate.supports_submodel(DelegateSubmodel::WhisperEncoder) {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{} does not support the complete WhisperEncoder submodel (no silent CPU fallback, FR-EX-08)",
+                delegate.delegate_name()
+            )));
+        }
+        let input = Tensor::host_f32(vec![1, self.config.n_mels, n_frames], log_mel.to_vec())?;
+        let inputs = [&input];
+        let mut outputs = delegate.execute_submodel(DelegateSubmodel::WhisperEncoder, &inputs)?;
+        if outputs.len() != 1 {
+            return Err(VokraError::ModelLoad(format!(
+                "{} WhisperEncoder returned {} outputs, expected exactly one",
+                delegate.delegate_name(),
+                outputs.len()
+            )));
+        }
+        let output = outputs.pop().expect("length checked");
+        let expected_shape = [1, self.config.n_audio_ctx, self.config.d_model];
+        if output.shape.as_slice() != expected_shape {
+            return Err(VokraError::ModelLoad(format!(
+                "{} WhisperEncoder output shape {:?} != {expected_shape:?}",
+                delegate.delegate_name(),
+                output.shape
+            )));
+        }
+        Ok(EncoderOutput {
+            hidden: output.as_f32()?.to_vec(),
+            n_ctx: self.config.n_audio_ctx,
+            d_model: self.config.d_model,
+        })
+    }
+
+    /// Measures the CPU encoder against one already-bound whole-submodel
+    /// delegate on identical log-mel features.
+    ///
+    /// This is the hardware bakeoff seam used by CoreML/ANE and QNN/Hexagon.
+    /// It deliberately accepts a live delegate rather than constructing one,
+    /// so load/compile time is outside the samples and every iteration uses the
+    /// same model and delegate session. The measured order alternates between
+    /// CPU-first and delegate-first. No backend fallback exists in this path.
+    pub fn bakeoff_encoder_delegate(
+        &self,
+        delegate: &dyn DelegateBackend,
+        log_mel: &[f32],
+        n_frames: usize,
+        warmup: usize,
+        iterations: usize,
+        atol: f32,
+    ) -> Result<WhisperEncoderBakeoff> {
+        if warmup == 0 {
+            return Err(VokraError::InvalidArgument(
+                "whisper delegate bakeoff requires at least one warm-up iteration".to_owned(),
+            ));
+        }
+        if iterations == 0 {
+            return Err(VokraError::InvalidArgument(
+                "whisper delegate bakeoff requires at least one measured iteration".to_owned(),
+            ));
+        }
+        if !atol.is_finite() || atol < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "whisper delegate bakeoff atol must be finite and non-negative".to_owned(),
+            ));
+        }
+
+        for _ in 0..warmup {
+            let cpu = self.encode(log_mel, n_frames)?;
+            std::hint::black_box(&cpu.hidden);
+            let delegated = self.encode_with_delegate(delegate, log_mel, n_frames)?;
+            std::hint::black_box(&delegated.hidden);
+        }
+
+        let mut cpu_seconds = Vec::with_capacity(iterations);
+        let mut delegate_seconds = Vec::with_capacity(iterations);
+        let mut max_abs_error = 0.0f32;
+        let mut sum_abs_error = 0.0f64;
+        let mut compared_values = 0usize;
+        let mut values_over_atol = 0usize;
+        let mut max_error_iteration = 0usize;
+        let mut max_error_index = 0usize;
+        let mut max_error_cpu_value = 0.0f32;
+        let mut max_error_delegate_value = 0.0f32;
+
+        for iteration in 0..iterations {
+            let timed_cpu = || -> Result<(EncoderOutput, f64)> {
+                let started = std::time::Instant::now();
+                let output = self.encode(log_mel, n_frames)?;
+                let seconds = started.elapsed().as_secs_f64();
+                std::hint::black_box(&output.hidden);
+                Ok((output, seconds))
+            };
+            let timed_delegate = || -> Result<(EncoderOutput, f64)> {
+                let started = std::time::Instant::now();
+                let output = self.encode_with_delegate(delegate, log_mel, n_frames)?;
+                let seconds = started.elapsed().as_secs_f64();
+                std::hint::black_box(&output.hidden);
+                Ok((output, seconds))
+            };
+            let ((cpu, cpu_elapsed), (delegated, delegate_elapsed)) = if iteration % 2 == 0 {
+                (timed_cpu()?, timed_delegate()?)
+            } else {
+                let delegated = timed_delegate()?;
+                let cpu = timed_cpu()?;
+                (cpu, delegated)
+            };
+            cpu_seconds.push(cpu_elapsed);
+            delegate_seconds.push(delegate_elapsed);
+
+            if cpu.hidden.len() != delegated.hidden.len() {
+                return Err(VokraError::ModelLoad(format!(
+                    "{} Whisper encoder output length {} != CPU length {}",
+                    delegate.delegate_name(),
+                    delegated.hidden.len(),
+                    cpu.hidden.len()
+                )));
+            }
+            for (index, (&cpu_value, &delegate_value)) in
+                cpu.hidden.iter().zip(&delegated.hidden).enumerate()
+            {
+                if !cpu_value.is_finite() || !delegate_value.is_finite() {
+                    return Err(VokraError::ModelLoad(format!(
+                        "{} Whisper encoder bakeoff produced a non-finite CPU/delegate value",
+                        delegate.delegate_name()
+                    )));
+                }
+                let difference = (cpu_value - delegate_value).abs();
+                if difference > max_abs_error {
+                    max_abs_error = difference;
+                    max_error_iteration = iteration;
+                    max_error_index = index;
+                    max_error_cpu_value = cpu_value;
+                    max_error_delegate_value = delegate_value;
+                }
+                if difference > atol {
+                    values_over_atol += 1;
+                }
+                sum_abs_error += f64::from(difference);
+            }
+            compared_values = compared_values
+                .checked_add(cpu.hidden.len())
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "whisper delegate bakeoff comparison count overflowed usize".to_owned(),
+                    )
+                })?;
+        }
+
+        Ok(WhisperEncoderBakeoff {
+            delegate_name: delegate.delegate_name().to_owned(),
+            cpu_seconds,
+            delegate_seconds,
+            max_abs_error,
+            mean_abs_error: sum_abs_error / compared_values as f64,
+            compared_values,
+            comparison_atol: atol,
+            values_over_atol,
+            max_error_iteration,
+            max_error_index,
+            max_error_cpu_value,
+            max_error_delegate_value,
+        })
+    }
+
     /// Convenience: PCM → log-mel → encoder hidden states (CPU backend).
     pub fn encode_pcm(&self, pcm: &[f32]) -> Result<EncoderOutput> {
         self.encode_pcm_with(&Compute::cpu(), pcm)
@@ -334,6 +573,123 @@ impl WhisperModel {
     #[cfg(test)]
     pub(crate) fn new_for_test(config: WhisperConfig, weights: WhisperWeights) -> Self {
         Self { config, weights }
+    }
+}
+
+#[cfg(test)]
+mod delegate_tests {
+    use super::*;
+
+    struct FixedDelegate {
+        output_shape: Vec<usize>,
+        supported: bool,
+    }
+
+    impl DelegateBackend for FixedDelegate {
+        fn delegate_name(&self) -> &str {
+            "fixed-test-delegate"
+        }
+
+        fn supports_submodel(&self, submodel: DelegateSubmodel) -> bool {
+            self.supported && matches!(submodel, DelegateSubmodel::WhisperEncoder)
+        }
+
+        fn execute_submodel(
+            &self,
+            submodel: DelegateSubmodel,
+            inputs: &[&Tensor],
+        ) -> Result<Vec<Tensor>> {
+            assert_eq!(submodel, DelegateSubmodel::WhisperEncoder);
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].shape, vec![1, 80, 8]);
+            let len = self.output_shape.iter().product();
+            Ok(vec![Tensor::host_f32(
+                self.output_shape.clone(),
+                (0..len).map(|index| index as f32).collect(),
+            )?])
+        }
+    }
+
+    #[test]
+    fn whole_encoder_delegate_contract_is_data_carrying_and_fail_loud() {
+        let model = decoder::test_support::tiny_model(1);
+        let log_mel = vec![0.25; 80 * 8];
+        let delegate = FixedDelegate {
+            output_shape: vec![1, 4, 2],
+            supported: true,
+        };
+        let output = model
+            .encode_with_delegate(&delegate, &log_mel, 8)
+            .expect("declared whole encoder delegate");
+        assert_eq!(output.n_ctx, 4);
+        assert_eq!(output.d_model, 2);
+        assert_eq!(
+            output.hidden,
+            (0..8).map(|index| index as f32).collect::<Vec<_>>()
+        );
+
+        let wrong_shape = FixedDelegate {
+            output_shape: vec![1, 2, 4],
+            supported: true,
+        };
+        let err = model
+            .encode_with_delegate(&wrong_shape, &log_mel, 8)
+            .expect_err("layout-compatible element count with wrong axes must fail");
+        assert!(matches!(err, VokraError::ModelLoad(_)));
+
+        let unsupported = FixedDelegate {
+            output_shape: vec![1, 4, 2],
+            supported: false,
+        };
+        let err = model
+            .encode_with_delegate(&unsupported, &log_mel, 8)
+            .expect_err("unsupported delegate must not invoke the CPU encoder");
+        assert!(matches!(err, VokraError::UnsupportedOp(_)));
+    }
+
+    #[test]
+    fn encoder_bakeoff_uses_identical_features_and_reports_numerical_error() {
+        let model = decoder::test_support::tiny_model(1);
+        let log_mel = vec![0.25; 80 * 8];
+        let expected = model.encode(&log_mel, 8).expect("CPU oracle");
+        struct OracleDelegate {
+            hidden: Vec<f32>,
+        }
+        impl DelegateBackend for OracleDelegate {
+            fn delegate_name(&self) -> &str {
+                "oracle-delegate"
+            }
+
+            fn supports_submodel(&self, submodel: DelegateSubmodel) -> bool {
+                matches!(submodel, DelegateSubmodel::WhisperEncoder)
+            }
+
+            fn execute_submodel(
+                &self,
+                _submodel: DelegateSubmodel,
+                _inputs: &[&Tensor],
+            ) -> Result<Vec<Tensor>> {
+                Ok(vec![Tensor::host_f32(vec![1, 4, 2], self.hidden.clone())?])
+            }
+        }
+        let delegate = OracleDelegate {
+            hidden: expected.hidden,
+        };
+        let report = model
+            .bakeoff_encoder_delegate(&delegate, &log_mel, 8, 1, 2, 0.01)
+            .expect("same-feature bakeoff");
+        assert_eq!(report.delegate_name, "oracle-delegate");
+        assert_eq!(report.cpu_seconds.len(), 2);
+        assert_eq!(report.delegate_seconds.len(), 2);
+        assert_eq!(report.compared_values, 16);
+        assert_eq!(report.max_abs_error, 0.0);
+        assert_eq!(report.mean_abs_error, 0.0);
+        assert_eq!(report.values_over_atol, 0);
+
+        let err = model
+            .bakeoff_encoder_delegate(&delegate, &log_mel, 8, 1, 0, 0.01)
+            .expect_err("zero measured iterations must fail");
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
     }
 }
 

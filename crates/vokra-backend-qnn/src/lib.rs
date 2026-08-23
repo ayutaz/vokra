@@ -35,12 +35,10 @@
 //! **no** Qualcomm AI Engine Direct SDK installed. Every QNN library name,
 //! symbol name and struct layout below is **from the WP instruction, not
 //! first-hand verified**; each is documented as such at its definition. The
-//! `sys` module's raw FFI + its compile-time layout assert therefore compile
-//! only on the Android / Linux / Windows CI arm (M5-02-T10a) — not on the
-//! authoring host — and the layout assert is a *self-consistency guard*, not a
-//! real-header check (owner T11 confirms the values against the SDK header, the
-//! same verification M3-11's GDExtension asserts did with `clang -m64`, except
-//! here there is no header to probe yet).
+//! SDK-free `sys` module therefore contains only the platform dynamic-loader
+//! machinery and a symbol-presence check. It declares no QNN ABI structs or
+//! callable function signatures. Those land only after owner T11 supplies the
+//! exact SDK headers and a header-compiled layout probe.
 //!
 //! # Design record (M5-02-T01, recorded here — the ADR tree is gitignored)
 //!

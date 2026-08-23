@@ -2,24 +2,24 @@
 //!
 //! CoreML **delegate** backend for Vokra (FR-BE-06: Apple ANE) — a concrete
 //! implementation of the `vokra-core` [`Backend`](vokra_core::Backend) trait,
-//! following `vokra-backend-metal` (M2-01) in shape. This **scaffold slice** of
-//! M5-01 lands the pieces that do not depend on the model-supply decision:
+//! following `vokra-backend-metal` (M2-01) at the raw Objective-C boundary and
+//! using a separate whole-submodel delegate surface:
 //!
 //! - an ANE-aware compute-device probe ([`vokra_coreml_probe`]) built on the
 //!   public `MLAllComputeDevices()` API (macOS 14.0+ / iOS 17.0+), so "is the
 //!   Apple Neural Engine reachable, and with how many cores" is answered from
 //!   the framework rather than assumed;
-//! - the [`CoreMlBackend`] trait handle whose op coverage is **empty** in this
-//!   slice — every op is an explicit
-//!   [`VokraError::UnsupportedOp`](vokra_core::VokraError::UnsupportedOp), never
-//!   a silent CPU fall back (FR-EX-08). Coverage grows once the execution path
-//!   lands.
+//! - an offline converter and [`CoreMlArtifact`] contract binding the complete
+//!   Whisper encoder to its source GGUF and compiled `.mlmodelc` tree;
+//! - [`CoreMlBackend`] whole-submodel execution through
+//!   [`vokra_core::DelegateBackend`], with a thread-local live `MLModel` cache.
+//!   Its ordinary per-op [`vokra_core::Backend`] coverage intentionally remains
+//!   empty: CoreML never partitions a Vokra graph or silently falls back.
 //!
-//! The op-execution path (model → `MLModel` → ANE, parity, bench) is **not** in
-//! this slice: it turns on how a CoreML artifact is supplied to the runtime,
-//! which is the subject of the M5-01-T02 ADR (owner-ratified). Until that ADR
-//! is accepted, this crate deliberately stops at the probe + an
-//! honest-empty-coverage handle. See `docs/adr/M5-01-coreml-delegate.md`.
+//! The 2026-08-24 Apple M1 bakeoff is recorded at
+//! `docs/handoff/m5-01-coreml-bakeoff-2026-08-24.md`: placement passes, but FP16
+//! parity and the 2x target fail. Consequently this stays opt-in and Rust-only;
+//! no C ABI delegate selector is exported.
 //!
 //! # Design record (M5-01-T01/T03, recorded here)
 //!
@@ -53,8 +53,8 @@
 //!   permanent "same op coverage, no ONNX-Runtime EP partitioning" constraint):
 //!   the intended execution unit is a *declared submodel*, and CoreML's own
 //!   choice of ANE / GPU / CPU inside that submodel is Apple's runtime concern,
-//!   not a Vokra-side silent fallback. The precise boundary is a T02 ADR point
-//!   and is **not** fixed by this scaffold.
+//!   not a Vokra-side silent fallback. The first fixed boundary is the complete
+//!   Whisper audio encoder (`log_mel` → `encoder_hidden`).
 //! - **(f) no CPU-side JIT** (NFR-RL-05): CoreML model compilation is the OS
 //!   framework's job; the host emits no executable pages (same framing as
 //!   Metal's `newLibraryWithSource:` and Vulkan's SPIR-V → driver compile).
@@ -80,8 +80,14 @@ mod sys;
 // The probe and the Backend trait handle exist on every target (with explicit
 // BackendUnavailable / UnsupportedOp errors off Apple), so downstream code can
 // always name them.
+mod artifact;
 mod backend;
+mod context;
+mod digest;
 mod probe;
 
+pub use artifact::{
+    CoreMlArtifact, CoreMlComputePrecision, WHISPER_ENCODER_INPUT, WHISPER_ENCODER_OUTPUT,
+};
 pub use backend::CoreMlBackend;
 pub use probe::{CoreMlCapabilities, vokra_coreml_probe};
