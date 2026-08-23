@@ -9,7 +9,7 @@ around the C ABI declared in `include/vokra.h`.
 
 ## Status
 
-`0.1.0-preview.1` — M2-11 preview. Skeleton only; native binaries are
+`0.1.0` — first tagged release. Native binaries are
 assembled by CD (see `.github/workflows/release.yml` job `unity-package`).
 
 ## Supported Unity versions

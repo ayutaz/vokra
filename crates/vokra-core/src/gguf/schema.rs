@@ -34,8 +34,9 @@
 //!
 //! Raise [`SCHEMA_VERSION`] when a converter begins emitting a group that
 //! loaders may come to depend on, and add a line to its changelog. Do not tie
-//! it to `CARGO_PKG_VERSION`: that string has been `0.1.0-alpha.0` since M0 and
-//! would have been identical on both sides of the incident above.
+//! it to `CARGO_PKG_VERSION`: that string stayed `0.1.0-alpha.0` throughout
+//! M0…M5 and would have been identical on both sides of the incident above.
+//! Package releases still do not identify schema changes within one release.
 
 use alloc::borrow::ToOwned;
 use alloc::format;
@@ -110,7 +111,7 @@ pub fn producer(file: &GgufFile) -> Option<&str> {
 }
 
 /// One-line provenance summary for logs and error messages, e.g.
-/// `"schema gen 1 (vokra-convert 0.1.0-alpha.0)"`.
+/// `"schema gen 1 (vokra-convert 0.1.0)"`.
 #[must_use]
 pub fn describe(file: &GgufFile) -> String {
     match producer(file) {

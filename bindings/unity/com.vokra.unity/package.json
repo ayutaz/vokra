@@ -1,6 +1,6 @@
 {
   "name": "com.vokra.unity",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0",
   "displayName": "Vokra",
   "description": "Vokra audio inference runtime for Unity (VAD/ASR/TTS/speaker).",
   "unity": "2022.3",

@@ -54,8 +54,8 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.1.0-alpha.0`. Rust APIs, the C ABI, GGUF metadata,
-and the model roster remain pre-1.0 and may change. The C header and Python
+The workspace version is `0.1.0`. Rust APIs, the C ABI, GGUF metadata, and the
+model roster remain pre-1.0 and may change. The C header and Python
 prototype table are checked for exact function-set equality; documentation
 therefore avoids copying a function count that would drift on the next ABI
 addition.

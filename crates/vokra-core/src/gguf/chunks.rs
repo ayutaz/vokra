@@ -178,17 +178,18 @@ pub const KEY_SILERO_VERSION: &str = "vokra.silero.version";
 /// answer, not an error: every GGUF converted up to that point lacks the key.
 /// Read it through [`crate::gguf::schema::schema_version`].
 ///
-/// **Not** the crate version: `CARGO_PKG_VERSION` has been `0.1.0-alpha.0`
-/// across M0…M5, so it cannot distinguish two artifacts from different
-/// converter generations. That is exactly the case this key exists for.
+/// **Not** the crate version: `CARGO_PKG_VERSION` stayed `0.1.0-alpha.0`
+/// across M0…M5 and now advances only with releases, so it cannot distinguish
+/// converter generations within one release. That is exactly the case this
+/// key exists for.
 pub const KEY_SCHEMA_VERSION: &str = "vokra.schema.version";
 
 /// `vokra.schema.producer` — the converter build that wrote the file, e.g.
-/// `"vokra-convert 0.1.0-alpha.0"` (`STRING`).
+/// `"vokra-convert 0.1.0"` (`STRING`).
 ///
 /// Diagnostic companion to [`KEY_SCHEMA_VERSION`]: it identifies the build for
 /// a bug report but must never gate behaviour, because the version string does
-/// not move between releases yet.
+/// is not a schema compatibility contract.
 pub const KEY_SCHEMA_PRODUCER: &str = "vokra.schema.producer";
 
 // `vokra.quant.*` — quantization policy metadata (M2-08, FR-QT-02).

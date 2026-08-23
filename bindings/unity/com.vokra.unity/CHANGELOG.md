@@ -7,6 +7,8 @@ suffix conventions (`-preview.N` for pre-1.0 iterations).
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-08-23
+
 ### Added
 - M4-02: **WebGL target** — `Plugins/WebGL/libvokra.a`
   (wasm32-unknown-emscripten staticlib, `DllImport("__Internal")`, CPU/WASM,
@@ -31,23 +33,23 @@ suffix conventions (`-preview.N` for pre-1.0 iterations).
   `EnsureLocalCopyAsync` gains a WebGL branch whose returned path is valid
   for managed (C#) file IO only — pass models to `CreateFromBytes` instead.
 
-## [0.1.0-preview.1] — TBD
+### Initial package baseline
 
-Initial preview release. M2-11 workstream.
+Initial package scaffold from the M2-11 workstream, included in `0.1.0`.
 
-### Added
+#### Added
 - Package layout at `bindings/unity/com.vokra.unity/`.
 - `Vokra.Runtime` and `Vokra.Editor` assembly definitions.
 - iOS PostProcessBuild hook wiring `libvokra.a`, `Metal.framework`,
   `Accelerate.framework` into the exported Xcode project.
 - Apache-2.0 license and NVIDIA-runtime non-bundling `NOTICE`.
 
-### Not included
+#### Not included in the initial scaffold
 - Native binaries (`libvokra.dylib` / `vokra.dll` / `libvokra.so` /
   `libvokra.a`) — populated by CD, not committed to git.
 - Model weights — fetched per-sample via
   `Samples~/VadAsrTts/scripts/fetch-demo-models.sh`.
 - CUDA runtime — resolved via `dlopen` at runtime per NVIDIA EULA.
 
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0-preview.1...HEAD
-[0.1.0-preview.1]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0-preview.1
+[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0

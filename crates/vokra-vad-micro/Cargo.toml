@@ -33,7 +33,7 @@ categories.workspace = true
 # (NFR-DS-02); the `version` tracks the shared workspace version for `cargo
 # publish` (X-07-T10, a no-op for local path resolution).
 [dependencies]
-vokra-core = { path = "../vokra-core", version = "0.1.0-alpha.0", default-features = false }
+vokra-core = { path = "../vokra-core", version = "0.1.0", default-features = false }
 
 [features]
 # `std` (default-ON) forwards to `vokra-core/std` and lets the host-executable
