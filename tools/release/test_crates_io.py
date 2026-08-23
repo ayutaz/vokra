@@ -6,10 +6,9 @@ Asserts the crates.io wiring added by X-07-T09..T12:
   (1) `crates-io-dry-run` job exists and hits the publish set in TOPOLOGICAL
       order (drives tools/release/crates_publish_order.py + `cargo package
       --list`).
-  (2) `crates-io-publish` job exists and is TOKEN-GATED (secrets.CRATES_IO_TOKEN
-      + tag + dry_run != true), with an honest ::notice:: skip when the token is
-      absent (fabricated-pass forbidden), and IMMUTABLE-INDEX fail-loud (no
-      --allow-dirty, no skip-existing).
+  (2) `crates-io-publish` job exists and is explicitly enabled by a repository
+      variable, then TOKEN-GATED (secrets.CRATES_IO_TOKEN + tag + dry_run !=
+      true). Disabled is an honest ::notice:: skip; enabled-without-token fails.
   (3) the publish job re-checks the license/zero-dep closure right before
       publishing (NFR-LC-02 mechanized — crates.io cannot be un-published).
   (4) the publish order tool self-verifies (delegates to `--verify`).
@@ -114,17 +113,23 @@ def main() -> None:
         bad("(2) crates-io-publish job missing")
     else:
         gated = ("CRATES_IO_TOKEN" in pub
+                 and "CRATES_IO_PUBLISH_ENABLED" in pub
                  and "startsWith(github.ref, 'refs/tags/v')" in pub
                  and "inputs.dry_run != true" in pub)
         if gated:
-            ok("(2) crates-io-publish is tag + dry_run + CRATES_IO_TOKEN gated")
+            ok("(2) crates-io-publish is explicit-enable + tag + dry_run + token gated")
         else:
-            bad("(2) crates-io-publish gating incomplete (need tag + dry_run + token)")
+            bad("(2) crates-io-publish gating incomplete (need enable + tag + dry_run + token)")
 
-        if "::notice::" in pub and "CRATES_IO_TOKEN not set" in pub:
-            ok("(2) token-absent path is an honest ::notice:: skip (no fabricated pass)")
+        if "::notice::" in pub and "explicitly disabled" in pub:
+            ok("(2) explicitly-disabled path is an honest ::notice:: skip")
         else:
-            bad("(2) token-absent path must be an announced ::notice:: skip")
+            bad("(2) explicitly-disabled path must be an announced ::notice:: skip")
+
+        if "FAIL CRATES_IO_PUBLISH_ENABLED=true" in pub:
+            ok("(2) enabled-without-token path fails loud")
+        else:
+            bad("(2) enabled-without-token path must fail loud")
 
         # Immutable index: must NOT weaken publish with --allow-dirty / skip.
         # Only inspect NON-comment lines — the job keeps a comment documenting
