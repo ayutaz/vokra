@@ -28,6 +28,7 @@ Usage: python3 tools/release/test_crates_io.py
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -37,6 +38,22 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 RELEASE_YML = os.path.join(ROOT, ".github", "workflows", "release.yml")
 ORDER_TOOL = os.path.join(ROOT, "tools", "release", "crates_publish_order.py")
 API_SNAPSHOT = os.path.join(ROOT, "docs", "abi", "vokra-rust-public-api.v1.0-rc.list")
+COUNT_CONTRACT_FILES = (
+    os.path.join(ROOT, "Cargo.toml"),
+    RELEASE_YML,
+    os.path.join(ROOT, "docs", "handoff", "x-07.md"),
+    ORDER_TOOL,
+)
+COUNT_PATTERNS = (
+    re.compile(r"\b(\d+)-crate publish set\b", re.IGNORECASE),
+    re.compile(r"\b(\d+)-crate topological closure\b", re.IGNORECASE),
+    re.compile(r"\bReserve the (\d+) crate names\b", re.IGNORECASE),
+    re.compile(r"\bcargo package --list`? for all (\d+) crates\b", re.IGNORECASE),
+    re.compile(r"\bALL (\d+) crates\b"),
+    re.compile(r"\bPublishes the (\d+)-crate set\b", re.IGNORECASE),
+    re.compile(r"\bOnly the (\d+) crates\b", re.IGNORECASE),
+    re.compile(r"\bcurrently (\d+) crates\b", re.IGNORECASE),
+)
 
 _pass = 0
 _fail = 0
@@ -130,7 +147,10 @@ def main() -> None:
 
     # (4) order tool self-verify.
     proc = subprocess.run(
-        ["python3", ORDER_TOOL, "--verify"], cwd=ROOT, capture_output=True, text=True
+        [sys.executable, ORDER_TOOL, "--verify"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     if proc.returncode == 0:
         ok(f"(4) crates_publish_order.py --verify OK ({proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else 'ok'})")
@@ -148,6 +168,39 @@ def main() -> None:
         ok("(6) Rust public-API snapshot present (publish-time contract record)")
     else:
         bad(f"(6) Rust public-API snapshot missing: {API_SNAPSHOT}")
+
+    # (7) Every tracked human-facing publish-count claim follows the current
+    # mechanically derived closure. This turns the 15 -> 18 documentation
+    # regression into a failing oracle instead of another manual audit item.
+    count_proc = subprocess.run(
+        [sys.executable, ORDER_TOOL, "--json"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if count_proc.returncode != 0:
+        bad(f"(7) could not derive publish count: {count_proc.stderr.strip()[:200]}")
+    else:
+        derived_count = json.loads(count_proc.stdout)["count"]
+        claims: list[tuple[str, int]] = []
+        for path in COUNT_CONTRACT_FILES:
+            body = open(path, encoding="utf-8").read()
+            for pattern in COUNT_PATTERNS:
+                claims.extend(
+                    (os.path.relpath(path, ROOT), int(match.group(1)))
+                    for match in pattern.finditer(body)
+                )
+        stale = [(path, count) for path, count in claims if count != derived_count]
+        if not claims:
+            bad("(7) no tracked publish-count claims found (oracle would be vacuous)")
+        elif stale:
+            detail = ", ".join(f"{path}={count}" for path, count in stale)
+            bad(f"(7) publish-count drift: graph={derived_count}; {detail}")
+        else:
+            ok(
+                f"(7) {len(claims)} tracked publish-count claims match "
+                f"the derived {derived_count}-crate closure"
+            )
 
     print()
     print(f"crates-io oracle: {_pass} passed, {_fail} failed")

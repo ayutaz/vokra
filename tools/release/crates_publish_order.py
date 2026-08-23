@@ -24,11 +24,12 @@ DESIGN (fixed by ADR docs/adr/X-07-release-train.md §crates.io):
     - integrations/*      — excluded workspaces (own Cargo.lock; link
                             NON-`vokra-*` crates — never publishable as vokra).
 
-* The closure computed from the real graph is 15 crates (NOT the "11" the spec
-  intake estimated — the 4 GPU/NPU backend crates vulkan/webgpu/coreml/qnn were
-  added after that count, and `vokra-models` references all 6 backends as
-  `dep:`-optional so they are forced into the closure). Actual code wins; the
-  discrepancy is recorded in the ADR.
+* The closure computed from the real graph is currently 18 crates (NOT the
+  "11" the spec intake estimated). The original X-07 correction reached 15
+  after adding the 4 GPU/NPU backend crates vulkan/webgpu/coreml/qnn; the live
+  runtime graph later pulled in `vokra-math`, `vokra-vad-micro`, and
+  `vokra-bert`. Actual code wins, and `test_crates_io.py` checks that every
+  tracked release count follows this mechanically derived value.
 
 Zero-dep (NFR-DS-02): python3 stdlib only, driving `cargo metadata` (a built-in
 of the pinned toolchain). No third-party crate, so the root Cargo.lock cannot
