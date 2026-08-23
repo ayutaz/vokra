@@ -2,7 +2,9 @@
 
 use vokra_core::{Result, Tensor, VokraError};
 
-use crate::artifact::{CoreMlArtifact, WHISPER_ENCODER_INPUT, WHISPER_ENCODER_OUTPUT};
+use crate::artifact::CoreMlArtifact;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use crate::artifact::{WHISPER_ENCODER_INPUT, WHISPER_ENCODER_OUTPUT};
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple {

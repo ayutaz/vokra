@@ -505,9 +505,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
             if matches!(hint, Some(TaskHint::MelFrontend)) {
                 return Ok((session, ModelTask::MelFrontend));
             }
-            let mut asr = WhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            let asr = WhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
             #[cfg(feature = "coreml")]
-            if backend == BackendKind::CoreMl {
+            let asr = if backend == BackendKind::CoreMl {
                 let config = asr.model().config();
                 let artifact = resolve_coreml_whisper_artifact(
                     path,
@@ -516,10 +516,11 @@ pub(crate) fn load_session_with_backend_and_mimi(
                     config.n_audio_ctx,
                     config.d_model,
                 )?;
-                asr = asr
-                    .with_coreml_artifact(artifact)
-                    .map_err(|error| error.to_string())?;
-            }
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
             let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
@@ -543,9 +544,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_DISTIL_WHISPER}`)"
                 ));
             }
-            let mut asr = DistilWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            let asr = DistilWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
             #[cfg(feature = "coreml")]
-            if backend == BackendKind::CoreMl {
+            let asr = if backend == BackendKind::CoreMl {
                 let config = asr.config();
                 let artifact = resolve_coreml_whisper_artifact(
                     path,
@@ -554,10 +555,11 @@ pub(crate) fn load_session_with_backend_and_mimi(
                     config.n_audio_ctx,
                     config.d_model,
                 )?;
-                asr = asr
-                    .with_coreml_artifact(artifact)
-                    .map_err(|error| error.to_string())?;
-            }
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
             let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
@@ -568,9 +570,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_KOTOBA_WHISPER}`)"
                 ));
             }
-            let mut asr = KotobaWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            let asr = KotobaWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
             #[cfg(feature = "coreml")]
-            if backend == BackendKind::CoreMl {
+            let asr = if backend == BackendKind::CoreMl {
                 let config = asr.config();
                 let artifact = resolve_coreml_whisper_artifact(
                     path,
@@ -579,10 +581,11 @@ pub(crate) fn load_session_with_backend_and_mimi(
                     config.n_audio_ctx,
                     config.d_model,
                 )?;
-                asr = asr
-                    .with_coreml_artifact(artifact)
-                    .map_err(|error| error.to_string())?;
-            }
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
             let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
