@@ -352,9 +352,12 @@ if [ "$DO_PACK" -eq 1 ]; then
     # Extract version from the crate's Cargo.toml without a TOML parser
     # (keep host requirements minimal — zero-dep spirit).
     CARGO_TOML="$GODOT_CRATE/Cargo.toml"
-    VERSION="$(
-        awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' "$CARGO_TOML"
-    )"
+    VERSION="${VOKRA_RELEASE_VERSION:-}"
+    if [ -z "$VERSION" ]; then
+        VERSION="$(
+            awk -F'"' '/^[[:space:]]*version[[:space:]]*=/ { print $2; exit }' "$CARGO_TOML"
+        )"
+    fi
     if [ -z "$VERSION" ]; then
         echo "build-godot-gdextension: FAIL could not parse version from $CARGO_TOML" >&2
         exit 1

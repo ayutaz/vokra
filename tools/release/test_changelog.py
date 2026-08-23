@@ -7,9 +7,8 @@ Covers:
     non-zero (never fabricated notes);
   * T17 roll-changelog idempotency (re-roll is a no-op) + post-roll integrity
     (--check passes) + the freshly-rolled [Unreleased] is empty (extract exits 2);
-  * T18 validate-tag: the release.yml job rejects non-semver tags AND
-    announced-skips (passes) on non-tag refs — the property that keeps the
-    dry-run/dispatch verify path from self-blocking.
+  * T18 validate-tag: the release.yml job delegates tag/candidate validation to
+    the single release-version contract and exposes its resolved job output.
 
 Zero-dep (NFR-DS-02): python3 stdlib only. FR-EX-08: no silent pass.
 Usage: python3 tools/release/test_changelog.py
@@ -27,6 +26,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 EXTRACT = os.path.join(ROOT, "scripts", "release", "extract-changelog.py")
 ROLL = os.path.join(ROOT, "scripts", "release", "roll-changelog.py")
 RELEASE_YML = os.path.join(ROOT, ".github", "workflows", "release.yml")
+VERSION_CONTRACT = os.path.join(ROOT, "tools", "release", "version_contract.py")
 
 _pass = 0
 _fail = 0
@@ -86,21 +86,21 @@ def test_extract(scratch: str) -> None:
     open(fx, "w").write(FIXTURE)
 
     # round-trip: [1.2.0] body extracted verbatim.
-    p = run(["python3", EXTRACT, "--version", "1.2.0", "--changelog", fx])
+    p = run([sys.executable, EXTRACT, "--version", "1.2.0", "--changelog", fx])
     if p.returncode == 0 and p.stdout.strip() == "- shipped feature X":
         ok("T15 extract round-trip: [1.2.0] body extracted verbatim")
     else:
         bad(f"T15 extract round-trip wrong (rc={p.returncode}): {p.stdout!r}")
 
     # Unreleased multi-line body.
-    p = run(["python3", EXTRACT, "--version", "Unreleased", "--changelog", fx])
+    p = run([sys.executable, EXTRACT, "--version", "Unreleased", "--changelog", fx])
     if p.returncode == 0 and "unreleased change A" in p.stdout and "unreleased change B" in p.stdout:
         ok("T15 extract [Unreleased] returns its body")
     else:
         bad(f"T15 extract [Unreleased] wrong (rc={p.returncode})")
 
     # absent section -> non-zero.
-    p = run(["python3", EXTRACT, "--version", "9.9.9", "--changelog", fx])
+    p = run([sys.executable, EXTRACT, "--version", "9.9.9", "--changelog", fx])
     if p.returncode != 0:
         ok("T15 absent section exits non-zero (FR-EX-08)")
     else:
@@ -109,7 +109,7 @@ def test_extract(scratch: str) -> None:
     # empty section -> non-zero (no fabricated notes).
     fe = os.path.join(scratch, "EMPTY.md")
     open(fe, "w").write(EMPTY_UNRELEASED)
-    p = run(["python3", EXTRACT, "--version", "Unreleased", "--changelog", fe])
+    p = run([sys.executable, EXTRACT, "--version", "Unreleased", "--changelog", fe])
     if p.returncode != 0:
         ok("T15 empty [Unreleased] exits non-zero (no fabricated notes, FR-EX-08)")
     else:
@@ -121,7 +121,7 @@ def test_roll(scratch: str) -> None:
     open(fx, "w").write(FIXTURE)
 
     # roll to a new version.
-    p = run(["python3", ROLL, "--version", "1.3.0", "--date", "2026-06-01", "--changelog", fx])
+    p = run([sys.executable, ROLL, "--version", "1.3.0", "--date", "2026-06-01", "--changelog", fx])
     if p.returncode != 0:
         bad(f"T17 roll failed: {p.stderr.strip()}")
         return
@@ -139,7 +139,7 @@ def test_roll(scratch: str) -> None:
 
     # idempotent: re-roll same version = no change.
     before = open(fx).read()
-    run(["python3", ROLL, "--version", "1.3.0", "--date", "2026-06-01", "--changelog", fx])
+    run([sys.executable, ROLL, "--version", "1.3.0", "--date", "2026-06-01", "--changelog", fx])
     after = open(fx).read()
     if before == after:
         ok("T17 roll idempotent: re-rolling the same version is a no-op")
@@ -147,14 +147,14 @@ def test_roll(scratch: str) -> None:
         bad("T17 roll NOT idempotent: re-roll changed the file")
 
     # --check passes on the rolled file.
-    p = run(["python3", ROLL, "--check", "--changelog", fx])
+    p = run([sys.executable, ROLL, "--check", "--changelog", fx])
     if p.returncode == 0:
         ok("T17 --check passes on the rolled changelog")
     else:
         bad(f"T17 --check failed on rolled changelog: {p.stderr.strip()}")
 
     # freshly-rolled [Unreleased] is empty -> extract exits 2.
-    p = run(["python3", EXTRACT, "--version", "Unreleased", "--changelog", fx])
+    p = run([sys.executable, EXTRACT, "--version", "Unreleased", "--changelog", fx])
     if p.returncode != 0:
         ok("T17 fresh [Unreleased] is empty -> extract refuses (no fabricated notes)")
     else:
@@ -167,21 +167,25 @@ def test_validate_tag() -> None:
     if "validate-tag:" not in text:
         bad("T18 validate-tag job missing from release.yml")
         return
-    # The announced-skip property: non-tag ref passes (exit 0 with a ::notice::).
-    if "non-tag ref" in text and "announced skip" in text and 'refs/tags/*' in text:
-        ok("T18 validate-tag announced-skips (passes) on non-tag refs")
+    if "tools/release/version_contract.py" in text and "release_version:" in text:
+        ok("T18 validate-tag delegates tag and dry-run candidate validation")
     else:
-        bad("T18 validate-tag missing the non-tag announced-skip (dispatch path would be blocked)")
+        bad("T18 validate-tag does not call the release-version contract")
+
+    if "version: ${{ steps.version-contract.outputs.version }}" in text:
+        ok("T18 validate-tag exposes one canonical version to downstream jobs")
+    else:
+        bad("T18 validate-tag does not expose the canonical version output")
 
     # Replicate the semver check on sample tags to prove the regex is right.
     semver = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
     good = ["v1.0.0", "v1.0.0-rc.1", "v0.1.0-alpha.0", "v10.20.30+build.5"]
     bad_tags = ["vfoo", "v1.0", "1.0.0", "vv1.0.0", "v1.0.0-", "release"]
-    # Assert the SAME regex text is present in the job (so the job enforces it).
-    if r"^v[0-9]+\.[0-9]+\.[0-9]+" in text:
-        ok("T18 validate-tag uses a v-prefixed semver regex")
+    contract = open(VERSION_CONTRACT, encoding="utf-8").read()
+    if "SEMVER_RE" in contract and 'tag.startswith("v")' in contract:
+        ok("T18 version contract enforces v-prefixed SemVer tags")
     else:
-        bad("T18 validate-tag semver regex not found in release.yml")
+        bad("T18 version contract SemVer/tag-prefix guard missing")
     if all(semver.match(t) for t in good) and not any(semver.match(t) for t in bad_tags):
         ok("T18 semver regex accepts valid tags / rejects vfoo, v1.0, bare 1.0.0, etc.")
     else:
