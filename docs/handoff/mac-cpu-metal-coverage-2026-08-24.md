@@ -13,20 +13,20 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-25, after the TitaNet-L wave, it reported:
+At 2026-08-25, after the DAC 16/24/44.1 kHz wave, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 67 |
+| Complete CPU code route | 70 |
 | Route/binder present, released-artifact CPU forward incomplete | 51 |
-| No complete runtime binder | 75 |
+| No complete runtime binder | 72 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 67 |
+| Complete Metal code route among the CPU-complete set | 70 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 126 |
+| Metal blocked by missing/partial CPU forward | 123 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -37,9 +37,10 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 67 repositories with a complete Metal code route are the four BigVGAN
+The 70 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
-FireRedVAD, FSMN-VAD, HiFi-GAN LibriTTS, both Kokoro checkpoints,
+the three DAC checkpoints (16, 24 and 44.1 kHz), FireRedVAD, FSMN-VAD,
+HiFi-GAN LibriTTS, both Kokoro checkpoints,
 Kotoba-Whisper, Mimi, Moshiko-7B, Moonshine Tiny/Base, NKF-AEC, Parakeet CTC
 1.1B, Parakeet TDT 0.6B v3, both Piper Plus checkpoints, RNNoise, both Silero
 VAD checkpoints, SmartTurn v2, SpeechT5 HiFi-GAN, TEN-VAD, both Vocos
@@ -333,6 +334,45 @@ The strict converter rejects missing, extra or shape-incompatible tensors,
 pins both checkpoint and NeMo source revisions, and refuses a licence override
 that contradicts the audited CC-BY-4.0 weights. Rust, CLI and the existing
 model-generic C speaker API all route the model. No public upload or
+replacement was performed.
+
+### Descript DAC token-to-waveform runtime
+
+The three public DAC repositories now have a strict native released
+token-to-waveform route: 16 kHz binds 358 F32 tensors and 12 codebooks, 24 kHz
+binds 558 tensors and 32 codebooks, and 44.1 kHz binds 328 tensors and 9
+codebooks. The loader folds upstream weight normalization and rejects missing,
+extra or wrong-shaped tensors. Factorized RVQ, every SEANet Conv1D /
+ConvTranspose1D and every Snake activation are selected together through
+`Compute`; an unsupported backend is an error and cannot fall back to CPU.
+
+The CLI accepts raw time-major `[frames,n_codebooks]` little-endian `u32`
+codes and emits mono WAV. Output length follows the released graphs exactly:
+16/24 kHz emit `frames * 320 - 8`, while 44.1 kHz emits `frames * 512`.
+Encoding is not implemented and returns an explicit error, so this is not
+presented as a completed bidirectional codec or as support for upstream's
+pickle-backed `.dac` container.
+
+The independent 44.1 kHz fixture was produced by
+`descript-audio-codec==1.0.0` through its public
+`ResidualVectorQuantize.from_codes` and `DAC.decode` APIs. It pins official
+release tag `0.0.1` `weights.pth` at SHA-256
+`a88eed82a7024ccc1facdb1e605c4c2f99281c8118c22c9895ffa846d8fb61aa`.
+The public `vokra/dac-44khz` GGUF at revision
+`20073ecbdd15b0826ebbde3dc6f00f463592a6fc` had SHA-256
+`cab82af37f4751006d017bd1c49660053a14c8e5c615f56f10fddd0ae95e1592`.
+
+| 44.1 kHz public artifact surface | max abs | mean abs | relative L1 | cosine |
+|---|---:|---:|---:|---:|
+| VAST CPU, official features through decoder | `8.940696716e-7` | `2.130511945e-7` | `9.884971632e-7` | `0.9999999404` |
+| VAST CPU, official codes through RVQ + decoder | `1.013278961e-6` | `2.336270768e-7` | `1.083963525e-6` | `0.9999999404` |
+| M1 Metal, official codes through RVQ + decoder | `1.013278961e-6` | `2.209130372e-7` | `1.024974133e-6` | `1.000000000` |
+
+The committed gates were tightened after measurement to max-abs `2e-6`,
+relative L1 `2.5e-6` and cosine at least `0.9999995`. The shared strict
+definitions cover the released 16/24 kHz manifest contracts, but those two
+siblings still require their own official fixture and real public-artifact
+runs; the 44.1 kHz result is not imputed to them. No Hub upload or artifact
 replacement was performed.
 
 ### Piper Plus CLI/C ABI reachability
@@ -806,9 +846,24 @@ execute Metal; the feature-gated Apple comparison remains open. Instance
 `48565792` was destroyed after verification; the Vast API returned no instance
 record (`instances: null`).
 
+Disposable instance `48577185` validated the DAC token-to-waveform wave and
+the accumulated worktree. The committed official 44.1 kHz fixture passed both
+decoder-only and complete RVQ-plus-decoder CPU gates at the narrow bounds
+recorded above. `cargo fmt --all -- --check`,
+`cargo test --workspace --quiet`, and
+`cargo clippy --workspace --all-targets -- -D warnings` all completed with
+zero failures. The M1 Metal comparison was run separately against the same
+public GGUF and official code/PCM fixture because Linux VAST cannot execute
+Metal. Before teardown, the four raw logs and their SHA-256 ledger were pulled
+to the maintainer host; the workspace-test and Clippy log digests are
+`e1388eb5b05e528612563bc75843cbc07b67c9a3f0d2952501bd7b4a40fe0fad`
+and `9afd3058b31e85932d66d0ac43cc01e52081f8e55103261406c389a9e39e5eb8`.
+Instance `48577185` was then destroyed; the paginated Vast inventory returned
+three unrelated labels and no `vokra-*` instance.
+
 ## Remaining execution order
 
-1. Make all 75 no-binder repositories CPU-runnable, family by family, with a
+1. Make all 72 no-binder repositories CPU-runnable, family by family, with a
    strict loader and independent upstream reference.
 2. Finish the 51 partial CPU forwards; do not mark a converter, synthesized
    bridge, or tensor probe as runtime completion.

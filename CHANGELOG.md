@@ -14,6 +14,14 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The three public Descript DAC repositories (16, 24 and 44.1 kHz) now have a
+  strict native token-to-waveform runtime. Factorized RVQ, every
+  weight-normalized SEANet convolution and every Snake activation honor the
+  selected CPU/Metal backend without fallback; the CLI decodes raw time-major
+  `u32le` code frames to WAV. The 44.1 kHz public GGUF matches the pinned
+  official DAC 0.0.1 decoder at end-to-end CPU `max_abs=1.02e-6`, and the M1
+  Metal result remains within the same narrow bound. Encoding is not exposed
+  as completed and returns an explicit unsupported error.
 - Both public NVIDIA TitaNet-Large repositories now share a strict native
   108-tensor speaker runtime: the checkpoint-era NeMo 1.10 log-mel frontend,
   five depthwise-separable Jasper/SE blocks, attentive statistics pooling and

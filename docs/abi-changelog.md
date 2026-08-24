@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-25 — 1.0.0-rc.1-dev (DAC token-to-waveform CPU/Metal runtime)
+
+The three public Descript DAC GGUF families now bind exact released manifests
+and decode discrete code frames to PCM through Rust and CLI. This is an
+additive Rust model surface and a CLI behavior extension. No C function, type,
+ownership rule or allocation contract changed; DAC is not added to the C ABI.
+The encoder remains explicitly unsupported rather than being represented as a
+completed bidirectional codec.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::dac` | `Dac`, `DacVariant`, `DacDecoder`, `ARCH`, `DAC_HOT_OPS` | Added | strict `from_gguf` / `from_path`, `with_backend`, backend/variant/geometry accessors, `decode_codes`, `decode_features` and `output_samples` | Owns folded FP32 weights and returned PCM; exact 16/24/44.1 kHz manifests dispatch RVQ, Conv1D and Snake through one selected backend with no fallback | no | (TBD) |
+| `vokra-cli run` | `--codec-mode decode` for `arch=dac` | Changed (behavior only) | raw time-major `[frames,n_codebooks]` little-endian `u32` input to mono WAV; `encode` is an explicit error | Adds a standalone decoder route without claiming an encoder or defining a serialized container ABI | no | (TBD) |
+| `gguf:vokra.dac.*` | released topology and provenance contract | Enforced | exact F32 name/shape manifests: 358 tensors / 12 codebooks at 16 kHz, 558 / 32 at 24 kHz, and 328 / 9 at 44.1 kHz | Existing canonical metadata is validated fail-closed; missing, extra, wrong-shaped or incompatible provenance is rejected | no for exact released files; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-25 — 1.0.0-rc.1-dev (TitaNet-L CPU/Metal speaker runtime)
 
 The two byte-identical public TitaNet-Large GGUFs now bind the exact

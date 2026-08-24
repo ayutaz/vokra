@@ -65,6 +65,13 @@ crates/vokra-models/tests/fixtures/parakeet_ctc/*.json text eol=lf
 crates/vokra-models/tests/fixtures/parakeet_ctc/*.txt text eol=lf
 crates/vokra-models/tests/fixtures/parakeet_ctc/*.md text eol=lf
 crates/vokra-models/tests/fixtures/parakeet_ctc/SHA256SUMS text eol=lf
+
+# Descript DAC 44.1 kHz independent decoder fixture. The six raw arrays are
+# SHA-256-pinned in manifest.txt and must remain plain Git blobs with byte-
+# identical checkouts on every platform.
+crates/vokra-models/tests/fixtures/dac_44khz/*.f32 -filter -diff -merge -text
+crates/vokra-models/tests/fixtures/dac_44khz/*.u32 -filter -diff -merge -text
+crates/vokra-models/tests/fixtures/dac_44khz/manifest.txt text eol=lf
 tools/parity/fixtures/*_reference.csv text eol=lf
 
 # Real-audio input consumed by tools/parity/dump_whisper_reference.py.
