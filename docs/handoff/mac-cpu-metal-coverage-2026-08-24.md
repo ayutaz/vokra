@@ -972,11 +972,45 @@ Instance `48591549` was destroyed after local SHA verification; the Vast API
 again returned only the unrelated `tiny-s2s-m2-{judge,generator}` instances
 and no volumes.
 
+Disposable instance `48595336` validated the first MeloTTS wave against the
+fixed public English revision `41fc375b3677373e2141ba5b80cd072581ee4308`.
+All five official releases received strict 1,051-tensor manifest binders, and
+the English artifact passed strict bind, decoding of the 119 inference
+`enc_p` tensors, and a one-token real-weight CPU text-encoder forward. The
+MeloTTS and shared SBV2 text tests, package check, and package Clippy all
+passed. Five raw logs were pulled to
+`/private/tmp/vokra-vast-48595336-results`; the real-smoke and Clippy log
+digests are
+`1ccf1a23c53eb94c1ad092614fc47547b1c39afc666c953ccf4e61e49632b5d3`
+and `9dd506647afd577829b6e415281e6803f3a6008d1d121ef1460a259120244e95`.
+Instance `48595336` was destroyed after local verification.
+
+Disposable instance `48597790` validated the MeloTTS duration and latent-flow
+wave. The public English GGUF (SHA-256
+`1196312e86d8e9ba553f505d8cbc151cf6a53c56d0c91dd1c1989c26e2567ee4`)
+passed strict bind and a real-weight CPU run through the text encoder,
+deterministic duration predictor, and all four VITS2 Transformer coupling-flow
+blocks. Focused MeloTTS/shared-duration/shared-flow tests reported
+`6 + 13 + 15` passes and zero failures; package check, format, package Clippy
+with warnings denied, both architecture shell gates, and `git diff --check`
+also passed. The ten-log SHA ledger was rechecked locally after extraction to
+`/private/tmp/vokra-vast-48597790-results`; the complete archive SHA-256 is
+`ab702cf3f7ba50b82baaa1b644cb33cc8079de76fe1b2f715e231f9a2ca1ecbb`.
+Instance `48597790` was destroyed, and the paginated Vast inventory returned
+only the unrelated `tiny-s2s-m2-{judge,generator}` instances with no Vokra
+label.
+
+This is not yet a MeloTTS synthesis completion claim. The HiFi-GAN decoder,
+duration expansion/prior sampling integration, language-specific raw-text and
+BERT sidecars, independent upstream numerical fixture, and Apple-hardware
+Metal comparison remain open. The five releases must stay partial until those
+gates close; Linux VAST cannot execute the Metal leg.
+
 ## Remaining execution order
 
-1. Make all 72 no-binder repositories CPU-runnable, family by family, with a
+1. Make all remaining no-binder repositories CPU-runnable, family by family, with a
    strict loader and independent upstream reference.
-2. Finish the 49 partial CPU forwards; do not mark a converter, synthesized
+2. Finish the partial CPU forwards; do not mark a converter, synthesized
    bridge, or tensor probe as runtime completion.
 3. The former CPU-complete/CPU-only set is closed at zero. Expand Metal only
    after each currently blocked CPU family closes its independent CPU gate.
