@@ -179,6 +179,19 @@ impl MeloDurationModel {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn deterministic_log_duration(
+        &self,
+        hidden: &[f32],
+        sequence_len: usize,
+        global_conditioning: &[f32],
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(backend, MELOTTS_DURATION_HOT_OPS)?;
+        self.deterministic
+            .forward(&compute, hidden, sequence_len, global_conditioning)
+    }
+
     /// Predicts one positive frame duration per text position.
     #[allow(clippy::too_many_arguments)]
     pub fn predict<R: NormalSource>(

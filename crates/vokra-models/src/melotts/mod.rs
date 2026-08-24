@@ -468,8 +468,69 @@ fn require_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
     use vokra_core::backend::BackendKind;
     use vokra_core::rng::GaussianSplitMix64;
+
+    const OFFICIAL_PARITY_ATOL: f32 = 0.01;
+
+    fn melotts_fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/melotts_english")
+    }
+
+    fn read_f32(path: &Path) -> Vec<f32> {
+        let bytes =
+            fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert_eq!(bytes.len() % 4, 0, "{} is not FP32", path.display());
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
+            .collect()
+    }
+
+    fn read_u32(path: &Path) -> Vec<u32> {
+        let bytes =
+            fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert_eq!(bytes.len() % 4, 0, "{} is not U32", path.display());
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("four bytes")))
+            .collect()
+    }
+
+    fn read_i32(path: &Path) -> Vec<i32> {
+        let bytes =
+            fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        assert_eq!(bytes.len() % 4, 0, "{} is not I32", path.display());
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| i32::from_le_bytes(chunk.try_into().expect("four bytes")))
+            .collect()
+    }
+
+    fn assert_official_parity(label: &str, actual: &[f32], expected: &[f32]) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "{label}: actual/reference lengths differ"
+        );
+        let (index, maximum) = actual
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .map(|(index, (actual, expected))| (index, (actual - expected).abs()))
+            .max_by(|left, right| left.1.total_cmp(&right.1))
+            .unwrap_or((0, 0.0));
+        eprintln!(
+            "melotts official parity: {label} max_abs={maximum:.9e}@{index} atol={OFFICIAL_PARITY_ATOL:.9e}"
+        );
+        assert!(
+            maximum.is_finite() && maximum <= OFFICIAL_PARITY_ATOL,
+            "{label}: max_abs={maximum:.9e}@{index} exceeds official parity atol={OFFICIAL_PARITY_ATOL:.9e}"
+        );
+    }
 
     #[test]
     fn official_variant_axes_match_released_tensor_tables() {
@@ -622,5 +683,149 @@ mod tests {
             synthesis.frame_count * HOP_LENGTH as usize
         );
         assert!(synthesis.pcm.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    #[ignore = "requires VOKRA_MELOTTS_GGUF pointing to the public English GGUF"]
+    fn official_english_acoustic_core_matches_reference() {
+        let path = std::env::var("VOKRA_MELOTTS_GGUF").expect("VOKRA_MELOTTS_GGUF");
+        let file = GgufFile::open(path).expect("open released MeloTTS English GGUF");
+        let checkpoint = MeloTtsCheckpoint::from_gguf(&file).expect("strict bind");
+        assert_eq!(checkpoint.variant(), MeloVariant::English);
+
+        let fixture = melotts_fixture_dir();
+        let phoneme_ids = read_u32(&fixture.join("phoneme_ids.u32"));
+        let tones = read_u32(&fixture.join("tones.u32"));
+        let language_ids = read_u32(&fixture.join("language_ids.u32"));
+        let bert = read_f32(&fixture.join("bert_position_major.f32"));
+        let ja_bert = read_f32(&fixture.join("ja_bert_position_major.f32"));
+        let expected_speaker = read_f32(&fixture.join("speaker_conditioning.f32"));
+        let expected_hidden = read_f32(&fixture.join("hidden_position_major.f32"));
+        let expected_mean = read_f32(&fixture.join("mean_position_major.f32"));
+        let expected_log_scale = read_f32(&fixture.join("log_scale_position_major.f32"));
+        let expected_log_duration = read_f32(&fixture.join("log_duration.f32"));
+        let expected_durations = read_i32(&fixture.join("durations.i32"));
+        let expected_expanded_mean = read_f32(&fixture.join("expanded_mean_position_major.f32"));
+        let expected_expanded_log_scale =
+            read_f32(&fixture.join("expanded_log_scale_position_major.f32"));
+        let expected_decoder_latent = read_f32(&fixture.join("decoder_latent_position_major.f32"));
+        let expected_pcm = read_f32(&fixture.join("pcm.f32"));
+        let sequence_len = phoneme_ids.len();
+        assert_eq!(sequence_len, 6);
+        assert_eq!(expected_durations, vec![1; sequence_len]);
+
+        let features = MeloTextFeatures {
+            phoneme_ids: &phoneme_ids,
+            tones: &tones,
+            language_ids: &language_ids,
+            bert: &bert,
+            ja_bert: &ja_bert,
+            speaker_id: 0,
+        };
+        let encoder = checkpoint
+            .load_text_encoder(&file)
+            .expect("load text encoder");
+        let encoded = encoder
+            .encode(features, BackendKind::Cpu)
+            .expect("official text encoder forward");
+        assert_official_parity(
+            "speaker_conditioning",
+            &encoded.speaker_conditioning,
+            &expected_speaker,
+        );
+        assert_official_parity("hidden", &encoded.hidden, &expected_hidden);
+        assert_official_parity("mean", &encoded.mean, &expected_mean);
+        assert_official_parity("log_scale", &encoded.log_scale, &expected_log_scale);
+        drop(encoder);
+
+        let duration = checkpoint
+            .load_duration_model(&file)
+            .expect("load duration model");
+        let log_duration = duration
+            .deterministic_log_duration(
+                &expected_hidden,
+                sequence_len,
+                &expected_speaker,
+                BackendKind::Cpu,
+            )
+            .expect("official deterministic duration forward");
+        assert_official_parity("log_duration", &log_duration, &expected_log_duration);
+        let mut rng = GaussianSplitMix64::new(0x4d45_4c4f);
+        let durations = duration
+            .predict(
+                &expected_hidden,
+                sequence_len,
+                &expected_speaker,
+                0.0,
+                0.0,
+                0.05,
+                &mut rng,
+                BackendKind::Cpu,
+            )
+            .expect("official duration prediction");
+        assert_eq!(durations, expected_durations);
+        drop(duration);
+
+        let expanded_mean = crate::sbv2::duration::length_regulate(
+            &expected_mean,
+            &expected_durations,
+            INTER_CHANNELS as usize,
+        );
+        let expanded_log_scale = crate::sbv2::duration::length_regulate(
+            &expected_log_scale,
+            &expected_durations,
+            INTER_CHANNELS as usize,
+        );
+        assert_official_parity("expanded_mean", &expanded_mean, &expected_expanded_mean);
+        assert_official_parity(
+            "expanded_log_scale",
+            &expanded_log_scale,
+            &expected_expanded_log_scale,
+        );
+
+        let flow = checkpoint.load_flow_model(&file).expect("load flow model");
+        let decoder_latent = flow
+            .inverse(
+                &expected_expanded_mean,
+                expected_durations.len(),
+                &expected_speaker,
+                BackendKind::Cpu,
+            )
+            .expect("official inverse-flow forward");
+        assert_official_parity("decoder_latent", &decoder_latent, &expected_decoder_latent);
+        drop(flow);
+
+        let decoder = checkpoint.load_decoder(&file).expect("load decoder");
+        let pcm = decoder
+            .decode(
+                &expected_decoder_latent,
+                expected_durations.len(),
+                &expected_speaker,
+                BackendKind::Cpu,
+            )
+            .expect("official decoder forward");
+        assert_official_parity("pcm", &pcm, &expected_pcm);
+        drop(decoder);
+
+        let model = checkpoint.load_model(&file).expect("load complete model");
+        let mut rng = GaussianSplitMix64::new(0x4d45_4c4f);
+        let synthesis = model
+            .synthesize(
+                features,
+                MeloSynthesisOptions {
+                    sdp_ratio: 0.0,
+                    noise_scale: 0.0,
+                    noise_scale_w: 0.0,
+                    length_scale: 0.05,
+                    max_frames: 64,
+                },
+                &mut rng,
+                BackendKind::Cpu,
+            )
+            .expect("official end-to-end acoustic forward");
+        assert_eq!(synthesis.durations, expected_durations);
+        assert_eq!(synthesis.frame_count, expected_durations.len());
+        assert_eq!(synthesis.sample_rate, SAMPLE_RATE);
+        assert_official_parity("end_to_end_pcm", &synthesis.pcm, &expected_pcm);
     }
 }
