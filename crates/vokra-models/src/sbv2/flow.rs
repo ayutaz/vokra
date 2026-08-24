@@ -61,6 +61,8 @@ use crate::compute::Compute;
 
 use super::text_encoder::SbV2TransformerBlock;
 
+const PRE_STACK_CONDITIONING: u8 = u8::MAX;
+
 // -----------------------------------------------------------------------
 // Flow-layer enum
 // -----------------------------------------------------------------------
@@ -190,11 +192,11 @@ pub struct SbV2TransformerCouplingLayer {
     /// Per-utterance conditioning vector width (upstream `gin_channels`,
     /// = 512 on the SBV2 v2 base).
     gin_channels: usize,
-    /// Optional Transformer block index immediately before which speaker
-    /// conditioning is injected. `None` preserves the original SBV2
+    /// Transformer block index immediately before which speaker conditioning
+    /// is injected. The private sentinel preserves the original SBV2
     /// pre-stack behavior; MeloTTS uses block two, matching its official
     /// `Encoder.cond_layer_idx`.
-    conditioning_layer: Option<usize>,
+    conditioning_layer: u8,
     /// Whether `post` emits only the mean statistic (`half_d_z` output
     /// channels) or both mean and log-scale (`2 * half_d_z` output
     /// channels). `true` on the SBV2 v2 base — see
@@ -287,7 +289,7 @@ impl SbV2TransformerCouplingLayer {
             half_d_z,
             d_hidden,
             gin_channels,
-            conditioning_layer: None,
+            conditioning_layer: PRE_STACK_CONDITIONING,
             mean_only,
         }
     }
@@ -300,11 +302,11 @@ impl SbV2TransformerCouplingLayer {
     #[must_use]
     pub fn with_conditioning_layer(mut self, layer: usize) -> Self {
         debug_assert!(
-            layer < self.encoder_stack.len(),
+            layer < self.encoder_stack.len() && layer < usize::from(PRE_STACK_CONDITIONING),
             "conditioning layer {layer} is outside a {}-block encoder stack",
             self.encoder_stack.len()
         );
-        self.conditioning_layer = Some(layer);
+        self.conditioning_layer = layer as u8;
         self
     }
 
@@ -364,7 +366,7 @@ impl SbV2TransformerCouplingLayer {
         } else {
             linear_g(&self.spk_emb_weight, &self.spk_emb_bias, g, self.d_hidden)
         };
-        if self.conditioning_layer.is_none() {
+        if self.conditioning_layer == PRE_STACK_CONDITIONING {
             add_conditioning(&mut h, self.d_hidden, &spk);
         }
 
@@ -372,7 +374,7 @@ impl SbV2TransformerCouplingLayer {
         //    Each block reads/writes h under the same layout as the text
         //    encoder's own transformer stack (see text_encoder.rs).
         for (layer, block) in self.encoder_stack.iter().enumerate() {
-            if self.conditioning_layer == Some(layer) {
+            if usize::from(self.conditioning_layer) == layer {
                 add_conditioning(&mut h, self.d_hidden, &spk);
             }
             block.forward(&mut h, mel_seq_len);
@@ -449,11 +451,11 @@ impl SbV2TransformerCouplingLayer {
                 self.d_hidden,
             )?
         };
-        if self.conditioning_layer.is_none() {
+        if self.conditioning_layer == PRE_STACK_CONDITIONING {
             add_conditioning(&mut hidden, self.d_hidden, &speaker);
         }
         for (layer, block) in self.encoder_stack.iter().enumerate() {
-            if self.conditioning_layer == Some(layer) {
+            if usize::from(self.conditioning_layer) == layer {
                 add_conditioning(&mut hidden, self.d_hidden, &speaker);
             }
             block.forward_with_compute(compute, &mut hidden, mel_seq_len)?;
