@@ -13,6 +13,7 @@ use super::{FILTER_CHANNELS, GIN_CHANNELS, HIDDEN_CHANNELS, INTER_CHANNELS, LABE
 
 const FLOW_BLOCKS: usize = 4;
 const FLOW_ENCODER_LAYERS: usize = 3;
+const FLOW_CONDITION_LAYER: usize = 2;
 const FLOW_FFN_KERNEL: usize = 5;
 const FLOW_WINDOW_SIZE: usize = 4;
 
@@ -68,7 +69,8 @@ impl MeloFlowModel {
                     hidden,
                     gin,
                     true,
-                ),
+                )
+                .with_conditioning_layer(FLOW_CONDITION_LAYER),
             ));
             layers.push(FlowLayer::Flip);
         }
