@@ -558,6 +558,11 @@ pub mod pyannote;
 // variant / config / license paths are real).
 pub mod hifigan;
 pub mod snac;
+// FocalCodec 12.5/25/50 Hz native codec family.  The three public GGUFs
+// share one WavLM + focal-modulation + BSQ + Vocos implementation; their
+// compressor/decompressor time-scale factors are selected from a pinned
+// release manifest rather than inferred from filenames.
+pub mod focalcodec;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
 // vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT
 // forward. CPU preserves the independent scalar reference; Metal dispatches

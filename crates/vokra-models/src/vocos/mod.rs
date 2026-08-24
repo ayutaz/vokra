@@ -374,6 +374,21 @@ struct ComputeVocosOps<'a> {
     compute: &'a Compute,
 }
 
+/// Reuses the standalone Vocos backend adapter for model-internal Vocos
+/// heads (FocalCodec is the first such consumer).  Keeping this seam here
+/// prevents an internal codec from accidentally routing learned ConvNeXt
+/// work through the scalar reference while a non-CPU backend is selected.
+pub(crate) fn decode_weights_with_compute(
+    features: &[f32],
+    frames: usize,
+    weights: &VocosWeights,
+    attrs: &VocosAttrs,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let ops = ComputeVocosOps { compute };
+    vocos_decode_with_ops(features, frames, None, weights, attrs, &ops)
+}
+
 impl VocosBackendOps for ComputeVocosOps<'_> {
     fn conv1d_same(
         &self,
