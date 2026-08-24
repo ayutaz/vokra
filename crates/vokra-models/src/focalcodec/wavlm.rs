@@ -217,12 +217,12 @@ fn attention(
             let row = &input[frame * WAVLM_DIM + head * WAVLM_HEAD_DIM
                 ..frame * WAVLM_DIM + (head + 1) * WAVLM_HEAD_DIM];
             let mut projected = [0.0f32; 8];
-            for out in 0..8 {
+            for (out, projected_value) in projected.iter_mut().enumerate() {
                 let mut value = weights.gru_bias[out];
-                for inner in 0..WAVLM_HEAD_DIM {
-                    value += row[inner] * weights.gru_weight[out * WAVLM_HEAD_DIM + inner];
+                for (inner, row_value) in row.iter().copied().enumerate() {
+                    value += row_value * weights.gru_weight[out * WAVLM_HEAD_DIM + inner];
                 }
-                projected[out] = value;
+                *projected_value = value;
             }
             let gate_a = sigmoid(projected[..4].iter().copied().sum());
             let gate_b = sigmoid(projected[4..].iter().copied().sum());
