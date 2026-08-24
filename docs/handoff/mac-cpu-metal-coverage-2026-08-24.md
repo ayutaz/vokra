@@ -425,6 +425,33 @@ hardware comparison remains open. This is recorded as an unrun device gate,
 not imputed from the passing CPU result or primitive Metal tests. No Hub
 upload or artifact replacement was performed.
 
+### SNAC standalone CLI reachability
+
+SNAC is now a routed `ModelTask::SnacCodec`, not a successful binder probe
+that `vokra-cli run` still refuses. The CLI accepts CPU waveform encode and
+CPU/Metal hierarchical decode through a versioned `VKRSNAC1` container. The
+container records the original PCM length, padded base-frame extent, every
+stage stride and length, the model topology, and a SHA-256 ledger over every
+GGUF tensor name, dtype, shape and payload. A sibling variant or modified
+checkpoint therefore fails before decode instead of producing plausible audio
+with the wrong model. Metal encode reaches SNAC's explicit missing
+nearest-codebook-search error and never performs a host fallback.
+
+Both unchanged public GGUFs passed the real CLI route on VAST commit
+`7df00dc4`: 24 kHz encoded 1,567 samples to four base frames / three stages
+and decoded back to an IEEE-float mono WAV with exactly 1,567 frames; 44.1 kHz
+encoded 5,003 samples to 32 base frames / four stages and decoded back to
+exactly 5,003 frames. Decoding the 24 kHz container with the 44.1 kHz model
+returned the explicit rate/stage/latent/hop/stride mismatch. The fixed public
+GGUF SHA-256 values remained the two values recorded above; no upload or
+replacement occurred.
+
+The post-route live Hub audit reported 194 public repositories / 193 GGUF
+repositories: CPU `full=72`, `partial=49`, `no-runtime-binder=72`,
+`not-artifact=1`; Metal `full=72`, `blocked-by-cpu=121`, `not-artifact=1`.
+This is code reachability plus the SNAC real-file CPU evidence above, not a
+claim that the still-open Apple-device SNAC Metal comparison has run.
+
 ### Piper Plus CLI/C ABI reachability
 
 Piper already declared GEMM as its complete backend hot-op set and already had
@@ -928,11 +955,28 @@ and the final Clippy log SHA-256 is
 Instance `48584151` was destroyed; the paginated inventory then returned only
 the unrelated `tiny-s2s-m2-{judge,generator}` instances and no volumes.
 
+Disposable instance `48591549` validated the standalone SNAC CLI wave and the
+accumulated branch at commit `7df00dc4`. The fixed-revision public 24/44.1 kHz
+GGUFs passed encode/decode, exact output-rate/frame-count checks, cross-variant
+rejection, and the explicit Metal-encode/no-fallback rejection. The full
+workspace run recorded 269 test-result suites, 7,153 passed, zero failed and
+34 ignored; `cargo clippy --workspace --all-targets -- -D warnings` returned
+status zero. The logs and small code/WAV products were pulled to
+`/private/tmp/vokra-vast-48591549-results`; the archive SHA-256 is
+`c093325f1955c0b65fcac48e1df3bd21bc4da251c89cb9e4e4d79afc548d4ff5`,
+the clean public-GGUF CLI log SHA-256 is
+`8cba52271cf13536c6de42ddc3b968d0fb8e696c45a3d33d2070e3be21b678d6`,
+and the workspace/Clippy log SHA-256 is
+`9a106b6627c80141093b16052a1cfcc8c3fed874714e810936e2aa6d0b94ca97`.
+Instance `48591549` was destroyed after local SHA verification; the Vast API
+again returned only the unrelated `tiny-s2s-m2-{judge,generator}` instances
+and no volumes.
+
 ## Remaining execution order
 
 1. Make all 72 no-binder repositories CPU-runnable, family by family, with a
    strict loader and independent upstream reference.
-2. Finish the 51 partial CPU forwards; do not mark a converter, synthesized
+2. Finish the 49 partial CPU forwards; do not mark a converter, synthesized
    bridge, or tensor probe as runtime completion.
 3. The former CPU-complete/CPU-only set is closed at zero. Expand Metal only
    after each currently blocked CPU family closes its independent CPU gate.
