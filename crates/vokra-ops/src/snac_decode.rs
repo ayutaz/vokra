@@ -893,17 +893,17 @@ mod tests {
         assert_eq!(got.len(), 8 * D_MODEL);
 
         let mut want = vec![0.0_f32; 8 * D_MODEL];
-        for stage in 0..4 {
+        for (stage, stage_codes) in codes.iter().enumerate() {
             let stride = d.config().active_vq_strides()[stage] as usize;
             let cb = &d.weights.codebooks[stage];
             let proj = &d.weights.out_projs[stage];
-            for (t_stage, &idx) in codes[stage].iter().enumerate() {
+            for (t_stage, &idx) in stage_codes.iter().enumerate() {
                 let low = cb.row(idx).unwrap();
                 for t in t_stage * stride..(t_stage + 1) * stride {
                     for o in 0..D_MODEL {
                         let mut y = proj.bias[o];
-                        for c in 0..CB_DIM {
-                            y += proj.weight[o * CB_DIM + c] * low[c];
+                        for (c, &low_value) in low.iter().enumerate() {
+                            y += proj.weight[o * CB_DIM + c] * low_value;
                         }
                         want[t * D_MODEL + o] += y;
                     }
