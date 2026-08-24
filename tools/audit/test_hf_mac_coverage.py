@@ -1,0 +1,148 @@
+import importlib.util
+import sys
+import unittest
+from pathlib import Path
+
+
+MODULE_PATH = Path(__file__).with_name("hf_mac_coverage.py")
+SPEC = importlib.util.spec_from_file_location("hf_mac_coverage", MODULE_PATH)
+assert SPEC is not None and SPEC.loader is not None
+audit = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = audit
+SPEC.loader.exec_module(audit)
+
+
+class HfMacCoverageTest(unittest.TestCase):
+    def test_readme_architecture_accepts_generated_card_shape(self):
+        self.assertEqual(
+            audit.parse_readme_architecture("| Architecture | `moonshine` |\n"),
+            "moonshine",
+        )
+        self.assertEqual(
+            audit.parse_readme_architecture("| Architecture | voxtral |\n"),
+            "voxtral",
+        )
+        self.assertIsNone(audit.parse_readme_architecture("# no table\n"))
+
+    def test_engine_parser_separates_routed_and_bound(self):
+        source = '''
+const ARCH_WHISPER: &str = "whisper";
+const ARCH_MOONSHINE: &str = "moonshine";
+const BOUND_ARCHES: &[BoundArch] = &[
+    BoundArch { arch: "snac", reason: "partial" },
+];
+'''
+        routed, bound = audit.parse_engine_arches(source)
+        self.assertEqual(routed, {"whisper", "moonshine"})
+        self.assertEqual(bound, {"snac"})
+
+    def test_classification_never_turns_partial_into_metal(self):
+        routed = {
+            "whisper",
+            "silero-vad",
+            "magnet_small_10secs",
+            "csm",
+            "nsnet2",
+            "pyannote-segmentation",
+            "rmvpe",
+            "sbv2",
+            "vocos",
+            "fsmn-vad",
+            "firered_vad",
+            "ten_vad",
+            "rnnoise",
+            "nkf_aec",
+            "xvector",
+            "ecapa_tdnn",
+            "wespeaker",
+            "titanet-large",
+        }
+        bound = {"snac"}
+        full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
+        silero = audit.RepoRecord(
+            "vokra/silero", "abc", ("model.gguf",), "silero-vad"
+        )
+        bound_record = audit.RepoRecord("vokra/snac", "abc", ("model.gguf",), "snac")
+        routed_partial = audit.RepoRecord(
+            "vokra/magnet", "abc", ("model.gguf",), "magnet_small_10secs"
+        )
+        csm = audit.RepoRecord("vokra/csm", "abc", ("model.gguf",), "csm")
+        sbv2 = audit.RepoRecord("vokra/sbv2", "abc", ("model.gguf",), "sbv2")
+        nsnet2 = audit.RepoRecord(
+            "vokra/nsnet2", "abc", ("model.gguf",), "nsnet2"
+        )
+        pyannote = audit.RepoRecord(
+            "vokra/pyannote", "abc", ("model.gguf",), "pyannote-segmentation"
+        )
+        rmvpe = audit.RepoRecord("vokra/rmvpe", "abc", ("model.gguf",), "rmvpe")
+        vocos = audit.RepoRecord("vokra/vocos", "abc", ("model.gguf",), "vocos")
+        fsmn = audit.RepoRecord("vokra/fsmn", "abc", ("model.gguf",), "fsmn-vad")
+        firered = audit.RepoRecord(
+            "vokra/firered", "abc", ("model.gguf",), "firered_vad"
+        )
+        ten_vad = audit.RepoRecord("vokra/ten-vad", "abc", ("model.gguf",), "ten_vad")
+        rnnoise = audit.RepoRecord("vokra/rnnoise", "abc", ("model.gguf",), "rnnoise")
+        nkf_aec = audit.RepoRecord("vokra/nkf-aec", "abc", ("model.gguf",), "nkf_aec")
+        xvector = audit.RepoRecord("vokra/xvector", "abc", ("model.gguf",), "xvector")
+        ecapa = audit.RepoRecord("vokra/ecapa", "abc", ("model.gguf",), "ecapa_tdnn")
+        wespeaker = audit.RepoRecord(
+            "vokra/pyannote-wespeaker-voxceleb-resnet34-lm",
+            "abc",
+            ("model.gguf",),
+            "wespeaker",
+        )
+        bad_wespeaker = audit.RepoRecord(
+            "vokra/wespeaker", "abc", ("model.gguf",), "wespeaker"
+        )
+        titanet = audit.RepoRecord(
+            "vokra/titanet-l", "abc", ("model.gguf",), "titanet-large"
+        )
+        missing = audit.RepoRecord("vokra/other", "abc", ("model.gguf",), "other")
+        bad_ecapa = audit.RepoRecord(
+            "vokra/voice-gender-classifier", "abc", ("model.gguf",), "ecapa_tdnn"
+        )
+        corrupt_ecapa = audit.RepoRecord(
+            "vokra/speechbrain-spkrec-ecapa-voxceleb",
+            "abc",
+            ("model.gguf",),
+            "ecapa_tdnn",
+        )
+        empty = audit.RepoRecord("vokra/empty", "abc", (), None)
+
+        self.assertEqual(audit.classify(full, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(bound_record, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(routed_partial, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(csm, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(nsnet2, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(pyannote, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(rmvpe, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(vocos, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(fsmn, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(firered, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(ten_vad, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(rnnoise, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(nkf_aec, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(xvector, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(ecapa, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(wespeaker, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(bad_wespeaker, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(titanet, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(corrupt_ecapa, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(missing, routed, bound).cpu_code, "no-runtime-binder")
+        self.assertEqual(audit.classify(empty, routed, bound).cpu_code, "not-artifact")
+
+    def test_tsv_rows_match_header_width(self):
+        record = audit.RepoRecord(
+            "vokra/whisper", "abc", ("model.gguf",), "whisper"
+        )
+        lines = audit.render_tsv([record], {"whisper"}, set()).splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(lines[0].split("\t")), len(lines[1].split("\t")))
+        self.assertEqual(lines[1].split("\t")[5], "full")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -34,6 +34,8 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::compute::Compute;
+
 use super::PyanNetWeights;
 
 /// Terminal `Linear(in → num_classes)` + numerically stable Softmax.
@@ -110,6 +112,36 @@ impl Classifier {
         }
         out
     }
+
+    /// Backend-dispatched classifier affine plus row-wise softmax.
+    pub fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(input.len(), seq_len * self.in_dim);
+        let mut weight_t = vec![0.0f32; self.weight.len()];
+        for class in 0..self.num_classes {
+            for input in 0..self.in_dim {
+                weight_t[input * self.num_classes + class] =
+                    self.weight[class * self.in_dim + input];
+            }
+        }
+        let mut logits = vec![0.0f32; seq_len * self.num_classes];
+        compute.gemm_f32(
+            seq_len,
+            self.num_classes,
+            self.in_dim,
+            input,
+            &weight_t,
+            Some(&self.bias),
+            &mut logits,
+        )?;
+        let mut probabilities = vec![0.0f32; logits.len()];
+        compute.softmax_f32(&logits, &mut probabilities, seq_len, self.num_classes)?;
+        Ok(probabilities)
+    }
 }
 
 fn bind_tensor(w: &PyanNetWeights, name: &str, expect_shape: &[usize]) -> Result<Vec<f32>> {
@@ -156,6 +188,15 @@ mod tests {
         };
         let input = vec![2.0, 1.0, 0.0, -1.0, -2.0, -3.0];
         let out = cls.forward(&input, 2);
+        let dispatched = cls
+            .forward_with_compute(&input, 2, &Compute::cpu())
+            .expect("Compute classifier");
+        let max_abs = out
+            .iter()
+            .zip(&dispatched)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs <= 1e-6, "classifier Compute max_abs={max_abs}");
         assert_eq!(out.len(), 6);
         // Every row should sum to ~1.
         for t in 0..2 {

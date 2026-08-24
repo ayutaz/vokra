@@ -32,8 +32,8 @@
 #       substring, not a fuzzy match. Ops with no `vokra-ops` module of that
 #       name are never examined at all, so legitimately-absent rows keep their
 #       natural wording. Today that exempts ecapa_tdnn_speaker_encode,
-#       wespeaker_speaker_encode, titanet_speaker_encode ("CAM++ already covers
-#       speaker embedding") and diarize ("trigger only ..."), none of which has
+#       wespeaker_speaker_encode, titanet_speaker_encode and diarize ("trigger
+#       only ..."), none of which has
 #       a same-named ops module.
 #     * The phrase list is a closed, reviewed set of absence assertions. It
 #       deliberately does NOT contain the bare word "trigger" — "trigger only"

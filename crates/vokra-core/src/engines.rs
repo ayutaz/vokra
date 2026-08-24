@@ -375,6 +375,15 @@ pub trait TtsEngine: Send + Sync {
     /// Synthesizes speech audio for `request`.
     fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio>;
 
+    /// The backend this engine actually dispatches on.
+    ///
+    /// This is the TTS counterpart of [`AsrEngine::backend`]. Backends are
+    /// required to preserve output parity, so comparing generated audio cannot
+    /// prove that a caller-selected backend reached the engine. There is no
+    /// default implementation: defaulting to [`BackendKind::Cpu`] would make a
+    /// newly backend-aware TTS engine silently misreport its execution path.
+    fn backend(&self) -> BackendKind;
+
     /// Returns `true` iff [`synthesize`](Self::synthesize) reads
     /// [`SynthesisRequest::style_vec`] as the AdaIN-style per-utterance
     /// style conditioning vector (SBV2 / VITS2-family), rather than
@@ -604,9 +613,38 @@ pub trait DenoiseStreamHandle {
     /// may return an empty vec.
     fn push_pcm(&mut self, pcm: &[f32]) -> Result<Vec<f32>>;
 
+    /// Flushes any right-padded analysis frame and overlap-add tail after the
+    /// caller has supplied the final PCM chunk.
+    ///
+    /// Stateless/frame-complete denoisers may keep the empty default. Models
+    /// with an STFT tail must override this method; silently dropping that tail
+    /// would shorten the utterance and diverge from one-shot inference.
+    fn finalize(&mut self) -> Result<Vec<f32>> {
+        Ok(Vec::new())
+    }
+
     /// Clears every recurrent state, returning the handle to its
     /// initial state.
     fn reset(&mut self);
+}
+
+/// A complete utterance-level source-separation or enhancement engine.
+///
+/// Outputs are stream-major mono waveforms. Every stream must have the same
+/// sample count as the model-defined forward returns; callers never infer or
+/// merge speakers silently.
+pub trait SeparationEngine: Send + Sync {
+    /// Separates or enhances one mono input waveform.
+    fn separate(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>>;
+
+    /// Required input and output sample rate in hertz.
+    fn sample_rate(&self) -> u32;
+
+    /// Exact number of parallel waveform streams emitted by the model.
+    fn output_streams(&self) -> usize;
+
+    /// Backend used by the learned operations in this engine.
+    fn backend(&self) -> BackendKind;
 }
 
 /// Inputs to [`TtsEngine::synthesize`].
@@ -971,6 +1009,10 @@ mod tts_engine_extension_tests {
         fn synthesize(&self, request: &SynthesisRequest) -> Result<SynthesizedAudio> {
             *self.last.lock().unwrap() = Some(request.clone());
             Ok(SynthesizedAudio::new(vec![0.0; 1], 22_050))
+        }
+
+        fn backend(&self) -> BackendKind {
+            BackendKind::Cpu
         }
     }
 

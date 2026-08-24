@@ -76,11 +76,46 @@
 //!   the [`arch_and_variant_tags_match_converter`] regression pin below.
 
 use vokra_core::gguf::{GgufFile, chunks};
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 use vokra_ops::bigvgan_generator::{
     AliasFreeActivationWeights, AmpBlock1Weights, BigVGanConfig, BigVGanGenerator, BigVGanWeights,
-    SnakeKind,
+    BigVganBackendOps, SnakeKind,
 };
+
+use crate::compute::{Compute, HotOp};
+use crate::hifigan::HifiGanComputeOps;
+
+/// Complete learned-op registry for every released BigVGAN variant.
+pub const BIGVGAN_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::SnakeActivation, HotOp::SnakeBeta];
+
+impl BigVganBackendOps for HifiGanComputeOps<'_> {
+    fn snake(
+        &self,
+        input: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0; input.len()];
+        self.compute
+            .snake_activation_f32(input, alpha, channels, time, &mut output)?;
+        Ok(output)
+    }
+
+    fn snake_beta(
+        &self,
+        input: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0; input.len()];
+        self.compute
+            .snake_beta_f32(input, alpha, beta, channels, time, &mut output)?;
+        Ok(output)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Arch / variant / metadata-key constants — mirror of
@@ -327,6 +362,7 @@ pub fn config_for_variant(variant: BigVGanVariant) -> BigVGanConfig {
 pub struct BigVGan {
     generator: BigVGanGenerator,
     variant: BigVGanVariant,
+    backend: BackendKind,
 }
 
 impl BigVGan {
@@ -346,7 +382,11 @@ impl BigVGan {
     pub fn new(variant: BigVGanVariant, weights: BigVGanWeights) -> Result<Self> {
         let cfg = config_for_variant(variant);
         let generator = BigVGanGenerator::new(cfg, weights)?;
-        Ok(Self { generator, variant })
+        Ok(Self {
+            generator,
+            variant,
+            backend: BackendKind::Cpu,
+        })
     }
 
     /// Deterministic zero-initialised fixture — **construction /
@@ -412,6 +452,20 @@ impl BigVGan {
         self.generator.config()
     }
 
+    /// Selects the backend used by every learned convolution and periodic
+    /// activation. CPU remains the constructor default.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Selected execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Runs the BigVGAN forward on `mel` (`[in_channels, t_mel]`
     /// row-major, `mel.len() == config().in_channels * t_mel`) and
     /// returns the raw PCM waveform bounded to `[-1, 1]` by the op's
@@ -427,7 +481,13 @@ impl BigVGan {
     /// [`VokraError::InvalidArgument`] on a `mel.len()` mismatch or a
     /// `t_mel == 0`.
     pub fn decode(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
-        self.generator.forward(mel, t_mel)
+        if self.backend == BackendKind::Cpu {
+            self.generator.forward(mel, t_mel)
+        } else {
+            let compute = Compute::for_backend(self.backend, BIGVGAN_HOT_OPS)?;
+            let ops = HifiGanComputeOps { compute: &compute };
+            self.generator.forward_with_backend_ops(mel, t_mel, &ops)
+        }
     }
 
     /// Dispatches on `vokra.model.arch` + `vokra.bigvgan.variant`, walks the
@@ -1199,6 +1259,7 @@ mod tests {
         let vg = BigVGan {
             generator,
             variant: BigVGanVariant::V2_24khz100Band256x,
+            backend: BackendKind::Cpu,
         };
         assert_eq!(vg.variant(), BigVGanVariant::V2_24khz100Band256x);
 
@@ -1220,6 +1281,65 @@ mod tests {
                 "PCM[{i}] = {v} must lie in [-1, 1] after terminal tanh"
             );
         }
+    }
+
+    #[test]
+    fn compute_backend_matches_scalar_full_bigvgan_stack() {
+        let cfg = BigVGanConfig {
+            in_channels: 4,
+            upsample_initial_channel: 8,
+            upsample_rates: vec![2, 2],
+            upsample_kernel_sizes: vec![4, 4],
+            resblock_kernel_sizes: vec![3],
+            resblock_dilation_sizes: vec![vec![1, 3]],
+            activation: SnakeKind::SnakeBeta,
+            snake_logscale: true,
+            use_bias_at_final: true,
+            use_tanh_at_final: true,
+        };
+        let mut weights = synthesized_weights_for_config(&cfg);
+        fn fill(values: &mut [f32], scale: f32) {
+            for (index, value) in values.iter_mut().enumerate() {
+                *value = ((index % 13) as f32 - 6.0) * scale;
+            }
+        }
+        fill(&mut weights.conv_pre_w, 0.002);
+        fill(&mut weights.conv_pre_b, 0.001);
+        for (weight, bias) in weights.ups_w.iter_mut().zip(&mut weights.ups_b) {
+            fill(weight, 0.002);
+            fill(bias, 0.001);
+        }
+        for block in &mut weights.amp_blocks {
+            for weight in block.convs1_w.iter_mut().chain(block.convs2_w.iter_mut()) {
+                fill(weight, 0.001);
+            }
+            for bias in block.convs1_b.iter_mut().chain(block.convs2_b.iter_mut()) {
+                fill(bias, 0.0005);
+            }
+        }
+        fill(&mut weights.conv_post_w, 0.002);
+        fill(weights.conv_post_b.as_mut().expect("terminal bias"), 0.001);
+        let generator = BigVGanGenerator::new(cfg, weights).expect("tiny non-zero generator");
+        let t_mel = 4;
+        let mel: Vec<f32> = (0..4 * t_mel)
+            .map(|index| ((index % 9) as f32 - 4.0) * 0.03)
+            .collect();
+        let scalar = generator.forward(&mel, t_mel).expect("scalar forward");
+        let compute = Compute::cpu();
+        let ops = HifiGanComputeOps { compute: &compute };
+        let dispatched = generator
+            .forward_with_backend_ops(&mel, t_mel, &ops)
+            .expect("Compute backend forward");
+        assert_eq!(scalar.len(), dispatched.len());
+        let max_abs = scalar
+            .iter()
+            .zip(&dispatched)
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs <= 1e-4,
+            "BigVGAN composed backend drift {max_abs} exceeds the registered synthetic FP32 gate"
+        );
     }
 
     /// Regression pin: `decode` must forward the underlying generator's
@@ -1253,6 +1373,7 @@ mod tests {
         let vg = BigVGan {
             generator,
             variant: BigVGanVariant::V2_22khz80Band256x,
+            backend: BackendKind::Cpu,
         };
         let t_mel = 2;
         let mel = vec![1.0f32; 4 * t_mel];

@@ -780,6 +780,9 @@ pub mod ace_step;
 // HuBERT checkpoint into a wav2vec2 loader silently (FR-EX-08).
 // Scale ~1.26 GB = local convert safe on M1 iMac 16 GB.
 pub mod hubert_large_ls960;
+// 2026-08-24 Mac coverage correction: Data2Vec Audio has distinct
+// tensor names and a five-layer positional-convolution stack.
+pub mod data2vec_audio;
 // 2026-08-04 hf-audio-gap SSL residual: Meta w2v-BERT 2.0
 // (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-supervised
 // speech encoder = Conformer body + dual (wav2vec2-style contrastive +

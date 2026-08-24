@@ -184,9 +184,9 @@ pub(crate) fn verify_arch(file: &GgufFile) -> Result<()> {
 /// The backend hot ops the Whisper forward dispatches. Unlike CAM++ / piper
 /// (GEMM only), Whisper also routes softmax / layer-norm / GELU / conv1d / GEMV
 /// through the backend, so a backend must cover **all six** to run Whisper. The
-/// Metal backend covers only GEMM in this slice, so Whisper on Metal is an
-/// explicit [`VokraError::UnsupportedOp`](vokra_core::VokraError) until those
-/// kernels land (M2-01 T09-T13, Phase 4) — never a silent CPU fall back.
+/// Metal covers all six through the imperative compute seam, including the
+/// beam/sample replay and word-alignment second forward. A backend missing any
+/// required op is rejected explicitly — never a silent CPU fall back.
 pub(crate) const WHISPER_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Gemv,
@@ -551,9 +551,9 @@ impl WhisperModel {
         decoder::DecoderState::new(Arc::clone(self), encoder)
     }
 
-    /// [`decoder`](Self::decoder) on an explicit backend (M2-01 Phase 3). Metal
-    /// is rejected until its full Whisper op set lands (Phase 4); on the CPU
-    /// backend this is identical to [`decoder`](Self::decoder).
+    /// [`decoder`](Self::decoder) on an explicit backend (M2-01 Phase 3). On
+    /// the CPU backend this is identical to [`decoder`](Self::decoder); Metal
+    /// covers the complete Whisper hot-op set.
     pub fn decoder_with_backend(
         self: &Arc<Self>,
         encoder: &EncoderOutput,

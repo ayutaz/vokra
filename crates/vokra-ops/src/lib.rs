@@ -317,6 +317,7 @@ pub mod snac_decode;
 // GPU dispatch.
 pub mod snake;
 // -------------------------------------------------------------------------
+pub mod speechbrain_fbank;
 pub mod stft;
 // ---- TEN-VAD v1.0 native network + LPCNet-derived frontend --------------
 pub mod ten_vad;
@@ -503,14 +504,14 @@ pub use fsq_codec::{
 };
 // ---------------------------------------------------------------------------
 pub use firered_vad::{
-    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
-    FireredVadDfsmnWeights, firered_vad_dfsmn_forward,
+    FireredVadBackendOps, FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, firered_vad_dfsmn_forward, firered_vad_dfsmn_forward_with_ops,
 };
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
 pub use fsmn_vad::{
-    FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward,
-    softmax_last_axis,
+    FsmnBackendOps, FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights,
+    fsmn_vad_forward, fsmn_vad_forward_with_ops, softmax_last_axis,
 };
 // ---------------------------------------------------------------------------
 pub use fused_logmel::fused_log_mel_scalar;
@@ -528,8 +529,10 @@ pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+pub use speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank};
 pub use vocos::{
-    VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
+    VocosAttrs, VocosBackendOps, VocosBlockWeights, VocosIstftPadding, VocosNormWeights,
+    VocosWeights, vocos_decode, vocos_decode_with_ops,
 };
 // ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
 pub use openwakeword::{

@@ -14,13 +14,24 @@
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::{VadEngine, VadStreamHandle};
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::ten_vad::{
-    HIDDEN_DIM, LSTM0_INPUT, LstmWeights, SeparableConvWeights, TenVadFrontend, TenVadNetworkState,
-    TenVadNetworkWeights, network_forward,
+    CONV_CHANNELS, HIDDEN_DIM, LSTM0_INPUT, LstmWeights, SeparableConvWeights, TenVadBackendOps,
+    TenVadFrontend, TenVadNetworkState, TenVadNetworkWeights, network_forward,
+    network_forward_with_ops,
 };
+
+use crate::compute::{Compute, HotOp};
+
+const TEN_VAD_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::Gemv,
+    HotOp::Gemm,
+];
 
 /// GGUF architecture discriminator.
 pub const ARCH: &str = "ten_vad";
@@ -224,6 +235,7 @@ pub struct TenVad {
     weights: Arc<TenVadWeights>,
     config: TenVadConfig,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl TenVad {
@@ -244,6 +256,7 @@ impl TenVad {
             weights: Arc::new(weights),
             config,
             weight_license,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -282,13 +295,27 @@ impl TenVad {
         self.weight_license
     }
 
+    /// Selects the backend for every learned convolution, recurrent
+    /// projection and dense layer. The LPCNet frontend remains host DSP.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected learned-op backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Runs the exact neural graph on one normalized `3 x 41` feature context.
     pub fn predict_features(
         &self,
         features: &[f32],
         state: &mut TenVadNetworkState,
     ) -> Result<f32> {
-        network_forward(features, &self.weights.network, state)
+        ten_vad_forward_dispatch(self.backend, features, &self.weights.network, state)
     }
 
     /// Runs a fresh frontend/network state on one 256-sample PCM frame.
@@ -299,6 +326,228 @@ impl TenVad {
     }
 }
 
+fn ten_vad_forward_dispatch(
+    backend: BackendKind,
+    features: &[f32],
+    weights: &TenVadNetworkWeights,
+    state: &mut TenVadNetworkState,
+) -> Result<f32> {
+    if backend == BackendKind::Cpu {
+        return network_forward(features, weights, state);
+    }
+    let compute = Compute::for_backend(backend, TEN_VAD_HOT_OPS)?;
+    network_forward_with_ops(
+        features,
+        weights,
+        state,
+        &mut ComputeTenVadOps { compute: &compute },
+    )
+}
+
+struct ComputeTenVadOps<'a> {
+    compute: &'a Compute,
+}
+
+impl TenVadBackendOps for ComputeTenVadOps<'_> {
+    fn conv_stack(&mut self, features: &[f32], weights: &TenVadNetworkWeights) -> Result<Vec<f32>> {
+        let mut conv0_depthwise = vec![0.0f32; 39];
+        self.compute.conv1d_f32(
+            features,
+            3,
+            41,
+            &weights.conv0.depthwise,
+            1,
+            3,
+            None,
+            1,
+            0,
+            &mut conv0_depthwise,
+        )?;
+        let mut conv0 = vec![0.0f32; CONV_CHANNELS * 39];
+        self.compute.conv1d_f32(
+            &conv0_depthwise,
+            1,
+            39,
+            &weights.conv0.pointwise,
+            CONV_CHANNELS,
+            1,
+            Some(&weights.conv0.bias),
+            1,
+            0,
+            &mut conv0,
+        )?;
+        conv0.iter_mut().for_each(|value| *value = value.max(0.0));
+
+        let mut pooled = vec![0.0f32; CONV_CHANNELS * 19];
+        for channel in 0..CONV_CHANNELS {
+            for output in 0..19 {
+                let start = channel * 39 + output * 2;
+                pooled[channel * 19 + output] =
+                    conv0[start].max(conv0[start + 1]).max(conv0[start + 2]);
+            }
+        }
+
+        let mut conv1_depthwise = vec![0.0f32; CONV_CHANNELS * 10];
+        self.compute.grouped_conv1d_f32(
+            &pooled,
+            CONV_CHANNELS,
+            19,
+            &weights.conv1.depthwise,
+            CONV_CHANNELS,
+            3,
+            None,
+            2,
+            1,
+            CONV_CHANNELS,
+            &mut conv1_depthwise,
+        )?;
+        let mut conv1 = vec![0.0f32; CONV_CHANNELS * 10];
+        self.compute.conv1d_f32(
+            &conv1_depthwise,
+            CONV_CHANNELS,
+            10,
+            &weights.conv1.pointwise,
+            CONV_CHANNELS,
+            1,
+            Some(&weights.conv1.bias),
+            1,
+            0,
+            &mut conv1,
+        )?;
+        conv1.iter_mut().for_each(|value| *value = value.max(0.0));
+
+        // The final upstream depthwise convolution uses right-only padding by
+        // one sample. Materialize that layout explicitly, then call the
+        // ordinary valid grouped kernel; symmetric padding would shift it.
+        let mut conv1_right_padded = vec![0.0f32; CONV_CHANNELS * 11];
+        for channel in 0..CONV_CHANNELS {
+            conv1_right_padded[channel * 11..channel * 11 + 10]
+                .copy_from_slice(&conv1[channel * 10..(channel + 1) * 10]);
+        }
+        let mut conv2_depthwise = vec![0.0f32; CONV_CHANNELS * 5];
+        self.compute.grouped_conv1d_f32(
+            &conv1_right_padded,
+            CONV_CHANNELS,
+            11,
+            &weights.conv2.depthwise,
+            CONV_CHANNELS,
+            3,
+            None,
+            2,
+            0,
+            CONV_CHANNELS,
+            &mut conv2_depthwise,
+        )?;
+        let mut conv2 = vec![0.0f32; CONV_CHANNELS * 5];
+        self.compute.conv1d_f32(
+            &conv2_depthwise,
+            CONV_CHANNELS,
+            5,
+            &weights.conv2.pointwise,
+            CONV_CHANNELS,
+            1,
+            Some(&weights.conv2.bias),
+            1,
+            0,
+            &mut conv2,
+        )?;
+        conv2.iter_mut().for_each(|value| *value = value.max(0.0));
+
+        let mut lstm_input = vec![0.0f32; LSTM0_INPUT];
+        for time in 0..5 {
+            for channel in 0..CONV_CHANNELS {
+                lstm_input[time * CONV_CHANNELS + channel] = conv2[channel * 5 + time];
+            }
+        }
+        Ok(lstm_input)
+    }
+
+    fn lstm_step(
+        &mut self,
+        input: &[f32],
+        weights: &LstmWeights,
+        hidden: &mut [f32],
+        cell: &mut [f32],
+    ) -> Result<Vec<f32>> {
+        let previous_hidden = hidden.to_vec();
+        let previous_cell = cell.to_vec();
+        let gate_dim = 4 * HIDDEN_DIM;
+        let mut combined_bias = vec![0.0f32; gate_dim];
+        for (row, bias) in combined_bias.iter_mut().enumerate() {
+            *bias = weights.bias[row] + weights.bias[gate_dim + row];
+        }
+        let mut gates = vec![0.0f32; gate_dim];
+        self.compute.gemv_f32(
+            gate_dim,
+            weights.input_size,
+            &weights.weight_ih,
+            input,
+            Some(&combined_bias),
+            &mut gates,
+        )?;
+        let mut recurrent = vec![0.0f32; gate_dim];
+        self.compute.gemv_f32(
+            gate_dim,
+            HIDDEN_DIM,
+            &weights.weight_hh,
+            &previous_hidden,
+            None,
+            &mut recurrent,
+        )?;
+        for (gate, recurrent) in gates.iter_mut().zip(recurrent) {
+            *gate += recurrent;
+        }
+        for unit in 0..HIDDEN_DIM {
+            let input_gate = ten_vad_sigmoid(gates[unit]);
+            let output_gate = ten_vad_sigmoid(gates[HIDDEN_DIM + unit]);
+            let forget_gate = ten_vad_sigmoid(gates[2 * HIDDEN_DIM + unit]);
+            let cell_gate = gates[3 * HIDDEN_DIM + unit].tanh();
+            cell[unit] = forget_gate * previous_cell[unit] + input_gate * cell_gate;
+            hidden[unit] = output_gate * cell[unit].tanh();
+        }
+        Ok(hidden.to_vec())
+    }
+
+    fn dense_head(
+        &mut self,
+        hidden1: &[f32],
+        hidden0: &[f32],
+        weights: &TenVadNetworkWeights,
+    ) -> Result<f32> {
+        let mut dense_input = Vec::with_capacity(HIDDEN_DIM * 2);
+        dense_input.extend_from_slice(hidden1);
+        dense_input.extend_from_slice(hidden0);
+        let mut dense = vec![0.0f32; 32];
+        self.compute.gemm_f32(
+            1,
+            32,
+            HIDDEN_DIM * 2,
+            &dense_input,
+            &weights.dense0_weight,
+            Some(&weights.dense0_bias),
+            &mut dense,
+        )?;
+        dense.iter_mut().for_each(|value| *value = value.max(0.0));
+        let bias = [weights.dense1_bias];
+        let mut logit = [0.0f32];
+        self.compute.gemm_f32(
+            1,
+            1,
+            32,
+            &dense,
+            &weights.dense1_weight,
+            Some(&bias),
+            &mut logit,
+        )?;
+        Ok(ten_vad_sigmoid(logit[0]))
+    }
+}
+
+#[inline]
+fn ten_vad_sigmoid(value: f32) -> f32 {
+    1.0 / (1.0 + (-value).exp())
+}
+
 impl VadEngine for TenVad {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send> {
         Box::new(TenVadStream {
@@ -307,6 +556,7 @@ impl VadEngine for TenVad {
             pending_pcm: Vec::new(),
             frontend: TenVadFrontend::new(),
             network_state: TenVadNetworkState::default(),
+            backend: self.backend,
         })
     }
 }
@@ -318,6 +568,7 @@ pub struct TenVadStream {
     pending_pcm: Vec<f32>,
     frontend: TenVadFrontend,
     network_state: TenVadNetworkState,
+    backend: BackendKind,
 }
 
 impl TenVadStream {
@@ -348,16 +599,25 @@ impl VadStreamHandle for TenVadStream {
             ));
         }
         self.pending_pcm.extend_from_slice(pcm);
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, TEN_VAD_HOT_OPS)?)
+        };
         let mut probabilities = Vec::new();
         let mut consumed = 0usize;
         while self.pending_pcm.len() - consumed >= self.config.hop_size {
             let frame = &self.pending_pcm[consumed..consumed + self.config.hop_size];
             let features = self.frontend.process_frame(frame)?;
-            probabilities.push(network_forward(
-                features,
-                &self.weights.network,
-                &mut self.network_state,
-            )?);
+            probabilities.push(match &compute {
+                None => network_forward(features, &self.weights.network, &mut self.network_state)?,
+                Some(compute) => network_forward_with_ops(
+                    features,
+                    &self.weights.network,
+                    &mut self.network_state,
+                    &mut ComputeTenVadOps { compute },
+                )?,
+            });
             consumed += self.config.hop_size;
         }
         if consumed > 0 {
@@ -482,6 +742,14 @@ mod tests {
     #[test]
     fn strict_binder_and_stream_are_chunk_invariant() {
         let model = TenVad::from_gguf(&zero_file()).unwrap();
+        assert_eq!(model.backend(), BackendKind::Cpu);
+        assert_eq!(
+            TenVad::from_gguf(&zero_file())
+                .unwrap()
+                .with_backend(BackendKind::Metal)
+                .backend(),
+            BackendKind::Metal
+        );
         assert_eq!(model.tensor_count(), TENSOR_COUNT);
         assert_eq!(
             model.weight_license(),

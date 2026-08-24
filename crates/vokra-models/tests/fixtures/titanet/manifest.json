@@ -1,0 +1,21 @@
+{
+  "checkpoint_sha256": "e838520693f269e7984f55bc8eb3c2d60ccf246bf4b896d4be9bcabe3e4b0fe3",
+  "compatibility_contract": "NeMo-1.10.0 exact_pad=false, reflect STFT, get_seq_len +1",
+  "embedding_shape": [
+    192
+  ],
+  "feature_shape": [
+    80,
+    52
+  ],
+  "format": "vokra-titanet-reference-v1",
+  "frames": 52,
+  "nemo_toolkit": "3.0.0",
+  "num_samples": 8173,
+  "oracle": "nemo.collections.asr.models.EncDecSpeakerLabelModel",
+  "sample_rate": 16000,
+  "source_revision": "082c5ae26168796d3ebac6adcf54bb8b5354daa1",
+  "torch": "2.13.0+cu130",
+  "upstream_hf": "nvidia/speakerverification_en_titanet_large",
+  "upstream_revision": "0dc382f40121a5fbd34db10a2bb04d826c2be6a8"
+}

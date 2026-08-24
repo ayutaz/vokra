@@ -1,0 +1,21 @@
+{
+  "checkpoint_sha256": "9872b375f2c6a3851ca471cbbf59e06efd23a627d78bf5872e1f0269fd298449",
+  "embedding_shape": [
+    1,
+    256
+  ],
+  "feature_shape": [
+    198,
+    80
+  ],
+  "format": "vokra-wespeaker-reference-v1",
+  "model_id": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
+  "model_revision": "f0c48c298fd835726c27956a5d617bad7115627e",
+  "numpy": "2.5.2",
+  "pcm_samples": 32000,
+  "python": "3.12.14",
+  "sample_rate": 16000,
+  "source_revision": "45941e7cba2c3ea99e232d02bedf617fc71b0dad",
+  "torch": "2.13.0+cu130",
+  "torchaudio": "2.11.0+cu130"
+}

@@ -2,7 +2,7 @@
 //! → GGUF conversion (Coverage-audit 2026-08-03 Wave A ticket).
 //!
 //! Input: the upstream Microsoft DNS-Challenge NR baseline —
-//! `NSNet2-baseline/nsnet2-20ms-baseline.onnx` (~2 MB). Because the upstream
+//! `NSNet2-baseline/nsnet2-20ms-baseline.onnx` (~10.8 MB). Because the upstream
 //! release is ONNX-only and Vokra's runtime never links ONNX / protobuf
 //! (FR-LD-05, NFR-DS-02), the offline sidecar
 //! `tools/parity/nsnet2_prepare_checkpoint.py` first bridges ONNX → safetensors;
@@ -14,8 +14,8 @@
 //!
 //! NSNet2 is a 20 ms-frame single-channel noise-suppression baseline (ICASSP
 //! 2020, `arXiv:2005.07551`): a 2-layer GRU + 3-Linear mask predictor operating
-//! over the 257-bin log-power spectrum of the 16 kHz input (STFT `n_fft=512`,
-//! hop 10 ms, 20 ms Hann window). Its role in the Vokra catalogue is the
+//! over the 161-bin log-power spectrum of the 16 kHz input (STFT `n_fft=320`,
+//! hop 10 ms, 20 ms square-root Hann window). Its role in the Vokra catalogue is the
 //! quantization-CI / industry-baseline reference for the `denoise` op family;
 //! it is deliberately **weaker** than DeepFilterNet3 (M4-20 T17) but
 //! architecturally distinct enough that silently sharing the `denoise` arch tag
@@ -29,27 +29,21 @@
 //! license class — same commercial verdict as apache-2.0 (no runtime-side
 //! attribution obligation).
 //!
-//! # BF16 posture
+//! # Dtype posture
 //!
-//! Every F32 / F16 / BF16 tensor passes through **verbatim** as the matching
-//! GGUF type (BF16 emits type 30 = `GgmlType::BF16`, no convert-time widening
-//! — the runtime widens BF16 → f32 losslessly at load via the single choke
-//! point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`). Mirror of
-//! `emotion2vec` / `ecapa_tdnn` / `qwen3_tts` / `vibevoice` / `voxcpm2` /
-//! `moshi` / `voxtral` — the landed sibling posture. NSNet2 itself ships F32
-//! (the ONNX release stores every initializer as `FLOAT`), but the pass-through
-//! arm keeps the door open for any downstream half-precision variant without a
-//! new converter arm.
+//! The pinned official ONNX stores all 14 initializers as F32. This converter
+//! accepts that exact dtype and manifest only. A half-precision or otherwise
+//! altered checkpoint is a different artifact and is rejected until it has its
+//! own independently verified conversion contract.
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream initializer names verbatim** as the
-//! prep script exports them (e.g. `fc1.weight` / `gru_1.W` / `mask.bias`) —
-//! the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM / VibeVoice
-//! / emotion2vec contract. Real-weight parity binding is a follow-up wave
-//! gated on the upstream tensor-name manifest fetch + license §3.1 sign-off
-//! (`docs/license-audit.md`); this converter passes every float tensor through
-//! unchanged so a future `Nsnet2Weights::from_gguf` can walk the same names.
+//! The official ONNX graph uses numeric initializer ids for every matrix and
+//! PyTorch module names only for biases. This converter accepts the exact
+//! 14-initializer manifest, renames it to the runtime's stable semantic names,
+//! removes ONNX's singleton direction axes, and transposes MatMul weights from
+//! `[in, out]` to runtime `[out, in]`. Missing, extra, retyped or reshaped
+//! tensors are hard errors.
 //!
 //! # No ONNX (permanent)
 //!
@@ -76,7 +70,7 @@ use crate::safetensors::SafetensorsFile;
 /// (in particular from `denoise` = DeepFilterNet3, which is a completely
 /// different topology — DFN3 uses an ERB analysis / synthesis pair around a
 /// convolutional recurrent network, whereas NSNet2 is a 2-layer GRU + 3-Linear
-/// mask over 257-bin STFT log-magnitude). Silently sharing an arch tag would
+/// mask over 161-bin STFT log-power). Silently sharing an arch tag would
 /// misroute the runtime dispatch.
 pub const ARCH: &str = "nsnet2";
 
@@ -95,7 +89,7 @@ pub const CATEGORY: &str = "enhancement";
 /// from. NSNet2 is not hosted on HuggingFace (the upstream is Microsoft's
 /// public DNS Challenge repository), so this uses `upstream_url` rather than
 /// `upstream_hf`; the model-card generator picks up either.
-pub const UPSTREAM_URL: &str = "github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline";
+pub const UPSTREAM_URL: &str = "github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline";
 
 /// Canonical weight license SPDX (`mit`). Overrides via the
 /// [`convert_nsnet2_file`] `license` parameter — the standing mechanism for
@@ -126,7 +120,7 @@ const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
 // them makes the runtime binder refuse to load (FR-EX-08 — no silent
 // default).
 
-/// GGUF metadata key: STFT bin count (u32; upstream = 257 = `n_fft/2 + 1`).
+/// GGUF metadata key: STFT bin count (u32; upstream = 161 = `n_fft/2 + 1`).
 pub const KEY_N_BINS: &str = "vokra.nsnet2.n_bins";
 /// GGUF metadata key: GRU / fc_in hidden width (u32; upstream = 400).
 pub const KEY_HIDDEN_DIM: &str = "vokra.nsnet2.hidden_dim";
@@ -134,7 +128,7 @@ pub const KEY_HIDDEN_DIM: &str = "vokra.nsnet2.hidden_dim";
 pub const KEY_FC1_DIM: &str = "vokra.nsnet2.fc1_dim";
 /// GGUF metadata key: `fc_2` output width (u32; upstream = 600).
 pub const KEY_FC2_DIM: &str = "vokra.nsnet2.fc2_dim";
-/// GGUF metadata key: STFT FFT length (u32; upstream = 512).
+/// GGUF metadata key: STFT FFT length (u32; upstream = 320).
 pub const KEY_N_FFT: &str = "vokra.nsnet2.n_fft";
 /// GGUF metadata key: STFT hop (u32 samples; upstream = 160 = 10 ms @ 16 kHz).
 pub const KEY_HOP: &str = "vokra.nsnet2.hop";
@@ -145,8 +139,8 @@ pub const KEY_WIN_LENGTH: &str = "vokra.nsnet2.win_length";
 /// GGUF metadata key: PCM sample rate (u32 Hz; upstream = 16 000).
 pub const KEY_SAMPLE_RATE: &str = "vokra.nsnet2.sample_rate";
 
-/// Upstream STFT bin count (`n_fft/2 + 1` for `n_fft = 512`).
-pub const DEFAULT_N_BINS: u32 = 257;
+/// Upstream STFT bin count (`n_fft/2 + 1` for `n_fft = 320`).
+pub const DEFAULT_N_BINS: u32 = 161;
 /// Upstream GRU / fc_in hidden width.
 pub const DEFAULT_HIDDEN_DIM: u32 = 400;
 /// Upstream `fc_1` output width.
@@ -154,7 +148,7 @@ pub const DEFAULT_FC1_DIM: u32 = 600;
 /// Upstream `fc_2` output width.
 pub const DEFAULT_FC2_DIM: u32 = 600;
 /// Upstream FFT length (samples).
-pub const DEFAULT_N_FFT: u32 = 512;
+pub const DEFAULT_N_FFT: u32 = 320;
 /// Upstream STFT hop (samples).
 pub const DEFAULT_HOP: u32 = 160;
 /// Upstream STFT window length (samples).
@@ -162,38 +156,145 @@ pub const DEFAULT_WIN_LENGTH: u32 = 320;
 /// Upstream PCM sample rate (Hz).
 pub const DEFAULT_SAMPLE_RATE: u32 = 16_000;
 
+#[derive(Debug, Clone, Copy)]
+struct TensorMap {
+    source: &'static str,
+    target: &'static str,
+    source_shape: &'static [u64],
+    target_shape: &'static [u64],
+    transpose_2d: bool,
+}
+
+/// Exact initializer walk of Microsoft's pinned
+/// `nsnet2-20ms-baseline.onnx` (commit `8b87a33b…`). Numeric names are ONNX
+/// graph ids; semantic target names are the stable native runtime contract.
+const TENSOR_MAP: &[TensorMap] = &[
+    TensorMap {
+        source: "172",
+        target: "fc_in.weight",
+        source_shape: &[161, 400],
+        target_shape: &[400, 161],
+        transpose_2d: true,
+    },
+    TensorMap {
+        source: "fc_in.0.bias",
+        target: "fc_in.bias",
+        source_shape: &[400],
+        target_shape: &[400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "192",
+        target: "gru_1.W",
+        source_shape: &[1, 1200, 400],
+        target_shape: &[1200, 400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "193",
+        target: "gru_1.R",
+        source_shape: &[1, 1200, 400],
+        target_shape: &[1200, 400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "194",
+        target: "gru_1.B",
+        source_shape: &[1, 2400],
+        target_shape: &[2400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "212",
+        target: "gru_2.W",
+        source_shape: &[1, 1200, 400],
+        target_shape: &[1200, 400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "213",
+        target: "gru_2.R",
+        source_shape: &[1, 1200, 400],
+        target_shape: &[1200, 400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "214",
+        target: "gru_2.B",
+        source_shape: &[1, 2400],
+        target_shape: &[2400],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "215",
+        target: "fc_1.weight",
+        source_shape: &[400, 600],
+        target_shape: &[600, 400],
+        transpose_2d: true,
+    },
+    TensorMap {
+        source: "fc_out.0.bias",
+        target: "fc_1.bias",
+        source_shape: &[600],
+        target_shape: &[600],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "216",
+        target: "fc_2.weight",
+        source_shape: &[600, 600],
+        target_shape: &[600, 600],
+        transpose_2d: true,
+    },
+    TensorMap {
+        source: "fc_out.2.bias",
+        target: "fc_2.bias",
+        source_shape: &[600],
+        target_shape: &[600],
+        transpose_2d: false,
+    },
+    TensorMap {
+        source: "217",
+        target: "mask.weight",
+        source_shape: &[600, 161],
+        target_shape: &[161, 600],
+        transpose_2d: true,
+    },
+    TensorMap {
+        source: "fc_out.4.bias",
+        target: "mask.bias",
+        source_shape: &[161],
+        target_shape: &[161],
+        transpose_2d: false,
+    },
+];
+
 /// Outcome of an NSNet2 conversion.
 ///
-/// All counters are additive and default to zero — a zero-tensor checkpoint
-/// returns `Nsnet2Report::default()` and the caller remains responsible for
-/// surfacing the "no float tensors" loud note (mirror of the
-/// `emotion2vec` / `ecapa_tdnn` `Report` pattern).
+/// The official checkpoint contains exactly 14 F32 initializers. The legacy
+/// counters remain in the shared conversion-report shape, but strict manifest
+/// validation means a successful conversion always has `read == written == 14`
+/// and both skip counters are zero.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Nsnet2Report {
     /// Total tensors surfaced by the safetensors reader (the sum of
     /// `written + skipped_non_float`). Pins the budget so a truncated header
     /// cannot silently drop tensors without the caller noticing.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16 all go through the
-    /// same byte-copy path since the BF16 pass-through landed 2026-07-25).
+    /// Official F32 tensors renamed and written to the runtime schema.
     pub written: usize,
-    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
-    /// safetensors reader rejects unknown dtypes at parse time; anything
-    /// that reaches this arm is a quantized dtype the runtime is not
-    /// expected to consume).
+    /// Always zero after a successful strict-manifest conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset counter).
-    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
-    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16`.
+    /// Always zero: the official manifest is F32-only.
     pub bf16_passthrough: usize,
 }
 
 /// Reads a safetensors checkpoint at `input` and writes an NSNet2 GGUF to
 /// `output`.
 ///
-/// Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
-/// name; the `vokra.model.*` (arch / name / category) and
+/// The exact official 14-initializer manifest is renamed, singleton GRU
+/// direction axes are removed, and MatMul weights are transposed into the
+/// native row-major runtime layout. The `vokra.model.*` (arch / name / category) and
 /// `vokra.provenance.*` (weight_license / license / model_id / source /
 /// upstream_url) chunk groups are stamped for the runtime compliance gate
 /// (FR-CP-03). `vokra.schema.*` is written unconditionally by the GGUF
@@ -213,8 +314,8 @@ pub fn convert_nsnet2_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<Nsnet2Report, ConvertError> {
-    // Whole-file read: NSNet2 ships as a ~2 MB ONNX which the prep script
-    // flattens into a similarly tiny safetensors — no need for the
+    // Whole-file read: NSNet2 ships as a ~10.8 MB ONNX which the prep script
+    // flattens into a similarly small safetensors — no need for the
     // streaming path the Moshi 15 GB / Voxtral 8.7 GB converters run.
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let st = SafetensorsFile::parse(bytes)?;
@@ -237,7 +338,9 @@ pub fn convert_nsnet2_file(
         effective_class,
         effective_license,
         Some(NAME),
-        Some("Microsoft DNS-Challenge NSNet2-baseline (MIT end-to-end)"),
+        Some(
+            "Microsoft DNS-Challenge NSNet2-baseline commit 8b87a33b2892f147b5c7ad39ea978453730db269 (MIT end-to-end)",
+        ),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
 
@@ -257,32 +360,65 @@ pub fn convert_nsnet2_file(
     b.add_u32(KEY_WIN_LENGTH, DEFAULT_WIN_LENGTH);
     b.add_u32(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
 
-    let mut report = Nsnet2Report::default();
-    // Float tensors pass through **verbatim** — no convert-time widening.
-    // BF16 stays GGUF `BF16` (type 30) per the accepted ADR
-    // (`docs/adr/qwen3-tts-bf16.md`, strategy A_passthrough); the runtime
-    // widens BF16 → f32 exactly at load via the single choke point
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
-    // `emotion2vec::convert_emotion2vec_file` / `ecapa_tdnn::convert_ecapa_tdnn_file`.
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+    if st.tensors().len() != TENSOR_MAP.len() {
+        return Err(ConvertError::Parse(format!(
+            "nsnet2: official initializer manifest has {} tensors, input has {}",
+            TENSOR_MAP.len(),
+            st.tensors().len(),
+        )));
+    }
+    for tensor in st.tensors() {
+        if !TENSOR_MAP
+            .iter()
+            .any(|mapping| mapping.source == tensor.name)
+        {
+            return Err(ConvertError::Parse(format!(
+                "nsnet2: unexpected initializer `{}`; refusing a different topology",
+                tensor.name,
+            )));
         }
+    }
+
+    let mut report = Nsnet2Report {
+        read: st.tensors().len(),
+        ..Nsnet2Report::default()
+    };
+    for mapping in TENSOR_MAP {
+        let tensor = st.tensor_info(mapping.source).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "nsnet2: missing official initializer `{}`",
+                mapping.source,
+            ))
+        })?;
+        if tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "nsnet2: initializer `{}` has dtype {:?}, expected F32",
+                mapping.source, tensor.dtype,
+            )));
+        }
+        if tensor.shape.as_slice() != mapping.source_shape {
+            return Err(ConvertError::Parse(format!(
+                "nsnet2: initializer `{}` has shape {:?}, expected {:?}",
+                mapping.source, tensor.shape, mapping.source_shape,
+            )));
+        }
+        let source = st.tensor_bytes(tensor);
+        let payload = if mapping.transpose_2d {
+            transpose_f32_bytes(
+                source,
+                mapping.source_shape[0] as usize,
+                mapping.source_shape[1] as usize,
+            )?
+        } else {
+            source.to_vec()
+        };
+        b.add_tensor(
+            mapping.target,
+            GgmlType::F32,
+            mapping.target_shape.to_vec(),
+            payload,
+        )?;
+        report.written += 1;
     }
 
     let out_bytes = b
@@ -290,6 +426,28 @@ pub fn convert_nsnet2_file(
         .map_err(|e| ConvertError::Parse(e.to_string()))?;
     std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
     Ok(report)
+}
+
+fn transpose_f32_bytes(bytes: &[u8], rows: usize, cols: usize) -> Result<Vec<u8>, ConvertError> {
+    let expected = rows
+        .checked_mul(cols)
+        .and_then(|elements| elements.checked_mul(4))
+        .ok_or_else(|| ConvertError::Parse("nsnet2: matrix byte length overflow".to_owned()))?;
+    if bytes.len() != expected {
+        return Err(ConvertError::Parse(format!(
+            "nsnet2: matrix payload has {} bytes, expected {expected}",
+            bytes.len(),
+        )));
+    }
+    let mut output = vec![0u8; bytes.len()];
+    for row in 0..rows {
+        for col in 0..cols {
+            let source = (row * cols + col) * 4;
+            let target = (col * rows + row) * 4;
+            output[target..target + 4].copy_from_slice(&bytes[source..source + 4]);
+        }
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -315,35 +473,59 @@ mod tests {
         p
     }
 
-    /// Builds a synthetic safetensors buffer carrying a single F32 tensor
-    /// shaped like NSNet2's first GRU input-weight matrix
-    /// (`3*hidden_dim x n_bins = 3*257 x 257 = 771 x 257`, F32) — small
-    /// enough to keep the buffer under 1 MB but non-trivial so a
-    /// silent-widen bug would surface as a byte diff.
+    /// Builds the exact official 14-initializer manifest with synthetic F32
+    /// payloads. Only `172` (`fc_in.weight`) carries non-zero sentinels; all
+    /// other tensors are zero-filled.
     fn synthetic_f32_safetensors() -> (Vec<u8>, Vec<u8>) {
-        // 6 non-zero F32 values reused as a 2x3 shape (so the assertions can
-        // pin an exact 24-byte payload). NSNet2's real tensors are larger
-        // but the pass-through semantics do not depend on shape; the
-        // fixture keeps the CI cache footprint minimal.
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(payload.len(), 24, "6 elements x 4 bytes F32 payload");
-        // Upstream NSNet2 initializer names are unqualified (`fc1.weight`,
-        // `gru_1.W`, `mask.bias` — no module-prefix tree). The fixture uses
-        // the recurrent-input `gru_1.W` shape as a representative anchor.
-        let header = r#"{"gru_1.W":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+        let mut entries = Vec::with_capacity(TENSOR_MAP.len());
+        let mut payload = Vec::new();
+        let mut expected_fc_in = Vec::new();
+        for mapping in TENSOR_MAP {
+            let start = payload.len();
+            let elements = mapping
+                .source_shape
+                .iter()
+                .try_fold(1usize, |acc, &dim| acc.checked_mul(dim as usize))
+                .expect("synthetic tensor element count");
+            let mut tensor = vec![0u8; elements * 4];
+            if mapping.source == "172" {
+                for (row, col, value) in [
+                    (0usize, 0usize, 1.0f32),
+                    (0, 399, -2.5),
+                    (7, 23, 0.15625),
+                    (160, 0, 3.5),
+                    (160, 399, 42.0),
+                ] {
+                    let offset = (row * 400 + col) * 4;
+                    tensor[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                expected_fc_in = transpose_f32_bytes(&tensor, 161, 400).unwrap();
+            }
+            payload.extend_from_slice(&tensor);
+            let shape = mapping
+                .source_shape
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            entries.push(format!(
+                "\"{}\":{{\"dtype\":\"F32\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+                mapping.source,
+                shape,
+                start,
+                payload.len(),
+            ));
+        }
+        let header = format!("{{{}}}", entries.join(","));
         let mut buf = Vec::new();
         buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
         buf.extend_from_slice(header.as_bytes());
         buf.extend_from_slice(&payload);
-        (buf, payload)
+        (buf, expected_fc_in)
     }
 
-    /// Builds a synthetic safetensors buffer carrying one BF16 tensor
-    /// (`shape=[2,3]`) so the pass-through arm and the BF16 subset counter
-    /// are exercised even though upstream NSNet2 ships F32 today. Any
-    /// future half-precision distillation would land on this arm without a
-    /// converter change.
+    /// Builds an intentionally invalid one-tensor BF16 checkpoint. The strict
+    /// official-manifest converter must reject it before emitting a GGUF.
     fn synthetic_bf16_safetensors() -> (Vec<u8>, Vec<u8>) {
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
         let bf16: Vec<u8> = values
@@ -359,11 +541,11 @@ mod tests {
         (buf, bf16)
     }
 
-    /// Baseline pass-through pin: an F32 tensor round-trips through the
-    /// file-based converter with its dtype preserved and bytes intact, and
-    /// the provenance / category / schema chunks land on the artifact.
+    /// Exact-manifest pin: official numeric initializer names are converted
+    /// to semantic runtime names, MatMul layout is transposed, and provenance
+    /// / topology chunks land on the artifact.
     #[test]
-    fn f32_tensor_passes_through_verbatim() {
+    fn official_manifest_converts_to_runtime_schema() {
         let (input_bytes, payload) = synthetic_f32_safetensors();
         let input = scratch_path("f32-in");
         let output = scratch_path("f32-out");
@@ -371,8 +553,8 @@ mod tests {
 
         let report = convert_nsnet2_file(&input, &output, None).expect("convert");
 
-        assert_eq!(report.read, 1, "one tensor visible in header");
-        assert_eq!(report.written, 1, "F32 must reach the pass-through arm");
+        assert_eq!(report.read, 14, "official initializer count");
+        assert_eq!(report.written, 14, "every official tensor is written");
         assert_eq!(
             report.skipped_non_float, 0,
             "F32 must not land in the skipped counter"
@@ -385,14 +567,14 @@ mod tests {
         let out_bytes = std::fs::read(&output).expect("read gguf output");
         let file = GgufFile::parse(out_bytes).expect("parse gguf");
         let info = file
-            .tensor_info("gru_1.W")
-            .expect("F32 tensor present after pass-through");
+            .tensor_info("fc_in.weight")
+            .expect("numeric initializer 172 renamed to fc_in.weight");
         assert_eq!(info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(info.dimensions, vec![2, 3]);
+        assert_eq!(info.dimensions, vec![400, 161]);
         assert_eq!(
             file.tensor_bytes(info),
             payload.as_slice(),
-            "F32 payload must be byte-identical to input"
+            "[161,400] MatMul matrix must be transposed to [400,161]"
         );
 
         // Provenance + category chunks pinned on the artifact itself.
@@ -459,49 +641,19 @@ mod tests {
         std::fs::remove_file(&output).ok();
     }
 
-    /// BF16 pass-through pin: even though upstream NSNet2 is F32, any
-    /// future half-precision distillation must ride the same arm without a
-    /// converter change. The dtype must stay BF16 (GGUF type 30) and the
-    /// payload must be byte-identical (a silent widen would still round-trip
-    /// values but would break the byte pin).
+    /// A one-tensor or retyped checkpoint is not the official topology and
+    /// must be rejected before an unusable GGUF is emitted.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synthetic_bf16_safetensors();
+    fn non_official_manifest_is_rejected() {
+        let (input_bytes, _bf16_payload) = synthetic_bf16_safetensors();
         let input = scratch_path("bf16-in");
         let output = scratch_path("bf16-out");
         std::fs::write(&input, &input_bytes).expect("write safetensors input");
 
-        let report = convert_nsnet2_file(&input, &output, None).expect("convert");
-
-        assert_eq!(report.read, 1, "one tensor visible in header");
-        assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of ecapa_tdnn)"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let info = file
-            .tensor_info("gru_2.W")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input"
+        let err = convert_nsnet2_file(&input, &output, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("official initializer manifest"),
+            "strict manifest error must explain the rejection: {err}"
         );
 
         std::fs::remove_file(&input).ok();

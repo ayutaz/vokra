@@ -1,8 +1,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! **ConvTasNet Libri1Mix Enhancement** (Asteroid,
-//! `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, **cc-by-sa-4.0**):
-//! safetensors → GGUF conversion (2026-08-02 Wave residual — first
-//! Copyleft-tier separator entry).
+//! `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, **license unresolved**):
+//! safetensors → GGUF conversion.
 //!
 //! ConvTasNet (Luo & Mesgarani 2019, arXiv:1809.07454) — fully
 //! convolutional TasNet variant, encoder + temporal-convolutional
@@ -19,32 +18,28 @@
 //! dilated TCN is topologically distinct from both — FR-EX-08 forbids
 //! silent shape misroute across separator families. `category =
 //! "enhancement"` (single-output enhancement head, mirrors the
-//! SepFormer WHAM / WHAMR / DNS-4 enhancement variants; the
+//! SepFormer WHAM / DNS-4 enhancement and WHAMR separation variants; the
 //! multi-speaker separation ConvTasNet variants would carry
 //! `category = "separation"` when they land in a follow-up).
 //!
-//! # License posture — CC-BY-SA-4.0 (**Copyleft**)
+//! # License posture — conflicting declarations (**fail closed**)
 //!
-//! Weight license = **cc-by-sa-4.0** per HF `JorisCos/
-//! ConvTasNet_Libri1Mix_enhsingle_16k` cardData `license: cc-by-sa-4.0`.
-//! First entry on the [`LicenseClass::Copyleft`] arm — the SA cascade
-//! propagates to derivatives (a GGUF built from a CC-BY-SA weight is
-//! itself CC-BY-SA), so downstream re-labelling as Apache-2.0 is a
-//! misrepresentation, not a mere attribution drop. Publish is
-//! redistributable **with the original licence preserved** — the
-//! `publish-one.sh` gate must ship the upstream LICENSE + NOTICE
-//! verbatim (T3 tier — Copyleft distribution). No `--allow-noncommercial`
-//! is required (Copyleft ≠ NonCommercial), but the SA cascade must be
-//! carried forward.
+//! At upstream revision `bb8a876bc157b5cf3c405994accb798c49146016`, HF
+//! cardData says CC-BY-SA-4.0, the model-card weight notice says
+//! CC-BY-SA-3.0, and the card identifies WHAM-derived training material as
+//! CC-BY-NC-4.0 (Research only).  The converter therefore defaults to
+//! [`LicenseClass::Unknown`] and SPDX `unknown`; publication stays blocked
+//! until an owner/legal review resolves the conflict.  `--license` remains
+//! available only for callers who independently hold this exact checkpoint
+//! under terms they can substantiate.
 //!
 //! # Upstream format — pytorch_model.bin (owner prep)
 //!
-//! Asteroid ships a single ~20 MB `pytorch_model.bin` checkpoint
-//! (raw `torch.save` of the ConvTasNet `nn.Module` state dict), NOT a
-//! native safetensors file. Owners run the standard
-//! `bin_to_safetensors.py` prep step before pointing this converter at
-//! the resulting `.safetensors` (same workflow as the SepFormer
-//! `.ckpt` families). This converter deliberately never reads
+//! Asteroid ships a single ~20 MB `pytorch_model.bin` checkpoint whose
+//! seven-field wrapper is not a bare state dict. Owners run the dedicated
+//! `tools/parity/conv_tasnet_prepare_checkpoint.py` safe extraction before
+//! pointing this converter at the resulting `.safetensors`. This converter
+//! deliberately never reads
 //! `pytorch_model.bin` directly — pickle deserialization inside the
 //! Rust runtime would violate the FR-LD-05 "no arbitrary code
 //! execution at load" rule.
@@ -61,10 +56,9 @@
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream state-dict keys verbatim**.
-//! Real-weight parity + a native `ConvTasNet::from_gguf` forward path
-//! are deferred to owner sign-off (`docs/license-audit.md` §3.1) —
-//! this converter provides the byte-parallel GGUF surface only.
+//! GGUF tensor names are the **upstream state-dict keys verbatim**. The exact
+//! 345-tensor manifest and every shape are checked before any output is
+//! written; a sibling or incomplete checkpoint fails closed.
 //!
 //! # No ONNX (permanent)
 //!
@@ -106,13 +100,14 @@ pub const CATEGORY: &str = "enhancement";
 /// `vokra.provenance.upstream_hf`.
 pub const UPSTREAM_HF: &str = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k";
 
-/// Default weight license SPDX id per HF cardData primary source.
-pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-sa-4.0";
+/// Fail-closed default because the upstream model card conflicts with itself.
+pub const DEFAULT_LICENSE_SPDX: &str = "unknown";
 
-const UPSTREAM_SOURCE: &str = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k (Asteroid ConvTasNet single-speaker enhancement, Libri1Mix 16 kHz, cc-by-sa-4.0)";
+const UPSTREAM_SOURCE: &str = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k@bb8a876bc157b5cf3c405994accb798c49146016 (license conflict: cardData CC-BY-SA-4.0; card notice CC-BY-SA-3.0; WHAM-derived data CC-BY-NC-4.0 Research only)";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 const KEY_N_FILTERS: &str = "vokra.conv_tasnet.n_filters";
 const KEY_N_KERNEL: &str = "vokra.conv_tasnet.n_kernel";
 const KEY_STRIDE: &str = "vokra.conv_tasnet.stride";
@@ -127,8 +122,8 @@ const KEY_N_SRC: &str = "vokra.conv_tasnet.n_src";
 const KEY_CAUSAL: &str = "vokra.conv_tasnet.causal";
 
 const N_FILTERS: u32 = 512;
-const N_KERNEL: u32 = 16;
-const STRIDE: u32 = 8;
+const N_KERNEL: u32 = 32;
+const STRIDE: u32 = 16;
 const N_BLOCKS: u32 = 8;
 const N_REPEATS: u32 = 3;
 const BN_CHAN: u32 = 128;
@@ -138,6 +133,76 @@ const CONV_KERNEL_SIZE: u32 = 3;
 const SAMPLE_RATE: u32 = 16_000;
 const N_SRC: u32 = 1;
 const CAUSAL: u32 = 0;
+const UPSTREAM_REVISION: &str = "bb8a876bc157b5cf3c405994accb798c49146016";
+const TENSOR_COUNT: usize = 345;
+
+fn expected_shapes() -> Vec<(String, Vec<u64>)> {
+    let mut shapes = vec![
+        ("encoder.filterbank._filters".to_owned(), vec![512, 1, 32]),
+        ("masker.bottleneck.0.gamma".to_owned(), vec![512]),
+        ("masker.bottleneck.0.beta".to_owned(), vec![512]),
+        ("masker.bottleneck.1.weight".to_owned(), vec![128, 512, 1]),
+        ("masker.bottleneck.1.bias".to_owned(), vec![128]),
+    ];
+    for block in 0..24 {
+        let prefix = format!("masker.TCN.{block}");
+        for (suffix, shape) in [
+            ("shared_block.0.weight", vec![512, 128, 1]),
+            ("shared_block.0.bias", vec![512]),
+            ("shared_block.1.weight", vec![1]),
+            ("shared_block.2.gamma", vec![512]),
+            ("shared_block.2.beta", vec![512]),
+            ("shared_block.3.weight", vec![512, 1, 3]),
+            ("shared_block.3.bias", vec![512]),
+            ("shared_block.4.weight", vec![1]),
+            ("shared_block.5.gamma", vec![512]),
+            ("shared_block.5.beta", vec![512]),
+            ("res_conv.weight", vec![128, 512, 1]),
+            ("res_conv.bias", vec![128]),
+            ("skip_conv.weight", vec![128, 512, 1]),
+            ("skip_conv.bias", vec![128]),
+        ] {
+            shapes.push((format!("{prefix}.{suffix}"), shape));
+        }
+    }
+    shapes.extend([
+        ("masker.mask_net.0.weight".to_owned(), vec![1]),
+        ("masker.mask_net.1.weight".to_owned(), vec![512, 128, 1]),
+        ("masker.mask_net.1.bias".to_owned(), vec![512]),
+        ("decoder.filterbank._filters".to_owned(), vec![512, 1, 32]),
+    ]);
+    debug_assert_eq!(shapes.len(), TENSOR_COUNT);
+    shapes
+}
+
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "conv_tasnet: checkpoint has {} tensors, expected exactly {TENSOR_COUNT}",
+            st.tensors().len()
+        )));
+    }
+    for (name, shape) in expected_shapes() {
+        let tensor = st
+            .tensors()
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .ok_or_else(|| ConvertError::Parse(format!("conv_tasnet: missing tensor `{name}`")))?;
+        if tensor.shape != shape {
+            return Err(ConvertError::Parse(format!(
+                "conv_tasnet: tensor `{name}` has shape {:?}, expected {shape:?}",
+                tensor.shape
+            )));
+        }
+        if !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+            return Err(ConvertError::Parse(format!(
+                "conv_tasnet: tensor `{name}` has non-floating dtype {:?}",
+                tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
 
 fn stamp_topology(builder: &mut GgufBuilder) {
     for (key, value) in [
@@ -173,20 +238,21 @@ pub fn convert_conv_tasnet_libri1mix_file(
 ) -> Result<ConvTasnetLibri1mixReport, ConvertError> {
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    validate_manifest(&st)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
     stamp_topology(&mut b);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
 
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        // Default: cc-by-sa-4.0 → Copyleft (SA cascade). `from_license_str`
-        // agrees; we hard-wire the pair here so a future accidental drop of
-        // the `-sa` token in the default SPDX string cannot silently downgrade
-        // the classification to AttributionRequired.
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Copyleft),
+        // The upstream declarations conflict.  Never guess the least
+        // restrictive term: `Unknown` makes both load/publication policy fail
+        // closed until the caller supplies a separately established licence.
+        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Unknown),
     };
     vokra_core::stamp_provenance(&mut b, class, &spdx, Some(NAME), Some(UPSTREAM_SOURCE));
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
@@ -208,9 +274,7 @@ pub fn convert_conv_tasnet_libri1mix_file(
                     report.bf16_passthrough += 1;
                 }
             }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+            _ => unreachable!("validate_manifest rejects non-floating Conv-TasNet tensors"),
         }
     }
 
@@ -239,42 +303,54 @@ mod tests {
         p
     }
 
-    fn safetensors_one(name: &str, dtype: &str, shape: &[u64], payload: &[u8]) -> Vec<u8> {
-        let shape_str = shape
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let header = format!(
-            r#"{{"{name}":{{"dtype":"{dtype}","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
-            payload.len()
-        );
+    fn safetensors_checkpoint(override_name: &str, override_dtype: &str) -> Vec<u8> {
+        let mut offset = 0usize;
+        let mut payload = Vec::new();
+        let mut entries = Vec::new();
+        for (name, shape) in expected_shapes() {
+            let dtype = if name == override_name {
+                override_dtype
+            } else {
+                "F16"
+            };
+            let element_bytes = match dtype {
+                "F32" => 4,
+                "F16" | "BF16" => 2,
+                other => panic!("unsupported test dtype {other}"),
+            };
+            let bytes = shape.iter().product::<u64>() as usize * element_bytes;
+            let end = offset + bytes;
+            let shape = shape
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            entries.push(format!(
+                r#""{name}":{{"dtype":"{dtype}","shape":[{shape}],"data_offsets":[{offset},{end}]}}"#
+            ));
+            payload.resize(payload.len() + bytes, 0);
+            offset = end;
+        }
+        let header = format!("{{{}}}", entries.join(","));
         let mut out = Vec::new();
         out.extend_from_slice(&(header.len() as u64).to_le_bytes());
         out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(payload);
+        out.extend_from_slice(&payload);
         out
     }
 
-    /// F32 pass-through + provenance stamps + Copyleft default: the
-    /// artifact must carry the CC-BY-SA SA cascade on the weight
-    /// license (dropping the SA token would silently downgrade
-    /// derivatives to AttributionRequired = a misrepresentation).
+    /// F32 pass-through + provenance stamps + fail-closed default.
     #[test]
-    fn f32_pass_through_and_default_license_is_copyleft() {
+    fn f32_pass_through_and_default_license_is_unknown() {
         let inp = tmp_path("f32-in");
         let outp = tmp_path("f32-out");
         // Use an upstream state-dict-like name so the naming contract
         // is exercised (verbatim key pass-through).
-        let payload: Vec<u8> = [1.0_f32, -2.0, 0.5, 0.25]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect();
-        let st = safetensors_one("masker.TCN.0.weight", "F32", &[2, 2], &payload);
+        let st = safetensors_checkpoint("masker.TCN.0.shared_block.0.weight", "F32");
         std::fs::write(&inp, &st).unwrap();
         let r = convert_conv_tasnet_libri1mix_file(&inp, &outp, None).unwrap();
-        assert_eq!(r.read, 1);
-        assert_eq!(r.written, 1);
+        assert_eq!(r.read, TENSOR_COUNT);
+        assert_eq!(r.written, TENSOR_COUNT);
         assert_eq!(r.bf16_passthrough, 0);
         assert_eq!(r.skipped_non_float, 0);
 
@@ -313,22 +389,17 @@ mod tests {
             read_str(chunks::KEY_PROVENANCE_LICENSE),
             DEFAULT_LICENSE_SPDX
         );
-        // The load-bearing pin: default class MUST be Copyleft (SA
-        // cascade), NOT AttributionRequired. Silent downgrade to
-        // AttributionRequired would strip the SA obligation from
-        // derivatives — publishing a derived GGUF under Apache-2.0
-        // would then be a misrepresentation. `from_license_str` has
-        // the same guarantee (share-alike is tested before plain
-        // cc-by), but pinning it explicitly on the class stamp is
-        // defence in depth.
         assert_eq!(
             read_str(chunks::KEY_PROVENANCE_WEIGHT_LICENSE),
-            LicenseClass::Copyleft.as_str(),
-            "default weight_license class must be Copyleft (SA cascade)"
+            LicenseClass::Unknown.as_str(),
+            "conflicting upstream declarations must default fail-closed"
         );
         // Cross-check: the upstream tensor name is preserved
         // verbatim in the GGUF (naming contract).
-        assert!(g.tensor_info("masker.TCN.0.weight").is_some());
+        assert!(
+            g.tensor_info("masker.TCN.0.shared_block.0.weight")
+                .is_some()
+        );
         let _ = std::fs::remove_file(&inp);
         let _ = std::fs::remove_file(&outp);
     }
@@ -340,37 +411,32 @@ mod tests {
     fn bf16_tensor_passes_through_verbatim() {
         let inp = tmp_path("bf16-in");
         let outp = tmp_path("bf16-out");
-        let payload: Vec<u8> = [1.0_f32, 2.0]
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        let st = safetensors_one("encoder.filterbank.weight", "BF16", &[1, 2], &payload);
+        let st = safetensors_checkpoint("encoder.filterbank._filters", "BF16");
         std::fs::write(&inp, &st).unwrap();
         let r = convert_conv_tasnet_libri1mix_file(&inp, &outp, None).unwrap();
         assert_eq!(r.bf16_passthrough, 1);
 
         let g = GgufFile::open(&outp).unwrap();
         let info = g
-            .tensor_info("encoder.filterbank.weight")
+            .tensor_info("encoder.filterbank._filters")
             .expect("BF16 tensor present");
         assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(g.tensor_bytes(info), payload.as_slice());
+        assert!(g.tensor_bytes(info).iter().all(|&byte| byte == 0));
         let _ = std::fs::remove_file(&inp);
         let _ = std::fs::remove_file(&outp);
     }
 
-    /// A caller supplying `--license mit` overrides the default
-    /// cc-by-sa-4.0 → Copyleft mapping. Same override escape hatch
+    /// A caller supplying `--license mit` overrides the fail-closed default.
+    /// Same override escape hatch
     /// used by Whisper / kokoro / vits-ja / xcodec2 / musicgen for
     /// callers who legitimately hold the weight under a different
     /// SPDX id (e.g. an Asteroid-compatible retraining released
     /// under a permissive licence).
     #[test]
-    fn license_override_swaps_stamp_off_copyleft() {
+    fn license_override_swaps_stamp_off_unknown() {
         let inp = tmp_path("lic-in");
         let outp = tmp_path("lic-out");
-        let payload: Vec<u8> = [1.0_f32].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let st = safetensors_one("x", "F32", &[1], &payload);
+        let st = safetensors_checkpoint("encoder.filterbank._filters", "F32");
         std::fs::write(&inp, &st).unwrap();
         convert_conv_tasnet_libri1mix_file(&inp, &outp, Some("mit")).unwrap();
         let g = GgufFile::open(&outp).unwrap();

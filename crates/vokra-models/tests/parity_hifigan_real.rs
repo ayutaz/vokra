@@ -65,4 +65,22 @@ fn parity_speechbrain_hifigan_real_weight_mel_to_waveform() {
         max_abs <= 5e-5,
         "SpeechBrain HiFi-GAN max |Δ| {max_abs:e} exceeds the 5e-5 FP32 bound"
     );
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    {
+        let metal = HiFiGan::from_gguf(&file)
+            .expect("rebind SpeechBrain HiFi-GAN for Metal")
+            .with_backend(vokra_core::BackendKind::Metal)
+            .decode(&mel, 2)
+            .expect("real SpeechBrain HiFi-GAN Metal forward");
+        let gpu_max_abs = actual
+            .iter()
+            .zip(&metal)
+            .map(|(cpu, gpu)| (cpu - gpu).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            gpu_max_abs <= 0.01,
+            "SpeechBrain HiFi-GAN CPU/Metal max |Δ| {gpu_max_abs:e} exceeds the established FP32 GPU gate"
+        );
+    }
 }

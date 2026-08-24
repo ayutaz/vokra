@@ -762,6 +762,27 @@ enum vokra_status_t vokra_model_attribution(const struct vokra_session_t *sessio
                                             size_t buf_len,
                                             size_t *out_needed);
 
+// Separates or enhances a complete mono waveform with the session's model.
+//
+// The returned allocation is stream-major `[stream][sample]`. Every stream
+// has `out_num_samples_per_stream` samples. Free it with
+// `vokra_audio_free(out_pcm, out_num_streams * out_num_samples_per_stream)`.
+// All output pointers are written only on `VOKRA_OK`.
+//
+// # Safety
+//
+// `session` must be a live session handle, `pcm` must point at
+// `num_samples` initialized `f32` values, and all output pointers must be
+// writable locations of their declared type.
+enum vokra_status_t vokra_separate(const struct vokra_session_t *session,
+                                   const float *pcm,
+                                   size_t num_samples,
+                                   int32_t sample_rate,
+                                   float **out_pcm,
+                                   size_t *out_num_streams,
+                                   size_t *out_num_samples_per_stream,
+                                   int32_t *out_sample_rate);
+
 // Loads a model from a GGUF file and creates an inference session on the CPU
 // backend (FR-API-01).
 //
@@ -933,8 +954,9 @@ const char *vokra_version(void);
 // Computes the speaker embedding of one mono reference utterance.
 //
 // The session must have been created from a speaker-encoder model (GGUF arch
-// `campplus`); any other model reports `VOKRA_ERROR_NOT_IMPLEMENTED`, the same
-// task-mismatch posture as `vokra_asr_transcribe` on a TTS voice.
+// `campplus`, `xvector`, `ecapa_tdnn`, `wespeaker`, or `titanet-large`); any other model reports
+// `VOKRA_ERROR_NOT_IMPLEMENTED`, the same task-mismatch posture as
+// `vokra_asr_transcribe` on a TTS voice.
 //
 // # Parameters
 //
@@ -942,9 +964,10 @@ const char *vokra_version(void);
 // - `pcm` / `num_samples`: mono `f32` samples in `[-1, 1]`. The clip must
 //   cover at least one analysis frame (25 ms at 16 kHz).
 // - `sample_rate`: sample rate of `pcm` in Hz. Must equal the rate the model's
-//   front-end was trained at (16000 for CAM++); a mismatch is rejected instead
-//   of resampled, because a silent resample would change the embedding without
-//   telling the caller (FR-EX-08).
+//   front-end was trained at (16000 for CAM++, X-vector, ECAPA-TDNN,
+//   WeSpeaker, and TitaNet-L); a mismatch is
+//   rejected instead of resampled, because a silent resample would change the
+//   embedding without telling the caller (FR-EX-08).
 // - `out_embedding` / `out_capacity`: caller-owned destination array and its
 //   length **in floats**. May be `NULL` / `0` to query the size only.
 // - `out_written`: receives the embedding dimension — on success the number of

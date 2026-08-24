@@ -32,6 +32,8 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::compute::Compute;
+
 use super::PyanNetWeights;
 
 /// LeakyReLU slope used between and after every Linear layer
@@ -129,6 +131,43 @@ impl LinearStack {
         }
         buf
     }
+
+    /// Backend-dispatched linear stack. LeakyReLU remains parameter-free host
+    /// activation glue; every learned affine executes as one GEMM per layer.
+    pub fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        let mut buffer = input.to_vec();
+        for layer in &self.layers {
+            let mut weight_t = vec![0.0f32; layer.weight.len()];
+            for output in 0..layer.out_dim {
+                for input in 0..layer.in_dim {
+                    weight_t[input * layer.out_dim + output] =
+                        layer.weight[output * layer.in_dim + input];
+                }
+            }
+            let mut output = vec![0.0f32; seq_len * layer.out_dim];
+            compute.gemm_f32(
+                seq_len,
+                layer.out_dim,
+                layer.in_dim,
+                &buffer,
+                &weight_t,
+                Some(&layer.bias),
+                &mut output,
+            )?;
+            for value in &mut output {
+                if *value < 0.0 {
+                    *value *= LEAKY_RELU_SLOPE;
+                }
+            }
+            buffer = output;
+        }
+        Ok(buffer)
+    }
 }
 
 /// Same shape-checking pattern the sibling BiLSTM binder uses.
@@ -207,6 +246,15 @@ mod tests {
         };
         let input = vec![1.0f32; 6 * 4];
         let out = stack.forward(&input, 6);
+        let dispatched = stack
+            .forward_with_compute(&input, 6, &Compute::cpu())
+            .expect("Compute linear stack");
+        let max_abs = out
+            .iter()
+            .zip(&dispatched)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs <= 1e-6, "linear stack Compute max_abs={max_abs}");
         assert_eq!(out.len(), 6 * 3);
         for &v in &out {
             assert!(v.is_finite(), "output contains non-finite: {v}");

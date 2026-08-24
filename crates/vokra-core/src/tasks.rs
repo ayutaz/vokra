@@ -152,6 +152,17 @@ impl Tts<'_> {
             )),
         }
     }
+
+    /// The backend the injected TTS engine dispatches on.
+    ///
+    /// Without an injected engine this reports the session selection, matching
+    /// [`Asr::backend`] and [`Speaker::backend`].
+    pub fn backend(&self) -> BackendKind {
+        match self.session.tts_engine() {
+            Some(engine) => engine.backend(),
+            None => self.session.backend_kind(),
+        }
+    }
 }
 
 /// S2S facade borrowed from a [`Session`] (FR-API-02).
@@ -395,6 +406,10 @@ mod tests {
                 let n = if req.deterministic { 2 } else { 1 };
                 Ok(SynthesizedAudio::new(vec![0.0; n], 22_050))
             }
+
+            fn backend(&self) -> BackendKind {
+                BackendKind::Metal
+            }
         }
 
         let (_file, session) = session("delegate");
@@ -407,6 +422,7 @@ mod tests {
             "delegated"
         );
         assert_eq!(session.tts().synthesize("hi").unwrap().sample_rate, 22_050);
+        assert_eq!(session.tts().backend(), BackendKind::Metal);
         assert_eq!(
             session
                 .tts()

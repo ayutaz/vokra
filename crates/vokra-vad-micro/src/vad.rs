@@ -11,8 +11,9 @@ use alloc::format;
 use vokra_core::{Result, VokraError};
 
 use crate::encoder;
-use crate::lstm::{LstmState, head_probability, lstm_forward};
-use crate::pseudo_stft::pseudo_stft;
+use crate::lstm::{LstmState, head_probability_with_ops, lstm_forward_with_ops};
+use crate::math::{ScalarSileroOps, SileroBackendOps};
+use crate::pseudo_stft::pseudo_stft_with_ops;
 use crate::weights::RateWeights;
 
 /// A sample rate Silero v5 supports (the single model handles both).
@@ -111,10 +112,27 @@ impl SampleRate {
 /// ONNX graph (dynamic time axis): the pseudo-STFT yields 3 or 4 frames and
 /// the encoder collapses either to a single time step.
 pub fn run_frame(rate: SampleRate, w: &RateWeights, frame: &[f32], state: &mut LstmState) -> f32 {
-    let mag = pseudo_stft(rate, w, frame);
-    let enc = encoder::encode(w, &mag);
-    let hidden = lstm_forward(w, &enc, state);
-    head_probability(w, &hidden)
+    run_frame_with_ops(rate, w, frame, state, &mut ScalarSileroOps)
+        .expect("the scalar Silero backend is infallible")
+}
+
+/// Runs one graph input through an injected Conv1D/GEMV backend.
+///
+/// The model topology, recurrent-state arithmetic, learned pseudo-STFT and
+/// activations are shared with [`run_frame`]. Device runtimes use this seam so
+/// every learned convolution and matrix projection executes on the selected
+/// backend; an unsupported kernel is returned as an explicit error.
+pub fn run_frame_with_ops<O: SileroBackendOps>(
+    rate: SampleRate,
+    w: &RateWeights,
+    frame: &[f32],
+    state: &mut LstmState,
+    ops: &mut O,
+) -> Result<f32> {
+    let mag = pseudo_stft_with_ops(rate, w, frame, ops)?;
+    let enc = encoder::encode_with_ops(w, &mag, ops)?;
+    let hidden = lstm_forward_with_ops(w, &enc, state, ops)?;
+    head_probability_with_ops(w, &hidden, ops)
 }
 
 #[cfg(test)]

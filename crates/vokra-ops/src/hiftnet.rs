@@ -355,6 +355,23 @@ impl Snake {
         self.alpha.len()
     }
 
+    /// Materialises the per-channel alpha values consumed by the closed-form
+    /// activation. Backend adapters use this once per dispatch so log-scale
+    /// checkpoints retain the exact upstream parameter interpretation.
+    #[must_use]
+    pub fn effective_alpha(&self) -> Vec<f32> {
+        self.alpha
+            .iter()
+            .map(|&value| {
+                if self.alpha_logscale {
+                    value.exp()
+                } else {
+                    value
+                }
+            })
+            .collect()
+    }
+
     /// Apply the activation in place to a `[channels, time]` row-major
     /// tensor. Faster than a functional variant because upstream calls it
     /// mid-ResBlock and never keeps the pre-activation around.

@@ -5,7 +5,7 @@
 //! (`crates/vokra-models/tests/parity_nsnet2.rs`,
 //! `VOKRA_NSNET2_REAL_GGUF` / `VOKRA_NSNET2_REAL_WAV`) — this file
 //! covers everything reachable from synthetic weights: the load-time
-//! contract (FR-EX-08), the ONNX → rnnoise GRU permutation, the
+//! contract (FR-EX-08), the ONNX GRU gate permutation, the
 //! identity-gain sanity of the sigmoid mask (mask pre-activation → +∞
 //! ⇒ gain ≈ 1 ⇒ output ≈ input), and the streaming state carry-over.
 
@@ -117,8 +117,9 @@ fn add_all_zero_tensors(b: &mut GgufBuilder, cfg: &Nsnet2Config) {
 #[test]
 fn upstream_default_config_validates() {
     Nsnet2Config::upstream_default().validate().unwrap();
-    assert_eq!(Nsnet2Config::upstream_default().n_bins, 257);
+    assert_eq!(Nsnet2Config::upstream_default().n_bins, 161);
     assert_eq!(Nsnet2Config::upstream_default().hidden_dim, 400);
+    assert_eq!(Nsnet2Config::upstream_default().n_fft, 320);
     assert_eq!(Nsnet2Config::upstream_default().sample_rate, 16_000);
 }
 
@@ -372,7 +373,7 @@ fn permute_onnx_gru_swaps_z_and_r_blocks() {
         3.0, 3.0, // Rb_h
     ];
 
-    let (w_ih, w_hh, bias) = permute_onnx_gru(&w, &r, &b, hidden, in_dim);
+    let (w_ih, w_hh, bias_ih, bias_hh) = permute_onnx_gru(&w, &r, &b, hidden, in_dim);
 
     // rnnoise order: R (0), Z (1), N (2).
     // Row block 0 (rnnoise R) should equal ONNX R (== 2.0 sentinel in w).
@@ -399,16 +400,11 @@ fn permute_onnx_gru_swaps_z_and_r_blocks() {
         &vec![30.0f32; hidden * hidden]
     );
 
-    // Bias: fused (Wb + Rb), permuted R/Z/N.
-    // R = Wb_r + Rb_r = 0.2 + 2.0 = 2.2
-    // Z = Wb_z + Rb_z = 0.1 + 1.0 = 1.1
-    // N = Wb_h + Rb_h = 0.3 + 3.0 = 3.3
-    assert!((bias[0] - 2.2).abs() < 1e-6);
-    assert!((bias[1] - 2.2).abs() < 1e-6);
-    assert!((bias[hidden] - 1.1).abs() < 1e-6);
-    assert!((bias[hidden + 1] - 1.1).abs() < 1e-6);
-    assert!((bias[2 * hidden] - 3.3).abs() < 1e-6);
-    assert!((bias[2 * hidden + 1] - 3.3).abs() < 1e-6);
+    // Biases stay separate because this graph uses
+    // `linear_before_reset=1`: the recurrent candidate bias is inside the
+    // reset multiplication and cannot be fused with the input bias.
+    assert_eq!(bias_ih, vec![0.2, 0.2, 0.1, 0.1, 0.3, 0.3]);
+    assert_eq!(bias_hh, vec![2.0, 2.0, 1.0, 1.0, 3.0, 3.0]);
 }
 
 // -------------------------------------------------------------------------
@@ -509,12 +505,22 @@ fn identity_gain_bypass_reproduces_input_within_steady_state() {
         .collect();
     let denoised = model.denoise_pcm(&pcm).unwrap();
 
+    // Microsoft's no-delay frontend emits `ceil(input_len / hop)` frames:
+    // internally it prepends one history frame, right-pads to a hop boundary,
+    // then discards that history frame. Our causal raw-frame STFT obtains the
+    // same frame set by right-padding the source to the corresponding natural
+    // overlap-add extent before analysis.
+    let official_frames = pcm.len().div_ceil(cfg.hop);
+    let official_output_len = (official_frames - 1) * cfg.hop + cfg.n_fft;
+    let mut reference_pcm = pcm.clone();
+    reference_pcm.resize(official_output_len, 0.0);
     let reference = vokra_ops::istft_streaming_oneshot(
-        &vokra_ops::stft(&pcm, &analysis_stft_attrs(&cfg)).unwrap(),
+        &vokra_ops::stft(&reference_pcm, &analysis_stft_attrs(&cfg)).unwrap(),
         &synthesis_istft_attrs(&cfg),
     )
     .unwrap();
 
+    assert_eq!(denoised.len(), official_output_len);
     assert_eq!(
         denoised.len(),
         reference.len(),
@@ -636,14 +642,13 @@ fn open_stream_rejects_sample_rate_mismatch() {
 fn gru_step_matches_hand_computed_reference() {
     // Build a hidden=2, in_dim=2 GRU with tiny distinct weights that
     // are easy to hand-verify. Compute the update in f64 by hand and
-    // compare to `rnnoise_gru_forward` (which is what the NSNet2
-    // forward calls after the ONNX permutation).
+    // compare to the native ONNX `linear_before_reset=1` implementation.
     let hidden = 2usize;
     let in_dim = 2usize;
 
     // rnnoise layout: [R (0..h), Z (h..2h), N (2h..3h)] rows.
     // W_ih:      [3h, in_dim]      W_hh:      [3h, h]
-    // bias:      [3h]              (fused Wb+Rb)
+    // bias_ih:   [3h]              bias_hh: [3h]
     // Fill with a distinct sentinel per gate/element so any block
     // swap or off-by-one row is detectable.
     let w_ih: Vec<f32> = vec![
@@ -662,10 +667,15 @@ fn gru_step_matches_hand_computed_reference() {
         0.09, 0.10, // N
         0.11, 0.12, //
     ];
-    let bias: Vec<f32> = vec![
+    let bias_ih: Vec<f32> = vec![
         0.01, 0.02, // R
         0.03, 0.04, // Z
         0.05, 0.06, // N
+    ];
+    let bias_hh: Vec<f32> = vec![
+        -0.01, -0.02, // R
+        -0.03, -0.04, // Z
+        0.15, -0.16, // N -- must remain inside reset multiplication
     ];
     let x = [0.5f32, -0.5];
     let h0 = [0.1f32, -0.2];
@@ -682,7 +692,7 @@ fn gru_step_matches_hand_computed_reference() {
     for i in 0..hidden {
         let row_ih_r = &w_ih[i * in_dim..(i + 1) * in_dim];
         let row_hh_r = &w_hh[i * hidden..(i + 1) * hidden];
-        let mut acc = bias[i] as f64;
+        let mut acc = (bias_ih[i] + bias_hh[i]) as f64;
         for k in 0..in_dim {
             acc += (row_ih_r[k] as f64) * (x[k] as f64);
         }
@@ -693,7 +703,7 @@ fn gru_step_matches_hand_computed_reference() {
 
         let row_ih_z = &w_ih[(hidden + i) * in_dim..(hidden + i + 1) * in_dim];
         let row_hh_z = &w_hh[(hidden + i) * hidden..(hidden + i + 1) * hidden];
-        let mut acc_z = bias[hidden + i] as f64;
+        let mut acc_z = (bias_ih[hidden + i] + bias_hh[hidden + i]) as f64;
         for k in 0..in_dim {
             acc_z += (row_ih_z[k] as f64) * (x[k] as f64);
         }
@@ -713,17 +723,20 @@ fn gru_step_matches_hand_computed_reference() {
     }
     let mut want = [0.0f64; 2];
     for i in 0..hidden {
-        let n_val = (n_ih[i] + r[i] * n_hh[i] + bias[2 * hidden + i] as f64).tanh();
+        let n_val = (n_ih[i]
+            + bias_ih[2 * hidden + i] as f64
+            + r[i] * (n_hh[i] + bias_hh[2 * hidden + i] as f64))
+            .tanh();
         want[i] = (1.0 - z[i]) * n_val + z[i] * (h0[i] as f64);
     }
 
-    // Run rnnoise's kernel.
+    // Run the native ONNX-compatible kernel.
     let mut state = h0.to_vec();
-    rnnoise_gru_forward(&x, &mut state, &w_ih, &w_hh, &bias).unwrap();
+    onnx_gru_forward_cpu(&x, &mut state, &w_ih, &w_hh, &bias_ih, &bias_hh).unwrap();
     for i in 0..hidden {
         assert!(
             (state[i] as f64 - want[i]).abs() < 1e-5,
-            "GRU spot-check row {i}: rnnoise = {}, hand ref = {}",
+            "GRU spot-check row {i}: native = {}, hand ref = {}",
             state[i],
             want[i]
         );

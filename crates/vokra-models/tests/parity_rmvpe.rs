@@ -431,6 +431,39 @@ fn parity_rmvpe_gguf_smoke() {
     );
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn parity_rmvpe_metal_matches_cpu_when_real_gguf_is_supplied() {
+    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
+        eprintln!("{GGUF_ENV} unset — skipping RMVPE Metal parity");
+        return;
+    };
+    let model = RMVPE::from_gguf(Path::new(&gguf_path)).expect("load real RMVPE GGUF");
+    let cfg = model.config().clone();
+    let pcm: Vec<f32> = (0..cfg.sample_rate as usize)
+        .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / cfg.sample_rate as f32).sin())
+        .collect();
+    let cpu = model
+        .extract_real(&pcm, cfg.sample_rate)
+        .expect("RMVPE CPU forward");
+    let model = model.with_backend(vokra_core::BackendKind::Metal);
+    let metal = model
+        .extract_real(&pcm, cfg.sample_rate)
+        .expect("RMVPE Metal forward");
+    assert_eq!(metal.len(), cpu.len());
+    for (index, (actual, expected)) in metal.iter().zip(&cpu).enumerate() {
+        assert_eq!(
+            actual.voiced, expected.voiced,
+            "frame {index}: Metal/CPU voiced decision"
+        );
+        assert!(
+            (actual.confidence - expected.confidence).abs() <= 0.01,
+            "frame {index}: Metal/CPU confidence diff {} > 0.01",
+            (actual.confidence - expected.confidence).abs()
+        );
+    }
+}
+
 /// GATED (Path B): opens the real RMVPE GGUF, feeds the dumped
 /// post-CNN hidden state into [`RMVPE::forward_from_hidden`] +
 /// head + sigmoid + argmax, and asserts the argmax-match rate against

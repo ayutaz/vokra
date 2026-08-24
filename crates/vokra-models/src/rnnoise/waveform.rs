@@ -9,6 +9,8 @@ use vokra_core::engines::{DenoiseEngine, DenoiseStreamHandle};
 use vokra_core::{Result, VokraError};
 use vokra_ops::fft::{Complex32, RealFftPlan};
 
+use crate::compute::Compute;
+
 use super::{
     FRAME_SIZE, N_BANDS, N_FEATURES, RnnoiseNetworkState, RnnoiseV02, SAMPLE_RATE, WINDOW_SIZE,
 };
@@ -92,6 +94,15 @@ impl RnnoiseStream {
 
     /// Processes exactly one official 10 ms frame.
     pub fn process_frame(&mut self, input: &[f32; FRAME_SIZE]) -> Result<RnnoiseFrameOutput> {
+        let compute = self.model.create_compute()?;
+        self.process_frame_with_compute(input, compute.as_ref())
+    }
+
+    fn process_frame_with_compute(
+        &mut self,
+        input: &[f32; FRAME_SIZE],
+        compute: Option<&Compute>,
+    ) -> Result<RnnoiseFrameOutput> {
         if input.iter().any(|sample| !sample.is_finite()) {
             return Err(VokraError::InvalidArgument(
                 "rnnoise: PCM frame contains a non-finite sample".to_owned(),
@@ -103,7 +114,9 @@ impl RnnoiseStream {
         let mut vad_probability = 0.0;
 
         if !silence {
-            let decision = self.model.forward_features(&mut self.network, &features)?;
+            let decision =
+                self.model
+                    .forward_features_with_compute(&mut self.network, &features, compute)?;
             vad_probability = decision.vad_probability;
             pitch_filter(
                 &mut self.delayed_x,
@@ -263,6 +276,7 @@ impl DenoiseStreamHandle for RnnoiseStream {
                 "rnnoise: PCM input contains a non-finite sample".to_owned(),
             ));
         }
+        let compute = self.model.create_compute()?;
         self.pending.extend_from_slice(pcm);
         let frames = self.pending.len() / FRAME_SIZE;
         let mut output = Vec::with_capacity(frames * FRAME_SIZE);
@@ -271,7 +285,11 @@ impl DenoiseStreamHandle for RnnoiseStream {
             let frame: [f32; FRAME_SIZE] = self.pending[start..start + FRAME_SIZE]
                 .try_into()
                 .expect("exact RNNoise frame");
-            output.extend_from_slice(&self.process_frame(&frame)?.pcm);
+            output.extend_from_slice(
+                &self
+                    .process_frame_with_compute(&frame, compute.as_ref())?
+                    .pcm,
+            );
         }
         if frames != 0 {
             self.pending.drain(..frames * FRAME_SIZE);

@@ -1,0 +1,12 @@
+[project]
+name = "vokra-conv-tasnet-parity"
+version = "0.1.0"
+description = "Isolated Asteroid 0.7.0 oracle for Conv-TasNet parity; never shipped in the runtime."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "asteroid==0.7.0",
+    "numpy>=1.26",
+    "requests>=2.32.0",
+    "safetensors>=0.8.0",
+    "torch>=2.0",
+]

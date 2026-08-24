@@ -84,13 +84,14 @@ pub use tokenizer::ParakeetTokenizer;
 
 use std::collections::BTreeSet;
 
-use vokra_backend_cpu::kernels;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::ir::graph::{MelAttrs, Normalization, PadMode, StftAttrs, Window, WindowSymmetry};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
 use vokra_ops::mel::MelFilterbank;
 use vokra_ops::stft::stft;
+
+use crate::compute::{Compute, HotOp};
 
 /// `vokra.model.arch` a Parakeet GGUF must carry. Written by
 /// `vokra-convert::models::parakeet::ARCH`; the compliance registry
@@ -104,6 +105,17 @@ pub const EXPECTED_ARCH: &str = "parakeet-tdt";
 /// PCM sample rate Parakeet expects. Not written in the upstream
 /// `config.json`; taken from the model card (16 kHz mono `.wav` / `.flac`).
 pub const PARAKEET_SAMPLE_RATE: u32 = 16_000;
+
+/// Complete learned-op registry for the shared FastConformer + TDT route.
+/// Two-dimensional subsampling convolutions are lowered to GEMM; the
+/// time-domain depthwise Conformer convolution uses grouped Conv1d.
+pub const PARAKEET_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::GroupedConv1d,
+];
 
 const KEY_SAMPLE_RATE: &str = "vokra.parakeet.sample_rate";
 const KEY_ENC_N_LAYER: &str = "vokra.parakeet.arch.encoder.n_layer";
@@ -1261,6 +1273,7 @@ pub struct ParakeetAsr {
     weights: ParakeetWeightStore,
     tokenizer: Option<ParakeetTokenizer>,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl ParakeetAsr {
@@ -1419,6 +1432,7 @@ impl ParakeetAsr {
             weights: ParakeetWeightStore::Synthesized(Box::new(weights)),
             tokenizer: None,
             weight_license: LicenseClass::Unknown,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -1459,7 +1473,21 @@ impl ParakeetAsr {
             weights: ParakeetWeightStore::Bound(Box::new(weights)),
             tokenizer,
             weight_license,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Selects the backend used by subsequent encoder and decoder calls.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected backend.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The resolved configuration.
@@ -1508,6 +1536,7 @@ impl ParakeetAsr {
     /// executable subgraph proves that the decoder-side real weights are not
     /// merely name-scanned while the PCM/encoder path remains loud-partial.
     pub fn tdt_head_step(&self, encoder_hidden: &[f32], token_id: u32) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
         let ParakeetWeightStore::Bound(weights) = &self.weights else {
             return Err(VokraError::NotImplemented(
                 "ParakeetAsr::tdt_head_step requires a real GGUF-bound checkpoint",
@@ -1529,6 +1558,7 @@ impl ParakeetAsr {
         let hidden = self.cfg.decoder.d_model;
         let mut encoder_projected = vec![0.0; hidden];
         linear_into(
+            &compute,
             encoder_hidden,
             &weights.encoder_projector_w,
             &weights.encoder_projector_b,
@@ -1538,10 +1568,11 @@ impl ParakeetAsr {
         let embed_offset = token_id as usize * hidden;
         let mut decoder = weights.embedding[embed_offset..embed_offset + hidden].to_vec();
         for layer in &weights.lstm {
-            decoder = lstm_zero_state_step(&decoder, layer, hidden)?;
+            decoder = lstm_zero_state_step(&compute, &decoder, layer, hidden)?;
         }
         let mut decoder_projected = vec![0.0; hidden];
         linear_into(
+            &compute,
             &decoder,
             &weights.decoder_projector_w,
             &weights.decoder_projector_b,
@@ -1555,6 +1586,7 @@ impl ParakeetAsr {
         let output_dim = weights.joint_head_b.len();
         let mut logits = vec![0.0; output_dim];
         linear_into(
+            &compute,
             &decoder_projected,
             &weights.joint_head_w,
             &weights.joint_head_b,
@@ -1569,6 +1601,11 @@ impl ParakeetAsr {
     /// The returned buffer is row-major `[encoder_frames, 1024]` before the
     /// TDT `encoder_projector`.
     pub fn encode_pcm(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
+        self.encode_pcm_with_compute(pcm, &compute)
+    }
+
+    fn encode_pcm_with_compute(&self, pcm: &[f32], compute: &Compute) -> Result<(Vec<f32>, usize)> {
         let ParakeetWeightStore::Bound(weights) = &self.weights else {
             return Err(VokraError::NotImplemented(
                 "ParakeetAsr::encode_pcm requires a real GGUF-bound checkpoint",
@@ -1577,6 +1614,7 @@ impl ParakeetAsr {
         let (features, frames) =
             parakeet_logmel(pcm, self.cfg.sample_rate, self.cfg.encoder.in_dim)?;
         let (mut hidden, encoded_frames) = subsampling_forward(
+            compute,
             &features,
             frames,
             self.cfg.encoder.in_dim,
@@ -1592,6 +1630,7 @@ impl ParakeetAsr {
         let positions = relative_positions(encoded_frames, self.cfg.encoder.d_model);
         for block in &weights.encoder {
             conformer_block_forward(
+                compute,
                 &mut hidden,
                 encoded_frames,
                 block,
@@ -1627,11 +1666,13 @@ impl ParakeetAsr {
         let ParakeetWeightStore::Bound(weights) = &self.weights else {
             unreachable!("synthesized branch returned above")
         };
-        let (encoder, frames) = self.encode_pcm(pcm)?;
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
+        let (encoder, frames) = self.encode_pcm_with_compute(pcm, &compute)?;
         let hidden = self.cfg.decoder.d_model;
         let mut projected = vec![0.0; frames * hidden];
         for frame in 0..frames {
             linear_into(
+                &compute,
                 &encoder[frame * self.cfg.encoder.d_model..(frame + 1) * self.cfg.encoder.d_model],
                 &weights.encoder_projector_w,
                 &weights.encoder_projector_b,
@@ -1641,7 +1682,13 @@ impl ParakeetAsr {
         }
 
         let mut state = ParakeetDecoderState::new(self.cfg.decoder.n_layer, hidden);
-        decoder_step(self.cfg.joint.blank_token_id, weights, hidden, &mut state)?;
+        decoder_step(
+            &compute,
+            self.cfg.joint.blank_token_id,
+            weights,
+            hidden,
+            &mut state,
+        )?;
         let mut tokens = Vec::new();
         let mut frame = 0usize;
         let max_steps = frames
@@ -1661,6 +1708,7 @@ impl ParakeetAsr {
             }
             let mut logits = vec![0.0; weights.joint_head_b.len()];
             linear_into(
+                &compute,
                 &joint,
                 &weights.joint_head_w,
                 &weights.joint_head_b,
@@ -1678,7 +1726,7 @@ impl ParakeetAsr {
                 }
             } else {
                 tokens.push(token);
-                decoder_step(token, weights, hidden, &mut state)?;
+                decoder_step(&compute, token, weights, hidden, &mut state)?;
             }
             frame = frame.saturating_add(duration);
             steps += 1;
@@ -1706,7 +1754,7 @@ impl AsrEngine for ParakeetAsr {
     }
 
     fn backend(&self) -> BackendKind {
-        BackendKind::Cpu
+        self.backend
     }
 }
 
@@ -1728,6 +1776,7 @@ impl ParakeetDecoderState {
 }
 
 fn decoder_step(
+    compute: &Compute,
     token: u32,
     weights: &ParakeetBoundWeights,
     hidden: usize,
@@ -1737,7 +1786,7 @@ fn decoder_step(
     let mut input = weights.embedding[offset..offset + hidden].to_vec();
     for (layer_index, layer) in weights.lstm.iter().enumerate() {
         let mut gates = vec![0.0; 4 * hidden];
-        kernels::gemv_f32(
+        compute.gemv_f32(
             4 * hidden,
             hidden,
             &layer.w_ih,
@@ -1746,7 +1795,7 @@ fn decoder_step(
             &mut gates,
         )?;
         let mut recurrent = vec![0.0; 4 * hidden];
-        kernels::gemv_f32(
+        compute.gemv_f32(
             4 * hidden,
             hidden,
             &layer.w_hh,
@@ -1769,6 +1818,7 @@ fn decoder_step(
         input = next;
     }
     linear_into(
+        compute,
         &input,
         &weights.decoder_projector_w,
         &weights.decoder_projector_b,
@@ -1856,7 +1906,124 @@ fn conv_output_size(input: usize, kernel: usize, stride: usize, padding: usize) 
     (input + 2 * padding - kernel) / stride + 1
 }
 
+#[allow(clippy::too_many_arguments)]
+fn conv2d_single_input_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    height: usize,
+    width: usize,
+    weight: &[f32],
+    bias: &[f32],
+    out_channels: usize,
+    kernel: usize,
+    stride: usize,
+    padding: usize,
+) -> Result<(Vec<f32>, usize, usize)> {
+    let out_h = conv_output_size(height, kernel, stride, padding);
+    let out_w = conv_output_size(width, kernel, stride, padding);
+    let positions = out_h * out_w;
+    let kernel_elems = kernel * kernel;
+    let mut patches = vec![0.0f32; positions * kernel_elems];
+    for out_y in 0..out_h {
+        for out_x in 0..out_w {
+            let row = (out_y * out_w + out_x) * kernel_elems;
+            for kernel_y in 0..kernel {
+                let source_y = out_y * stride + kernel_y;
+                if source_y < padding || source_y - padding >= height {
+                    continue;
+                }
+                for kernel_x in 0..kernel {
+                    let source_x = out_x * stride + kernel_x;
+                    if source_x < padding || source_x - padding >= width {
+                        continue;
+                    }
+                    patches[row + kernel_y * kernel + kernel_x] =
+                        input[(source_y - padding) * width + source_x - padding];
+                }
+            }
+        }
+    }
+    let mut weight_t = vec![0.0f32; kernel_elems * out_channels];
+    for channel in 0..out_channels {
+        for k in 0..kernel_elems {
+            weight_t[k * out_channels + channel] = weight[channel * kernel_elems + k];
+        }
+    }
+    let mut spatial = vec![0.0f32; positions * out_channels];
+    compute.gemm_f32(
+        positions,
+        out_channels,
+        kernel_elems,
+        &patches,
+        &weight_t,
+        Some(bias),
+        &mut spatial,
+    )?;
+    let mut output = vec![0.0f32; out_channels * positions];
+    for position in 0..positions {
+        for channel in 0..out_channels {
+            output[channel * positions + position] = spatial[position * out_channels + channel];
+        }
+    }
+    Ok((output, out_h, out_w))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn depthwise_conv2d_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    channels: usize,
+    height: usize,
+    width: usize,
+    weight: &[f32],
+    bias: &[f32],
+    kernel: usize,
+    stride: usize,
+    padding: usize,
+) -> Result<(Vec<f32>, usize, usize)> {
+    let out_h = conv_output_size(height, kernel, stride, padding);
+    let out_w = conv_output_size(width, kernel, stride, padding);
+    let positions = out_h * out_w;
+    let kernel_elems = kernel * kernel;
+    let mut output = vec![0.0f32; channels * positions];
+    // Compute has no native Conv2d primitive. Each channel is therefore one
+    // small im2col GEMM; this is complete backend execution, not CPU fallback.
+    for channel in 0..channels {
+        let mut patches = vec![0.0f32; positions * kernel_elems];
+        for out_y in 0..out_h {
+            for out_x in 0..out_w {
+                let row = (out_y * out_w + out_x) * kernel_elems;
+                for kernel_y in 0..kernel {
+                    let source_y = out_y * stride + kernel_y;
+                    if source_y < padding || source_y - padding >= height {
+                        continue;
+                    }
+                    for kernel_x in 0..kernel {
+                        let source_x = out_x * stride + kernel_x;
+                        if source_x < padding || source_x - padding >= width {
+                            continue;
+                        }
+                        patches[row + kernel_y * kernel + kernel_x] = input
+                            [(channel * height + source_y - padding) * width + source_x - padding];
+                    }
+                }
+            }
+        }
+        compute.gemm_f32(
+            positions,
+            1,
+            kernel_elems,
+            &patches,
+            &weight[channel * kernel_elems..(channel + 1) * kernel_elems],
+            Some(&bias[channel..channel + 1]),
+            &mut output[channel * positions..(channel + 1) * positions],
+        )?;
+    }
+    Ok((output, out_h, out_w))
+}
+
 pub(crate) fn subsampling_forward(
+    compute: &Compute,
     input: &[f32],
     frames: usize,
     frequency: usize,
@@ -1867,60 +2034,35 @@ pub(crate) fn subsampling_forward(
     let kernel = config.subsampling_conv_kernel_size;
     let stride = config.subsampling_conv_stride;
     let padding = (kernel - 1) / 2;
-    let mut time = conv_output_size(frames, kernel, stride, padding);
-    let mut freq = conv_output_size(frequency, kernel, stride, padding);
-    let mut value = vec![0.0; channels * time * freq];
-    for channel in 0..channels {
-        for out_t in 0..time {
-            for out_f in 0..freq {
-                let mut sum = weights.conv0_b[channel];
-                for kernel_t in 0..kernel {
-                    let source_t = out_t * stride + kernel_t;
-                    if source_t < padding || source_t - padding >= frames {
-                        continue;
-                    }
-                    for kernel_f in 0..kernel {
-                        let source_f = out_f * stride + kernel_f;
-                        if source_f < padding || source_f - padding >= frequency {
-                            continue;
-                        }
-                        sum += input[(source_t - padding) * frequency + source_f - padding]
-                            * weights.conv0_w[(channel * kernel + kernel_t) * kernel + kernel_f];
-                    }
-                }
-                value[(channel * time + out_t) * freq + out_f] = sum.max(0.0);
-            }
-        }
+    let (mut value, mut time, mut freq) = conv2d_single_input_with_compute(
+        compute,
+        input,
+        frames,
+        frequency,
+        &weights.conv0_w,
+        &weights.conv0_b,
+        channels,
+        kernel,
+        stride,
+        padding,
+    )?;
+    for entry in &mut value {
+        *entry = entry.max(0.0);
     }
 
     for stage in 0..2 {
-        let next_time = conv_output_size(time, kernel, stride, padding);
-        let next_freq = conv_output_size(freq, kernel, stride, padding);
-        let mut depthwise = vec![0.0; channels * next_time * next_freq];
-        for channel in 0..channels {
-            for out_t in 0..next_time {
-                for out_f in 0..next_freq {
-                    let mut sum = weights.depthwise_b[stage][channel];
-                    for kernel_t in 0..kernel {
-                        let source_t = out_t * stride + kernel_t;
-                        if source_t < padding || source_t - padding >= time {
-                            continue;
-                        }
-                        for kernel_f in 0..kernel {
-                            let source_f = out_f * stride + kernel_f;
-                            if source_f < padding || source_f - padding >= freq {
-                                continue;
-                            }
-                            sum += value
-                                [(channel * time + source_t - padding) * freq + source_f - padding]
-                                * weights.depthwise_w[stage]
-                                    [(channel * kernel + kernel_t) * kernel + kernel_f];
-                        }
-                    }
-                    depthwise[(channel * next_time + out_t) * next_freq + out_f] = sum;
-                }
-            }
-        }
+        let (depthwise, next_time, next_freq) = depthwise_conv2d_with_compute(
+            compute,
+            &value,
+            channels,
+            time,
+            freq,
+            &weights.depthwise_w[stage],
+            &weights.depthwise_b[stage],
+            kernel,
+            stride,
+            padding,
+        )?;
         let positions = next_time * next_freq;
         let mut spatial = vec![0.0; positions * channels];
         for channel in 0..channels {
@@ -1929,7 +2071,7 @@ pub(crate) fn subsampling_forward(
             }
         }
         let mut projected = vec![0.0; positions * channels];
-        kernels::gemm_f32(
+        compute.gemm_f32(
             positions,
             channels,
             channels,
@@ -1962,7 +2104,7 @@ pub(crate) fn subsampling_forward(
         }
     }
     let mut output = vec![0.0; time * config.d_model];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         time,
         config.d_model,
         projection_in,
@@ -1990,10 +2132,15 @@ pub(crate) fn relative_positions(frames: usize, width: usize) -> Vec<f32> {
     output
 }
 
-fn layer_norm(input: &[f32], rows: usize, norm: &ParakeetBoundNorm) -> Result<Vec<f32>> {
+fn layer_norm(
+    compute: &Compute,
+    input: &[f32],
+    rows: usize,
+    norm: &ParakeetBoundNorm,
+) -> Result<Vec<f32>> {
     let width = norm.weight.len();
     let mut output = vec![0.0; input.len()];
-    kernels::layer_norm_f32(
+    compute.layer_norm_f32(
         input,
         &mut output,
         rows,
@@ -2013,6 +2160,7 @@ struct FeedForwardWeights<'a> {
 }
 
 fn feed_forward(
+    compute: &Compute,
     input: &[f32],
     frames: usize,
     width: usize,
@@ -2020,7 +2168,7 @@ fn feed_forward(
     weights: FeedForwardWeights<'_>,
 ) -> Result<Vec<f32>> {
     let mut expanded = vec![0.0; frames * inner];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         frames,
         inner,
         width,
@@ -2033,7 +2181,7 @@ fn feed_forward(
         *value *= sigmoid_f32(*value);
     }
     let mut output = vec![0.0; frames * width];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         frames,
         width,
         inner,
@@ -2046,6 +2194,7 @@ fn feed_forward(
 }
 
 fn attention_forward(
+    compute: &Compute,
     input: &[f32],
     positions: &[f32],
     frames: usize,
@@ -2057,7 +2206,7 @@ fn attention_forward(
     let head_dim = config.head_dim();
     let project = |weight: &[f32], bias: Option<&[f32]>| -> Result<Vec<f32>> {
         let mut output = vec![0.0; frames * width];
-        kernels::gemm_f32(frames, width, width, input, weight, bias, &mut output)?;
+        compute.gemm_f32(frames, width, width, input, weight, bias, &mut output)?;
         Ok(output)
     };
     let q = project(&block.q_w_t, block.q_b.as_deref())?;
@@ -2065,7 +2214,7 @@ fn attention_forward(
     let v = project(&block.v_w_t, block.v_b.as_deref())?;
     let position_count = 2 * frames - 1;
     let mut relative_k = vec![0.0; position_count * width];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         position_count,
         width,
         width,
@@ -2077,41 +2226,84 @@ fn attention_forward(
     let scale = 1.0 / (head_dim as f32).sqrt();
     let mut scores = vec![0.0; heads * frames * frames];
     for head in 0..heads {
+        let mut q_content = vec![0.0f32; frames * head_dim];
+        let mut q_position = vec![0.0f32; frames * head_dim];
+        let mut k_t = vec![0.0f32; head_dim * frames];
+        let mut relative_t = vec![0.0f32; head_dim * position_count];
+        for frame in 0..frames {
+            for dim in 0..head_dim {
+                let hidden_index = head * head_dim + dim;
+                let query_value = q[frame * width + hidden_index];
+                q_content[frame * head_dim + dim] = query_value + block.bias_u[hidden_index];
+                q_position[frame * head_dim + dim] = query_value + block.bias_v[hidden_index];
+                k_t[dim * frames + frame] = k[frame * width + hidden_index];
+            }
+        }
+        for position in 0..position_count {
+            for dim in 0..head_dim {
+                relative_t[dim * position_count + position] =
+                    relative_k[position * width + head * head_dim + dim];
+            }
+        }
+        let mut content_scores = vec![0.0f32; frames * frames];
+        compute.gemm_f32(
+            frames,
+            frames,
+            head_dim,
+            &q_content,
+            &k_t,
+            None,
+            &mut content_scores,
+        )?;
+        let mut position_scores = vec![0.0f32; frames * position_count];
+        compute.gemm_f32(
+            frames,
+            position_count,
+            head_dim,
+            &q_position,
+            &relative_t,
+            None,
+            &mut position_scores,
+        )?;
         for query in 0..frames {
             for key in 0..frames {
                 let relative = frames - 1 - query + key;
-                let mut content = 0.0f32;
-                let mut positional = 0.0f32;
-                for dim in 0..head_dim {
-                    let hidden_index = head * head_dim + dim;
-                    let query_value = q[query * width + hidden_index];
-                    content +=
-                        (query_value + block.bias_u[hidden_index]) * k[key * width + hidden_index];
-                    positional += (query_value + block.bias_v[hidden_index])
-                        * relative_k[relative * width + hidden_index];
-                }
-                scores[(head * frames + query) * frames + key] = (content + positional) * scale;
+                scores[(head * frames + query) * frames + key] = (content_scores
+                    [query * frames + key]
+                    + position_scores[query * position_count + relative])
+                    * scale;
             }
         }
     }
     let mut probabilities = vec![0.0; scores.len()];
-    kernels::softmax_f32(&scores, &mut probabilities, heads * frames, frames)?;
+    compute.softmax_f32(&scores, &mut probabilities, heads * frames, frames)?;
     let mut context = vec![0.0; frames * width];
-    for query in 0..frames {
-        for head in 0..heads {
+    for head in 0..heads {
+        let mut v_head = vec![0.0f32; frames * head_dim];
+        for key in 0..frames {
             for dim in 0..head_dim {
-                let hidden_index = head * head_dim + dim;
-                let mut sum = 0.0f32;
-                for key in 0..frames {
-                    sum += probabilities[(head * frames + query) * frames + key]
-                        * v[key * width + hidden_index];
-                }
-                context[query * width + hidden_index] = sum;
+                v_head[key * head_dim + dim] = v[key * width + head * head_dim + dim];
+            }
+        }
+        let mut context_head = vec![0.0f32; frames * head_dim];
+        compute.gemm_f32(
+            frames,
+            head_dim,
+            frames,
+            &probabilities[head * frames * frames..(head + 1) * frames * frames],
+            &v_head,
+            None,
+            &mut context_head,
+        )?;
+        for query in 0..frames {
+            for dim in 0..head_dim {
+                context[query * width + head * head_dim + dim] =
+                    context_head[query * head_dim + dim];
             }
         }
     }
     let mut output = vec![0.0; frames * width];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         frames,
         width,
         width,
@@ -2124,6 +2316,7 @@ fn attention_forward(
 }
 
 fn convolution_forward(
+    compute: &Compute,
     input: &[f32],
     frames: usize,
     block: &ParakeetBoundEncoderBlock,
@@ -2131,7 +2324,7 @@ fn convolution_forward(
 ) -> Result<Vec<f32>> {
     let width = config.d_model;
     let mut doubled = vec![0.0; frames * 2 * width];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         frames,
         2 * width,
         width,
@@ -2149,17 +2342,30 @@ fn convolution_forward(
     }
     let kernel = config.conv_kernel_size;
     let padding = (kernel - 1) / 2;
+    let mut gated_channels = vec![0.0f32; gated.len()];
+    for frame in 0..frames {
+        for channel in 0..width {
+            gated_channels[channel * frames + frame] = gated[frame * width + channel];
+        }
+    }
+    let mut convolved_channels = vec![0.0f32; gated.len()];
+    compute.grouped_conv1d_f32(
+        &gated_channels,
+        width,
+        frames,
+        &block.conv_dw_w,
+        width,
+        kernel,
+        block.conv_dw_b.as_deref(),
+        1,
+        padding,
+        width,
+        &mut convolved_channels,
+    )?;
     let mut convolved = vec![0.0; gated.len()];
     for frame in 0..frames {
         for channel in 0..width {
-            let mut sum = block.conv_dw_b.as_ref().map_or(0.0, |bias| bias[channel]);
-            for tap in 0..kernel {
-                let source = frame + tap;
-                if source >= padding && source - padding < frames {
-                    sum += gated[(source - padding) * width + channel]
-                        * block.conv_dw_w[channel * kernel + tap];
-                }
-            }
+            let sum = convolved_channels[channel * frames + frame];
             let normalized = (sum - block.conv_bn_mean[channel])
                 / (block.conv_bn_var[channel] + 1e-5).sqrt()
                 * block.conv_bn_weight[channel]
@@ -2168,7 +2374,7 @@ fn convolution_forward(
         }
     }
     let mut output = vec![0.0; convolved.len()];
-    kernels::gemm_f32(
+    compute.gemm_f32(
         frames,
         width,
         width,
@@ -2181,6 +2387,7 @@ fn convolution_forward(
 }
 
 pub(crate) fn conformer_block_forward(
+    compute: &Compute,
     hidden: &mut [f32],
     frames: usize,
     block: &ParakeetBoundEncoderBlock,
@@ -2188,8 +2395,9 @@ pub(crate) fn conformer_block_forward(
     config: &ParakeetEncoderConfig,
 ) -> Result<()> {
     let width = config.d_model;
-    let normalized = layer_norm(hidden, frames, &block.norm_ff1)?;
+    let normalized = layer_norm(compute, hidden, frames, &block.norm_ff1)?;
     let ff1 = feed_forward(
+        compute,
         &normalized,
         frames,
         width,
@@ -2204,18 +2412,19 @@ pub(crate) fn conformer_block_forward(
     for (value, branch) in hidden.iter_mut().zip(ff1) {
         *value += 0.5 * branch;
     }
-    let normalized = layer_norm(hidden, frames, &block.norm_attn)?;
-    let attention = attention_forward(&normalized, positions, frames, block, config)?;
+    let normalized = layer_norm(compute, hidden, frames, &block.norm_attn)?;
+    let attention = attention_forward(compute, &normalized, positions, frames, block, config)?;
     for (value, branch) in hidden.iter_mut().zip(attention) {
         *value += branch;
     }
-    let normalized = layer_norm(hidden, frames, &block.norm_conv)?;
-    let convolution = convolution_forward(&normalized, frames, block, config)?;
+    let normalized = layer_norm(compute, hidden, frames, &block.norm_conv)?;
+    let convolution = convolution_forward(compute, &normalized, frames, block, config)?;
     for (value, branch) in hidden.iter_mut().zip(convolution) {
         *value += branch;
     }
-    let normalized = layer_norm(hidden, frames, &block.norm_ff2)?;
+    let normalized = layer_norm(compute, hidden, frames, &block.norm_ff2)?;
     let ff2 = feed_forward(
+        compute,
         &normalized,
         frames,
         width,
@@ -2230,7 +2439,7 @@ pub(crate) fn conformer_block_forward(
     for (value, branch) in hidden.iter_mut().zip(ff2) {
         *value += 0.5 * branch;
     }
-    let normalized = layer_norm(hidden, frames, &block.norm_out)?;
+    let normalized = layer_norm(compute, hidden, frames, &block.norm_out)?;
     hidden.copy_from_slice(&normalized);
     Ok(())
 }
@@ -2252,16 +2461,18 @@ fn argmax_finite(values: &[f32], label: &str) -> Result<usize> {
 }
 
 fn linear_into(
+    compute: &Compute,
     input: &[f32],
     weight: &[f32],
     bias: &[f32],
     output_dim: usize,
     output: &mut [f32],
 ) -> Result<()> {
-    kernels::gemv_f32(output_dim, input.len(), weight, input, Some(bias), output)
+    compute.gemv_f32(output_dim, input.len(), weight, input, Some(bias), output)
 }
 
 fn lstm_zero_state_step(
+    compute: &Compute,
     input: &[f32],
     weights: &ParakeetBoundLstmLayer,
     hidden: usize,
@@ -2277,7 +2488,7 @@ fn lstm_zero_state_step(
     // The recurrent term is exactly zero for this parity consumer's initial
     // state, but the strict binder still validates and loads `w_hh` so it
     // cannot disappear from the checkpoint contract.
-    kernels::gemv_f32(
+    compute.gemv_f32(
         4 * hidden,
         hidden,
         &weights.w_ih,

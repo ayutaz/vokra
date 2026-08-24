@@ -231,6 +231,28 @@ fn parity_pyannote_gguf_smoke() {
         }
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    {
+        use vokra_core::BackendKind;
+
+        let metal = PyanNet::from_gguf(path)
+            .expect("bind PyanNet for Metal")
+            .with_backend(BackendKind::Metal)
+            .segment(&pcm)
+            .expect("run complete PyanNet Metal forward");
+        assert_eq!(metal.len(), probs.len());
+        let max_abs = probs
+            .iter()
+            .flatten()
+            .zip(metal.iter().flatten())
+            .map(|(cpu, gpu)| (cpu - gpu).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs <= 0.01,
+            "PyanNet CPU/Metal powerset max_abs={max_abs:.9e} exceeds 0.01"
+        );
+    }
+
     // Real reference |Δ| check — only fires when
     // `PARITY_PYANNOTE_REFERENCE_NPY` is also set. Until the reference
     // dumper lands (Wave 3 follow-up), this branch is skipped with a

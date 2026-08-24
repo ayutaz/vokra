@@ -222,3 +222,40 @@ fn v6_2_1_prob_stream_matches_ort_reference_16k_ctx() {
         ref_probs.len()
     );
 }
+
+/// Env- and Apple-gated: the v6.2.1 retrained weights execute through the
+/// same complete Metal path and stay within the registered FP32 bound against
+/// the independently ORT-pinned CPU route.
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn v6_2_1_cpu_metal_stream_parity() {
+    let Ok(path) = env::var(V6_GGUF_ENV) else {
+        println!("SKIP: ${V6_GGUF_ENV} unset");
+        return;
+    };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/parity/silero_vad/test_16k.wav");
+    let wav = vokra_models::silero_vad::wav::read_wav_f32(fixture).unwrap();
+    let cpu = SileroVadV5::open(&path).unwrap();
+    let metal = SileroVadV5::open(&path)
+        .unwrap()
+        .with_backend(vokra_core::BackendKind::Metal);
+    let cpu_probabilities = cpu
+        .open_stream()
+        .push_pcm(&wav.samples, wav.sample_rate)
+        .unwrap();
+    let metal_probabilities = metal
+        .open_stream()
+        .push_pcm(&wav.samples, wav.sample_rate)
+        .unwrap();
+    assert_eq!(metal_probabilities.len(), cpu_probabilities.len());
+    let max_abs = metal_probabilities
+        .iter()
+        .zip(&cpu_probabilities)
+        .map(|(metal, cpu)| (metal - cpu).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_abs <= 0.01,
+        "Silero v6.2.1 CPU/Metal max abs {max_abs} exceeds 0.01"
+    );
+}

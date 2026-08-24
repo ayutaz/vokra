@@ -95,16 +95,16 @@
 
 use std::collections::BTreeSet;
 
-use vokra_backend_cpu::kernels;
 use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{AsrEngine, BackendKind, LicenseClass, Result, Transcription, VokraError};
 use vokra_ops::ctc_decode_greedy;
 
+use crate::compute::Compute;
 use crate::parakeet::{
-    ParakeetBoundEncoderBlock, ParakeetBoundNorm, ParakeetBoundSubsampling, ParakeetEncoderConfig,
-    ParakeetTokenizer, conformer_block_forward, parakeet_logmel, relative_positions,
-    subsampling_forward, transpose_out_in,
+    PARAKEET_HOT_OPS, ParakeetBoundEncoderBlock, ParakeetBoundNorm, ParakeetBoundSubsampling,
+    ParakeetEncoderConfig, ParakeetTokenizer, conformer_block_forward, parakeet_logmel,
+    relative_positions, subsampling_forward, transpose_out_in,
 };
 
 /// `vokra.model.arch` a Parakeet-CTC GGUF must carry. Written by
@@ -1092,6 +1092,7 @@ pub struct ParakeetCtcAsr {
     weights: ParakeetCtcWeightStore,
     tokenizer: Option<ParakeetTokenizer>,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl ParakeetCtcAsr {
@@ -1258,6 +1259,7 @@ impl ParakeetCtcAsr {
             // AttributionRequired). `from_gguf` overrides with whatever
             // the provenance chunk carries (or `Unknown` if absent).
             weight_license: LicenseClass::AttributionRequired,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -1385,7 +1387,21 @@ impl ParakeetCtcAsr {
             weights: ParakeetCtcWeightStore::Bound(Box::new(weights)),
             tokenizer: Some(tokenizer),
             weight_license,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Selects the backend used by subsequent encoder and CTC-head calls.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected backend.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The stamped weight-license class surfaced from the GGUF's
@@ -1438,6 +1454,11 @@ impl ParakeetCtcAsr {
     /// Runs the official 80-bin frontend and 42-block FastConformer encoder.
     /// Returns row-major `[encoder_frames, 1024]`.
     pub fn encode_pcm(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
+        self.encode_pcm_with_compute(pcm, &compute)
+    }
+
+    fn encode_pcm_with_compute(&self, pcm: &[f32], compute: &Compute) -> Result<(Vec<f32>, usize)> {
         let ParakeetCtcWeightStore::Bound(weights) = &self.weights else {
             return Err(VokraError::NotImplemented(
                 "ParakeetCtcAsr::encode_pcm requires a real GGUF-bound checkpoint",
@@ -1447,6 +1468,7 @@ impl ParakeetCtcAsr {
         let (features, frames) =
             parakeet_logmel(pcm, self.cfg.sample_rate, self.cfg.encoder.in_dim)?;
         let (mut hidden, encoded_frames) = subsampling_forward(
+            compute,
             &features,
             frames,
             self.cfg.encoder.in_dim,
@@ -1467,13 +1489,30 @@ impl ParakeetCtcAsr {
         }
         let positions = relative_positions(encoded_frames, self.cfg.encoder.d_model);
         for block in &weights.encoder {
-            conformer_block_forward(&mut hidden, encoded_frames, block, &positions, &shared)?;
+            conformer_block_forward(
+                compute,
+                &mut hidden,
+                encoded_frames,
+                block,
+                &positions,
+                &shared,
+            )?;
         }
         Ok((hidden, encoded_frames))
     }
 
     /// Applies the official `Conv1d(kernel_size=1)` CTC projection.
     pub fn logits(&self, encoder: &[f32], frames: usize) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
+        self.logits_with_compute(encoder, frames, &compute)
+    }
+
+    fn logits_with_compute(
+        &self,
+        encoder: &[f32],
+        frames: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         let ParakeetCtcWeightStore::Bound(weights) = &self.weights else {
             return Err(VokraError::NotImplemented(
                 "ParakeetCtcAsr::logits requires a real GGUF-bound checkpoint",
@@ -1487,7 +1526,7 @@ impl ParakeetCtcAsr {
             )));
         }
         let mut logits = vec![0.0; frames * self.cfg.head.vocab_size];
-        kernels::gemm_f32(
+        compute.gemm_f32(
             frames,
             self.cfg.head.vocab_size,
             width,
@@ -1521,8 +1560,9 @@ impl ParakeetCtcAsr {
                 "parakeet-ctc transcribe: synthesized weights cannot produce a real transcript",
             ));
         }
-        let (encoder, frames) = self.encode_pcm(pcm)?;
-        let logits = self.logits(&encoder, frames)?;
+        let compute = Compute::for_backend(self.backend, PARAKEET_HOT_OPS)?;
+        let (encoder, frames) = self.encode_pcm_with_compute(pcm, &compute)?;
+        let logits = self.logits_with_compute(&encoder, frames, &compute)?;
         ctc_decode_greedy(
             &logits,
             frames,
@@ -1570,7 +1610,7 @@ impl AsrEngine for ParakeetCtcAsr {
     }
 
     fn backend(&self) -> BackendKind {
-        BackendKind::Cpu
+        self.backend
     }
 }
 

@@ -356,11 +356,9 @@ declare -a NO_READER=(
   'beats|publish-only BF16 pass-through (microsoft/unilm BEATs, MIT via the repo-root LICENSE). beats.rs:60 defers the safetensors prepare script. The tag is kept distinct precisely so a BEATs checkpoint cannot misroute into a HuBERT loader; no binder module exists.'
   'bs_roformer|publish-BLOCKED, not merely unbound: the BS-RoFormer family carries no uniform upstream license (most releases carry none at all), so the converter defaults to LicenseClass::RedistributionForbidden fail-closed and a caller must supply --license <spdx> from their own attestation. bs_roformer.rs:19 names crates/vokra-models/src/bs_roformer/ as the binder that "will read" this metadata; that directory does not exist yet.'
   'dasheng|publish-only BF16 pass-through (Xiaomi mispeech Dasheng, apache-2.0, <2 GB). dasheng.rs:45 defers the prepare script; no vokra-models::dasheng module exists.'
-  'ecapa_tdnn|reader-side gap ONLY — the converter half is fully wired: ModelKind::EcapaTdnn exists (crates/vokra-convert/src/lib.rs:1442), from_arg accepts four spellings (~:4652), and convert_file_licensed (opens :6927) dispatches it at ~:8958, so `vokra-cli convert --model ecapa-tdnn` runs end to end (crates/vokra-cli/src/convert.rs:61, pinned by the slug table at :1790). What is missing is a READER: crates/vokra-models/src/ecapa_tdnn/ does not exist. The sibling SpeechBrain binder says the same thing from the other direction at crates/vokra-models/src/lang_id/mod.rs:720 — "no runtime ECAPA trunk binder exists in this workspace yet, the sibling `ecapa_tdnn` arch is converter-side only" — while listing that trunk as one of four pieces its own loud-partial forward still waits on. CORRECTION 2026-08-15: this entry used to claim the tag was "not wired on EITHER side", quoting a "Wiring status" section of ecapa_tdnn.rs that had gone stale under it; that section was deleted in the same 2026-08-15 sweep, so do not go looking for it. Only half of what it said was ever true here (there is indeed no crate-root re-export), and a re-export is not what makes a converter reachable — convert_file_licensed is, and it dispatches. The entry also deferred the gap "to owner sign-off (license-audit.md section 3.1)", which had already been granted: row 316 is signed as Commercial 2026-07-28 yousan and the weights are published as vokra/ecapa-tdnn. Nothing gates a binder now except wave ordering, which is a much weaker claim than the one this line used to make.'
   'firered_asr_llm_l|awaiting a binder: ~16.6 GB / 8.3B BF16 (Conformer encoder + Qwen2 LM decoder). firered_asr_llm_l.rs:100 records that it has no runtime binder of its own and that the only landed Qwen2-family forward belongs to a different model. Its siblings firered_asr_aed_l and firered_vad each have a binder; the tag stays distinct so an AED loader cannot try to read an LLM decoder.'
   'frcrn|publish-only BF16 pass-through (alibabasglab FRCRN, apache-2.0). frcrn.rs:10 reserves the tag for a future vokra-models::frcrn::* implementation. The tag is deliberately NOT "denoise", so it cannot misroute into the DeepFilterNet3 binder.'
   'htdemucs_multi|publish-only, variant-agnostic BF16 pass-through skeleton (facebookresearch/demucs, MIT). htdemucs_multi.rs:50 names a future vokra-models::htdemucs_multi module; real-weight parity is deferred to owner sign-off (license-audit.md section 3.1).'
-  'hubert|publish-only BF16 pass-through (facebook/hubert-large-ls960-ft, apache-2.0; local convert safe). The future native forward is expected to share ops with wav2vec2_ctc, but hubert_large_ls960.rs:17 keeps the tag distinct so a HuBERT checkpoint cannot misroute into the wav2vec2 loader. No binder module exists.'
   'mert|publish-only BF16 pass-through AND NonCommercial: m-a-p/MERT-v1-330M is cc-by-nc-4.0, so publish needs --allow-noncommercial and the M2-13 runtime gate refuses a commercial-mode load. mert.rs:53 defers the prepare script; no binder module exists.'
   'metricgan_plus|publish-only BF16 pass-through (SpeechBrain MetricGAN+, apache-2.0). metricgan_plus.rs:43 names a future crates/vokra-models/src/metricgan_plus/ module and :32 defers the from_gguf forward to owner sign-off.'
   'mossformer2_ss_16k|publish-only BF16 pass-through (ClearerVoice-Studio MossFormer2, apache-2.0). mossformer2_ss_16k.rs:52-56 defers real-weight parity against a future gated-attention forward to owner sign-off, and :60-70 is where the tag is kept distinct from the landed FsmnVad binder (related FSMN block, different task head) — those are two separate sections, and citing only the first for both claims is how a reason starts drifting off its evidence.'
@@ -373,7 +371,6 @@ declare -a NO_READER=(
   'tiger_separator|publish-only BF16 pass-through (JusperLee TIGER-DnR, apache-2.0). tiger.rs:70 names a future crates/vokra-models/src/tiger/ module and :56 defers TigerSeparator::from_gguf to a follow-up on the RMVPE / Charsiu loud-partial precedent.'
   'titanet-large|publish-only BF16 pass-through (NVIDIA TitaNet-L, cc-by-4.0 so AttributionRequired). titanet.rs:59 states the runtime port is out of scope for the converter wave; :10 reserves the tag for a future native TitaNet loader.'
   'unity-2|vast.ai-gated (~9.00 GB) AND NonCommercial: SeamlessM4T v2 Large is cc-by-nc-4.0, so publish needs --allow-noncommercial. The converter is a BF16 pass-through skeleton and seamless_m4t_v2_large.rs:29-31 keeps the tag distinct from the M4T v1 / MMS siblings so it cannot misroute the runtime binder (FR-EX-08). No binder module exists.'
-  'xvector|publish-only BF16 pass-through (SpeechBrain x-vector, apache-2.0). xvector.rs:12 reserves the tag for a future vokra-models::xvector::* loader; no such module exists.'
   'yamnet|publish-only BF16 pass-through (YAMNet mirror, apache-2.0 with section 3.1 blank fail-closed pending owner confirmation of the mirror LICENSE). yamnet.rs:49 defers the prepare script and :24-25 keeps the tag distinct so a MobileNet checkpoint cannot route through a Cnn14 loader. Until 2026-08-15 the ONLY "yamnet" literals under vokra-models/src were the PANNs / ATST / MAEST tests asserting those binders REFUSE a YAMNet GGUF, and the gate was counting that refusal as proof of a binder.'
   'audioseal_real_weight|publish-only: weights ship as vokra/audioseal-real-weight (MIT), but the Generator+Detector runtime binder is gated on the M5-05 T04 watermark ADR, which is owner-pending (converter states this at audioseal_real_weight.rs:185).'
   'facodec|publish-only BF16 pass-through (naturalspeech3_facodec.rs). Runtime binder + real-weight parity are a post-signoff follow-up on the RMVPE / Charsiu loud-partial precedent; the redecoder variants additionally await an owner ELVIS-Act routing decision (main zoo vs voiceclone-experimental) because they enable timbre swapping.'
@@ -672,6 +669,54 @@ CONST_USE = re.compile(r'\b([A-Z][A-Z0-9_]*)\b')
 ASSEMBLED_KEY = re.compile(r'^\{([A-Z][A-Z0-9_]*)\}(\S*)$')
 # The tail of an assembled key, when it is literal enough to name exactly.
 KEY_TAIL = re.compile(r'[A-Za-z0-9_.]*')
+SOME_ARG = re.compile(r'^\s*Some\s*\(')
+
+
+def function_call_arguments(source, name):
+    """Yield balanced argument text for calls to `name` in sanitized code."""
+    cursor = 0
+    while True:
+        start = source.find(name, cursor)
+        if start < 0:
+            return
+        before = source[start - 1] if start else ""
+        after_name = start + len(name)
+        if before.isalnum() or before == "_":
+            cursor = after_name
+            continue
+        opening = after_name
+        while opening < len(source) and source[opening].isspace():
+            opening += 1
+        if opening >= len(source) or source[opening] != "(":
+            cursor = after_name
+            continue
+        depth = 1
+        end = opening + 1
+        while end < len(source) and depth:
+            if source[end] == "(":
+                depth += 1
+            elif source[end] == ")":
+                depth -= 1
+            end += 1
+        if depth:
+            return
+        yield source[opening + 1 : end - 1]
+        cursor = end
+
+
+def top_level_arguments(call):
+    """Split one balanced call at commas outside nested expressions."""
+    out, depth, start = [], 0, 0
+    for index, char in enumerate(call):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            out.append(call[start:index])
+            start = index + 1
+    out.append(call[start:])
+    return out
 
 
 def rust_files(root):
@@ -1221,7 +1266,7 @@ def meta_stamped(root):
     two halves are finally symmetric: a literal must REACH CODE, not merely
     be bound to a name.
 
-    A use is one of three shapes:
+    A use is one of four shapes:
       - the const NAME in code position (`b.add_u32(KEY_FOO, v)`,
         `write_u32_array(b, KEY_CONV_DIM, &CONV_DIM)`, a `[KEY_A, KEY_B]`
         array a loop later stamps);
@@ -1236,6 +1281,11 @@ def meta_stamped(root):
         diagnostic that merely names a key: `"{KEY_FOO} is missing"` has a
         space, `"missing {k}"` interpolates a lowercase local. Both the
         head const's own value and the assembled key are recorded.
+      - the shared `stamp_provenance` writer. Its implementation lives in
+        `vokra-core`, outside this converter-tree scan: weight-license is
+        unconditional, while `model_id` and `source` count only when their
+        respective call arguments are visibly `Some(..)`. A `None` must not
+        satisfy a required reader.
 
     Resolution is same-file first, then tree-wide for names that bind
     exactly one key. Ambiguity is real — `KEY_SAMPLE_RATE` is declared in
@@ -1298,6 +1348,24 @@ def meta_stamped(root):
                 base = resolve(m.group(1), decls)
                 if base:
                     keys.add(base)
+
+        # `vokra_core::stamp_provenance` is a real metadata writer whose
+        # body is deliberately outside `vokra-convert/src`. Parse balanced
+        # calls from string/comment-sanitized production code rather than
+        # treating a mere import or diagnostic mention as a write.
+        production = "\n".join(
+            line if index + 1 not in skip else ""
+            for index, line in enumerate(code)
+        )
+        for call in function_call_arguments(production, "stamp_provenance"):
+            args = top_level_arguments(call)
+            if len(args) < 5:
+                continue
+            keys.add("vokra.provenance.weight_license")
+            if SOME_ARG.match(args[3]):
+                keys.add("vokra.provenance.model_id")
+            if SOME_ARG.match(args[4]):
+                keys.add("vokra.provenance.source")
     return keys
 
 
@@ -2884,8 +2952,56 @@ self_test() {
     fi
     write_stamps
 
+    # 45. The shared provenance helper lives in vokra-core, outside the
+    #     converter subtree scanned by this gate. A visible Some(model_id)
+    #     argument is nevertheless a real write performed by that helper.
+    write_meta \
+        'const KEY_PROV_ID: &str = "vokra.provenance.model_id";' \
+        'fn load_prov(g: &GgufFile) -> Result<Self> {' \
+        '    let id = g.get(KEY_PROV_ID).ok_or_else(|| e())?;' \
+        '    Ok(Self { id })' \
+        '}'
+    {
+        printf 'fn stamp(b: &mut GgufBuilder) {\n'
+        printf '    b.add_u32("vokra.dfix.kept", 1);\n'
+        printf '    vokra_core::stamp_provenance(\n'
+        printf '        b, LicenseClass::Permissive, "apache-2.0", Some("model"), None,\n'
+        printf '    );\n'
+        printf '}\n'
+    } >"$tmp/conv/models/stamps.rs"
+    if run "$ok" -- "$okb" >/dev/null 2>&1; then
+        echo "self-test PASS: stamp_provenance with Some(model_id) counts as a real model_id stamp"
+    else
+        echo "self-test FAIL: stamp_provenance(Some(model_id), ..) must satisfy the provenance reader" >&2
+        run "$ok" -- "$okb" 2>&1 >&2 || true
+        status=1
+    fi
+
+    # 46. The same helper with None for source must not answer a required
+    #     source reader. This keeps helper recognition fail-closed instead
+    #     of treating every optional field as unconditionally stamped.
+    write_meta \
+        'const KEY_PROV_SOURCE: &str = "vokra.provenance.source";' \
+        'fn load_source(g: &GgufFile) -> Result<Self> {' \
+        '    let source = g.get(KEY_PROV_SOURCE).ok_or_else(|| e())?;' \
+        '    Ok(Self { source })' \
+        '}'
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: stamp_provenance(..., None) must not count as a source stamp" >&2
+        status=1
+    elif grep -q 'leg d.*`vokra.provenance.\*`' <<<"$out" \
+        && grep -q 'vokra.provenance.source' <<<"$out"; then
+        echo "self-test PASS: stamp_provenance None does not fabricate an optional provenance stamp"
+    else
+        echo "self-test FAIL: the absent provenance source was not reported" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    write_meta
+    write_stamps
+
     if [ "$status" -eq 0 ]; then
-        echo "check-arch-handshake --self-test: OK (47 cases)"
+        echo "check-arch-handshake --self-test: OK (49 cases)"
     fi
     return "$status"
 }

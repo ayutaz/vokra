@@ -12,7 +12,7 @@
 
 use std::process::ExitCode;
 
-use vokra_core::engines::KwsEngine;
+use vokra_core::engines::{KwsEngine, SeparationEngine};
 use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
@@ -29,8 +29,9 @@ USAGE:
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <wav2vec2.gguf> --input <16k-mono.wav> [--output <features.f32>]
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
-    vokra-cli run --model <campplus.gguf> --input <a.wav> [--compare <b.wav>]
+    vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
@@ -39,6 +40,8 @@ USAGE:
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <sepformer.gguf> --input <mixture.wav> [--output <separated.wav>]
+    vokra-cli run --model <conv-tasnet.gguf> --input <noisy.wav> [--output <enhanced.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
     vokra-cli run --model <fcpe.gguf> --input <in.wav>
@@ -58,13 +61,14 @@ USAGE:
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
-                                speaker embedding / denoise / segmentation / F0).
+                                speaker embedding / denoise / separation /
+                                segmentation / F0).
                                 An arch vokra-models binds but this CLI has no
                                 task for is refused with the binding module and
                                 the library entry point to call — never a bare
                                 `unsupported model arch` (FR-EX-08).
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
-                                denoise, segmentation and F0; optional recorded
+                                denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
                                 path, FR-OP-60). For NKF-AEC this is the mic
                                 signal and must be paired with --far-end.
@@ -80,17 +84,17 @@ OPTIONS:
                                 repeat, channel mixing, or resampling is done.
     --backend <name>            cpu | metal | cuda — backend for the model's hot
                                 ops [default cpu]. Mirrors `bench --backend`:
-                                honored by the whisper / voxtral ASR, kokoro TTS
-                                and speaker (CAM++) paths. VAD, piper-plus TTS
-                                Parakeet-TDT ASR, and the CSM / Moshi S2S
-                                engines run on the CPU only, so a non-CPU
-                                --backend for them is a loud error rather than
-                                a silent CPU run (FR-EX-08).
+                                honored only by architectures whose complete
+                                learned-op set has an explicit backend route.
+                                CPU-only or routed-partial engines reject an
+                                unsupported selection loudly rather than
+                                silently running on CPU (FR-EX-08).
                                 For the honoring paths, metal/cuda need the CLI
                                 built with that feature — an unavailable backend
                                 fails loudly at inference, never silently on CPU.
-    --compare <path>            speaker (campplus) only: second WAV; prints the
-                                cosine similarity of the two 192-d embeddings
+    --compare <path>            speaker (CAM++ / X-vector / ECAPA-TDNN / WeSpeaker / TitaNet-L):
+                                second WAV; prints the
+                                cosine similarity of the two embeddings
                                 (speaker_verify, FR-OP-81)
     --text <string>             text to synthesize (TTS) / normalize
                                 (wetextprocessing) / the reply text CSM
@@ -121,11 +125,15 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro only: duration multiplier (reciprocal
                                 of upstream `speed`) [default 1.0]
-    --output <path>             WAV file for audio-producing tasks. Charsiu
+    --output <path>             WAV file for audio-producing tasks. An encoder-
+                                only Wav2Vec2 GGUF writes time-major raw f32
+                                `[frames, hidden]` features. Charsiu
                                 writes alignment TSV; CT-Punc
                                 writes exact UTF-8 restored text when present.
                                 Mimi requires it: code container for encode,
                                 WAV for decode. Vocoders write waveform WAV.
+                                Multi-speaker SepFormer models derive
+                                `<stem>.sourceN.wav` paths from this value.
     --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
                                 side-car. Each record is `<u32 id><TAB><token>`;
                                 tokens allow literal Unicode plus `\\`, `\t`,
@@ -234,15 +242,13 @@ struct RunArgs {
     /// Vocos Encodec AdaLayerNorm condition (`0..4`).
     bandwidth_id: Option<usize>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
-    /// Honored by whisper / voxtral ASR, kokoro TTS, speaker (CAM++), and the
-    /// standalone Mimi codec, whose dispatch binds `.with_backend(...)`. The
-    /// VAD, piper-plus TTS and CSM / Moshi S2S engines are not
-    /// backend-parameterised, so a non-CPU backend for them is rejected loudly
-    /// in `main` rather than run silently on the CPU (FR-EX-08). For the
-    /// honoring paths an *unavailable* backend still fails loudly at
-    /// inference, never silently on CPU.
+    /// Honored only by concrete engines whose dispatch binds
+    /// `.with_backend(...)` for the complete declared learned-op set. Engines
+    /// without that seam are rejected loudly in `main` rather than run
+    /// silently on CPU (FR-EX-08). For honoring paths an *unavailable* backend
+    /// still fails loudly at inference, never silently on CPU.
     backend: vokra_core::BackendKind,
-    /// Speaker (campplus) only: second WAV for the cosine-similarity
+    /// Speaker (CAM++ / X-vector) only: second WAV for cosine similarity.
     /// comparison. Any other task rejects the flag loudly (FR-EX-08).
     compare: Option<String>,
     /// NKF-AEC only: the far-end/reference WAV paired sample-for-sample with
@@ -600,45 +606,30 @@ fn backend_flag_name(backend: vokra_core::BackendKind) -> String {
 /// engine, the human label of that engine; `None` for the backend-honoring
 /// paths.
 ///
-/// The VAD (Silero), piper-plus TTS and both S2S engines (CSM / Moshi) bind
-/// their concrete engine *without* `.with_backend(...)` — see `engine.rs` and
-/// the Kokoro / Voxtral / speaker arms of this file for the ones that DO — so
-/// a non-CPU `--backend` would be a silent CPU no-op for them. [`main`] uses
-/// this to reject that combination loudly (FR-EX-08). The match is exhaustive
-/// so a newly added arch must classify itself here; keep it in lock-step with
-/// the `.with_backend(...)` call sites.
+/// Engines listed here bind without `.with_backend(...)`, so a non-CPU
+/// selection would be a silent CPU no-op. [`main`] rejects that combination
+/// loudly (FR-EX-08). The match is exhaustive; keep it in lock-step with the
+/// concrete binders.
 fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
     match task {
-        ModelTask::Vad => Some("VAD (Silero)"),
-        // Wave G (2026-08-15): the four newly routed arches all bind their
-        // concrete model WITHOUT a `.with_backend(...)` seam (none of
-        // `FsmnVadV1` / `Nsnet2V1` / `PyanNet` / `RMVPE` has one), so a
-        // non-CPU `--backend` would be a silent CPU run for them — same class
-        // of gap as VAD / piper-plus / CSM / Moshi above.
-        ModelTask::VadFsmn => Some("VAD (FSMN)"),
-        ModelTask::VadFirered => Some("VAD (FireRedVAD)"),
-        ModelTask::VadTen => Some("VAD (TEN-VAD)"),
+        // Wave G (2026-08-15): these routed arches bind concrete models
+        // without a `.with_backend(...)` seam, so a non-CPU selection would
+        // be a silent CPU run. NSNet2 later left this group and is classified
+        // in the mixed denoise arm below.
         ModelTask::KwsOpenwakeword => Some("openWakeWord keyword spotting"),
-        ModelTask::SmartTurn => Some("SmartTurn v2 semantic endpointing"),
-        ModelTask::Denoise => Some("NSNet2 / RNNoise speech enhancement"),
-        ModelTask::Segment => Some("pyannote speaker segmentation"),
-        ModelTask::F0Rmvpe => Some("RMVPE F0 (pitch) extraction"),
-        ModelTask::F0Fcpe => Some("FCPE F0 (pitch) extraction"),
+        // Both routed denoise arches bind the selected backend themselves.
+        ModelTask::Denoise => None,
         ModelTask::F0Crepe => Some("CREPE F0 (pitch) extraction"),
         ModelTask::AlignCharsiu => Some("Charsiu forced alignment"),
         ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
-        ModelTask::AecNkf => Some("NKF acoustic echo cancellation"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
-        ModelTask::VocoderBigVgan => Some("BigVGAN neural vocoder"),
-        ModelTask::VocoderHifiGan => Some("HiFi-GAN neural vocoder"),
-        ModelTask::VocoderVocos => Some("Vocos neural vocoder"),
-        ModelTask::Tts => Some("piper-plus TTS"),
+        ModelTask::VocoderBigVgan => None,
+        ModelTask::VocoderHifiGan => None,
         ModelTask::S2s => Some("CSM speech-to-speech"),
-        ModelTask::S2sDuplex => Some("Moshi full-duplex speech-to-speech"),
         // SBV2 (Task 38): `SbV2Model` / `DebertaV2Encoder` / `DebertaV3Encoder`
         // have no `.with_backend(...)` seam yet (no Metal/CUDA Compute-seam
         // wiring for this arch today) — a non-CPU `--backend` would silently
-        // run on the CPU, same class of gap as VAD/piper-plus/CSM/Moshi above.
+        // run on the CPU, same class of gap as VAD/CSM/Moshi above.
         ModelTask::Sbv2 => Some("SBV2 (Style-Bert-VITS2 v2) TTS"),
         // Backend-honoring: the concrete engine binds `.with_backend(...)`, so
         // a non-CPU backend reaches the hot ops (and an unavailable one fails
@@ -646,9 +637,23 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // NOT fire for these.
         ModelTask::Asr
         | ModelTask::AsrVoxtral
+        | ModelTask::SpeechFeaturesWav2Vec2
+        | ModelTask::Vad
+        | ModelTask::VadFirered
+        | ModelTask::VadTen
+        | ModelTask::F0Rmvpe
+        | ModelTask::F0Fcpe
+        | ModelTask::SmartTurn
+        | ModelTask::Segment
+        | ModelTask::Separation
+        | ModelTask::Tts
         | ModelTask::TtsKokoro
         | ModelTask::Speaker
-        | ModelTask::MimiCodec => None,
+        | ModelTask::MimiCodec
+        | ModelTask::S2sDuplex
+        | ModelTask::VadFsmn
+        | ModelTask::VocoderVocos
+        | ModelTask::AecNkf => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -669,11 +674,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
 
-    // `--compare` belongs to the speaker (campplus) task only. Reject it on
+    // `--compare` belongs to the speaker task only. Reject it on
     // every other arch rather than silently ignoring the flag (FR-EX-08).
     if a.compare.is_some() && task != ModelTask::Speaker {
         return Err(
-            "run: --compare is only supported for the speaker (campplus) arch — \
+            "run: --compare is only supported for speaker-embedding arches — \
              it compares two speaker embeddings (FR-OP-81)"
                 .to_owned(),
         );
@@ -780,22 +785,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     // `--backend metal|cuda|vulkan` reaches the model's hot ops only on the
     // arches whose `run` dispatch binds the concrete engine
-    // `.with_backend(...)`: the Whisper / Voxtral ASR paths, the Kokoro TTS
-    // path, speaker (CAM++) encoder, and standalone Mimi codec. The VAD
-    // (Silero), piper-plus TTS, and both S2S engines (CSM / Moshi) bind without
-    // a backend and run on the CPU regardless. A non-CPU `--backend` for one
-    // of them would be a silent no-op — the model would run on the CPU while
-    // the caller believes the GPU is in use. Reject it loudly rather than
-    // misreport where the model ran (FR-EX-08), mirroring the per-arch flag
-    // rejections above. (The honoring arches keep their existing posture: an
-    // *unavailable* backend there fails loudly at inference, never on CPU.)
+    // `.with_backend(...)`. CPU-only engines bind without a backend and run on
+    // CPU regardless. A non-CPU `--backend` for one of them would be a silent
+    // no-op, so reject it loudly rather than misreport where the model ran
+    // (FR-EX-08). Honoring arches keep their existing posture: an unavailable
+    // backend fails loudly at inference, never on CPU.
     if a.backend != vokra_core::BackendKind::Cpu {
         if let Some(engine_label) = cpu_only_engine_label(task) {
             return Err(format!(
                 "run: --backend {backend} is not supported for this model — the \
                  {engine_label} engine runs on the CPU regardless (its dispatch is not \
-                 backend-parameterised). Only the whisper / voxtral ASR, kokoro TTS, \
-                 speaker (campplus), and standalone Mimi paths honor --backend; a non-CPU backend here would \
+                 backend-parameterised). This architecture has no complete \
+                 --backend route; a non-CPU backend here would \
                  silently run on the CPU (FR-EX-08). Re-run with --backend cpu (or omit it).",
                 backend = backend_flag_name(a.backend),
             ));
@@ -828,6 +829,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .as_deref()
                 .ok_or("run (ASR): --input <in.wav> is required")?;
             let clip = wav::read_wav(path)?;
+            let arch = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str());
+            if matches!(
+                arch,
+                Some(vokra_models::wav2vec2_ctc::ARCH)
+                    | Some(vokra_models::hubert::ARCH)
+                    | Some(vokra_models::data2vec_audio::ARCH)
+            ) && clip.sample_rate != 16_000
+            {
+                return Err(format!(
+                    "run ({arch:?} ASR): {path} is {} Hz, expected 16000 Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
             // Whisper's beam-search entry point lives on the concrete
             // `WhisperAsr` (n-best + alignment), not on the shared
             // `AsrEngine` trait the session injects. `--word-timestamps`
@@ -864,6 +881,49 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             let text = run_asr(&session, &clip.samples)?;
             println!("asr: {text}");
         }
+        ModelTask::SpeechFeaturesWav2Vec2 => {
+            let path = a
+                .input
+                .as_deref()
+                .ok_or("run (Wav2Vec2 features): --input <16k-mono.wav> is required")?;
+            if a.beam_size != 1
+                || a.no_repeat_ngram != 0
+                || a.length_penalty.to_bits() != 0.6f32.to_bits()
+            {
+                return Err(
+                    "run (Wav2Vec2 features): beam-search flags are not applicable to the encoder-only checkpoint"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != 16_000 {
+                return Err(format!(
+                    "run (Wav2Vec2 features): {path} is {} Hz, expected 16000 Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let model = vokra_models::wav2vec2_ctc::Wav2Vec2Ctc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
+            let (features, frames) = model
+                .encode_features(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            let hidden = model.config().hidden_size;
+            if let Some(output) = a.output.as_deref() {
+                let bytes = features
+                    .iter()
+                    .flat_map(|value| value.to_le_bytes())
+                    .collect::<Vec<_>>();
+                std::fs::write(output, bytes).map_err(|error| {
+                    format!("run (Wav2Vec2 features): --output {output}: {error}")
+                })?;
+                println!("wav2vec2-features: {frames} frames x {hidden} f32 -> {output}");
+            } else {
+                println!(
+                    "wav2vec2-features: {frames} frames x {hidden} f32 (no --output; features discarded)"
+                );
+            }
+        }
         ModelTask::AsrVoxtral => {
             run_voxtral(&session, &a)?;
         }
@@ -898,6 +958,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         // ---- Wave G (2026-08-15) — newly routed real forwards ------------
         ModelTask::Denoise => {
             run_denoise(&session, &a)?;
+        }
+        ModelTask::Separation => {
+            run_separation(&session, &a)?;
         }
         ModelTask::Segment => {
             run_segment(&a)?;
@@ -1254,50 +1317,84 @@ fn run_kokoro(a: &RunArgs) -> Result<(), String> {
     )
 }
 
-/// The speaker-embedding demo path (CAM++ / M0-08, FR-OP-81): Kaldi fbank
-/// (CAM++ config incl. CMN) → 192-d embedding; prints the L2-norm, and with
+/// The speaker-embedding demo path (CAM++ / X-vector / ECAPA-TDNN / WeSpeaker /
+/// TitaNet, FR-OP-81). Each model
+/// owns its exact PCM frontend and returns its native embedding width. With
 /// `--compare <b.wav>` the cosine similarity of the two embeddings via
 /// [`vokra_models::speaker::speaker_verify`] (threshold-free: the operating
 /// point is the caller's, ADR M4-20 §D-4).
 ///
-/// The encoder binds here from the session's GGUF (the [`Session`] facade has
-/// no speaker engine slot) and honors `--backend`: CAM++ dispatches GEMM only,
-/// so a GEMM-covering backend (Metal) runs the whole forward on the GPU; an
-/// unavailable backend errors at embed time (FR-EX-08).
+/// The concrete encoder binds here from the already-open session GGUF and
+/// honors `--backend`; this keeps model-specific diagnostics available without
+/// loading the weights twice. Unknown/malformed layouts and unsupported
+/// backends are loud errors (FR-EX-08).
 fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
-    use vokra_models::speaker::{EMBED_DIM, SpeakerEncoder, speaker_verify};
-    use vokra_ops::kaldi_fbank::{KaldiFbankOpts, kaldi_fbank};
+    use vokra_core::SpeakerEngine;
+    use vokra_models::ecapa_tdnn::EcapaTdnn;
+    use vokra_models::speaker::{SpeakerEncoder, speaker_verify};
+    use vokra_models::titanet::TitaNet;
+    use vokra_models::wespeaker::WeSpeaker;
+    use vokra_models::xvector::XVector;
 
     let input = a
         .input
         .as_deref()
         .ok_or("run (speaker): --input <a.wav> is required")?;
-    let encoder = SpeakerEncoder::from_gguf(session.gguf())
-        .map_err(|e| e.to_string())?
-        .with_backend(a.backend);
-    let opts = KaldiFbankOpts::camplus();
-
-    // wav → fbank → embedding for one clip. The CAM++ fbank recipe is fixed
-    // at 16 kHz (`KaldiFbankOpts::camplus`); a mismatched WAV is an explicit
-    // error — silently feeding a 44.1/48 kHz clip through a 16 kHz filterbank
-    // would produce a garbage embedding with no diagnostic (FR-EX-08).
-    let embed_clip = |path: &str| -> Result<[f32; EMBED_DIM], String> {
-        let clip = wav::read_wav(path)?;
-        if clip.sample_rate != opts.sample_rate {
+    let arch = session
+        .gguf()
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|value| value.as_str())
+        .ok_or("run (speaker): GGUF is missing `vokra.model.arch`")?;
+    let encoder: Box<dyn SpeakerEngine> = match arch {
+        "campplus" => Box::new(
+            SpeakerEncoder::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend),
+        ),
+        "xvector" => Box::new(
+            XVector::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend),
+        ),
+        "ecapa_tdnn" => Box::new(
+            EcapaTdnn::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend),
+        ),
+        "wespeaker" => Box::new(
+            WeSpeaker::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend),
+        ),
+        "titanet-large" => Box::new(
+            TitaNet::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(a.backend),
+        ),
+        other => {
             return Err(format!(
-                "run (speaker): {path}: expected a {} Hz mono WAV (the CAM++ Kaldi-fbank \
-                 recipe), got {} Hz — resample offline first",
-                opts.sample_rate, clip.sample_rate
+                "run (speaker): unsupported speaker architecture `{other}`"
             ));
         }
-        let (fbank, frames) = kaldi_fbank(&clip.samples, &opts).map_err(|e| e.to_string())?;
-        let emb = encoder.embed(&fbank, frames).map_err(|e| e.to_string())?;
+    };
+
+    // WAV → model-owned frontend → embedding. A mismatched rate is an
+    // explicit error inside the model; neither frontend silently resamples.
+    let embed_clip = |path: &str| -> Result<Vec<f32>, String> {
+        let clip = wav::read_wav(path)?;
+        let emb = encoder
+            .embed(&clip.samples, clip.sample_rate)
+            .map_err(|e| format!("run (speaker): {path}: {e}"))?;
         let l2 = emb
             .iter()
             .map(|v| f64::from(*v) * f64::from(*v))
             .sum::<f64>()
             .sqrt();
-        println!("speaker: {path}: frames={frames} dim={EMBED_DIM} l2_norm={l2:.6}");
+        println!(
+            "speaker: {path}: samples={} dim={} l2_norm={l2:.6}",
+            clip.samples.len(),
+            emb.len()
+        );
         Ok(emb)
     };
 
@@ -1340,7 +1437,8 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
     let (rate, out) = match arch {
         "nsnet2" => {
             let model = vokra_models::nsnet2::Nsnet2V1::from_gguf(session.gguf())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
             let rate = model.config().sample_rate;
             if clip.sample_rate != rate {
                 return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
@@ -1352,7 +1450,8 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
         }
         "rnnoise" => {
             let model = vokra_models::rnnoise::RnnoiseV02::from_gguf(session.gguf())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
             let rate = vokra_models::rnnoise::SAMPLE_RATE;
             if clip.sample_rate != rate {
                 return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
@@ -1382,6 +1481,102 @@ fn denoise_rate_error(path: &str, arch: &str, expected: u32, actual: u32) -> Str
     )
 }
 
+/// Runs one complete source-separation or enhancement utterance.
+fn run_separation(session: &Session, a: &RunArgs) -> Result<(), String> {
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (separation): --input <mixture.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let arch = session
+        .gguf()
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|value| value.as_str())
+        .ok_or("run (separation): GGUF is missing `vokra.model.arch`")?;
+    let (label, model): (&str, Box<dyn SeparationEngine>) = match arch {
+        "sepformer" => (
+            "sepformer",
+            Box::new(
+                vokra_models::sepformer::SepFormer::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(a.backend),
+            ),
+        ),
+        "conv_tasnet" => (
+            "conv-tasnet",
+            Box::new(
+                vokra_models::conv_tasnet::ConvTasnet::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(a.backend),
+            ),
+        ),
+        other => {
+            return Err(format!(
+                "run (separation): internal dispatch error: arch `{other}` is not sepformer or conv_tasnet"
+            ));
+        }
+    };
+    let rate = model.sample_rate();
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (separation): {path} is {} Hz, but arch `{arch}` requires {rate} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let outputs = model
+        .separate(&clip.samples)
+        .map_err(|error| error.to_string())?;
+    if outputs.len() != model.output_streams() {
+        return Err(format!(
+            "run (separation): internal output-count mismatch: model declares {}, forward returned {}",
+            model.output_streams(),
+            outputs.len()
+        ));
+    }
+
+    match a.output.as_deref() {
+        None => println!(
+            "{label}: {} input samples -> {} streams x {} samples @ {rate} Hz (no --output; audio discarded)",
+            clip.samples.len(),
+            outputs.len(),
+            outputs.first().map_or(0, Vec::len),
+        ),
+        Some(output) if outputs.len() == 1 => {
+            wav::write_wav(output, &outputs[0], rate)?;
+            println!(
+                "{label}: wrote {} samples @ {rate} Hz -> {output}",
+                outputs[0].len()
+            );
+        }
+        Some(output) => {
+            for (index, pcm) in outputs.iter().enumerate() {
+                let stream_path = separation_stream_path(output, index + 1);
+                wav::write_wav(&stream_path, pcm, rate)?;
+                println!(
+                    "{label}: source {} wrote {} samples @ {rate} Hz -> {}",
+                    index + 1,
+                    pcm.len(),
+                    stream_path.display(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn separation_stream_path(base: &str, source: usize) -> std::path::PathBuf {
+    let path = std::path::Path::new(base);
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("separated");
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("wav");
+    path.with_file_name(format!("{stem}.source{source}.{extension}"))
+}
+
 /// The pyannote `segmentation-3.0` speaker-segmentation path (Wave G).
 ///
 /// Prints one summary line: total frames, frames carrying any speaker, frames
@@ -1406,7 +1601,9 @@ fn run_segment(a: &RunArgs) -> Result<(), String> {
         .input
         .as_deref()
         .ok_or("run (segment): --input <in.wav> is required")?;
-    let model = PyanNet::open(&a.model).map_err(|e| e.to_string())?;
+    let model = PyanNet::open(&a.model)
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
     let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
     if clip.sample_rate != rate {
@@ -1466,7 +1663,9 @@ fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
         .input
         .as_deref()
         .ok_or("run (f0): --input <in.wav> is required")?;
-    let model = RMVPE::open(&a.model).map_err(|e| e.to_string())?;
+    let model = RMVPE::open(&a.model)
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
     let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
     if clip.sample_rate != rate {
@@ -1491,7 +1690,9 @@ fn run_f0_fcpe(a: &RunArgs) -> Result<(), String> {
         .input
         .as_deref()
         .ok_or("run (f0): --input <in.wav> is required")?;
-    let model = FCPE::from_gguf(std::path::Path::new(&a.model)).map_err(|e| e.to_string())?;
+    let model = FCPE::from_gguf(std::path::Path::new(&a.model))
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
     let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
     if clip.sample_rate != rate {
@@ -1834,7 +2035,8 @@ fn run_bigvgan(session: &Session, a: &RunArgs) -> Result<(), String> {
         .as_deref()
         .ok_or("run (bigvgan): --input <mel.f32> is required")?;
     let model = vokra_models::bigvgan::BigVGan::from_gguf(session.gguf())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
     let n_mels = model.config().in_channels as usize;
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (bigvgan): --input {input_path}: {error}"))?;
@@ -1867,7 +2069,8 @@ fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
         .as_deref()
         .ok_or("run (hifigan): --input <mel.f32> is required")?;
     let model = vokra_models::hifigan::HiFiGan::from_gguf(session.gguf())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
     let n_mels = model.attrs().n_mels;
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (hifigan): --input {input_path}: {error}"))?;
@@ -1897,8 +2100,9 @@ fn run_vocos(session: &Session, a: &RunArgs) -> Result<(), String> {
         .input
         .as_deref()
         .ok_or("run (vocos): --input <features.f32> is required")?;
-    let model =
-        vokra_models::vocos::Vocos::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+    let model = vokra_models::vocos::Vocos::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
     let bytes = std::fs::read(input_path)
         .map_err(|error| format!("run (vocos): --input {input_path}: {error}"))?;
     let (features, frames) =
@@ -2042,8 +2246,9 @@ fn run_nkf_aec(session: &Session, a: &RunArgs) -> Result<(), String> {
     let far = wav::read_wav(far_path).map_err(|e| format!("{far_path}: {e}"))?;
     validate_aec_pair(mic_path, &mic, far_path, &far)?;
 
-    let model =
-        vokra_models::aec::nkf_aec::NkfAec::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let model = vokra_models::aec::nkf_aec::NkfAec::from_gguf(session.gguf())
+        .map_err(|e| e.to_string())?
+        .with_backend(a.backend);
     let cfg = model.config();
     if mic.sample_rate != cfg.sample_rate {
         return Err(format!(
@@ -2285,7 +2490,8 @@ fn run_smart_turn(session: &Session, args: &RunArgs) -> Result<(), String> {
         .ok_or("run (smart-turn): --input <16k-mono.wav> is required")?;
     let clip = wav::read_wav(path)?;
     let model = vokra_models::smart_turn::SmartTurn::from_gguf(session.gguf())
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())?
+        .with_backend(args.backend);
     let prediction = model
         .predict_endpoint(&clip.samples, clip.sample_rate)
         .map_err(|error| error.to_string())?;
@@ -3473,7 +3679,11 @@ mod tests {
         assert!(USAGE.contains("--compare"), "USAGE lists --compare");
         assert!(USAGE.contains("--far-end"), "USAGE lists --far-end");
         assert!(USAGE.contains("speaker"), "USAGE mentions the speaker task");
-        assert!(USAGE.contains("campplus"), "USAGE names the campplus arch");
+        assert!(USAGE.contains("CAM++"), "USAGE names the CAM++ family");
+        assert!(
+            USAGE.contains("X-vector"),
+            "USAGE names the X-vector family"
+        );
         // P2 cc-10 / cc-19 surface.
         assert!(
             USAGE.contains("--word-timestamps"),
@@ -3506,7 +3716,7 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(
-            err.contains("--compare is only supported for the speaker"),
+            err.contains("--compare is only supported for speaker-embedding arches"),
             "got: {err}"
         );
     }
@@ -3579,15 +3789,11 @@ mod tests {
         assert!(err.contains("--input"), "actionable: {err}");
     }
 
-    /// Real-GGUF gated e2e (mirrors the `speaker::parity` gating): set
-    /// `VOKRA_CAMPLUS_GGUF` to a converted CAM++ GGUF to run; skips clean
-    /// when unset (CI stays green, no fabricated pass).
+    /// Real-GGUF gated e2e (mirrors the model parity gates).  Each available
+    /// public speaker artifact must run through the same CLI surface; an unset
+    /// model variable skips only that leg.
     #[test]
     fn speaker_real_gguf_e2e_identical_inputs_gated() {
-        let Ok(model) = std::env::var("VOKRA_CAMPLUS_GGUF") else {
-            eprintln!("skipping speaker CLI e2e: set VOKRA_CAMPLUS_GGUF to run");
-            return;
-        };
         let dir = std::env::temp_dir();
         let in_wav = dir.join(format!("vokra-cli-spk-e2e-{}.wav", std::process::id()));
         // 1 s of deterministic pseudo-speech at 16 kHz (multi-tone, enough
@@ -3600,33 +3806,44 @@ mod tests {
             })
             .collect();
         wav::write_wav(in_wav.to_str().unwrap(), &samples, 16_000).unwrap();
-        // Identical inputs → the run succeeds (cosine 1.0 prints to stdout;
-        // the numeric assertion rides the campaign harness, which captures
-        // stdout of the release binary).
-        let code = main(&args(&[
-            "--model",
-            &model,
-            "--input",
-            in_wav.to_str().unwrap(),
-            "--compare",
-            in_wav.to_str().unwrap(),
-        ]))
-        .expect("speaker e2e runs");
-        assert_eq!(code, ExitCode::SUCCESS);
-        // A non-16 kHz clip is an explicit error (no silent resample).
         let wav8k = dir.join(format!("vokra-cli-spk-e2e8k-{}.wav", std::process::id()));
         wav::write_wav(wav8k.to_str().unwrap(), &samples[..8000], 8_000).unwrap();
-        let err = main(&args(&[
-            "--model",
-            &model,
-            "--input",
-            wav8k.to_str().unwrap(),
-        ]))
-        .unwrap_err();
-        assert!(
-            err.contains("16000 Hz") || err.contains("16 kHz"),
-            "got: {err}"
-        );
+        for (variable, label) in [
+            ("VOKRA_CAMPLUS_GGUF", "CAM++"),
+            ("VOKRA_XVECTOR_GGUF", "X-vector"),
+            ("VOKRA_ECAPA_GGUF", "ECAPA-TDNN"),
+            ("VOKRA_WESPEAKER_GGUF", "WeSpeaker"),
+            ("VOKRA_TITANET_GGUF", "TitaNet-L"),
+        ] {
+            let Ok(model) = std::env::var(variable) else {
+                eprintln!("skipping {label} CLI e2e: set {variable} to run");
+                continue;
+            };
+            // Identical inputs → success and cosine 1.0 on stdout.
+            let code = main(&args(&[
+                "--model",
+                &model,
+                "--input",
+                in_wav.to_str().unwrap(),
+                "--compare",
+                in_wav.to_str().unwrap(),
+            ]))
+            .unwrap_or_else(|error| panic!("{label} speaker e2e failed: {error}"));
+            assert_eq!(code, ExitCode::SUCCESS);
+
+            // A non-16 kHz clip is an explicit error (no silent resample).
+            let err = main(&args(&[
+                "--model",
+                &model,
+                "--input",
+                wav8k.to_str().unwrap(),
+            ]))
+            .unwrap_err();
+            assert!(
+                err.contains("16000 Hz") || err.contains("16 kHz"),
+                "{label}: got {err}"
+            );
+        }
         let _ = std::fs::remove_file(&in_wav);
         let _ = std::fs::remove_file(&wav8k);
     }
@@ -3706,6 +3923,55 @@ mod tests {
         let b = run_once();
         assert!(!a.samples.is_empty(), "model frames were pulled");
         assert_eq!(a.samples, b.samples, "T26 (d): deterministic reproduction");
+
+        #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+        {
+            use vokra_core::{BackendKind, VokraError};
+
+            match vokra_models::moshi::gpu_backend_probe(BackendKind::Metal) {
+                Ok(()) => {
+                    let metal_wav = dir.join("model-metal.wav");
+                    let metal_args: Vec<String> = [
+                        "--model",
+                        gguf.to_str().unwrap(),
+                        "--input",
+                        in_wav.to_str().unwrap(),
+                        "--output",
+                        metal_wav.to_str().unwrap(),
+                        "--backend",
+                        "metal",
+                        "--duplex",
+                        "--echo-sim",
+                        "0.5",
+                        "--interrupt-after",
+                        "2",
+                        "--deterministic",
+                    ]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                    main(&metal_args).expect("Moshi Metal duplex demo runs");
+                    let metal =
+                        wav::read_wav(metal_wav.to_str().unwrap()).expect("Metal output wav");
+                    assert_eq!(metal.samples.len(), a.samples.len());
+                    let max_abs = metal
+                        .samples
+                        .iter()
+                        .zip(&a.samples)
+                        .map(|(&gpu, &cpu)| (gpu - cpu).abs())
+                        .fold(0.0f32, f32::max);
+                    eprintln!("Moshi CLI CPU/Metal PCM max_abs={max_abs:.9e}");
+                    assert!(
+                        max_abs <= 0.01,
+                        "Moshi CLI CPU/Metal PCM max_abs={max_abs} exceeds 0.01"
+                    );
+                }
+                Err(VokraError::BackendUnavailable(error)) => {
+                    eprintln!("skip Moshi CLI Metal parity: {error}");
+                }
+                Err(error) => panic!("unexpected Moshi Metal probe error: {error}"),
+            }
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4130,22 +4396,9 @@ mod tests {
     #[test]
     fn cpu_only_engine_label_classifies_every_task() {
         // Silent-ignore engines → guard fires (named label).
-        assert_eq!(cpu_only_engine_label(ModelTask::Vad), Some("VAD (Silero)"));
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::VadFirered),
-            Some("VAD (FireRedVAD)")
-        );
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::Tts),
-            Some("piper-plus TTS")
-        );
         assert_eq!(
             cpu_only_engine_label(ModelTask::S2s),
             Some("CSM speech-to-speech")
-        );
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::S2sDuplex),
-            Some("Moshi full-duplex speech-to-speech")
         );
         assert_eq!(
             cpu_only_engine_label(ModelTask::Sbv2),
@@ -4155,28 +4408,86 @@ mod tests {
             cpu_only_engine_label(ModelTask::CtPunc),
             Some("CT-Punc punctuation restoration")
         );
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::VocoderBigVgan),
-            Some("BigVGAN neural vocoder")
-        );
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::VocoderHifiGan),
-            Some("HiFi-GAN neural vocoder")
-        );
-        assert_eq!(
-            cpu_only_engine_label(ModelTask::VocoderVocos),
-            Some("Vocos neural vocoder")
-        );
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Tts), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VadFsmn), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VocoderVocos), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VocoderBigVgan), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::VocoderHifiGan), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Denoise), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Separation), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AecNkf), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::F0Rmvpe), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::F0Fcpe), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::SmartTurn), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Segment), None);
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
+    }
+
+    #[test]
+    fn separation_multi_stream_paths_are_deterministic() {
+        assert_eq!(
+            separation_stream_path("/tmp/mix.wav", 1),
+            std::path::PathBuf::from("/tmp/mix.source1.wav")
+        );
+        assert_eq!(
+            separation_stream_path("relative/output", 3),
+            std::path::PathBuf::from("relative/output.source3.wav")
+        );
+    }
+
+    /// Real-weight full-posterior CPU/Metal parity for the FSMN learned-op
+    /// seam. The CPU path remains independently pinned to FunASR in
+    /// `parity_fsmn_vad_real`; this leg proves that every released projection
+    /// and causal depthwise-memory block reaches the selected Apple backend.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn fsmn_vad_real_cpu_metal_full_posterior_parity() {
+        let Some(path) = std::env::var_os("VOKRA_FSMN_VAD_REAL_GGUF") else {
+            eprintln!("skip: set VOKRA_FSMN_VAD_REAL_GGUF to the strict canonical GGUF");
+            return;
+        };
+        let cpu =
+            vokra_models::fsmn_vad::FsmnVadV1::open(&path).expect("bind strict FSMN-VAD for CPU");
+        let metal = vokra_models::fsmn_vad::FsmnVadV1::open(&path)
+            .expect("bind strict FSMN-VAD for Metal")
+            .with_backend(vokra_core::BackendKind::Metal);
+        let width = cpu.config().encoder.input_dim;
+        let features = (0..13 * width)
+            .map(|index| {
+                let phase = index as f32;
+                (phase * 0.013).sin() * 0.25 + (phase * 0.007).cos() * 0.1
+            })
+            .collect::<Vec<_>>();
+        let cpu_probabilities = cpu
+            .forward_features(&features)
+            .expect("CPU FSMN feature forward");
+        let metal_probabilities = metal
+            .forward_features(&features)
+            .expect("Metal FSMN feature forward");
+        assert_eq!(metal_probabilities.len(), cpu_probabilities.len());
+        let max_abs = metal_probabilities
+            .iter()
+            .zip(&cpu_probabilities)
+            .map(|(metal, cpu)| (metal - cpu).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("FSMN-VAD real CPU/Metal full-posterior max_abs={max_abs:.9e}");
+        assert!(
+            max_abs <= 0.01,
+            "FSMN-VAD CPU/Metal posterior max |delta| {max_abs:.9e} exceeds the fixed FP32 GPU bound"
+        );
     }
 
     #[test]
@@ -4203,26 +4514,18 @@ mod tests {
         assert!(err.contains("exact multiple of channels=3"), "{err}");
     }
 
-    /// (a) `--backend metal` on the silero VAD arch is a loud FR-EX-08 error
-    /// that names the backend and the engine; (b) `--backend cpu` and the
-    /// unset default still pass the guard and reach the VAD task (which then
-    /// asks for `--input`).
+    /// Silero is backend-honoring: Metal, explicit CPU and the default CPU all
+    /// pass the former guard and reach the VAD task's `--input` contract.
     #[test]
-    fn non_cpu_backend_on_vad_is_rejected_but_cpu_passes() {
+    fn backend_selection_on_silero_reaches_vad_input_contract() {
         let model = silero_fixture();
         let err = main(&args(&["--model", &model, "--backend", "metal"])).unwrap_err();
         assert!(
-            err.contains("--backend metal is not supported"),
-            "names the backend: {err}"
+            !err.contains("is not supported for this model"),
+            "Metal must pass the former CPU-only guard: {err}"
         );
-        assert!(
-            err.contains("VAD (Silero)") && err.contains("runs on the CPU regardless"),
-            "explains why: {err}"
-        );
-        assert!(err.contains("FR-EX-08"), "cites the contract: {err}");
+        assert!(err.contains("--input"), "Metal reaches the VAD task: {err}");
 
-        // (b) Explicit cpu is NOT rejected by the guard — it reaches the VAD
-        // task, which requires --input.
         let err_cpu = main(&args(&["--model", &model, "--backend", "cpu"])).unwrap_err();
         assert!(
             !err_cpu.contains("is not supported for this model"),
@@ -4233,7 +4536,6 @@ mod tests {
             "cpu reaches the VAD task: {err_cpu}"
         );
 
-        // (b) Unset backend defaults to cpu — same as above.
         let err_unset = main(&args(&["--model", &model])).unwrap_err();
         assert!(
             !err_unset.contains("is not supported for this model"),
@@ -4269,11 +4571,11 @@ mod tests {
         );
     }
 
-    /// (a) `--backend metal` on the Moshi full-duplex (S2S) arch is a loud
-    /// FR-EX-08 error. Uses the same synthetic checkpoint the duplex smoke
-    /// test converts.
+    /// Moshi is backend-honoring: a Metal selection passes the former
+    /// CPU-only guard and reaches the task's ordinary input contract. Uses the
+    /// same synthetic checkpoint the duplex smoke test converts.
     #[test]
-    fn non_cpu_backend_on_moshi_duplex_is_rejected_loudly() {
+    fn non_cpu_backend_on_moshi_duplex_reaches_the_engine() {
         let dir = std::env::temp_dir().join(format!("vokra-cli-moshi-be-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ckpt = dir.join("model.safetensors");
@@ -4291,12 +4593,12 @@ mod tests {
         .unwrap_err();
         std::fs::remove_dir_all(&dir).ok();
         assert!(
-            err.contains("--backend metal is not supported"),
-            "names the backend: {err}"
+            err.contains("--input"),
+            "Moshi should pass the backend guard and reach its input contract: {err}"
         );
         assert!(
-            err.contains("Moshi full-duplex speech-to-speech"),
-            "names the engine: {err}"
+            !err.contains("--backend metal is not supported"),
+            "Moshi must not be classified CPU-only: {err}"
         );
     }
 

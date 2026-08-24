@@ -625,7 +625,9 @@ fn kgnet_step_returns_zero_for_all_zero_weights() {
         &mut kg_re,
         &mut kg_im,
         &mut scratch,
-    );
+        None,
+    )
+    .unwrap();
     for (i, &v) in kg_re.iter().enumerate() {
         assert!(v.abs() < 1e-6, "kg_re[{i}] = {v}, want 0");
     }

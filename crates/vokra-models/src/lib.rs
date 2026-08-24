@@ -368,6 +368,23 @@ pub mod kws;
 // pipeline is wired.
 pub mod fsmn_vad;
 pub mod speaker;
+// SpeechBrain ECAPA-TDNN speaker encoder. The binder accepts only the exact
+// 200-tensor public topology and runs its learned Conv1d/attention path through
+// the explicit CPU/Metal Compute seam.
+pub mod ecapa_tdnn;
+// WeSpeaker ResNet34-LM speaker encoder. Strictly accepts the two public
+// manifests and dispatches every learned Conv2D/projection GEMM through the
+// selected CPU or Metal backend.
+pub mod wespeaker;
+// NVIDIA TitaNet-L speaker encoder. Strictly accepts the public 108-tensor
+// NeMo inference manifest and dispatches its complete depthwise-separable
+// Conv1D/SE/attention graph through the selected CPU or Metal backend.
+pub mod titanet;
+// SpeechBrain X-vector speaker encoder. Strictly accepts both existing public
+// GGUF layouts (32 bare embedding tensors or 46 combined prefixed tensors),
+// runs the exact 24-bin SpeechBrain frontend and five-layer TDNN, and routes
+// every learned convolution through one explicit CPU/Metal Compute seam.
+pub mod xvector;
 // StyleTTS 2 (Li et al. 2023, arXiv:2306.07691). Config-only scaffold —
 // the upstream `yl4579/StyleTTS2` release ships weights under a
 // **voice-consent / disclosure usage agreement** (README §Pre-trained
@@ -536,9 +553,10 @@ pub mod pyannote;
 pub mod hifigan;
 pub mod snac;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
-// vocos = standalone vocos runtime binder (loud-partial — ConvNeXt V2
-// backbone missing from vokra-ops; iSTFT head available via
-// `vokra_ops::istft`, Kokoro precedent).
+// vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT
+// forward. CPU preserves the independent scalar reference; Metal dispatches
+// dense/grouped Conv1D, LayerNorm and GELU through the whole-model backend
+// seam without a silent CPU fallback.
 // bigvgan = standalone binder for the 4 nvidia/bigvgan_* variants;
 // decode delegates to existing `vokra_ops::bigvgan_generator`.
 // beat_this = CPJKU Transformer beat/downbeat tracker (MIT, ISMIR
@@ -598,37 +616,30 @@ pub mod demucs;
 // precedent (vocos / bigvgan / snac / mt3 / kyutai_stt / parakeet_ctc
 // / redimnet / sortformer).
 pub mod musicgen;
-// Wave 5 2026-08-14 audit follow-up (separation-runtime binder — LIB.RS
-// RULE append at end with Wave 5 comment marker): Conv-TasNet
-// (Luo & Mesgarani 2019, arXiv:1809.07454) — Convolutional Time-domain
-// Speech Separation loud-partial runtime binder for the `conv_tasnet`
-// converter arch. Real arch check + tensor-manifest non-emptiness gate
-// + primary-source-transcribed ConvTasnetConfig (12-axis Asteroid
-// Libri1Mix `enhsingle_16k` hold — the converter does NOT yet stamp
-// `vokra.conv_tasnet.*` so a follow-up wave lands the strict axis read
-// alongside the encoder-masker-decoder walk); separate() loud-partial
-// pending Asteroid Python 1D Conv encoder + TCN masker + 1D
-// ConvTranspose decoder composition
-// (github.com/asteroid-team/asteroid). Speech-separation Copyleft
-// (CC-BY-SA-4.0 T3 tier — §3.1 sign-off row `conv-tasnet-libri1mix`
-// already ☑ Commercial by owner 2026-08-02 yousan) sibling to the
-// music-source-separation `demucs` (MIT Permissive) landed just above.
+// Conv-TasNet Libri1Mix native enhancement runtime. Strictly binds the pinned
+// 345-tensor Asteroid checkpoint and all twelve topology/provenance axes, then
+// runs the 512-filter encoder, 24-block dilated TCN masker and learned decoder.
+// Conv1D, grouped Conv1D and Global LayerNorm share one explicit CPU/Metal
+// backend route; scalar activations/layout/residual work stays host glue. The
+// independent Asteroid 0.7.0 fixture pins encoder, bottleneck, mask and final
+// waveform parity. Upstream license declarations conflict, so conversion and
+// runtime support are complete while official redistribution remains
+// fail-closed (`LicenseClass::Unknown`).
 pub mod conv_tasnet;
 // Wave 5 2026-08-14 audit follow-up (separation-runtime binder — LIB.RS
 // RULE append at end with Wave 5 comment marker): SpeechBrain SepFormer
 // family (Subakan et al. 2021 / arXiv:2010.13154 §3, apache-2.0) — 7
 // variants (wsj02mix / libri2mix / libri3mix / wham16k-enhancement /
 // whamr16k / whamr8k / dns4-16k-enhancement) share the `sepformer`
-// converter arch + this runtime binder. Real `from_gguf` (arch check +
-// variant tag round-trip + n_out variant/stamp cross-check + non-empty
-// tensor gate + weight-license class surfacing); `separate()` loud-
-// partial pending dual-path Transformer masker composition (encoder +
-// IntraTransformer + InterTransformer + `n_out`-way head + decoder)
+// converter arch + this runtime binder. Strict `from_gguf` validates the
+// architecture, variant, category, output-stream count and all 417 learned
+// tensors; `separate()` implements the encoder, dual-path Transformer masker
+// (16 intra/inter Transformer layers), `n_out`-way head and decoder
 // per `github.com/speechbrain/speechbrain/blob/develop/speechbrain/
 // lobes/models/dual_path.py` + `resepformer.py` + arXiv:2010.13154.
 // Sibling to the music-source-separation `demucs` (MIT Permissive) and
-// the speech-source-separation `conv_tasnet` (CC-BY-SA-4.0 Copyleft T3)
-// landed just above — §3.1 sign-off rows 364-370 all ☑ Commercial
+// the speech-enhancement `conv_tasnet` (runtime complete; redistribution
+// unresolved) landed just above — SepFormer's §3.1 rows remain commercial
 // (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
 pub mod sepformer;
 // Wave 6 2026-08-14 audit follow-up (denoise runtime binder — LIB.RS
@@ -2438,6 +2449,19 @@ pub mod deepfake_detection;
 // `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
 // `[[feedback-license-signoff-primary-source]]`).
 pub mod chattts;
+
+// Mac CPU/Metal coverage wave (2026-08-24): strict native reader and complete
+// Wav2Vec2 CTC forward for the seven public `vokra/wav2vec2-*` GGUF repos.
+// The module keeps the encoder-only XLSR checkpoint usable through its feature
+// API and refuses the adapter-only MMS artifact explicitly.
+pub mod wav2vec2_ctc;
+// Mac CPU/Metal coverage wave (2026-08-24): strict public
+// `facebook/hubert-large-ls960-ft` CTC binder. The arch/tensor namespace
+// remains distinct; learned Wav2Vec2-family ops are shared after exact bind.
+pub mod hubert;
+// Mac CPU/Metal coverage wave (2026-08-24): dedicated Data2Vec Audio
+// binder for its distinct names and five-layer positional-conv stack.
+pub mod data2vec_audio;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

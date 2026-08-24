@@ -267,6 +267,65 @@ fn conv1d_metal_matches_cpu() {
     eprintln!("conv1d Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
 }
 
+#[test]
+fn grouped_conv1d_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("grouped-conv1d");
+    // Includes groups=1, a two-group convolution, and Vocos' depthwise shape.
+    let cases = [
+        (2usize, 9usize, 4usize, 3usize, 1usize, 1usize, 1usize),
+        (4, 11, 6, 5, 2, 2, 2),
+        (7, 13, 7, 7, 1, 3, 7),
+        (64, 17, 64, 7, 1, 3, 64),
+    ];
+    let mut worst = 0.0f32;
+    for &(in_ch, in_len, out_ch, kernel, stride, padding, groups) in &cases {
+        let out_len = (in_len + 2 * padding - kernel) / stride + 1;
+        let input = rand_vec(0x6A01 ^ ((in_ch * 131 + in_len) as u64), in_ch * in_len);
+        let weight = rand_vec(
+            0x6A02 ^ ((out_ch * 17 + kernel) as u64),
+            out_ch * (in_ch / groups) * kernel,
+        );
+        let bias = rand_vec(0x6A03 ^ out_ch as u64, out_ch);
+        let mut gpu = vec![f32::NAN; out_ch * out_len];
+        ctx.grouped_conv1d_f32(
+            &input,
+            in_ch,
+            in_len,
+            &weight,
+            out_ch,
+            kernel,
+            Some(&bias),
+            stride,
+            padding,
+            groups,
+            &mut gpu,
+        )
+        .expect("metal grouped conv1d");
+        let mut cpu_out = vec![0.0f32; out_ch * out_len];
+        cpu::grouped_conv1d_f32(
+            &input,
+            in_ch,
+            in_len,
+            &weight,
+            out_ch,
+            kernel,
+            Some(&bias),
+            stride,
+            padding,
+            groups,
+            &mut cpu_out,
+        )
+        .expect("cpu grouped conv1d");
+        let d = max_abs_diff(&gpu, &cpu_out);
+        eprintln!(
+            "grouped_conv1d in_ch={in_ch:<3} out_ch={out_ch:<3} groups={groups:<3} k={kernel} max|Δ|={d:.3e}"
+        );
+        assert!(d <= ATOL, "grouped conv1d max|Δ| {d} > {ATOL}");
+        worst = worst.max(d);
+    }
+    eprintln!("grouped conv1d Metal vs CPU: global max|Δ| = {worst:.3e}");
+}
+
 /// Shape mismatches are explicit `InvalidArgument`, not a GPU fault (mirrors the
 /// GEMM shape-validation test).
 #[test]
@@ -304,6 +363,23 @@ fn kernels_reject_bad_shapes_explicitly() {
             1,
             0,
             &mut [0.0; 1]
+        )
+        .is_err()
+    );
+    // grouped conv1d: zero groups and indivisible channels are explicit.
+    assert!(
+        ctx.grouped_conv1d_f32(
+            &[1.0, 2.0],
+            1,
+            2,
+            &[1.0],
+            1,
+            1,
+            None,
+            1,
+            0,
+            0,
+            &mut [0.0; 2],
         )
         .is_err()
     );

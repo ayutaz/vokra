@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use vokra_core::BackendKind;
+use vokra_core::engines::SeparationEngine;
 use vokra_core::quant::{
     DegradationReport, QuantPolicy, verify_hifigan_int8 as core_verify_hifigan_int8,
 };
@@ -588,17 +589,15 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
-        // Speaker embedding (CAM++): no bench task is defined — the run-side
+        // Speaker embedding: no bench task is defined — the run-side
         // Speaker arm prints the embedding L2-norm / cosine, but a timing
         // harness needs a settled fbank+embed window definition first.
         // Reject rather than fabricate a measurement (FR-EX-08).
         ModelTask::Speaker => {
-            return Err(
-                "bench: arch `campplus` (speaker embedding) has no bench task yet — \
-                 use `vokra-cli run --model <campplus.gguf> --input <a.wav>` for the \
+            return Err("bench: speaker-embedding arches have no bench task yet — \
+                 use `vokra-cli run --model <speaker.gguf> --input <a.wav>` for the \
                  embedding itself (FR-EX-08: refusing to fabricate a measurement)"
-                    .to_owned(),
-            );
+                .to_owned());
         }
         // SBV2 (Task 38): the `run` arm needs the `--bert-ja` / `--bert-en`
         // side-car GGUFs `bench`'s generic `--model`-only dispatch has no
@@ -632,6 +631,32 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("smart-turn", audio_seconds, samples)
+        }
+        ModelTask::SpeechFeaturesWav2Vec2 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Wav2Vec2 features): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != 16_000 {
+                return Err(format!(
+                    "bench (Wav2Vec2 features): {path} is {} Hz, expected 16000 Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / 16_000.0;
+            let pcm = clip.samples;
+            let model = vokra_models::wav2vec2_ctc::Wav2Vec2Ctc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let features = model
+                    .encode_features(&pcm)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(features);
+                Ok(())
+            })?;
+            ("wav2vec2-features", audio_seconds, samples)
         }
         // Wave G (2026-08-15): FSMN-VAD shares this arm verbatim — its binder
         // implements the same `VadEngine` trait Silero does and is injected
@@ -682,6 +707,56 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("denoise", audio_seconds, samples)
+        }
+        ModelTask::Separation => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (separation): --input <mixture.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let arch = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str())
+                .ok_or("bench (separation): GGUF is missing `vokra.model.arch`")?;
+            let (label, model): (&str, Box<dyn SeparationEngine>) = match arch {
+                "sepformer" => (
+                    "sepformer",
+                    Box::new(
+                        vokra_models::sepformer::SepFormer::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
+                "conv_tasnet" => (
+                    "conv-tasnet",
+                    Box::new(
+                        vokra_models::conv_tasnet::ConvTasnet::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
+                other => {
+                    return Err(format!(
+                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer or conv_tasnet"
+                    ));
+                }
+            };
+            let rate = model.sample_rate();
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (separation): {path} is {} Hz, but arch `{arch}` requires {rate} Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let outputs = model.separate(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(outputs);
+                Ok(())
+            })?;
+            (label, audio_seconds, samples)
         }
         // pyannote's forward is real but sits behind the binder's own
         // `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (its BiLSTM stack has not been

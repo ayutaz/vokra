@@ -265,12 +265,95 @@ impl FsmnStreamState {
     }
 }
 
+/// Backend seam for the learned projections and causal depthwise memory in
+/// the released FSMN-VAD encoder.
+///
+/// Frontend feature extraction, ReLU, softmax, residual addition and stream
+/// history bookkeeping remain host control/DSP. Implementations must execute
+/// the learned matrix and depthwise-convolution work on their declared backend;
+/// returning an explicit error is required when a shape or primitive is
+/// unsupported.
+pub trait FsmnBackendOps {
+    /// Applies a row-wise linear projection with an optional learned bias.
+    fn linear(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// Applies the learned causal depthwise memory and residual connection,
+    /// updating the per-block projected history.
+    fn causal_memory(
+        &mut self,
+        projected: &[f32],
+        frames: usize,
+        cfg: &FsmnEncoderConfig,
+        weights: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>>;
+}
+
+struct ScalarFsmnOps;
+
+impl FsmnBackendOps for ScalarFsmnOps {
+    fn linear(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = linear(input, rows, input_dim, weight, output_dim);
+        if let Some(bias) = bias {
+            debug_assert_eq!(bias.len(), output_dim);
+            for row in 0..rows {
+                for column in 0..output_dim {
+                    output[row * output_dim + column] += bias[column];
+                }
+            }
+        }
+        Ok(output)
+    }
+
+    fn causal_memory(
+        &mut self,
+        projected: &[f32],
+        frames: usize,
+        cfg: &FsmnEncoderConfig,
+        weights: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>> {
+        Ok(causal_memory(projected, frames, cfg, weights, history))
+    }
+}
+
 /// Runs the exact released encoder and returns `[frames, output_dim]` logits.
 pub fn fsmn_vad_forward(
     cfg: &FsmnEncoderConfig,
     weights: &FsmnVadWeights,
     input_features: &[f32],
     state: &mut FsmnStreamState,
+) -> Result<Vec<f32>> {
+    fsmn_vad_forward_with_ops(cfg, weights, input_features, state, &mut ScalarFsmnOps)
+}
+
+/// Runs the exact released encoder through an injected learned-op backend.
+///
+/// [`fsmn_vad_forward`] remains the scalar CPU oracle and calls this function
+/// with the built-in adapter. Device backends can inject GEMV and grouped
+/// Conv1D without duplicating the model topology or stream-state semantics.
+pub fn fsmn_vad_forward_with_ops<O: FsmnBackendOps>(
+    cfg: &FsmnEncoderConfig,
+    weights: &FsmnVadWeights,
+    input_features: &[f32],
+    state: &mut FsmnStreamState,
+    ops: &mut O,
 ) -> Result<Vec<f32>> {
     weights.validate(cfg)?;
     if !state.matches(cfg) {
@@ -287,66 +370,72 @@ pub fn fsmn_vad_forward(
     }
     let frames = input_features.len() / cfg.input_dim;
 
-    let input_affine = affine(
+    let input_affine = affine_with_ops(
+        ops,
         input_features,
         frames,
         cfg.input_dim,
         &weights.in_linear1_weight,
-        &weights.in_linear1_bias,
+        Some(&weights.in_linear1_bias),
         cfg.input_affine_dim,
-    );
-    let mut hidden = affine(
+    )?;
+    let mut hidden = affine_with_ops(
+        ops,
         &input_affine,
         frames,
         cfg.input_affine_dim,
         &weights.in_linear2_weight,
-        &weights.in_linear2_bias,
+        Some(&weights.in_linear2_bias),
         cfg.linear_dim,
-    );
+    )?;
     hidden.iter_mut().for_each(|value| *value = value.max(0.0));
 
     for (block_index, block) in weights.blocks.iter().enumerate() {
-        let projected = linear(
+        let projected = ops.linear(
             &hidden,
             frames,
             cfg.linear_dim,
             &block.linear_weight,
+            None,
             cfg.proj_dim,
-        );
-        let memory = causal_memory(
+        )?;
+        let memory = ops.causal_memory(
             &projected,
             frames,
             cfg,
             &block.memory_weight,
             &mut state.per_block_history[block_index],
-        );
-        hidden = affine(
+        )?;
+        hidden = affine_with_ops(
+            ops,
             &memory,
             frames,
             cfg.proj_dim,
             &block.affine_weight,
-            &block.affine_bias,
+            Some(&block.affine_bias),
             cfg.linear_dim,
-        );
+        )?;
         hidden.iter_mut().for_each(|value| *value = value.max(0.0));
     }
 
-    let output_affine = affine(
+    let output_affine = affine_with_ops(
+        ops,
         &hidden,
         frames,
         cfg.linear_dim,
         &weights.out_linear1_weight,
-        &weights.out_linear1_bias,
+        Some(&weights.out_linear1_bias),
         cfg.output_affine_dim,
-    );
-    Ok(affine(
+    )?;
+    affine_with_ops(
+        ops,
         &output_affine,
         frames,
         cfg.output_affine_dim,
         &weights.out_linear2_weight,
-        &weights.out_linear2_bias,
+        Some(&weights.out_linear2_bias),
         cfg.output_dim,
-    ))
+    )
 }
 
 fn causal_memory(
@@ -382,22 +471,16 @@ fn causal_memory(
     output
 }
 
-fn affine(
+fn affine_with_ops<O: FsmnBackendOps>(
+    ops: &mut O,
     input: &[f32],
     rows: usize,
     input_dim: usize,
     weight: &[f32],
-    bias: &[f32],
+    bias: Option<&[f32]>,
     output_dim: usize,
-) -> Vec<f32> {
-    debug_assert_eq!(bias.len(), output_dim);
-    let mut output = linear(input, rows, input_dim, weight, output_dim);
-    for row in 0..rows {
-        for column in 0..output_dim {
-            output[row * output_dim + column] += bias[column];
-        }
-    }
-    output
+) -> Result<Vec<f32>> {
+    ops.linear(input, rows, input_dim, weight, bias, output_dim)
 }
 
 fn linear(

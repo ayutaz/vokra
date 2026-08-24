@@ -56,6 +56,8 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::compute::Compute;
+
 use super::PyanNetWeights;
 
 // ---------------------------------------------------------------------------
@@ -170,6 +172,36 @@ impl BiLstmLayer {
         output
     }
 
+    fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(input.len(), seq_len * self.input_dim);
+        let hidden = self.hidden_dim;
+        let mut output = vec![0.0f32; seq_len * 2 * hidden];
+        if seq_len == 0 {
+            return Ok(output);
+        }
+        let mut state = vec![0.0f32; hidden];
+        let mut cell = vec![0.0f32; hidden];
+        let mut gates = vec![0.0f32; 4 * hidden];
+        for time in 0..seq_len {
+            let input = &input[time * self.input_dim..(time + 1) * self.input_dim];
+            self.step_with_compute(0, input, &mut state, &mut cell, &mut gates, compute)?;
+            output[time * 2 * hidden..time * 2 * hidden + hidden].copy_from_slice(&state);
+        }
+        state.fill(0.0);
+        cell.fill(0.0);
+        for time in (0..seq_len).rev() {
+            let input = &input[time * self.input_dim..(time + 1) * self.input_dim];
+            self.step_with_compute(1, input, &mut state, &mut cell, &mut gates, compute)?;
+            output[time * 2 * hidden + hidden..(time + 1) * 2 * hidden].copy_from_slice(&state);
+        }
+        Ok(output)
+    }
+
     /// One `nn.LSTMCell` step for a given direction; mutates `h` / `c`
     /// in place. Formula (PyTorch, no peephole):
     ///
@@ -210,6 +242,50 @@ impl BiLstmLayer {
             c[j] = new_c;
             h[j] = new_h;
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_with_compute(
+        &self,
+        direction: usize,
+        input: &[f32],
+        state: &mut [f32],
+        cell: &mut [f32],
+        gates: &mut [f32],
+        compute: &Compute,
+    ) -> Result<()> {
+        let hidden = self.hidden_dim;
+        let rows = 4 * hidden;
+        compute.gemv_f32(
+            rows,
+            self.input_dim,
+            &self.w_ih[direction],
+            input,
+            Some(&self.b_ih[direction]),
+            gates,
+        )?;
+        let mut recurrent = vec![0.0f32; rows];
+        compute.gemv_f32(
+            rows,
+            hidden,
+            &self.w_hh[direction],
+            state,
+            Some(&self.b_hh[direction]),
+            &mut recurrent,
+        )?;
+        for (gate, recurrent) in gates.iter_mut().zip(recurrent) {
+            *gate += recurrent;
+        }
+        for index in 0..hidden {
+            let input_gate = sigmoid(gates[index]);
+            let forget_gate = sigmoid(gates[hidden + index]);
+            let candidate = gates[2 * hidden + index].tanh();
+            let output_gate = sigmoid(gates[3 * hidden + index]);
+            let next_cell = forget_gate * cell[index] + input_gate * candidate;
+            cell[index] = next_cell;
+            state[index] = output_gate * next_cell.tanh();
+        }
+        Ok(())
     }
 }
 
@@ -319,6 +395,21 @@ impl MonoLithicBiLstmStack {
             buf = layer.forward(&buf, seq_len);
         }
         buf
+    }
+
+    /// Backend-dispatched sibling of [`Self::forward`]. Every learned input
+    /// and recurrent projection uses GEMV on the selected backend.
+    pub fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        let mut buffer = input.to_vec();
+        for layer in &self.layers {
+            buffer = layer.forward_with_compute(&buffer, seq_len, compute)?;
+        }
+        Ok(buffer)
     }
 }
 
@@ -446,6 +537,15 @@ mod tests {
             .map(|i| ((i as f32) - 4.0) * 0.1)
             .collect();
         let out = layer.forward(&input, 4);
+        let dispatched = layer
+            .forward_with_compute(&input, 4, &Compute::cpu())
+            .expect("Compute BiLSTM");
+        let max_abs = out
+            .iter()
+            .zip(&dispatched)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs <= 1e-5, "BiLSTM Compute max_abs={max_abs}");
         for &v in &out {
             assert!(v.is_finite(), "output contains non-finite: {v}");
         }

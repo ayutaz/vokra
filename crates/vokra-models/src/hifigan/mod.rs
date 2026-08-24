@@ -68,12 +68,196 @@
 
 use vokra_core::gguf::GgufFile;
 use vokra_core::gguf::chunks;
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
-    HifiGanConfig, HifiGanConvPadding, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
-    UpsampleStageWeights, hifigan_generator_with_conv_padding,
+    HifiGanBackendOps, HifiGanConfig, HifiGanConvPadding, HifiGanWeights, MrfBranchWeights,
+    ResBlockLayer, UpsampleStageWeights, hifigan_generator_with_backend_ops,
+    hifigan_generator_with_conv_padding,
 };
+
+use crate::compute::{Compute, HotOp};
+
+/// Complete learned-op registry for both standalone HiFi-GAN releases.
+/// Dilated and transposed convolutions are expressed as exact host layout
+/// transforms followed by the selected backend's Conv1D kernel.
+pub const HIFIGAN_HOT_OPS: &[HotOp] = &[HotOp::Conv1d];
+
+pub(crate) struct HifiGanComputeOps<'a> {
+    pub(crate) compute: &'a Compute,
+}
+
+impl HifiGanComputeOps<'_> {
+    fn expanded_dilated_weight(
+        weight: &[f32],
+        in_ch: usize,
+        out_ch: usize,
+        kernel: usize,
+        dilation: usize,
+    ) -> Result<(Vec<f32>, usize)> {
+        if dilation == 0 || kernel == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFi-GAN backend Conv1D requires non-zero kernel and dilation".to_owned(),
+            ));
+        }
+        if weight.len() != out_ch * in_ch * kernel {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFi-GAN backend Conv1D weight length {} != {out_ch}*{in_ch}*{kernel}",
+                weight.len()
+            )));
+        }
+        let effective_kernel = 1 + (kernel - 1) * dilation;
+        let mut expanded = vec![0.0; out_ch * in_ch * effective_kernel];
+        for oc in 0..out_ch {
+            for ic in 0..in_ch {
+                let source = (oc * in_ch + ic) * kernel;
+                let destination = (oc * in_ch + ic) * effective_kernel;
+                for tap in 0..kernel {
+                    expanded[destination + tap * dilation] = weight[source + tap];
+                }
+            }
+        }
+        Ok((expanded, effective_kernel))
+    }
+
+    fn reflect_pad(
+        input: &[f32],
+        channels: usize,
+        time: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        if padding >= time {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFi-GAN reflect padding {padding} must be smaller than input length {time}"
+            )));
+        }
+        let padded_time = time + 2 * padding;
+        let mut padded = vec![0.0; channels * padded_time];
+        for channel in 0..channels {
+            let source = &input[channel * time..(channel + 1) * time];
+            let destination = &mut padded[channel * padded_time..(channel + 1) * padded_time];
+            for (index, slot) in destination.iter_mut().enumerate() {
+                let logical = index as isize - padding as isize;
+                let source_index = if logical < 0 {
+                    (-logical) as usize
+                } else if logical >= time as isize {
+                    (2 * time as isize - 2 - logical) as usize
+                } else {
+                    logical as usize
+                };
+                *slot = source[source_index];
+            }
+        }
+        Ok(padded)
+    }
+}
+
+impl HifiGanBackendOps for HifiGanComputeOps<'_> {
+    fn conv1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        padding_mode: HifiGanConvPadding,
+    ) -> Result<Vec<f32>> {
+        let (expanded_weight, effective_kernel) =
+            Self::expanded_dilated_weight(weight, in_ch, out_ch, kernel, dilation)?;
+        let reflected;
+        let (backend_input, backend_len, backend_padding) = match padding_mode {
+            HifiGanConvPadding::Zero => (input, in_len, padding),
+            HifiGanConvPadding::Reflect => {
+                reflected = Self::reflect_pad(input, in_ch, in_len, padding)?;
+                (reflected.as_slice(), in_len + 2 * padding, 0)
+            }
+        };
+        if backend_len + 2 * backend_padding < effective_kernel || stride == 0 {
+            return Err(VokraError::InvalidArgument(
+                "HiFi-GAN backend Conv1D has invalid output extent".to_owned(),
+            ));
+        }
+        let out_len = (backend_len + 2 * backend_padding - effective_kernel) / stride + 1;
+        let mut output = vec![0.0; out_ch * out_len];
+        self.compute.conv1d_f32(
+            backend_input,
+            in_ch,
+            backend_len,
+            &expanded_weight,
+            out_ch,
+            effective_kernel,
+            bias,
+            stride,
+            backend_padding,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn conv_transpose1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        if stride == 0 || in_len == 0 || kernel == 0 || padding >= kernel {
+            return Err(VokraError::InvalidArgument(
+                "HiFi-GAN backend ConvTranspose1D has invalid stride/input/kernel/padding"
+                    .to_owned(),
+            ));
+        }
+        if input.len() != in_ch * in_len || weight.len() != in_ch * out_ch * kernel {
+            return Err(VokraError::InvalidArgument(
+                "HiFi-GAN backend ConvTranspose1D input or weight shape mismatch".to_owned(),
+            ));
+        }
+        let expanded_len = (in_len - 1) * stride + 1;
+        let mut expanded_input = vec![0.0; in_ch * expanded_len];
+        for channel in 0..in_ch {
+            for time in 0..in_len {
+                expanded_input[channel * expanded_len + time * stride] =
+                    input[channel * in_len + time];
+            }
+        }
+        let mut flipped_weight = vec![0.0; out_ch * in_ch * kernel];
+        for input_channel in 0..in_ch {
+            for output_channel in 0..out_ch {
+                for tap in 0..kernel {
+                    flipped_weight[(output_channel * in_ch + input_channel) * kernel + tap] =
+                        weight[(input_channel * out_ch + output_channel) * kernel
+                            + (kernel - 1 - tap)];
+                }
+            }
+        }
+        let conv_padding = kernel - 1 - padding;
+        let out_len = expanded_len + 2 * conv_padding - kernel + 1;
+        let mut output = vec![0.0; out_ch * out_len];
+        self.compute.conv1d_f32(
+            &expanded_input,
+            in_ch,
+            expanded_len,
+            &flipped_weight,
+            out_ch,
+            kernel,
+            bias,
+            1,
+            conv_padding,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+}
 
 /// `vokra.model.arch` value emitted by the SpeechBrain LibriTTS 22.05 kHz
 /// converter (`crates/vokra-convert/src/models/hifigan_vocoder.rs::ARCH`).
@@ -133,6 +317,7 @@ pub struct HiFiGan {
     /// Boundary mode for every stride-1 Conv1d. SpeechBrain's wrapper uses
     /// reflect; SpeechT5 and the public constructor retain zero padding.
     conv_padding: HifiGanConvPadding,
+    backend: BackendKind,
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +478,7 @@ impl HiFiGan {
             normalization,
             inference_padding,
             conv_padding,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -300,6 +486,19 @@ impl HiFiGan {
     #[must_use]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
+    }
+
+    /// Selects the execution backend used by every learned convolution.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Selected execution backend. CPU is the constructor default.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The shape-metadata bundle (n_mels, upsample_rates, MRF branches).
@@ -481,14 +680,28 @@ impl HiFiGan {
             )?;
             (padded.as_slice(), n_frames + self.inference_padding * 2)
         };
-        hifigan_generator_with_conv_padding(
-            input,
-            input_frames,
-            &self.weights,
-            &self.attrs,
-            &self.config,
-            self.conv_padding,
-        )
+        if self.backend == BackendKind::Cpu {
+            hifigan_generator_with_conv_padding(
+                input,
+                input_frames,
+                &self.weights,
+                &self.attrs,
+                &self.config,
+                self.conv_padding,
+            )
+        } else {
+            let compute = Compute::for_backend(self.backend, HIFIGAN_HOT_OPS)?;
+            let ops = HifiGanComputeOps { compute: &compute };
+            hifigan_generator_with_backend_ops(
+                input,
+                input_frames,
+                &self.weights,
+                &self.attrs,
+                &self.config,
+                self.conv_padding,
+                &ops,
+            )
+        }
     }
 
     /// Dispatches on the `vokra.model.arch` metadata chunk and loads a
@@ -977,6 +1190,67 @@ mod tests {
         for &v in &pcm {
             assert!(v.is_finite() && v > -1.0 && v < 1.0);
         }
+    }
+
+    #[test]
+    fn compute_backend_matches_scalar_full_hifigan_stack() {
+        let attrs = tiny_attrs_v1();
+        let mut model = HiFiGan::synthesized(attrs.clone(), attrs.sample_rate)
+            .expect("synthesized non-zero parity model");
+        model.conv_padding = HifiGanConvPadding::Reflect;
+
+        fn fill(values: &mut [f32], scale: f32) {
+            for (index, value) in values.iter_mut().enumerate() {
+                *value = ((index % 17) as f32 - 8.0) * scale;
+            }
+        }
+
+        fill(&mut model.weights.conv_pre_weight, 0.002);
+        fill(&mut model.weights.conv_pre_bias, 0.001);
+        for upsample in &mut model.weights.upsample_weights {
+            fill(&mut upsample.weight, 0.002);
+            fill(&mut upsample.bias, 0.001);
+        }
+        for stage in &mut model.weights.mrf_stage_weights {
+            for branch in stage {
+                for layer in &mut branch.layers {
+                    fill(&mut layer.weight, 0.001);
+                    fill(&mut layer.bias, 0.0005);
+                    fill(layer.weight_c2.as_mut().expect("V1 c2 weight"), 0.001);
+                    fill(layer.bias_c2.as_mut().expect("V1 c2 bias"), 0.0005);
+                }
+            }
+        }
+        fill(&mut model.weights.conv_post_weight, 0.002);
+        fill(&mut model.weights.conv_post_bias, 0.001);
+
+        let n_frames = 5;
+        let mel: Vec<f32> = (0..attrs.n_mels * n_frames)
+            .map(|index| ((index % 11) as f32 - 5.0) * 0.03)
+            .collect();
+        let scalar = model.decode(&mel, n_frames).expect("scalar forward");
+        let compute = Compute::cpu();
+        let ops = HifiGanComputeOps { compute: &compute };
+        let dispatched = hifigan_generator_with_backend_ops(
+            &mel,
+            n_frames,
+            &model.weights,
+            &model.attrs,
+            &model.config,
+            model.conv_padding,
+            &ops,
+        )
+        .expect("Compute backend forward");
+        assert_eq!(scalar.len(), dispatched.len());
+        let max_abs = scalar
+            .iter()
+            .zip(&dispatched)
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs <= 1e-4,
+            "composed Conv1D backend drift {max_abs} exceeds the registered synthetic FP32 gate"
+        );
     }
 
     /// Structural precondition: [`HiFiGan::synthesized`] must reject a

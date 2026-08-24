@@ -18,8 +18,11 @@ pub use waveform::{RnnoiseFrameOutput, RnnoiseStream};
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};
+
+use crate::compute::{Compute, HotOp};
 
 /// Required GGUF architecture tag.
 pub const ARCH: &str = "rnnoise";
@@ -39,6 +42,11 @@ pub const CONV1_WIDTH: usize = 128;
 pub const HIDDEN_SIZE: usize = 384;
 /// Number of recurrent layers.
 pub const N_GRU: usize = 3;
+
+/// Backend-dispatched learned operators used by the RNNoise v0.2 network.
+/// Feature extraction, int8 activation quantization, nonlinear gates, and
+/// waveform synthesis remain model-specific host glue.
+pub const RNNOISE_HOT_OPS: &[HotOp] = &[HotOp::Gemv];
 
 const KEY_RELEASE_SHA256: &str = "vokra.rnnoise.release_tarball_sha256";
 const KEY_SAMPLE_RATE: &str = "vokra.rnnoise.sample_rate";
@@ -71,6 +79,9 @@ struct Linear {
     input: usize,
     output: usize,
     matrix: Matrix,
+    /// Output-major FP32 view used only by backend GEMV execution. The CPU
+    /// path continues to consume `matrix` in Xiph's exact native layout.
+    backend_weight: Vec<f32>,
     bias: Vec<f32>,
     diagonal: Option<Vec<f32>>,
 }
@@ -89,6 +100,7 @@ struct RnnoiseWeights {
 #[derive(Debug, Clone)]
 pub struct RnnoiseV02 {
     weights: Arc<RnnoiseWeights>,
+    backend: BackendKind,
 }
 
 /// Per-stream causal Conv and GRU state.
@@ -183,7 +195,24 @@ impl RnnoiseV02 {
                 gain,
                 vad,
             }),
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Selects the required execution backend. The default is CPU. A
+    /// non-CPU backend is validated against [`RNNOISE_HOT_OPS`] before the
+    /// first network frame, and failure is explicit rather than a CPU
+    /// fallback.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// Opens and binds a canonical v0.2 GGUF.
@@ -218,18 +247,49 @@ impl RnnoiseV02 {
         state: &mut RnnoiseNetworkState,
         features: &[f32; N_FEATURES],
     ) -> Result<RnnoiseNetworkOutput> {
+        let compute = self.create_compute()?;
+        self.forward_features_with_compute(state, features, compute.as_ref())
+    }
+
+    pub(super) fn create_compute(&self) -> Result<Option<Compute>> {
+        if self.backend == BackendKind::Cpu {
+            Ok(None)
+        } else {
+            Compute::for_backend(self.backend, RNNOISE_HOT_OPS).map(Some)
+        }
+    }
+
+    pub(super) fn forward_features_with_compute(
+        &self,
+        state: &mut RnnoiseNetworkState,
+        features: &[f32; N_FEATURES],
+        compute: Option<&Compute>,
+    ) -> Result<RnnoiseNetworkOutput> {
         if features.iter().any(|value| !value.is_finite()) {
             return Err(VokraError::InvalidArgument(
                 "rnnoise: feature frame contains a non-finite value".to_owned(),
             ));
         }
-        let conv1 = causal_conv(&self.weights.conv1, &mut state.conv1, features, N_FEATURES)?;
-        let conv2 = causal_conv(&self.weights.conv2, &mut state.conv2, &conv1, CONV1_WIDTH)?;
+        let conv1 = causal_conv(
+            &self.weights.conv1,
+            &mut state.conv1,
+            features,
+            N_FEATURES,
+            compute,
+        )?;
+        let conv2 = causal_conv(
+            &self.weights.conv2,
+            &mut state.conv2,
+            &conv1,
+            CONV1_WIDTH,
+            compute,
+        )?;
         gru(
             &self.weights.gru_input[0],
             &self.weights.gru_recurrent[0],
             &mut state.gru[0],
             &conv2,
+            compute,
         )?;
         for layer in 1..N_GRU {
             let (previous, current) = state.gru.split_at_mut(layer);
@@ -238,10 +298,17 @@ impl RnnoiseV02 {
                 &self.weights.gru_recurrent[layer],
                 &mut current[0],
                 &previous[layer - 1],
+                compute,
             )?;
         }
-        let gain_logits = self.weights.gain.forward(&state.gru[2])?;
-        let vad_logits = self.weights.vad.forward(&state.gru[2])?;
+        let gain_logits = self
+            .weights
+            .gain
+            .forward_with_compute(&state.gru[2], compute)?;
+        let vad_logits = self
+            .weights
+            .vad
+            .forward_with_compute(&state.gru[2], compute)?;
         let gains = std::array::from_fn(|index| sigmoid_approx(gain_logits[index]));
         Ok(RnnoiseNetworkOutput {
             gains,
@@ -285,6 +352,64 @@ impl Linear {
         }
         Ok(output)
     }
+
+    fn forward_with_compute(&self, input: &[f32], compute: Option<&Compute>) -> Result<Vec<f32>> {
+        let Some(compute) = compute else {
+            return self.forward(input);
+        };
+        if input.len() != self.input {
+            return Err(VokraError::InvalidArgument(format!(
+                "rnnoise Linear input has {} elements, expected {}",
+                input.len(),
+                self.input
+            )));
+        }
+
+        let mut quantized_input = Vec::new();
+        let backend_input = match &self.matrix {
+            Matrix::Float(_) => input,
+            Matrix::Quantized { .. } => {
+                quantized_input.reserve(input.len());
+                quantized_input.extend(
+                    input
+                        .iter()
+                        .map(|value| f32::from((0.5 + 127.0 * value).floor() as i8)),
+                );
+                &quantized_input
+            }
+        };
+        let mut output = vec![0.0f32; self.output];
+        compute.gemv_f32(
+            self.output,
+            self.input,
+            &self.backend_weight,
+            backend_input,
+            None,
+            &mut output,
+        )?;
+        if let Matrix::Quantized { scale, .. } = &self.matrix {
+            for (value, scale) in output.iter_mut().zip(scale) {
+                *value *= *scale;
+            }
+        }
+        for (value, bias) in output.iter_mut().zip(&self.bias) {
+            *value += *bias;
+        }
+        if let Some(diagonal) = &self.diagonal {
+            if self.output != 3 * self.input {
+                return Err(VokraError::ModelLoad(
+                    "rnnoise: recurrent diagonal requires output = 3 * input".to_owned(),
+                ));
+            }
+            for gate in 0..3 {
+                for index in 0..self.input {
+                    output[gate * self.input + index] +=
+                        diagonal[gate * self.input + index] * input[index];
+                }
+            }
+        }
+        Ok(output)
+    }
 }
 
 fn causal_conv(
@@ -292,6 +417,7 @@ fn causal_conv(
     memory: &mut [f32],
     input: &[f32],
     width: usize,
+    compute: Option<&Compute>,
 ) -> Result<Vec<f32>> {
     let history = layer.input.checked_sub(width).ok_or_else(|| {
         VokraError::ModelLoad("rnnoise: causal Conv input width exceeds kernel width".to_owned())
@@ -306,7 +432,7 @@ fn causal_conv(
     let mut joined = Vec::with_capacity(layer.input);
     joined.extend_from_slice(memory);
     joined.extend_from_slice(input);
-    let mut output = layer.forward(&joined)?;
+    let mut output = layer.forward_with_compute(&joined, compute)?;
     output
         .iter_mut()
         .for_each(|value| *value = tanh_approx(*value));
@@ -314,10 +440,16 @@ fn causal_conv(
     Ok(output)
 }
 
-fn gru(input_layer: &Linear, recurrent: &Linear, state: &mut [f32], input: &[f32]) -> Result<()> {
+fn gru(
+    input_layer: &Linear,
+    recurrent: &Linear,
+    state: &mut [f32],
+    input: &[f32],
+    compute: Option<&Compute>,
+) -> Result<()> {
     let n = state.len();
-    let mut zrh = input_layer.forward(input)?;
-    let recur = recurrent.forward(state)?;
+    let mut zrh = input_layer.forward_with_compute(input, compute)?;
+    let recur = recurrent.forward_with_compute(state, compute)?;
     if zrh.len() != 3 * n || recur.len() != 3 * n {
         return Err(VokraError::ModelLoad(
             "rnnoise: GRU projection output is not three gate blocks".to_owned(),
@@ -518,10 +650,18 @@ fn load_float_named(
     input: usize,
     output: usize,
 ) -> Result<Linear> {
+    let weights = load_tensor(gguf, weight_name, input * output)?;
+    let mut backend_weight = vec![0.0f32; input * output];
+    for column in 0..input {
+        for row in 0..output {
+            backend_weight[row * input + column] = weights[column * output + row];
+        }
+    }
     Ok(Linear {
         input,
         output,
-        matrix: Matrix::Float(load_tensor(gguf, weight_name, input * output)?),
+        matrix: Matrix::Float(weights),
+        backend_weight,
         bias: load_tensor(gguf, &format!("{prefix}_bias"), output)?,
         diagonal: None,
     })
@@ -553,14 +693,18 @@ fn load_quantized(
     } else {
         input * output
     };
+    let weights = exact_i8(gguf, &format!("{prefix}_weights_int8"), weight_count)?;
+    let backend_weight = expand_quantized_weight(&weights, indices.as_deref(), input, output)?;
+    let scale = load_tensor(gguf, &format!("{prefix}_scale"), output)?;
     Ok(Linear {
         input,
         output,
         matrix: Matrix::Quantized {
-            weights: exact_i8(gguf, &format!("{prefix}_weights_int8"), weight_count)?,
+            weights,
             indices,
-            scale: load_tensor(gguf, &format!("{prefix}_scale"), output)?,
+            scale,
         },
+        backend_weight,
         bias: load_tensor(gguf, &format!("{prefix}_bias"), output)?,
         diagonal: if diagonal {
             Some(load_tensor(
@@ -572,6 +716,63 @@ fn load_quantized(
             None
         },
     })
+}
+
+fn expand_quantized_weight(
+    weights: &[i8],
+    indices: Option<&[i32]>,
+    input: usize,
+    output: usize,
+) -> Result<Vec<f32>> {
+    let mut dense = vec![0.0f32; input * output];
+    let mut weight_offset = 0usize;
+    if let Some(indices) = indices {
+        let mut index_offset = 0usize;
+        for row_base in (0..output).step_by(8) {
+            let blocks = usize::try_from(indices[index_offset]).map_err(|_| {
+                VokraError::ModelLoad("rnnoise: negative sparse block count".to_owned())
+            })?;
+            index_offset += 1;
+            for _ in 0..blocks {
+                let column = usize::try_from(indices[index_offset]).map_err(|_| {
+                    VokraError::ModelLoad("rnnoise: negative sparse column".to_owned())
+                })?;
+                index_offset += 1;
+                for row in 0..8 {
+                    for inner in 0..4 {
+                        dense[(row_base + row) * input + column + inner] =
+                            f32::from(weights[weight_offset + 4 * row + inner]);
+                    }
+                }
+                weight_offset += 32;
+            }
+        }
+        if index_offset != indices.len() {
+            return Err(VokraError::ModelLoad(format!(
+                "rnnoise: sparse expansion consumed {index_offset}, stored {} indices",
+                indices.len()
+            )));
+        }
+    } else {
+        for row_base in (0..output).step_by(8) {
+            for column in (0..input).step_by(4) {
+                for row in 0..8 {
+                    for inner in 0..4 {
+                        dense[(row_base + row) * input + column + inner] =
+                            f32::from(weights[weight_offset + 4 * row + inner]);
+                    }
+                }
+                weight_offset += 32;
+            }
+        }
+    }
+    if weight_offset != weights.len() {
+        return Err(VokraError::ModelLoad(format!(
+            "rnnoise: quantized expansion consumed {weight_offset} weights, stored {}",
+            weights.len()
+        )));
+    }
+    Ok(dense)
 }
 
 fn validate_sparse_indices(
@@ -644,5 +845,61 @@ mod tests {
     fn exact_integer_container_rejects_fractional_values() {
         let value = 1.25f32;
         assert!(value.fract() != 0.0);
+    }
+
+    #[test]
+    fn backend_dense_view_preserves_float_and_blocked_i8_linear_math() {
+        let compute = Compute::cpu();
+
+        let float_input = 3;
+        let float_output = 2;
+        let float_weights = vec![0.25, -0.5, 1.0, 0.75, -0.25, 0.125];
+        let mut float_backend = vec![0.0; float_input * float_output];
+        for column in 0..float_input {
+            for row in 0..float_output {
+                float_backend[row * float_input + column] =
+                    float_weights[column * float_output + row];
+            }
+        }
+        let float = Linear {
+            input: float_input,
+            output: float_output,
+            matrix: Matrix::Float(float_weights),
+            backend_weight: float_backend,
+            bias: vec![0.125, -0.25],
+            diagonal: None,
+        };
+        let input = [0.5, -0.75, 0.25];
+        assert_eq!(
+            float.forward(&input).unwrap(),
+            float.forward_with_compute(&input, Some(&compute)).unwrap()
+        );
+
+        let quant_input = 8;
+        let quant_output = 8;
+        let quant_weights = (0..quant_input * quant_output)
+            .map(|index| (index as i32 % 17 - 8) as i8)
+            .collect::<Vec<_>>();
+        let quant_backend =
+            expand_quantized_weight(&quant_weights, None, quant_input, quant_output).unwrap();
+        let quantized = Linear {
+            input: quant_input,
+            output: quant_output,
+            matrix: Matrix::Quantized {
+                weights: quant_weights,
+                indices: None,
+                scale: vec![0.01; quant_output],
+            },
+            backend_weight: quant_backend,
+            bias: vec![0.125; quant_output],
+            diagonal: None,
+        };
+        let input = [0.5, -0.75, 0.25, 0.125, -0.5, 0.625, -0.25, 0.875];
+        assert_eq!(
+            quantized.forward(&input).unwrap(),
+            quantized
+                .forward_with_compute(&input, Some(&compute))
+                .unwrap()
+        );
     }
 }

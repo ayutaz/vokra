@@ -160,9 +160,21 @@
 use std::path::Path;
 
 use vokra_core::VokraError;
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgmlType, GgufFile};
 
+use crate::compute::{Compute, HotOp};
+
 use super::F0Frame;
+
+/// Backend-dispatched learned operators used by RMVPE.
+///
+/// The 2-D convolutions are lowered to row-major GEMM (im2col for Conv2d,
+/// contribution projection for ConvTranspose2d); the recurrent GRU gates use
+/// GEMV. Batch-norm, pooling, activations, layout transforms and pitch decoding
+/// remain host glue. [`Compute::for_backend`] validates the complete set before
+/// the first learned operator runs, so selecting Metal never falls back to CPU.
+pub const RMVPE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Gemv];
 
 // ---------------------------------------------------------------------------
 // GGUF metadata keys — mirror `crates/vokra-convert/src/models/rmvpe.rs`
@@ -915,6 +927,80 @@ fn conv2d_pad_same(
     out
 }
 
+/// Backend-dispatched counterpart of [`conv2d_pad_same`]. The host builds the
+/// zero-padded im2col matrix and restores NCHW layout; every learned
+/// multiply-accumulate, including bias addition, is executed by one GEMM.
+#[allow(clippy::too_many_arguments)] // mirrors the scalar convolution contract
+fn conv2d_pad_same_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    in_c: usize,
+    h: usize,
+    w: usize,
+    weight: &[f32],
+    out_c: usize,
+    kh: usize,
+    kw: usize,
+    bias: Option<&[f32]>,
+) -> Result<Vec<f32>, VokraError> {
+    debug_assert_eq!(input.len(), in_c * h * w);
+    debug_assert_eq!(weight.len(), out_c * in_c * kh * kw);
+    let spatial = h * w;
+    let kernel = in_c * kh * kw;
+    let pad_h = kh / 2;
+    let pad_w = kw / 2;
+
+    let mut patches = vec![0.0f32; spatial * kernel];
+    for oy in 0..h {
+        for ox in 0..w {
+            let row = (oy * w + ox) * kernel;
+            for ic in 0..in_c {
+                for ky in 0..kh {
+                    let iy = oy as isize + ky as isize - pad_h as isize;
+                    if iy < 0 || iy as usize >= h {
+                        continue;
+                    }
+                    for kx in 0..kw {
+                        let ix = ox as isize + kx as isize - pad_w as isize;
+                        if ix < 0 || ix as usize >= w {
+                            continue;
+                        }
+                        let col = (ic * kh + ky) * kw + kx;
+                        patches[row + col] = input[(ic * h + iy as usize) * w + ix as usize];
+                    }
+                }
+            }
+        }
+    }
+
+    // GEMM consumes B as [kernel, out_c], while PyTorch stores Conv2d
+    // weights as [out_c, kernel].
+    let mut weight_t = vec![0.0f32; kernel * out_c];
+    for oc in 0..out_c {
+        for k in 0..kernel {
+            weight_t[k * out_c + oc] = weight[oc * kernel + k];
+        }
+    }
+    let mut spatial_major = vec![0.0f32; spatial * out_c];
+    compute.gemm_f32(
+        spatial,
+        out_c,
+        kernel,
+        &patches,
+        &weight_t,
+        bias,
+        &mut spatial_major,
+    )?;
+
+    let mut out = vec![0.0f32; out_c * spatial];
+    for p in 0..spatial {
+        for oc in 0..out_c {
+            out[oc * spatial + p] = spatial_major[p * out_c + oc];
+        }
+    }
+    Ok(out)
+}
+
 /// PyTorch `BatchNorm2d` (inference mode) — in-place affine over an
 /// `[C, H, W]` NCHW plane:
 ///
@@ -1044,6 +1130,77 @@ fn conv_transpose2d_stride2(
     (out, h_out, w_out)
 }
 
+/// Backend-dispatched counterpart of [`conv_transpose2d_stride2`]. One GEMM
+/// projects every input pixel from `in_c` to all `(out_c, kh, kw)` kernel
+/// contributions. The host then performs only the fixed stride-2 scatter/add
+/// and NCHW layout work; no weight multiply runs outside the selected backend.
+#[allow(clippy::too_many_arguments)] // mirrors the scalar convolution contract
+fn conv_transpose2d_stride2_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    in_c: usize,
+    h: usize,
+    w: usize,
+    weight: &[f32],
+    out_c: usize,
+    kh: usize,
+    kw: usize,
+    bias: Option<&[f32]>,
+) -> Result<(Vec<f32>, usize, usize), VokraError> {
+    debug_assert_eq!(input.len(), in_c * h * w);
+    debug_assert_eq!(weight.len(), in_c * out_c * kh * kw);
+    let spatial = h * w;
+    let projected = out_c * kh * kw;
+    let h_out = (h - 1) * 2 + kh;
+    let w_out = (w - 1) * 2 + kw;
+
+    let mut input_spatial = vec![0.0f32; spatial * in_c];
+    for iy in 0..h {
+        for ix in 0..w {
+            let p = iy * w + ix;
+            for ic in 0..in_c {
+                input_spatial[p * in_c + ic] = input[(ic * h + iy) * w + ix];
+            }
+        }
+    }
+    // ConvTranspose2d weights are [in_c, out_c, kh, kw], exactly the
+    // [in_c, projected] B matrix needed here.
+    let mut contributions = vec![0.0f32; spatial * projected];
+    compute.gemm_f32(
+        spatial,
+        projected,
+        in_c,
+        &input_spatial,
+        weight,
+        None,
+        &mut contributions,
+    )?;
+
+    let mut out = vec![0.0f32; out_c * h_out * w_out];
+    if let Some(b) = bias {
+        let out_spatial = h_out * w_out;
+        for (oc, &value) in b.iter().enumerate().take(out_c) {
+            out[oc * out_spatial..(oc + 1) * out_spatial].fill(value);
+        }
+    }
+    for iy in 0..h {
+        for ix in 0..w {
+            let row = (iy * w + ix) * projected;
+            for oc in 0..out_c {
+                for ky in 0..kh {
+                    let oy = iy * 2 + ky;
+                    for kx in 0..kw {
+                        let ox = ix * 2 + kx;
+                        let col = (oc * kh + ky) * kw + kx;
+                        out[(oc * h_out + oy) * w_out + ox] += contributions[row + col];
+                    }
+                }
+            }
+        }
+    }
+    Ok((out, h_out, w_out))
+}
+
 /// In-place `LeakyReLU(slope)`.
 fn leaky_relu_inplace(x: &mut [f32], slope: f32) {
     for v in x {
@@ -1161,6 +1318,65 @@ fn gru_cell_step(
         h_new[i] = (1.0 - z) * n + z * h_prev[i];
     }
     h_new
+}
+
+/// Backend-dispatched GRU cell. Both learned projections execute as GEMV;
+/// gate activations and the fixed element-wise recurrence remain host glue.
+#[allow(clippy::too_many_arguments)] // mirrors the scalar GRU-cell contract
+fn gru_cell_step_with_compute(
+    compute: &Compute,
+    x: &[f32],
+    h_prev: &[f32],
+    w_ih: &[f32],
+    w_hh: &[f32],
+    b_ih: &[f32],
+    b_hh: &[f32],
+    hidden_size: usize,
+    input_size: usize,
+) -> Result<Vec<f32>, VokraError> {
+    let h = hidden_size;
+    let mut ih = vec![0.0f32; 3 * h];
+    let mut hh = vec![0.0f32; 3 * h];
+    compute.gemv_f32(3 * h, input_size, w_ih, x, Some(b_ih), &mut ih)?;
+    compute.gemv_f32(3 * h, h, w_hh, h_prev, Some(b_hh), &mut hh)?;
+
+    let mut h_new = vec![0.0f32; h];
+    for i in 0..h {
+        let r = sigmoid_scalar(ih[i] + hh[i]);
+        let z = sigmoid_scalar(ih[h + i] + hh[h + i]);
+        let n = (ih[2 * h + i] + r * hh[2 * h + i]).tanh();
+        h_new[i] = (1.0 - z) * n + z * h_prev[i];
+    }
+    Ok(h_new)
+}
+
+/// Projects every frame through a row-major `[out, in]` weight using GEMM.
+fn linear_frames_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    n_frames: usize,
+    in_features: usize,
+    weight: &[f32],
+    bias: &[f32],
+    out_features: usize,
+) -> Result<Vec<f32>, VokraError> {
+    let mut weight_t = vec![0.0f32; in_features * out_features];
+    for o in 0..out_features {
+        for i in 0..in_features {
+            weight_t[i * out_features + o] = weight[o * in_features + i];
+        }
+    }
+    let mut out = vec![0.0f32; n_frames * out_features];
+    compute.gemm_f32(
+        n_frames,
+        out_features,
+        in_features,
+        input,
+        &weight_t,
+        Some(bias),
+        &mut out,
+    )?;
+    Ok(out)
 }
 
 /// Collapses an `[C, H, W]` NCHW buffer to `[H, C * W]` row-major
@@ -1300,6 +1516,48 @@ impl<'a> RmvpeBlock<'a> {
         }
     }
 
+    /// Backend-dispatched encoder path. Learned convolution runs through
+    /// `compute`; BN, activation and pooling retain the scalar reference glue.
+    fn apply_encoder_with_compute(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        in_c: usize,
+        h: usize,
+        w: usize,
+    ) -> Result<(Vec<f32>, usize, usize), VokraError> {
+        if in_c != self.n_in {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe encoder: input channels {in_c} != block.n_in {} (FR-EX-08)",
+                self.n_in
+            )));
+        }
+        let mut out = conv2d_pad_same_with_compute(
+            compute,
+            input,
+            in_c,
+            h,
+            w,
+            self.conv_w,
+            self.n_out,
+            self.kh,
+            self.kw,
+            self.conv_b,
+        )?;
+        if let (Some(g), Some(b), Some(m), Some(v)) =
+            (self.bn_gamma, self.bn_beta, self.bn_mean, self.bn_var)
+        {
+            batchnorm2d_apply(&mut out, self.n_out, h, w, g, b, m, v, BN_EPS);
+        }
+        leaky_relu_inplace(&mut out, LRELU_SLOPE);
+        if h >= 2 && w >= 2 {
+            let (pooled, h_out, w_out) = maxpool2d_2x2(&out, self.n_out, h, w);
+            Ok((pooled, h_out, w_out))
+        } else {
+            Ok((out, h, w))
+        }
+    }
+
     /// Runs the decoder path: `ConvTranspose2d(stride = 2)` + optional
     /// BN (after the ConvT if bound) + `LeakyReLU(0.01)`. Skip-concat
     /// with the paired encoder is a follow-up wave (would need paired
@@ -1329,6 +1587,43 @@ impl<'a> RmvpeBlock<'a> {
             self.kw,
             self.conv_b,
         );
+        if let (Some(g), Some(b), Some(m), Some(v)) =
+            (self.bn_gamma, self.bn_beta, self.bn_mean, self.bn_var)
+        {
+            batchnorm2d_apply(&mut out, self.n_out, h_out, w_out, g, b, m, v, BN_EPS);
+        }
+        leaky_relu_inplace(&mut out, LRELU_SLOPE);
+        Ok((out, h_out, w_out))
+    }
+
+    /// Backend-dispatched decoder path. The fixed scatter/add after the GEMM
+    /// is layout glue; all weight multiplication runs through `compute`.
+    fn apply_decoder_with_compute(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        in_c: usize,
+        h: usize,
+        w: usize,
+    ) -> Result<(Vec<f32>, usize, usize), VokraError> {
+        if in_c != self.n_in {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe decoder: input channels {in_c} != block.n_in {} (FR-EX-08)",
+                self.n_in
+            )));
+        }
+        let (mut out, h_out, w_out) = conv_transpose2d_stride2_with_compute(
+            compute,
+            input,
+            in_c,
+            h,
+            w,
+            self.conv_w,
+            self.n_out,
+            self.kh,
+            self.kw,
+            self.conv_b,
+        )?;
         if let (Some(g), Some(b), Some(m), Some(v)) =
             (self.bn_gamma, self.bn_beta, self.bn_mean, self.bn_var)
         {
@@ -1576,6 +1871,88 @@ impl RmvpeWeights {
         Ok(out)
     }
 
+    /// Backend-dispatched bidirectional GRU. This deliberately mirrors
+    /// [`Self::apply_bigru`] so the CPU path remains the established scalar
+    /// oracle while Metal routes both gate projections through GEMV.
+    fn apply_bigru_with_compute(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        n_frames: usize,
+        input_size: usize,
+        hidden: usize,
+    ) -> Result<Vec<f32>, VokraError> {
+        debug_assert_eq!(input.len(), n_frames * input_size);
+        let (_, w_ih_f) = self
+            .tensor("gru.weight_ih_l0")
+            .expect("checked by discover");
+        let (_, w_hh_f) = self
+            .tensor("gru.weight_hh_l0")
+            .expect("checked by discover");
+        let (_, w_ih_r) = self
+            .tensor("gru.weight_ih_l0_reverse")
+            .expect("checked by discover");
+        let (_, w_hh_r) = self
+            .tensor("gru.weight_hh_l0_reverse")
+            .expect("checked by discover");
+        let (_, b_ih_f) = self.tensor("gru.bias_ih_l0").ok_or_else(|| {
+            VokraError::ModelLoad("rmvpe: gru.bias_ih_l0 missing (FR-EX-08)".into())
+        })?;
+        let (_, b_hh_f) = self.tensor("gru.bias_hh_l0").ok_or_else(|| {
+            VokraError::ModelLoad("rmvpe: gru.bias_hh_l0 missing (FR-EX-08)".into())
+        })?;
+        let (_, b_ih_r) = self.tensor("gru.bias_ih_l0_reverse").ok_or_else(|| {
+            VokraError::ModelLoad("rmvpe: gru.bias_ih_l0_reverse missing (FR-EX-08)".into())
+        })?;
+        let (_, b_hh_r) = self.tensor("gru.bias_hh_l0_reverse").ok_or_else(|| {
+            VokraError::ModelLoad("rmvpe: gru.bias_hh_l0_reverse missing (FR-EX-08)".into())
+        })?;
+        for (name, len) in [
+            ("bias_ih_l0", b_ih_f.len()),
+            ("bias_hh_l0", b_hh_f.len()),
+            ("bias_ih_l0_reverse", b_ih_r.len()),
+            ("bias_hh_l0_reverse", b_hh_r.len()),
+        ] {
+            if len != 3 * hidden {
+                return Err(VokraError::ModelLoad(format!(
+                    "rmvpe: gru.{name} len {len} != 3 * hidden {} (FR-EX-08)",
+                    3 * hidden
+                )));
+            }
+        }
+
+        let mut fwd_states = vec![0.0f32; n_frames * hidden];
+        let mut h_prev = vec![0.0f32; hidden];
+        for t in 0..n_frames {
+            let x = &input[t * input_size..(t + 1) * input_size];
+            let h_new = gru_cell_step_with_compute(
+                compute, x, &h_prev, w_ih_f, w_hh_f, b_ih_f, b_hh_f, hidden, input_size,
+            )?;
+            fwd_states[t * hidden..(t + 1) * hidden].copy_from_slice(&h_new);
+            h_prev = h_new;
+        }
+
+        let mut rev_states = vec![0.0f32; n_frames * hidden];
+        let mut h_prev = vec![0.0f32; hidden];
+        for t in (0..n_frames).rev() {
+            let x = &input[t * input_size..(t + 1) * input_size];
+            let h_new = gru_cell_step_with_compute(
+                compute, x, &h_prev, w_ih_r, w_hh_r, b_ih_r, b_hh_r, hidden, input_size,
+            )?;
+            rev_states[t * hidden..(t + 1) * hidden].copy_from_slice(&h_new);
+            h_prev = h_new;
+        }
+
+        let mut out = vec![0.0f32; n_frames * 2 * hidden];
+        for t in 0..n_frames {
+            let base = t * 2 * hidden;
+            out[base..base + hidden].copy_from_slice(&fwd_states[t * hidden..(t + 1) * hidden]);
+            out[base + hidden..base + 2 * hidden]
+                .copy_from_slice(&rev_states[t * hidden..(t + 1) * hidden]);
+        }
+        Ok(out)
+    }
+
     /// Discovered `head.weight` / `head.bias` view — the terminal
     /// 360-class Linear projection's shape (`out_features` /
     /// `in_features`) plus the two flat slices the forward feeds into
@@ -1691,6 +2068,10 @@ pub enum CnnChainPolicy {
 #[derive(Debug)]
 pub struct RMVPE {
     config: RmvpeConfig,
+    /// Selected execution backend. CPU preserves the established scalar
+    /// oracle; non-CPU backends are validated against [`RMVPE_HOT_OPS`]
+    /// before forward execution.
+    backend: BackendKind,
     // Bound (real, dequantized) upstream RMVPE state_dict tensors —
     // consumed by [`RMVPE::extract_real`] at forward time. The
     // `RmvpeWeights` shape gate in `from_gguf` guarantees every tensor
@@ -1746,6 +2127,7 @@ impl RMVPE {
         let weights = RmvpeWeights::from_gguf(&gguf)?;
         Ok(Self {
             config,
+            backend: BackendKind::Cpu,
             weights,
             cnn_policy,
         })
@@ -1754,6 +2136,19 @@ impl RMVPE {
     /// Convenience alias for [`from_gguf`](Self::from_gguf).
     pub fn open(path: impl AsRef<Path>) -> Result<Self, VokraError> {
         Self::from_gguf(path.as_ref())
+    }
+
+    /// Selects the backend used by subsequent forward calls.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected execution backend.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The [`CnnChainPolicy`] this handle was loaded under.
@@ -1956,10 +2351,16 @@ impl RMVPE {
     ///   post-CNN feature width, head input width mismatched against
     ///   BiGRU output, or a required tensor missing under the expected
     ///   name — FR-EX-08 loud-partial posture).
-    /// - Never returns [`VokraError::UnsupportedOp`] — the previous
-    ///   "kernel binding pending" stub was replaced by this real
-    ///   forward (`docs/abi-changelog.md`).
+    /// - [`VokraError::UnsupportedOp`] when a selected non-CPU backend does
+    ///   not cover the complete [`RMVPE_HOT_OPS`] set. There is no per-op CPU
+    ///   fallback.
     pub fn extract_real(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<F0Frame>, VokraError> {
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, RMVPE_HOT_OPS)?)
+        };
+
         // 1. Mel front-end (real STFT + mel filterbank).
         let mel = self.mel_spectrogram(pcm);
         let hop = (self.config.hop as usize).max(1);
@@ -1996,7 +2397,11 @@ impl RMVPE {
             let Some(block) = self.weights.encoder_block(i) else {
                 break;
             };
-            let (out, h_out, w_out) = block.apply_encoder(&feature, c_cur, h_cur, w_cur)?;
+            let (out, h_out, w_out) = if let Some(compute) = compute.as_ref() {
+                block.apply_encoder_with_compute(compute, &feature, c_cur, h_cur, w_cur)?
+            } else {
+                block.apply_encoder(&feature, c_cur, h_cur, w_cur)?
+            };
             feature = out;
             c_cur = block.n_out;
             h_cur = h_out;
@@ -2019,7 +2424,11 @@ impl RMVPE {
             let Some(block) = self.weights.decoder_block(i) else {
                 break;
             };
-            let (out, h_out, w_out) = block.apply_decoder(&feature, c_cur, h_cur, w_cur)?;
+            let (out, h_out, w_out) = if let Some(compute) = compute.as_ref() {
+                block.apply_decoder_with_compute(compute, &feature, c_cur, h_cur, w_cur)?
+            } else {
+                block.apply_decoder(&feature, c_cur, h_cur, w_cur)?
+            };
             feature = out;
             c_cur = block.n_out;
             h_cur = h_out;
@@ -2049,9 +2458,18 @@ impl RMVPE {
                  or the GRU hparams are mis-configured (FR-EX-08)"
             )));
         }
-        let bigru_out =
+        let bigru_out = if let Some(compute) = compute.as_ref() {
+            self.weights.apply_bigru_with_compute(
+                compute,
+                &feature_per_frame,
+                n_frames,
+                gru_input_size,
+                gru_hidden,
+            )?
+        } else {
             self.weights
-                .apply_bigru(&feature_per_frame, n_frames, gru_input_size, gru_hidden)?;
+                .apply_bigru(&feature_per_frame, n_frames, gru_input_size, gru_hidden)?
+        };
         let bigru_out_width = 2 * gru_hidden;
 
         // 7. Head projection (Conv1d/Conv2d with kernel=1 or plain
@@ -2071,19 +2489,31 @@ impl RMVPE {
             )));
         }
 
-        let mut all_probs = Vec::with_capacity(n_frames * head.out_features);
-        for t in 0..n_frames {
-            let frame_in = &bigru_out[t * bigru_out_width..(t + 1) * bigru_out_width];
-            let mut probs = linear_forward(
-                frame_in,
+        let mut all_probs = if let Some(compute) = compute.as_ref() {
+            linear_frames_with_compute(
+                compute,
+                &bigru_out,
+                n_frames,
+                head.in_features,
                 head.weight,
                 head.bias,
-                head.in_features,
                 head.out_features,
-            );
-            sigmoid_inplace(&mut probs);
-            all_probs.extend(probs);
-        }
+            )?
+        } else {
+            let mut all_probs = Vec::with_capacity(n_frames * head.out_features);
+            for t in 0..n_frames {
+                let frame_in = &bigru_out[t * bigru_out_width..(t + 1) * bigru_out_width];
+                all_probs.extend(linear_forward(
+                    frame_in,
+                    head.weight,
+                    head.bias,
+                    head.in_features,
+                    head.out_features,
+                ));
+            }
+            all_probs
+        };
+        sigmoid_inplace(&mut all_probs);
 
         // 8. Decode per-frame -> F0Frame. Honor the frame_times()
         //    frame-count contract by truncating any center-STFT extra
@@ -2135,6 +2565,11 @@ impl RMVPE {
         feature_dim: usize,
         sample_rate: u32,
     ) -> Result<Vec<F0Frame>, VokraError> {
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, RMVPE_HOT_OPS)?)
+        };
         if hidden.len() != n_frames * feature_dim {
             return Err(VokraError::ModelLoad(format!(
                 "rmvpe::forward_from_hidden: hidden len {} != n_frames {n_frames} * \
@@ -2149,9 +2584,18 @@ impl RMVPE {
                  supplied feature_dim {feature_dim} (FR-EX-08)"
             )));
         }
-        let bigru_out = self
-            .weights
-            .apply_bigru(hidden, n_frames, gru_input_size, gru_hidden)?;
+        let bigru_out = if let Some(compute) = compute.as_ref() {
+            self.weights.apply_bigru_with_compute(
+                compute,
+                hidden,
+                n_frames,
+                gru_input_size,
+                gru_hidden,
+            )?
+        } else {
+            self.weights
+                .apply_bigru(hidden, n_frames, gru_input_size, gru_hidden)?
+        };
         let bigru_out_width = 2 * gru_hidden;
 
         let head = self.weights.head_shape_and_slices()?;
@@ -2167,19 +2611,37 @@ impl RMVPE {
         let hop = (self.config.hop as usize).max(1);
         let sr = (sample_rate as f32).max(1.0);
         const VOICED_THRESHOLD: f32 = 0.03;
-        let mut frames = Vec::with_capacity(n_frames);
-        for t in 0..n_frames {
-            let frame_in = &bigru_out[t * bigru_out_width..(t + 1) * bigru_out_width];
-            let mut probs = linear_forward(
-                frame_in,
+        let mut all_probs = if let Some(compute) = compute.as_ref() {
+            linear_frames_with_compute(
+                compute,
+                &bigru_out,
+                n_frames,
+                head.in_features,
                 head.weight,
                 head.bias,
-                head.in_features,
                 head.out_features,
-            );
-            sigmoid_inplace(&mut probs);
+            )?
+        } else {
+            let mut all_probs = Vec::with_capacity(n_frames * head.out_features);
+            for t in 0..n_frames {
+                let frame_in = &bigru_out[t * bigru_out_width..(t + 1) * bigru_out_width];
+                all_probs.extend(linear_forward(
+                    frame_in,
+                    head.weight,
+                    head.bias,
+                    head.in_features,
+                    head.out_features,
+                ));
+            }
+            all_probs
+        };
+        sigmoid_inplace(&mut all_probs);
+
+        let mut frames = Vec::with_capacity(n_frames);
+        for t in 0..n_frames {
+            let probs = &all_probs[t * head.out_features..(t + 1) * head.out_features];
             let (hz, voiced, confidence) =
-                decode_class_to_hz(&probs, &self.config, VOICED_THRESHOLD);
+                decode_class_to_hz(probs, &self.config, VOICED_THRESHOLD);
             frames.push(F0Frame {
                 time_sec: (t * hop) as f32 / sr,
                 hz,
@@ -2352,6 +2814,73 @@ pub fn decode_class_to_hz(
 mod tests {
     use super::*;
     use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+    fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32) {
+        assert_eq!(actual.len(), expected.len());
+        for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (a - e).abs() <= tolerance,
+                "element {i}: actual={a}, expected={e}, abs_diff={} > {tolerance}",
+                (a - e).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn compute_cpu_matches_scalar_learned_primitives() {
+        let compute = Compute::cpu();
+
+        let input = vec![0.2, -0.3, 0.7, 0.1, -0.4, 0.8, 0.5, -0.6];
+        let conv_w: Vec<f32> = (0..36).map(|i| (i as f32 - 17.0) * 0.013).collect();
+        let conv_b = [0.1, -0.2];
+        let scalar = conv2d_pad_same(&input, 2, 2, 2, &conv_w, 2, 3, 3, Some(&conv_b));
+        let dispatched = conv2d_pad_same_with_compute(
+            &compute,
+            &input,
+            2,
+            2,
+            2,
+            &conv_w,
+            2,
+            3,
+            3,
+            Some(&conv_b),
+        )
+        .expect("Compute CPU Conv2d");
+        assert_close(&dispatched, &scalar, 1e-5);
+
+        let trans_w: Vec<f32> = (0..24).map(|i| (i as f32 - 11.0) * 0.017).collect();
+        let trans_b = [0.03, -0.04, 0.05];
+        let (scalar, sh, sw) =
+            conv_transpose2d_stride2(&input, 2, 2, 2, &trans_w, 3, 2, 2, Some(&trans_b));
+        let (dispatched, dh, dw) = conv_transpose2d_stride2_with_compute(
+            &compute,
+            &input,
+            2,
+            2,
+            2,
+            &trans_w,
+            3,
+            2,
+            2,
+            Some(&trans_b),
+        )
+        .expect("Compute CPU ConvTranspose2d");
+        assert_eq!((dh, dw), (sh, sw));
+        assert_close(&dispatched, &scalar, 1e-5);
+
+        let x = [0.25, -0.4, 0.75];
+        let h_prev = [-0.2, 0.3];
+        let w_ih: Vec<f32> = (0..18).map(|i| (i as f32 - 8.0) * 0.021).collect();
+        let w_hh: Vec<f32> = (0..12).map(|i| (i as f32 - 5.0) * -0.019).collect();
+        let b_ih = [0.01, -0.02, 0.03, -0.04, 0.05, -0.06];
+        let b_hh = [-0.03, 0.02, -0.01, 0.04, -0.05, 0.06];
+        let scalar = gru_cell_step(&x, &h_prev, &w_ih, &w_hh, &b_ih, &b_hh, 2, 3);
+        let dispatched =
+            gru_cell_step_with_compute(&compute, &x, &h_prev, &w_ih, &w_hh, &b_ih, &b_hh, 2, 3)
+                .expect("Compute CPU GRU");
+        assert_close(&dispatched, &scalar, 1e-6);
+    }
 
     /// A GGUF path that cannot possibly exist on any developer or CI host.
     fn nonexistent_gguf_path() -> std::path::PathBuf {

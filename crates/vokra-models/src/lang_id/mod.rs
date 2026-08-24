@@ -710,19 +710,16 @@ fn identify_loud_partial(language_count: Option<usize>) -> VokraError {
         ),
     };
     VokraError::UnsupportedOp(format!(
-        "lang_id_ecapa identify (loud-partial): the full forward is deferred; four pieces \
-         must land before real language logits can be emitted: (1) the filterbank front-end \
-         — `vokra_ops::kaldi_fbank` exists in-repo, but this converter stamps NO \
-         `vokra.lang_id.*` axis group, so its opts (n_mels, sample rate, frame length, hop) \
-         cannot be derived from the artifact and must come from a real-checkpoint dump of \
-         the upstream `hyperparams.yaml`; (2) the ECAPA-TDNN trunk (SE-Res2Blocks + \
-         multi-layer feature aggregation) — no runtime ECAPA trunk binder exists in this \
-         workspace yet, the sibling `ecapa_tdnn` arch is converter-side only; \
-         (3) attentive statistics pooling onto the utterance embedding; (4) the language \
-         classifier head. Output width = {width}. Language NAMES are not recoverable from a \
-         converted GGUF at all: the converter stamps neither a language list nor a language \
-         count, so an index cannot be mapped to an ISO 639 code without the upstream label \
-         encoder. Primary sources: {PRIMARY_SOURCE_HF_VOXLINGUA107}, \
+        "lang_id_ecapa identify (loud-partial): the shared SpeechBrain ECAPA trunk, 80-bin \
+         frontend and attentive statistics pool now exist in `vokra_models::ecapa_tdnn`, but \
+         this language-ID artifact cannot emit language logits. The live public \
+         `vokra/lang-id-voxlingua107` GGUF contains only the same 200 embedding-model tensors \
+         as the speaker encoder: it has no language classifier head and no 107-entry label \
+         map. This binder also requires the historical `embedding_model.` prefix and stamps \
+         no `vokra.lang_id.*` frontend/topology contract. Refusing to fabricate a classifier \
+         or infer ISO 639 labels from tensor order (FR-EX-08). A gated replacement GGUF must \
+         include the official classifier tensors, label map and exact frontend metadata \
+         before this error can be removed. Declared output width = {width}. Primary sources: {PRIMARY_SOURCE_HF_VOXLINGUA107}, \
          {PRIMARY_SOURCE_HF_COMMONLANGUAGE}, paper {PRIMARY_SOURCE_PAPER}, reference code \
          {PRIMARY_SOURCE_CODE}. Runtime cannot fabricate a language logits array (FR-EX-08 \
          — no silent partial output)."
@@ -1149,12 +1146,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 9 — `identify` loud-partials, naming every missing primitive and
+    // Test 9 — `identify` loud-partials, distinguishing the implemented
+    //          ECAPA trunk from the artifact-level classifier blockers and
     //          citing the primary sources.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn identify_loud_partial_names_the_missing_primitives() {
+    fn identify_loud_partial_names_the_artifact_blockers() {
         let file = lang_id_gguf(
             Some(NAME_VOXLINGUA107),
             Some(LicenseClass::Permissive),
@@ -1174,24 +1172,29 @@ mod tests {
                 );
                 assert!(msg.contains("loud-partial"), "posture label: {msg}");
 
-                // Every deferred primitive named explicitly.
-                for primitive in [
-                    "kaldi_fbank",
+                // The implemented runtime pieces and every remaining
+                // artifact blocker are named explicitly.
+                for detail in [
+                    "shared SpeechBrain ECAPA trunk",
+                    "80-bin frontend",
+                    "attentive statistics pool",
+                    "no language classifier head",
+                    "no 107-entry label map",
                     "vokra.lang_id.*",
-                    "ECAPA-TDNN trunk",
-                    "SE-Res2Blocks",
-                    "attentive statistics pooling",
-                    "language classifier head",
+                    "gated replacement GGUF",
+                    "official classifier tensors",
+                    "label map",
+                    "exact frontend metadata",
                 ] {
                     assert!(
-                        msg.contains(primitive),
-                        "expected the missing primitive '{primitive}' to be named: {msg}"
+                        msg.contains(detail),
+                        "expected runtime/artifact detail '{detail}' to be named: {msg}"
                     );
                 }
 
                 // The output width is reported from the payload, not invented.
                 assert!(
-                    msg.contains("Output width = 7"),
+                    msg.contains("Declared output width = 7"),
                     "the width read off disk must be reported: {msg}"
                 );
                 assert!(
@@ -1201,7 +1204,7 @@ mod tests {
 
                 // The unavailability of the names is stated plainly.
                 assert!(
-                    msg.contains("Language NAMES are not recoverable"),
+                    msg.contains("infer ISO 639 labels"),
                     "the absent taxonomy must be stated plainly: {msg}"
                 );
 
@@ -1242,7 +1245,7 @@ mod tests {
         match err {
             VokraError::UnsupportedOp(msg) => {
                 assert!(
-                    msg.contains("Output width = unavailable from this artifact"),
+                    msg.contains("Declared output width = unavailable from this artifact"),
                     "an unreadable width must be declared unavailable, never guessed: {msg}"
                 );
             }

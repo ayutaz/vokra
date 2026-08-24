@@ -74,9 +74,9 @@
 //! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | runtime primitive, strict real-weight binder, alias-free forward, CLI mel contract, and independent waveform parity landed; the min-dtype anchor is registered (M2-08). Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`CTC_DECODE_OP`]                | FR-OP-41 | runtime primitives landed (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam`, incl. n-gram LM shallow fusion + hotword boost) and the NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`); those binders are loud-partial and name this primitive as the piece that already exists, so no live call site exists yet. Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`RNNT_DECODE_OP`]               | FR-OP-42 | runtime primitive landed (`vokra_ops::rnnt_decode`) with a **live consumer**: `ParakeetTdt11b::decode_tdt` calls it at `vokra-models/src/parakeet_tdt_1_1b/mod.rs:621`. The e2e `transcribe` stays loud-partial (encoder axes await the first real 1.1B weight). Reserved: the graph-side `OpKind` variant + C ABI export |
-//! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | CAM++ already covers speaker embedding             |
-//! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | CAM++ already covers speaker embedding             |
-//! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | CAM++ already covers speaker embedding             |
+//! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | native 200-tensor SpeechBrain ECAPA binder, CPU/Metal forward, CLI/C ABI speaker route and independent parity landed. Reserved: the graph-side `OpKind` variant + dedicated C ABI op export |
+//! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | native strict WeSpeaker binder, CPU/Metal forward, CLI/C ABI speaker route and independent parity landed. Reserved: the graph-side `OpKind` variant + dedicated C ABI op export |
+//! | [`TITANET_SPEAKER_ENCODE_OP`]    | FR-OP-80 | native strict TitaNet-L binder, CPU/Metal forward, CLI/C ABI speaker route and independent parity landed. Reserved: the graph-side `OpKind` variant + dedicated C ABI op export |
 //! | [`DIARIZE_OP`]                   | FR-OP-82 | trigger only (pyannote license MIT primary source 2026-07-30 signed = `docs/license-audit.md` §3.1 row 263, `gated: auto` は access control のみで追加条項なし) |
 
 /// BigVGAN generator op-kind identifier. Re-exported from the M2-08 registry:
@@ -99,17 +99,22 @@ pub const CTC_DECODE_OP: &str = "ctc_decode";
 /// variant.
 pub const RNNT_DECODE_OP: &str = "rnnt_decode";
 
-/// ECAPA-TDNN speaker-encoder op-kind identifier (FR-OP-80 variant, covered by
-/// CAM++). Reserved; unregistered.
+/// ECAPA-TDNN speaker-encoder op-kind identifier. The native model forward is
+/// live; only a graph-side `OpKind` variant and dedicated op-level C ABI export
+/// remain reserved. The model-generic `vokra_speaker_embed` C ABI already
+/// consumes ECAPA through `SpeakerEngine`.
 pub const ECAPA_TDNN_SPEAKER_ENCODE_OP: &str = "ecapa_tdnn_speaker_encode";
 
-/// WeSpeaker speaker-encoder op-kind identifier (FR-OP-80 variant, covered by
-/// CAM++). Reserved; unregistered.
+/// WeSpeaker speaker-encoder op-kind identifier. The native model forward is
+/// live; only a graph-side `OpKind` variant and dedicated op-level C ABI export
+/// remain reserved. The generic `vokra_speaker_embed` C ABI already consumes
+/// WeSpeaker through `SpeakerEngine`.
 pub const WESPEAKER_SPEAKER_ENCODE_OP: &str = "wespeaker_speaker_encode";
 
-/// TitaNet speaker-encoder op-kind identifier (FR-OP-80 variant, covered by
-/// CAM++; the converter side landed 2026-07-30 with CC-BY-4.0 sign-off,
-/// the runtime op landing is M5-residual). Reserved; unregistered.
+/// TitaNet speaker-encoder op-kind identifier. The native model forward is
+/// live; only a graph-side `OpKind` variant and dedicated op-level C ABI export
+/// remain reserved. The generic `vokra_speaker_embed` C ABI already consumes
+/// TitaNet through `SpeakerEngine`.
 pub const TITANET_SPEAKER_ENCODE_OP: &str = "titanet_speaker_encode";
 
 /// Diarization op-kind identifier (FR-OP-82). Reserved; unregistered.
@@ -176,17 +181,17 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
         M5ResidualAnchor {
             op_id: ECAPA_TDNN_SPEAKER_ENCODE_OP,
             fr_op: "FR-OP-80",
-            blocker: "CAM++ already covers speaker embedding",
+            blocker: "native SpeechBrain ECAPA binder and CPU/Metal forward landed; reserved: the graph-side OpKind variant + dedicated op-level C ABI export",
         },
         M5ResidualAnchor {
             op_id: WESPEAKER_SPEAKER_ENCODE_OP,
             fr_op: "FR-OP-80",
-            blocker: "CAM++ already covers speaker embedding",
+            blocker: "native strict WeSpeaker binder and CPU/Metal forward landed; reserved: the graph-side OpKind variant + dedicated op-level C ABI export",
         },
         M5ResidualAnchor {
             op_id: TITANET_SPEAKER_ENCODE_OP,
             fr_op: "FR-OP-80",
-            blocker: "CAM++ already covers speaker embedding",
+            blocker: "native strict TitaNet-L binder and CPU/Metal forward landed; reserved: the graph-side OpKind variant + dedicated op-level C ABI export",
         },
         M5ResidualAnchor {
             op_id: DIARIZE_OP,

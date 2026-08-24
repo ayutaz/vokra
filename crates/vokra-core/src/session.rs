@@ -21,8 +21,9 @@ use std::sync::atomic::AtomicU64;
 use crate::backend::BackendKind;
 use crate::compliance::AttributionInfo;
 use crate::engines::{
-    AsrEngine, CodecDecoderEngine, CodecDecoderHandle, S2sDuplexEngine, S2sEngine, SpeakerEngine,
-    SpeechFeatureEngine, SpeechFeatureStream, TtsEngine, VadEngine, VadStreamHandle,
+    AsrEngine, CodecDecoderEngine, CodecDecoderHandle, S2sDuplexEngine, S2sEngine,
+    SeparationEngine, SpeakerEngine, SpeechFeatureEngine, SpeechFeatureStream, TtsEngine,
+    VadEngine, VadStreamHandle,
 };
 use crate::error::{Result, VokraError};
 use crate::gguf::GgufFile;
@@ -81,6 +82,7 @@ pub struct Session {
     s2s_duplex: Option<Arc<dyn S2sDuplexEngine>>,
     speech_features: Option<Arc<dyn SpeechFeatureEngine>>,
     codec_decoder: Option<Arc<dyn CodecDecoderEngine>>,
+    separation: Option<Arc<dyn SeparationEngine>>,
     /// Speaker-embedding engine (CAM++ = M0-08, FR-OP-80). Same shape as the
     /// engines above; the facade entry is [`Session::speaker`].
     speaker: Option<Arc<dyn SpeakerEngine>>,
@@ -103,6 +105,7 @@ impl Clone for Session {
             s2s_duplex: self.s2s_duplex.clone(),
             speech_features: self.speech_features.clone(),
             codec_decoder: self.codec_decoder.clone(),
+            separation: self.separation.clone(),
             speaker: self.speaker.clone(),
             attribution: self.attribution.clone(),
         }
@@ -122,6 +125,7 @@ impl fmt::Debug for Session {
             .field("s2s_duplex_engine", &self.s2s_duplex.is_some())
             .field("speech_feature_engine", &self.speech_features.is_some())
             .field("codec_decoder_engine", &self.codec_decoder.is_some())
+            .field("separation_engine", &self.separation.is_some())
             .field("speaker_engine", &self.speaker.is_some())
             .field("attribution", &self.attribution.is_some())
             .finish()
@@ -249,6 +253,13 @@ impl Session {
         self
     }
 
+    /// Attaches an utterance-level source-separation or enhancement engine.
+    #[must_use]
+    pub fn with_separation_engine(mut self, engine: Arc<dyn SeparationEngine>) -> Self {
+        self.separation = Some(engine);
+        self
+    }
+
     /// Attaches a speaker-embedding engine (CAM++ = M0-08, FR-OP-80); the
     /// [`Speaker`](crate::tasks::Speaker) facade delegates to it.
     #[must_use]
@@ -309,6 +320,49 @@ impl Session {
                 "no streaming codec decoder engine injected for this model",
             )),
         }
+    }
+
+    /// Separates or enhances a complete mono waveform.
+    ///
+    /// Returns [`VokraError::NotImplemented`] when this model has no complete
+    /// separation engine attached.
+    pub fn separate_audio(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>> {
+        match &self.separation {
+            Some(engine) => engine.separate(pcm),
+            None => Err(VokraError::NotImplemented(
+                "no source-separation engine injected for this model",
+            )),
+        }
+    }
+
+    /// Returns the attached separation engine's required sample rate.
+    pub fn separation_sample_rate(&self) -> Result<u32> {
+        self.separation
+            .as_ref()
+            .map(|engine| engine.sample_rate())
+            .ok_or(VokraError::NotImplemented(
+                "no source-separation engine injected for this model",
+            ))
+    }
+
+    /// Returns the attached separation engine's exact output-stream count.
+    pub fn separation_output_streams(&self) -> Result<usize> {
+        self.separation
+            .as_ref()
+            .map(|engine| engine.output_streams())
+            .ok_or(VokraError::NotImplemented(
+                "no source-separation engine injected for this model",
+            ))
+    }
+
+    /// Returns the backend used by the attached separation engine.
+    pub fn separation_backend(&self) -> Result<BackendKind> {
+        self.separation
+            .as_ref()
+            .map(|engine| engine.backend())
+            .ok_or(VokraError::NotImplemented(
+                "no source-separation engine injected for this model",
+            ))
     }
 
     /// The injected speaker-embedding engine, if any (used by the
@@ -442,6 +496,7 @@ impl SessionBuilder {
             s2s_duplex: None,
             speech_features: None,
             codec_decoder: None,
+            separation: None,
             speaker: None,
             attribution: None,
         })

@@ -91,22 +91,26 @@ impl ResidualSiluLogitsAdapter {
         })
     }
 
-    fn apply_into(&self, hidden: &[f32], rows: usize, output: &mut Vec<f32>) {
+    fn apply_into(
+        &self,
+        compute: &Compute,
+        hidden: &[f32],
+        rows: usize,
+        output: &mut Vec<f32>,
+    ) -> Result<()> {
         let d = self.hidden_size;
         resize_zeroed(output, rows * d);
         for row in 0..rows {
             let input = &hidden[row * d..(row + 1) * d];
             let result = &mut output[row * d..(row + 1) * d];
+            compute.gemv_f32(d, d, &self.weight, input, Some(&self.bias), result)?;
             for out in 0..d {
-                let weights = &self.weight[out * d..(out + 1) * d];
-                let mut affine = self.bias[out];
-                for (&value, &weight) in input.iter().zip(weights) {
-                    affine += value * weight;
-                }
+                let affine = result[out];
                 let silu = affine / (1.0 + (-affine).exp());
                 result[out] = input[out] + silu;
             }
         }
+        Ok(())
     }
 }
 
@@ -149,9 +153,9 @@ pub struct DecoderState {
     adapted_hidden: Vec<f32>,
     /// Backend selector for the step forward (`Copy`, so [`DecoderState`] stays
     /// `Send` — it never holds a live `!Send` backend). A [`Compute`] is built
-    /// from it at each step entry (M2-01 Phase 3). Metal does not yet cover the
-    /// Whisper op set, so a Metal state is an explicit error at construction /
-    /// step (never a silent CPU fall back, FR-EX-08).
+    /// from it at each step entry (M2-01 Phase 3). The backend must cover the
+    /// complete Whisper op set; construction fails explicitly otherwise
+    /// (never a silent CPU fall back, FR-EX-08).
     backend_kind: BackendKind,
     /// Device-resident decoder-step session (Phase 3a, Metal-only in this slice).
     ///
@@ -177,8 +181,7 @@ impl DecoderState {
     /// # Errors
     ///
     /// [`VokraError::UnsupportedOp`](vokra_core::VokraError) if `backend_kind`
-    /// does not cover the Whisper hot-op set (e.g. Metal, whose softmax /
-    /// layer-norm / … kernels are not yet landed) — an explicit error at
+    /// does not cover the Whisper hot-op set — an explicit error at
     /// construction, never a silent CPU fall back (FR-EX-08).
     pub(crate) fn new_with_backend(
         model: Arc<WhisperModel>,
@@ -294,8 +297,11 @@ impl DecoderState {
     /// Installs the Whisper-Medusa module-0 output transform.
     ///
     /// Device-resident decoder sessions currently fuse the final projection,
-    /// so they cannot insert this model-specific transform.  Refuse them
-    /// explicitly instead of reading back and silently falling back to CPU.
+    /// so they cannot insert this model-specific transform. Switch this state
+    /// to the ordinary per-op path on the *same selected backend*: the adapter
+    /// GEMV and tied projection still execute through [`Compute`], and no CPU
+    /// fallback is introduced. A future fused pre-projection adapter can keep
+    /// the resident session instead.
     pub(crate) fn with_output_adapter(
         mut self,
         adapter: Arc<ResidualSiluLogitsAdapter>,
@@ -307,13 +313,7 @@ impl DecoderState {
                 self.model.config().d_model,
             )));
         }
-        if self.device_session.is_some() {
-            return Err(VokraError::UnsupportedOp(
-                "whisper-medusa output head is CPU-only until the device-resident decoder \
-                 session exposes a pre-projection adapter; no silent CPU fallback"
-                    .into(),
-            ));
-        }
+        self.device_session = None;
         self.output_adapter = Some(adapter);
         Ok(self)
     }
@@ -475,9 +475,11 @@ impl DecoderState {
             return Ok(());
         }
 
-        // CPU / CUDA per-op path (unchanged from before Phase 3a): build the
-        // backend dispatcher for this step (Copy `backend_kind`, so the state
-        // stays `Send`) and drive the per-block kernels through `Compute`.
+        // Per-op path: build the backend dispatcher for this step (Copy
+        // `backend_kind`, so the state stays `Send`) and drive every declared
+        // hot op through `Compute`. CPU/CUDA use this normally; Metal also uses
+        // it when a Whisper-Medusa output adapter is installed because the
+        // resident session currently fuses the vanilla final projection.
         let compute = Compute::for_backend(self.backend_kind, super::WHISPER_HOT_OPS)?;
         let t_kv = start + t;
         for (li, layer) in w.layers.iter().enumerate() {
@@ -554,7 +556,7 @@ impl DecoderState {
         self.self_kv.advance(t);
         let projection_input = match &self.output_adapter {
             Some(adapter) => {
-                adapter.apply_into(&self.block.ln, t, &mut self.adapted_hidden);
+                adapter.apply_into(&compute, &self.block.ln, t, &mut self.adapted_hidden)?;
                 self.adapted_hidden.as_slice()
             }
             None => self.block.ln.as_slice(),
@@ -581,32 +583,34 @@ impl DecoderState {
     /// per-op forward as `step_into` but, at each layer's
     /// cross-attention, also copies out the softmax weights via
     /// [`cross_attention_capture`]. It is NOT the hot path (it allocates
-    /// freely) and forces the CPU per-op path — never the device session
-    /// (alignment is not GPU-accelerated, ADR §D-5).
+    /// freely) and uses the state's selected per-op backend — never the device
+    /// session, whose contract does not expose attention probabilities.
     ///
     /// The self-attention cache is reset on entry and again on exit, so a call
     /// leaves the state as it found it (a fresh alignment pass, independent of
     /// any prior decode).
     pub(crate) fn cross_attention_weights(&mut self, tokens: &[u32]) -> Result<Vec<f32>> {
-        let (cfg, w) = self.model.decoder_state();
-        let d = cfg.d_model;
-        let ff = cfg.ffn_dim;
-        let n_head = cfg.n_text_head;
         let t = tokens.len();
         if t == 0 {
             return Err(VokraError::InvalidArgument(
                 "whisper cross_attention_weights: empty token sequence".into(),
             ));
         }
+        // Alignment is a clean second forward from position 0. Reset both the
+        // host mirror and any resident session so this second pass cannot
+        // inherit decoder state from the completed search.
+        self.reset();
+        let (cfg, w) = self.model.decoder_state();
+        let d = cfg.d_model;
+        let ff = cfg.ffn_dim;
+        let n_head = cfg.n_text_head;
         if t > cfg.n_text_ctx {
             return Err(VokraError::InvalidArgument(format!(
                 "whisper cross_attention_weights: {t} tokens exceed n_text_ctx {}",
                 cfg.n_text_ctx
             )));
         }
-        // Alignment is a clean second forward from position 0.
-        self.self_kv.reset();
-        let compute = Compute::for_backend(BackendKind::Cpu, super::WHISPER_HOT_OPS)?;
+        let compute = Compute::for_backend(self.backend_kind, super::WHISPER_HOT_OPS)?;
         let n_layer = w.layers.len();
         let n_ctx = self.n_ctx;
 
@@ -692,7 +696,7 @@ impl DecoderState {
             )?;
             add_assign(&mut self.h, &self.block.block_out)?;
         }
-        self.self_kv.reset();
+        self.reset();
         Ok(captured)
     }
 }
@@ -1043,6 +1047,25 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{tiny_encoder, tiny_model, tiny_model_ctx};
     use super::*;
+
+    #[test]
+    fn residual_silu_adapter_uses_compute_gemv_and_matches_closed_form() {
+        let adapter =
+            ResidualSiluLogitsAdapter::new(vec![1.0, 0.0, 0.0, 1.0], vec![0.0, 0.0], 2).unwrap();
+        let hidden = [0.0, 1.0, -1.0, 2.0];
+        let mut actual = Vec::new();
+        adapter
+            .apply_into(&Compute::cpu(), &hidden, 2, &mut actual)
+            .unwrap();
+        let expected = hidden.map(|value| value + value / (1.0 + (-value).exp()));
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() <= 1e-6),
+            "actual={actual:?} expected={expected:?}"
+        );
+    }
 
     #[test]
     fn new_rejects_encoder_dim_mismatch() {

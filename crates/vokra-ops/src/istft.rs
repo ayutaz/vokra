@@ -85,9 +85,11 @@ pub fn istft(spectrogram: &Spectrogram, attrs: &IstftAttrs) -> Result<Vec<f32>> 
         }
     }
 
-    for (a, w) in acc.iter_mut().zip(&wss) {
-        if *w > NOLA_EPS {
-            *a /= *w;
+    if attrs.normalize_window {
+        for (a, w) in acc.iter_mut().zip(&wss) {
+            if *w > NOLA_EPS {
+                *a /= *w;
+            }
         }
     }
 

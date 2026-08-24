@@ -9,11 +9,12 @@
 //! Output: a GGUF carrying every float tensor verbatim under its
 //! upstream safetensors name, plus the `vokra.wav2vec2_ctc.*` hparam
 //! chunk group and `vokra.provenance.*` / `vokra.model.*` metadata
-//! chunks a future native wav2vec2 loader will read.
+//! chunks consumed by the strict native `vokra_models::wav2vec2_ctc`
+//! loader.
 //!
 //! # HF / licence / category
 //!
-//! All four canonical variants ship under `apache-2.0` per their HF
+//! The seven native Wav2Vec2 variants ship under `apache-2.0` per their HF
 //! model cards (CC-verified via HF API `cardData.license` on
 //! 2026-07-30):
 //!
@@ -21,6 +22,8 @@
 //!   (12 layers × d=768 × 12h × ffn=3072, `feat_extract_norm=group`,
 //!   `do_stable_layer_norm=false`), English LibriSpeech 960h,
 //!   `Wav2Vec2ForCTC` with `vocab_size=32` char CTC head.
+//! - `facebook/wav2vec2-large-960h-lv60-self` — large stable topology
+//!   with the 32-way English CTC head.
 //! - `facebook/wav2vec2-large-xlsr-53` — 300M params, large topology
 //!   (24 layers × d=1024 × 16h × ffn=4096, `feat_extract_norm=layer`,
 //!   `do_stable_layer_norm=true`), multilingual XLSR-53 pretrained,
@@ -32,22 +35,17 @@
 //! - `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn` — same
 //!   large topology, `Wav2Vec2ForCTC` head with `vocab_size=3503`
 //!   (Simplified Chinese).
+//! - `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` — same large
+//!   topology, `Wav2Vec2ForCTC` head with `vocab_size=51`.
 //! - `facebook/wav2vec2-xlsr-53-espeak-cv-ft` — same large topology,
 //!   `Wav2Vec2ForCTC` head with `vocab_size=392` **eSpeak IPA phoneme**
 //!   tokens (Xu et al. 2022, arXiv:2109.11680 — CommonVoice fine-tune
 //!   whose CTC output is the eSpeak-NG phoneme inventory instead of a
 //!   character or kanji vocabulary). Complementary to the char /
 //!   kana+kanji / hanzi rows above: the same XLSR-53 backbone is
-//!   redirected at a phoneme-level head that the future runtime pipes
-//!   into a G2P-symmetric alignment stage. The phoneme vocab bytes
-//!   (`vocab.json`) are a follow-up wave: they will be embedded as a
-//!   `vokra.tokenizer.model` `U8` array using the Whisper 手法
-//!   (`include_bytes!` at compile time, no external crate) once the
-//!   upstream file is snapshotted under `crates/vokra-convert/
-//!   resources/wav2vec2_espeak_phoneme_vocab.bin`; today the converter
-//!   only stamps the axis (`vokra.wav2vec2_ctc.vocab_size = 392`) so a
-//!   future `Wav2Vec2CtcWeights::from_gguf` reader can reject a
-//!   mis-sized head loudly (FR-EX-08).
+//!   redirected at a phoneme-level head. The native runtime snapshots
+//!   the pinned official `vocab.json` with `include_bytes!` and checks
+//!   the 392-way head before binding.
 //!
 //! Model category: `asr` (recorded under `vokra.model.category`).
 //!
@@ -98,25 +96,23 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Neucodec / Wespeaker contract). Real-weight binding
-//! is a follow-up wave gated on the upstream tensor-name manifest
-//! fetch; this converter passes every F32 / F16 / BF16 tensor through
-//! unchanged so a future `Wav2Vec2CtcWeights::from_gguf` can walk the
-//! same names.
+//! VibeVoice / Neucodec / Wespeaker contract). The strict native
+//! binder walks those same names and validates the complete tensor
+//! count and every learned tensor shape.
 //!
 //! # Real-weight parity
 //!
-//! Real-weight parity against the upstream HF pipeline is deferred to
-//! owner (`docs/license-audit.md` §3.1 sign-off) — this converter
-//! provides the byte-parallel GGUF surface only.
+//! `tools/parity/wav2vec2_ctc_dump_reference.py` runs the pinned
+//! official Transformers implementation. The committed fixture and
+//! env-gated real-GGUF test cover PCM normalization, encoder features,
+//! logits, exact CTC ids and text for base-960h; large stable topology
+//! is separately exercised with a public GGUF.
 //!
 //! # No ONNX (permanent)
 //!
 //! wav2vec 2.0 is distributed as safetensors + a Python pipeline;
-//! this converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future
-//! `crates/vokra-models/src/wav2vec2_ctc/` module (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
+//! this converter **never** touches ONNX (FR-LD-05). Inference is
+//! re-implemented natively in `crates/vokra-models/src/wav2vec2_ctc/`.
 
 use std::path::Path;
 
@@ -168,6 +164,9 @@ pub enum Variant {
     /// ffn=3072, `feat_extract_norm="group"`, English LibriSpeech 960h
     /// CTC head with `vocab_size=32` char tokenizer.
     Base960h,
+    /// `facebook/wav2vec2-large-960h-lv60-self`. Large stable topology
+    /// plus the 32-way English CTC head.
+    Large960hLv60Self,
     /// `facebook/wav2vec2-large-xlsr-53`. Large topology (24 × d=1024 ×
     /// 16h × ffn=4096) trained with `Wav2Vec2ForPreTraining` — the
     /// pretrained base for the multilingual fine-tunes below. No CTC
@@ -181,66 +180,30 @@ pub enum Variant {
     /// topology + CTC head with `vocab_size=3503` (Simplified
     /// Chinese).
     LargeXlsr53ChineseZhCn,
+    /// `jonatasgrosman/wav2vec2-large-xlsr-53-arabic`. Large stable
+    /// topology plus the 51-way Arabic CTC head.
+    LargeXlsr53Arabic,
     /// `facebook/wav2vec2-xlsr-53-espeak-cv-ft`. Large topology +
     /// `Wav2Vec2ForCTC` head with `vocab_size=392` **eSpeak IPA
     /// phoneme** tokens (arXiv:2109.11680, CommonVoice fine-tune).
     /// Complementary to the char / kana+kanji / hanzi rows above —
     /// same XLSR-53 backbone but the CTC output space is the
     /// eSpeak-NG phoneme inventory instead of a character-level
-    /// vocabulary. The phoneme `vocab.json` will be embedded as
-    /// `vokra.tokenizer.model` (`U8` array, Whisper 手法) in a
-    /// follow-up wave; today the converter only stamps the axis
-    /// (`vokra.wav2vec2_ctc.vocab_size = 392`).
+    /// vocabulary. The runtime snapshots the pinned official vocab.
     LargeXlsr53EspeakCvFt,
-    /// `facebook/data2vec-audio-base-960h`. Baevski et al. 2022 —
-    /// `Data2VecAudioForCTC` (arXiv:2202.03555). Shares the wav2vec 2.0
-    /// **base** topology (12 layers × d=768 × 12h × ffn=3072,
-    /// `feat_extract_norm="group"`, `do_stable_layer_norm=false`) and
-    /// the same 7-layer Conv1D feature-extractor
-    /// (`conv_dim=[512×7]`, `conv_kernel=[10,3,3,3,3,2,2]`,
-    /// `conv_stride=[5,2,2,2,2,2,2]`), + English LibriSpeech 960h CTC
-    /// head (`vocab_size=32`). The safetensors tensor names are
-    /// identical to the sibling `Base960h` arm — data2vec differs in
-    /// the **pretraining objective** (contextualised latent
-    /// representation prediction with an EMA teacher) rather than the
-    /// downstream inference topology, so the wav2vec2 CTC converter
-    /// covers it verbatim. Only the `name` +
-    /// `vokra.provenance.upstream_hf` differ from `Base960h` so a
-    /// stamped GGUF faithfully reports the upstream release. Primary
-    /// source: `huggingface.co/facebook/data2vec-audio-base-960h/raw/
-    /// main/config.json` (`architectures = ["Data2VecAudioForCTC"]`,
-    /// `apache-2.0` per HF `cardData.license` CC-verified 2026-08-02).
-    Data2vecAudioBase960h,
     /// `facebook/mms-1b-all`. Meta MMS (Massively Multilingual Speech,
     /// Pratap et al. 2023, arXiv:2305.13516) — a 1B-parameter wav2vec 2.0
     /// backbone (`Wav2Vec2ForCTC` head family) bundled with 1000+
     /// per-language CTC adapters (~2000 sibling files in the repo).
     ///
-    /// **PLACEHOLDER AXES** — the parent workflow's SIZE NOTE forbids
-    /// downloading the ~4.00 GB upstream `model.safetensors` +
-    /// `config.json`, so the axes below route to the closest-family
-    /// sibling arm ([`Self::LargeXlsr53Base`]: 24 × d=1024 × 16h ×
-    /// ffn=4096, `feat_extract_norm="layer"`,
-    /// `do_stable_layer_norm=true`). The MMS-1B backbone is a distinct
-    /// 1B-parameter release (its true topology and per-language adapter
-    /// dimensions must be transcribed from the primary-source
-    /// `huggingface.co/facebook/mms-1b-all/raw/main/config.json` in a
-    /// follow-up wave before any downstream loader can trust the
-    /// emitted hparams).
-    ///
-    /// The **provenance** stamp is faithful — only the axis hparams are
-    /// placeholder:
-    /// - `name = "mms-1b-all"` (distinct from every sibling arm)
-    /// - `upstream_hf = "facebook/mms-1b-all"`
-    /// - `has_ctc_head = true` (MMS ships per-language CTC adapters +
-    ///   an English default head via the `Wav2Vec2ForCTC` interface)
-    ///
-    /// The distinct `name` + `upstream_hf` stamp is the guardrail a
-    /// future `Wav2Vec2CtcWeights::from_gguf` reader will use to
-    /// recognise this artifact and refuse to bind the placeholder
-    /// axes until the follow-up wave lands the true topology + the
-    /// per-language adapter loader (~1000 sibling `adapter.*.safetensors`
-    /// files, tracked in the parent workflow's `notes` field).
+    /// The backbone axes are pinned from upstream revision
+    /// `3d33597edbdaaba14a8e858e2c8caa76e3cec0cd`: 48 × d=1280 × 16h ×
+    /// ffn=5120, stable pre-LayerNorm, and base `vocab_size=154`.
+    /// Per-language adapters remain separate artifacts. The currently
+    /// public Vokra GGUF contains only an 8.9 MB adapter and carries
+    /// incompatible metadata/license stamps, so the runtime refuses it
+    /// until a full backbone+adapter artifact passes the publication
+    /// gates.
     ///
     /// Weight-distribution licence = **cc-by-nc-4.0** (T4 tier /
     /// Research-only publish path per the X-Codec-2 (2026-07-28)
@@ -310,6 +273,22 @@ impl Variant {
                 num_conv_pos_embedding_groups: 16,
                 has_ctc_head: true,
             },
+            Self::Large960hLv60Self => VariantAxes {
+                name: "wav2vec2-large-960h-lv60-self",
+                upstream_hf: "facebook/wav2vec2-large-960h-lv60-self",
+                hidden_size: 1024,
+                n_layer: 24,
+                n_head: 16,
+                intermediate_size: 4096,
+                vocab_size: 32,
+                layer_norm_eps: 1e-5,
+                feat_extract_norm: "layer",
+                do_stable_layer_norm: true,
+                hidden_act: "gelu",
+                num_conv_pos_embeddings: 128,
+                num_conv_pos_embedding_groups: 16,
+                has_ctc_head: true,
+            },
             // Primary source: huggingface.co/facebook/wav2vec2-large-xlsr-53/raw/main/config.json
             // Fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」).
             Self::LargeXlsr53Base => VariantAxes {
@@ -367,6 +346,22 @@ impl Variant {
                 num_conv_pos_embedding_groups: 16,
                 has_ctc_head: true,
             },
+            Self::LargeXlsr53Arabic => VariantAxes {
+                name: "wav2vec2-large-xlsr-53-arabic",
+                upstream_hf: "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
+                hidden_size: 1024,
+                n_layer: 24,
+                n_head: 16,
+                intermediate_size: 4096,
+                vocab_size: 51,
+                layer_norm_eps: 1e-5,
+                feat_extract_norm: "layer",
+                do_stable_layer_norm: true,
+                hidden_act: "gelu",
+                num_conv_pos_embeddings: 128,
+                num_conv_pos_embedding_groups: 16,
+                has_ctc_head: true,
+            },
             // Primary source: huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft/raw/main/config.json
             // Fetched 2026-08-01 (CLAUDE.md「ハルシネーション厳禁」).
             // XLSR-53 large backbone (`Wav2Vec2ForCTC`, `apache-2.0`)
@@ -393,62 +388,19 @@ impl Variant {
                 num_conv_pos_embedding_groups: 16,
                 has_ctc_head: true,
             },
-            // Primary source: huggingface.co/facebook/data2vec-audio-base-960h/raw/main/config.json
-            // (CC-verified 2026-08-02, CLAUDE.md「ハルシネーション厳禁」).
-            // data2vec-audio-base-960h shares the wav2vec 2.0 **base**
-            // topology (12L × d=768 × 12h × ffn=3072,
-            // `feat_extract_norm="group"`, `do_stable_layer_norm=false`)
-            // with a Wav2Vec2ForCTC-compatible LibriSpeech 960h English
-            // char CTC head (`vocab_size=32`). Only `name` +
-            // `upstream_hf` diverge from `Base960h` so a stamped GGUF
-            // faithfully reports the upstream release rather than
-            // masquerading as `wav2vec2-base-960h`.
-            // 2026-08-02 wave: `facebook/mms-1b-all` (cc-by-nc-4.0).
-            // Meta MMS 1B (Pratap et al. 2023, arXiv:2305.13516) —
-            // the parent workflow's SIZE NOTE (4.00 GB checkpoint)
-            // forbids downloading `config.json` for verification, so
-            // the axes below **route to the closest-family sibling**
-            // ([`Self::LargeXlsr53Base`]: 24L × d=1024 × 16h ×
-            // ffn=4096, `feat_extract_norm="layer"`,
-            // `do_stable_layer_norm=true`) as an explicit
-            // PLACEHOLDER. Only the discriminating axes — `name`,
-            // `upstream_hf`, `has_ctc_head=true` (MMS ships per-lang
-            // CTC adapters + English default head via
-            // `Wav2Vec2ForCTC`) — are faithful. A follow-up wave must
-            // transcribe the true MMS-1B topology + adapter dims and
-            // land a per-language adapter loader before any downstream
-            // loader can trust these placeholder hparams. The
-            // provenance stamp guardrail (distinct `name` +
-            // `upstream_hf`) lets a future
-            // `Wav2Vec2CtcWeights::from_gguf` reader detect this
-            // artifact and refuse to bind until the follow-up.
+            // Primary source: facebook/mms-1b-all config.json at
+            // revision 3d33597edbdaaba14a8e858e2c8caa76e3cec0cd.
             Self::Mms1bAll => VariantAxes {
                 name: "mms-1b-all",
                 upstream_hf: "facebook/mms-1b-all",
-                hidden_size: 1024,
-                n_layer: 24,
+                hidden_size: 1280,
+                n_layer: 48,
                 n_head: 16,
-                intermediate_size: 4096,
-                vocab_size: 32,
+                intermediate_size: 5120,
+                vocab_size: 154,
                 layer_norm_eps: 1e-5,
                 feat_extract_norm: "layer",
                 do_stable_layer_norm: true,
-                hidden_act: "gelu",
-                num_conv_pos_embeddings: 128,
-                num_conv_pos_embedding_groups: 16,
-                has_ctc_head: true,
-            },
-            Self::Data2vecAudioBase960h => VariantAxes {
-                name: "data2vec-audio-base-960h",
-                upstream_hf: "facebook/data2vec-audio-base-960h",
-                hidden_size: 768,
-                n_layer: 12,
-                n_head: 12,
-                intermediate_size: 3072,
-                vocab_size: 32,
-                layer_norm_eps: 1e-5,
-                feat_extract_norm: "group",
-                do_stable_layer_norm: false,
                 hidden_act: "gelu",
                 num_conv_pos_embeddings: 128,
                 num_conv_pos_embedding_groups: 16,
@@ -953,6 +905,57 @@ mod tests {
     }
 
     #[test]
+    fn hparam_chunk_pins_lv60_and_arabic_ctc_variants() {
+        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
+        for (tag, variant, name, upstream, vocab) in [
+            (
+                "lv60",
+                Variant::Large960hLv60Self,
+                "wav2vec2-large-960h-lv60-self",
+                "facebook/wav2vec2-large-960h-lv60-self",
+                32,
+            ),
+            (
+                "arabic",
+                Variant::LargeXlsr53Arabic,
+                "wav2vec2-large-xlsr-53-arabic",
+                "jonatasgrosman/wav2vec2-large-xlsr-53-arabic",
+                51,
+            ),
+        ] {
+            let input = write_temp(&format!("{tag}-in"), &bytes);
+            let output = write_temp(&format!("{tag}-out"), &[]);
+            convert_wav2vec2_ctc_file_with_variant(&input, &output, variant, None).unwrap();
+            let file = GgufFile::parse(std::fs::read(&output).unwrap()).unwrap();
+            assert_eq!(
+                file.get(chunks::KEY_MODEL_NAME)
+                    .and_then(|value| value.as_str()),
+                Some(name)
+            );
+            assert_eq!(
+                file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                    .and_then(|value| value.as_str()),
+                Some(upstream)
+            );
+            assert_eq!(
+                file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
+                Some(1024)
+            );
+            assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(24));
+            assert_eq!(
+                file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()),
+                Some(vocab)
+            );
+            assert_eq!(
+                file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
+                Some(true)
+            );
+            std::fs::remove_file(input).ok();
+            std::fs::remove_file(output).ok();
+        }
+    }
+
+    #[test]
     fn hparam_chunk_pins_espeak_cv_ft_variant() {
         // Regression fence: the espeak-cv-ft variant is the only wav2vec2
         // arm whose CTC head has `vocab_size=392` (eSpeak IPA phoneme
@@ -1062,107 +1065,11 @@ mod tests {
     }
 
     #[test]
-    fn hparam_chunk_pins_data2vec_audio_base_960h_variant() {
-        // Regression fence: `Data2vecAudioBase960h` shares the wav2vec 2.0
-        // **base** topology with `Base960h` (12L × d=768 × 12h × ffn=3072,
-        // `feat_extract_norm=group`, `do_stable_layer_norm=false`,
-        // `vocab_size=32`, `has_ctc_head=true`), so only `name` +
-        // `upstream_hf` may diverge — the assertions below both prove the
-        // stamped axes match `huggingface.co/facebook/data2vec-audio-base-960h/
-        // raw/main/config.json` (CC-verified 2026-08-02) AND that the
-        // variant did not accidentally get routed to (or masquerade as)
-        // the sibling `Base960h` arm's `wav2vec2-base-960h` provenance.
-        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
-        let input_path = write_temp("data2vec-in", &bytes);
-        let output_path = write_temp("data2vec-out", &[]);
-
-        let report = convert_wav2vec2_ctc_file_with_variant(
-            &input_path,
-            &output_path,
-            Variant::Data2vecAudioBase960h,
-            None,
-        )
-        .expect("data2vec-audio-base-960h conversion must succeed");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.bf16_passthrough, 1);
-        assert_eq!(report.skipped_non_float, 0);
-
-        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
-
-        // Shared wav2vec 2.0 base topology axes.
-        assert_eq!(
-            file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
-            Some(768)
-        );
-        assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(12));
-        assert_eq!(file.get(KEY_N_HEAD).and_then(|v| v.as_u64()), Some(12));
-        assert_eq!(
-            file.get(KEY_INTERMEDIATE_SIZE).and_then(|v| v.as_u64()),
-            Some(3072)
-        );
-        assert_eq!(
-            file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
-            Some("group"),
-            "base topology uses feat_extract_norm=group"
-        );
-        assert_eq!(
-            file.get(KEY_DO_STABLE_LAYER_NORM).and_then(|v| v.as_bool()),
-            Some(false)
-        );
-        assert_eq!(
-            file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
-            Some(true),
-            "data2vec-audio-base-960h is Data2VecAudioForCTC (has CTC head)"
-        );
-        assert_eq!(
-            file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()),
-            Some(32),
-            "LibriSpeech 960h English char CTC vocab_size=32"
-        );
-
-        // Discriminating axis: name + upstream_hf must faithfully report
-        // the data2vec-audio upstream release, NOT masquerade as
-        // wav2vec2-base-960h.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("data2vec-audio-base-960h"),
-            "GGUF must NOT report wav2vec2-base-960h (would lose data2vec provenance)"
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("facebook/data2vec-audio-base-960h"),
-            "upstream_hf must point at the data2vec-audio release, not the wav2vec2 sibling"
-        );
-        // Arch tag stays `wav2vec2_ctc` (tensor names + topology are
-        // identical — data2vec differs in the pretraining objective, not
-        // the downstream inference arch).
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(MODEL_CATEGORY)
-        );
-
-        std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
-    }
-
-    #[test]
     fn hparam_chunk_pins_mms_1b_all_variant() {
-        // Regression fence: `Mms1bAll` routes through the shared
-        // wav2vec2_ctc converter (parent workflow REUSE HINT) but must
-        // stamp the discriminating `name` + `upstream_hf` faithfully so
-        // a future `Wav2Vec2CtcWeights::from_gguf` reader can detect
-        // the MMS-1B artifact and refuse to bind the placeholder axes
-        // until the follow-up wave lands the true topology + adapter
-        // loader. The axes themselves route to LargeXlsr53Base
-        // (placeholder — the parent workflow SIZE NOTE forbids
-        // downloading the 4.00 GB checkpoint / config.json for real
-        // primary-source transcription).
+        // Regression fence: the pass-through converter stamps the
+        // official MMS-1B backbone axes and NonCommercial provenance.
+        // This does not make an adapter-only artifact runnable: the
+        // strict runtime separately requires the complete tensor set.
         let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
         let input_path = write_temp("mms-in", &bytes);
         let output_path = write_temp("mms-out", &[]);
@@ -1181,13 +1088,11 @@ mod tests {
 
         let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
 
-        // Discriminating axes: name + upstream_hf must faithfully
-        // report the MMS-1B release (guardrail for the placeholder-axis
-        // rebind refusal).
+        // Discriminating name + upstream_hf must faithfully report MMS.
         assert_eq!(
             file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
             Some("mms-1b-all"),
-            "GGUF must report `mms-1b-all` (guardrail for placeholder-axis refusal)"
+            "GGUF must report `mms-1b-all`"
         );
         assert_eq!(
             file.get(KEY_PROVENANCE_UPSTREAM_HF)
@@ -1222,13 +1127,17 @@ mod tests {
             Some(LicenseClass::NonCommercial.as_str()),
             "weight_license class must be NonCommercial (T4 tier gate)"
         );
-        // Placeholder axes assertion — routed to LargeXlsr53Base until
-        // the follow-up wave transcribes the true MMS-1B topology.
         assert_eq!(
             file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
-            Some(1024),
-            "placeholder axis (LargeXlsr53Base sibling) — follow-up must transcribe MMS-1B config.json"
+            Some(1280),
+            "official MMS-1B hidden size"
         );
+        assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(48));
+        assert_eq!(
+            file.get(KEY_INTERMEDIATE_SIZE).and_then(|v| v.as_u64()),
+            Some(5120)
+        );
+        assert_eq!(file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()), Some(154));
         assert_eq!(
             file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
             Some(true),
@@ -1237,7 +1146,7 @@ mod tests {
         assert_eq!(
             file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
             Some("layer"),
-            "placeholder axis (large topology sibling)"
+            "official MMS-1B feature-extractor norm"
         );
 
         std::fs::remove_file(&input_path).ok();

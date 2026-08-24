@@ -7,7 +7,7 @@
 //! LibriSpeech / SRE (16 kHz mono, 192-d embedding). Output: a GGUF
 //! carrying every float tensor verbatim under its upstream safetensors
 //! name, plus the `vokra.provenance.*` / `vokra.model.*` metadata chunks
-//! a future native TitaNet loader will read.
+//! consumed by the native CPU/Metal TitaNet loader.
 //!
 //! # HF / licence / category
 //!
@@ -49,38 +49,21 @@
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Neucodec / WeSpeaker / ECAPA-TDNN contract). Real-weight
-//! binding is a **follow-up wave** gated on the M5-residual op landing
-//! (`TITANET_SPEAKER_ENCODE_OP` in
-//! `crates/vokra-core/src/m5_residual_ops.rs`, FR-OP-80 variant).
-//!
-//! # Runtime port is out-of-scope
-//!
-//! This converter provides the byte-parallel GGUF surface only; a
-//! consumer needing a speaker embedding today should use CAM++
-//! (`vokra-models::speaker_encode`) which already covers fbank-80 →
-//! 192-d embedding under Apache-2.0 (no attribution overhead). TitaNet
-//! runtime binding is M5-residual (`docs/adr/M5-ORPHAN-SCOPE-residual-ops-amx-sme.md`).
+//! GGUF tensor names are the **upstream safetensors names verbatim**, after
+//! validating the exact 108-float-tensor inference manifest extracted from
+//! the pinned `.nemo` checkpoint. Unknown, partial, extra, and shape-incompatible
+//! manifests fail before an output file is written.
 //!
 //! # No ONNX (permanent)
 //!
 //! NVIDIA distributes TitaNet as a `.nemo` (torch pickle inside a tar);
 //! this converter **never** touches ONNX (FR-LD-05); a native
-//! re-implementation lives in a future `crates/vokra-models/src/titanet/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! re-implementation lives in `crates/vokra-models/src/titanet/`.
 //!
 //! # Real-weight parity
 //!
-//! Real-weight parity against the upstream NeMo `EncDecSpeakerLabelModel`
-//! inference path is deferred to the runtime landing wave — this
-//! converter only guarantees byte-identical tensor pass-through +
-//! metadata stamps. `docs/license-audit.md` §3.1 sign-off = ☑ Commercial
-//! 2026-07-30 yousan (weight license verified via HF primary source;
-//! runtime parity harness is a follow-up when the M5-residual op lands).
-
-#![allow(dead_code)]
+//! Real-weight parity is checked against the upstream NeMo
+//! `EncDecSpeakerLabelModel` inference path by the companion parity harness.
 
 use std::path::Path;
 
@@ -119,13 +102,19 @@ pub const MODEL_CATEGORY: &str = "speaker";
 pub const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 pub const UPSTREAM_HF: &str = "nvidia/speakerverification_en_titanet_large";
 
+/// Immutable upstream checkpoint revision.
+pub const UPSTREAM_REVISION: &str = "0dc382f40121a5fbd34db10a2bb04d826c2be6a8";
+/// NeMo v1.10.0 source revision used by the native implementation.
+pub const SOURCE_REVISION: &str = "082c5ae26168796d3ebac6adcf54bb8b5354daa1";
+
 /// Default upstream weight licence (SPDX). Primary source: HF model
 /// card `cardData.license` YAML frontmatter (`license: cc-by-4.0`) +
 /// card body "License to use this model is covered by the CC-BY-4.0"
 /// (fetched 2026-07-30). Callers who obtained the weight under a
-/// different SPDX may override at the outer
-/// `convert_file --license <spdx>` boundary; the class is re-derived
-/// via [`LicenseClass::from_license_str`].
+/// different SPDX must use a separately identified converter/model family.
+/// This canonical converter refuses an incompatible
+/// `convert_file --license <spdx>` override rather than laundering NVIDIA's
+/// audited checkpoint under a different licence.
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-4.0";
 
 /// FR-MD-09 attribution text stamped into `vokra.provenance.attribution`
@@ -139,6 +128,36 @@ pub const TITANET_ATTRIBUTION_TEXT: &str = "This application uses NVIDIA TitaNet
     16 kHz mono → 192-d embedding). Model weights are licensed under CC-BY 4.0 \
     (attribution required; commercial use permitted). Copyright (c) NVIDIA. \
     Source: https://huggingface.co/nvidia/speakerverification_en_titanet_large";
+
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_SOURCE_REVISION: &str = "vokra.titanet.source_revision";
+const KEY_SAMPLE_RATE: &str = "vokra.titanet.sample_rate";
+const KEY_N_MELS: &str = "vokra.titanet.n_mels";
+const KEY_N_FFT: &str = "vokra.titanet.n_fft";
+const KEY_WIN_LENGTH: &str = "vokra.titanet.win_length";
+const KEY_HOP_LENGTH: &str = "vokra.titanet.hop_length";
+const KEY_EMBED_DIM: &str = "vokra.titanet.embed_dim";
+const KEY_ENCODER_CHANNELS: &str = "vokra.titanet.encoder_channels";
+const KEY_OUTPUT_CHANNELS: &str = "vokra.titanet.output_channels";
+const KEY_ATTENTION_CHANNELS: &str = "vokra.titanet.attention_channels";
+const KEY_ENCODER_BN_EPS: &str = "vokra.titanet.encoder_bn_eps";
+const KEY_DECODER_BN_EPS: &str = "vokra.titanet.decoder_bn_eps";
+const KEY_STATS_EPS: &str = "vokra.titanet.stats_eps";
+const KEY_FRONTEND: &str = "vokra.titanet.frontend";
+const KEY_BLOCKS: &str = "vokra.titanet.blocks";
+const KEY_POOLING: &str = "vokra.titanet.pooling";
+const KEY_LAYOUT: &str = "vokra.titanet.artifact_layout";
+
+const INPUT_DIM: u64 = 80;
+const FFT_BINS: u64 = 257;
+const WINDOW_SIZE: u64 = 400;
+const EMBED_DIM: u64 = 192;
+const ENCODER_CHANNELS: u64 = 1_024;
+const OUTPUT_CHANNELS: u64 = 3_072;
+const ATTENTION_CHANNELS: u64 = 128;
+const STATS_CHANNELS: u64 = OUTPUT_CHANNELS * 2;
+const CLASS_COUNT: u64 = 16_681;
+const TENSOR_COUNT: usize = 108;
 
 /// Outcome of a TitaNet conversion.
 ///
@@ -189,6 +208,15 @@ pub fn convert_titanet_file(
 ) -> Result<TitaNetReport, ConvertError> {
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    validate_manifest(&st)?;
+
+    if let Some(license) = license.filter(|value| !value.is_empty())
+        && !license.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX)
+    {
+        return Err(ConvertError::Parse(format!(
+            "titanet: the audited NVIDIA checkpoint is `{DEFAULT_LICENSE_SPDX}`; refusing incompatible override `{license}`"
+        )));
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -199,19 +227,34 @@ pub fn convert_titanet_file(
     // trace the artifact back to its serving location by upstream_hf.
     b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    b.add_u32(KEY_SAMPLE_RATE, 16_000);
+    b.add_u32(KEY_N_MELS, INPUT_DIM as u32);
+    b.add_u32(KEY_N_FFT, 512);
+    b.add_u32(KEY_WIN_LENGTH, WINDOW_SIZE as u32);
+    b.add_u32(KEY_HOP_LENGTH, 160);
+    b.add_u32(KEY_EMBED_DIM, EMBED_DIM as u32);
+    b.add_u32(KEY_ENCODER_CHANNELS, ENCODER_CHANNELS as u32);
+    b.add_u32(KEY_OUTPUT_CHANNELS, OUTPUT_CHANNELS as u32);
+    b.add_u32(KEY_ATTENTION_CHANNELS, ATTENTION_CHANNELS as u32);
+    b.add_f32(KEY_ENCODER_BN_EPS, 1.0e-3);
+    b.add_f32(KEY_DECODER_BN_EPS, 1.0e-5);
+    b.add_f32(KEY_STATS_EPS, 1.0e-10);
+    b.add_string(KEY_FRONTEND, "nemo-filterbank-v1.10.0");
+    b.add_string(KEY_BLOCKS, "1x3,3x7,3x11,3x15,1x1");
+    b.add_string(KEY_POOLING, "attentive-statistics-population-v1");
+    b.add_string(KEY_LAYOUT, "nemo-inference-108-v1");
 
     // Self-describing redistribution: the artifact carries its own
     // licence. Default = cc-by-4.0 (upstream
     // `nvidia/speakerverification_en_titanet_large` HF cardData).
-    // `license` overrides for callers who obtained the weight under a
-    // different SPDX (see `convert_file_licensed` in `lib.rs`).
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (
-            DEFAULT_LICENSE_SPDX.to_owned(),
-            LicenseClass::AttributionRequired,
-        ),
-    };
+    // The exact supported checkpoint has an audited CC-BY-4.0 license; an
+    // incompatible caller override was rejected above.
+    let (spdx, class) = (
+        DEFAULT_LICENSE_SPDX.to_owned(),
+        LicenseClass::AttributionRequired,
+    );
     vokra_core::stamp_provenance(
         &mut b,
         class,
@@ -269,7 +312,165 @@ pub fn convert_titanet_file(
     Ok(report)
 }
 
-#[cfg(test)]
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "titanet: tensor count is {}, expected exactly {TENSOR_COUNT}",
+            st.tensors().len()
+        )));
+    }
+    let expected = expected_manifest();
+    debug_assert_eq!(expected.len(), TENSOR_COUNT);
+    for (name, dimensions) in expected {
+        let tensor = st
+            .tensor_info(&name)
+            .ok_or_else(|| ConvertError::Parse(format!("titanet: missing tensor `{name}`")))?;
+        if tensor.shape != dimensions {
+            return Err(ConvertError::Parse(format!(
+                "titanet: tensor `{name}` has dims {:?}, expected {dimensions:?}",
+                tensor.shape
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn expected_manifest() -> Vec<(String, Vec<u64>)> {
+    let mut expected = Vec::with_capacity(TENSOR_COUNT);
+    expected.push((
+        "preprocessor.featurizer.fb".to_owned(),
+        vec![1, INPUT_DIM, FFT_BINS],
+    ));
+    expected.push((
+        "preprocessor.featurizer.window".to_owned(),
+        vec![WINDOW_SIZE],
+    ));
+
+    push_jasper(&mut expected, 0, INPUT_DIM, ENCODER_CHANNELS, 1, 3, false);
+    push_jasper(
+        &mut expected,
+        1,
+        ENCODER_CHANNELS,
+        ENCODER_CHANNELS,
+        3,
+        7,
+        true,
+    );
+    push_jasper(
+        &mut expected,
+        2,
+        ENCODER_CHANNELS,
+        ENCODER_CHANNELS,
+        3,
+        11,
+        true,
+    );
+    push_jasper(
+        &mut expected,
+        3,
+        ENCODER_CHANNELS,
+        ENCODER_CHANNELS,
+        3,
+        15,
+        true,
+    );
+    push_jasper(
+        &mut expected,
+        4,
+        ENCODER_CHANNELS,
+        OUTPUT_CHANNELS,
+        1,
+        1,
+        false,
+    );
+
+    let attention = "decoder._pooling.attention_layer";
+    expected.push((
+        format!("{attention}.0.conv_layer.weight"),
+        vec![ATTENTION_CHANNELS, OUTPUT_CHANNELS * 3, 1],
+    ));
+    expected.push((
+        format!("{attention}.0.conv_layer.bias"),
+        vec![ATTENTION_CHANNELS],
+    ));
+    push_norm(
+        &mut expected,
+        &format!("{attention}.0.bn"),
+        ATTENTION_CHANNELS,
+    );
+    expected.push((
+        format!("{attention}.2.weight"),
+        vec![OUTPUT_CHANNELS, ATTENTION_CHANNELS, 1],
+    ));
+    expected.push((format!("{attention}.2.bias"), vec![OUTPUT_CHANNELS]));
+    push_norm(&mut expected, "decoder.emb_layers.0.0", STATS_CHANNELS);
+    expected.push((
+        "decoder.emb_layers.0.1.weight".to_owned(),
+        vec![EMBED_DIM, STATS_CHANNELS, 1],
+    ));
+    expected.push(("decoder.emb_layers.0.1.bias".to_owned(), vec![EMBED_DIM]));
+    expected.push((
+        "decoder.final.weight".to_owned(),
+        vec![CLASS_COUNT, EMBED_DIM],
+    ));
+    expected
+}
+
+fn push_jasper(
+    expected: &mut Vec<(String, Vec<u64>)>,
+    block: usize,
+    input_channels: u64,
+    output_channels: u64,
+    repeat: usize,
+    kernel: u64,
+    residual: bool,
+) {
+    let base = format!("encoder.encoder.{block}");
+    let mut channels = input_channels;
+    for unit in 0..repeat {
+        let offset = unit * 5;
+        expected.push((
+            format!("{base}.mconv.{offset}.conv.weight"),
+            vec![channels, 1, kernel],
+        ));
+        expected.push((
+            format!("{base}.mconv.{}.conv.weight", offset + 1),
+            vec![output_channels, channels, 1],
+        ));
+        push_norm(
+            expected,
+            &format!("{base}.mconv.{}", offset + 2),
+            output_channels,
+        );
+        channels = output_channels;
+    }
+    let se_index = if repeat == 1 { 3 } else { 13 };
+    expected.push((
+        format!("{base}.mconv.{se_index}.fc.0.weight"),
+        vec![output_channels / 8, output_channels],
+    ));
+    expected.push((
+        format!("{base}.mconv.{se_index}.fc.2.weight"),
+        vec![output_channels, output_channels / 8],
+    ));
+    if residual {
+        expected.push((
+            format!("{base}.res.0.0.conv.weight"),
+            vec![output_channels, input_channels, 1],
+        ));
+        push_norm(expected, &format!("{base}.res.0.1"), output_channels);
+    }
+}
+
+fn push_norm(expected: &mut Vec<(String, Vec<u64>)>, prefix: &str, channels: u64) {
+    for suffix in ["weight", "bias", "running_mean", "running_var"] {
+        expected.push((format!("{prefix}.{suffix}"), vec![channels]));
+    }
+}
+
+// Historical one/two-tensor pass-through tests are intentionally excluded:
+// the production converter now rejects partial manifests.
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufFile};
@@ -653,6 +854,32 @@ mod tests {
         assert!(
             LicenseClass::AttributionRequired.redistributable(),
             "CC-BY 4.0 permits redistribution"
+        );
+    }
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+
+    #[test]
+    fn exact_manifest_has_108_unique_tensors() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        let mut names = manifest.iter().map(|(name, _)| name).collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), TENSOR_COUNT);
+    }
+
+    #[test]
+    fn pinned_identity_and_license_are_stable() {
+        assert_eq!(ARCH, "titanet-large");
+        assert_eq!(UPSTREAM_REVISION.len(), 40);
+        assert_eq!(SOURCE_REVISION.len(), 40);
+        assert_eq!(
+            LicenseClass::from_license_str(DEFAULT_LICENSE_SPDX),
+            LicenseClass::AttributionRequired
         );
     }
 }

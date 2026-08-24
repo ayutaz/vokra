@@ -958,6 +958,10 @@ impl TtsEngine for PiperPlusTts {
         )
     }
 
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
+
     /// Overrides the default `synthesize_stream` (which loudly refuses per
     /// FR-EX-08) to return a **single-chunk** [`PiperPlusTtsStream`] — the
     /// piper-plus surface unification landing for WP-23 / M4-03. The full

@@ -80,19 +80,22 @@
 //!   layout the upstream state_dict emits (openWakeWord precedent —
 //!   defense against a Python bridge that silently writes the
 //!   transpose).
-//! - **Non-CPU backend**: [`NkfAecStream::push_paired`] runs entirely
-//!   on the CPU; requesting a different backend at the session level is
-//!   a load-time `UnsupportedOp` because no backend arm is wired yet.
+//! - **Backend selection**: KGNet's learned Linear / GRU projections use
+//!   the selected backend's GEMV kernel. STFT, complex Kalman recurrence,
+//!   PReLU, GRU gates, and overlap-add remain model-specific host glue.
+//!   An unavailable backend is an explicit error; there is no CPU fallback.
 
 use std::sync::Arc;
 
-use vokra_core::Complex32;
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::{AecEngine, AecStreamHandle};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::ir::graph::{Normalization, Window, WindowSymmetry};
-use vokra_core::{Result, VokraError};
+use vokra_core::{Complex32, Result, VokraError};
 use vokra_ops::fft::RealFftPlan;
 use vokra_ops::window::window;
+
+use crate::compute::{Compute, HotOp};
 
 #[cfg(test)]
 mod tests;
@@ -113,6 +116,9 @@ pub const DEFAULT_NAME: &str = "nkf-aec";
 
 /// `vokra.model.category` — AEC family.
 pub const CATEGORY: &str = "aec";
+
+/// Backend-dispatched learned operators used by KGNet.
+pub const NKF_AEC_HOT_OPS: &[HotOp] = &[HotOp::Gemv];
 
 // ---- upstream-pinned dims (nkf.py::NKF / KGNet — hardcoded release axes)
 //
@@ -326,6 +332,27 @@ impl LinearWeights {
             *out_slot = acc;
         }
     }
+
+    fn forward_with_compute(
+        &self,
+        x: &[f32],
+        out: &mut [f32],
+        compute: Option<&Compute>,
+    ) -> Result<()> {
+        if let Some(compute) = compute {
+            compute.gemv_f32(
+                self.out_dim,
+                self.in_dim,
+                &self.weight,
+                x,
+                Some(&self.bias),
+                out,
+            )
+        } else {
+            self.forward(x, out);
+            Ok(())
+        }
+    }
 }
 
 /// One real `nn.GRU` layer's parameters (upstream torch layout).
@@ -408,6 +435,47 @@ impl GruWeights {
             let n = (a_in + r * a_hn).tanh();
             h_out[o] = (1.0 - z) * n + z * h_in[o];
         }
+    }
+
+    fn step_with_compute(
+        &self,
+        x: &[f32],
+        h_in: &[f32],
+        h_out: &mut [f32],
+        compute: Option<&Compute>,
+        projection_scratch: &mut [f32],
+    ) -> Result<()> {
+        let Some(compute) = compute else {
+            self.step(x, h_in, h_out);
+            return Ok(());
+        };
+        let h = self.hidden;
+        debug_assert_eq!(projection_scratch.len(), 6 * h);
+        let (input_projection, hidden_projection) = projection_scratch.split_at_mut(3 * h);
+        compute.gemv_f32(
+            3 * h,
+            self.input_size,
+            &self.weight_ih,
+            x,
+            Some(&self.bias_ih),
+            input_projection,
+        )?;
+        compute.gemv_f32(
+            3 * h,
+            h,
+            &self.weight_hh,
+            h_in,
+            Some(&self.bias_hh),
+            hidden_projection,
+        )?;
+        for index in 0..h {
+            let reset = sigmoid(input_projection[index] + hidden_projection[index]);
+            let update = sigmoid(input_projection[h + index] + hidden_projection[h + index]);
+            let candidate =
+                (input_projection[2 * h + index] + reset * hidden_projection[2 * h + index]).tanh();
+            h_out[index] = (1.0 - update) * candidate + update * h_in[index];
+        }
+        Ok(())
     }
 }
 
@@ -646,9 +714,11 @@ fn complex_dense_forward(
     x_im: &[f32],
     y_re: &mut [f32],
     y_im: &mut [f32],
-) {
-    lr.forward(x_re, y_re);
-    li.forward(x_im, y_im);
+    compute: Option<&Compute>,
+) -> Result<()> {
+    lr.forward_with_compute(x_re, y_re, compute)?;
+    li.forward_with_compute(x_im, y_im, compute)?;
+    Ok(())
 }
 
 /// Applies `ComplexPReLU`: independent real PReLU on the real and
@@ -697,16 +767,18 @@ fn complex_gru_step(
     out_re: &mut [f32],
     out_im: &mut [f32],
     scratch: &mut [f32],
-) {
+    projection_scratch: &mut [f32],
+    compute: Option<&Compute>,
+) -> Result<()> {
     let hh = gru_r.hidden;
     let (h_rr_new, rest) = scratch.split_at_mut(hh);
     let (h_ir_new, rest) = rest.split_at_mut(hh);
     let (h_ri_new, h_ii_new) = rest.split_at_mut(hh);
 
-    gru_r.step(x_re, h_rr, h_rr_new);
-    gru_r.step(x_im, h_ir, h_ir_new);
-    gru_i.step(x_re, h_ri, h_ri_new);
-    gru_i.step(x_im, h_ii, h_ii_new);
+    gru_r.step_with_compute(x_re, h_rr, h_rr_new, compute, projection_scratch)?;
+    gru_r.step_with_compute(x_im, h_ir, h_ir_new, compute, projection_scratch)?;
+    gru_i.step_with_compute(x_re, h_ri, h_ri_new, compute, projection_scratch)?;
+    gru_i.step_with_compute(x_im, h_ii, h_ii_new, compute, projection_scratch)?;
 
     // Frr = h_rr_new; Fir = h_ir_new; Fri = h_ri_new; Fii = h_ii_new
     // y = complex(Frr - Fii, Fri + Fir)
@@ -719,6 +791,7 @@ fn complex_gru_step(
     h_ir.copy_from_slice(h_ir_new);
     h_ri.copy_from_slice(h_ri_new);
     h_ii.copy_from_slice(h_ii_new);
+    Ok(())
 }
 
 /// Full `KGNet.forward` for a single bin. Consumes the `2L+1` complex
@@ -739,7 +812,8 @@ fn kgnet_step(
     kg_re: &mut [f32],
     kg_im: &mut [f32],
     scratch: &mut KgnetScratch,
-) {
+    compute: Option<&Compute>,
+) -> Result<()> {
     // fc_in
     complex_dense_forward(
         &w.fc_in_lr,
@@ -748,7 +822,8 @@ fn kgnet_step(
         feat_im,
         &mut scratch.fc_in_out_re,
         &mut scratch.fc_in_out_im,
-    );
+        compute,
+    )?;
     complex_prelu_apply(w.fc_in_prelu, &mut scratch.fc_in_out_re);
     complex_prelu_apply(w.fc_in_prelu, &mut scratch.fc_in_out_im);
 
@@ -765,7 +840,9 @@ fn kgnet_step(
         &mut scratch.gru_out_re,
         &mut scratch.gru_out_im,
         &mut scratch.gru_scratch,
-    );
+        &mut scratch.gru_projection_scratch,
+        compute,
+    )?;
 
     // fc_out.0
     complex_dense_forward(
@@ -775,7 +852,8 @@ fn kgnet_step(
         &scratch.gru_out_im,
         &mut scratch.fc_out0_re,
         &mut scratch.fc_out0_im,
-    );
+        compute,
+    )?;
     complex_prelu_apply(w.fc_out_prelu, &mut scratch.fc_out0_re);
     complex_prelu_apply(w.fc_out_prelu, &mut scratch.fc_out0_im);
 
@@ -787,7 +865,9 @@ fn kgnet_step(
         &scratch.fc_out0_im,
         kg_re,
         kg_im,
-    );
+        compute,
+    )?;
+    Ok(())
 }
 
 /// Per-bin scratch buffers reused across steps (allocated once per
@@ -803,6 +883,9 @@ pub(crate) struct KgnetScratch {
     // 4 * rnn_dim — one contiguous block for the ComplexGRU step
     // (`h_rr_new`, `h_ir_new`, `h_ri_new`, `h_ii_new`).
     gru_scratch: Vec<f32>,
+    // 6 * rnn_dim — input and recurrent `[3H]` projections reused by
+    // the backend GEMV GRU path.
+    gru_projection_scratch: Vec<f32>,
 }
 
 impl KgnetScratch {
@@ -815,6 +898,7 @@ impl KgnetScratch {
             fc_out0_re: vec![0.0; cfg.fc_dim],
             fc_out0_im: vec![0.0; cfg.fc_dim],
             gru_scratch: vec![0.0; 4 * cfg.rnn_dim],
+            gru_projection_scratch: vec![0.0; 6 * cfg.rnn_dim],
         }
     }
 }
@@ -828,6 +912,7 @@ impl KgnetScratch {
 pub struct NkfAec {
     cfg: NkfAecConfig,
     weights: Arc<NkfAecWeights>,
+    backend: BackendKind,
 }
 
 impl NkfAec {
@@ -855,6 +940,7 @@ impl NkfAec {
         Ok(Self {
             cfg,
             weights: Arc::new(weights),
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -871,7 +957,21 @@ impl NkfAec {
         Self {
             cfg,
             weights: Arc::new(weights),
+            backend: BackendKind::Cpu,
         }
+    }
+
+    /// Selects the required execution backend for KGNet projections.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The bound checkpoint's config.
@@ -889,9 +989,10 @@ impl AecEngine for NkfAec {
                 self.cfg.sample_rate
             )));
         }
-        Ok(Box::new(NkfAecStream::new(
+        Ok(Box::new(NkfAecStream::new_with_backend(
             self.cfg.clone(),
             Arc::clone(&self.weights),
+            self.backend,
         )))
     }
 }
@@ -926,6 +1027,7 @@ impl AecEngine for NkfAec {
 pub struct NkfAecStream {
     pub(crate) cfg: NkfAecConfig,
     pub(crate) weights: Arc<NkfAecWeights>,
+    pub(crate) backend: BackendKind,
     // ---- per-bin recurrent state ----------------------------------------
     //
     // Row-major `[F_bins, L]` complex — one Kalman filter tap vector per
@@ -1005,7 +1107,16 @@ pub struct NkfAecStream {
 }
 
 impl NkfAecStream {
+    #[cfg(test)]
     fn new(cfg: NkfAecConfig, weights: Arc<NkfAecWeights>) -> Self {
+        Self::new_with_backend(cfg, weights, BackendKind::Cpu)
+    }
+
+    fn new_with_backend(
+        cfg: NkfAecConfig,
+        weights: Arc<NkfAecWeights>,
+        backend: BackendKind,
+    ) -> Self {
         let f = cfg.f_bins();
         let l = cfg.l;
         let rnn = cfg.rnn_dim;
@@ -1038,6 +1149,7 @@ impl NkfAecStream {
             frame_e_im: vec![0.0; f],
             cfg,
             weights,
+            backend,
         }
     }
 
@@ -1068,7 +1180,7 @@ impl NkfAecStream {
     // obscures the paper's per-tap recurrence steps. Keep the index-
     // based loops so the code reads as the paper does.
     #[allow(clippy::needless_range_loop)]
-    fn step_frame(&mut self, y_re: &[f32], y_im: &[f32]) {
+    fn step_frame(&mut self, y_re: &[f32], y_im: &[f32], compute: Option<&Compute>) -> Result<()> {
         let f_bins = self.cfg.f_bins();
         let l = self.cfg.l;
         let rnn = self.cfg.rnn_dim;
@@ -1158,7 +1270,8 @@ impl NkfAecStream {
                 &mut kg_re,
                 &mut kg_im,
                 &mut self.scratch,
-            );
+                compute,
+            )?;
 
             // (f) h_posterior = h_prior + kg * e; echo_hat = <xt, h_posterior>
             let mut echo_post = Complex32::ZERO;
@@ -1174,6 +1287,7 @@ impl NkfAecStream {
             self.frame_e_re[k] = e_out.re;
             self.frame_e_im[k] = e_out.im;
         }
+        Ok(())
     }
 
     /// Streaming drain — new-frame-only, per-frame OLA.
@@ -1251,6 +1365,12 @@ impl NkfAecStream {
             return Ok(Vec::new());
         }
 
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, NKF_AEC_HOT_OPS)?)
+        };
+
         // Grow OLA ring to accommodate every new frame's tail. The
         // last new frame extends up to `(available_frames - 1) * hop +
         // n_fft`; the ring must reach that absolute sample.
@@ -1305,7 +1425,7 @@ impl NkfAecStream {
             // consume a familiar `[f_bins]` slice. Kalman advances once.
             let y_re: Vec<f32> = y_spec_bins.iter().map(|c| c.re).collect();
             let y_im: Vec<f32> = y_spec_bins.iter().map(|c| c.im).collect();
-            self.step_frame(&y_re, &y_im);
+            self.step_frame(&y_re, &y_im, compute.as_ref())?;
 
             // (3e) Inverse-FFT E[f] (includes `1/n_fft` under `Backward`
             // convention — `RealFftPlan::inverse`); apply the synthesis

@@ -174,12 +174,29 @@
 
 use std::path::Path;
 
+use vokra_core::BackendKind;
 use vokra_core::gguf::{GgufError, GgufFile, GgufMetadataValue};
 use vokra_core::ir::graph::{MelAttrs, StftAttrs};
 use vokra_ops::mel::MelFilterbank;
 use vokra_ops::stft::stft;
 
+use crate::compute::{Compute, HotOp};
+
 use super::{F0Frame, LoadError};
+
+/// Complete learned-op set used by the FCPE backend path.
+///
+/// GroupNorm is expressed as one affine layer-normalisation dispatch per
+/// channel group over its contiguous `[channels_per_group, time]` slice.
+/// Pointwise projections and the output head use Conv1D/GEMM respectively;
+/// fixed mel/DSP, transposes, residuals and parameter-free activations remain
+/// host glue.
+pub const FCPE_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::LayerNorm,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+];
 
 // -- Released `fcpe_c_v001` reference values ---------------------------------
 //
@@ -735,6 +752,7 @@ pub struct FCPE {
     weights: Option<FcpeWeights>,
     /// Pre-computed cent grid (`out_dims` entries, cent-linear).
     cent_grid: Vec<f32>,
+    backend: BackendKind,
 }
 
 impl FCPE {
@@ -776,7 +794,25 @@ impl FCPE {
             cfg,
             weights,
             cent_grid,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Selects the backend used by the complete learned FCPE forward.
+    ///
+    /// CPU remains the default and preserves the established scalar oracle.
+    /// A non-CPU backend is accepted only when it covers every op in
+    /// [`FCPE_HOT_OPS`]; there is no per-op CPU fallback.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// Extracts an F0 track from PCM samples by running the real FCPE
@@ -889,7 +925,12 @@ impl FCPE {
         // unusable n_fft / hop), which is a fact the caller needs, not one
         // to paper over with zeros.
         let mel = self.compute_mel(pcm, n_frames)?;
-        let latents = self.forward(&mel, n_frames, weights);
+        let latents = if self.backend == BackendKind::Cpu {
+            self.forward_scalar(&mel, n_frames, weights)
+        } else {
+            let compute = Compute::for_backend(self.backend, FCPE_HOT_OPS)?;
+            self.forward_with_compute(&mel, n_frames, weights, &compute)?
+        };
         Ok(self.decode(&latents, n_frames, sr, hop))
     }
 
@@ -952,7 +993,7 @@ impl FCPE {
 
     /// Runs the CFNaiveMelPEInfer forward and returns the sigmoid latents
     /// `[t_frames, n_pitch_bins]` (row-major).
-    fn forward(&self, mel: &[f32], t_frames: usize, w: &FcpeWeights) -> Vec<f32> {
+    fn forward_scalar(&self, mel: &[f32], t_frames: usize, w: &FcpeWeights) -> Vec<f32> {
         let d_model = self.cfg.d_model as usize;
         let n_mels = self.cfg.n_mels as usize;
         let ffn_dim = self.cfg.ffn_dim as usize;
@@ -1076,6 +1117,152 @@ impl FCPE {
             }
         }
         latents
+    }
+
+    /// Backend-dispatched FCPE forward. All learned convolutions,
+    /// normalisations and the output affine use `compute`; the remaining
+    /// operations are parameter-free layout, activation and residual glue.
+    fn forward_with_compute(
+        &self,
+        mel: &[f32],
+        t_frames: usize,
+        w: &FcpeWeights,
+        compute: &Compute,
+    ) -> Result<Vec<f32>, vokra_core::VokraError> {
+        let d_model = self.cfg.d_model as usize;
+        let n_mels = self.cfg.n_mels as usize;
+        let ffn_dim = self.cfg.ffn_dim as usize;
+        let inner_dim = ffn_dim / 2;
+        let stem_k = self.cfg.stem_kernel as usize;
+        let stem_pad = stem_k / 2;
+        let conv_k = self.cfg.conv_kernel as usize;
+        let conv_pad = conv_k / 2;
+        let n_bins = self.cfg.n_pitch_bins as usize;
+        let gn_groups = self.cfg.stem_groups as usize;
+
+        let mel_ch = transpose_flat(mel, t_frames, n_mels);
+        let mut stem1 = vec![0.0f32; d_model * t_frames];
+        compute.conv1d_f32(
+            &mel_ch,
+            n_mels,
+            t_frames,
+            &w.stem_w1,
+            d_model,
+            stem_k,
+            Some(&w.stem_b1),
+            1,
+            stem_pad,
+            &mut stem1,
+        )?;
+        group_norm_with_compute(
+            compute,
+            &mut stem1,
+            d_model,
+            t_frames,
+            gn_groups,
+            &w.stem_gn_gamma,
+            &w.stem_gn_beta,
+        )?;
+        leaky_relu_inplace(&mut stem1, LEAKY_SLOPE);
+
+        let mut stem2 = vec![0.0f32; d_model * t_frames];
+        compute.conv1d_f32(
+            &stem1,
+            d_model,
+            t_frames,
+            &w.stem_w2,
+            d_model,
+            stem_k,
+            Some(&w.stem_b2),
+            1,
+            stem_pad,
+            &mut stem2,
+        )?;
+        let mut x_tf = transpose_flat(&stem2, d_model, t_frames);
+
+        let mut normed = vec![0.0f32; t_frames * d_model];
+        let mut pw1_out_ch = vec![0.0f32; ffn_dim * t_frames];
+        let mut gated_ch = vec![0.0f32; inner_dim * t_frames];
+        let mut dw_out_ch = vec![0.0f32; inner_dim * t_frames];
+        let mut pw2_out_ch = vec![0.0f32; d_model * t_frames];
+
+        for layer in &w.layers {
+            compute.layer_norm_f32(
+                &x_tf,
+                &mut normed,
+                t_frames,
+                d_model,
+                &layer.ln_gamma,
+                &layer.ln_beta,
+                NORM_EPS,
+            )?;
+            let normed_ch = transpose_flat(&normed, t_frames, d_model);
+            compute.conv1d_f32(
+                &normed_ch,
+                d_model,
+                t_frames,
+                &layer.pw1_w,
+                ffn_dim,
+                1,
+                Some(&layer.pw1_b),
+                1,
+                0,
+                &mut pw1_out_ch,
+            )?;
+            glu_channel(&pw1_out_ch, ffn_dim, t_frames, &mut gated_ch);
+            compute.grouped_conv1d_f32(
+                &gated_ch,
+                inner_dim,
+                t_frames,
+                &layer.dw_w,
+                inner_dim,
+                conv_k,
+                Some(&layer.dw_b),
+                1,
+                conv_pad,
+                inner_dim,
+                &mut dw_out_ch,
+            )?;
+            silu_inplace(&mut dw_out_ch);
+            compute.conv1d_f32(
+                &dw_out_ch,
+                inner_dim,
+                t_frames,
+                &layer.pw2_w,
+                d_model,
+                1,
+                Some(&layer.pw2_b),
+                1,
+                0,
+                &mut pw2_out_ch,
+            )?;
+            residual_add_transposed(&mut x_tf, &pw2_out_ch, t_frames, d_model);
+        }
+
+        compute.layer_norm_f32(
+            &x_tf,
+            &mut normed,
+            t_frames,
+            d_model,
+            &w.head_norm_gamma,
+            &w.head_norm_beta,
+            NORM_EPS,
+        )?;
+        let head_w_t = transpose_flat(&w.head_w, n_bins, d_model);
+        let mut latents = vec![0.0f32; t_frames * n_bins];
+        compute.gemm_f32(
+            t_frames,
+            n_bins,
+            d_model,
+            &normed,
+            &head_w_t,
+            Some(&w.head_b),
+            &mut latents,
+        )?;
+        for value in &mut latents {
+            *value = sigmoid(*value);
+        }
+        Ok(latents)
     }
 
     /// Local-argmax decoder — mirrors upstream
@@ -1325,6 +1512,50 @@ fn group_norm_inplace(
             }
         }
     }
+}
+
+/// GroupNorm through the backend's affine normalisation primitive.
+///
+/// A channel-first FCPE group is one contiguous row of
+/// `channels_per_group * time` values. Expanding the per-channel affine over
+/// time lets the existing LayerNorm kernel reproduce GroupNorm's population
+/// statistics exactly while keeping every learned gamma/beta application on
+/// the selected backend.
+#[allow(clippy::too_many_arguments)]
+fn group_norm_with_compute(
+    compute: &Compute,
+    x: &mut [f32],
+    ch: usize,
+    t: usize,
+    groups: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Result<(), vokra_core::VokraError> {
+    let ch_per_group = ch / groups;
+    let group_len = ch_per_group * t;
+    let mut affine_gamma = vec![0.0f32; group_len];
+    let mut affine_beta = vec![0.0f32; group_len];
+    let mut normalized = vec![0.0f32; group_len];
+    for group in 0..groups {
+        for local_ch in 0..ch_per_group {
+            let channel = group * ch_per_group + local_ch;
+            affine_gamma[local_ch * t..(local_ch + 1) * t].fill(gamma[channel]);
+            affine_beta[local_ch * t..(local_ch + 1) * t].fill(beta[channel]);
+        }
+        let start = group * group_len;
+        let end = start + group_len;
+        compute.layer_norm_f32(
+            &x[start..end],
+            &mut normalized,
+            1,
+            group_len,
+            &affine_gamma,
+            &affine_beta,
+            NORM_EPS,
+        )?;
+        x[start..end].copy_from_slice(&normalized);
+    }
+    Ok(())
 }
 
 /// LayerNorm applied per-row on `[t_frames, d_model]` row-major, writing
@@ -2010,6 +2241,39 @@ mod tests {
             assert!(f.hz >= 0.0);
             assert!(f.confidence >= 0.0 && f.confidence <= 1.0);
         }
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// The backend adapter must preserve the established scalar FCPE oracle
+    /// before it is allowed to represent a GPU route. This exercises every
+    /// learned stem, GroupNorm, encoder and head operation with non-zero
+    /// deterministic weights through the CPU implementation of `Compute`.
+    #[test]
+    fn fcpe_complete_compute_path_matches_scalar_oracle() {
+        let tmp = std::env::temp_dir().join(format!(
+            "vokra-fcpe-compute-parity-{}.gguf",
+            std::process::id()
+        ));
+        let hop = write_synthetic_fcpe_gguf(&tmp);
+        let fcpe = FCPE::from_gguf(&tmp).expect("load complete synthetic FCPE");
+        let weights = fcpe.weights.as_ref().expect("fixture binds weights");
+        let pcm = synthetic_sine_pcm(hop, 20);
+        let frames = pcm.len() / hop as usize;
+        let mel = fcpe.compute_mel(&pcm, frames).expect("FCPE mel");
+        let scalar = fcpe.forward_scalar(&mel, frames, weights);
+        let compute = Compute::cpu();
+        let dispatched = fcpe
+            .forward_with_compute(&mel, frames, weights, &compute)
+            .expect("complete Compute path");
+        let max_abs = scalar
+            .iter()
+            .zip(&dispatched)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs <= 1.0e-4,
+            "FCPE complete Compute path max_abs={max_abs:.9e} exceeds 1e-4"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 

@@ -105,10 +105,9 @@ impl WhisperAsr {
     /// [`BackendKind::Cpu`]).
     ///
     /// Whisper needs softmax / layer-norm / GELU / conv1d / GEMV on the backend
-    /// as well as GEMM, which the Metal slice does not yet cover, so
-    /// `with_backend(BackendKind::Metal)` makes the transcribe entries an
-    /// explicit [`VokraError::UnsupportedOp`] until those Metal kernels land
-    /// (Phase 4) — never a silent CPU fall back (FR-EX-08).
+    /// as well as GEMM. The Metal backend covers that complete hot-op set;
+    /// greedy, beam, sampled, and word-alignment forwards all preserve this
+    /// selection rather than substituting a CPU decoder.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend_kind = backend;
@@ -196,10 +195,9 @@ impl WhisperAsr {
     /// without detokenizing. Useful when no tokenizer is attached and for
     /// token-level parity tests.
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
-        // Build the backend dispatcher once at the entry (errors here for a
-        // backend that does not cover the Whisper op set — e.g. Metal, Phase 4),
-        // and run the encoder on it; the decoder steps rebuild it from the same
-        // backend selection. The CPU path is bit-identical to before the seam.
+        // Build the backend dispatcher once at the entry and run the encoder
+        // on it; the decoder steps rebuild it from the same backend selection.
+        // The CPU path is bit-identical to before the seam.
         let encoder = self.encode_selected(pcm)?;
         let mut state = self
             .model
@@ -295,9 +293,9 @@ impl WhisperAsr {
     /// # Errors
     ///
     /// * [`VokraError::UnsupportedOp`] when the selected backend does not
-    ///   cover the Whisper op set (e.g. Metal today) — the same guard the
-    ///   greedy [`transcribe_tokens`](Self::transcribe_tokens) enforces
-    ///   (no silent CPU fall back, FR-EX-08).
+    ///   cover the Whisper op set — the same guard the greedy
+    ///   [`transcribe_tokens`](Self::transcribe_tokens) enforces (no silent
+    ///   CPU fall back, FR-EX-08).
     /// * Any error surfaced by
     ///   [`vokra_core::decode::beam_search()`] itself (empty
     ///   prefix, zero widths, `word_timestamps` enabled, …).
@@ -306,9 +304,8 @@ impl WhisperAsr {
         pcm: &[f32],
         config: &BeamSearchConfig<'_>,
     ) -> Result<Vec<BeamHypothesis>> {
-        // Metal is rejected here (Whisper op set uncovered until Phase 4); the
-        // scorer's per-step decoder runs on the CPU backend as before.
         let encoder = self.encode_selected(pcm)?;
+        let decoder_backend = self.decoder_backend();
         let cfg = self.model.config();
         // The clip's TRUE (unpadded) audio-position count for the word-
         // timestamp alignment (openai timing.py:208 `weights[:, :, :
@@ -322,17 +319,22 @@ impl WhisperAsr {
         // each arm rather than unifying to a trait object.
         match &self.tokenizer {
             Some(tok) => {
-                let mut scorer = WhisperBeamScorer::with_tokenizer(
+                let mut scorer = WhisperBeamScorer::with_tokenizer_and_backend(
                     Arc::clone(&self.model),
                     &encoder,
                     tok,
                     n_valid_audio,
+                    decoder_backend,
                 )?;
                 beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
             }
             None => {
-                let mut scorer =
-                    WhisperBeamScorer::new(Arc::clone(&self.model), &encoder, n_valid_audio)?;
+                let mut scorer = WhisperBeamScorer::new_with_backend(
+                    Arc::clone(&self.model),
+                    &encoder,
+                    n_valid_audio,
+                    decoder_backend,
+                )?;
                 beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
             }
         }
@@ -349,7 +351,11 @@ impl WhisperAsr {
         config: &SamplerConfig,
     ) -> Result<Vec<u32>> {
         let encoder = self.encode_selected(pcm)?;
-        let mut source = WhisperLogitsSource::new(Arc::clone(&self.model), &encoder)?;
+        let mut source = WhisperLogitsSource::new_with_backend(
+            Arc::clone(&self.model),
+            &encoder,
+            self.decoder_backend(),
+        )?;
         let cfg = self.model.config();
         sample_sequence(
             &mut source,

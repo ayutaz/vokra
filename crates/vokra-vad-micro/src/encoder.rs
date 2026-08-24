@@ -9,7 +9,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use crate::math::{conv1d_wt, relu_in_place};
+use crate::math::{ScalarSileroOps, SileroBackendOps, relu_in_place};
 use crate::pseudo_stft::Magnitude;
 use crate::weights::RateWeights;
 
@@ -30,34 +30,41 @@ const STRIDES: [usize; 4] = [1, 2, 2, 1];
 
 /// Runs the encoder conv stack on the magnitude spectrogram.
 pub fn encode(w: &RateWeights, mag: &Magnitude) -> EncoderOut {
+    encode_with_ops(w, mag, &mut ScalarSileroOps).expect("the scalar Silero backend is infallible")
+}
+
+pub(crate) fn encode_with_ops<O: SileroBackendOps>(
+    w: &RateWeights,
+    mag: &Magnitude,
+    ops: &mut O,
+) -> vokra_core::Result<EncoderOut> {
     let mut data = mag.data.clone();
     let mut c_in = mag.bins;
     let mut len = mag.frames;
     for (layer, stride) in w.encoder.iter().zip(STRIDES) {
         debug_assert_eq!(layer.c_in, c_in);
-        // M5-14 Wave-2 (T21): the transposed-weight formulation of the same
-        // conv — bit-identical per element (see `math::conv1d_wt`).
-        let out = conv1d_wt(
+        let out = ops.conv1d(
             &data,
             c_in,
             len,
+            &layer.weight,
             &layer.weight_t,
-            Some(&layer.bias),
             layer.c_out,
             layer.k,
+            Some(&layer.bias),
             stride,
             1, // pad = 1
-        );
+        )?;
         len = (len + 2 - layer.k) / stride + 1;
         c_in = layer.c_out;
         data = out;
         relu_in_place(&mut data);
     }
-    EncoderOut {
+    Ok(EncoderOut {
         data,
         channels: c_in,
         frames: len,
-    }
+    })
 }
 
 #[cfg(test)]

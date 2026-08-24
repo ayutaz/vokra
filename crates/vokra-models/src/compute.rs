@@ -349,6 +349,14 @@ pub enum HotOp {
     /// `covered_by_webgpu` / `covered_by_coreml` / `covered_by_qnn` return
     /// `false`.
     AntiAliasedUpsample,
+    /// Grouped 1-D convolution with PyTorch weight layout
+    /// `[out_ch, in_ch / groups, kernel]`. Vocos uses the depthwise case
+    /// (`groups == in_ch == out_ch`) in every ConvNeXt block.
+    ///
+    /// The CPU arm composes the existing dense convolution kernel per group;
+    /// the Metal arm uses group-local indexing in the direct Conv1d shader.
+    /// CUDA/WebGPU/Vulkan/delegates remain explicitly uncovered.
+    GroupedConv1d,
     /// Stateful causal HiFi-GAN generator forward (#46), including the
     /// generator's causal transposed-convolution stages and streaming state.
     /// This is one model-level hot op rather than a claim that the existing
@@ -409,6 +417,7 @@ impl HotOp {
                 | HotOp::LayerNorm
                 | HotOp::Gelu
                 | HotOp::Conv1d
+                | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
                 | HotOp::WavTokenizerVq
@@ -641,7 +650,7 @@ impl Compute {
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] if `kind` is a real backend that does not
-    ///   cover some op in `required` (e.g. Metal for a model that needs softmax)
+    ///   cover some op in `required` (e.g. Metal for a model that needs GroupFsq)
     ///   — never a per-op CPU fall back.
     /// - [`VokraError::BackendUnavailable`] if `kind` is not built into this
     ///   binary (e.g. `Metal` without the `metal` feature, or off an Apple
@@ -1072,6 +1081,45 @@ impl Compute {
             Be::WebGpu(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
+        }
+    }
+
+    /// Grouped 1-D convolution. The CPU and Metal arms execute real grouped
+    /// kernels; other GPU arms refuse explicitly because their coverage gate
+    /// does not list [`HotOp::GroupedConv1d`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn grouped_conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::grouped_conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.grouped_conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "grouped_conv1d has no CUDA Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "grouped_conv1d has no WebGPU Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -3811,6 +3859,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -3881,6 +3930,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::WavTokenizerVq,
@@ -4084,6 +4134,7 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
         ] {
@@ -4150,6 +4201,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4210,6 +4262,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4257,6 +4310,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4321,6 +4375,7 @@ mod tests {
             HotOp::LayerNorm,
             HotOp::Gelu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4509,6 +4564,7 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
         ] {

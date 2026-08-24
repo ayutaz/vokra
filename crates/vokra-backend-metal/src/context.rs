@@ -290,7 +290,7 @@ kernel void vokra_gelu_f32(
 // outer, kk inner) accumulation order equals the im2col+GEMM reduction the CPU
 // runs, so the two agree within the FP32 bound; bias is added after, as on CPU.
 struct Conv1dDims {
-    uint in_ch;
+    uint in_per_group;
     uint in_len;
     uint out_ch;
     uint kernel_size;
@@ -298,6 +298,7 @@ struct Conv1dDims {
     uint stride;
     uint padding;
     uint has_bias;
+    uint out_per_group;
 };
 
 kernel void vokra_conv1d_f32(
@@ -313,12 +314,13 @@ kernel void vokra_conv1d_f32(
     if (t >= d.out_len || oc >= d.out_ch) {
         return;
     }
-    const uint k     = d.in_ch * d.kernel_size;
+    const uint group = oc / d.out_per_group;
+    const uint k     = d.in_per_group * d.kernel_size;
     const uint wbase = oc * k;
     float acc = 0.0f;
-    for (uint c = 0; c < d.in_ch; ++c) {
+    for (uint c = 0; c < d.in_per_group; ++c) {
         const uint wc    = wbase + c * d.kernel_size;
-        const uint ibase = c * d.in_len;
+        const uint ibase = (group * d.in_per_group + c) * d.in_len;
         for (uint kk = 0; kk < d.kernel_size; ++kk) {
             const uint pos = t * d.stride + kk;
             if (pos >= d.padding && pos < d.padding + d.in_len) {
@@ -1657,7 +1659,7 @@ struct DequantGemvDims {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Conv1dDims {
-    in_ch: u32,
+    in_per_group: u32,
     in_len: u32,
     out_ch: u32,
     kernel_size: u32,
@@ -1665,6 +1667,7 @@ struct Conv1dDims {
     stride: u32,
     padding: u32,
     has_bias: u32,
+    out_per_group: u32,
 }
 
 /// `col_gather` dims (`setBytes:` index 2). Field order / widths mirror the MSL
@@ -5208,15 +5211,23 @@ impl MetalContext {
         // SAFETY: token consumed by the matching pop below.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let r = self.run_conv1d(
-            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out_len, out,
+            input, in_len, weight, out_ch, kernel, bias, stride, padding, out_len, in_ch, out_ch,
+            out,
         );
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
     }
 
-    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
-    fn run_conv1d(
+    /// Grouped 1-D convolution with PyTorch-compatible weight layout
+    /// `[out_ch, in_ch / groups, kernel]`.
+    ///
+    /// `groups == in_ch == out_ch` is the depthwise form used by Vocos'
+    /// ConvNeXt blocks. The same Metal pipeline as [`Self::conv1d_f32`] is
+    /// used; group-local input indexing is performed by the shader, so no
+    /// dense diagonal weight expansion or CPU convolution is hidden here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn grouped_conv1d_f32(
         &self,
         input: &[f32],
         in_ch: usize,
@@ -5227,7 +5238,50 @@ impl MetalContext {
         bias: Option<&[f32]>,
         stride: usize,
         padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_grouped_conv1d(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_conv1d(
+            input,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            out_len,
+            in_ch / groups,
+            out_ch / groups,
+            out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn run_conv1d(
+        &self,
+        input: &[f32],
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
         out_len: usize,
+        in_per_group: usize,
+        out_per_group: usize,
         out: &mut [f32],
     ) -> Result<()> {
         let in_buf = self.new_buffer_from_slice(input)?;
@@ -5236,7 +5290,7 @@ impl MetalContext {
         let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
         let out_buf = self.new_buffer_output(out.len())?;
         let dims = Conv1dDims {
-            in_ch: in_ch as u32,
+            in_per_group: in_per_group as u32,
             in_len: in_len as u32,
             out_ch: out_ch as u32,
             kernel_size: kernel as u32,
@@ -5244,6 +5298,7 @@ impl MetalContext {
             stride: stride as u32,
             padding: padding as u32,
             has_bias: u32::from(bias.is_some()),
+            out_per_group: out_per_group as u32,
         };
         let (grid, tg) = grid_2d(out_len, out_ch);
         self.dispatch_compute(
@@ -8264,6 +8319,75 @@ fn validate_conv1d(
     )?;
     if let Some(bias) = bias {
         expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+    Ok(out_len)
+}
+
+/// Validates the grouped-convolution extension of [`validate_conv1d`].
+#[allow(clippy::too_many_arguments)]
+fn validate_grouped_conv1d(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    groups: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if groups == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d groups must be >= 1".to_owned(),
+        ));
+    }
+    if in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "grouped_conv1d in_ch {in_ch} and out_ch {out_ch} must both be divisible by groups {groups}"
+        )));
+    }
+    if stride == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d stride must be >= 1".to_owned(),
+        ));
+    }
+    if kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d kernel must be >= 1".to_owned(),
+        ));
+    }
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "grouped_conv1d 2*padding")?)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("grouped_conv1d padded length overflow".to_owned())
+        })?;
+    if padded < kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "grouped_conv1d padded length {padded} is smaller than kernel {kernel}"
+        )));
+    }
+    let out_len = (padded - kernel) / stride + 1;
+    expect_len(
+        "grouped_conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "grouped_conv1d in_ch*in_len")?,
+    )?;
+    let in_per = in_ch / groups;
+    let k = checked_mul(in_per, kernel, "grouped_conv1d in_per*kernel")?;
+    expect_len(
+        "grouped_conv1d weight",
+        weight.len(),
+        checked_mul(out_ch, k, "grouped_conv1d out_ch*k")?,
+    )?;
+    expect_len(
+        "grouped_conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "grouped_conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("grouped_conv1d bias", bias.len(), out_ch)?;
     }
     Ok(out_len)
 }

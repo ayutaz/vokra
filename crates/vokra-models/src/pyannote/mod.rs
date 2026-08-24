@@ -104,8 +104,10 @@
 
 use std::path::Path;
 
-use vokra_core::VokraError;
 use vokra_core::gguf::{GgmlType, GgufFile};
+use vokra_core::{BackendKind, VokraError};
+
+use crate::compute::{Compute, HotOp};
 
 pub mod sincnet;
 use sincnet::SincNet;
@@ -191,6 +193,9 @@ pub const DEFAULT_NUM_POWERSET_CLASSES: u32 = 7;
 /// first sinc conv1d + 2 conv1d+bn+maxpool blocks emit 60 features per
 /// frame, wired verbatim into `nn.LSTM(60, ...)` in PyanNet.py L96).
 pub const SINCNET_OUTPUT_FEATURES: u32 = 60;
+
+/// Complete learned-op set for the PyanNet backend route.
+pub const PYANNOTE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Gemv, HotOp::Softmax, HotOp::Conv1d];
 
 // ---------------------------------------------------------------------------
 // PyanNetConfig — the (sample_rate / sincnet_stride / lstm.* / linear.*
@@ -689,6 +694,7 @@ pub struct PyanNet {
     // posture as RMVPE / Charsiu.
     #[allow(dead_code)]
     weights: PyanNetWeights,
+    backend: BackendKind,
 }
 
 impl PyanNet {
@@ -728,7 +734,11 @@ impl PyanNet {
         // PyanNet.py CNRS MIT). See [`PyanNetWeights::verify_core_shapes`]
         // for the sentinel-gated strict / permissive contract.
         weights.verify_core_shapes(&config)?;
-        Ok(Self { config, weights })
+        Ok(Self {
+            config,
+            weights,
+            backend: BackendKind::Cpu,
+        })
     }
 
     /// Convenience alias for [`from_gguf`](Self::from_gguf).
@@ -740,6 +750,20 @@ impl PyanNet {
     /// primary-source constant fallback).
     pub fn config(&self) -> &PyanNetConfig {
         &self.config
+    }
+
+    /// Selects the backend for every learned SincNet, BiLSTM, linear and
+    /// classifier operation. The existing parity opt-in remains unchanged.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// Computes the number of output frames for a given number of
@@ -848,7 +872,16 @@ impl PyanNet {
         // Step 1: SincNet frontend — real, tested primitive.
         let stride = self.config.sincnet_stride as usize;
         let sn = SincNet::from_weights(&self.weights, stride)?;
-        let sinc_out = sn.forward(pcm, sample_rate)?;
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, PYANNOTE_HOT_OPS)?)
+        };
+        let sinc_out = if let Some(compute) = compute.as_ref() {
+            sn.forward_with_compute(pcm, sample_rate, compute)?
+        } else {
+            sn.forward(pcm, sample_rate)?
+        };
         // sinc_out.features is [num_channels · num_frames] channel-major
         // (row-major with channel outer); the downstream BiLSTM expects
         // row-major [num_frames · num_channels] (batch_first=True). Do
@@ -868,7 +901,11 @@ impl PyanNet {
             self.config.lstm_hidden_size as usize, // hidden_dim = 128
             self.config.lstm_num_layers as usize,  // num_layers = 2
         )?;
-        let lstm_out = bilstm.forward(&lstm_in, t);
+        let lstm_out = if let Some(compute) = compute.as_ref() {
+            bilstm.forward_with_compute(&lstm_in, t, compute)?
+        } else {
+            bilstm.forward(&lstm_in, t)
+        };
         // lstm_out is [t · (2 · hidden_dim)] row-major.
         let lstm_out_dim = 2 * self.config.lstm_hidden_size as usize;
 
@@ -879,7 +916,11 @@ impl PyanNet {
             self.config.linear_hidden_size as usize, // linear.*.out = 128
             self.config.linear_num_layers as usize,  // 2
         )?;
-        let linear_out = linear.forward(&lstm_out, t);
+        let linear_out = if let Some(compute) = compute.as_ref() {
+            linear.forward_with_compute(&lstm_out, t, compute)?
+        } else {
+            linear.forward(&lstm_out, t)
+        };
         // linear_out is [t · linear_hidden_size].
 
         // Step 4: Classifier + Softmax.
@@ -888,7 +929,11 @@ impl PyanNet {
             self.config.linear_hidden_size as usize,
             self.config.num_powerset_classes as usize,
         )?;
-        let probs = classifier.forward(&linear_out, t);
+        let probs = if let Some(compute) = compute.as_ref() {
+            classifier.forward_with_compute(&linear_out, t, compute)?
+        } else {
+            classifier.forward(&linear_out, t)
+        };
         // Reshape to Vec<Vec<f32>> per frame.
         let n_classes = self.config.num_powerset_classes as usize;
         let mut out: Vec<Vec<f32>> = Vec::with_capacity(t);

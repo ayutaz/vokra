@@ -340,6 +340,19 @@ impl SincNet {
     /// - [`VokraError::UnsupportedOp`] if the input is shorter than the
     ///   sinc kernel (251 samples).
     pub fn forward(&self, pcm: &[f32], sample_rate: u32) -> Result<SincNetOutput> {
+        let cpu = Compute::cpu();
+        self.forward_with_compute(pcm, sample_rate, &cpu)
+    }
+
+    /// Runs the complete learned SincNet convolution path on `compute`.
+    /// InstanceNorm, pooling, filter synthesis and parameter-free activations
+    /// remain host DSP/glue; no learned convolution falls back to CPU.
+    pub(crate) fn forward_with_compute(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        compute: &Compute,
+    ) -> Result<SincNetOutput> {
         if sample_rate != SAMPLE_RATE_SINCNET {
             return Err(VokraError::UnsupportedOp(format!(
                 "pyannote-segmentation SincNet: sample_rate={sample_rate}, only 16000 is \
@@ -354,8 +367,6 @@ impl SincNet {
                 pcm.len()
             )));
         }
-        let cpu = Compute::cpu();
-
         // Step 1: `wav_norm1d = InstanceNorm1d(1, affine=True)` on the
         // raw waveform. Single-channel case collapses to `x_norm =
         // (x - mean(x)) / sqrt(var(x) + eps)`, then `y = γ·x_norm + β`
@@ -369,7 +380,7 @@ impl SincNet {
         let filters = self.synthesise_sinc_filters();
         let l0_len = conv1d_out_len(wav.len(), KERNEL_SIZE_SINC, self.sincnet_stride);
         let mut l0 = vec![0.0f32; N_FILTERS_SINC * l0_len];
-        cpu.conv1d_f32(
+        compute.conv1d_f32(
             &wav,
             1,
             wav.len(),
@@ -406,7 +417,7 @@ impl SincNet {
         // Step 6: Conv1d(80, 60, kernel=5, stride=1) — with bias.
         let l2_len = conv1d_out_len(l1_len, CONV_KERNEL_LATER, 1);
         let mut l2 = vec![0.0f32; CONV1_OUT_CH * l2_len];
-        cpu.conv1d_f32(
+        compute.conv1d_f32(
             &l1,
             N_FILTERS_SINC,
             l1_len,
@@ -436,7 +447,7 @@ impl SincNet {
         // Step 9: Conv1d(60, 60, kernel=5, stride=1) — with bias.
         let l4_len = conv1d_out_len(l3_len, CONV_KERNEL_LATER, 1);
         let mut l4 = vec![0.0f32; CONV2_OUT_CH * l4_len];
-        cpu.conv1d_f32(
+        compute.conv1d_f32(
             &l3,
             CONV1_OUT_CH,
             l3_len,
@@ -1145,6 +1156,16 @@ mod tests {
             .collect();
 
         let out = sn.forward(&pcm, SAMPLE_RATE_SINCNET).expect("forward");
+        let dispatched = sn
+            .forward_with_compute(&pcm, SAMPLE_RATE_SINCNET, &Compute::cpu())
+            .expect("Compute SincNet");
+        let max_abs = out
+            .features
+            .iter()
+            .zip(&dispatched.features)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert_eq!(max_abs, 0.0, "SincNet CPU Compute route must be exact");
         assert_eq!(out.num_channels, CONV2_OUT_CH);
         assert_eq!(
             out.num_frames,

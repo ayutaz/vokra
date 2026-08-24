@@ -1104,16 +1104,17 @@ pub enum ModelKind {
     /// Microsoft **NSNet2** noise-suppression baseline (Coverage-audit
     /// 2026-08-03 Wave A ticket). Category = `enhancement`. Distinct
     /// arch tag from `denoise` (DeepFilterNet3) — NSNet2 is a 2-layer
-    /// GRU + 3-Linear mask predictor over 257-bin STFT log-magnitude
-    /// (`nsnet2-20ms-baseline.onnx`, ~2 MB), whereas DFN3 uses an ERB
+    /// GRU + 3-Linear mask predictor over a 161-bin log-power STFT
+    /// (`n_fft=320`; `nsnet2-20ms-baseline.onnx`, ~10.8 MB), whereas DFN3 uses an ERB
     /// analysis / synthesis pair around a convolutional recurrent
     /// network. The upstream is ONNX-only and lives on GitHub
     /// (`github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline`,
     /// not HuggingFace); `tools/parity/nsnet2_prepare_checkpoint.py`
     /// bridges ONNX → safetensors so this converter never links ONNX
-    /// (FR-LD-05, NFR-DS-02). BF16 pass-through skeleton — every
-    /// F32 / F16 / BF16 tensor passes through verbatim under its
-    /// upstream initializer name. Provenance = **MIT** (Permissive).
+    /// (FR-LD-05, NFR-DS-02). The exact 14 F32 initializer manifest is
+    /// validated, numerically named matrices are renamed/transposed into the
+    /// native runtime schema, and all topology drift fails closed.
+    /// Provenance = **MIT** (Permissive).
     Nsnet2,
     /// Microsoft **DNSMOS P.808 + P.835** MOS predictor bundle (coverage-
     /// audit Wave A ticket `dnsmos-p808-p835`, 2026-08-03): a **prepared**
@@ -1557,14 +1558,16 @@ pub enum ModelKind {
     /// routes to the 1.7B (flagship) default.
     Qwen3Asr,
     /// **wav2vec 2.0 CTC** family safetensors checkpoint (SoTA plan
-    /// Phase 5 ASR fleet, 2026-07-30). Category = `asr`. Four
-    /// canonical variants share the 7-layer Conv1D feature-extractor
+    /// Phase 5 ASR fleet, 2026-07-30). Category = `asr`. Seven
+    /// native variants share the 7-layer Conv1D feature-extractor
     /// topology (`conv_dim=[512×7]`, `conv_kernel=[10,3,3,3,3,2,2]`,
     /// `conv_stride=[5,2,2,2,2,2,2]`) at 320× total downsampling:
     /// - `facebook/wav2vec2-base-960h` (95M, base topology 12 × d=768
     ///   × 12h × ffn=3072, `feat_extract_norm="group"`,
     ///   `do_stable_layer_norm=false`, English LibriSpeech CTC head
     ///   `vocab_size=32`),
+    /// - `facebook/wav2vec2-large-960h-lv60-self` (large stable
+    ///   topology + English CTC head `vocab_size=32`),
     /// - `facebook/wav2vec2-large-xlsr-53` (300M, large topology 24 ×
     ///   d=1024 × 16h × ffn=4096, `feat_extract_norm="layer"`,
     ///   `do_stable_layer_norm=true`, `Wav2Vec2ForPreTraining` — no
@@ -1573,6 +1576,8 @@ pub enum ModelKind {
     ///   topology + CTC head `vocab_size=2341`),
     /// - `jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn` (large
     ///   topology + CTC head `vocab_size=3503`),
+    /// - `jonatasgrosman/wav2vec2-large-xlsr-53-arabic` (large
+    ///   topology + CTC head `vocab_size=51`),
     /// - `facebook/wav2vec2-xlsr-53-espeak-cv-ft` (large topology +
     ///   CTC head `vocab_size=392` — **eSpeak IPA phoneme** vocabulary,
     ///   arXiv:2109.11680, CommonVoice fine-tune; complementary to the
@@ -1580,38 +1585,24 @@ pub enum ModelKind {
     ///
     /// Every hparam is transcribed verbatim from the primary-source
     /// `config.json` per variant (CLAUDE.md「ハルシネーション厳禁」,
-    /// fetched 2026-07-30, espeak-cv-ft 2026-08-01). All five ship
+    /// fetched 2026-07-30, espeak-cv-ft 2026-08-01). All seven ship
     /// **apache-2.0** (Permissive) per the HF API `cardData.license`
     /// (CC-verified). The `--model wav2vec2-base-960h` /
-    /// `wav2vec2-large-xlsr-53` / `wav2vec2-large-xlsr-53-japanese` /
+    /// `wav2vec2-large-960h-lv60-self` / `wav2vec2-large-xlsr-53` /
+    /// `wav2vec2-large-xlsr-53-japanese` /
     /// `wav2vec2-large-xlsr-53-chinese-zh-cn` /
+    /// `wav2vec2-large-xlsr-53-arabic` /
     /// `wav2vec2-xlsr-53-espeak-cv-ft` slugs pick the
     /// `models::wav2vec2_ctc::Variant`; the bare `wav2vec2` slug
     /// routes to `base-960h` (the smallest / most widely-used release).
     Wav2Vec2Ctc,
-    /// **data2vec-audio** (`facebook/data2vec-audio-base-960h`,
-    /// apache-2.0) — Baevski et al. 2022, arXiv:2202.03555. A sibling
-    /// release of the wav2vec 2.0 CTC family: data2vec-audio shares
-    /// the wav2vec 2.0 **base** downstream inference topology
-    /// (12 × d=768 × 12h × ffn=3072, `feat_extract_norm="group"`,
-    /// `do_stable_layer_norm=false`), the same 7-layer Conv1D
-    /// feature-extractor, and the LibriSpeech 960h English char CTC
-    /// head (`vocab_size=32`). The tensor names are **identical** to
-    /// `wav2vec2-base-960h`, so the [`Self::Wav2Vec2Ctc`] converter
-    /// covers it verbatim; the only divergence is the **pretraining
-    /// objective** (contextualised latent representation prediction
-    /// with an EMA teacher), which does not affect downstream
-    /// inference. A distinct `ModelKind` (rather than a slug-only
-    /// alias of `Wav2Vec2Ctc`) is used so `vokra.model.name` +
-    /// `vokra.provenance.upstream_hf` faithfully report the data2vec-
-    /// audio upstream release instead of masquerading as
-    /// `wav2vec2-base-960h`. Category `asr`, license Permissive
-    /// (apache-2.0 per HF `cardData.license` CC-verified 2026-08-02).
-    /// The `--model data2vec-audio-base` / `data2vec-audio-base-960h`
-    /// slugs pick this arm; convert dispatch routes it through
-    /// `models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant`
-    /// with the sibling `Variant::Data2vecAudioBase960h` (correct
-    /// provenance stamp on top of the shared topology axes).
+    /// Dedicated **data2vec-audio** converter
+    /// (`facebook/data2vec-audio-base-960h`, apache-2.0). The audited
+    /// public checkpoint uses `data2vec_audio.*` names and a five-layer
+    /// positional-convolution stack; it is not byte-compatible with the
+    /// Wav2Vec2 binder. The converter stamps a distinct `data2vec_audio`
+    /// arch plus the audited five-layer positional stack; the native
+    /// runtime also accepts the one exact legacy public mis-stamp.
     Data2vecAudioBase,
     /// Meta **MMS-1B-All** (`facebook/mms-1b-all`, cc-by-nc-4.0) —
     /// Massively Multilingual Speech (Pratap et al. 2023,
@@ -1622,18 +1613,12 @@ pub enum ModelKind {
     /// REUSE HINT) via a dedicated
     /// `models::wav2vec2_ctc::Variant::Mms1bAll` arm.
     ///
-    /// **Placeholder axes** — the parent workflow's SIZE NOTE (4.00 GB
-    /// checkpoint) forbids downloading `config.json` for
-    /// primary-source transcription, so the axes route to the closest-
-    /// family sibling (`LargeXlsr53Base`: 24 × d=1024 × 16h ×
-    /// ffn=4096, `feat_extract_norm="layer"`,
-    /// `do_stable_layer_norm=true`) as a placeholder while the
-    /// discriminating `name = "mms-1b-all"` +
-    /// `upstream_hf = "facebook/mms-1b-all"` stamps stay faithful for
-    /// provenance readback + placeholder-axis refusal at load time
-    /// (M2-13 runtime gate). A follow-up wave must transcribe the true
-    /// MMS-1B topology + land a per-language adapter loader before any
-    /// downstream loader can trust the emitted hparams.
+    /// Backbone axes are pinned from upstream revision
+    /// `3d33597edbdaaba14a8e858e2c8caa76e3cec0cd` (1280/48/16/5120,
+    /// stable pre-LN, base vocab 154). The current public Vokra GGUF is
+    /// only an adapter fragment with incompatible metadata/license and
+    /// is explicitly rejected until a full backbone+adapter artifact is
+    /// converted and published through the NonCommercial gates.
     ///
     /// Weight-distribution licence = **cc-by-nc-4.0** (T4 tier /
     /// Research-only publish path per the X-Codec-2 (2026-07-28)
@@ -1997,17 +1982,16 @@ pub enum ModelKind {
     MetricganPlus,
     /// **speechbrain/sepformer-wsj02mix** (Implementer E TIER 1,
     /// 2026-07-30). Category = `separation` (2-speaker source
-    /// separation task — distinct from the enhancement-category
-    /// SepFormer siblings). SepFormer = Transformer-based dual-path
+    /// separation task). SepFormer = Transformer-based dual-path
     /// separator (Subakan et al. 2021). Shares the
     /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// the `SepformerWham16kEnh` / `SepformerWhamr16k` siblings; the
     /// three differ only in training data + head count +
     /// `vokra.sepformer.variant` / `vokra.model.category` /
     /// `vokra.model.name` / `vokra.provenance.upstream_hf` stamps.
-    /// Every F32 / F16 / BF16 tensor passes through verbatim; the
-    /// internal dual-path Transformer body is a `loud-partial`
-    /// follow-up. Provenance = **apache-2.0** (Permissive).
+    /// The converter emits the strict 417-tensor contract consumed by
+    /// the native encoder, dual-path Transformer masker and decoder.
+    /// Provenance = **apache-2.0** (Permissive).
     SepFormer,
     /// **speechbrain/sepformer-wham16k-enhancement** (Implementer E
     /// TIER 1, 2026-07-30). Category = `enhancement`. Single-speaker
@@ -2017,8 +2001,8 @@ pub enum ModelKind {
     /// **apache-2.0** (Permissive).
     SepformerWham16kEnh,
     /// **speechbrain/sepformer-whamr16k** (Implementer E TIER 1,
-    /// 2026-07-30). Category = `enhancement`. Joint dereverb +
-    /// denoise on WHAMR! 16 kHz. Shares the
+    /// 2026-07-30). Category = `separation`. Two-speaker source
+    /// separation under WHAMR! noise and reverberation at 16 kHz. Shares the
     /// `models::sepformer::ARCH` tag `sepformer` + converter with
     /// [`Self::SepFormer`] / [`Self::SepformerWham16kEnh`]. Provenance
     /// = **apache-2.0** (Permissive).
@@ -2033,10 +2017,9 @@ pub enum ModelKind {
     /// / [`Self::SepformerWhamr16k`]; the distinct ModelKind ensures
     /// the artifact does NOT silently inherit the Wsj02mix sibling's
     /// `vokra.model.name` / `vokra.provenance.upstream_hf` /
-    /// `vokra.sepformer.variant` stamps. Every F32 / F16 / BF16 tensor
-    /// passes through verbatim; the internal dual-path Transformer
-    /// body is a `loud-partial` follow-up (same posture as the
-    /// SepFormer siblings). Provenance = **apache-2.0** (Permissive
+    /// `vokra.sepformer.variant` stamps. The strict 417-tensor contract
+    /// is consumed by the native dual-path Transformer runtime.
+    /// Provenance = **apache-2.0** (Permissive
     /// — SpeechBrain end-to-end Apache-2.0; the LibriMix training
     /// corpus itself is CC-BY-4.0 but that is a corpus-level
     /// attribution obligation, not a weight-license restriction).
@@ -2057,20 +2040,19 @@ pub enum ModelKind {
     /// `vokra.sepformer.variant` = wrong CDN attribution +
     /// `vokra.sepformer.n_out` = wrong binder output-stream axis (the
     /// new `vokra.sepformer.n_out = 3` chunk added the same wave makes
-    /// this explicit at load time). Every F32 / F16 / BF16 tensor
-    /// passes through verbatim; the internal dual-path Transformer
-    /// body is a `loud-partial` follow-up (same posture as the
-    /// SepFormer siblings). Provenance = **apache-2.0** (Permissive
+    /// this explicit at load time). The strict 417-tensor contract is
+    /// consumed by the native dual-path Transformer runtime.
+    /// Provenance = **apache-2.0** (Permissive
     /// — SpeechBrain end-to-end Apache-2.0; the LibriMix training
     /// corpus itself is CC-BY-4.0 but that is a corpus-level
     /// attribution obligation, not a weight-license restriction —
     /// identical posture to the sibling `libri2mix` row).
     SepformerLibri3Mix,
     /// **speechbrain/sepformer-whamr** (Wave 4 candidate, 2026-08-01).
-    /// Category = `enhancement`. Joint dereverb + denoise on WHAMR!
-    /// **8 kHz** — the base-sample-rate sibling of
-    /// [`Self::SepformerWhamr16k`]; same reverberant conditioning +
-    /// masker head, only the sample rate differs (WHAMR paper Chen et
+    /// Category = `separation`. Two-speaker source separation under
+    /// WHAMR! noise and reverberation at **8 kHz** — the base-sample-rate sibling of
+    /// [`Self::SepformerWhamr16k`]; same two-output masker head, only
+    /// the sample rate differs (WHAMR paper Chen et
     /// al. 2022 originally released the 8 kHz variant; the 16 kHz
     /// sibling was published later for wider-band inputs). Shares the
     /// `models::sepformer::ARCH` tag `sepformer` + converter with
@@ -2080,9 +2062,8 @@ pub enum ModelKind {
     /// inherit the 16 kHz sibling's `vokra.provenance.upstream_hf` =
     /// wrong CDN attribution (both repos live under `speechbrain/` but
     /// with different HF slugs). Every F32 / F16 / BF16 tensor passes
-    /// through verbatim; the internal dual-path Transformer body is a
-    /// `loud-partial` follow-up (same posture as the sibling SepFormer
-    /// variants). Provenance = **apache-2.0** (Permissive — SpeechBrain
+    /// through verbatim; the strict 417-tensor contract is consumed by
+    /// the native runtime. Provenance = **apache-2.0** (Permissive — SpeechBrain
     /// end-to-end Apache-2.0).
     SepformerWhamr8k,
     /// **speechbrain/sepformer-dns4-16k-enhancement** (Wave 4 candidate,
@@ -2094,15 +2075,13 @@ pub enum ModelKind {
     /// [`Self::SepformerWhamr16k`] / [`Self::SepformerLibri2Mix`] /
     /// [`Self::SepformerLibri3Mix`] / [`Self::SepformerWhamr8k`]; the
     /// distinct ModelKind ensures the artifact does NOT silently
-    /// inherit any WHAM! / WHAMR! enhancement sibling's
-    /// `vokra.provenance.upstream_hf` = wrong CDN attribution (all
-    /// four enhancement variants share `vokra.sepformer.n_out = 1`,
-    /// so the distinct provenance stamp is the only surface that
-    /// discriminates them at load time — silent misrouting would not
-    /// fail loudly at the binder). Every F32 / F16 / BF16 tensor
-    /// passes through verbatim; the internal dual-path Transformer
-    /// body is a `loud-partial` follow-up (same posture as every
-    /// sibling SepFormer variant). Provenance = **apache-2.0**
+    /// inherit any WHAM! / WHAMR! sibling's
+    /// `vokra.provenance.upstream_hf` = wrong CDN attribution. DNS-4
+    /// and WHAM 16k are the two one-output enhancement variants;
+    /// WHAMR 8/16 kHz are two-output separation variants, so category
+    /// and `vokra.sepformer.n_out` are both validated at load time.
+    /// The strict 417-tensor contract is consumed by the native runtime.
+    /// Provenance = **apache-2.0**
     /// (Permissive — SpeechBrain end-to-end Apache-2.0; the Microsoft
     /// DNS-4 corpus itself is corpus-level provenance separate from
     /// the fine-tuned weight license, identical posture to the
@@ -3026,7 +3005,7 @@ pub enum ModelKind {
     /// to owner sign-off (`docs/license-audit.md` §3.1).
     XttsV2,
     /// **ConvTasNet Libri1Mix Enhancement** (Asteroid,
-    /// `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, **cc-by-sa-4.0**)
+    /// `JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`, **license unresolved**)
     /// safetensors checkpoint (2026-08-02 Wave residual). ConvTasNet
     /// (Luo & Mesgarani 2019, arXiv:1809.07454) — fully convolutional
     /// TasNet: encoder + stacked dilated TCN mask estimator + decoder.
@@ -3040,33 +3019,26 @@ pub enum ModelKind {
     /// `bs_roformer`, `mp_senet`) address different topologies. Silently
     /// sharing would mis-route runtime dispatch to a wrong-shape forward.
     /// Category `enhancement` (single-output enhancement head — mirrors
-    /// the SepFormer WHAM / WHAMR / DNS-4 enhancement sibling posture).
+    /// the SepFormer WHAM / DNS-4 enhancement sibling posture).
     /// Future multi-speaker ConvTasNet variants would carry
     /// `category = "separation"` under a distinct `ModelKind` arm.
     ///
-    /// **License posture — Copyleft (CC-BY-SA-4.0 SA cascade)**: first
-    /// entry on the [`vokra_core::LicenseClass::Copyleft`] arm. A GGUF
-    /// derived from a CC-BY-SA weight is itself CC-BY-SA; downstream
-    /// re-labelling as Apache-2.0 is a misrepresentation, not a mere
-    /// attribution drop. Publish is **redistributable with the original
-    /// licence preserved** (T3 tier — `publish-one.sh` gate must ship
-    /// the upstream LICENSE + NOTICE verbatim). No
-    /// `--allow-noncommercial` required (Copyleft ≠ NonCommercial), but
-    /// the SA cascade must carry forward on every derivative.
+    /// **License posture — fail closed**: upstream revision `bb8a876b…`
+    /// conflicts between cardData CC-BY-SA-4.0, the body weight notice
+    /// CC-BY-SA-3.0 and WHAM-derived training data marked CC-BY-NC-4.0
+    /// Research only. The default stamp is therefore `unknown`; publish is
+    /// blocked until owner/upstream/legal resolution.
     ///
     /// **Upstream format**: single ~20 MB `pytorch_model.bin` (raw
-    /// `torch.save` of the ConvTasNet state dict). Owners run the
-    /// standard `bin_to_safetensors.py` prep step before pointing this
-    /// converter at the resulting `.safetensors` (same workflow as the
-    /// SepFormer `.ckpt` families). This converter deliberately never
+    /// `torch.save` wrapper). Owners run the dedicated
+    /// `conv_tasnet_prepare_checkpoint.py` step before pointing this
+    /// converter at the resulting `.safetensors`. This converter never
     /// reads `pytorch_model.bin` directly — pickle deserialization
     /// inside the Rust runtime would violate the FR-LD-05 "no arbitrary
     /// code execution at load" rule.
     ///
-    /// Scale ~0.02 GB = local convert safe on M1 iMac. BF16 pass-through
-    /// skeleton mirror of `musicgen_small` / `sepformer` — real-weight
-    /// parity + a native `ConvTasNet::from_gguf` forward path are
-    /// deferred to owner sign-off (`docs/license-audit.md` §3.1).
+    /// Scale ~0.02 GB. The converter validates all 345 tensors and the native
+    /// CPU/Metal runtime is checked against the independent Asteroid oracle.
     ConvTasnetLibri1mix,
     /// **GTCRN** (`Xiaobin-Rong/gtcrn`, **MIT**) safetensors → GGUF
     /// converter (Wave 6 2026-08-14 audit follow-up, denoise
@@ -3082,7 +3054,7 @@ pub enum ModelKind {
     /// **Distinct arch tag `gtcrn`** — sibling enhancement / separator
     /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
     /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
-    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// 2-layer GRU + 3-Linear mask over 161-bin STFT), `dnsmos`
     /// (P.808/P.835 metric only), `metricgan_plus`, `mp_senet_dns`,
     /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
     /// `mossformer2_ss_16k`, `facebook_denoiser`) all have distinct
@@ -3141,7 +3113,7 @@ pub enum ModelKind {
     /// **Distinct arch tag `storm`** — sibling enhancement / separator
     /// families (`denoise` (DFN3 ERB analysis/synthesis + CRN),
     /// `rnnoise` (Xiph GRU + BFCC), `nsnet2` (Microsoft DNS baseline,
-    /// 2-layer GRU + 3-Linear mask over 257-bin STFT), `dnsmos`
+    /// 2-layer GRU + 3-Linear mask over 161-bin STFT), `dnsmos`
     /// (P.808/P.835 metric only), `gtcrn` (grouped Conv2D + SB-TF-LSTM
     /// + ERB grouping ~23K params), `metricgan_plus`, `mp_senet_dns`,
     /// `sepformer`, `conv_tasnet`, `demucs`, `frcrn`,
@@ -4784,6 +4756,9 @@ impl ModelKind {
             | "wav2vec2-large-xlsr-53-chinese-zh-cn"
             | "wav2vec2_large_xlsr_53_chinese_zh_cn"
             | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn"
+            | "wav2vec2-large-xlsr-53-arabic"
+            | "wav2vec2_large_xlsr_53_arabic"
+            | "jonatasgrosman/wav2vec2-large-xlsr-53-arabic"
             // Wave 4 slug-only add (2026-08-01): Facebook wav2vec2 large
             // 960h with self-training on LV60 unlabelled audio
             // (`facebook/wav2vec2-large-960h-lv60-self`, apache-2.0). Same
@@ -4796,28 +4771,9 @@ impl ModelKind {
             // from Xu et al. 2021 (arXiv:2010.11430) over the LibriVox
             // LV60 corpus, distinct upstream release from XLSR-53.
             //
-            // Slug-only routes to the existing
-            // `models::wav2vec2_ctc::Variant::LargeXlsr53Base` arm
-            // below because that variant already pins the correct large
-            // topology axes (24L / 1024h / 16h / 4096ffn +
-            // `feat_extract_norm=layer` + `do_stable_layer_norm=true`)
-            // and `vocab_size=32` matches LV60-self's English char CTC
-            // head. `has_ctc_head` is stored `false` for the XLSR-53
-            // base but LV60-self actually carries a CTC head — a future
-            // real-weight publish therefore requires either
-            // (a) a distinct `Wav2Vec2CtcVariant::Large960hLv60Self`
-            // arm added to the converter so `has_ctc_head` +
-            // `upstream_hf` faithfully name this row's upstream repo,
-            // or (b) a `restamp` pass to rewrite the `vokra.provenance.*`
-            // + `vokra.wav2vec2_ctc.has_ctc_head` chunks (mirror of the
-            // `restamp_provenance` low-memory rewrite path landed
-            // 2026-07-23, `crates/vokra-convert/src/lib.rs::restamp_file`).
-            // Slug-only registration is landed together with the §3.1
-            // row + `LicenseClass::Permissive` (already covered by the
-            // `wav2vec2` prefix walk in
-            // `crates/vokra-core/src/compliance/license_class.rs`) so
-            // the future publish path only needs the converter arm to
-            // close the loop.
+            // A dedicated variant now stamps the CTC-head bit and LV60
+            // provenance correctly; it must not alias the encoder-only XLSR
+            // base even though their transformer axes match.
             | "wav2vec2-large-960h-lv60-self"
             | "wav2vec2_large_960h_lv60_self"
             | "facebook/wav2vec2-large-960h-lv60-self"
@@ -4834,28 +4790,17 @@ impl ModelKind {
             // an existing arm without stamping a demonstrably wrong
             // vocab_size and mis-representing has_ctc_head — a
             // dedicated `models::wav2vec2_ctc::Variant::LargeXlsr53EspeakCvFt`
-            // arm carries the correct axes. The phoneme `vocab.json`
-            // itself will be embedded as `vokra.tokenizer.model` U8
-            // array (Whisper 手法, `include_bytes!` at compile time)
-            // in a follow-up wave once the upstream file is
-            // snapshotted; today the converter stamps only the axis
-            // (`vokra.wav2vec2_ctc.vocab_size = 392`) so a future
-            // `Wav2Vec2CtcWeights::from_gguf` reader can loudly reject
-            // a mis-sized head (FR-EX-08).
+            // arm carries the correct axes. The native runtime embeds
+            // the pinned official vocab and rejects a mis-sized head.
             | "wav2vec2-xlsr-53-espeak-cv-ft"
             | "wav2vec2_xlsr_53_espeak_cv_ft"
             | "facebook/wav2vec2-xlsr-53-espeak-cv-ft" => Some(Self::Wav2Vec2Ctc),
             // 2026-08-02 wave: `facebook/data2vec-audio-base-960h`
             // (apache-2.0). Baevski et al. 2022 (arXiv:2202.03555):
-            // wav2vec 2.0 base topology + data2vec pretraining
-            // objective + LibriSpeech 960h English char CTC head. The
-            // safetensors tensor names are identical to
-            // `wav2vec2-base-960h` (data2vec differs in the pretraining
-            // objective, not the downstream inference arch), so the
-            // wav2vec2 CTC converter covers it verbatim — a distinct
-            // `ModelKind` is used only so
-            // `vokra.model.name` + `vokra.provenance.upstream_hf`
-            // faithfully report the data2vec-audio release. The bare
+            // distinct `data2vec_audio.*` tensor names and five-layer
+            // positional-conv stack. This legacy selector preserves
+            // provenance but does not claim Wav2Vec2 runtime
+            // compatibility. The bare
             // `data2vec-audio-base` slug + the `-960h` variant + the
             // fully-qualified `facebook/data2vec-audio-base-960h` HF
             // repo id all route to the same arm.
@@ -4870,13 +4815,9 @@ impl ModelKind {
             // + 1000+ per-language CTC adapters. Base tensor path
             // reuses the [`Self::Wav2Vec2Ctc`] converter via a
             // dedicated `models::wav2vec2_ctc::Variant::Mms1bAll`
-            // arm (parent workflow REUSE HINT); the placeholder-axis
-            // guardrail (distinct `name` + `upstream_hf`) lets a
-            // future `Wav2Vec2CtcWeights::from_gguf` reader detect
-            // this artifact and refuse to bind until the follow-up
-            // wave transcribes the true MMS-1B topology + lands the
-            // per-language adapter loader (~1000 sibling
-            // `adapter.*.safetensors` files).
+            // arm. Official backbone axes are stamped, while the
+            // strict runtime still refuses incomplete adapter-only
+            // artifacts and requires a full per-language bundle.
             "mms-1b-all"
             | "mms_1b_all"
             | "mms-1b"
@@ -5625,7 +5566,8 @@ impl ModelKind {
             | "coqui/xtts-v2"
             | "coqui/XTTS-v2" => Some(Self::XttsV2),
             // ConvTasNet Libri1Mix Enhancement (Asteroid, 2026-08-02 Wave
-            // residual, cc-by-sa-4.0). First Copyleft-tier separator arm.
+            // residual; upstream license declarations conflict, so the
+            // registry and converter default fail closed.
             // Aliases cover the kebab-case and underscore spellings + the
             // full upstream HF slug (case-insensitive lookup handled by
             // whatever normalisation the caller applies before dispatch —
@@ -6529,24 +6471,12 @@ pub fn convert_file_with_slug(
             })
         }
         ModelKind::Data2vecAudioBase => {
-            // Same converter as `Wav2Vec2Ctc` (tensor names identical —
-            // data2vec-audio inherits the wav2vec 2.0 base downstream
-            // inference topology + Conv1D feature-extractor + English
-            // LibriSpeech 960h char CTC head); the dedicated
-            // `Variant::Data2vecAudioBase960h` only overrides `name` +
-            // `upstream_hf` so the stamped GGUF faithfully reports the
-            // data2vec-audio upstream release rather than masquerading
-            // as `wav2vec2-base-960h`.
-            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
-                input,
-                output,
-                models::wav2vec2_ctc::Variant::Data2vecAudioBase960h,
-                license,
-            )?;
+            let report =
+                models::data2vec_audio::convert_data2vec_audio_file(input, output, license)?;
             let notes = vec![format!(
                 "data2vec-audio-base-960h: {} float weights written verbatim ({} BF16 \
                  passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
-                 {} tensors read (via wav2vec2_ctc converter — tensor names identical)",
+                 {} tensors read (dedicated data2vec_audio contract)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             Ok(ConvertSummary {
@@ -6563,14 +6493,9 @@ pub fn convert_file_with_slug(
             // et al. 2023, arXiv:2305.13516) — 1B wav2vec 2.0 backbone
             // + 1000+ per-language CTC adapters. Base tensor path
             // reuses the wav2vec2_ctc converter (parent workflow REUSE
-            // HINT) via a dedicated `Variant::Mms1bAll` arm with
-            // **placeholder axes** (routes to LargeXlsr53Base sibling)
-            // and faithful `name = "mms-1b-all"` +
-            // `upstream_hf = "facebook/mms-1b-all"` stamps for the
-            // placeholder-axis refusal guardrail (M2-13 runtime gate).
-            // A follow-up wave must transcribe the true MMS-1B
-            // topology + land the per-language adapter loader
-            // (~1000 sibling `adapter.*.safetensors`).
+            // HINT) via a dedicated `Variant::Mms1bAll` arm with the
+            // official 1280/48/16/5120 backbone axes. Runtime binding
+            // still requires a complete backbone plus language adapter.
             //
             // Weight-distribution licence default = `cc-by-nc-4.0`
             // (T4 tier / Research-only publish path). Callers pass
@@ -6586,8 +6511,8 @@ pub fn convert_file_with_slug(
             let notes = vec![format!(
                 "mms-1b-all: {} float weights written verbatim ({} BF16 passthrough — runtime \
                  widens to f32 exactly at load), {} non-float skipped, {} tensors read (via \
-                 wav2vec2_ctc converter — placeholder axes route to LargeXlsr53Base sibling, \
-                 per-language adapter loader is a follow-up wave)",
+                 wav2vec2_ctc converter — official backbone axes; complete per-language bundle \
+                 is required by the strict runtime)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             Ok(ConvertSummary {
@@ -6602,25 +6527,13 @@ pub fn convert_file_with_slug(
             let variant = match slug.to_lowercase().as_str() {
                 "wav2vec2-large-xlsr-53"
                 | "wav2vec2_large_xlsr_53"
-                | "facebook/wav2vec2-large-xlsr-53"
-                // Wave 4 slug-only add (2026-08-01): route
-                // `wav2vec2-large-960h-lv60-self` through the closest
-                // existing large-topology variant. Both slugs share the
-                // 24 × d=1024 × 16h × ffn=4096 backbone with
-                // `feat_extract_norm=layer` + `do_stable_layer_norm=true`
-                // + `vocab_size=32`; only `has_ctc_head` (LV60-self =
-                // true vs XLSR-53-base = false) and the upstream_hf
-                // provenance stamp differ. Following the slug-only
-                // discipline (parent decision, no converter module
-                // edits), the two axis mismatches are documented in
-                // the from_arg() docstring above and are expected to
-                // be fixed by (a) a dedicated `Large960hLv60Self`
-                // variant arm or (b) a `restamp` pass when the row is
-                // published — not now.
-                | "wav2vec2-large-960h-lv60-self"
+                | "facebook/wav2vec2-large-xlsr-53" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53Base
+                }
+                "wav2vec2-large-960h-lv60-self"
                 | "wav2vec2_large_960h_lv60_self"
                 | "facebook/wav2vec2-large-960h-lv60-self" => {
-                    models::wav2vec2_ctc::Variant::LargeXlsr53Base
+                    models::wav2vec2_ctc::Variant::Large960hLv60Self
                 }
                 "wav2vec2-large-xlsr-53-japanese"
                 | "wav2vec2_large_xlsr_53_japanese"
@@ -6631,6 +6544,11 @@ pub fn convert_file_with_slug(
                 | "wav2vec2_large_xlsr_53_chinese_zh_cn"
                 | "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn" => {
                     models::wav2vec2_ctc::Variant::LargeXlsr53ChineseZhCn
+                }
+                "wav2vec2-large-xlsr-53-arabic"
+                | "wav2vec2_large_xlsr_53_arabic"
+                | "jonatasgrosman/wav2vec2-large-xlsr-53-arabic" => {
+                    models::wav2vec2_ctc::Variant::LargeXlsr53Arabic
                 }
                 // Wave 4 variant-enum extension (2026-08-01): XLSR-53
                 // large backbone with an eSpeak-NG IPA phoneme CTC head
@@ -8159,23 +8077,22 @@ pub fn convert_file_licensed(
         }
         ModelKind::Nsnet2 => {
             // Coverage-audit 2026-08-03 Wave A: MIT Permissive baseline —
-            // pass every F32 / F16 / BF16 tensor through verbatim and stamp
-            // the `vokra.model.*` + `vokra.provenance.*` chunks that identify
-            // the artifact as the NSNet2 20 ms enhancement baseline. The
+            // validate the exact 14 F32 initializer manifest, rename and
+            // transpose it into the native schema, and stamp the
+            // `vokra.model.*` + `vokra.provenance.*` chunks. The
             // upstream ONNX → safetensors bridge lives in the offline
             // sidecar `tools/parity/nsnet2_prepare_checkpoint.py` so this
             // converter stays inside the zero-dep safetensors-only contract
             // (FR-LD-05, NFR-DS-02).
             let report = models::nsnet2::convert_nsnet2_file(input, output, license)?;
             let notes = vec![format!(
-                "nsnet2: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "nsnet2: {} official ONNX initializers mapped to the strict native manifest",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Nsnet2,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: 8,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -9019,7 +8936,9 @@ pub fn convert_file_licensed(
             return Ok(ConvertSummary {
                 model: ModelKind::EcapaTdnn,
                 tensor_count: report.written,
-                metadata_count: 0,
+                // 3 model keys + 4 provenance keys + upstream HF/revision +
+                // 15 exact frontend/topology/layout keys.
+                metadata_count: 24,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -9303,13 +9222,9 @@ pub fn convert_file_licensed(
             // 1B wav2vec 2.0 backbone + 1000+ per-language CTC
             // adapters (~2000 sibling files in the repo). Base tensor
             // path reuses the wav2vec2_ctc converter via the dedicated
-            // `Variant::Mms1bAll` arm with **placeholder axes**
-            // (routes to LargeXlsr53Base sibling — parent workflow
-            // SIZE NOTE forbids downloading the 4.00 GB checkpoint /
-            // config.json for real primary-source transcription).
-            // Faithful `name = "mms-1b-all"` +
-            // `upstream_hf = "facebook/mms-1b-all"` stamps for the
-            // placeholder-axis refusal guardrail (M2-13 runtime gate).
+            // `Variant::Mms1bAll` arm. Its backbone axes are pinned
+            // from the official config; a strict runtime still needs
+            // the full backbone and a selected language adapter.
             let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
                 input,
                 output,
@@ -9319,8 +9234,8 @@ pub fn convert_file_licensed(
             let notes = vec![format!(
                 "mms-1b-all: {} float weights written verbatim ({} BF16 passthrough — runtime \
                  widens to f32 exactly at load), {} non-float skipped, {} tensors read (via \
-                 wav2vec2_ctc converter — placeholder axes, per-language adapter loader is a \
-                 follow-up wave)",
+                 wav2vec2_ctc converter — official backbone axes; complete per-language bundle \
+                 required by the strict runtime)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {
@@ -9331,32 +9246,14 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === Data2vecAudioBase (2026-08-02 wave, routes through
-        // wav2vec2_ctc — tensor names identical, only name +
-        // upstream_hf differ) ===
+        // === Data2vecAudioBase dedicated converter ===
         ModelKind::Data2vecAudioBase => {
-            // Baevski et al. 2022 (arXiv:2202.03555):
-            // `facebook/data2vec-audio-base-960h` (apache-2.0). Shares
-            // the wav2vec 2.0 base downstream inference topology +
-            // Conv1D feature-extractor + LibriSpeech 960h English char
-            // CTC head with `wav2vec2-base-960h` — data2vec differs in
-            // the pretraining objective (contextualised latent
-            // representation prediction with an EMA teacher), not the
-            // downstream inference arch. The dedicated
-            // `Variant::Data2vecAudioBase960h` overrides only `name` +
-            // `upstream_hf` so the stamped GGUF faithfully reports the
-            // data2vec-audio release instead of masquerading as the
-            // wav2vec2 sibling.
-            let report = models::wav2vec2_ctc::convert_wav2vec2_ctc_file_with_variant(
-                input,
-                output,
-                models::wav2vec2_ctc::Variant::Data2vecAudioBase960h,
-                license,
-            )?;
+            let report =
+                models::data2vec_audio::convert_data2vec_audio_file(input, output, license)?;
             let notes = vec![format!(
                 "data2vec-audio-base-960h: {} float weights written verbatim ({} BF16 \
                  passthrough — runtime widens to f32 exactly at load), {} non-float skipped, \
-                 {} tensors read (via wav2vec2_ctc converter — tensor names identical)",
+                 {} tensors read (dedicated data2vec_audio contract)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {
@@ -10610,29 +10507,25 @@ pub fn convert_file_licensed(
                 notes,
             });
         }
-        // === ConvTasnetLibri1mix (2026-08-02 Wave residual, first Copyleft-tier separator) ===
+        // === ConvTasnetLibri1mix (strict native runtime; publication fail-closed) ===
         ModelKind::ConvTasnetLibri1mix => {
             // ConvTasNet Libri1Mix Enhancement (JorisCos/ConvTasNet_Libri1Mix_
-            // enhsingle_16k, cc-by-sa-4.0). Asteroid recipe fine-tune —
+            // enhsingle_16k). Asteroid recipe fine-tune —
             // single-speaker enhancement, 16 kHz, one output stream.
             // Distinct arch tag `conv_tasnet` from sibling separator
             // families (sepformer / demucs / tiger_separator / bs_roformer /
             // mp_senet) — FR-EX-08 forbids silent shape misroute across
-            // separator families. First entry on the Copyleft weight-license
-            // arm (SA cascade — a derived GGUF is itself CC-BY-SA), T3 tier
-            // redistributable with original licence preserved. Owner runs
-            // `bin_to_safetensors.py` before pointing this converter at the
-            // resulting `.safetensors` (upstream ships raw pytorch_model.bin
-            // pickle which FR-LD-05 forbids the runtime from reading
-            // directly). Scale ~20 MB = local convert safe.
+            // separator families. Upstream license signals conflict, so the
+            // default stamp is Unknown and publication is blocked. Owner runs
+            // the dedicated `conv_tasnet_prepare_checkpoint.py` safe wrapper
+            // extraction before conversion. Scale ~20 MB.
             let report = models::conv_tasnet_libri1mix::convert_conv_tasnet_libri1mix_file(
                 input, output, license,
             )?;
             let notes = vec![format!(
                 "conv-tasnet-libri1mix: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (cc-by-sa-4.0 default, Copyleft — SA cascade preserved on \
-                 derivatives, T3 tier redistributable with original licence; runtime binder \
-                 deferred to owner sign-off)",
+                 {} non-float skipped (license default unknown due conflicting upstream \
+                 declarations; publication blocked; strict 345-tensor native CPU/Metal binder)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -11415,8 +11308,8 @@ pub fn convert_file_licensed(
         }
         // === SepformerWhamr8k (Wave 4 candidate, 2026-08-01) ===
         // Shares the sepformer converter — WHAMR! 8 kHz is the base-
-        // sample-rate sibling of Whamr16k; same reverberant conditioning
-        // + masker head, only the sample rate differs. Distinct variant
+        // sample-rate sibling of Whamr16k; same two-output masker head,
+        // only the sample rate differs. Distinct variant
         // ensures the correct vokra.model.name /
         // vokra.provenance.upstream_hf / vokra.sepformer.variant stamps
         // land on the artifact (NOT silently inherited from the 16 kHz
@@ -11443,15 +11336,13 @@ pub fn convert_file_licensed(
         }
         // === SepformerDns4Enh (Wave 4 candidate, 2026-08-01) ===
         // Shares the sepformer converter — Microsoft DNS-4 is a
-        // single-speaker enhancement task like the WHAM! / WHAMR!
-        // enhancement siblings; the two differ only in the training
-        // corpus (Microsoft DNS-4 vs WSJ0-derived WHAM! / WHAMR!).
+        // single-speaker enhancement task like WHAM! 16 kHz. WHAMR!
+        // siblings use the same backbone but are two-speaker separation
+        // checkpoints, so their category and output axis differ.
         // Distinct variant ensures the correct vokra.model.name /
         // vokra.provenance.upstream_hf / vokra.sepformer.variant
         // stamps land on the artifact (NOT silently inherited from
-        // any WHAM! / WHAMR! sibling = wrong CDN attribution; all
-        // enhancement variants share n_out = 1 so provenance is the
-        // only discriminator at load time).
+        // any WHAM! / WHAMR! sibling = wrong CDN attribution).
         ModelKind::SepformerDns4Enh => {
             let report = models::sepformer::convert_sepformer_file(
                 input,
@@ -11641,7 +11532,9 @@ pub fn convert_file_licensed(
             return Ok(ConvertSummary {
                 model: ModelKind::XVector,
                 tensor_count: report.written,
-                metadata_count: 0,
+                // 3 model keys + 4 provenance keys + upstream HF/revision +
+                // 12 exact frontend/topology/layout keys.
+                metadata_count: 21,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });

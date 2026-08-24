@@ -183,6 +183,46 @@ fn stream_ctx_test(rate: SampleRate) {
     );
 }
 
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+fn stream_cpu_metal_test(rate: SampleRate) {
+    let wav = read_wav_f32(parity_dir().join(format!("test_{}.wav", tag(rate)))).unwrap();
+    let cpu = SileroVadV5::open(test_gguf_path()).unwrap();
+    let metal = SileroVadV5::open(test_gguf_path())
+        .unwrap()
+        .with_backend(vokra_core::BackendKind::Metal);
+    let cpu_probabilities = cpu.open_stream().push_pcm(&wav.samples, rate.hz()).unwrap();
+    let metal_probabilities = metal
+        .open_stream()
+        .push_pcm(&wav.samples, rate.hz())
+        .unwrap();
+    let reference = read_floats(&format!("probs_{}_ctx.txt", tag(rate)));
+    assert_eq!(cpu_probabilities.len(), reference.len());
+    assert_eq!(metal_probabilities.len(), reference.len());
+    let cpu_reference_err = max_abs_err(&cpu_probabilities, &reference);
+    let metal_reference_err = max_abs_err(&metal_probabilities, &reference);
+    let cpu_metal_err = max_abs_err(&cpu_probabilities, &metal_probabilities);
+    eprintln!(
+        "[silero parity {} Metal] frames={} cpu_ref={cpu_reference_err:.3e} metal_ref={metal_reference_err:.3e} cpu_metal={cpu_metal_err:.3e} (atol={ATOL})",
+        tag(rate),
+        reference.len()
+    );
+    assert!(cpu_reference_err < ATOL);
+    assert!(metal_reference_err < ATOL);
+    assert!(cpu_metal_err < ATOL);
+}
+
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn stream_cpu_metal_parity_16k() {
+    stream_cpu_metal_test(SampleRate::Hz16000);
+}
+
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn stream_cpu_metal_parity_8k() {
+    stream_cpu_metal_test(SampleRate::Hz8000);
+}
+
 /// Speech segments from per-frame probabilities — a faithful reduction of the
 /// upstream segmenter at **default parameters**: threshold 0.5, neg_threshold
 /// `max(threshold - 0.15, 0.01)` = 0.35, min_speech 250 ms, min_silence

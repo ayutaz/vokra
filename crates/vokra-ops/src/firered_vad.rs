@@ -189,6 +189,62 @@ pub struct FireredVadDfsmnState {
     cache_frames: usize,
 }
 
+/// Backend seam for the learned affine projections and causal depthwise
+/// memories in the canonical FireRedVAD DFSMN.
+pub trait FireredVadBackendOps {
+    /// Applies `[rows,input_dim] × [input_dim,output_dim]` with an optional
+    /// learned output bias.
+    fn affine(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// Applies one causal depthwise memory filter, adds its projected-input
+    /// residual and advances the retained history.
+    fn causal_memory(
+        &mut self,
+        input: &[f32],
+        frames: usize,
+        cfg: &FireredVadDfsmnConfig,
+        weight: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>>;
+}
+
+struct ScalarFireredVadOps;
+
+impl FireredVadBackendOps for ScalarFireredVadOps {
+    fn affine(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>> {
+        Ok(affine_input_output(
+            input, input_dim, weight, bias, output_dim, rows,
+        ))
+    }
+
+    fn causal_memory(
+        &mut self,
+        input: &[f32],
+        frames: usize,
+        cfg: &FireredVadDfsmnConfig,
+        weight: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>> {
+        Ok(memory_forward(input, frames, cfg, weight, history))
+    }
+}
+
 impl FireredVadDfsmnState {
     /// Allocates zero causal histories for a fresh stream.
     pub fn zeros(cfg: &FireredVadDfsmnConfig) -> Result<Self> {
@@ -228,6 +284,17 @@ pub fn firered_vad_dfsmn_forward(
     features: &[f32],
     state: &mut FireredVadDfsmnState,
 ) -> Result<Vec<f32>> {
+    firered_vad_dfsmn_forward_with_ops(cfg, weights, features, state, &mut ScalarFireredVadOps)
+}
+
+/// Runs the canonical DFSMN through an injected learned-op backend.
+pub fn firered_vad_dfsmn_forward_with_ops<O: FireredVadBackendOps>(
+    cfg: &FireredVadDfsmnConfig,
+    weights: &FireredVadDfsmnWeights,
+    features: &[f32],
+    state: &mut FireredVadDfsmnState,
+    ops: &mut O,
+) -> Result<Vec<f32>> {
     weights.validate(cfg)?;
     if !state.matches(cfg) {
         return Err(VokraError::InvalidArgument(
@@ -242,81 +309,80 @@ pub fn firered_vad_dfsmn_forward(
         )));
     }
     let frames = features.len() / cfg.input_dim;
-    let mut hidden = affine_input_output(
+    let mut hidden = ops.affine(
         features,
         frames,
         cfg.input_dim,
         &weights.input_fc1_weight,
-        &weights.input_fc1_bias,
+        Some(&weights.input_fc1_bias),
         cfg.hidden_dim,
-    );
+    )?;
     relu_in_place(&mut hidden);
-    let mut projected = affine_input_output(
+    let mut projected = ops.affine(
         &hidden,
         frames,
         cfg.hidden_dim,
         &weights.input_fc2_weight,
-        &weights.input_fc2_bias,
+        Some(&weights.input_fc2_bias),
         cfg.projection_dim,
-    );
+    )?;
     relu_in_place(&mut projected);
-    projected = memory_forward(
+    projected = ops.causal_memory(
         &projected,
         frames,
         cfg,
         &weights.memory_weights[0],
         &mut state.histories[0],
-    );
+    )?;
 
-    let projection_zero_bias = vec![0.0; cfg.projection_dim];
     for (index, block) in weights.blocks.iter().enumerate() {
         let residual = projected.clone();
-        hidden = affine_input_output(
+        hidden = ops.affine(
             &projected,
             frames,
             cfg.projection_dim,
             &block.fc1_weight,
-            &block.fc1_bias,
+            Some(&block.fc1_bias),
             cfg.hidden_dim,
-        );
+        )?;
         relu_in_place(&mut hidden);
-        projected = affine_input_output(
+        projected = ops.affine(
             &hidden,
             frames,
             cfg.hidden_dim,
             &block.fc2_weight,
-            &projection_zero_bias,
+            None,
             cfg.projection_dim,
-        );
-        projected = memory_forward(
+        )?;
+        projected = ops.causal_memory(
             &projected,
             frames,
             cfg,
             &weights.memory_weights[index + 1],
             &mut state.histories[index + 1],
-        );
+        )?;
         for (value, skip) in projected.iter_mut().zip(residual) {
             *value += skip;
         }
     }
 
-    hidden = affine_input_output(
+    hidden = ops.affine(
         &projected,
         frames,
         cfg.projection_dim,
         &weights.dnn_weight,
-        &weights.dnn_bias,
+        Some(&weights.dnn_bias),
         cfg.hidden_dim,
-    );
+    )?;
     relu_in_place(&mut hidden);
-    let logits = affine_input_output(
+    let logits = ops.affine(
         &hidden,
         frames,
         cfg.hidden_dim,
         &weights.output_weight,
-        &weights.output_bias,
+        Some(&weights.output_bias),
         cfg.output_dim,
-    );
+    )?;
     Ok(logits
         .into_iter()
         .map(|value| 1.0 / (1.0 + (-value).exp()))
@@ -354,19 +420,19 @@ fn memory_forward(
 
 fn affine_input_output(
     input: &[f32],
-    rows: usize,
     input_dim: usize,
     weight: &[f32],
-    bias: &[f32],
+    bias: Option<&[f32]>,
     output_dim: usize,
+    rows: usize,
 ) -> Vec<f32> {
     debug_assert_eq!(input.len(), rows * input_dim);
     debug_assert_eq!(weight.len(), input_dim * output_dim);
-    debug_assert_eq!(bias.len(), output_dim);
+    debug_assert!(bias.is_none_or(|values| values.len() == output_dim));
     let mut output = vec![0.0; rows * output_dim];
     for row in 0..rows {
         for out in 0..output_dim {
-            let mut sum = bias[out];
+            let mut sum = bias.map_or(0.0, |values| values[out]);
             for inner in 0..input_dim {
                 sum += input[row * input_dim + inner] * weight[inner * output_dim + out];
             }

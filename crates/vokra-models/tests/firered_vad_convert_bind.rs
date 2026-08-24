@@ -95,6 +95,14 @@ fn converter_output_binds_and_runs_native_forward() {
     assert_eq!(summary.tensor_count, 39);
 
     let model = FireredVad::from_path(&output).expect("bind converted GGUF");
+    assert_eq!(model.backend(), vokra_core::BackendKind::Cpu);
+    assert_eq!(
+        FireredVad::from_path(&output)
+            .unwrap()
+            .with_backend(vokra_core::BackendKind::Metal)
+            .backend(),
+        vokra_core::BackendKind::Metal
+    );
     let config = model.native_config().expect("native variant");
     assert_eq!(config.sample_rate, 16_000);
     assert_eq!(config.dfsmn.n_blocks, 8);

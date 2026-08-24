@@ -119,7 +119,7 @@ use vokra_bert::tokenizer::SbertTokenizer;
 use vokra_bert::wordpiece::BertWordpieceTokenizer;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::rng::{GaussianSplitMix64, TorchRandnStream};
-use vokra_core::{Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
+use vokra_core::{BackendKind, Result, SynthesisRequest, SynthesizedAudio, TtsEngine, VokraError};
 use vokra_ops::attrs::{HifiGanAttrs, ResBlockType};
 use vokra_ops::hifigan::{
     GinCondition, HifiGanConfig, HifiGanWeights, MrfBranchWeights, ResBlockLayer,
@@ -2023,6 +2023,12 @@ impl TtsEngine for SbV2Model {
             rng_mode: RngMode::default(),
         };
         self.synthesize(&sbv2_request)
+    }
+
+    fn backend(&self) -> BackendKind {
+        // SBV2 has no Compute-seam selection yet. Keeping this explicit makes
+        // the CPU-only state observable until its Metal wiring lands.
+        BackendKind::Cpu
     }
 
     /// SBV2 threads [`SynthesisRequest::style_vec`] into its

@@ -1173,6 +1173,10 @@ impl TtsEngine for KokoroTts {
              use KokoroTts::synthesize_phonemes with phoneme ids from a separate G2P",
         ))
     }
+
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
 }
 
 #[cfg(test)]
