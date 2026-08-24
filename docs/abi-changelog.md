@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-25 — 1.0.0-rc.1-dev (MeloTTS released-config metadata correction)
+
+The MeloTTS converter's English and Chinese language axes are corrected to the
+released `myshell-ai/MeloTTS-*` configs and tensor tables. The key names and
+types are unchanged, but newly converted English and Chinese artifacts carry
+different values. The five public GGUFs predate this correction; runtime
+compatibility for those exact audited manifests is tracked separately and must
+not turn arbitrary metadata/tensor disagreement into a permissive fallback.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.melotts.*` | `vokra.melotts.{n_symbols,num_tones,num_languages}` | Fixed values | English `219 / 16 / 10` (was `178 / 0 / 1`); Chinese `112 / 11 / 4` (was `112 / 11 / 1`); Korean, Spanish and Japanese remain `219 / 16 / 10` | Values are pinned to the official per-language `config.json` and released embedding-table shapes. New conversions are self-consistent; consumers must reject unrecognized mismatches. | yes for code that depended on the incorrect values; no for key/type ABI | (TBD) |
+
 ### 2026-08-25 — 1.0.0-rc.1-dev (DAC token-to-waveform CPU/Metal runtime)
 
 The three public Descript DAC GGUF families now bind exact released manifests
