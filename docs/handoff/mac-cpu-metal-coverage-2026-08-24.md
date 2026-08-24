@@ -375,6 +375,56 @@ siblings still require their own official fixture and real public-artifact
 runs; the 44.1 kHz result is not imputed to them. No Hub upload or artifact
 replacement was performed.
 
+### SNAC bidirectional CPU and Metal decode
+
+The two public SNAC repositories now bind their exact released graphs:
+`vokra/snac-24khz` requires 269 F32 tensors and three hierarchical RVQ stages,
+while `vokra/snac-44khz` requires 286 F32 tensors, four RVQ stages and both
+32-frame local-attention blocks. CPU implements waveform encode, normalized
+nearest-codebook search, hierarchical feature reconstruction and stochastic
+waveform decode. Metal implements the complete token-to-waveform route,
+including four-stage RVQ, grouped/dilated Conv1D, odd-stride ConvTranspose1D
+`output_padding`, Snake, layer normalization, GEMM, softmax and local
+attention. Metal encode returns an explicit unsupported-operation error at
+the missing codebook-search kernel; it never performs a silent CPU search.
+
+The independent oracle uses upstream `snac==1.2.1` source revision
+`8f79a718f1ad71f94f79999f0071348227aff22e`. Its official 24 kHz checkpoint is
+revision `d73ad176a12188fcf4f360ba3bf2c2fbbe8f58ec`, SHA-256
+`4b8164cc6606bfa627f1a784734c1e539891518f1191ed9194fe1e3b9b4bff40`;
+the 44.1 kHz checkpoint is revision
+`873ebef9718b89660340c6f55a2b515e98cfa1d9`, SHA-256
+`b0a676cbdc8d1cc53186f6d777bc956fb7932ceacdc657a4c3741646e9e7ead0`.
+The dumper calls the official encoder, quantizer and decoder. It captures the
+four PyTorch NoiseBlock inputs so learned-graph parity is not confounded with
+an invented cross-library RNG-seed equivalence.
+
+The public Vokra GGUFs were fetched at revisions
+`17fe131f825e82151ad87c511c49fef4b9209564` (24 kHz, SHA-256
+`3c357841858fd24a05f4a7fb5b28daffa5931373aad3112f83a9d09d3575cc8a`)
+and `3c7e4fad6b0b2ac34e65c674647d9914780cb90e` (44.1 kHz, SHA-256
+`91ac3e7b6d1a3c332efe098b1b1773d32df98f14651cfc19d5f12ec147331e3a`).
+Both strict binders accepted those unchanged public artifacts, and CPU encode
+produced the exact official code sequence.
+
+| Public SNAC surface | max abs | relative L1 | cosine |
+|---|---:|---:|---:|
+| 24 kHz CPU encoder | `7.820129395e-5` | `2.271287742e-6` | `1.000000000` |
+| 24 kHz CPU RVQ decode | `9.536743164e-7` | `4.393151833e-8` | `1.000000000` |
+| 24 kHz CPU decoder | `8.046627045e-7` | `2.054521656e-6` | `1.000000000` |
+| 44.1 kHz CPU encoder + local attention | `3.101825714e-4` | `4.241102395e-6` | `1.000000000` |
+| 44.1 kHz CPU RVQ decode | `3.814697266e-6` | `4.973113820e-8` | `1.000000000` |
+| 44.1 kHz CPU decoder + local attention | `5.215406418e-7` | `8.614468708e-7` | `1.000000000` |
+
+The measured CPU gates are max-abs `4e-4` / relative L1 `1e-5` for the
+encoder, `5e-6` / `1e-7` for RVQ and `1.5e-6` / `4e-6` for the decoder, with
+the corresponding cosine floors committed beside the fixtures. Linux VAST
+cannot execute Metal, and current host policy forbids a local
+`vokra-models` real-weight Cargo run, so the feature-gated 24/44 kHz Apple
+hardware comparison remains open. This is recorded as an unrun device gate,
+not imputed from the passing CPU result or primitive Metal tests. No Hub
+upload or artifact replacement was performed.
+
 ### Piper Plus CLI/C ABI reachability
 
 Piper already declared GEMM as its complete backend hot-op set and already had
@@ -860,6 +910,23 @@ to the maintainer host; the workspace-test and Clippy log digests are
 and `9afd3058b31e85932d66d0ac43cc01e52081f8e55103261406c389a9e39e5eb8`.
 Instance `48577185` was then destroyed; the paginated Vast inventory returned
 three unrelated labels and no `vokra-*` instance.
+
+Disposable instance `48584151` validated the SNAC 24/44 kHz wave and the
+accumulated worktree. Both public GGUFs passed strict binding, exact official
+encode-code comparison and the encoder/RVQ/decoder CPU gates recorded above.
+The workspace test run completed with zero failures. Two Clippy-only
+range-loop findings were corrected; the final four-stage unit test and
+`cargo clippy --workspace --all-targets -- -D warnings` then completed with
+zero code failures on commit `2b9899a8`. Before teardown, all logs, the
+environment/SHA ledger and generated fixture archive were pulled to
+`/private/tmp/vokra-vast-48584151-results`; the complete archive SHA-256 is
+`4d9d6b775ef17a95afe721cbfc2814b67077a1adf43499b66723495c4df8f020`,
+the workspace-test log SHA-256 is
+`c5ae60f43e52973f4e32d525aca3a25dadc9906e236b3747a36832514747b357`,
+and the final Clippy log SHA-256 is
+`66f667e1101401a045f84aedaf4d027a579bdbbb0b11cf9e8c221dbc28e7feb4`.
+Instance `48584151` was destroyed; the paginated inventory then returned only
+the unrelated `tiny-s2s-m2-{judge,generator}` instances and no volumes.
 
 ## Remaining execution order
 
