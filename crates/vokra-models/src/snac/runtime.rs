@@ -678,7 +678,8 @@ impl ConvTranspose1d {
                 "snac ConvTranspose1D output is not channel-aligned".to_owned(),
             ));
         }
-        Ok((output, output.len() / self.out_channels))
+        let output_time = output.len() / self.out_channels;
+        Ok((output, output_time))
     }
 }
 
