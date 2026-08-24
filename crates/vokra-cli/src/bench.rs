@@ -837,6 +837,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::SnacCodec => {
+            return Err(
+                "bench: arch `snac` uses hierarchical stage rates and explicit encode/decode modes; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <snac.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
         ModelTask::VocoderBigVgan => {
             return Err(
                 "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"

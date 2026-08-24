@@ -16,7 +16,7 @@ use vokra_core::engines::{KwsEngine, SeparationEngine};
 use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
-use crate::runtime_contracts::{MimiCodesV1, parse_ct_punc_tsv, sha256};
+use crate::runtime_contracts::{MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256};
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
@@ -55,6 +55,8 @@ USAGE:
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
+    vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
+    vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -77,6 +79,8 @@ OPTIONS:
                                 decode it is a `VKRMCODE` v1 code container.
                                 For DAC decode it is raw time-major
                                 `[frames,n_codebooks]` little-endian u32.
+                                For SNAC encode it is a mono WAV; for decode it
+                                is a `VKRSNAC1` v1 hierarchical code container.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -135,7 +139,9 @@ OPTIONS:
                                 writes exact UTF-8 restored text when present.
                                 Mimi requires it: code container for encode,
                                 WAV for decode. DAC decode also requires a WAV
-                                output. Vocoders write waveform WAV.
+                                output. SNAC requires a `.vsc` code container
+                                for encode and a WAV for decode. Vocoders write
+                                waveform WAV.
                                 Multi-speaker SepFormer models derive
                                 `<stem>.sourceN.wav` paths from this value.
     --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
@@ -151,6 +157,11 @@ OPTIONS:
                                 frame rate, topology, and codebook SHA-256.
                                 dac: `decode` only, from raw time-major u32le
                                 codes; unsupported encode is an explicit error.
+                                snac: `encode` (CPU mono WAV -> versioned
+                                stage-major container) or `decode` (container ->
+                                WAV on CPU/Metal). Metal encode is an explicit
+                                unsupported-operation error; it never falls
+                                back to CPU.
     --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
                                 condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
@@ -242,8 +253,8 @@ struct RunArgs {
     output: Option<String>,
     /// CT-Punc-only versioned TSV pairing token ids and escaped UTF-8 tokens.
     tokens: Option<String>,
-    /// Standalone Mimi direction. Required on the `mimi` arch and rejected
-    /// everywhere else.
+    /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
+    /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
     /// Vocos Encodec AdaLayerNorm condition (`0..4`).
     bandwidth_id: Option<usize>,
@@ -657,6 +668,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Speaker
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
+        | ModelTask::SnacCodec
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -704,9 +716,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if a.codec_mode.is_some() && task != ModelTask::MimiCodec && task != ModelTask::DacCodec {
+    if a.codec_mode.is_some()
+        && task != ModelTask::MimiCodec
+        && task != ModelTask::DacCodec
+        && task != ModelTask::SnacCodec
+    {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac codec arches".to_owned(),
+            "run: --codec-mode is only supported for standalone mimi/dac/snac codec arches"
+                .to_owned(),
         );
     }
     if a.bandwidth_id.is_some() && task != ModelTask::VocoderVocos {
@@ -1002,6 +1019,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::DacCodec => {
             run_dac_codec(&session, &a)?;
+        }
+        ModelTask::SnacCodec => {
+            run_snac_codec(&session, &a)?;
         }
         ModelTask::VocoderBigVgan => {
             run_bigvgan(&session, &a)?;
@@ -2101,6 +2121,244 @@ fn run_dac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
         pcm.len(),
         model.sample_rate()
     );
+    Ok(())
+}
+
+/// Fingerprints the exact SNAC tensor contract without hashing unrelated GGUF
+/// metadata. The strict binder separately validates architecture, provenance,
+/// license, and the complete manifest. This ledger pins every tensor's name,
+/// dtype, shape, and payload so a code container cannot be decoded with a
+/// sibling or modified checkpoint that happens to share the same topology.
+fn snac_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
+    const DOMAIN: &[u8] = b"vokra-snac-gguf-tensor-fingerprint-v1";
+    let mut ledger = Vec::new();
+    ledger.extend_from_slice(DOMAIN);
+    ledger.extend_from_slice(
+        &u64::try_from(file.tensors().len())
+            .map_err(|_| "run (snac): tensor count exceeds u64")?
+            .to_le_bytes(),
+    );
+    for info in file.tensors() {
+        let name = info.name.as_bytes();
+        ledger.extend_from_slice(
+            &u64::try_from(name.len())
+                .map_err(|_| "run (snac): tensor name length exceeds u64")?
+                .to_le_bytes(),
+        );
+        ledger.extend_from_slice(name);
+        ledger.extend_from_slice(&info.dtype.tag().to_le_bytes());
+        ledger.extend_from_slice(
+            &u32::try_from(info.dimensions.len())
+                .map_err(|_| "run (snac): tensor rank exceeds u32")?
+                .to_le_bytes(),
+        );
+        for &dimension in &info.dimensions {
+            ledger.extend_from_slice(&dimension.to_le_bytes());
+        }
+        let payload = file.tensor_bytes(info);
+        ledger.extend_from_slice(
+            &u64::try_from(payload.len())
+                .map_err(|_| "run (snac): tensor byte length exceeds u64")?
+                .to_le_bytes(),
+        );
+        ledger.extend_from_slice(&sha256(payload));
+    }
+    Ok(sha256(&ledger))
+}
+
+fn validate_snac_codes_for_model(
+    codes: &SnacCodesV1,
+    model: &vokra_models::snac::Snac,
+    model_sha256: [u8; 32],
+) -> Result<(), String> {
+    let config = model.config();
+    let n_stages = u32::try_from(config.n_stages)
+        .map_err(|_| "run (snac decode): model stage count exceeds u32")?;
+    let codebook_size = u32::try_from(model.codebook_size())
+        .map_err(|_| "run (snac decode): model codebook size exceeds u32")?;
+    let latent_dim = u32::try_from(model.latent_dim())
+        .map_err(|_| "run (snac decode): model latent dimension exceeds u32")?;
+    let hop_length = u32::try_from(model.hop_length())
+        .map_err(|_| "run (snac decode): model hop length exceeds u32")?;
+    if codes.sample_rate != model.sample_rate()
+        || codes.n_stages != n_stages
+        || codes.codebook_size != codebook_size
+        || codes.latent_dim != latent_dim
+        || codes.hop_length != hop_length
+        || codes.vq_strides != config.vq_strides
+    {
+        return Err(format!(
+            "run (snac decode): container/model contract mismatch: container \
+             rate={} stages={} bins={} latent={} hop={} strides={:?}, model \
+             rate={} stages={} bins={} latent={} hop={} strides={:?}",
+            codes.sample_rate,
+            codes.n_stages,
+            codes.codebook_size,
+            codes.latent_dim,
+            codes.hop_length,
+            codes.vq_strides,
+            model.sample_rate(),
+            n_stages,
+            codebook_size,
+            latent_dim,
+            hop_length,
+            config.vq_strides
+        ));
+    }
+    if codes.model_sha256 != model_sha256 {
+        return Err(format!(
+            "run (snac decode): model SHA-256 mismatch (container {}, model {}); \
+             hierarchical codes must be decoded by the exact GGUF tensors that encoded them",
+            hex_digest(&codes.model_sha256),
+            hex_digest(&model_sha256)
+        ));
+    }
+    Ok(())
+}
+
+/// SNAC 24/44 kHz waveform encode and hierarchical-code decode.
+///
+/// The encoder pads exactly as the upstream runtime requires and records the
+/// caller's original sample count. Decode validates the padded topology,
+/// requires the exact tensor fingerprint, then trims only that recorded tail.
+/// Metal encode reaches the model's explicit unsupported-operation error;
+/// there is no host-side codebook-search fallback.
+fn run_snac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (snac): --text/--tokens are not codec inputs; use --input plus \
+             --codec-mode encode|decode"
+                .to_owned(),
+        );
+    }
+    let mode = a
+        .codec_mode
+        .ok_or("run (snac): --codec-mode encode|decode is required")?;
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (snac): --input <wav|codes.vsc> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (snac): --output <codes.vsc|wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+    let model = vokra_models::snac::Snac::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let model_sha256 = snac_model_fingerprint(session.gguf())?;
+
+    match mode {
+        CodecMode::Encode => {
+            let clip = wav::read_wav(input_path)
+                .map_err(|error| format!("run (snac encode): {input_path}: {error}"))?;
+            if clip.sample_rate != model.sample_rate() {
+                return Err(format!(
+                    "run (snac encode): {input_path} is {} Hz, model requires {} Hz — \
+                     resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate,
+                    model.sample_rate()
+                ));
+            }
+            let codes = model
+                .encode(&clip.samples, clip.sample_rate)
+                .map_err(|error| error.to_string())?;
+            let config = model.config();
+            if codes.len() != config.n_stages {
+                return Err(format!(
+                    "run (snac encode): encoder returned {} stages, model declares {}",
+                    codes.len(),
+                    config.n_stages
+                ));
+            }
+            let mut base_frames = None;
+            let mut stage_lengths = [0u64; 4];
+            for (stage, (stage_codes, &stride)) in
+                codes.iter().zip(config.active_vq_strides()).enumerate()
+            {
+                let frames = stage_codes
+                    .len()
+                    .checked_mul(stride as usize)
+                    .ok_or("run (snac encode): base frame count overflow")?;
+                if let Some(expected) = base_frames {
+                    if frames != expected {
+                        return Err(format!(
+                            "run (snac encode): stage {stage} implies {frames} base frames, expected {expected}"
+                        ));
+                    }
+                } else {
+                    base_frames = Some(frames);
+                }
+                stage_lengths[stage] = u64::try_from(stage_codes.len())
+                    .map_err(|_| "run (snac encode): stage length exceeds u64")?;
+            }
+            let base_frames = base_frames.ok_or("run (snac encode): encoder returned no stages")?;
+            let container = SnacCodesV1 {
+                sample_rate: model.sample_rate(),
+                n_stages: u32::try_from(config.n_stages)
+                    .map_err(|_| "run (snac encode): stage count exceeds u32")?,
+                codebook_size: u32::try_from(model.codebook_size())
+                    .map_err(|_| "run (snac encode): codebook size exceeds u32")?,
+                latent_dim: u32::try_from(model.latent_dim())
+                    .map_err(|_| "run (snac encode): latent dimension exceeds u32")?,
+                hop_length: u32::try_from(model.hop_length())
+                    .map_err(|_| "run (snac encode): hop length exceeds u32")?,
+                base_frames: u64::try_from(base_frames)
+                    .map_err(|_| "run (snac encode): base frame count exceeds u64")?,
+                pcm_samples: u64::try_from(clip.samples.len())
+                    .map_err(|_| "run (snac encode): PCM sample count exceeds u64")?,
+                model_sha256,
+                vq_strides: config.vq_strides,
+                stage_lengths,
+                codes,
+            };
+            std::fs::write(output_path, container.to_bytes()?)
+                .map_err(|error| format!("run (snac encode): --output {output_path}: {error}"))?;
+            println!(
+                "snac encode: {} samples -> {} base frames / {} hierarchical stages -> {output_path}",
+                clip.samples.len(),
+                base_frames,
+                config.n_stages
+            );
+        }
+        CodecMode::Decode => {
+            let bytes = std::fs::read(input_path)
+                .map_err(|error| format!("run (snac decode): {input_path}: {error}"))?;
+            let container = SnacCodesV1::from_bytes(&bytes)?;
+            validate_snac_codes_for_model(&container, &model, model_sha256)?;
+            let mut pcm = model
+                .decode(&container.codes)
+                .map_err(|error| error.to_string())?;
+            let expected_padded = usize::try_from(container.base_frames)
+                .ok()
+                .and_then(|frames| frames.checked_mul(model.hop_length()))
+                .ok_or("run (snac decode): padded PCM sample count does not fit this host")?;
+            if pcm.len() != expected_padded {
+                return Err(format!(
+                    "run (snac decode): decoder emitted {} samples, container topology predicts {expected_padded}",
+                    pcm.len()
+                ));
+            }
+            let original_samples = usize::try_from(container.pcm_samples).map_err(
+                |_| "run (snac decode): original PCM sample count does not fit this host",
+            )?;
+            pcm.truncate(original_samples);
+            wav::write_wav(output_path, &pcm, model.sample_rate())
+                .map_err(|error| format!("run (snac decode): --output {output_path}: {error}"))?;
+            println!(
+                "snac decode: {} base frames / {} hierarchical stages -> {} samples @ {} Hz -> {output_path}",
+                container.base_frames,
+                container.n_stages,
+                pcm.len(),
+                model.sample_rate()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -3784,6 +4042,37 @@ mod tests {
         assert!(USAGE.contains("vokra-ct-punc-tsv-v1"));
         assert!(USAGE.contains("--codec-mode encode"));
         assert!(USAGE.contains("VKRMCODE"));
+        assert!(USAGE.contains("snac.gguf"));
+        assert!(USAGE.contains("VKRSNAC1"));
+    }
+
+    #[test]
+    fn snac_model_fingerprint_pins_tensor_name_shape_dtype_and_payload() {
+        use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+
+        fn fixture(name: &str, dimensions: Vec<u64>, values: &[f32]) -> GgufFile {
+            let mut builder = GgufBuilder::new();
+            let payload = values
+                .iter()
+                .flat_map(|value| value.to_le_bytes())
+                .collect();
+            builder
+                .add_tensor(name, GgmlType::F32, dimensions, payload)
+                .expect("add fingerprint tensor");
+            GgufFile::parse(builder.to_bytes().expect("serialize fingerprint fixture"))
+                .expect("parse fingerprint fixture")
+        }
+
+        let original = fixture("weight", vec![2], &[1.0, 2.0]);
+        let same = fixture("weight", vec![2], &[1.0, 2.0]);
+        let renamed = fixture("other", vec![2], &[1.0, 2.0]);
+        let reshaped = fixture("weight", vec![1, 2], &[1.0, 2.0]);
+        let changed = fixture("weight", vec![2], &[1.0, 3.0]);
+        let digest = snac_model_fingerprint(&original).unwrap();
+        assert_eq!(digest, snac_model_fingerprint(&same).unwrap());
+        assert_ne!(digest, snac_model_fingerprint(&renamed).unwrap());
+        assert_ne!(digest, snac_model_fingerprint(&reshaped).unwrap());
+        assert_ne!(digest, snac_model_fingerprint(&changed).unwrap());
     }
 
     /// `--compare` on a non-speaker arch is an explicit contract error
@@ -3830,7 +4119,9 @@ mod tests {
 
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
         assert!(
-            err.contains("--codec-mode is only supported for standalone mimi/dac codec arches")
+            err.contains(
+                "--codec-mode is only supported for standalone mimi/dac/snac codec arches"
+            )
         );
     }
 
@@ -4506,6 +4797,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFsmn), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VocoderVocos), None);

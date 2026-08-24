@@ -52,19 +52,20 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "firered_vad",
             "ten_vad",
             "rnnoise",
+            "snac",
             "nkf_aec",
             "xvector",
             "ecapa_tdnn",
             "wespeaker",
             "titanet-large",
         }
-        bound = {"snac"}
+        bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
         silero = audit.RepoRecord(
             "vokra/silero", "abc", ("model.gguf",), "silero-vad"
         )
         dac = audit.RepoRecord("vokra/dac-44khz", "abc", ("model.gguf",), "dac")
-        bound_record = audit.RepoRecord("vokra/snac", "abc", ("model.gguf",), "snac")
+        snac = audit.RepoRecord("vokra/snac", "abc", ("model.gguf",), "snac")
         routed_partial = audit.RepoRecord(
             "vokra/magnet", "abc", ("model.gguf",), "magnet_small_10secs"
         )
@@ -114,7 +115,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(full, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")
-        self.assertEqual(audit.classify(bound_record, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(snac, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(snac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(routed_partial, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(csm, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "partial")

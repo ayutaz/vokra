@@ -1621,6 +1621,18 @@ impl Snac {
         self.encoder.hop_length
     }
 
+    /// Returns the channel width of the co-aligned quantizer/decoder latent.
+    #[must_use]
+    pub const fn latent_dim(&self) -> usize {
+        self.config.variant.latent_dim()
+    }
+
+    /// Returns the number of entries in every hierarchical codebook.
+    #[must_use]
+    pub const fn codebook_size(&self) -> usize {
+        CODEBOOK_SIZE
+    }
+
     fn validate_encode_input(&self, pcm: &[f32], sample_rate: u32) -> Result<()> {
         if sample_rate != self.sample_rate() {
             return Err(VokraError::InvalidArgument(format!(

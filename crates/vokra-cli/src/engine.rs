@@ -237,6 +237,11 @@ pub(crate) enum ModelTask {
     /// non-causal, so this is deliberately a whole-code-matrix task rather
     /// than the causal generic streaming codec handle.
     DacCodec,
+    /// SNAC 24/44 kHz hierarchical codec encode/decode. The run route uses a
+    /// versioned stage-major code container because stage lengths differ.
+    /// CPU supports encode/decode; Metal supports complete decode and rejects
+    /// encode explicitly until GPU nearest-codebook search exists.
+    SnacCodec,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -395,6 +400,8 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 const ARCH_MIMI: &str = "mimi";
 /// Descript DAC 16/24/44.1 kHz codec family.
 const ARCH_DAC: &str = "dac";
+/// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
+const ARCH_SNAC: &str = "snac";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
@@ -1092,6 +1099,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::DacCodec))
         }
+        ARCH_SNAC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SNAC}`"
+                ));
+            }
+            Ok((session, ModelTask::SnacCodec))
+        }
         ARCH_BIGVGAN => {
             if hint.is_some() {
                 return Err(format!(
@@ -1225,7 +1240,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_SNAC}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
@@ -1721,12 +1736,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // BigVGAN and Vocos left this registry on 2026-08-21 after strict
     // loaders, real forwards, parity, and explicit feature-file CLI
     // contracts landed.
-    BoundArch {
-        arch: "snac",
-        module: "vokra_models::snac",
-        entry: "Snac::from_gguf → Snac::encode / Snac::decode",
-        probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
-    },
     // --- Text / alignment side-cars ---------------------------------------
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
@@ -2836,6 +2845,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_snac_to_the_hierarchical_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SNAC, "snac-routed", |path| {
+            load_session(path).expect("snac session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::SnacCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|binding| binding.arch != ARCH_SNAC),
+            "the routed hierarchical SNAC codec must not retain a registry row"
+        );
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
@@ -2880,6 +2901,8 @@ mod tests {
             ARCH_NKF_AEC,
             ARCH_CT_PUNC,
             ARCH_MIMI,
+            ARCH_DAC,
+            ARCH_SNAC,
             ARCH_BIGVGAN,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,

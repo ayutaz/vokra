@@ -315,6 +315,260 @@ impl MimiCodesV1 {
     }
 }
 
+/// SNAC hierarchical-code container magic (`VKRSNAC1`) and current version.
+const SNAC_MAGIC: &[u8; 8] = b"VKRSNAC1";
+const SNAC_VERSION: u16 = 1;
+const SNAC_HEADER_LEN: usize = 144;
+const SNAC_MAX_STAGES: usize = 4;
+
+/// Portable SNAC hierarchical-code container, version 1.
+///
+/// Unlike flat RVQ codecs, each SNAC stage has its own temporal stride and
+/// therefore its own code count. The payload is stage-major unsigned u32
+/// little endian; `stage_lengths` and `vq_strides` make those extents
+/// explicit. The model fingerprint covers every GGUF tensor name, dtype,
+/// shape, and payload so decode cannot silently use a different checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnacCodesV1 {
+    pub(crate) sample_rate: u32,
+    pub(crate) n_stages: u32,
+    pub(crate) codebook_size: u32,
+    pub(crate) latent_dim: u32,
+    pub(crate) hop_length: u32,
+    pub(crate) base_frames: u64,
+    pub(crate) pcm_samples: u64,
+    pub(crate) model_sha256: [u8; 32],
+    pub(crate) vq_strides: [u32; SNAC_MAX_STAGES],
+    pub(crate) stage_lengths: [u64; SNAC_MAX_STAGES],
+    pub(crate) codes: Vec<Vec<u32>>,
+}
+
+impl SnacCodesV1 {
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        let code_count = self.codes.iter().try_fold(0usize, |total, stage| {
+            total
+                .checked_add(stage.len())
+                .ok_or("SNAC code count overflow")
+        })?;
+        let payload_len = code_count
+            .checked_mul(4)
+            .ok_or("SNAC code payload size overflow")?;
+        let capacity = SNAC_HEADER_LEN
+            .checked_add(payload_len)
+            .ok_or("SNAC container size overflow")?;
+        let mut out = Vec::with_capacity(capacity);
+        out.extend_from_slice(SNAC_MAGIC);
+        out.extend_from_slice(&SNAC_VERSION.to_le_bytes());
+        out.extend_from_slice(&(SNAC_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // flags, reserved
+        out.extend_from_slice(&self.sample_rate.to_le_bytes());
+        out.extend_from_slice(&self.n_stages.to_le_bytes());
+        out.extend_from_slice(&self.codebook_size.to_le_bytes());
+        out.extend_from_slice(&self.latent_dim.to_le_bytes());
+        out.extend_from_slice(&self.hop_length.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        out.extend_from_slice(&self.base_frames.to_le_bytes());
+        out.extend_from_slice(&self.pcm_samples.to_le_bytes());
+        out.extend_from_slice(&self.model_sha256);
+        for stride in self.vq_strides {
+            out.extend_from_slice(&stride.to_le_bytes());
+        }
+        for length in self.stage_lengths {
+            out.extend_from_slice(&length.to_le_bytes());
+        }
+        out.extend_from_slice(&[0u8; 8]); // reserved for additive v1 fields
+        debug_assert_eq!(out.len(), SNAC_HEADER_LEN);
+        for stage in &self.codes {
+            for code in stage {
+                out.extend_from_slice(&code.to_le_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < SNAC_HEADER_LEN {
+            return Err(format!(
+                "SNAC code container is truncated: {} bytes, need at least {SNAC_HEADER_LEN}",
+                bytes.len()
+            ));
+        }
+        if &bytes[..8] != SNAC_MAGIC {
+            return Err("SNAC code container has wrong magic; expected `VKRSNAC1`".to_owned());
+        }
+        let version = read_u16(bytes, 8)?;
+        if version != SNAC_VERSION {
+            return Err(format!(
+                "SNAC code container version {version} is unsupported; this build reads version {SNAC_VERSION}"
+            ));
+        }
+        let header_len = read_u16(bytes, 10)? as usize;
+        if header_len != SNAC_HEADER_LEN {
+            return Err(format!(
+                "SNAC code container v1 header length {header_len} != {SNAC_HEADER_LEN}"
+            ));
+        }
+        if read_u32(bytes, 12)? != 0
+            || read_u32(bytes, 36)? != 0
+            || bytes[136..144].iter().any(|&byte| byte != 0)
+        {
+            return Err("SNAC code container v1 has non-zero reserved fields".to_owned());
+        }
+
+        let n_stages = read_u32(bytes, 20)?;
+        let mut model_sha256 = [0u8; 32];
+        model_sha256.copy_from_slice(&bytes[56..88]);
+        let mut vq_strides = [0u32; SNAC_MAX_STAGES];
+        for (stage, stride) in vq_strides.iter_mut().enumerate() {
+            *stride = read_u32(bytes, 88 + stage * 4)?;
+        }
+        let mut stage_lengths = [0u64; SNAC_MAX_STAGES];
+        for (stage, length) in stage_lengths.iter_mut().enumerate() {
+            *length = read_u64(bytes, 104 + stage * 8)?;
+        }
+
+        let active_stages = usize::try_from(n_stages)
+            .map_err(|_| "SNAC stage count does not fit this host".to_owned())?;
+        if active_stages > SNAC_MAX_STAGES {
+            return Err(format!(
+                "SNAC code container has {active_stages} stages; v1 supports at most {SNAC_MAX_STAGES}"
+            ));
+        }
+        let code_count = stage_lengths[..active_stages]
+            .iter()
+            .try_fold(0u64, |total, &length| {
+                total.checked_add(length).ok_or("SNAC code count overflow")
+            })?;
+        let code_count = usize::try_from(code_count)
+            .map_err(|_| "SNAC code count does not fit this host".to_owned())?;
+        let expected = SNAC_HEADER_LEN
+            .checked_add(
+                code_count
+                    .checked_mul(4)
+                    .ok_or("SNAC payload size overflow")?,
+            )
+            .ok_or("SNAC container size overflow")?;
+        if bytes.len() != expected {
+            return Err(format!(
+                "SNAC code container length {} != header {SNAC_HEADER_LEN} + {code_count} u32 codes ({expected})",
+                bytes.len()
+            ));
+        }
+
+        let mut payload = bytes[SNAC_HEADER_LEN..].chunks_exact(4);
+        let mut codes = Vec::with_capacity(active_stages);
+        for &length in &stage_lengths[..active_stages] {
+            let length = usize::try_from(length)
+                .map_err(|_| "SNAC stage length does not fit this host".to_owned())?;
+            let mut stage_codes = Vec::with_capacity(length);
+            for _ in 0..length {
+                let word = payload
+                    .next()
+                    .ok_or("SNAC code container payload is truncated")?;
+                stage_codes.push(u32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+            }
+            codes.push(stage_codes);
+        }
+        debug_assert!(payload.next().is_none());
+        let parsed = Self {
+            sample_rate: read_u32(bytes, 16)?,
+            n_stages,
+            codebook_size: read_u32(bytes, 24)?,
+            latent_dim: read_u32(bytes, 28)?,
+            hop_length: read_u32(bytes, 32)?,
+            base_frames: read_u64(bytes, 40)?,
+            pcm_samples: read_u64(bytes, 48)?,
+            model_sha256,
+            vq_strides,
+            stage_lengths,
+            codes,
+        };
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.sample_rate == 0
+            || self.codebook_size == 0
+            || self.latent_dim == 0
+            || self.hop_length == 0
+            || self.base_frames == 0
+            || self.pcm_samples == 0
+        {
+            return Err(
+                "SNAC code container v1 has a zero rate, axis, frame, hop, or PCM length"
+                    .to_owned(),
+            );
+        }
+        let n_stages = usize::try_from(self.n_stages)
+            .map_err(|_| "SNAC stage count does not fit this host")?;
+        if !(1..=SNAC_MAX_STAGES).contains(&n_stages) {
+            return Err(format!(
+                "SNAC code container v1 stage count {n_stages} is outside 1..={SNAC_MAX_STAGES}"
+            ));
+        }
+        if self.codes.len() != n_stages {
+            return Err(format!(
+                "SNAC code container has {} stage vectors, expected {n_stages}",
+                self.codes.len()
+            ));
+        }
+        for stage in 0..n_stages {
+            let stride = u64::from(self.vq_strides[stage]);
+            if stride == 0 || !self.base_frames.is_multiple_of(stride) {
+                return Err(format!(
+                    "SNAC stage {stage} stride {stride} does not divide base_frames {}",
+                    self.base_frames
+                ));
+            }
+            let expected = self.base_frames / stride;
+            if self.stage_lengths[stage] != expected {
+                return Err(format!(
+                    "SNAC stage {stage} length {} != base_frames/stride {expected}",
+                    self.stage_lengths[stage]
+                ));
+            }
+            let actual = u64::try_from(self.codes[stage].len())
+                .map_err(|_| "SNAC stage code count exceeds u64")?;
+            if actual != expected {
+                return Err(format!(
+                    "SNAC stage {stage} code vector has {actual} entries, expected {expected}"
+                ));
+            }
+            if let Some((index, code)) = self.codes[stage]
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, code)| *code >= self.codebook_size)
+            {
+                return Err(format!(
+                    "SNAC stage {stage} code {code} at index {index} is outside codebook_size {}",
+                    self.codebook_size
+                ));
+            }
+        }
+        for stage in n_stages..SNAC_MAX_STAGES {
+            if self.vq_strides[stage] != 0 || self.stage_lengths[stage] != 0 {
+                return Err(format!(
+                    "SNAC inactive stage {stage} must have zero stride and length"
+                ));
+            }
+        }
+        let padded_samples = self
+            .base_frames
+            .checked_mul(u64::from(self.hop_length))
+            .ok_or("SNAC padded PCM length overflow")?;
+        if self.pcm_samples > padded_samples {
+            return Err(format!(
+                "SNAC original PCM length {} exceeds padded decode extent {padded_samples}",
+                self.pcm_samples
+            ));
+        }
+        Ok(())
+    }
+}
+
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
     let b = bytes
         .get(offset..offset + 2)
@@ -553,6 +807,72 @@ mod tests {
                 .to_bytes()
                 .unwrap_err()
                 .contains("outside codebook_size")
+        );
+    }
+
+    fn sample_snac_codes() -> SnacCodesV1 {
+        SnacCodesV1 {
+            sample_rate: 24_000,
+            n_stages: 3,
+            codebook_size: 4096,
+            latent_dim: 768,
+            hop_length: 2_048,
+            base_frames: 8,
+            pcm_samples: 15_000,
+            model_sha256: sha256(b"snac-model"),
+            vq_strides: [4, 2, 1, 0],
+            stage_lengths: [2, 4, 8, 0],
+            codes: vec![vec![1, 2], vec![3, 4, 5, 6], vec![7; 8]],
+        }
+    }
+
+    #[test]
+    fn snac_v1_round_trips_hierarchical_stage_major_codes() {
+        let value = sample_snac_codes();
+        let bytes = value.to_bytes().unwrap();
+        assert_eq!(&bytes[..8], b"VKRSNAC1");
+        assert_eq!(&bytes[144..148], &1u32.to_le_bytes());
+        assert_eq!(&bytes[152..156], &3u32.to_le_bytes());
+        assert_eq!(SnacCodesV1::from_bytes(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn snac_v1_rejects_truncation_code_range_and_stage_extent_mismatch() {
+        let mut bytes = sample_snac_codes().to_bytes().unwrap();
+        bytes.pop();
+        assert!(
+            SnacCodesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("length")
+        );
+
+        let mut value = sample_snac_codes();
+        value.codes[1][2] = value.codebook_size;
+        assert!(
+            value
+                .to_bytes()
+                .unwrap_err()
+                .contains("outside codebook_size")
+        );
+
+        let mut value = sample_snac_codes();
+        value.stage_lengths[1] = 3;
+        assert!(value.to_bytes().unwrap_err().contains("base_frames/stride"));
+    }
+
+    #[test]
+    fn snac_v1_rejects_nonzero_inactive_stage_and_impossible_pcm_length() {
+        let mut value = sample_snac_codes();
+        value.vq_strides[3] = 1;
+        assert!(value.to_bytes().unwrap_err().contains("inactive stage 3"));
+
+        let mut value = sample_snac_codes();
+        value.pcm_samples = value.base_frames * u64::from(value.hop_length) + 1;
+        assert!(
+            value
+                .to_bytes()
+                .unwrap_err()
+                .contains("exceeds padded decode extent")
         );
     }
 

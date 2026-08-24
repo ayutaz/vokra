@@ -114,6 +114,7 @@ METAL_CODE_ARCHES = {
     "piper-plus-mb-istft-vits2",
     "rnnoise",
     "silero-vad",
+    "snac",
     "sepformer",
     "smart_turn",
     "speecht5_hifigan",
