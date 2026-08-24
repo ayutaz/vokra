@@ -16,6 +16,7 @@ dependencies = [
     "pyannote-audio>=4.0.7",
     "safetensors>=0.8.0",
     "sentencepiece>=0.2.2",
+    "snac @ git+https://github.com/hubertsiuzdak/snac@8f79a718f1ad71f94f79999f0071348227aff22e",
     "speechbrain==1.0.3",
     "torch>=2.0",
     "torchaudio>=2.11.0",

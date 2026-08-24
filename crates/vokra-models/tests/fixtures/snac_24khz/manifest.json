@@ -1,0 +1,68 @@
+{
+  "checkpoint_sha256": "4b8164cc6606bfa627f1a784734c1e539891518f1191ed9194fe1e3b9b4bff40",
+  "code_shapes": [
+    [
+      1,
+      1
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      4
+    ]
+  ],
+  "config_sha256": "e119b9366d4f5e73c6ca5f31137c4ff361578bbb132953a5203afe037c4012be",
+  "feature_shape": [
+    1,
+    768,
+    4
+  ],
+  "files": {
+    "codes_0.u32": "ca143abead49dd699b8f7668d0bce235c8a06cee542d31070bdb513650c67a88",
+    "codes_1.u32": "f091bde8c748e711198ceaa557c9eeb52f2c7a59050527962d60228bef5c2b1b",
+    "codes_2.u32": "362b8a7e3abe660e23a6cb6c0a3ebbe6ac72303e4df23cf97aba592146765770",
+    "decoded_features_time_major.f32": "ab9367c8c28ecee4de2036153e51e25954148232a2d9890112666ca0fe45da2b",
+    "decoded_pcm.f32": "fc8199b73392c6f536796f701009dcd5c9bff4663ddf697fca7d07df6f56c8a2",
+    "encoded_features.f32": "36d7b1335e3c180f2327a1afdd69010ffb160c018f8c0a77caf39c4f48db14c5",
+    "noise_0.f32": "9cf08c2a4bdc1ea67d0c897128679d633d0a55e36fdf8978bd46d15005c82a86",
+    "noise_1.f32": "9df57f8f79a356d26a3fae04f80bb8f6a65b59a16d1e6fffe28fb6cdd6b08b9f",
+    "noise_2.f32": "64d8b0c2ded082a139205b451ff08acf324a97bcbc04dd699d95215f9ff91b29",
+    "noise_3.f32": "f01c93a6928adb8fe4a81d9c2fe4ea30de229216c79138a96d8b107de45a996b",
+    "pcm.f32": "7e12c8bbf4a7cc14a09e34a8b1962d781598a83943ad2cee72c118c0a9acf8fd"
+  },
+  "format": "vokra-snac-reference-v1",
+  "noise_shapes": [
+    [
+      1,
+      1,
+      32
+    ],
+    [
+      1,
+      1,
+      256
+    ],
+    [
+      1,
+      1,
+      1024
+    ],
+    [
+      1,
+      1,
+      2048
+    ]
+  ],
+  "num_samples": 1567,
+  "oracle": "snac.SNAC.from_pretrained/encode/decode",
+  "padded_samples": 2048,
+  "sample_rate": 24000,
+  "snac_version": "1.2.1",
+  "source_revision": "8f79a718f1ad71f94f79999f0071348227aff22e",
+  "torch": "2.13.0+cu130",
+  "upstream_hf": "hubertsiuzdak/snac_24khz",
+  "upstream_revision": "d73ad176a12188fcf4f360ba3bf2c2fbbe8f58ec"
+}

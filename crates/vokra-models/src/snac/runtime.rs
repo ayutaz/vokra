@@ -1105,7 +1105,7 @@ impl NoiseBlock {
         compute: &Compute,
         input: Vec<f32>,
         time: usize,
-        rng: &mut GaussianSplitMix64,
+        noise: &[f32],
     ) -> Result<Vec<f32>> {
         let (projected, output_time) = self.linear.forward(compute, &input, time)?;
         if output_time != time || projected.len() != input.len() {
@@ -1113,7 +1113,12 @@ impl NoiseBlock {
                 "snac noise projection changed the decoder extent".to_owned(),
             ));
         }
-        let noise: Vec<f32> = (0..time).map(|_| rng.next_gaussian()).collect();
+        if noise.len() != time || noise.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac noise length {} must equal finite decoder extent {time}",
+                noise.len()
+            )));
+        }
         let mut output = input;
         for channel in 0..self.linear.out_channels {
             for t in 0..time {
@@ -1159,16 +1164,20 @@ impl DecoderBlock {
         })
     }
 
-    fn forward(
+    fn forward<F>(
         &self,
         compute: &Compute,
         input: Vec<f32>,
         time: usize,
-        rng: &mut GaussianSplitMix64,
-    ) -> Result<(Vec<f32>, usize)> {
+        next_noise: &mut F,
+    ) -> Result<(Vec<f32>, usize)>
+    where
+        F: FnMut(usize) -> Result<Vec<f32>>,
+    {
         let hidden = self.snake.forward(compute, &input, time)?;
         let (hidden, output_time) = self.upsample.forward(compute, &hidden, time)?;
-        let mut hidden = self.noise.forward(compute, hidden, output_time, rng)?;
+        let noise = next_noise(output_time)?;
+        let mut hidden = self.noise.forward(compute, hidden, output_time, &noise)?;
         for residual in &self.residuals {
             hidden = residual.forward(compute, hidden, output_time)?;
         }
@@ -1260,13 +1269,16 @@ impl Decoder {
         })
     }
 
-    fn forward(
+    fn forward_with_noise<F>(
         &self,
         compute: &Compute,
         features: &[f32],
         latent_dim: usize,
-        seed: u64,
-    ) -> Result<Vec<f32>> {
+        mut next_noise: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: FnMut(usize) -> Result<Vec<f32>>,
+    {
         if features.is_empty() || !features.len().is_multiple_of(latent_dim) {
             return Err(VokraError::InvalidArgument(format!(
                 "snac decoder feature length {} must be a positive multiple of latent dim \
@@ -1285,9 +1297,8 @@ impl Decoder {
         if let Some(attention) = &self.attention {
             hidden = attention.forward(compute, &hidden, time)?;
         }
-        let mut rng = GaussianSplitMix64::new(seed);
         for block in &self.blocks {
-            (hidden, time) = block.forward(compute, hidden, time, &mut rng)?;
+            (hidden, time) = block.forward(compute, hidden, time, &mut next_noise)?;
         }
         hidden = self.post_snake.forward(compute, &hidden, time)?;
         let (mut pcm, output_time) = self.post.forward(compute, &hidden, time)?;
@@ -1300,6 +1311,19 @@ impl Decoder {
             *sample = sample.tanh();
         }
         Ok(pcm)
+    }
+
+    fn forward(
+        &self,
+        compute: &Compute,
+        features: &[f32],
+        latent_dim: usize,
+        seed: u64,
+    ) -> Result<Vec<f32>> {
+        let mut rng = GaussianSplitMix64::new(seed);
+        self.forward_with_noise(compute, features, latent_dim, |time| {
+            Ok((0..time).map(|_| rng.next_gaussian()).collect())
+        })
     }
 }
 
@@ -1597,10 +1621,7 @@ impl Snac {
         self.encoder.hop_length
     }
 
-    /// CPU waveform-to-hierarchical-code encode. Metal is rejected before
-    /// any convolution runs because nearest-codebook search has no Metal op;
-    /// there is no silent host search inside a GPU request.
-    pub fn encode(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<Vec<u32>>> {
+    fn validate_encode_input(&self, pcm: &[f32], sample_rate: u32) -> Result<()> {
         if sample_rate != self.sample_rate() {
             return Err(VokraError::InvalidArgument(format!(
                 "snac encode sample rate {sample_rate} != model sample rate {} (no silent \
@@ -1613,13 +1634,10 @@ impl Snac {
                 "snac encode requires non-empty finite mono PCM".to_owned(),
             ));
         }
-        if self.backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(format!(
-                "snac encode is CPU-only: backend {:?} has no hierarchical codebook-search \
-                 kernel; no silent CPU fallback is performed",
-                self.backend
-            )));
-        }
+        Ok(())
+    }
+
+    fn cpu_encoder_features(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
         let first_stride = self.config.active_vq_strides()[0] as usize;
         let attention_multiple = if self.config.variant.has_attention() {
             ATTENTION_WINDOW
@@ -1640,8 +1658,34 @@ impl Snac {
         let mut padded = vec![0.0; padded_len];
         padded[..pcm.len()].copy_from_slice(pcm);
         let compute = Compute::for_backend(BackendKind::Cpu, SNAC_HOT_OPS)?;
-        let (features, time) = self.encoder.forward(&compute, &padded)?;
+        self.encoder.forward(&compute, &padded)
+    }
+
+    /// CPU waveform-to-hierarchical-code encode. Metal is rejected before
+    /// any convolution runs because nearest-codebook search has no Metal op;
+    /// there is no silent host search inside a GPU request.
+    pub fn encode(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<Vec<u32>>> {
+        self.validate_encode_input(pcm, sample_rate)?;
+        if self.backend != BackendKind::Cpu {
+            return Err(VokraError::UnsupportedOp(format!(
+                "snac encode is CPU-only: backend {:?} has no hierarchical codebook-search \
+                 kernel; no silent CPU fallback is performed",
+                self.backend
+            )));
+        }
+        let (features, time) = self.cpu_encoder_features(pcm)?;
+        let compute = Compute::for_backend(BackendKind::Cpu, SNAC_HOT_OPS)?;
         self.quantizer.encode(&compute, &features, time)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn encode_features_for_parity(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<f32>> {
+        self.validate_encode_input(pcm, sample_rate)?;
+        self.cpu_encoder_features(pcm).map(|(features, _)| features)
     }
 
     /// Deterministic convenience decode using seed zero for upstream noise
@@ -1653,7 +1697,21 @@ impl Snac {
     /// Complete stochastic hierarchical-code-to-waveform decode.
     pub fn decode_with_seed(&self, codes: &[Vec<u32>], seed: u64) -> Result<Vec<f32>> {
         let compute = Compute::for_backend(self.backend, SNAC_HOT_OPS)?;
-        let time_major = self.quantizer.decode(&compute, codes, self.sample_rate())?;
+        let channel_major = self.decode_features_channel_major(&compute, codes)?;
+        self.decoder.forward(
+            &compute,
+            &channel_major,
+            self.config.variant.latent_dim(),
+            seed,
+        )
+    }
+
+    fn decode_features_channel_major(
+        &self,
+        compute: &Compute,
+        codes: &[Vec<u32>],
+    ) -> Result<Vec<f32>> {
+        let time_major = self.quantizer.decode(compute, codes, self.sample_rate())?;
         if time_major.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "snac decode requires at least one co-aligned base frame".to_owned(),
@@ -1667,7 +1725,39 @@ impl Snac {
                 channel_major[channel * time + t] = time_major[t * latent + channel];
             }
         }
-        self.decoder.forward(&compute, &channel_major, latent, seed)
+        Ok(channel_major)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn decode_with_noise_for_parity(
+        &self,
+        codes: &[Vec<u32>],
+        noises: &[Vec<f32>],
+    ) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(self.backend, SNAC_HOT_OPS)?;
+        let channel_major = self.decode_features_channel_major(&compute, codes)?;
+        let mut stage = 0usize;
+        let output = self.decoder.forward_with_noise(
+            &compute,
+            &channel_major,
+            self.config.variant.latent_dim(),
+            |time| {
+                let noise = noises.get(stage).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "snac parity noise is missing decoder stage {stage} with extent {time}"
+                    ))
+                })?;
+                stage += 1;
+                Ok(noise.clone())
+            },
+        )?;
+        if stage != noises.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac parity noise supplied {} stages, decoder consumed {stage}",
+                noises.len()
+            )));
+        }
+        Ok(output)
     }
 
     /// Runs only the hierarchical RVQ reconstruction and returns time-major
