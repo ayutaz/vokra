@@ -5,6 +5,9 @@ description = "Pinned independent upstream FocalCodec reference dumper"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "focalcodec @ git+https://github.com/lucadellalib/focalcodec.git@912b7f2c0cd43d54a8aed296bbcc925dec7d4ea3",
+    # Vast stock images require the pre-0.30 non-Xet download path; see the
+    # repository VAST workflow's pinned Hugging Face compatibility rule.
+    "huggingface-hub>=0.29,<0.30",
 ]
 
 [tool.uv]
