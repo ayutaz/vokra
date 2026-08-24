@@ -47,7 +47,10 @@
 //! `SbV2Model::synthetic_for_test` (`sbv2/mod.rs`) continues to compile and
 //! pass without any parameter changes on the callers' side.
 
+use vokra_core::Result;
 use vokra_core::rng::NormalSource;
+
+use crate::compute::Compute;
 
 // -----------------------------------------------------------------------------
 // SDP-wide constants (from upstream `models.py::StochasticDurationPredictor`
@@ -210,6 +213,113 @@ fn conv1d_scalar(
         }
     }
     out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn conv1d_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    in_channels: usize,
+    input_len: usize,
+    weight: &[f32],
+    out_channels: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    padding: usize,
+    dilation: usize,
+    groups: usize,
+) -> Result<Vec<f32>> {
+    let effective_kernel = dilation * (kernel - 1) + 1;
+    let expanded;
+    let effective_weight = if dilation == 1 {
+        weight
+    } else {
+        let in_per_group = in_channels / groups;
+        let mut values = vec![0.0; out_channels * in_per_group * effective_kernel];
+        for output in 0..out_channels {
+            for input in 0..in_per_group {
+                for tap in 0..kernel {
+                    values[(output * in_per_group + input) * effective_kernel + tap * dilation] =
+                        weight[(output * in_per_group + input) * kernel + tap];
+                }
+            }
+        }
+        expanded = values;
+        &expanded
+    };
+    let output_len = input_len + 2 * padding - effective_kernel + 1;
+    let mut output = vec![0.0; out_channels * output_len];
+    if groups == 1 {
+        compute.conv1d_f32(
+            input,
+            in_channels,
+            input_len,
+            effective_weight,
+            out_channels,
+            effective_kernel,
+            bias,
+            1,
+            padding,
+            &mut output,
+        )?;
+    } else {
+        compute.grouped_conv1d_f32(
+            input,
+            in_channels,
+            input_len,
+            effective_weight,
+            out_channels,
+            effective_kernel,
+            bias,
+            1,
+            padding,
+            groups,
+            &mut output,
+        )?;
+    }
+    Ok(output)
+}
+
+fn layer_norm_channels_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    channels: usize,
+    time: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Result<Vec<f32>> {
+    let position_major = transpose_channel_major(input, channels, time);
+    let mut normalized = vec![0.0; input.len()];
+    compute.layer_norm_f32(
+        &position_major,
+        &mut normalized,
+        time,
+        channels,
+        gamma,
+        beta,
+        LAYER_NORM_EPS,
+    )?;
+    Ok(transpose_position_major(&normalized, time, channels))
+}
+
+fn transpose_channel_major(input: &[f32], channels: usize, time: usize) -> Vec<f32> {
+    let mut output = vec![0.0; input.len()];
+    for channel in 0..channels {
+        for position in 0..time {
+            output[position * channels + channel] = input[channel * time + position];
+        }
+    }
+    output
+}
+
+fn transpose_position_major(input: &[f32], time: usize, channels: usize) -> Vec<f32> {
+    let mut output = vec![0.0; input.len()];
+    for position in 0..time {
+        for channel in 0..channels {
+            output[channel * time + position] = input[position * channels + channel];
+        }
+    }
+    output
 }
 
 /// Channel flip of a `[2, T]` latent (`torch.flip(x, [1])` in the VITS SDP's
@@ -426,6 +536,84 @@ impl DDSConv {
         }
         buf
     }
+
+    /// Backend-dispatched DDS forward used by MeloTTS. Dilated depthwise
+    /// kernels are expanded with zero taps and sent through the existing
+    /// grouped-convolution backend, so no learned convolution falls back to
+    /// host scalar execution.
+    pub fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        time: usize,
+        conditioning: Option<&[f32]>,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(input.len(), self.channels * time);
+        let mut buffer = if let Some(conditioning) = conditioning {
+            debug_assert_eq!(conditioning.len(), input.len());
+            input
+                .iter()
+                .zip(conditioning)
+                .map(|(left, right)| left + right)
+                .collect()
+        } else {
+            input.to_vec()
+        };
+        for layer in 0..self.n_layers {
+            let dilation = self.kernel.pow(layer as u32);
+            let padding = dilation * (self.kernel - 1) / 2;
+            let separated = conv1d_with_compute(
+                compute,
+                &buffer,
+                self.channels,
+                time,
+                &self.convs_sep_w[layer],
+                self.channels,
+                self.kernel,
+                Some(&self.convs_sep_b[layer]),
+                padding,
+                dilation,
+                self.channels,
+            )?;
+            let normalized = layer_norm_channels_with_compute(
+                compute,
+                &separated,
+                self.channels,
+                time,
+                &self.norms_1[layer].gamma,
+                &self.norms_1[layer].beta,
+            )?;
+            let mut activated = vec![0.0; normalized.len()];
+            compute.gelu_f32(&normalized, &mut activated)?;
+
+            let pointwise = conv1d_with_compute(
+                compute,
+                &activated,
+                self.channels,
+                time,
+                &self.convs_1x1_w[layer],
+                self.channels,
+                1,
+                Some(&self.convs_1x1_b[layer]),
+                0,
+                1,
+                1,
+            )?;
+            let normalized = layer_norm_channels_with_compute(
+                compute,
+                &pointwise,
+                self.channels,
+                time,
+                &self.norms_2[layer].gamma,
+                &self.norms_2[layer].beta,
+            )?;
+            compute.gelu_f32(&normalized, &mut activated)?;
+            for (value, residual) in buffer.iter_mut().zip(&activated) {
+                *value += residual;
+            }
+        }
+        Ok(buffer)
+    }
 }
 
 /// Element-wise affine flow (`modules.py::ElementwiseAffine`): a fixed
@@ -608,6 +796,66 @@ impl ConvFlow {
             result[time + t] = unconstrained_rqs_inverse(x1, &w, &hh, &d);
         }
         result
+    }
+
+    /// Backend-dispatched reverse coupling. The rational-quadratic spline is
+    /// scalar control math; every learned convolution and DDS normalization
+    /// uses `compute`.
+    pub fn reverse_with_compute(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        time: usize,
+        conditioning: &[f32],
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(input.len(), 2 * time);
+        debug_assert_eq!(conditioning.len(), self.dp_filter * time);
+        let hidden = conv1d_with_compute(
+            compute,
+            &input[..time],
+            1,
+            time,
+            &self.pre_w,
+            self.dp_filter,
+            1,
+            Some(&self.pre_b),
+            0,
+            1,
+            1,
+        )?;
+        let hidden = self
+            .convs
+            .forward_with_compute(compute, &hidden, time, Some(conditioning))?;
+        let parameters = conv1d_with_compute(
+            compute,
+            &hidden,
+            self.dp_filter,
+            time,
+            &self.proj_w,
+            RQS_NUM_BINS * 3 - 1,
+            1,
+            Some(&self.proj_b),
+            0,
+            1,
+            1,
+        )?;
+        let scale = vokra_math::sqrt(self.dp_filter as f32);
+        let mut result = input.to_vec();
+        for position in 0..time {
+            let mut widths = [0.0; RQS_NUM_BINS];
+            let mut heights = [0.0; RQS_NUM_BINS];
+            let mut derivatives = [0.0; RQS_NUM_BINS - 1];
+            for bin in 0..RQS_NUM_BINS {
+                widths[bin] = parameters[bin * time + position] / scale;
+                heights[bin] = parameters[(RQS_NUM_BINS + bin) * time + position] / scale;
+            }
+            for bin in 0..RQS_NUM_BINS - 1 {
+                derivatives[bin] = parameters[(2 * RQS_NUM_BINS + bin) * time + position];
+            }
+            result[time + position] =
+                unconstrained_rqs_inverse(input[time + position], &widths, &heights, &derivatives);
+        }
+        Ok(result)
     }
 }
 
@@ -974,6 +1222,67 @@ impl SbV2SDP {
         )
     }
 
+    /// Backend-dispatched SDP conditioner used by native GPU-capable models.
+    pub fn body_with_compute(
+        &self,
+        compute: &Compute,
+        hidden_row_major: &[f32],
+        text_seq_len: usize,
+        global_conditioning: &[f32],
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(hidden_row_major.len(), text_seq_len * self.d_hidden);
+        debug_assert_eq!(global_conditioning.len(), self.gin);
+        let hidden_channel_major =
+            transpose_position_major(hidden_row_major, text_seq_len, self.d_hidden);
+        let mut hidden = conv1d_with_compute(
+            compute,
+            &hidden_channel_major,
+            self.d_hidden,
+            text_seq_len,
+            &self.pre_w,
+            self.d_hidden,
+            1,
+            Some(&self.pre_b),
+            0,
+            1,
+            1,
+        )?;
+        let conditioning = conv1d_with_compute(
+            compute,
+            global_conditioning,
+            self.gin,
+            1,
+            &self.cond_w,
+            self.d_hidden,
+            1,
+            Some(&self.cond_b),
+            0,
+            1,
+            1,
+        )?;
+        for channel in 0..self.d_hidden {
+            for position in 0..text_seq_len {
+                hidden[channel * text_seq_len + position] += conditioning[channel];
+            }
+        }
+        let hidden = self
+            .convs
+            .forward_with_compute(compute, &hidden, text_seq_len, None)?;
+        conv1d_with_compute(
+            compute,
+            &hidden,
+            self.d_hidden,
+            text_seq_len,
+            &self.proj_w,
+            self.d_hidden,
+            1,
+            Some(&self.proj_b),
+            0,
+            1,
+            1,
+        )
+    }
+
     /// Samples one duration per phoneme position. See the struct-level doc
     /// for the exact 4-step algorithm.
     ///
@@ -1108,6 +1417,67 @@ impl SbV2SDP {
             .take(text_seq_len) // channel 0 spans the first text_seq_len entries
             .map(|&logw| vokra_math::exp(logw).ceil().max(1.0) as i32)
             .collect()
+    }
+
+    /// Backend-dispatched duration sampling. Random-number generation and
+    /// spline control math remain deterministic host glue; all learned
+    /// convolutions, normalizations and GELUs use `compute`.
+    pub fn sample_with_compute<R: NormalSource>(
+        &self,
+        compute: &Compute,
+        hidden: &[f32],
+        text_seq_len: usize,
+        global_conditioning: &[f32],
+        rng: &mut R,
+        noise_scale_w: f32,
+    ) -> Result<Vec<i32>> {
+        Ok(self
+            .sample_log_duration_with_compute(
+                compute,
+                hidden,
+                text_seq_len,
+                global_conditioning,
+                rng,
+                noise_scale_w,
+            )?
+            .into_iter()
+            .map(|log_duration| vokra_math::exp(log_duration).ceil().max(1.0) as i32)
+            .collect())
+    }
+
+    /// Returns the stochastic predictor's raw log-duration samples before
+    /// exponentiation. MeloTTS blends these with its deterministic predictor
+    /// in log space through `sdp_ratio`.
+    pub fn sample_log_duration_with_compute<R: NormalSource>(
+        &self,
+        compute: &Compute,
+        hidden: &[f32],
+        text_seq_len: usize,
+        global_conditioning: &[f32],
+        rng: &mut R,
+        noise_scale_w: f32,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(hidden.len(), text_seq_len * self.d_hidden);
+        debug_assert_eq!(global_conditioning.len(), self.gin);
+        if text_seq_len == 0 {
+            return Ok(Vec::new());
+        }
+        let body = self.body_with_compute(compute, hidden, text_seq_len, global_conditioning)?;
+        let mut latent = vec![0.0; 2 * text_seq_len];
+        if noise_scale_w != 0.0 {
+            for value in &mut latent {
+                *value = rng.next_normal() * noise_scale_w;
+            }
+        }
+        if let Some((_unused, rest)) = self.flows.split_first() {
+            for flow in rest.iter().rev() {
+                flip2(&mut latent, text_seq_len);
+                latent = flow.reverse_with_compute(compute, &latent, text_seq_len, &body)?;
+            }
+            flip2(&mut latent, text_seq_len);
+        }
+        let latent = self.ea.reverse(&latent, text_seq_len);
+        Ok(latent[..text_seq_len].to_vec())
     }
 }
 
@@ -1247,6 +1617,52 @@ mod tests {
     }
 
     #[test]
+    fn dilated_depthwise_compute_matches_scalar_reference() {
+        let channels = 2;
+        let time = 7;
+        let kernel = 3;
+        let dilation = 3;
+        let padding = dilation * (kernel - 1) / 2;
+        let input: Vec<f32> = (0..channels * time)
+            .map(|index| index as f32 * 0.07 - 0.3)
+            .collect();
+        let weight = vec![0.2, -0.4, 0.7, -0.1, 0.5, 0.3];
+        let bias = vec![0.05, -0.2];
+        let reference = conv1d_scalar(
+            &input,
+            channels,
+            time,
+            &weight,
+            channels,
+            kernel,
+            Some(&bias),
+            padding,
+            dilation,
+            channels,
+        );
+        let actual = conv1d_with_compute(
+            &Compute::cpu(),
+            &input,
+            channels,
+            time,
+            &weight,
+            channels,
+            kernel,
+            Some(&bias),
+            padding,
+            dilation,
+            channels,
+        )
+        .unwrap();
+        for (index, (actual, reference)) in actual.iter().zip(&reference).enumerate() {
+            assert!(
+                (actual - reference).abs() <= 1e-6,
+                "dilated depthwise mismatch at {index}: actual={actual}, reference={reference}"
+            );
+        }
+    }
+
+    #[test]
     fn element_wise_affine_reverse_matches_hand_computed() {
         // m = [1.0, -2.0], logs = [ln 2, 0.0].
         // reverse: z0 = (x0 - 1.0) * exp(-ln 2) = (x0 - 1.0) / 2
@@ -1289,6 +1705,20 @@ mod tests {
         let mut rng = GaussianSplitMix64::new(0);
         let out = sdp.sample(&hidden, 3, &g, &mut rng, 0.0);
         assert_eq!(out, vec![1_i32; 3]);
+    }
+
+    #[test]
+    fn sdp_compute_path_matches_scalar_empty_reference() {
+        let sdp = SbV2SDP::empty(4, 4);
+        let hidden = vec![0.5; 3 * 4];
+        let global = vec![0.7; 4];
+        let mut reference_rng = GaussianSplitMix64::new(17);
+        let mut compute_rng = GaussianSplitMix64::new(17);
+        let reference = sdp.sample(&hidden, 3, &global, &mut reference_rng, 0.6);
+        let actual = sdp
+            .sample_with_compute(&Compute::cpu(), &hidden, 3, &global, &mut compute_rng, 0.6)
+            .unwrap();
+        assert_eq!(actual, reference);
     }
 
     #[test]

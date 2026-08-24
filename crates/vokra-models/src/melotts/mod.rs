@@ -11,8 +11,12 @@ use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, require_tensor_shape};
 
+mod duration;
+mod flow;
 mod text_encoder;
 
+pub use duration::{MELOTTS_DURATION_HOT_OPS, MeloDurationModel};
+pub use flow::{MELOTTS_FLOW_HOT_OPS, MeloFlowModel};
 pub use text_encoder::{MELOTTS_TEXT_HOT_OPS, MeloTextEncoder, MeloTextFeatures, MeloTextOutput};
 
 const LABEL: &str = "melotts";
@@ -399,6 +403,16 @@ impl MeloTtsCheckpoint {
     pub fn load_text_encoder(&self, file: &GgufFile) -> Result<MeloTextEncoder> {
         MeloTextEncoder::from_gguf(file, self.config)
     }
+
+    /// Decodes the stochastic and deterministic duration predictors.
+    pub fn load_duration_model(&self, file: &GgufFile) -> Result<MeloDurationModel> {
+        MeloDurationModel::from_gguf(file)
+    }
+
+    /// Decodes the four VITS2 Transformer coupling-flow blocks.
+    pub fn load_flow_model(&self, file: &GgufFile) -> Result<MeloFlowModel> {
+        MeloFlowModel::from_gguf(file)
+    }
 }
 
 fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
@@ -441,6 +455,7 @@ mod tests {
     use super::*;
 
     use vokra_core::backend::BackendKind;
+    use vokra_core::rng::GaussianSplitMix64;
 
     #[test]
     fn official_variant_axes_match_released_tensor_tables() {
@@ -485,7 +500,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires VOKRA_MELOTTS_GGUF pointing to a released full GGUF"]
-    fn released_gguf_binds_loads_and_runs_text_encoder() {
+    fn released_gguf_binds_loads_and_runs_native_core() {
         let path = std::env::var("VOKRA_MELOTTS_GGUF").expect("VOKRA_MELOTTS_GGUF");
         let file = GgufFile::open(path).expect("open released MeloTTS GGUF");
         let checkpoint = MeloTtsCheckpoint::from_gguf(&file).expect("strict bind");
@@ -514,5 +529,34 @@ mod tests {
         assert!(output.hidden.iter().all(|value| value.is_finite()));
         assert!(output.mean.iter().all(|value| value.is_finite()));
         assert!(output.log_scale.iter().all(|value| value.is_finite()));
+
+        let duration = checkpoint
+            .load_duration_model(&file)
+            .expect("load duration tensors");
+        let mut rng = GaussianSplitMix64::new(17);
+        let durations = duration
+            .predict(
+                &output.hidden,
+                output.sequence_len,
+                &output.speaker_conditioning,
+                0.0,
+                0.0,
+                1.0,
+                &mut rng,
+                BackendKind::Cpu,
+            )
+            .expect("real deterministic duration forward");
+        assert_eq!(durations.len(), output.sequence_len);
+        assert!(durations.iter().all(|duration| *duration > 0));
+
+        let flow = checkpoint
+            .load_flow_model(&file)
+            .expect("load flow tensors");
+        let latent = vec![0.0; INTER_CHANNELS as usize];
+        let decoder_latent = flow
+            .inverse(&latent, 1, &output.speaker_conditioning, BackendKind::Cpu)
+            .expect("real latent flow forward");
+        assert_eq!(decoder_latent.len(), INTER_CHANNELS as usize);
+        assert!(decoder_latent.iter().all(|value| value.is_finite()));
     }
 }
