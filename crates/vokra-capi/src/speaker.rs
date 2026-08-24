@@ -955,12 +955,8 @@ mod tests {
             eprintln!("skipping TitaNet Metal e2e: set VOKRA_TITANET_GGUF to run");
             return;
         };
-        assert!(
-            crate::options::vokra_backend_available(
-                crate::options::vokra_backend_t::VOKRA_BACKEND_METAL as i32
-            ),
-            "a Metal-featured Apple test host must expose a Metal device"
-        );
+        vokra_models::make_backend(vokra_core::BackendKind::Metal)
+            .unwrap_or_else(|error| panic!("failed to create the Apple Metal backend: {error}"));
 
         let pcm = reference_pcm();
         let cpu = vokra_models::titanet::TitaNet::from_path(&model)
@@ -1040,10 +1036,13 @@ mod tests {
         eprintln!(
             "TitaNet Metal vs CPU: max_abs={max_abs:.9e} relative_l1={relative_l1:.9e} cosine={cosine:.9}"
         );
-        assert!(max_abs <= 0.01, "Metal/CPU max_abs {max_abs} exceeds 0.01");
         assert!(
-            relative_l1 <= 1.0e-3,
-            "Metal/CPU relative_l1 {relative_l1} exceeds 1e-3"
+            max_abs <= 1.0e-4,
+            "Metal/CPU max_abs {max_abs} exceeds 1e-4"
+        );
+        assert!(
+            relative_l1 <= 1.0e-4,
+            "Metal/CPU relative_l1 {relative_l1} exceeds 1e-4"
         );
         assert!(cosine >= 0.99999, "Metal/CPU cosine {cosine} is too low");
 

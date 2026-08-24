@@ -314,6 +314,21 @@ the changed NeMo 3 STFT padding/sequence-length defaults. VAST measured:
 | 80-bin frontend | `1.907348633e-5` | `3.124698196e-6` | `1.000000119` |
 | 192-d embedding / end-to-end | `7.338821888e-7` | `8.251741747e-6` | `1.000000119` |
 
+VAST instance `48569784` also passed the focused model-library, converter,
+CLI, C-ABI and selected-backend tests, followed by
+`cargo test --workspace --quiet` and
+`cargo clippy --workspace --all-targets -- -D warnings` with zero code
+failures. It was destroyed after verification.
+
+The feature-gated real-file test was then run on the maintainer Apple host
+against the public GGUF. The Codex sandbox correctly surfaced that it could
+not see a system Metal device; the exact same test outside that sandbox ran
+the complete graph on Metal and passed against CPU with max-abs
+`2.803280950e-7`, relative L1 `3.596126135e-6` and cosine `1.000000000`.
+The committed Apple gate requires max-abs and relative L1 at most `1e-4` and
+cosine at least `0.99999`. Because the two public GGUFs are byte-identical,
+that one real-file result applies to both audited revisions.
+
 The strict converter rejects missing, extra or shape-incompatible tensors,
 pins both checkpoint and NeMo source revisions, and refuses a licence override
 that contradicts the audited CC-BY-4.0 weights. Rust, CLI and the existing
@@ -793,7 +808,7 @@ record (`instances: null`).
 
 ## Remaining execution order
 
-1. Make all 77 no-binder repositories CPU-runnable, family by family, with a
+1. Make all 75 no-binder repositories CPU-runnable, family by family, with a
    strict loader and independent upstream reference.
 2. Finish the 51 partial CPU forwards; do not mark a converter, synthesized
    bridge, or tensor probe as runtime completion.
