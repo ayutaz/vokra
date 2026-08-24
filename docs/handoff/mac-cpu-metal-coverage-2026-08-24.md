@@ -1020,12 +1020,52 @@ to `/private/tmp/vokra-vast-48600202-results`; the complete archive SHA-256 is
 Instance `48600202` was destroyed, and the inventory again returned only the
 unrelated `tiny-s2s-m2-{judge,generator}` instances with no Vokra label.
 
-This is still not a full MeloTTS release-completion claim. The low-level
-feature-to-PCM CPU path is now complete, and all learned decoder convolutions
-share the explicit CPU/Metal backend seam. Language-specific raw-text/G2P/BERT
-sidecars, the independent upstream numerical fixture, and the Apple-hardware
-Metal comparison remain open. The five releases stay partial until those
-gates close; Linux VAST cannot execute the Metal leg.
+Disposable instance `48602407` generated an independent MeloTTS English
+reference from MyShell source commit
+`209145371cff8fc3bd60d7be902ea69cbdb7965a` and the fixed upstream checkpoint
+revision `bb4fb7346d566d277ba8c8c7dbfdf6786139b8ef`, then compared it with Vokra's
+fixed public GGUF revision `41fc375b3677373e2141ba5b80cd072581ee4308`
+(GGUF SHA-256
+`1196312e86d8e9ba553f505d8cbc151cf6a53c56d0c91dd1c1989c26e2567ee4`).
+The fixture covers speaker conditioning, both BERT feature planes, text
+encoder taps, deterministic log-duration and exact integer durations, length
+regulation, inverse flow, decoder PCM, and the integrated acoustic path. The
+official checkpoint and config SHA-256 values are respectively
+`acd278040eaf9536908e2b965273df5a731c44d8f0da66cc5fed7972772ed23c`
+and `039116c927c70eaa4458d315ea83aaaa99e1fca1c621b50c8ca56b4a5700eb77`.
+
+The first independent run exposed a real graph mismatch: the shared SBV2
+coupling flow injected projected speaker conditioning before the transformer
+stack, while released MeloTTS injects it immediately before block two through
+`Encoder.cond_layer_idx = 2`. After making that position a model-private
+override, maximum absolute errors were `7.23e-7` for encoder hidden state,
+`1.31e-6` for the prior mean, `5.96e-7` for prior log-scale, `1.19e-6` for
+deterministic log-duration, `1.91e-6` for inverse-flow latent, `4.27e-7` for
+decoder PCM, and `6.65e-7` for integrated PCM. All remain far below the
+unchanged FP32 gate `atol = 0.01`; exact integer durations and expanded tensors
+also matched.
+
+At commit `4e193622`, package Clippy with warnings denied, format, the real
+official parity test, and the complete `vokra-models` package test all exited
+zero. The library summary was `2,541 passed; 0 failed; 6 ignored`. Final logs
+were pulled to `/private/tmp/vokra-melotts-evidence-4e193622.tar.gz`; local and
+remote archive SHA-256 both equal
+`2706576bf676f9b1ac6d5a98c345f745af3208875378fde9e1a96135443adcb8`.
+The independently generated fixture archive was also pulled to
+`/private/tmp/melotts-fixture-6565903c.tar.gz` and verified at SHA-256
+`047b5ed7f34dfbd046a95d3b071b4ec36b3a30ad8b0e32b4a3390351369a51ad`.
+Instance `48602407` was destroyed after those checks. The Vast inventory then
+contained only the unrelated `tiny-s2s-m2-{judge,generator}` instances: no
+Vokra-labelled instance remains stopped or running.
+
+This is still not a full five-release MeloTTS completion claim. The English
+low-level feature-to-PCM CPU path now has an independent official numerical
+gate, and all learned decoder convolutions share the explicit CPU/Metal
+backend seam. The five language-specific raw-text/G2P/BERT frontends and the
+Apple-hardware Metal comparison remain open. The four sibling releases share
+the acoustic topology, but each public file still needs its own real-artifact
+verdict before it can inherit the English result; Linux VAST cannot execute
+the Metal leg.
 
 ## Remaining execution order
 

@@ -300,7 +300,7 @@ impl SbV2TransformerCouplingLayer {
     /// This override exists for compatible VITS2 variants such as MeloTTS,
     /// whose released graph injects at `cond_layer_idx = 2`.
     #[must_use]
-    pub fn with_conditioning_layer(mut self, layer: usize) -> Self {
+    pub(crate) fn with_conditioning_layer(mut self, layer: usize) -> Self {
         debug_assert!(
             layer < self.encoder_stack.len() && layer < usize::from(PRE_STACK_CONDITIONING),
             "conditioning layer {layer} is outside a {}-block encoder stack",
