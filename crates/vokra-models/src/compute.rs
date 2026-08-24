@@ -2082,11 +2082,11 @@ impl Compute {
         }
     }
 
-    /// SNAC 3-stage hierarchical residual VQ codec decode — the Vocoder
+    /// SNAC 3/4-stage hierarchical residual VQ codec decode — the Vocoder
     /// wave WF5 op wired into the imperative `Compute` seam (upstream
     /// `hubertsiuzdak/snac`, MIT / Apache-2.0).
     ///
-    /// Given `[3]` per-stage `codes` vectors of `u32` codebook indices, the
+    /// Given one per-stage `codes` vector of `u32` codebook indices, the
     /// SNAC [`SnacConfig`] (holds per-stage temporal strides) and the
     /// [`SnacWeights`] bundle (3 factorized [`CodebookTable`]s and 3
     /// [`DacOutProj`]s), returns a fresh `[t_expanded × d_model]` row-major
@@ -2136,10 +2136,10 @@ impl Compute {
     ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
     pub fn snac_decode_f32(
         &self,
-        codes: &[Vec<u32>; 3],
+        codes: &[Vec<u32>],
         config: SnacConfig,
-        codebooks: &[CodebookTable; 3],
-        out_projs: &[DacOutProj; 3],
+        codebooks: &[CodebookTable],
+        out_projs: &[DacOutProj],
     ) -> Result<Vec<f32>> {
         match &self.be {
             Be::Cpu => {
@@ -2149,16 +2149,8 @@ impl Compute {
                 // algorithmic changes. Chunk-granularity so building the
                 // decoder per call is negligible next to the FP32 fold.
                 let weights = SnacWeights {
-                    codebooks: [
-                        codebooks[0].clone(),
-                        codebooks[1].clone(),
-                        codebooks[2].clone(),
-                    ],
-                    out_projs: [
-                        out_projs[0].clone(),
-                        out_projs[1].clone(),
-                        out_projs[2].clone(),
-                    ],
+                    codebooks: codebooks.to_vec(),
+                    out_projs: out_projs.to_vec(),
                 };
                 let decoder = SnacDecoder::new(config, weights)?;
                 decoder.decode(codes)
@@ -2173,8 +2165,28 @@ impl Compute {
                 // `vokra_ops::snac_decode::SnacDecoder::new` /
                 // `SnacDecoder::decode` (FR-EX-08 — never a silent GPU OOB or
                 // CPU fall back).
+                if !(1..=vokra_ops::MAX_SNAC_STAGES).contains(&config.n_stages) {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "snac_decode_f32 metal: config.n_stages {} is outside 1..={}",
+                        config.n_stages,
+                        vokra_ops::MAX_SNAC_STAGES
+                    )));
+                }
+                if codes.len() != config.n_stages
+                    || codebooks.len() != config.n_stages
+                    || out_projs.len() != config.n_stages
+                {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "snac_decode_f32 metal: n_stages={} but codes.len()={}, \
+                         codebooks.len()={}, out_projs.len()={} (one entry per stage required)",
+                        config.n_stages,
+                        codes.len(),
+                        codebooks.len(),
+                        out_projs.len()
+                    )));
+                }
                 let strides = config.vq_strides;
-                for (s, &stride) in strides.iter().enumerate() {
+                for (s, &stride) in strides[..config.n_stages].iter().enumerate() {
                     if stride == 0 {
                         return Err(VokraError::InvalidArgument(format!(
                             "snac_decode_f32 metal: config.vq_strides[{s}] = 0 (stride 0 would \
@@ -2265,7 +2277,7 @@ impl Compute {
                 // next to the GPU dispatch (matches the heap-returning shape).
                 let total_codes: usize = codes.iter().map(std::vec::Vec::len).sum();
                 let mut codes_flat: Vec<u32> = Vec::with_capacity(total_codes);
-                let mut stage_offsets: [u32; 3] = [0, 0, 0];
+                let mut stage_offsets: [u32; 4] = [0, 0, 0, 0];
                 let mut running: usize = 0;
                 for (s, stage_codes) in codes.iter().enumerate() {
                     stage_offsets[s] = u32::try_from(running).map_err(|_| {
@@ -2281,13 +2293,13 @@ impl Compute {
                     })?;
                 }
                 let mut codebooks_flat: Vec<f32> =
-                    Vec::with_capacity(3 * codebook_size * codebook_dim);
+                    Vec::with_capacity(config.n_stages * codebook_size * codebook_dim);
                 for cb in codebooks {
                     codebooks_flat.extend_from_slice(&cb.data);
                 }
                 let mut proj_weights_flat: Vec<f32> =
-                    Vec::with_capacity(3 * d_model * codebook_dim);
-                let mut proj_biases_flat: Vec<f32> = Vec::with_capacity(3 * d_model);
+                    Vec::with_capacity(config.n_stages * d_model * codebook_dim);
+                let mut proj_biases_flat: Vec<f32> = Vec::with_capacity(config.n_stages * d_model);
                 for p in out_projs {
                     proj_weights_flat.extend_from_slice(&p.weight);
                     proj_biases_flat.extend_from_slice(&p.bias);
@@ -2296,6 +2308,7 @@ impl Compute {
                     &codes_flat,
                     stage_offsets,
                     strides,
+                    config.n_stages,
                     &codebooks_flat,
                     &proj_weights_flat,
                     &proj_biases_flat,

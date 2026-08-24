@@ -573,7 +573,7 @@ pub use rnnoise::{
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
-pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+pub use snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 // ---- Vocoder Metal wave WF2 snake activation re-exports (2026-08-13) ----
 pub use snake::snake_activation_f32;

@@ -1,4 +1,4 @@
-//! SNAC (Multi-Scale Neural Audio Codec) 3-stage residual VQ decode
+//! SNAC (Multi-Scale Neural Audio Codec) 3/4-stage residual VQ decode
 //! (SoTA plan Phase 3 TTS primitive; FR-OP-30 RVQ family).
 //!
 //! # Op contract
@@ -80,7 +80,13 @@ use crate::mimi_rvq::CodebookTable;
 // Config
 // ---------------------------------------------------------------------------
 
-/// Static configuration for a SNAC 3-stage RVQ decode.
+/// Maximum number of hierarchical RVQ stages in the published SNAC family.
+/// The 24 kHz checkpoint uses three stages and the 44.1 kHz checkpoint uses
+/// four. Keeping this bound explicit lets the Metal ABI stay fixed-size while
+/// the public op accepts either released topology.
+pub const MAX_SNAC_STAGES: usize = 4;
+
+/// Static configuration for a SNAC hierarchical RVQ decode.
 ///
 /// The task-level API deliberately keeps this struct minimal — the sample
 /// rate and per-stage strides are the only two fields the consumer (Orpheus,
@@ -94,7 +100,10 @@ pub struct SnacConfig {
     /// Per-stage temporal strides. Every stage `i` runs at
     /// `base_frame_rate / vq_strides[i]`; SNAC 24 kHz = `[4, 2, 1]` gives the
     /// canonical ~12 / 23 / 47 Hz per-stage code rate (module docs).
-    pub vq_strides: [u32; 3],
+    pub vq_strides: [u32; MAX_SNAC_STAGES],
+    /// Number of active entries in [`Self::vq_strides`]. Published SNAC
+    /// checkpoints use 3 (24 kHz) or 4 (44.1 kHz).
+    pub n_stages: usize,
 }
 
 impl SnacConfig {
@@ -108,8 +117,29 @@ impl SnacConfig {
     pub const fn snac_24khz() -> Self {
         Self {
             sample_rate: 24000,
-            vq_strides: [4, 2, 1],
+            vq_strides: [4, 2, 1, 0],
+            n_stages: 3,
         }
+    }
+
+    /// Canonical SNAC 44.1 kHz variant: four hierarchical stages with
+    /// `vq_strides = [8, 4, 2, 1]`.
+    #[inline]
+    #[must_use]
+    pub const fn snac_44khz() -> Self {
+        Self {
+            sample_rate: 44_100,
+            vq_strides: [8, 4, 2, 1],
+            n_stages: 4,
+        }
+    }
+
+    /// Active per-stage strides. Construction validation guarantees this
+    /// slice is non-empty and contains no zero stride.
+    #[inline]
+    #[must_use]
+    pub fn active_vq_strides(&self) -> &[u32] {
+        &self.vq_strides[..self.n_stages]
     }
 }
 
@@ -117,7 +147,7 @@ impl SnacConfig {
 // Weights bundle
 // ---------------------------------------------------------------------------
 
-/// The three factorized codebook tables + three `out_proj`s that feed a SNAC
+/// The factorized codebook tables + `out_proj`s that feed a SNAC
 /// decode.
 ///
 /// Both the [`CodebookTable`] (from `mimi_rvq`) and [`DacOutProj`] (from
@@ -134,17 +164,17 @@ impl SnacConfig {
 #[derive(Debug, Clone)]
 pub struct SnacWeights {
     /// Per-stage factorized `[codebook_size, codebook_dim]` codebooks.
-    pub codebooks: [CodebookTable; 3],
+    pub codebooks: Vec<CodebookTable>,
     /// Per-stage `out_proj` (`codebook_dim → d_model`) with weight-norm
     /// **already folded offline** by the model converter.
-    pub out_projs: [DacOutProj; 3],
+    pub out_projs: Vec<DacOutProj>,
 }
 
 // ---------------------------------------------------------------------------
 // Decoder
 // ---------------------------------------------------------------------------
 
-/// Host-side SNAC 3-stage RVQ decoder — owns its codebooks + folded
+/// Host-side SNAC hierarchical RVQ decoder — owns its codebooks + folded
 /// `out_proj`s, exposes the tight `decode(&codes)` mouth the Orpheus / Maya1
 /// model wrappers consume.
 ///
@@ -176,7 +206,23 @@ impl SnacDecoder {
     /// [`VokraError::InvalidArgument`] on any of the above axis / shape /
     /// stride violations.
     pub fn new(config: SnacConfig, weights: SnacWeights) -> Result<Self> {
-        for (i, s) in config.vq_strides.iter().enumerate() {
+        if !(1..=MAX_SNAC_STAGES).contains(&config.n_stages) {
+            return Err(VokraError::InvalidArgument(format!(
+                "SnacDecoder::new: n_stages {} is outside 1..={MAX_SNAC_STAGES}",
+                config.n_stages
+            )));
+        }
+        if weights.codebooks.len() != config.n_stages || weights.out_projs.len() != config.n_stages
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "SnacDecoder::new: config.n_stages={} but codebooks.len()={} and \
+                 out_projs.len()={} (one table and projection are required per stage)",
+                config.n_stages,
+                weights.codebooks.len(),
+                weights.out_projs.len()
+            )));
+        }
+        for (i, s) in config.active_vq_strides().iter().enumerate() {
             if *s == 0 {
                 return Err(VokraError::InvalidArgument(format!(
                     "SnacDecoder::new: vq_strides[{i}] must be > 0, got 0 \
@@ -257,7 +303,7 @@ impl SnacDecoder {
         self.codebook_dim
     }
 
-    /// Decodes the three per-stage code vectors into a `[T, d_model]`
+    /// Decodes the per-stage code vectors into a `[T, d_model]`
     /// row-major FP32 feature buffer, where
     /// `T = codes[i].len() * vq_strides[i]` (the same for every `i`).
     ///
@@ -280,8 +326,15 @@ impl SnacDecoder {
     ///   (`codes[i].len() * vq_strides[i]` differs across stages);
     /// - `codes[i].len() * vq_strides[i]` overflows `usize`;
     /// - `codes[i][t] >= codebook_size` (no silent clamp — FR-EX-08).
-    pub fn decode(&self, codes: &[Vec<u32>; 3]) -> Result<Vec<f32>> {
-        let strides = self.config.vq_strides;
+    pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
+        if codes.len() != self.config.n_stages {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode: codes.len() {} != n_stages {}",
+                codes.len(),
+                self.config.n_stages
+            )));
+        }
+        let strides = self.config.active_vq_strides();
 
         // Every stage must expand to the same base T; compute it once.
         let t_expanded = self.check_and_measure(codes, strides)?;
@@ -337,7 +390,7 @@ impl SnacDecoder {
 
     /// Validates cross-stage length alignment and returns the common `T`.
     /// `T = codes[i].len() * vq_strides[i]` must be equal for every stage.
-    fn check_and_measure(&self, codes: &[Vec<u32>; 3], strides: [u32; 3]) -> Result<usize> {
+    fn check_and_measure(&self, codes: &[Vec<u32>], strides: &[u32]) -> Result<usize> {
         let mut common: Option<usize> = None;
         for (i, stage_codes) in codes.iter().enumerate() {
             let t_i = stage_codes.len();
@@ -409,8 +462,20 @@ mod tests {
 
     fn make_weights() -> SnacWeights {
         SnacWeights {
-            codebooks: [make_codebook(0), make_codebook(1), make_codebook(2)],
-            out_projs: [make_proj(0), make_proj(1), make_proj(2)],
+            codebooks: vec![make_codebook(0), make_codebook(1), make_codebook(2)],
+            out_projs: vec![make_proj(0), make_proj(1), make_proj(2)],
+        }
+    }
+
+    fn make_weights_4() -> SnacWeights {
+        SnacWeights {
+            codebooks: vec![
+                make_codebook(0),
+                make_codebook(1),
+                make_codebook(2),
+                make_codebook(3),
+            ],
+            out_projs: vec![make_proj(0), make_proj(1), make_proj(2), make_proj(3)],
         }
     }
 
@@ -418,7 +483,8 @@ mod tests {
         // Non-canonical strides — [4, 2, 1] is the SNAC 24 kHz shape.
         SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [4, 2, 1],
+            vq_strides: [4, 2, 1, 0],
+            n_stages: 3,
         }
     }
 
@@ -428,7 +494,12 @@ mod tests {
     fn snac_config_canonical_matches_hubertsiuzdak_24khz_defaults() {
         let c = SnacConfig::snac_24khz();
         assert_eq!(c.sample_rate, 24_000);
-        assert_eq!(c.vq_strides, [4, 2, 1]);
+        assert_eq!(c.active_vq_strides(), [4, 2, 1]);
+        assert_eq!(c.n_stages, 3);
+        let c44 = SnacConfig::snac_44khz();
+        assert_eq!(c44.sample_rate, 44_100);
+        assert_eq!(c44.active_vq_strides(), [8, 4, 2, 1]);
+        assert_eq!(c44.n_stages, 4);
     }
 
     // ---- Constructor validation ------------------------------------------
@@ -439,7 +510,7 @@ mod tests {
         assert_eq!(d.codebook_size(), CB_SIZE);
         assert_eq!(d.codebook_dim(), CB_DIM);
         assert_eq!(d.d_model(), D_MODEL);
-        assert_eq!(d.config().vq_strides, [4, 2, 1]);
+        assert_eq!(d.config().active_vq_strides(), [4, 2, 1]);
     }
 
     #[test]
@@ -458,8 +529,8 @@ mod tests {
         let odd =
             CodebookTable::new(CB_SIZE + 1, CB_DIM, vec![0.0; (CB_SIZE + 1) * CB_DIM]).unwrap();
         let weights = SnacWeights {
-            codebooks: [make_codebook(0), odd, make_codebook(2)],
-            out_projs: [make_proj(0), make_proj(1), make_proj(2)],
+            codebooks: vec![make_codebook(0), odd, make_codebook(2)],
+            out_projs: vec![make_proj(0), make_proj(1), make_proj(2)],
         };
         assert!(matches!(
             SnacDecoder::new(tiny_config(), weights),
@@ -473,8 +544,8 @@ mod tests {
         let wide =
             CodebookTable::new(CB_SIZE, CB_DIM + 1, vec![0.0; CB_SIZE * (CB_DIM + 1)]).unwrap();
         let weights = SnacWeights {
-            codebooks: [make_codebook(0), make_codebook(1), wide],
-            out_projs: [make_proj(0), make_proj(1), make_proj(2)],
+            codebooks: vec![make_codebook(0), make_codebook(1), wide],
+            out_projs: vec![make_proj(0), make_proj(1), make_proj(2)],
         };
         assert!(matches!(
             SnacDecoder::new(tiny_config(), weights),
@@ -493,8 +564,8 @@ mod tests {
         )
         .unwrap();
         let weights = SnacWeights {
-            codebooks: [make_codebook(0), make_codebook(1), make_codebook(2)],
-            out_projs: [make_proj(0), make_proj(1), wide],
+            codebooks: vec![make_codebook(0), make_codebook(1), make_codebook(2)],
+            out_projs: vec![make_proj(0), make_proj(1), wide],
         };
         assert!(matches!(
             SnacDecoder::new(tiny_config(), weights),
@@ -514,8 +585,8 @@ mod tests {
         )
         .unwrap();
         let weights = SnacWeights {
-            codebooks: [make_codebook(0), make_codebook(1), make_codebook(2)],
-            out_projs: [wrong, make_proj(1), make_proj(2)],
+            codebooks: vec![make_codebook(0), make_codebook(1), make_codebook(2)],
+            out_projs: vec![wrong, make_proj(1), make_proj(2)],
         };
         assert!(matches!(
             SnacDecoder::new(tiny_config(), weights),
@@ -583,7 +654,8 @@ mod tests {
         // multiple timesteps.
         let cfg = SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [1, 1, 1],
+            vq_strides: [1, 1, 1, 0],
+            n_stages: 3,
         };
         let d = SnacDecoder::new(cfg, make_weights()).unwrap();
         let codes: [Vec<u32>; 3] = [vec![0, 1, 2, 3], vec![3, 2, 1, 0], vec![1, 3, 0, 2]];
@@ -625,12 +697,13 @@ mod tests {
         .unwrap();
 
         let weights = SnacWeights {
-            codebooks: [cb.clone(), cb.clone(), cb.clone()],
-            out_projs: [proj.clone(), proj.clone(), proj.clone()],
+            codebooks: vec![cb.clone(), cb.clone(), cb.clone()],
+            out_projs: vec![proj.clone(), proj.clone(), proj.clone()],
         };
         let cfg = SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [1, 1, 1],
+            vq_strides: [1, 1, 1, 0],
+            n_stages: 3,
         };
         let d = SnacDecoder::new(cfg, weights).unwrap();
 
@@ -659,12 +732,13 @@ mod tests {
         let zero_proj = DacOutProj::new(3, 2, vec![0.0; 6], vec![0.0; 3]).unwrap();
 
         let weights = SnacWeights {
-            codebooks: [cb, zero_cb.clone(), zero_cb],
-            out_projs: [proj, zero_proj.clone(), zero_proj],
+            codebooks: vec![cb, zero_cb.clone(), zero_cb],
+            out_projs: vec![proj, zero_proj.clone(), zero_proj],
         };
         let cfg = SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [4, 2, 1],
+            vq_strides: [4, 2, 1, 0],
+            n_stages: 3,
         };
         let d = SnacDecoder::new(cfg, weights).unwrap();
 
@@ -804,5 +878,38 @@ mod tests {
         assert_eq!(out.len(), 4 * D_MODEL);
         // Values are finite (no NaN / Inf leaks from the fold).
         assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn snac_44khz_four_stage_decode_matches_hand_fold() {
+        let d = SnacDecoder::new(SnacConfig::snac_44khz(), make_weights_4()).unwrap();
+        let codes = [
+            vec![1],
+            vec![2, 3],
+            vec![0, 1, 2, 3],
+            vec![3, 2, 1, 0, 1, 2, 3, 0],
+        ];
+        let got = d.decode(&codes).unwrap();
+        assert_eq!(got.len(), 8 * D_MODEL);
+
+        let mut want = vec![0.0_f32; 8 * D_MODEL];
+        for stage in 0..4 {
+            let stride = d.config().active_vq_strides()[stage] as usize;
+            let cb = &d.weights.codebooks[stage];
+            let proj = &d.weights.out_projs[stage];
+            for (t_stage, &idx) in codes[stage].iter().enumerate() {
+                let low = cb.row(idx).unwrap();
+                for t in t_stage * stride..(t_stage + 1) * stride {
+                    for o in 0..D_MODEL {
+                        let mut y = proj.bias[o];
+                        for c in 0..CB_DIM {
+                            y += proj.weight[o * CB_DIM + c] * low[c];
+                        }
+                        want[t * D_MODEL + o] += y;
+                    }
+                }
+            }
+        }
+        assert_eq!(got, want);
     }
 }

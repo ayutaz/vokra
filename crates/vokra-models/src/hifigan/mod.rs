@@ -211,6 +211,24 @@ impl HifiGanBackendOps for HifiGanComputeOps<'_> {
         stride: usize,
         padding: usize,
     ) -> Result<Vec<f32>> {
+        self.conv_transpose1d_with_output_padding(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, 0,
+        )
+    }
+
+    fn conv_transpose1d_with_output_padding(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<Vec<f32>> {
         if stride == 0 || in_len == 0 || kernel == 0 || padding >= kernel {
             return Err(VokraError::InvalidArgument(
                 "HiFi-GAN backend ConvTranspose1D has invalid stride/input/kernel/padding"
@@ -222,7 +240,21 @@ impl HifiGanBackendOps for HifiGanComputeOps<'_> {
                 "HiFi-GAN backend ConvTranspose1D input or weight shape mismatch".to_owned(),
             ));
         }
-        let expanded_len = (in_len - 1) * stride + 1;
+        if output_padding >= stride {
+            return Err(VokraError::InvalidArgument(format!(
+                "HiFi-GAN backend ConvTranspose1D output_padding {output_padding} must be < \
+                 stride {stride}"
+            )));
+        }
+        let expanded_len = (in_len - 1)
+            .checked_mul(stride)
+            .and_then(|v| v.checked_add(1))
+            .and_then(|v| v.checked_add(output_padding))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "HiFi-GAN backend ConvTranspose1D expanded length overflow".to_owned(),
+                )
+            })?;
         let mut expanded_input = vec![0.0; in_ch * expanded_len];
         for channel in 0..in_ch {
             for time in 0..in_len {

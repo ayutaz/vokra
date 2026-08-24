@@ -788,6 +788,36 @@ pub trait HifiGanBackendOps {
         stride: usize,
         padding: usize,
     ) -> Result<Vec<f32>>;
+
+    /// PyTorch-layout ConvTranspose1D with explicit `output_padding`.
+    /// Existing backends retain their old contract through the default arm;
+    /// a non-zero value must be implemented explicitly and never falls back
+    /// to a different device or silently changes the output extent.
+    #[allow(clippy::too_many_arguments)]
+    fn conv_transpose1d_with_output_padding(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<Vec<f32>> {
+        if output_padding == 0 {
+            self.conv_transpose1d(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding,
+            )
+        } else {
+            Err(VokraError::UnsupportedOp(format!(
+                "ConvTranspose1D output_padding={output_padding} is not implemented by this \
+                 backend (no silent fallback)"
+            )))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -856,6 +886,33 @@ impl HifiGanBackendOps for ScalarHifiGanBackendOps {
     ) -> Result<Vec<f32>> {
         transposed_conv1d_scalar(
             input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding,
+        )
+    }
+
+    fn conv_transpose1d_with_output_padding(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<Vec<f32>> {
+        transposed_conv1d_scalar_with_output_padding(
+            input,
+            in_ch,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            output_padding,
         )
     }
 }
@@ -1375,6 +1432,24 @@ fn transposed_conv1d_scalar(
     stride: usize,
     padding: usize,
 ) -> Result<Vec<f32>> {
+    transposed_conv1d_scalar_with_output_padding(
+        input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, 0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+fn transposed_conv1d_scalar_with_output_padding(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+) -> Result<Vec<f32>> {
     if stride == 0 {
         return Err(VokraError::InvalidArgument(
             "transposed_conv1d: stride must be >= 1".to_owned(),
@@ -1384,6 +1459,16 @@ fn transposed_conv1d_scalar(
         return Err(VokraError::InvalidArgument(
             "transposed_conv1d: kernel must be >= 1".to_owned(),
         ));
+    }
+    if in_len == 0 {
+        return Err(VokraError::InvalidArgument(
+            "transposed_conv1d: in_len must be >= 1".to_owned(),
+        ));
+    }
+    if output_padding >= stride {
+        return Err(VokraError::InvalidArgument(format!(
+            "transposed_conv1d: output_padding {output_padding} must be < stride {stride}"
+        )));
     }
     if input.len() != in_ch * in_len {
         return Err(VokraError::InvalidArgument(format!(
@@ -1408,7 +1493,15 @@ fn transposed_conv1d_scalar(
             out_ch
         )));
     }
-    let full_out = (in_len - 1) * stride + kernel;
+    let full_out = (in_len - 1)
+        .checked_mul(stride)
+        .and_then(|v| v.checked_add(kernel))
+        .and_then(|v| v.checked_add(output_padding))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "transposed_conv1d: output length arithmetic overflow".to_owned(),
+            )
+        })?;
     if full_out < 2 * padding {
         return Err(VokraError::InvalidArgument(format!(
             "transposed_conv1d: 2*padding {} exceeds naive output {full_out}",
@@ -1910,6 +2003,36 @@ fn validate_weights(w: &HifiGanWeights, attrs: &HifiGanAttrs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conv_transpose_output_padding_extends_and_computes_tail() {
+        // PyTorch shape: (2-1)*3 - 2*2 + (4-1) + 1 + 1 = 4.
+        // The extra tail is a real convolution value (2*weight[2] = 6),
+        // not a zero-filled placeholder.
+        let got = ScalarHifiGanBackendOps
+            .conv_transpose1d_with_output_padding(
+                &[1.0, 2.0],
+                1,
+                2,
+                &[1.0, 2.0, 3.0, 4.0],
+                1,
+                4,
+                None,
+                3,
+                2,
+                1,
+            )
+            .unwrap();
+        assert_eq!(got, [3.0, 6.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn conv_transpose_rejects_output_padding_not_less_than_stride() {
+        let err = ScalarHifiGanBackendOps
+            .conv_transpose1d_with_output_padding(&[1.0], 1, 1, &[1.0, 2.0], 1, 2, None, 2, 0, 2)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
 
     /// Tiny attrs shape used across tests — big enough to exercise the
     /// upsample stack + MRF branch average, small enough to reason about.

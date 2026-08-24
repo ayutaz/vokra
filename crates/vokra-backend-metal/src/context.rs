@@ -1059,7 +1059,7 @@ kernel void vokra_xcodec2_fsq_decode_f32(
 // upstream `ResidualVectorQuantize.from_codes` algorithm, `hubertsiuzdak/snac
 // /blob/main/snac/vq.py` L61-71):
 //
-//     For each stage s in 0..3:
+//     For each active stage s:
 //       z_p_s = codebooks[s].row(codes[s][t_stage])                # embed lookup
 //       z_q_s = W_s @ z_p_s + b_s                                   # WNConv1d(codebook_dim → d_model)
 //       z_q_s = repeat_interleave(z_q_s, stride=strides[s], dim=-1) # temporal upsample
@@ -1108,19 +1108,20 @@ kernel void vokra_xcodec2_fsq_decode_f32(
 // Threadgroup 16x16 (the `grid_2d` default); the ragged tail is guarded
 // against both bounds.
 //
-// The 3-stage loop is unrolled by fixing `const uint N_STAGES = 3` (SNAC's
-// architecture pins exactly three quantizers; upstream `snac/vq.py` L15-25).
+// The published family has three stages at 24 kHz and four at 44.1 kHz. The
+// ABI reserves four slots and `n_stages` selects the active prefix.
 struct SnacDecodeDims {
     uint d_model;
     uint codebook_dim;
     uint codebook_size;
     uint t_expanded;
+    uint n_stages;
     // Per-stage temporal strides (SNAC 24 kHz canonical = [4, 2, 1]).
-    uint strides[3];
+    uint strides[4];
     // Start of each stage in the flat `codes` buffer. `codes[stage_offsets[s]
     // + t_stage]` for stage `s`. stage_offsets[0] is always 0; stage_offsets[1]
     // = len(codes[0]); stage_offsets[2] = len(codes[0]) + len(codes[1]).
-    uint stage_offsets[3];
+    uint stage_offsets[4];
 };
 
 kernel void vokra_snac_decode_f32(
@@ -1144,7 +1145,7 @@ kernel void vokra_snac_decode_f32(
     // GEMV over `codebook_dim`, so the parity bound is FP32 GEMV-scale
     // rather than bit-for-bit.
     float acc = 0.0f;
-    for (uint s = 0; s < 3u; ++s) {
+    for (uint s = 0; s < d.n_stages; ++s) {
         const uint stride_s = d.strides[s];
         const uint t_stage  = t_out / stride_s;
         const uint idx      = codes[d.stage_offsets[s] + t_stage];
@@ -1935,8 +1936,9 @@ struct SnacDecodeDims {
     codebook_dim: u32,
     codebook_size: u32,
     t_expanded: u32,
-    strides: [u32; 3],
-    stage_offsets: [u32; 3],
+    n_stages: u32,
+    strides: [u32; 4],
+    stage_offsets: [u32; 4],
 }
 
 /// Vocoder Metal wave WF5 qwen3_tts_codec dims (`setBytes:` index 4). Field
@@ -3855,8 +3857,9 @@ impl MetalContext {
     pub fn snac_decode_f32(
         &self,
         codes_flat: &[u32],
-        stage_offsets: [u32; 3],
-        strides: [u32; 3],
+        stage_offsets: [u32; 4],
+        strides: [u32; 4],
+        n_stages: usize,
         codebooks_flat: &[f32],
         proj_weights_flat: &[f32],
         proj_biases_flat: &[f32],
@@ -3875,7 +3878,12 @@ impl MetalContext {
                  codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
             )));
         }
-        for (s, &stride) in strides.iter().enumerate() {
+        if !(1..=4).contains(&n_stages) {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: n_stages {n_stages} is outside 1..=4"
+            )));
+        }
+        for (s, &stride) in strides[..n_stages].iter().enumerate() {
             if stride == 0 {
                 return Err(VokraError::InvalidArgument(format!(
                     "snac_decode_f32: strides[{s}] = 0 (would divide base frame rate by zero; \
@@ -3884,23 +3892,24 @@ impl MetalContext {
             }
         }
         // Codebook / projection buffer size checks (per-stage sizes multiplied
-        // by 3 stages).
+        // by the active stage count).
         let per_stage_cb = codebook_size.checked_mul(codebook_dim).ok_or_else(|| {
             VokraError::InvalidArgument(format!(
                 "snac_decode_f32: codebook_size * codebook_dim overflows usize \
                          (codebook_size={codebook_size} codebook_dim={codebook_dim})"
             ))
         })?;
-        let expected_cb = per_stage_cb.checked_mul(3).ok_or_else(|| {
+        let expected_cb = per_stage_cb.checked_mul(n_stages).ok_or_else(|| {
             VokraError::InvalidArgument(
-                "snac_decode_f32: 3 * codebook_size * codebook_dim overflows usize".to_owned(),
+                "snac_decode_f32: n_stages * codebook_size * codebook_dim overflows usize"
+                    .to_owned(),
             )
         })?;
         if codebooks_flat.len() != expected_cb {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: codebooks_flat.len() {} != 3 * codebook_size * codebook_dim \
-                 {expected_cb}",
-                codebooks_flat.len()
+                "snac_decode_f32: codebooks_flat.len() {} != n_stages ({n_stages}) * \
+                 codebook_size * codebook_dim = {expected_cb}",
+                codebooks_flat.len(),
             )));
         }
         let per_stage_w = d_model.checked_mul(codebook_dim).ok_or_else(|| {
@@ -3909,60 +3918,61 @@ impl MetalContext {
                  (d_model={d_model} codebook_dim={codebook_dim})"
             ))
         })?;
-        let expected_w = per_stage_w.checked_mul(3).ok_or_else(|| {
+        let expected_w = per_stage_w.checked_mul(n_stages).ok_or_else(|| {
             VokraError::InvalidArgument(
-                "snac_decode_f32: 3 * d_model * codebook_dim overflows usize".to_owned(),
+                "snac_decode_f32: n_stages * d_model * codebook_dim overflows usize".to_owned(),
             )
         })?;
         if proj_weights_flat.len() != expected_w {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: proj_weights_flat.len() {} != 3 * d_model * codebook_dim \
-                 {expected_w}",
-                proj_weights_flat.len()
+                "snac_decode_f32: proj_weights_flat.len() {} != n_stages ({n_stages}) * \
+                 d_model * codebook_dim = {expected_w}",
+                proj_weights_flat.len(),
             )));
         }
-        let expected_b = d_model.checked_mul(3).ok_or_else(|| {
-            VokraError::InvalidArgument("snac_decode_f32: 3 * d_model overflows usize".to_owned())
+        let expected_b = d_model.checked_mul(n_stages).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: n_stages * d_model overflows usize".to_owned(),
+            )
         })?;
         if proj_biases_flat.len() != expected_b {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: proj_biases_flat.len() {} != 3 * d_model {expected_b}",
-                proj_biases_flat.len()
+                "snac_decode_f32: proj_biases_flat.len() {} != n_stages ({n_stages}) * \
+                 d_model = {expected_b}",
+                proj_biases_flat.len(),
             )));
         }
         // Per-stage code count check: `codes[s].len() * strides[s]` must
         // equal `t_expanded` for every stage (SnacDecoder::check_and_measure
         // invariant). We reconstruct `codes[s].len()` from
         // `stage_offsets` + `codes_flat.len()`.
-        let stage_lens: [usize; 3] = [
-            (stage_offsets[1] as usize)
-                .checked_sub(stage_offsets[0] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: stage_offsets[1] {} < stage_offsets[0] {}",
-                        stage_offsets[1], stage_offsets[0]
-                    ))
-                })?,
-            (stage_offsets[2] as usize)
-                .checked_sub(stage_offsets[1] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: stage_offsets[2] {} < stage_offsets[1] {}",
-                        stage_offsets[2], stage_offsets[1]
-                    ))
-                })?,
-            codes_flat
-                .len()
-                .checked_sub(stage_offsets[2] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: codes_flat.len() {} < stage_offsets[2] {}",
-                        codes_flat.len(),
-                        stage_offsets[2]
-                    ))
-                })?,
-        ];
-        for (s, &len) in stage_lens.iter().enumerate() {
+        if stage_offsets[0] != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: stage_offsets[0] must be 0, got {}",
+                stage_offsets[0]
+            )));
+        }
+        let mut stage_lens = [0usize; 4];
+        for s in 0..n_stages {
+            let start = stage_offsets[s] as usize;
+            let end = if s + 1 < n_stages {
+                stage_offsets[s + 1] as usize
+            } else {
+                codes_flat.len()
+            };
+            stage_lens[s] = end.checked_sub(start).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage end {end} < stage_offsets[{s}] {start}"
+                ))
+            })?;
+            if end > codes_flat.len() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} end {end} exceeds codes_flat.len() {}",
+                    codes_flat.len()
+                )));
+            }
+        }
+        for (s, &len) in stage_lens[..n_stages].iter().enumerate() {
             let expanded = len.checked_mul(strides[s] as usize).ok_or_else(|| {
                 VokraError::InvalidArgument(format!(
                     "snac_decode_f32: stage {s} codes.len() ({len}) * strides[{s}] ({}) \
@@ -4002,6 +4012,7 @@ impl MetalContext {
             codes_flat,
             stage_offsets,
             strides,
+            n_stages,
             codebooks_flat,
             proj_weights_flat,
             proj_biases_flat,
@@ -4019,8 +4030,9 @@ impl MetalContext {
     fn run_snac_decode(
         &self,
         codes_flat: &[u32],
-        stage_offsets: [u32; 3],
-        strides: [u32; 3],
+        stage_offsets: [u32; 4],
+        strides: [u32; 4],
+        n_stages: usize,
         codebooks_flat: &[f32],
         proj_weights_flat: &[f32],
         proj_biases_flat: &[f32],
@@ -4051,6 +4063,7 @@ impl MetalContext {
             codebook_dim: codebook_dim as u32,
             codebook_size: codebook_size as u32,
             t_expanded: t_expanded as u32,
+            n_stages: n_stages as u32,
             strides,
             stage_offsets,
         };

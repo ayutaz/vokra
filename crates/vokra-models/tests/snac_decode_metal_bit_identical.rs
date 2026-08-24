@@ -130,7 +130,8 @@ mod metal_band {
     fn tiny_config() -> SnacConfig {
         SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [4, 2, 1],
+            vq_strides: [4, 2, 1, 0],
+            n_stages: 3,
         }
     }
 
@@ -196,12 +197,12 @@ mod metal_band {
         // CPU arm must be bit-identical to it (a sanity gate on the CPU arm
         // rather than a Metal claim).
         let ref_weights = SnacWeights {
-            codebooks: [
+            codebooks: vec![
                 codebooks[0].clone(),
                 codebooks[1].clone(),
                 codebooks[2].clone(),
             ],
-            out_projs: [
+            out_projs: vec![
                 out_projs[0].clone(),
                 out_projs[1].clone(),
                 out_projs[2].clone(),
@@ -215,6 +216,45 @@ mod metal_band {
             cpu_out, reference,
             "Compute::cpu()::snac_decode_f32 must be bit-identical to SnacDecoder::decode"
         );
+    }
+
+    /// The published 44.1 kHz topology has four stages. This is a separate
+    /// ABI/parity pin because a three-stage-only shader can pass every 24 kHz
+    /// test while silently omitting the finest 44.1 kHz code stream.
+    #[test]
+    fn four_stage_44khz_metal_matches_cpu_within_atol_or_clean_skip() {
+        let Some(compute_metal) = metal_compute() else {
+            println!("skip: no Metal device on this host (clean skip, never fabricated)");
+            return;
+        };
+        let compute_cpu = Compute::cpu();
+        let cfg = SnacConfig::snac_44khz();
+        let codebooks = vec![
+            make_codebook(0),
+            make_codebook(1),
+            make_codebook(2),
+            make_codebook(3),
+        ];
+        let out_projs = vec![make_proj(0), make_proj(1), make_proj(2), make_proj(3)];
+        // 1*8 == 2*4 == 4*2 == 8*1.
+        let codes = vec![
+            vec![1],
+            vec![2, 3],
+            vec![0, 1, 2, 3],
+            vec![3, 2, 1, 0, 1, 2, 3, 0],
+        ];
+
+        let cpu_out = compute_cpu
+            .snac_decode_f32(&codes, cfg, &codebooks, &out_projs)
+            .expect("four-stage CPU arm must succeed");
+        let metal_out = compute_metal
+            .snac_decode_f32(&codes, cfg, &codebooks, &out_projs)
+            .expect("four-stage Metal arm must succeed");
+        assert_eq!(cpu_out.len(), 8 * D_MODEL);
+        assert_eq!(cpu_out.len(), metal_out.len());
+        let d = max_delta(&cpu_out, &metal_out);
+        println!("four-stage [8,4,2,1] Metal vs CPU max |Δ| = {d:e}");
+        assert!(d <= ATOL, "four-stage Metal vs CPU max |Δ| = {d} > {ATOL}");
     }
 
     /// Strides `[1, 1, 1]` collapse SNAC to a standard 3-stage factorized
@@ -232,7 +272,8 @@ mod metal_band {
 
         let cfg = SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [1, 1, 1],
+            vq_strides: [1, 1, 1, 0],
+            n_stages: 3,
         };
         let codebooks = make_codebooks_tiny();
         let out_projs = make_projs_tiny();
@@ -313,7 +354,8 @@ mod metal_band {
         };
         let cfg = SnacConfig {
             sample_rate: 24_000,
-            vq_strides: [4, 2, 1],
+            vq_strides: [4, 2, 1, 0],
+            n_stages: 3,
         };
         let mut codebooks: [CodebookTable; 3] = [make_cb(0), make_cb(1), make_cb(2)];
         let out_projs: [DacOutProj; 3] = [make_p(0), make_p(1), make_p(2)];
