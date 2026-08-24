@@ -1121,9 +1121,9 @@ impl NoiseBlock {
         }
         let mut output = input;
         for channel in 0..self.linear.out_channels {
-            for t in 0..time {
+            for (t, &noise_value) in noise.iter().enumerate() {
                 let index = channel * time + t;
-                output[index] += noise[t] * projected[index];
+                output[index] += noise_value * projected[index];
             }
         }
         Ok(output)
