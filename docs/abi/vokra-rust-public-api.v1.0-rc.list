@@ -127,6 +127,7 @@ CONST vokra-ops::rnnoise::N_PITCH_BANDS|pub const N_PITCH_BANDS: usize = 6;
 CONST vokra-ops::rnnoise::N_STFT_BINS|pub const N_STFT_BINS: usize = 241;
 CONST vokra-ops::rnnoise::PITCH_BUF_SIZE|pub const PITCH_BUF_SIZE: usize = 720;
 CONST vokra-ops::rnnoise::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 48_000;
+CONST vokra-ops::snac_decode::MAX_SNAC_STAGES|pub const MAX_SNAC_STAGES: usize = 4;
 CONST vokra-ops::ten_vad::CONTEXT_FRAMES|pub const CONTEXT_FRAMES: usize = 3;
 CONST vokra-ops::ten_vad::CONV_CHANNELS|pub const CONV_CHANNELS: usize = 16;
 CONST vokra-ops::ten_vad::FFT_SIZE|pub const FFT_SIZE: usize = 1024;
@@ -899,6 +900,7 @@ FN vokra-ops::hifigan::check|pub fn check(&self, fp32: &[f32], int8: &[f32]) -> 
 FN vokra-ops::hifigan::delta|pub fn delta(&self) -> f32 {
 FN vokra-ops::hifigan::fp16|pub fn fp16() -> Self {
 FN vokra-ops::hifigan::fp32|pub fn fp32() -> Self {
+FN vokra-ops::hifigan::hifigan_generator_conditioned_with_backend_ops|pub fn hifigan_generator_conditioned_with_backend_ops<O: HifiGanBackendOps>(
 FN vokra-ops::hifigan::hifigan_generator_conditioned|pub fn hifigan_generator_conditioned(
 FN vokra-ops::hifigan::hifigan_generator_with_backend_ops|pub fn hifigan_generator_with_backend_ops<O: HifiGanBackendOps>(
 FN vokra-ops::hifigan::hifigan_generator_with_conv_padding|pub fn hifigan_generator_with_conv_padding(
@@ -1067,13 +1069,15 @@ FN vokra-ops::rnnt_decode::beam|pub fn beam(num_timesteps: usize, vocab_size: us
 FN vokra-ops::rnnt_decode::greedy|pub fn greedy(num_timesteps: usize, vocab_size: usize) -> Self {
 FN vokra-ops::rnnt_decode::rnnt_decode|pub fn rnnt_decode(encoder_out: &[f32], attrs: &RnntAttrs) -> Result<Vec<RnntHypothesis>> {
 FN vokra-ops::rnnt_decode::tdt|pub fn tdt(num_timesteps: usize, vocab_size: usize, duration_bins: Vec<u32>) -> Self {
+FN vokra-ops::snac_decode::active_vq_strides|pub fn active_vq_strides(&self) -> &[u32] {
 FN vokra-ops::snac_decode::codebook_dim|pub const fn codebook_dim(&self) -> usize {
 FN vokra-ops::snac_decode::codebook_size|pub const fn codebook_size(&self) -> usize {
 FN vokra-ops::snac_decode::config|pub const fn config(&self) -> &SnacConfig {
 FN vokra-ops::snac_decode::d_model|pub const fn d_model(&self) -> usize {
-FN vokra-ops::snac_decode::decode|pub fn decode(&self, codes: &[Vec<u32>; 3]) -> Result<Vec<f32>> {
+FN vokra-ops::snac_decode::decode|pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
 FN vokra-ops::snac_decode::new|pub fn new(config: SnacConfig, weights: SnacWeights) -> Result<Self> {
 FN vokra-ops::snac_decode::snac_24khz|pub const fn snac_24khz() -> Self {
+FN vokra-ops::snac_decode::snac_44khz|pub const fn snac_44khz() -> Self {
 FN vokra-ops::snake::snake_activation_f32|pub fn snake_activation_f32(
 FN vokra-ops::snake::snake_beta_f32|pub fn snake_beta_f32(
 FN vokra-ops::speechbrain_fbank::ecapa_voxceleb|pub fn ecapa_voxceleb() -> Self {
@@ -1742,7 +1746,7 @@ USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_c
 USE vokra-ops::resample::{StreamingResampler, resample}|pub use resample::{StreamingResampler, resample};
 USE vokra-ops::rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, }|pub use rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, };
 USE vokra-ops::rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode}|pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
-USE vokra-ops::snac_decode::{SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+USE vokra-ops::snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights};
 USE vokra-ops::snake::snake_activation_f32|pub use snake::snake_activation_f32;
 USE vokra-ops::snake::snake_beta_f32|pub use snake::snake_beta_f32;
 USE vokra-ops::speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank}|pub use speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank};

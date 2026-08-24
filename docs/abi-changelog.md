@@ -563,6 +563,25 @@ consuming queued data.
 | `vokra-core` | `Session::with_speech_feature_engine` / `Session::open_speech_feature_stream` | Added | public methods | Attach or open the family-specific engine; absence is a loud `NotImplemented` | no | (TBD) |
 | `vokra-models` | `MimiEncoder::{feature_dim, feature_frame_hop, encode_features_into, encode_features_all}` / `MimiEncoderState::reset` | Added | public methods | Reuse the native causal encoder and expose its pre-RVQ continuous grid without changing codec output arithmetic | no | (TBD) |
 
+### 2026-08-25 — 1.0.0-rc.1-dev (SNAC hierarchy and conditioned HiFi-GAN backend surface)
+
+The accumulated SNAC 24/44.1 kHz decoder work and the MeloTTS decoder add one
+intentional Rust API wave in `vokra-ops`; the C ABI and GGUF schema are
+unchanged. SNAC's former fixed three-stage input changes to a checkpoint-shaped
+slice so the official four-stage 44.1 kHz release can use the same decoder.
+This is a source-breaking prerelease signature change, recorded before the
+M5-13 freeze. The HiFi-GAN addition is the backend-dispatched sibling of the
+existing conditioned scalar entry and preserves the explicit
+conditioning-layer mismatch errors.
+
+| Crate / area | Symbol | Kind | Signature | Rationale | Breaking? | PR |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vokra-ops::snac_decode` | `SnacDecoder::decode` | Changed | `pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>>` | Accept the checkpoint-derived three- or four-stage hierarchy instead of freezing one array width. | yes | (TBD) |
+| `vokra-ops::hifigan` | `hifigan_generator_conditioned_with_backend_ops` | Added | `pub fn hifigan_generator_conditioned_with_backend_ops<O: HifiGanBackendOps>(...) -> Result<Vec<f32>>` | Route speaker conditioning and every learned HiFi-GAN convolution through the selected backend for MeloTTS without a CPU fallback. | no | (TBD) |
+| `vokra-ops::snac_decode` | `MAX_SNAC_STAGES` | Added | `pub const MAX_SNAC_STAGES: usize = 4` | Publish the validated upper bound shared by the two official SNAC releases. | no | (TBD) |
+| `vokra-ops::snac_decode` | `SnacDecoder::active_vq_strides` | Added | `pub fn active_vq_strides(&self) -> &[u32]` | Expose the checkpoint-selected hierarchy for generic codec callers. | no | (TBD) |
+| `vokra-ops::snac_decode` | `SnacConfig::snac_44khz` | Added | `pub const fn snac_44khz() -> Self` | Add the official four-stage 44.1 kHz topology alongside the existing 24 kHz constructor. | no | (TBD) |
+
 ### 2026-08-21 — 1.0.0-rc.1-dev (stateful streaming resampler — Rust surface only, additive)
 
 Issue #50 adds a caller-owned-buffer streaming wrapper around Vokra's existing

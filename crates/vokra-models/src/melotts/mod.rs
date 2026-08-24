@@ -11,12 +11,16 @@ use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, require_tensor_shape};
 
+mod decoder;
 mod duration;
 mod flow;
+mod model;
 mod text_encoder;
 
+pub use decoder::{MELOTTS_DECODER_HOT_OPS, MeloDecoder};
 pub use duration::{MELOTTS_DURATION_HOT_OPS, MeloDurationModel};
 pub use flow::{MELOTTS_FLOW_HOT_OPS, MeloFlowModel};
+pub use model::{MeloSynthesisOptions, MeloSynthesisOutput, MeloTts};
 pub use text_encoder::{MELOTTS_TEXT_HOT_OPS, MeloTextEncoder, MeloTextFeatures, MeloTextOutput};
 
 const LABEL: &str = "melotts";
@@ -413,6 +417,16 @@ impl MeloTtsCheckpoint {
     pub fn load_flow_model(&self, file: &GgufFile) -> Result<MeloFlowModel> {
         MeloFlowModel::from_gguf(file)
     }
+
+    /// Decodes and folds the speaker-conditioned HiFi-GAN generator.
+    pub fn load_decoder(&self, file: &GgufFile) -> Result<MeloDecoder> {
+        MeloDecoder::from_gguf(file)
+    }
+
+    /// Loads the complete low-level acoustic synthesis stack.
+    pub fn load_model(&self, file: &GgufFile) -> Result<MeloTts> {
+        MeloTts::from_checkpoint(self, file)
+    }
 }
 
 fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
@@ -558,5 +572,55 @@ mod tests {
             .expect("real latent flow forward");
         assert_eq!(decoder_latent.len(), INTER_CHANNELS as usize);
         assert!(decoder_latent.iter().all(|value| value.is_finite()));
+
+        let decoder = checkpoint
+            .load_decoder(&file)
+            .expect("load decoder tensors");
+        let pcm = decoder
+            .decode(
+                &decoder_latent,
+                1,
+                &output.speaker_conditioning,
+                BackendKind::Cpu,
+            )
+            .expect("real HiFi-GAN decoder forward");
+        assert_eq!(pcm.len(), HOP_LENGTH as usize);
+        assert!(pcm.iter().all(|value| value.is_finite()));
+        assert!(pcm.iter().all(|value| (-1.0..=1.0).contains(value)));
+
+        drop(encoder);
+        drop(duration);
+        drop(flow);
+        drop(decoder);
+
+        let model = checkpoint.load_model(&file).expect("load complete model");
+        let mut rng = GaussianSplitMix64::new(17);
+        let synthesis = model
+            .synthesize(
+                MeloTextFeatures {
+                    phoneme_ids: &[0],
+                    tones: &[0],
+                    language_ids: &[0],
+                    bert: &bert,
+                    ja_bert: &ja_bert,
+                    speaker_id: 0,
+                },
+                MeloSynthesisOptions {
+                    sdp_ratio: 0.0,
+                    noise_scale: 0.0,
+                    noise_scale_w: 0.0,
+                    length_scale: 0.1,
+                    max_frames: 512,
+                },
+                &mut rng,
+                BackendKind::Cpu,
+            )
+            .expect("real end-to-end acoustic forward");
+        assert_eq!(synthesis.sample_rate, SAMPLE_RATE);
+        assert_eq!(
+            synthesis.pcm.len(),
+            synthesis.frame_count * HOP_LENGTH as usize
+        );
+        assert!(synthesis.pcm.iter().all(|value| value.is_finite()));
     }
 }

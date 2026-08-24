@@ -994,6 +994,35 @@ pub fn hifigan_generator_with_backend_ops<O: HifiGanBackendOps>(
     )
 }
 
+/// Runs a speaker-conditioned HiFi-GAN through a caller-supplied learned-op
+/// backend. This is the backend-dispatched counterpart of
+/// [`hifigan_generator_conditioned`]: every convolution, including the
+/// conditioning projection and transposed upsample stages, reaches `ops`.
+/// Scalar activations, residual additions and terminal tanh retain the shared
+/// generator implementation.
+#[allow(clippy::too_many_arguments)]
+pub fn hifigan_generator_conditioned_with_backend_ops<O: HifiGanBackendOps>(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    g: &[f32],
+    conv_padding: HifiGanConvPadding,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal_with_ops(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        Some(g),
+        conv_padding,
+        ops,
+    )
+}
+
 /// HGAN-05-GIN-COND (2026-08-09): HiFi-GAN generator with optional
 /// speaker (or general gin) conditioning.
 ///
@@ -2256,6 +2285,45 @@ mod tests {
             }
         }
         w
+    }
+
+    #[test]
+    fn conditioned_backend_entry_matches_scalar_entry() {
+        let attrs = tiny_attrs_v1();
+        let mut weights = tiny_weights_v1(&attrs);
+        weights.cond = Some(GinCondition {
+            weight: (0..attrs.initial_channel * 3)
+                .map(|index| index as f32 * 0.002 - 0.01)
+                .collect(),
+            bias: vec![0.003; attrs.initial_channel],
+            gin_channels: 3,
+        });
+        let frames = 3;
+        let mel: Vec<f32> = (0..attrs.n_mels * frames)
+            .map(|index| index as f32 * 0.01 - 0.04)
+            .collect();
+        let conditioning = [0.2, -0.3, 0.5];
+        let reference = hifigan_generator_conditioned(
+            &mel,
+            frames,
+            &weights,
+            &attrs,
+            &HifiGanConfig::fp32(),
+            Some(&conditioning),
+        )
+        .unwrap();
+        let actual = hifigan_generator_conditioned_with_backend_ops(
+            &mel,
+            frames,
+            &weights,
+            &attrs,
+            &HifiGanConfig::fp32(),
+            &conditioning,
+            HifiGanConvPadding::Zero,
+            &ScalarHifiGanBackendOps,
+        )
+        .unwrap();
+        assert_eq!(actual, reference);
     }
 
     // ---- T02: attrs validate ---------------------------------------------

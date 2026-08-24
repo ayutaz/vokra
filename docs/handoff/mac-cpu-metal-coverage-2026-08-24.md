@@ -1000,10 +1000,31 @@ Instance `48597790` was destroyed, and the paginated Vast inventory returned
 only the unrelated `tiny-s2s-m2-{judge,generator}` instances with no Vokra
 label.
 
-This is not yet a MeloTTS synthesis completion claim. The HiFi-GAN decoder,
-duration expansion/prior sampling integration, language-specific raw-text and
-BERT sidecars, independent upstream numerical fixture, and Apple-hardware
-Metal comparison remain open. The five releases must stay partial until those
+Contract `48599976` was allocated for the next MeloTTS wave but Vast reported
+its required resources unavailable and queued it with intended state
+`stopped`. It contained no work or result data and was immediately destroyed
+instead of being left stopped or billable.
+
+Disposable instance `48600202` validated the MeloTTS HiFi-GAN and integrated
+acoustic-core wave. The same pinned public English GGUF passed a real-weight
+CPU path from supplied phoneme/tone/language/BERT features through text,
+duration expansion, acoustic-prior sampling, all four latent-flow blocks,
+speaker-conditioned HiFi-GAN and 44.1 kHz PCM. The one-token complete smoke
+finished in 9.52 seconds and checked exact 512-sample-per-frame output,
+finiteness and the terminal `[-1, 1]` range. Ten focused MeloTTS tests and the
+conditioned shared-HiFi-GAN backend comparison passed; package check, format,
+package Clippy with warnings denied and `git diff --check` also passed. All
+eleven log/text entries passed the locally re-run SHA ledger after extraction
+to `/private/tmp/vokra-vast-48600202-results`; the complete archive SHA-256 is
+`a9f288e272d4ee3e02647d35b778b45c11081173cc51f77d6133a987dac1c38b`.
+Instance `48600202` was destroyed, and the inventory again returned only the
+unrelated `tiny-s2s-m2-{judge,generator}` instances with no Vokra label.
+
+This is still not a full MeloTTS release-completion claim. The low-level
+feature-to-PCM CPU path is now complete, and all learned decoder convolutions
+share the explicit CPU/Metal backend seam. Language-specific raw-text/G2P/BERT
+sidecars, the independent upstream numerical fixture, and the Apple-hardware
+Metal comparison remain open. The five releases stay partial until those
 gates close; Linux VAST cannot execute the Metal leg.
 
 ## Remaining execution order
