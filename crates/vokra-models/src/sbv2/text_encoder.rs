@@ -43,6 +43,10 @@
 //! `[192, 1024, 1]` `bert_bridge.conv`, this is byte-identical to a
 //! `[out, in]` linear-weight buffer since `kernel = 1`.
 
+use vokra_core::Result;
+
+use crate::compute::Compute;
+
 /// Numerical-stability epsilon for [`LayerNorm`]. Matches upstream VITS
 /// `modules.LayerNorm.__init__(eps=1e-5)`.
 const LN_EPS: f32 = 1e-5;
@@ -424,6 +428,27 @@ impl SbV2TransformerBlock {
         add_residual_inplace(hidden, &ffn_out);
         self.norm2.forward_inplace(hidden);
     }
+
+    /// Backend-dispatched sibling of [`Self::forward`].
+    ///
+    /// Learned projections, attention reductions, softmax, LayerNorm and FFN
+    /// convolutions all use the selected [`Compute`] backend. Residual adds,
+    /// relative-position index shuffles and ReLU remain host-side scalar glue.
+    pub(crate) fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        hidden: &mut [f32],
+        seq_len: usize,
+    ) -> Result<()> {
+        debug_assert_eq!(hidden.len(), seq_len * self.d_model);
+        let attn_out = self.attn.forward_with_compute(compute, hidden, seq_len)?;
+        add_residual_inplace(hidden, &attn_out);
+        self.norm1.forward_with_compute(compute, hidden)?;
+
+        let ffn_out = self.ffn.forward_with_compute(compute, hidden, seq_len)?;
+        add_residual_inplace(hidden, &ffn_out);
+        self.norm2.forward_with_compute(compute, hidden)
+    }
 }
 
 // =====================================================================
@@ -468,6 +493,22 @@ impl LayerNorm {
     /// `out[c] = (x[c] - mean) / sqrt(var + eps) * gamma[c] + beta[c]`.
     fn forward_inplace(&self, x: &mut [f32]) {
         layer_norm_rows_inplace(x, self.channels, &self.gamma, &self.beta);
+    }
+
+    fn forward_with_compute(&self, compute: &Compute, x: &mut [f32]) -> Result<()> {
+        let rows = x.len() / self.channels;
+        let mut output = vec![0.0; x.len()];
+        compute.layer_norm_f32(
+            x,
+            &mut output,
+            rows,
+            self.channels,
+            &self.gamma,
+            &self.beta,
+            LN_EPS,
+        )?;
+        x.copy_from_slice(&output);
+        Ok(())
     }
 }
 
@@ -684,6 +725,109 @@ impl RelPositionMHA {
         // Final O projection.
         conv1x1_biased(&output, &self.o_weight, &self.o_bias, d, d)
     }
+
+    fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        x: &[f32],
+        seq_len: usize,
+    ) -> Result<Vec<f32>> {
+        let d = self.d_model;
+        let q = linear_rows_with_compute(compute, x, &self.q_weight, &self.q_bias, d, d)?;
+        let k = linear_rows_with_compute(compute, x, &self.k_weight, &self.k_bias, d, d)?;
+        let v = linear_rows_with_compute(compute, x, &self.v_weight, &self.v_bias, d, d)?;
+
+        let rel_k =
+            get_relative_embeddings(&self.emb_rel_k, self.window_size, seq_len, self.d_head);
+        let rel_v =
+            get_relative_embeddings(&self.emb_rel_v, self.window_size, seq_len, self.d_head);
+        let rel_len = 2 * seq_len - 1;
+        let scale = 1.0 / vokra_math::sqrt(self.d_head as f32);
+        let rel_k_t = transpose_matrix(&rel_k, rel_len, self.d_head);
+        let mut output = vec![0.0; seq_len * d];
+
+        for head in 0..self.n_heads {
+            let mut q_head = gather_head(&q, seq_len, d, head, self.d_head);
+            for value in &mut q_head {
+                *value *= scale;
+            }
+            let k_head = gather_head(&k, seq_len, d, head, self.d_head);
+            let v_head = gather_head(&v, seq_len, d, head, self.d_head);
+            let k_head_t = transpose_matrix(&k_head, seq_len, self.d_head);
+
+            let mut scores = vec![0.0; seq_len * seq_len];
+            compute.gemm_f32(
+                seq_len,
+                seq_len,
+                self.d_head,
+                &q_head,
+                &k_head_t,
+                None,
+                &mut scores,
+            )?;
+
+            let mut rel_logits = vec![0.0; seq_len * rel_len];
+            compute.gemm_f32(
+                seq_len,
+                rel_len,
+                self.d_head,
+                &q_head,
+                &rel_k_t,
+                None,
+                &mut rel_logits,
+            )?;
+            for query in 0..seq_len {
+                for key in 0..seq_len {
+                    let relative = key as isize - query as isize + seq_len as isize - 1;
+                    scores[query * seq_len + key] +=
+                        rel_logits[query * rel_len + relative as usize];
+                }
+            }
+
+            let mut probabilities = vec![0.0; scores.len()];
+            compute.softmax_f32(&scores, &mut probabilities, seq_len, seq_len)?;
+            let mut content = vec![0.0; seq_len * self.d_head];
+            compute.gemm_f32(
+                seq_len,
+                self.d_head,
+                seq_len,
+                &probabilities,
+                &v_head,
+                None,
+                &mut content,
+            )?;
+
+            let mut relative_weights = vec![0.0; seq_len * rel_len];
+            for query in 0..seq_len {
+                for relative in 0..rel_len {
+                    let key = relative as isize - seq_len as isize + 1 + query as isize;
+                    if key >= 0 && key < seq_len as isize {
+                        relative_weights[query * rel_len + relative] =
+                            probabilities[query * seq_len + key as usize];
+                    }
+                }
+            }
+            let mut relative_output = vec![0.0; seq_len * self.d_head];
+            compute.gemm_f32(
+                seq_len,
+                self.d_head,
+                rel_len,
+                &relative_weights,
+                &rel_v,
+                None,
+                &mut relative_output,
+            )?;
+            for position in 0..seq_len {
+                for channel in 0..self.d_head {
+                    output[position * d + head * self.d_head + channel] = content
+                        [position * self.d_head + channel]
+                        + relative_output[position * self.d_head + channel];
+                }
+            }
+        }
+
+        linear_rows_with_compute(compute, &output, &self.o_weight, &self.o_bias, d, d)
+    }
 }
 
 /// Position-wise FFN: two same-padded Conv1d layers with bias, ReLU
@@ -815,6 +959,37 @@ impl PositionWiseFFN {
         // Second conv: [T, d_ff] -> [T, d_model] with same-padding.
         conv1d_same_padded(
             &h,
+            self.d_ff,
+            &self.conv2_weight,
+            &self.conv2_bias,
+            self.d_model,
+            self.kernel,
+            seq_len,
+        )
+    }
+
+    fn forward_with_compute(
+        &self,
+        compute: &Compute,
+        x: &[f32],
+        seq_len: usize,
+    ) -> Result<Vec<f32>> {
+        let mut hidden = conv1d_same_padded_with_compute(
+            compute,
+            x,
+            self.d_model,
+            &self.conv1_weight,
+            &self.conv1_bias,
+            self.d_ff,
+            self.kernel,
+            seq_len,
+        )?;
+        for value in &mut hidden {
+            *value = value.max(0.0);
+        }
+        conv1d_same_padded_with_compute(
+            compute,
+            &hidden,
             self.d_ff,
             &self.conv2_weight,
             &self.conv2_bias,
@@ -1060,6 +1235,84 @@ fn conv1d_same_padded(
         }
     }
     out
+}
+
+fn linear_rows_with_compute(
+    compute: &Compute,
+    x: &[f32],
+    weight_out_in: &[f32],
+    bias: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+) -> Result<Vec<f32>> {
+    let rows = x.len() / in_dim;
+    let weight_in_out = transpose_matrix(weight_out_in, out_dim, in_dim);
+    let mut output = vec![0.0; rows * out_dim];
+    compute.gemm_f32(
+        rows,
+        out_dim,
+        in_dim,
+        x,
+        &weight_in_out,
+        Some(bias),
+        &mut output,
+    )?;
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)] // mirrors Compute::conv1d_f32's intrinsic shape
+fn conv1d_same_padded_with_compute(
+    compute: &Compute,
+    x_position_major: &[f32],
+    in_dim: usize,
+    weight: &[f32],
+    bias: &[f32],
+    out_dim: usize,
+    kernel: usize,
+    seq_len: usize,
+) -> Result<Vec<f32>> {
+    let input_channel_major = transpose_matrix(x_position_major, seq_len, in_dim);
+    let mut output_channel_major = vec![0.0; out_dim * seq_len];
+    compute.conv1d_f32(
+        &input_channel_major,
+        in_dim,
+        seq_len,
+        weight,
+        out_dim,
+        kernel,
+        Some(bias),
+        1,
+        (kernel - 1) / 2,
+        &mut output_channel_major,
+    )?;
+    Ok(transpose_matrix(&output_channel_major, out_dim, seq_len))
+}
+
+fn transpose_matrix(input: &[f32], rows: usize, columns: usize) -> Vec<f32> {
+    debug_assert_eq!(input.len(), rows * columns);
+    let mut output = vec![0.0; input.len()];
+    for row in 0..rows {
+        for column in 0..columns {
+            output[column * rows + row] = input[row * columns + column];
+        }
+    }
+    output
+}
+
+fn gather_head(
+    input: &[f32],
+    seq_len: usize,
+    d_model: usize,
+    head: usize,
+    d_head: usize,
+) -> Vec<f32> {
+    let mut output = vec![0.0; seq_len * d_head];
+    for position in 0..seq_len {
+        let source = position * d_model + head * d_head;
+        let destination = position * d_head;
+        output[destination..destination + d_head].copy_from_slice(&input[source..source + d_head]);
+    }
+    output
 }
 
 /// Materializes the length-`2*t-1` slice of a shared relative-position

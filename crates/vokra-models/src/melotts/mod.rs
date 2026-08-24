@@ -11,6 +11,10 @@ use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, require_tensor_shape};
 
+mod text_encoder;
+
+pub use text_encoder::{MELOTTS_TEXT_HOT_OPS, MeloTextEncoder, MeloTextFeatures, MeloTextOutput};
+
 const LABEL: &str = "melotts";
 const ARCH: &str = "melotts";
 const CATEGORY: &str = "tts";
@@ -52,12 +56,12 @@ const KEY_NUM_TONES: &str = "vokra.melotts.num_tones";
 const KEY_NUM_LANGUAGES: &str = "vokra.melotts.num_languages";
 
 const COMMON_MANIFEST: [u8; 32] = [
-    0x39, 0x96, 0x2e, 0x5b, 0x34, 0x4d, 0xc4, 0xfd, 0x5b, 0xff, 0x86, 0x67, 0xc3, 0xae, 0x92, 0xf8,
-    0xc4, 0x71, 0x4c, 0xd9, 0x8b, 0x11, 0x10, 0xe5, 0x2b, 0x2f, 0x88, 0xec, 0xeb, 0x19, 0x63, 0x4d,
+    0x83, 0x88, 0x12, 0x87, 0xfb, 0xc9, 0x8e, 0x65, 0x83, 0xa9, 0x28, 0x48, 0xf5, 0xa7, 0x7c, 0x70,
+    0xc1, 0x56, 0xe9, 0x3f, 0x00, 0x1f, 0xf8, 0x2e, 0xbf, 0x34, 0xbe, 0xf2, 0x0a, 0xf4, 0x15, 0x44,
 ];
 const CHINESE_MANIFEST: [u8; 32] = [
-    0x5c, 0x42, 0xf9, 0xf1, 0xb4, 0xdc, 0x5b, 0x89, 0x61, 0x6c, 0x14, 0x92, 0x8a, 0x45, 0x95, 0xc6,
-    0x88, 0xa5, 0xad, 0x3a, 0x44, 0x88, 0x37, 0x17, 0xe6, 0xf8, 0x02, 0x81, 0x2c, 0xf2, 0xef, 0xb6,
+    0x41, 0xf1, 0x75, 0x13, 0x4e, 0xd9, 0x44, 0xe9, 0x58, 0xe7, 0x2c, 0xe6, 0x51, 0xc3, 0x4d, 0xc1,
+    0x1f, 0xe8, 0xea, 0x59, 0x3f, 0xc5, 0x1b, 0x7b, 0xc5, 0xe9, 0xbf, 0x8f, 0x54, 0x92, 0x5a, 0x09,
 ];
 
 /// One of the five official language checkpoints published by Vokra.
@@ -389,6 +393,12 @@ impl MeloTtsCheckpoint {
     pub const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
     }
+
+    /// Decodes the real embedding, BERT projection and six-layer relative
+    /// Transformer tensors into the native CPU/Metal text encoder.
+    pub fn load_text_encoder(&self, file: &GgufFile) -> Result<MeloTextEncoder> {
+        MeloTextEncoder::from_gguf(file, self.config)
+    }
 }
 
 fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
@@ -430,6 +440,8 @@ fn require_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    use vokra_core::backend::BackendKind;
+
     #[test]
     fn official_variant_axes_match_released_tensor_tables() {
         for (variant, symbols, tones, languages, speakers) in [
@@ -469,5 +481,38 @@ mod tests {
         assert_ne!(CHINESE_MANIFEST, COMMON_MANIFEST);
         assert_eq!(MeloVariant::English.manifest_sha256(), COMMON_MANIFEST);
         assert_eq!(MeloVariant::Chinese.manifest_sha256(), CHINESE_MANIFEST);
+    }
+
+    #[test]
+    #[ignore = "requires VOKRA_MELOTTS_GGUF pointing to a released full GGUF"]
+    fn released_gguf_binds_loads_and_runs_text_encoder() {
+        let path = std::env::var("VOKRA_MELOTTS_GGUF").expect("VOKRA_MELOTTS_GGUF");
+        let file = GgufFile::open(path).expect("open released MeloTTS GGUF");
+        let checkpoint = MeloTtsCheckpoint::from_gguf(&file).expect("strict bind");
+        let encoder = checkpoint
+            .load_text_encoder(&file)
+            .expect("load enc_p tensors");
+        let bert = vec![0.0; 1_024];
+        let ja_bert = vec![0.0; 768];
+        let output = encoder
+            .encode(
+                MeloTextFeatures {
+                    phoneme_ids: &[0],
+                    tones: &[0],
+                    language_ids: &[0],
+                    bert: &bert,
+                    ja_bert: &ja_bert,
+                    speaker_id: 0,
+                },
+                BackendKind::Cpu,
+            )
+            .expect("real text forward");
+        assert_eq!(output.sequence_len, 1);
+        assert_eq!(output.hidden.len(), HIDDEN_CHANNELS as usize);
+        assert_eq!(output.mean.len(), INTER_CHANNELS as usize);
+        assert_eq!(output.log_scale.len(), INTER_CHANNELS as usize);
+        assert!(output.hidden.iter().all(|value| value.is_finite()));
+        assert!(output.mean.iter().all(|value| value.is_finite()));
+        assert!(output.log_scale.iter().all(|value| value.is_finite()));
     }
 }
