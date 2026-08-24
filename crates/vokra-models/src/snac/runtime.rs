@@ -1561,31 +1561,37 @@ impl Snac {
         self
     }
 
+    /// Returns the backend selected for learned decode operations.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the validated architecture configuration.
     #[must_use]
     pub const fn config(&self) -> &SnacConfig {
         &self.config
     }
 
+    /// Returns the bound public SNAC variant.
     #[must_use]
     pub const fn variant(&self) -> SnacVariant {
         self.config.variant
     }
 
+    /// Returns the audited weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the waveform sample rate expected by this model.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         self.config.sample_rate
     }
 
+    /// Returns the waveform samples represented by one finest-level code.
     #[must_use]
     pub const fn hop_length(&self) -> usize {
         self.encoder.hop_length
