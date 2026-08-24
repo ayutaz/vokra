@@ -130,6 +130,7 @@ pub mod chatterbox_nano;
 pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
+pub mod dac;
 mod strict_checkpoint;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B TTS
 // (apache-2.0). Same architecture as CosyVoice2 — Qwen2 LLM backbone +

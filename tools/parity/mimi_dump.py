@@ -57,6 +57,8 @@ Subcommands
     - ``codes.u32`` — ``[time, books]`` fixed-seed codes in ``[0, rows)``;
     - ``decoded_features.f32`` — ``[time, d_model]`` from the public
       ``model.quantizer.from_codes`` API;
+    - ``decoded_pcm.f32`` — optional complete SEANet decoder output from the
+      public ``model.decode`` API when ``--waveform`` is requested;
     - ``manifest.txt``.
 
 ``encodec``
@@ -87,7 +89,7 @@ Usage
 
     venv/bin/python tools/parity/mimi_dump.py dac \\
         --checkpoint /path/to/weights_24khz.pth \\
-        --out tests/parity/dac --seed 0 --time 32 --rows 192 --books 12
+        --out tests/parity/dac --seed 0 --time 32 --rows 192 --books 12 --waveform
 
     venv/bin/python tools/parity/mimi_dump.py encodec \\
         --out tests/parity/encodec --seed 0 --time 32 --rows 128 --books 8
@@ -231,6 +233,11 @@ def cmd_dac(args: argparse.Namespace) -> int:
         # the weight_norm pre-forward hooks so .weight below is current.
         z_q, _z_p, _codes = model.quantizer.from_codes(codes_bnt)
         decoded_td = z_q.squeeze(0).t().contiguous()  # [T, d_model]
+        decoded_pcm = None
+        if args.waveform:
+            # Public upstream decoder API. No Vokra converter tensor, folded
+            # weight, or mirrored implementation participates in this oracle.
+            decoded_pcm = model.decode(z_q).squeeze(0).squeeze(0).contiguous()
 
         tables = []
         weights = []
@@ -255,12 +262,14 @@ def cmd_dac(args: argparse.Namespace) -> int:
     _write_f32(out / "out_proj_bias.f32", biases_t.numpy())
     _write_u32(out / "codes.u32", codes_bnt.squeeze(0).t().contiguous().numpy())
     _write_f32(out / "decoded_features.f32", decoded_td.numpy())
+    if decoded_pcm is not None:
+        _write_f32(out / "decoded_pcm.f32", decoded_pcm.numpy())
 
     hop = math.prod(kwargs["encoder_rates"])
     lines = [
         "M4-04 T14 DAC factorized RVQ reference fixture (sliced, projection included)",
         f"reference: descript-audio-codec (MIT) public API — ResidualVectorQuantize.from_codes; {', '.join(_versions('descript-audio-codec', 'torch', 'numpy'))}",
-        "checkpoint pin: descriptinc/descript-audio-codec release tag 0.0.4 weights_24khz.pth (24 kHz / 8 kbps zoo-primary variant — ADR M4-04 §T02)",
+        f"checkpoint pin: {args.checkpoint_pin}",
         f"checkpoint sha256: {_sha256(Path(args.checkpoint))}",
         f"upstream DacRvqAttrs pin (fixture asserts these): n_codebooks={n_codebooks_full} codebook_size={kwargs['codebook_size']} codebook_dim={kwargs['codebook_dim']} d_model={d_model} sample_rate={kwargs['sample_rate']} hop={hop}",
         f"fixture subset: first {books} quantizers (prefix decode = upstream variable-bitrate semantics), rows sliced to {rows}",
@@ -268,17 +277,20 @@ def cmd_dac(args: argparse.Namespace) -> int:
         f"seed: {args.seed}; codes in [0, {rows})",
         "note: out_proj_weight is the weight-norm EFFECTIVE weight as torch computed it (g*v/||v||, dim=0); the Vokra converter folds the same formula offline",
     ]
-    _finish_manifest(
-        out,
-        lines,
-        [
-            "codebook_tables_sliced.f32",
-            "out_proj_weight.f32",
-            "out_proj_bias.f32",
-            "codes.u32",
-            "decoded_features.f32",
-        ],
-    )
+    files = [
+        "codebook_tables_sliced.f32",
+        "out_proj_weight.f32",
+        "out_proj_bias.f32",
+        "codes.u32",
+        "decoded_features.f32",
+    ]
+    if decoded_pcm is not None:
+        lines.append(
+            f"waveform: decoded_pcm [{decoded_pcm.numel()}] f32 from public "
+            "DAC.decode(ResidualVectorQuantize.from_codes(codes))"
+        )
+        files.append("decoded_pcm.f32")
+    _finish_manifest(out, lines, files)
     return 0
 
 
@@ -360,6 +372,20 @@ def main() -> int:
     p.add_argument("--time", type=int, default=32)
     p.add_argument("--rows", type=int, default=192)
     p.add_argument("--books", type=int, default=12)
+    p.add_argument(
+        "--checkpoint-pin",
+        default=(
+            "descriptinc/descript-audio-codec release tag 0.0.4 "
+            "weights_24khz.pth (24 kHz / 8 kbps zoo-primary variant — "
+            "ADR M4-04 §T02)"
+        ),
+        help="auditable upstream release/source label written to manifest.txt",
+    )
+    p.add_argument(
+        "--waveform",
+        action="store_true",
+        help="also dump the public DAC.decode SEANet waveform",
+    )
     p.set_defaults(fn=cmd_dac)
 
     p = sub.add_parser("encodec", help="EnCodec op-path dump (synthetic weights only — FR-OP-32)")

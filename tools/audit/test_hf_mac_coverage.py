@@ -42,6 +42,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "silero-vad",
             "magnet_small_10secs",
             "csm",
+            "dac",
             "nsnet2",
             "pyannote-segmentation",
             "rmvpe",
@@ -62,6 +63,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
         silero = audit.RepoRecord(
             "vokra/silero", "abc", ("model.gguf",), "silero-vad"
         )
+        dac = audit.RepoRecord("vokra/dac-44khz", "abc", ("model.gguf",), "dac")
         bound_record = audit.RepoRecord("vokra/snac", "abc", ("model.gguf",), "snac")
         routed_partial = audit.RepoRecord(
             "vokra/magnet", "abc", ("model.gguf",), "magnet_small_10secs"
@@ -111,6 +113,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
 
         self.assertEqual(audit.classify(full, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bound_record, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(routed_partial, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(csm, routed, bound).cpu_code, "partial")

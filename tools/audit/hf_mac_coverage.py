@@ -94,6 +94,7 @@ METAL_CODE_ARCHES = {
     "campplus",
     "conv_tasnet",
     "crisper-whisper",
+    "dac",
     "data2vec_audio",
     "distil-whisper",
     "ecapa_tdnn",

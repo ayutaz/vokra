@@ -233,6 +233,10 @@ pub(crate) enum ModelTask {
     /// effective RVQ tables, and neural decoder from the same GGUF and uses
     /// the versioned portable code container between the two modes.
     MimiCodec,
+    /// Descript DAC offline token-to-PCM decode. The released SEANet is
+    /// non-causal, so this is deliberately a whole-code-matrix task rather
+    /// than the causal generic streaming codec handle.
+    DacCodec,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -389,6 +393,8 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 /// Standalone Kyutai Mimi codec — mirror of what
 /// `vokra-cli convert --model mimi` writes.
 const ARCH_MIMI: &str = "mimi";
+/// Descript DAC 16/24/44.1 kHz codec family.
+const ARCH_DAC: &str = "dac";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
@@ -1077,6 +1083,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // codec components and a versioned codes container, none of which
             // belongs in the ASR/TTS/S2S session slots.
             Ok((session, ModelTask::MimiCodec))
+        }
+        ARCH_DAC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_DAC}`"
+                ));
+            }
+            Ok((session, ModelTask::DacCodec))
         }
         ARCH_BIGVGAN => {
             if hint.is_some() {
@@ -2807,6 +2821,18 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|b| b.arch != ARCH_MIMI),
             "the routed standalone codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_dac_to_the_standalone_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_DAC, "dac-routed", |path| {
+            load_session(path).expect("dac session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::DacCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|binding| binding.arch != ARCH_DAC),
+            "the routed standalone DAC codec must not retain a registry row"
         );
     }
 

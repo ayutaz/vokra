@@ -54,6 +54,7 @@ USAGE:
     vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv> [--output <restored.txt>]
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
+    vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -74,6 +75,8 @@ OPTIONS:
                                 signal and must be paired with --far-end.
                                 For Mimi encode it is a mono WAV; for Mimi
                                 decode it is a `VKRMCODE` v1 code container.
+                                For DAC decode it is raw time-major
+                                `[frames,n_codebooks]` little-endian u32.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -131,7 +134,8 @@ OPTIONS:
                                 writes alignment TSV; CT-Punc
                                 writes exact UTF-8 restored text when present.
                                 Mimi requires it: code container for encode,
-                                WAV for decode. Vocoders write waveform WAV.
+                                WAV for decode. DAC decode also requires a WAV
+                                output. Vocoders write waveform WAV.
                                 Multi-speaker SepFormer models derive
                                 `<stem>.sourceN.wav` paths from this value.
     --tokens <path>             ct_punc only: `vokra-ct-punc-tsv-v1` UTF-8
@@ -140,11 +144,13 @@ OPTIONS:
                                 `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
                                 caller token strings paired with the exact ids
                                 passed to the model; no tokenizer is inferred.
-    --codec-mode <mode>         mimi only: `encode` (mono WAV -> portable
-                                code container) or `decode` (container -> WAV).
+    --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
+                                container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
                                 order, u32 little-endian codes, mono rate,
                                 frame rate, topology, and codebook SHA-256.
+                                dac: `decode` only, from raw time-major u32le
+                                codes; unsupported encode is an explicit error.
     --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
                                 condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
@@ -650,6 +656,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::TtsKokoro
         | ModelTask::Speaker
         | ModelTask::MimiCodec
+        | ModelTask::DacCodec
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -697,11 +704,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if a.codec_mode.is_some() && task != ModelTask::MimiCodec {
+    if a.codec_mode.is_some() && task != ModelTask::MimiCodec && task != ModelTask::DacCodec {
         return Err(
-            "run: --codec-mode is only supported for the standalone mimi arch — use \
-             `--codec-mode encode|decode` with its portable code container"
-                .to_owned(),
+            "run: --codec-mode is only supported for standalone mimi/dac codec arches".to_owned(),
         );
     }
     if a.bandwidth_id.is_some() && task != ModelTask::VocoderVocos {
@@ -994,6 +999,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::MimiCodec => {
             run_mimi_codec(&session, &a)?;
+        }
+        ModelTask::DacCodec => {
+            run_dac_codec(&session, &a)?;
         }
         ModelTask::VocoderBigVgan => {
             run_bigvgan(&session, &a)?;
@@ -2017,6 +2025,82 @@ fn run_mimi_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
             );
         }
     }
+    Ok(())
+}
+
+/// Descript DAC's exact non-causal token-to-waveform path.
+///
+/// Input is headerless row-major `[frames, n_codebooks]` little-endian u32.
+/// A raw contract is intentional: DAC's upstream `.dac` container is a NumPy
+/// pickle object and cannot enter the zero-dependency runtime. Code range,
+/// matrix width, model topology, and output extent are still validated before
+/// a WAV is written.
+fn run_dac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (dac): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (dac): encode is not implemented; this public runtime surface is the complete released token-to-PCM decoder used by DAC-backed TTS models"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err("run (dac): --codec-mode decode is required".to_owned());
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (dac): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (dac): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (dac decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (dac decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let model = vokra_models::dac::Dac::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let frames = codes.len() / model.n_codebooks();
+    let pcm = model
+        .decode_codes(&codes)
+        .map_err(|error| error.to_string())?;
+    let expected = model
+        .output_samples(frames)
+        .map_err(|error| error.to_string())?;
+    if pcm.len() != expected {
+        return Err(format!(
+            "run (dac decode): decoder emitted {} samples, topology predicts {expected}",
+            pcm.len()
+        ));
+    }
+    wav::write_wav(output_path, &pcm, model.sample_rate())
+        .map_err(|error| format!("run (dac decode): --output {output_path}: {error}"))?;
+    println!(
+        "dac decode: {frames} frames x {} codebooks -> {} samples @ {} Hz -> {output_path}",
+        model.n_codebooks(),
+        pcm.len(),
+        model.sample_rate()
+    );
     Ok(())
 }
 
@@ -3745,7 +3829,9 @@ mod tests {
         assert!(err.contains("--tokens is only supported for the ct_punc arch"));
 
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
-        assert!(err.contains("--codec-mode is only supported for the standalone mimi arch"));
+        assert!(
+            err.contains("--codec-mode is only supported for standalone mimi/dac codec arches")
+        );
     }
 
     /// A campplus-arch GGUF whose tensors do not bind fails loudly at the
@@ -4419,6 +4505,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFsmn), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VocoderVocos), None);
