@@ -1,0 +1,473 @@
+//! Native runtime binding for the five official MyShell MeloTTS releases.
+//!
+//! The public Vokra GGUFs preserve the upstream MeloTTS tensor names.  This
+//! module pins their complete 1,051-entry name/shape ledgers before any tensor
+//! payload is decoded.  The English and Chinese artifacts predate a converter
+//! metadata correction; those two legacy tuples are accepted only after the
+//! complete official manifest and release identity have matched.
+
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+use vokra_core::{LicenseClass, Result, VokraError};
+
+use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, require_tensor_shape};
+
+const LABEL: &str = "melotts";
+const ARCH: &str = "melotts";
+const CATEGORY: &str = "tts";
+const TENSOR_COUNT: usize = 1_051;
+
+const SAMPLE_RATE: u32 = 44_100;
+const N_FFT: u32 = 2_048;
+const HOP_LENGTH: u32 = 512;
+const N_SPEAKERS_CAPACITY: u32 = 256;
+const INTER_CHANNELS: u32 = 192;
+const HIDDEN_CHANNELS: u32 = 192;
+const FILTER_CHANNELS: u32 = 768;
+const N_HEADS: u32 = 2;
+const N_LAYERS: u32 = 6;
+const N_LAYERS_TRANS_FLOW: u32 = 3;
+const GIN_CHANNELS: u32 = 256;
+const UPSAMPLE_INITIAL_CHANNEL: u32 = 512;
+const UPSAMPLE_TOTAL: u32 = 512;
+
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_VARIANT: &str = "vokra.melotts.variant";
+const KEY_SAMPLE_RATE: &str = "vokra.melotts.sample_rate";
+const KEY_N_FFT: &str = "vokra.melotts.n_fft";
+const KEY_HOP_LENGTH: &str = "vokra.melotts.hop_length";
+const KEY_N_SPEAKERS_CAPACITY: &str = "vokra.melotts.n_speakers_capacity";
+const KEY_N_SPEAKERS_ACTIVE: &str = "vokra.melotts.n_speakers_active";
+const KEY_INTER_CHANNELS: &str = "vokra.melotts.inter_channels";
+const KEY_HIDDEN_CHANNELS: &str = "vokra.melotts.hidden_channels";
+const KEY_FILTER_CHANNELS: &str = "vokra.melotts.filter_channels";
+const KEY_N_HEADS: &str = "vokra.melotts.n_heads";
+const KEY_N_LAYERS: &str = "vokra.melotts.n_layers";
+const KEY_N_LAYERS_TRANS_FLOW: &str = "vokra.melotts.n_layers_trans_flow";
+const KEY_GIN_CHANNELS: &str = "vokra.melotts.gin_channels";
+const KEY_UPSAMPLE_INITIAL_CHANNEL: &str = "vokra.melotts.upsample_initial_channel";
+const KEY_UPSAMPLE_TOTAL: &str = "vokra.melotts.upsample_total";
+const KEY_N_SYMBOLS: &str = "vokra.melotts.n_symbols";
+const KEY_NUM_TONES: &str = "vokra.melotts.num_tones";
+const KEY_NUM_LANGUAGES: &str = "vokra.melotts.num_languages";
+
+const COMMON_MANIFEST: [u8; 32] = [
+    0x39, 0x96, 0x2e, 0x5b, 0x34, 0x4d, 0xc4, 0xfd, 0x5b, 0xff, 0x86, 0x67, 0xc3, 0xae, 0x92, 0xf8,
+    0xc4, 0x71, 0x4c, 0xd9, 0x8b, 0x11, 0x10, 0xe5, 0x2b, 0x2f, 0x88, 0xec, 0xeb, 0x19, 0x63, 0x4d,
+];
+const CHINESE_MANIFEST: [u8; 32] = [
+    0x5c, 0x42, 0xf9, 0xf1, 0xb4, 0xdc, 0x5b, 0x89, 0x61, 0x6c, 0x14, 0x92, 0x8a, 0x45, 0x95, 0xc6,
+    0x88, 0xa5, 0xad, 0x3a, 0x44, 0x88, 0x37, 0x17, 0xe6, 0xf8, 0x02, 0x81, 0x2c, 0xf2, 0xef, 0xb6,
+];
+
+/// One of the five official language checkpoints published by Vokra.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeloVariant {
+    /// `vokra/melotts-english`.
+    English,
+    /// `vokra/melotts-chinese`.
+    Chinese,
+    /// `vokra/melotts-korean`.
+    Korean,
+    /// `vokra/melotts-spanish`.
+    Spanish,
+    /// `vokra/melotts-japanese`.
+    Japanese,
+}
+
+impl MeloVariant {
+    /// Returns the canonical Vokra model name stamped in the GGUF.
+    #[must_use]
+    pub const fn model_name(self) -> &'static str {
+        match self {
+            Self::English => "melotts-english",
+            Self::Chinese => "melotts-chinese",
+            Self::Korean => "melotts-korean",
+            Self::Spanish => "melotts-spanish",
+            Self::Japanese => "melotts-japanese",
+        }
+    }
+
+    /// Returns the short variant tag stamped in the GGUF.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::English => "english",
+            Self::Chinese => "chinese",
+            Self::Korean => "korean",
+            Self::Spanish => "spanish",
+            Self::Japanese => "japanese",
+        }
+    }
+
+    /// Returns the pinned upstream Hugging Face repository.
+    #[must_use]
+    pub const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::English => "myshell-ai/MeloTTS-English",
+            Self::Chinese => "myshell-ai/MeloTTS-Chinese",
+            Self::Korean => "myshell-ai/MeloTTS-Korean",
+            Self::Spanish => "myshell-ai/MeloTTS-Spanish",
+            Self::Japanese => "myshell-ai/MeloTTS-Japanese",
+        }
+    }
+
+    /// Returns the official symbol-vocabulary size.
+    #[must_use]
+    pub const fn n_symbols(self) -> u32 {
+        match self {
+            Self::Chinese => 112,
+            Self::English | Self::Korean | Self::Spanish | Self::Japanese => 219,
+        }
+    }
+
+    /// Returns the official tone-vocabulary size.
+    #[must_use]
+    pub const fn num_tones(self) -> u32 {
+        match self {
+            Self::Chinese => 11,
+            Self::English | Self::Korean | Self::Spanish | Self::Japanese => 16,
+        }
+    }
+
+    /// Returns the official language-embedding vocabulary size.
+    #[must_use]
+    pub const fn num_languages(self) -> u32 {
+        match self {
+            Self::Chinese => 4,
+            Self::English | Self::Korean | Self::Spanish | Self::Japanese => 10,
+        }
+    }
+
+    /// Returns the number of entries exposed by the release's `spk2id` map.
+    #[must_use]
+    pub const fn n_speakers_active(self) -> u32 {
+        match self {
+            Self::English => 5,
+            Self::Chinese | Self::Korean | Self::Spanish | Self::Japanese => 1,
+        }
+    }
+
+    const fn manifest_sha256(self) -> [u8; 32] {
+        match self {
+            Self::Chinese => CHINESE_MANIFEST,
+            Self::English | Self::Korean | Self::Spanish | Self::Japanese => COMMON_MANIFEST,
+        }
+    }
+
+    fn parse(tag: &str) -> Result<Self> {
+        match tag {
+            "english" => Ok(Self::English),
+            "chinese" => Ok(Self::Chinese),
+            "korean" => Ok(Self::Korean),
+            "spanish" => Ok(Self::Spanish),
+            "japanese" => Ok(Self::Japanese),
+            _ => Err(VokraError::ModelLoad(format!(
+                "{LABEL}: unsupported `{KEY_VARIANT}`={tag:?}"
+            ))),
+        }
+    }
+
+    const fn spec(self) -> StrictCheckpointSpec {
+        StrictCheckpointSpec {
+            label: LABEL,
+            arch: ARCH,
+            model_name: self.model_name(),
+            model_name_alias: None,
+            tensor_count: TENSOR_COUNT,
+            manifest_sha256: self.manifest_sha256(),
+        }
+    }
+}
+
+/// Architecture configuration validated against the official release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeloConfig {
+    /// Language release selected by the GGUF identity.
+    pub variant: MeloVariant,
+    /// Output PCM sampling rate.
+    pub sample_rate: u32,
+    /// Spectral FFT size used during training.
+    pub n_fft: u32,
+    /// Decoder upsampling factor and PCM hop length.
+    pub hop_length: u32,
+    /// Speaker-table capacity.
+    pub n_speakers_capacity: u32,
+    /// Number of active release speaker IDs.
+    pub n_speakers_active: u32,
+    /// Latent channel count.
+    pub inter_channels: u32,
+    /// Text hidden channel count.
+    pub hidden_channels: u32,
+    /// Transformer feed-forward channel count.
+    pub filter_channels: u32,
+    /// Transformer attention head count.
+    pub n_heads: u32,
+    /// Text-encoder layer count.
+    pub n_layers: u32,
+    /// Transformer coupling-flow layer count.
+    pub n_layers_trans_flow: u32,
+    /// Global speaker-conditioning width.
+    pub gin_channels: u32,
+    /// HiFi-GAN initial channel count.
+    pub upsample_initial_channel: u32,
+    /// Product of all HiFi-GAN upsample rates.
+    pub upsample_total: u32,
+    /// Symbol-vocabulary size.
+    pub n_symbols: u32,
+    /// Tone-vocabulary size.
+    pub num_tones: u32,
+    /// Language-embedding vocabulary size.
+    pub num_languages: u32,
+}
+
+impl MeloConfig {
+    const fn official(variant: MeloVariant) -> Self {
+        Self {
+            variant,
+            sample_rate: SAMPLE_RATE,
+            n_fft: N_FFT,
+            hop_length: HOP_LENGTH,
+            n_speakers_capacity: N_SPEAKERS_CAPACITY,
+            n_speakers_active: variant.n_speakers_active(),
+            inter_channels: INTER_CHANNELS,
+            hidden_channels: HIDDEN_CHANNELS,
+            filter_channels: FILTER_CHANNELS,
+            n_heads: N_HEADS,
+            n_layers: N_LAYERS,
+            n_layers_trans_flow: N_LAYERS_TRANS_FLOW,
+            gin_channels: GIN_CHANNELS,
+            upsample_initial_channel: UPSAMPLE_INITIAL_CHANNEL,
+            upsample_total: UPSAMPLE_TOTAL,
+            n_symbols: variant.n_symbols(),
+            num_tones: variant.num_tones(),
+            num_languages: variant.num_languages(),
+        }
+    }
+}
+
+/// Strict handle proving that a GGUF is one of the five published releases.
+#[derive(Debug, Clone)]
+pub struct MeloTtsCheckpoint {
+    checkpoint: StrictCheckpoint,
+    config: MeloConfig,
+    corrected_legacy_metadata: bool,
+}
+
+impl MeloTtsCheckpoint {
+    /// Validates release identity, provenance, all metadata and all 1,051
+    /// tensor names/shapes without decoding tensor payloads.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let variant = MeloVariant::parse(required_string(file, KEY_VARIANT)?)?;
+        let checkpoint = StrictCheckpoint::bind(file, variant.spec())?;
+        require_string(file, KEY_MODEL_CATEGORY, CATEGORY)?;
+        require_string(file, KEY_UPSTREAM_HF, variant.upstream_hf())?;
+        if checkpoint.weight_license() != LicenseClass::Permissive {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: `{}` must be `permissive` for the official MIT checkpoint, got {:?}",
+                chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+                checkpoint.weight_license()
+            )));
+        }
+
+        for (key, expected) in [
+            (KEY_SAMPLE_RATE, SAMPLE_RATE),
+            (KEY_N_FFT, N_FFT),
+            (KEY_HOP_LENGTH, HOP_LENGTH),
+            (KEY_N_SPEAKERS_CAPACITY, N_SPEAKERS_CAPACITY),
+            (KEY_N_SPEAKERS_ACTIVE, variant.n_speakers_active()),
+            (KEY_INTER_CHANNELS, INTER_CHANNELS),
+            (KEY_HIDDEN_CHANNELS, HIDDEN_CHANNELS),
+            (KEY_FILTER_CHANNELS, FILTER_CHANNELS),
+            (KEY_N_HEADS, N_HEADS),
+            (KEY_N_LAYERS, N_LAYERS),
+            (KEY_N_LAYERS_TRANS_FLOW, N_LAYERS_TRANS_FLOW),
+            (KEY_GIN_CHANNELS, GIN_CHANNELS),
+            (KEY_UPSAMPLE_INITIAL_CHANNEL, UPSAMPLE_INITIAL_CHANNEL),
+            (KEY_UPSAMPLE_TOTAL, UPSAMPLE_TOTAL),
+        ] {
+            require_u32(file, key, expected)?;
+        }
+
+        let stamped_axes = (
+            required_u32(file, KEY_N_SYMBOLS)?,
+            required_u32(file, KEY_NUM_TONES)?,
+            required_u32(file, KEY_NUM_LANGUAGES)?,
+        );
+        let official_axes = (
+            variant.n_symbols(),
+            variant.num_tones(),
+            variant.num_languages(),
+        );
+        let legacy_axes = match variant {
+            MeloVariant::English => Some((178, 0, 1)),
+            MeloVariant::Chinese => Some((112, 11, 1)),
+            MeloVariant::Korean | MeloVariant::Spanish | MeloVariant::Japanese => None,
+        };
+        let corrected_legacy_metadata = stamped_axes != official_axes;
+        if corrected_legacy_metadata && Some(stamped_axes) != legacy_axes {
+            return Err(VokraError::ModelLoad(format!(
+                "{LABEL}: release axes {stamped_axes:?} are neither official {official_axes:?} nor the pinned legacy tuple {legacy_axes:?} for {:?}",
+                variant
+            )));
+        }
+
+        require_tensor_shape(
+            file,
+            LABEL,
+            "enc_p.emb.weight",
+            &[variant.n_symbols() as usize, HIDDEN_CHANNELS as usize],
+        )?;
+        require_tensor_shape(
+            file,
+            LABEL,
+            "enc_p.tone_emb.weight",
+            &[variant.num_tones() as usize, HIDDEN_CHANNELS as usize],
+        )?;
+        require_tensor_shape(
+            file,
+            LABEL,
+            "enc_p.language_emb.weight",
+            &[variant.num_languages() as usize, HIDDEN_CHANNELS as usize],
+        )?;
+        require_tensor_shape(
+            file,
+            LABEL,
+            "emb_g.weight",
+            &[N_SPEAKERS_CAPACITY as usize, GIN_CHANNELS as usize],
+        )?;
+        require_tensor_shape(
+            file,
+            LABEL,
+            "dec.conv_pre.weight",
+            &[
+                UPSAMPLE_INITIAL_CHANNEL as usize,
+                INTER_CHANNELS as usize,
+                7,
+            ],
+        )?;
+
+        Ok(Self {
+            checkpoint,
+            config: MeloConfig::official(variant),
+            corrected_legacy_metadata,
+        })
+    }
+
+    /// Returns the official configuration, including corrected language axes.
+    #[must_use]
+    pub const fn config(&self) -> MeloConfig {
+        self.config
+    }
+
+    /// Returns the selected language release.
+    #[must_use]
+    pub const fn variant(&self) -> MeloVariant {
+        self.config.variant
+    }
+
+    /// Reports whether the exact known public legacy axis tuple was corrected.
+    #[must_use]
+    pub const fn corrected_legacy_metadata(&self) -> bool {
+        self.corrected_legacy_metadata
+    }
+
+    /// Returns the pinned model name.
+    #[must_use]
+    pub fn model_name(&self) -> &str {
+        self.checkpoint.model_name()
+    }
+
+    /// Returns the fail-closed stamped weight-license class.
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.checkpoint.weight_license()
+    }
+
+    /// Returns the complete manifest tensor count.
+    #[must_use]
+    pub const fn tensor_count(&self) -> usize {
+        self.checkpoint.tensor_count()
+    }
+}
+
+fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
+    file.get(key)
+        .and_then(GgufMetadataValue::as_str)
+        .ok_or_else(|| VokraError::ModelLoad(format!("{LABEL}: missing/non-string `{key}`")))
+}
+
+fn require_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = required_string(file, key)?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{key}`={actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn required_u32(file: &GgufFile, key: &str) -> Result<u32> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_u64)
+        .ok_or_else(|| VokraError::ModelLoad(format!("{LABEL}: missing/non-u32 `{key}`")))?;
+    u32::try_from(actual)
+        .map_err(|_| VokraError::ModelLoad(format!("{LABEL}: `{key}`={actual} exceeds u32")))
+}
+
+fn require_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
+    let actual = required_u32(file, key)?;
+    if actual != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: `{key}`={actual}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_variant_axes_match_released_tensor_tables() {
+        for (variant, symbols, tones, languages, speakers) in [
+            (MeloVariant::English, 219, 16, 10, 5),
+            (MeloVariant::Chinese, 112, 11, 4, 1),
+            (MeloVariant::Korean, 219, 16, 10, 1),
+            (MeloVariant::Spanish, 219, 16, 10, 1),
+            (MeloVariant::Japanese, 219, 16, 10, 1),
+        ] {
+            let config = MeloConfig::official(variant);
+            assert_eq!(config.n_symbols, symbols);
+            assert_eq!(config.num_tones, tones);
+            assert_eq!(config.num_languages, languages);
+            assert_eq!(config.n_speakers_active, speakers);
+            assert_eq!(config.upsample_total, config.hop_length);
+        }
+    }
+
+    #[test]
+    fn variant_identity_is_one_to_one() {
+        for variant in [
+            MeloVariant::English,
+            MeloVariant::Chinese,
+            MeloVariant::Korean,
+            MeloVariant::Spanish,
+            MeloVariant::Japanese,
+        ] {
+            assert_eq!(MeloVariant::parse(variant.tag()).unwrap(), variant);
+            assert!(variant.model_name().starts_with("melotts-"));
+            assert!(variant.upstream_hf().starts_with("myshell-ai/MeloTTS-"));
+        }
+        assert!(MeloVariant::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn chinese_has_a_distinct_manifest_shape_contract() {
+        assert_ne!(CHINESE_MANIFEST, COMMON_MANIFEST);
+        assert_eq!(MeloVariant::English.manifest_sha256(), COMMON_MANIFEST);
+        assert_eq!(MeloVariant::Chinese.manifest_sha256(), CHINESE_MANIFEST);
+    }
+}

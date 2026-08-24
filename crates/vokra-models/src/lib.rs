@@ -229,6 +229,11 @@ pub mod kyutai_stt;
 // CC-BY-NC-4.0 (T4 tier — `--allow-noncommercial` required to publish;
 // M2-13 compliance gate refuses commercial-mode load).
 pub mod magnet;
+// MyShell MeloTTS English / Chinese / Korean / Spanish / Japanese (MIT):
+// strict 1,051-tensor public-checkpoint identity and official VITS2 config.
+// Native feature-to-PCM execution is added in this module family without
+// weakening the per-language raw-text frontend boundary.
+pub mod melotts;
 // post-audit CC-gap 2026-08-13 Wave D remaining WF8: Meta AudioCraft
 // MelodyFlow T24 30secs runtime binder (**SCAFFOLD** — CPU-only,
 // loud-partial forward per RMVPE / DNSMOS / openwakeword / sibling
