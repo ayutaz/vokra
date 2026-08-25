@@ -4249,6 +4249,7 @@ mod tests {
         // `xcodec2_fsq_f32` / `snake_activation_f32` / `snac_decode_f32` /
         // `denoise_apply_mask_f32`).
         for op in [
+            HotOp::Silu,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -4329,6 +4330,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
@@ -4390,6 +4392,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
@@ -4438,6 +4441,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
@@ -4503,6 +4507,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
@@ -4680,6 +4685,7 @@ mod tests {
             );
         }
         for op in [
+            HotOp::Silu,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,

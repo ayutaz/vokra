@@ -14,6 +14,14 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- Both public WavTokenizer repositories now share a strict native
+  token-to-waveform decoder for their byte-identical 1,091-tensor GGUF. The
+  single-codebook gather, positional ResNet/attention network, 12 ConvNeXt
+  blocks and Vocos iSTFT head honor explicit CPU/Metal selection; unknown
+  manifests and unsupported backends fail without a CPU fallback. The exact
+  public artifact matches the pinned official WavTokenizer decoder at CPU
+  `max_abs=1.63e-5`, while Apple M1 Metal matches CPU at
+  `max_abs=5.16e-6`. Waveform encoding remains explicitly unsupported.
 - The three public standalone BERT-family GGUFs now run as CPU/Metal text encoders
   through Rust and `vokra-cli run --token-ids`, returning final hidden-state
   features for Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3. The early

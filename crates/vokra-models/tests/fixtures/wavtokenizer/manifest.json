@@ -1,0 +1,26 @@
+{
+  "code_count": 4,
+  "condition_id": 0,
+  "config": "configs/wavtokenizer_smalldata_frame75_3s_nq1_code4096_dim512_kmeans200_attn.yaml",
+  "decoded_shape": [
+    1,
+    1280
+  ],
+  "feature_shape": [
+    1,
+    512,
+    4
+  ],
+  "files": {
+    "codes.u32le": "3bab5738a2c63b11352ad1211664346c1f1ff19de67bd750e1b8a61408c353ea",
+    "decoded_pcm.f32": "4ea67d810d212d451632cd90893298da4884a625b52a35a6c1e310e3ec656072",
+    "features.f32": "b2fad66d117cd777f9076d7d0e2fdde353ea7aeeeebafeb2aa86eb7628dd0fe0"
+  },
+  "format": "vokra-wavtokenizer-reference-v1",
+  "gguf_sha256": "99b7dce0426266f7f2f6615091d832cea71387ce57edfae66666143a5c33a36b",
+  "oracle": "official WavTokenizer.codes_to_features + WavTokenizer.decode",
+  "source_commit": "5cf440d91ac420ca338f117b7003a77450d64730",
+  "source_repository": "https://github.com/jishengpeng/WavTokenizer",
+  "state_tensor_count": 289,
+  "torch": "2.13.0"
+}

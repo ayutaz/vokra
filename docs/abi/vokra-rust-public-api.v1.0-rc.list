@@ -1128,6 +1128,7 @@ FN vokra-ops::vit::vit_pool|pub fn vit_pool(
 FN vokra-ops::vit::weights|pub fn weights(&self) -> &ViTWeights {
 FN vokra-ops::vocos::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::vocos::validate|pub fn validate(&self, attrs: &VocosAttrs) -> Result<()> {
+FN vokra-ops::vocos::vocos_decode_from_embedded_with_ops|pub fn vocos_decode_from_embedded_with_ops<O: VocosBackendOps>(
 FN vokra-ops::vocos::vocos_decode_with_ops|pub fn vocos_decode_with_ops<O: VocosBackendOps>(
 FN vokra-ops::vocos::vocos_decode|pub fn vocos_decode(
 FN vokra-ops::voice_ref::fixed_voice|pub fn fixed_voice(name: impl Into<String>) -> Self {

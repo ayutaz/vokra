@@ -14,20 +14,21 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE and standalone BERT-family CPU/Metal waves, it reported:
+Piper, FCPE, standalone BERT-family and WavTokenizer CPU/Metal waves, it
+reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 83 |
+| Complete CPU code route | 85 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 61 |
+| No complete runtime binder | 59 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 83 |
+| Complete Metal code route among the CPU-complete set | 85 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 110 |
+| Metal blocked by missing/partial CPU forward | 108 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -38,7 +39,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 83 repositories with a complete Metal code route are the four BigVGAN
+The 85 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -55,13 +56,16 @@ public pyannote WeSpeaker ResNet34-LM repository, and both byte-identical
 TitaNet-Large repositories (`vokra/titanet-l` and `vokra/titanet-large`), plus
 the standalone Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3 text
 encoders.
+They also include `vokra/wavtokenizer-large` and
+`vokra/wavtokenizer-large-speech-75token`, whose GGUF payloads are
+byte-identical.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There are no CPU-complete, Metal-unsupported repositories in this inventory.
-The remaining 110 Metal-blocked repositories first need a complete released-
+The remaining 108 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -1596,6 +1600,45 @@ Mac log/output/environment set is under
 `/private/tmp/vokra-focalcodec-mac-51a0681c`; its locally verified SHA-ledger
 digest is
 `887d3c047ff8dfbaa75f50ed06bcc5ad602dc82282940fed726fa0ed0b2cc3bb`.
+
+### WavTokenizer large-speech 75-token decoder
+
+The two public repositories `vokra/wavtokenizer-large` (revision
+`fa3dc6c15581c76c86be61513003fd84fa161d54`) and
+`vokra/wavtokenizer-large-speech-75token` (revision
+`103a577083a7221728cc7c60354044acc664657c`) carry the same
+846,393,344-byte, 1,091-tensor GGUF. Its SHA-256 is
+`99b7dce0426266f7f2f6615091d832cea71387ce57edfae66666143a5c33a36b`.
+The strict loader accepts that exact released MIT/provenance/model contract
+and rejects extra, missing, wrong-shaped or differently identified manifests.
+
+The native decoder covers the single 4,096-entry, 512-dimensional codebook,
+four conditioning rows, four positional ResNet blocks and temporal attention,
+all 12 conditioned ConvNeXt blocks, magnitude/phase head and same-padded
+1,280-point iSTFT. VQ gather, Conv1D, grouped Conv1D, GroupNorm, LayerNorm,
+GEMM, Softmax, GELU and SiLU honor the requested CPU or Metal backend. CLI
+decode accepts one little-endian `u32` code per 75 Hz frame and writes 24 kHz
+mono WAV. Encode remains an explicit unsupported-operation error.
+
+The independent oracle imports the official `jishengpeng/WavTokenizer`
+implementation at commit `5cf440d91ac420ca338f117b7003a77450d64730`, loads
+the audited GGUF's verbatim F32 inference state into the upstream modules and
+calls the official `codes_to_features` plus `decode` methods. For the
+four-code/1,280-sample fixture, the public GGUF produced:
+
+| Comparison | max abs | mean abs | relative L1 | cosine |
+|---|---:|---:|---:|---:|
+| Mac CPU / official | `1.628510654e-5` | `2.329980862e-6` | `5.741390002e-6` | `0.999999999978` |
+| Apple M1 Metal / official | `1.708976924e-5` | `2.329881909e-6` | `5.741146168e-6` | `0.999999999978` |
+| Mac CPU / Apple M1 Metal | `5.155801773e-6` | `1.240446591e-6` | `3.056629167e-6` | `0.999999999995` |
+
+The official fixture is registered at `atol=2e-5` and cosine
+`>=0.999999999`, both derived after the oracle was fixed and without relaxing
+the measured result. Disposable VAST instance `48645355` validated the
+focused strict-loader/model tests (`4 passed / 0 failed`) and warnings-as-error
+library Clippy at commit `97f3db3e`; its logs were pulled to
+`/private/tmp/vokra-wavtokenizer-vast-48645355` and the instance was destroyed.
+No Hugging Face upload or public artifact change was performed.
 
 ## Remaining execution order
 

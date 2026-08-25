@@ -128,6 +128,7 @@ METAL_CODE_ARCHES = {
     "vocos",
     "voxtral",
     "wav2vec2_ctc",
+    "wavtokenizer",
     "whisper",
     "whisper-medusa-v1",
     "wespeaker",
