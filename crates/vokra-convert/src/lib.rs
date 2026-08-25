@@ -2164,20 +2164,18 @@ pub enum ModelKind {
     /// SpeechBrain **lang-id-voxlingua107-ecapa** checkpoint (TIER 1
     /// F wave, 2026-07-30). Category = `classification`. 107-language
     /// identification (Valk & Alumäe 2021 arXiv:2011.12998) with
-    /// ECAPA-TDNN backbone. BF16 pass-through skeleton — shares the
-    /// `models::speechbrain_lang_id` file with the CommonLanguage
-    /// sibling ([`Self::LangIdCommonLanguage`]); both variants share
-    /// the ECAPA-TDNN topology and differ only in the head vocab (a
-    /// shape-derivable hparam). Provenance = **apache-2.0**
-    /// (Permissive).
+    /// a 60-bin ECAPA-TDNN backbone, 256-d embedding and XVector MLP
+    /// classifier. Conversion requires the official prepared checkpoint so
+    /// the classifier and ordered 107-label inventory cannot be omitted.
+    /// Provenance = **apache-2.0** (Permissive).
     LangIdVoxlingua107,
     /// SpeechBrain **lang-id-commonlanguage_ecapa** checkpoint (TIER
     /// 1 F wave, 2026-07-30, sibling of [`Self::LangIdVoxlingua107`]).
     /// Category = `classification`. CommonLanguage-trained variant
-    /// (~45 languages) sharing the same ECAPA-TDNN topology; the
-    /// distinct ModelKind ensures the correct `vokra.model.name` +
-    /// `vokra.provenance.upstream_hf` land on the artifact. BF16 pass-
-    /// through skeleton. Provenance = **apache-2.0** (Permissive).
+    /// (~45 languages) with an 80-bin, 192-d ECAPA encoder and cosine
+    /// classifier. It shares the family dispatch tag but not the complete
+    /// VoxLingua107 topology; required GGUF metadata keeps the two layouts
+    /// distinct. Provenance = **apache-2.0** (Permissive).
     LangIdCommonLanguage,
     /// SpeechBrain **spkrec-xvect-voxceleb** X-vector checkpoint
     /// (TIER 1 F wave, 2026-07-30). Category = `speaker`. TDNN-based

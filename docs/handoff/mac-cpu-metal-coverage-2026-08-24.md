@@ -539,7 +539,13 @@ remain fail-closed rather than being counted as runnable:
 |---|---|
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` at `3dc7704b2dcb80b8ea8eb2d3db7280f682ac3657` | The 83,239,904-byte `spkrec-ecapa-voxceleb.restamped.gguf` (SHA-256 `75e74d4e41d16bf2af5a0176c189fc1c7f7597fe66aae47cacef17343cbb4c01`) fails GGUF parsing with tensor data out of bounds at `mfa.conv.conv.weight`; it requires a gated replacement. |
 | `vokra/voice-gender-classifier` | Mis-stamped as canonical ECAPA, but carries a distinct 202-tensor `conv1/layer1-3/attention/fc6/fc7` classifier topology and incorrect provenance; the 200-tensor binder rejects it. |
-| `vokra/lang-id-voxlingua107` | Carries the same 200 embedding tensors but no language classifier head or 107-entry label map; the shared ECAPA trunk is implemented, while classification remains an explicit artifact error pending a correctly licensed, gated replacement. |
+| `vokra/lang-id-voxlingua107` | Carries 200 embedding tensors but no official XVector classifier, ordered 107-entry label map, or variant-specific 60-mel/256-d contract. The converter now refuses embedding-only inputs and accepts only the output of `tools/parity/speechbrain_lang_id_prepare_checkpoint.py`; runtime classification and an authorized gated replacement remain pending. |
+
+The prepared Lang-ID contract deliberately does not alias the two SpeechBrain
+releases. VoxLingua107 is 60-mel → 256-d ECAPA → XVector MLP + log-softmax,
+whereas CommonLanguage is 80-mel → 192-d ECAPA → cosine classifier. Both keep
+the `lang_id_ecapa` family dispatch tag, but the converter stamps and validates
+their different frontend, embedding, classifier and ordered-label metadata.
 
 The SHA-256 above is the value on the live fixed-revision model card and the
 downloaded 83,239,808-byte file; it corrects a stale ledger transcription that

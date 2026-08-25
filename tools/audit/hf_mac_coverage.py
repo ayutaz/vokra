@@ -84,6 +84,13 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "attribution; the strict native binder refuses the provenance mismatch pending "
         "an authorized gated replacement",
     ),
+    "vokra/lang-id-voxlingua107": (
+        "partial",
+        "the public GGUF contains only 200 ECAPA embedding tensors: it omits the official "
+        "XVector classifier, ordered 107-label encoder and the variant-specific 60-mel/256-d "
+        "contract; the strict converter now requires the official prepared checkpoint, but "
+        "the live artifact needs an authorized gated replacement",
+    ),
 }
 
 # Conservative code-path inventory. Every entry must also be a full routed
