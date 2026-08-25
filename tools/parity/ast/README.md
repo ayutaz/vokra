@@ -21,13 +21,21 @@ VOKRA_AST_GGUF=/root/models/ast.gguf \
   --test parity_ast_real -- --nocapture
 ```
 
-The acceptance bounds were registered before observing Vokra output:
+The logit acceptance bounds were registered before observing Vokra output:
 
-- normalized frontend max absolute error `2e-5`;
 - logits max absolute error `1e-2`;
 - logits RMSE `2e-3`;
 - logits cosine similarity at least `0.99999`;
 - exact top-5 class-index ordering.
+
+The frontend initially used a pre-registered max-only bound of `2e-5`. The
+first real run stopped at `3.23415e-4`. Investigation located the maximum in a
+near-f32-floor high-frequency mel bin; more importantly, the official
+TorchAudio float32 frontend differs from the independent NumPy float64
+Kaldi-equation cross-check by max `2.40257e-4` (RMSE `5.54365e-6`). The
+evidence-backed frontend gate is therefore max `5e-4`, RMSE `1e-5`, and p99
+`2e-5`. This preserves strict distribution checks instead of hiding broad
+drift behind a max-only tolerance.
 
 Do not widen a failed bound without locating and documenting the numerical
 cause. The public GGUF and upstream checkpoint remain on VAST; only the
