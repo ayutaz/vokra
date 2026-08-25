@@ -100,6 +100,7 @@ METAL_CODE_ARCHES = {
     "data2vec_audio",
     "deberta_v2",
     "deberta_v3",
+    "denoise",
     "distil-whisper",
     "ecapa_tdnn",
     "fcpe",

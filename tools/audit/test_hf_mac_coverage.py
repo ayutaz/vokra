@@ -147,9 +147,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(bad_wespeaker, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(titanet, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(deepfilternet, routed, bound).cpu_code, "full")
-        self.assertEqual(
-            audit.classify(deepfilternet, routed, bound).metal_code, "cpu-only"
-        )
+        self.assertEqual(audit.classify(deepfilternet, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(corrupt_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(missing, routed, bound).cpu_code, "no-runtime-binder")

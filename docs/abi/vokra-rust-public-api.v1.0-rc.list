@@ -818,6 +818,8 @@ FN vokra-ops::denoise::denoise_synthesized_tensors|pub fn denoise_synthesized_te
 FN vokra-ops::denoise::denoise_tensor_manifest|pub fn denoise_tensor_manifest(cfg: &DeepFilterNetConfig) -> Vec<TensorSpec> {
 FN vokra-ops::denoise::denoise|pub fn denoise(noisy: &[f32], model: &DenoiseModel) -> Result<Vec<f32>> {
 FN vokra-ops::denoise::emb_dim|pub fn emb_dim(&self) -> usize {
+FN vokra-ops::denoise::enhance_with_backend_ops_and_taps|pub fn enhance_with_backend_ops_and_taps(
+FN vokra-ops::denoise::enhance_with_backend_ops|pub fn enhance_with_backend_ops(
 FN vokra-ops::denoise::enhance_with_taps|pub fn enhance_with_taps(&self, noisy: &[f32]) -> Result<(Vec<f32>, DenoiseTaps)> {
 FN vokra-ops::denoise::enhance|pub fn enhance(&self, noisy: &[f32]) -> Result<Vec<f32>> {
 FN vokra-ops::denoise::erb_widths|pub fn erb_widths(&self) -> Result<Vec<usize>> {
@@ -982,6 +984,7 @@ FN vokra-ops::itn::token::parse_tokens|pub fn parse_tokens(input: &str) -> Resul
 FN vokra-ops::itn::token::prefix|pub const fn prefix(self) -> &'static str {
 FN vokra-ops::itn::token::render|pub fn render(&self, orders: &[(&str, &[&str])]) -> String {
 FN vokra-ops::itn::token::reorder|pub fn reorder(input: &str, parse_type: ItnParseType) -> Result<String> {
+FN vokra-ops::kaldi_fbank::ast_audioset|pub fn ast_audioset() -> Self {
 FN vokra-ops::kaldi_fbank::camplus|pub fn camplus() -> Self {
 FN vokra-ops::kaldi_fbank::kaldi_fbank_with_window|pub fn kaldi_fbank_with_window(
 FN vokra-ops::kaldi_fbank::kaldi_fbank|pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usize)> {
@@ -1112,7 +1115,9 @@ FN vokra-ops::vae_continuous::voxcpm2_2b|pub fn voxcpm2_2b() -> Self {
 FN vokra-ops::vae_continuous::voxcpm_0_5b|pub fn voxcpm_0_5b() -> Self {
 FN vokra-ops::vit::add_pos_embed|pub fn add_pos_embed(&self, tokens: &mut [f32], grid: &PatchGrid) -> Result<()> {
 FN vokra-ops::vit::attrs|pub fn attrs(&self) -> &ViTAttrs {
+FN vokra-ops::vit::encode_tokens_with_backend|pub fn encode_tokens_with_backend(
 FN vokra-ops::vit::encode_tokens|pub fn encode_tokens(&self, tokens: &[f32], n_tokens: usize) -> Result<Vec<f32>> {
+FN vokra-ops::vit::forward_with_backend|pub fn forward_with_backend(
 FN vokra-ops::vit::forward|pub fn forward(
 FN vokra-ops::vit::head_dim|pub fn head_dim(&self) -> usize {
 FN vokra-ops::vit::mlp_dim|pub fn mlp_dim(&self) -> usize {
@@ -1611,11 +1616,13 @@ TRAIT vokra-core::rng::NormalSource|pub trait NormalSource {
 TRAIT vokra-core::stream::event::EventSink|pub trait EventSink {
 TRAIT vokra-core::stream::step::StreamStep|pub trait StreamStep: Send {
 TRAIT vokra-ops::bigvgan_generator::BigVganBackendOps|pub trait BigVganBackendOps: HifiGanBackendOps {
+TRAIT vokra-ops::denoise::DenoiseBackendOps|pub trait DenoiseBackendOps {
 TRAIT vokra-ops::firered_vad::FireredVadBackendOps|pub trait FireredVadBackendOps {
 TRAIT vokra-ops::fsmn_vad::FsmnBackendOps|pub trait FsmnBackendOps {
 TRAIT vokra-ops::hifigan::HifiGanBackendOps|pub trait HifiGanBackendOps {
 TRAIT vokra-ops::prosody::ApplyProsody|pub trait ApplyProsody {
 TRAIT vokra-ops::ten_vad::TenVadBackendOps|pub trait TenVadBackendOps {
+TRAIT vokra-ops::vit::ViTBackendOps|pub trait ViTBackendOps {
 TRAIT vokra-ops::vocos::VocosBackendOps|pub trait VocosBackendOps {
 TRAIT vokra-ops::voice_ref::VoiceRefSource|pub trait VoiceRefSource {
 TYPE vokra-core::decode::wfst::fst::Label|pub type Label = u32;
