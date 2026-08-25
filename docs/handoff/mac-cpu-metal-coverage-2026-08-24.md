@@ -134,11 +134,12 @@ No public upload or replacement was performed.
 
 ### SepFormer seven-checkpoint family
 
-SepFormer now implements the full learned forward: encoder, GroupNorm,
-segmentation/overlap-add, two dual-path blocks with 16 total Transformer
-layers, multi-head attention, ReLU feed-forward networks, PReLU mask heads and
-decoder. Its complete backend hot-op set is GEMM, Softmax, LayerNorm and
-Conv1D. CLI and Rust sessions expose source separation, and the C ABI adds
+SepFormer implements the full learned forward: encoder, dedicated one-group
+GroupNorm, segmentation/overlap-add, two dual-path blocks with 16 total
+Transformer layers, multi-head attention, ReLU feed-forward networks, PReLU
+mask heads and decoder. Its complete backend hot-op set is GEMM, Softmax,
+LayerNorm, GroupNorm and Conv1D. CLI and Rust sessions expose source
+separation, and the C ABI adds
 `vokra_separate`; the returned allocation is stream-major and is released
 once with the existing `vokra_audio_free` function.
 
@@ -151,18 +152,44 @@ exact known variant/provenance plus audited `[512,256,1,1]` mask-head shape.
 WHAMR is treated as two-speaker separation (`category=separation`, `n_out=2`),
 while WHAM 16 kHz and DNS-4 remain one-output enhancement models.
 
-The independent SpeechBrain 1.0.3 fixture at pinned upstream revision
-`90b3c5c3ffe3e04387b566715ab5fff36ec7b9d9` passed on VAST:
+The independent oracle now covers all seven checkpoints with the official
+`speechbrain==1.0.3` implementation at each fixed upstream revision. The model
+and deterministic 4,096-sample input execute in float64 before little-endian
+f32 serialization; the dumper never imports Vokra or reads a GGUF. Six variants
+retain the established waveform boundary `max_abs <= 0.01`,
+`mean_abs <= 0.001`. DNS4 is separately pre-registered at `0.1513 / 0.00515`:
+the pinned official FP32 output itself differed across Apple ARM and VAST x86
+by max `0.0972996`, mean `0.00243752`, and the bound is twice the largest
+observed official FP32-to-FP64 floor. The full derivation and SHA-256 ledger are
+in `crates/vokra-models/tests/fixtures/sepformer/README.md`.
 
-| SepFormer surface | max abs | mean abs |
-|---|---:|---:|
-| Encoder | `1.192092896e-7` | `1.695379948e-11` |
-| Final 4,096-sample waveform | `1.866221428e-4` | `1.220094873e-5` |
+The Apple M1 campaign ran the exact seven public GGUFs through CPU, real Metal
+and the official FP64 fixtures. Largest waveform errors per variant were:
 
-The CLI produced a 4,096-sample output WAV from the public WHAM 16 kHz GGUF,
-and the real public-model C ABI test passed in 90.08 seconds. These are CPU
-measurements; SepFormer's declared Metal path still needs the same explicit
-Apple-device verification as the encoder family above.
+| Variant | CPU / official max | Metal / official max | CPU / Metal max |
+|---|---:|---:|---:|
+| WSJ02Mix | `9.1076e-5` | `1.6022e-4` | `7.1526e-5` |
+| Libri2Mix | `5.2452e-5` | `8.2612e-5` | `3.8028e-5` |
+| Libri3Mix | `5.7220e-6` | `5.7220e-6` | `4.7684e-6` |
+| WHAM16k enhancement | `1.3560e-6` | `1.3635e-6` | `9.9838e-7` |
+| WHAMR16k | `2.4587e-7` | `6.7800e-7` | `4.3213e-7` |
+| WHAMR 8 kHz | `3.3248e-7` | `3.5577e-7` | `4.0419e-7` |
+| DNS4 enhancement | `8.8398e-2` | `1.1426e-1` | `6.3866e-2` |
+
+Every encoder comparison remained at or below `2.3842e-6`. Metal GroupNorm
+matched CPU over SepFormer production shapes at max `4.768e-7`; the corrected
+bias-first Metal GEMM matched CPU/naive references at max `6.676e-6`. Metal is
+the selected backend for every learned op and never falls back to CPU.
+
+Commit `f02a7556` was then checked on disposable VAST instance `48639251`.
+`parity_sepformer_real` passed `4 / 0 / 0` in 274.38 seconds, including all
+seven strict binds and all seven CPU/official-FP64 forwards. DNS4 x86 CPU
+measured max `0.12589264`, mean `0.00357618`; all other x86 rows remained far
+inside the shared boundary. The command
+`cargo clippy -p vokra-models --all-targets -- -D warnings` exited zero. No
+upload occurred, no VAST-generated artifact required
+pullback, and the instance was destroyed; the live VAST inventory returned
+`[]`.
 
 ### Conv-TasNet Libri1Mix enhancement
 

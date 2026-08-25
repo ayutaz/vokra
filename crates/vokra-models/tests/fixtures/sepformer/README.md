@@ -38,7 +38,9 @@ rounded upward (`2 * 0.0756435 = 0.151287`,
 `2 * 0.00257070 = 0.0051414`). On the Apple validation run, Vokra CPU versus
 the FP64 oracle measured max `0.08839798`, mean `0.00243860`; Metal measured
 max `0.11425972`, mean `0.00306709`; and CPU versus Metal measured max
-`0.06386566`, mean `0.00141754`.
+`0.06386566`, mean `0.00141754`. The subsequent VAST x86 CPU run at commit
+`f02a7556` measured max `0.12589264`, mean `0.00357618` against the same FP64
+fixture, also inside the pre-registered DNS4 boundary.
 
 DNS4 selects the portable scalar reduction order only for its CPU path. The
 other six variants retain normal CPU ISA dispatch. Metal remains fully
