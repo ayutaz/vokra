@@ -52,6 +52,17 @@
 > 812-F32-tensor binder, native two-complex-U-Net/FSMN enhancement forward and
 > CLI/bench routes for CPU and Metal. VAST compile/official CPU parity and
 > Apple-device Metal parity remain pending, so no numerical pass is claimed.
+>
+> **2026-08-26 YuE-upsampler source wave:** `vokra/yue-upsampler` now has an
+> exact 81-tensor Vocos decoder, native 1024-channel-feature to 44.1 kHz PCM
+> forward and explicit CPU/Metal CLI routes. VAST official CPU and Apple-device
+> Metal measurements are staged but not yet numerical-pass claims.
+>
+> **2026-08-26 emotion2vec source wave:** `vokra/emotion2vec` now strict-binds
+> the exact public 185-F32-tensor artifact and exposes the official native
+> 16 kHz waveform-to-bilingual-nine-class CPU/Metal forward through CLI and
+> bench. VAST FunASR CPU and Apple-device Metal measurements remain pending, so
+> this is code reachability rather than a parity-pass claim.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -70,7 +81,8 @@ At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
 MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
-Facebook Denoiser DNS48, NISQA v2 and FRCRN-SE-16K,
+Facebook Denoiser DNS48, NISQA v2, FRCRN-SE-16K, YuE-upsampler and
+emotion2vec+ Large,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -79,13 +91,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 102 |
-| Route/binder present, released-artifact CPU forward incomplete | 46 |
+| Complete CPU route for the live public artifact | 104 |
+| Route/binder present, released-artifact CPU forward incomplete | 44 |
 | No complete runtime binder | 45 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 102 |
+| Complete Metal code route among the CPU-complete set | 104 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 91 |
+| Metal blocked by missing/partial CPU forward | 89 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -98,7 +110,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 102 repositories with a complete Metal code route are the Audiobox
+The 104 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -129,6 +141,7 @@ They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
 They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
+They also include `vokra/yue-upsampler` and `vokra/emotion2vec`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
 live-artifact-complete list (see below). RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
@@ -136,7 +149,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 94 Metal-blocked repositories first need a complete released-
+remaining 89 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2385,6 +2398,34 @@ performed or authorized. The live read-only inventory after the NISQA and
 FRCRN routes reports CPU `full=102`, `partial=46`,
 `no-runtime-binder=45`, `not-artifact=1` and Metal `full=102`,
 `blocked-by-cpu=91`, `not-artifact=1`.
+
+### YuE-upsampler and emotion2vec source waves
+
+The YuE-upsampler wave moves the exact public 81-tensor artifact from a
+bound-only decoder to a native Vocos CPU/Metal feature-to-waveform route. The
+subsequent emotion2vec wave pins the public 648,576,992-byte `model.gguf`
+(`052efcdaa000208933bfe1633ae81115fa9aa05b043920bb1cfa92f2827f02bc`),
+its 185-F32-tensor manifest
+(`f5f8f684302cf55fb399277a7446976a77f570816e7e3345a008e4d0b6774401`)
+and the immutable official FunASR/checkpoint inputs.
+
+emotion2vec implements the seven-layer raw-waveform frontend, five grouped
+positional convolutions, ten learned tokens, four context plus eight global
+post-norm ALiBi blocks, mean pooling and official bilingual nine-class head.
+All Conv1D/grouped-Conv1D, GEMM, Softmax, LayerNorm and GELU operations use the
+selected `Compute` backend. Waveform normalization, tensor layouts, ALiBi
+construction and mean pooling are deterministic host glue; unsupported
+backends fail before inference without a CPU fallback. CLI run prints every
+score and bench preserves the selected backend.
+
+`tools/parity/emotion2vec_dump_reference.py` imports the exact official FunASR
+revision directly, while `scripts/publish/vast-ai/run-emotion2vec-parity.sh`
+downloads and verifies every pinned public/official input before compiling and
+recording the first CPU measurement. Bounds deliberately remain unset until
+that VAST output and an Apple CPU/Metal run are reviewed. Neither model was run
+on the maintainer Mac. The resulting live reachability totals are CPU
+`full=104`, `partial=44`, `no-runtime-binder=45`, `not-artifact=1` and Metal
+`full=104`, `blocked-by-cpu=89`, `not-artifact=1`.
 
 ## Remaining execution order
 

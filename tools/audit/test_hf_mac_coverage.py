@@ -65,6 +65,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "denoise",
             "dnsmos",
             "nisqa_v2_weight",
+            "emotion2vec",
             "utmos",
             "metricgan_plus",
             "frcrn",
@@ -158,6 +159,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         frcrn = audit.RepoRecord(
             "vokra/frcrn", "abc", ("frcrn.gguf",), "frcrn"
         )
+        emotion2vec = audit.RepoRecord(
+            "vokra/emotion2vec", "abc", ("model.gguf",), "emotion2vec"
+        )
         tiger = audit.RepoRecord(
             "vokra/tiger-dnr",
             "abc",
@@ -224,6 +228,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(nisqa, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(frcrn, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(frcrn, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(emotion2vec, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(emotion2vec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")

@@ -127,6 +127,7 @@ METAL_CODE_ARCHES = {
     "distil-whisper",
     "dnsmos",
     "ecapa_tdnn",
+    "emotion2vec",
     "facebook_denoiser",
     "fcpe",
     "firered_vad",

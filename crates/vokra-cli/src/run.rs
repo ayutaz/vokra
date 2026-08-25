@@ -861,6 +861,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Speaker
         | ModelTask::LangId
         | ModelTask::AudioQualityAudiobox
+        | ModelTask::EmotionClassification
         | ModelTask::WatermarkAudioseal
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
@@ -1208,6 +1209,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::AudioQualityAudiobox => {
             run_audiobox_aesthetics(&session, &a)?;
         }
+        ModelTask::EmotionClassification => {
+            run_emotion2vec(&session, &a)?;
+        }
         ModelTask::WatermarkAudioseal => {
             run_audioseal(&session, &a)?;
         }
@@ -1468,6 +1472,45 @@ fn run_audiobox_aesthetics(session: &Session, args: &RunArgs) -> Result<(), Stri
         std::fs::write(output, bytes)
             .map_err(|error| format!("run (Audiobox Aesthetics): --output {output}: {error}"))?;
         println!("audiobox-aesthetics: CE/CU/PC/PQ f32 -> {output}");
+    }
+    Ok(())
+}
+
+/// Runs the strict emotion2vec+ Large classifier. `--output` writes all nine
+/// softmax scores as little-endian f32 in the official bilingual label order.
+fn run_emotion2vec(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (emotion2vec): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::emotion2vec::Emotion2Vec::from_gguf(session.gguf())
+        .map_err(|error| format!("run (emotion2vec): {error}"))?
+        .with_backend(args.backend);
+    let scores = model
+        .classify_scores(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (emotion2vec): {error}"))?;
+    let labels = vokra_models::emotion2vec::Emotion2Vec::class_labels();
+    let mut ranked = scores.iter().copied().enumerate().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    for (rank, (index, score)) in ranked.into_iter().enumerate() {
+        println!(
+            "emotion2vec[{}]: index={index} label={} score={score:.9}",
+            rank + 1,
+            labels[index]
+        );
+    }
+    if let Some(output) = args.output.as_deref() {
+        let bytes = scores
+            .iter()
+            .flat_map(|score| score.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (emotion2vec): --output {output}: {error}"))?;
+        println!(
+            "emotion2vec: {} scores in official label order -> {output}",
+            scores.len()
+        );
     }
     Ok(())
 }

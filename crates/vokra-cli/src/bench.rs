@@ -670,6 +670,33 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("audiobox-aesthetics", audio_seconds, samples)
         }
+        ModelTask::EmotionClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (emotion2vec): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::emotion2vec::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (emotion2vec): {path} is {} Hz, expected {rate} Hz — resample explicitly before classification (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::emotion2vec::Emotion2Vec::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let scores = model
+                    .classify_scores(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(scores);
+                Ok(())
+            })?;
+            ("emotion2vec", audio_seconds, samples)
+        }
         ModelTask::WatermarkAudioseal => {
             let path = args
                 .input

@@ -399,7 +399,11 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [x] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate) — Commercial signed; CLI dispatch is complete. The exact upstream candidate remains recorded in §3.1. Remaining: real-weight preparation/binding/parity and publish gate.
 - [x] **Wespeaker/wespeaker-voxceleb-resnet34-LM** — Commercial signed; CLI dispatch is complete. category=speaker. Its current CC-BY-4.0 provenance includes FR-MD-09 attribution. Remaining: real-weight preparation/binding/parity and publish gate.
 - [x] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker) — Commercial signed; CLI dispatch is complete. category=speaker. Remaining: real-weight preparation/binding/parity and publish gate.
-- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; CLI dispatch is complete. category=emotion. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; strict
+  real-weight preparation, binding and native CPU/Metal CLI dispatch are
+  complete in the 2026-08-26 wave. category=emotion. Remaining: VAST official
+  CPU parity and Apple-device Metal parity. The existing public GGUF is the
+  destination; no republish is planned by this runtime wave.
 
 **Copyleft (1 entry) — SKU rename + PUBLISHED 2026-07-28**:
 

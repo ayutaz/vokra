@@ -250,6 +250,18 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (emotion2vec CPU/Metal runtime)
+
+The exact public 185-tensor emotion2vec+ Large artifact gains a strict native
+waveform-to-nine-class forward plus CLI run and bench routes. No C symbol,
+ownership rule or allocation ABI changes. The audited legacy GGUF remains
+readable only through its immutable tensor manifest and generic MIT provenance.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::emotion2vec` | `Emotion2Vec`, `Emotion2VecConfig`, `Emotion2VecScores`, topology/identity constants | Added/tightened | strict open/bind/backend selection; `classify_pcm(&[f32], 16_000) -> Result<Vec<f32>>`; `classify_scores` returns official bilingual labels with probabilities | Owns decoded F32 weights. Conv1D/grouped-Conv1D/GEMM/Softmax/LayerNorm/GELU honor explicit CPU/Metal selection; unsupported backends fail with no fallback | no for exact audited public file; malformed or partial files fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=emotion2vec` | Added (behavior only) | 16 kHz mono WAV to all nine scores in official label order; optional output is nine little-endian f32 values | Wrong sample rate, non-finite/short PCM, provenance/manifest drift and unsupported backend fail explicitly | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (emotion2vec strict conversion contract)
 
 The historical pass-through converter now accepts only the immutable official
@@ -259,8 +271,8 @@ identifiable by the same complete tensor manifest and generic provenance.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
-| `vokra-convert::models::emotion2vec` | `convert_emotion2vec_file`, `Emotion2vecReport`, source/topology constants | Tightened/additive | same conversion signature; exact 185 F32 names/shapes and immutable source/checkpoint required | Canonical official input remains accepted. Partial/foreign/dtype-drifted inputs and conflicting license overrides now fail before output | no for canonical release; intentionally rejects previously loose inputs | (TBD) |
-| `gguf:vokra.emotion2vec.*` | 17-key topology/label group | Added | sample/encoder/Conv axes, normalization flag, arrays and official bilingual labels | New converters stamp the group. The exact historical public GGUF may omit it while its immutable 185-tensor manifest and generic MIT provenance match; partial groups fail closed in the runtime wave | no for audited public file | (TBD) |
+| `vokra-convert::models::emotion2vec` | `convert_emotion2vec_file`, `Emotion2vecReport`, source/topology constants | Tightened/additive | same conversion signature; exact 185 F32 names/shapes and immutable source/checkpoint required | Canonical official input remains accepted. Partial/foreign/dtype-drifted inputs and conflicting license overrides now fail before output | no for canonical release; intentionally rejects previously loose inputs | `f2e10046` |
+| `gguf:vokra.emotion2vec.*` | 17-key topology/label group | Added | sample/encoder/Conv axes, normalization flag, arrays and official bilingual labels | New converters stamp the group. The exact historical public GGUF may omit it while its immutable 185-tensor manifest and generic MIT provenance match; partial groups fail closed in the runtime wave | no for audited public file | `f2e10046` |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (YuE-upsampler CPU/Metal runtime)
 

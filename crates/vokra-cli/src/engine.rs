@@ -100,6 +100,11 @@ pub(crate) enum ModelTask {
     /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
     /// the selected CPU/Metal backend reaches its complete WavLM forward.
     AudioQualityAudiobox,
+    /// Nine-way speech-emotion classification through emotion2vec+ Large.
+    /// The concrete strict binder is created in the run/bench arm so the
+    /// selected CPU/Metal backend reaches all learned hot operations without
+    /// loading the 648 MB public GGUF twice.
+    EmotionClassification,
     /// AudioSeal 16-bit watermark generation/detection. The concrete four-
     /// checkpoint bundle binds in the run/bench arm so malformed audio is
     /// rejected before decoding weights and the selected CPU/Metal backend
@@ -386,6 +391,7 @@ const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
 const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
+const ARCH_EMOTION2VEC: &str = "emotion2vec";
 const ARCH_AUDIOSEAL: &str = "audioseal_real_weight";
 const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
@@ -939,6 +945,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: run/bench bind the strict four-axis scorer once
             // and thread the caller-selected backend through every hot op.
             Ok((session, ModelTask::AudioQualityAudiobox))
+        }
+        ARCH_EMOTION2VEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_EMOTION2VEC}`"
+                ));
+            }
+            // Bare session: run/bench bind the exact 185-tensor classifier
+            // once and thread the selected CPU/Metal backend through it.
+            Ok((session, ModelTask::EmotionClassification))
         }
         ARCH_AUDIOSEAL => {
             if hint.is_some() {
@@ -1892,10 +1908,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // that fires FIRST: their forwards are loud-partials today, so that is
     // what a caller hits. Even once those land, an SSL encoder emits `[T, D]`
     // hidden states — not a CLI-shaped artifact — so these rows would move to
-    // `NoCliShapedOutput` rather than gain a `run` task. The classifier heads
-    // (`emotion2vec`, `panns`, `maest::tag`) are the exception: a label +
-    // score list IS printable, so those become candidates for a real `run`
-    // arm the day their forwards land.
+    // `NoCliShapedOutput` rather than gain a `run` task. The remaining
+    // classifier heads (`panns`, `maest::tag`) are the exception: a label +
+    // score list is printable. emotion2vec left this table when its complete
+    // CPU/Metal forward and dedicated run task landed.
     BoundArch {
         arch: "atst",
         module: "vokra_models::atst",
@@ -1931,14 +1947,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::clap",
         entry: "Clap::from_gguf → Clap::encode_audio",
         probe: Some(|g: &GgufFile| vokra_models::clap::Clap::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "emotion2vec",
-        module: "vokra_models::emotion2vec",
-        entry: "Emotion2Vec::from_gguf → Emotion2Vec::classify",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::emotion2vec::Emotion2Vec::from_gguf(g).map(|_| ())
-        }),
     },
     BoundArch {
         arch: "panns",
@@ -2748,20 +2756,14 @@ mod tests {
         }
     }
 
-    /// A row that carries a probe really loads the binder: the message
-    /// reports one of the two probe outcomes, never neither.
+    /// emotion2vec has a real printable classifier surface and therefore
+    /// routes to a task instead of the bound-but-not-runnable diagnostic.
     #[test]
-    fn load_session_bound_arch_probe_reports_a_load_outcome() {
-        let err = with_arch_only_gguf("emotion2vec", "emotion2vec-arch", |p| {
-            let Err(e) = load_session(p) else {
-                panic!("emotion2vec has no run task");
-            };
-            e
+    fn load_session_routes_emotion2vec_to_classification() {
+        with_arch_only_gguf(ARCH_EMOTION2VEC, "emotion2vec-arch", |path| {
+            let (_, task) = load_session(path).expect("emotion2vec route");
+            assert_eq!(task, ModelTask::EmotionClassification);
         });
-        assert!(
-            err.contains("LOADED and validated") || err.contains("FAILED — the binder reports:"),
-            "a probed row must report the binder's own load outcome: {err}"
-        );
     }
 
     /// Zonos moved from the last no-loader slice to a strict manifest probe;

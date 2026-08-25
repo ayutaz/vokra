@@ -14,6 +14,14 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The exact public emotion2vec+ Large GGUF now strict-binds its 185-tensor
+  native classifier and runs the 7-layer waveform frontend, grouped positional
+  convolutions, learned tokens, 4+8 post-norm ALiBi blocks, mean pool and
+  bilingual nine-way head through explicit CPU/Metal backends. CLI run and
+  bench routes return all scores in official label order; malformed contracts,
+  unsupported backends and invalid 16 kHz PCM fail without a CPU fallback.
+  VAST official CPU parity and Apple-device Metal parity are staged but not yet
+  claimed.
 - The emotion2vec+ Large converter now pins the immutable official
   `model.pt`, exact 185-F32-tensor manifest, 16 kHz frontend, 8+4 post-norm
   ALiBi encoder topology and official bilingual nine-label order. A dedicated
@@ -21,7 +29,7 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   `[1,1,16,1,1] -> [16]` ALiBi reshape, while the independent parity dumper
   imports the public-release FunASR commit directly. Loose/partial tensors,
   wrong shapes/dtypes and conflicting license overrides now fail closed;
-  the native CPU/Metal forward is the next change in this model wave.
+  the native forward consumes the resulting strict contract directly.
 - The public YuE-upsampler GGUF now strict-binds its exact 81-tensor
   `m-a-p/YuE-upsampler` 151k release and decodes 1024-channel codec features
   to 44.1 kHz PCM through the existing native Vocos CPU/Metal graph. The

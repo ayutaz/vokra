@@ -874,35 +874,12 @@ pub mod storm;
 // obligations propagate to downstream consumers = an owner-scope
 // legal decision, not a CC judgement).
 pub mod wavlm;
-// Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
-// Wave 8 comment marker; **RETRY of Wave 7 silently-lost item** per
-// WAVE 6/7 LESSON — write files to disk FIRST, then return
-// IMPL_SCHEMA): emotion2vec+ Large (`emotion2vec/emotion2vec_plus_large`,
-// MIT end-to-end) — 9-class speech emotion recognition self-supervised
-// pretrain (Ma et al. 2024 ACL, arXiv:2312.15185). **First
-// `category="emotion"` runtime binder in the converter tree**, sibling
-// to the wav2vec2-SSL-lineage fleet (`wav2vec2_ctc` CTC ASR head /
-// `wavlm_sv` XVector speaker head / `hubert` bare SSL / `data2vec-audio`
-// masked-prediction encoder) — never silently shares arch since all
-// four siblings expose completely different downstream heads on top of
-// the shared wav2vec2 encoder lineage (FR-EX-08 forbids the silent
-// shape misroute). Loud-partial pattern per panns / wavlm / storm /
-// audioldm2 / musicgen / redimnet precedent — `from_gguf` REAL (strict
-// arch check + non-empty tensor gate + weight-license class surfacing;
-// converter does NOT stamp `vokra.emotion2vec.*` topology chunks so
-// this binder mirrors the panns arch-only-gate posture, not the strict
-// axis-array `wavlm_sv` posture) + `classify(pcm) -> Result<Vec<f32>>`
-// UnsupportedOp naming (i) wav2vec2-style SSL Transformer encoder walk
-// (base topology 12L/768H per wav2vec2 lineage, exact axes deferred to
-// real-checkpoint dump), (ii) linear 9-way classifier head with all 9
-// emotion labels echoed verbatim (Angry/Disgusted/Fearful/Happy/
-// Neutral/Other/Sad/Surprised/`<unk>`) so a reader diagnosing the gap
-// can cross-check `argmax` interpretation without walking the upstream
-// `label.txt`, primary-source URLs `huggingface.co/emotion2vec/
-// emotion2vec_plus_large` + `github.com/ddlBoJack/emotion2vec` +
-// arXiv:2312.15185. §3.1 sign-off = Permissive (MIT, primary-source-
-// verified by the converter 2026-07-25 — no owner action needed for
-// MIT class per feedback-license-signoff-primary-source memory).
+// Native emotion2vec+ Large classifier. The strict binder accepts only the
+// audited public 185-F32-tensor identity and its all-or-none 17-key topology
+// contract: 7-layer waveform stem, 5 grouped positional convolutions, 10
+// learned tokens, 4 context plus 8 global post-norm ALiBi blocks, mean pooling
+// and the official bilingual 9-way head. Learned hot operations honor explicit
+// CPU/Metal selection; every other backend is an error with no CPU fallback.
 pub mod emotion2vec;
 // Moonshine ASR family (`moonshine-ai/moonshine-{tiny,base}`, MIT) — real-time
 // transformer encoder-decoder ASR alternative to Whisper for edge
