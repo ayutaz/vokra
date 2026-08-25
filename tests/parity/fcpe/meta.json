@@ -1,0 +1,37 @@
+{
+  "checkpoint_sha256": "b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015",
+  "confidence_threshold": 0.006,
+  "decoder": "local_argmax",
+  "files": {
+    "f0.f32": {
+      "bytes": 132,
+      "sha256": "8591629e7a318015fb8977def6f9a50787bc79a7c2b957b6f5e46ff5b9f75ad1"
+    },
+    "input.wav": {
+      "bytes": 10284,
+      "sha256": "be60d9c606a177078b8d6562ad7577cb94e1fc4d883cc26d9ce5e6f113b18fa3"
+    },
+    "latent.f32": {
+      "bytes": 47520,
+      "sha256": "59257a350fa24a9b73d8f07fab8acc727de9b0dcba19cc045fcd3dbc161c776b"
+    },
+    "mel.f32": {
+      "bytes": 16896,
+      "sha256": "470907a290454d78306fa173cf2a372f13eae9cc578029e96bcdcdb7bd9e621e"
+    }
+  },
+  "format": "vokra-fcpe-parity-v1",
+  "frames": 33,
+  "librosa_version": "0.11.0",
+  "local_attention_version": "1.11.2",
+  "n_mels": 128,
+  "n_pitch_bins": 360,
+  "numpy_version": "2.3.5",
+  "sample_count": 5120,
+  "sample_rate": 16000,
+  "torch_version": "2.13.0",
+  "torchaudio_version": "2.11.0",
+  "torchfcpe_version": "0.0.4",
+  "upstream": "CNChTu/FCPE official PyPI torchfcpe wheel",
+  "wheel_sha256": "f042c463d850d76c6f4899a0b84f0b694bb560adf05f4de951097a756d17472d"
+}

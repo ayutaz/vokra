@@ -56,7 +56,7 @@
 //!     max_val, max_idx = argmax(y[t])
 //!     window = y[t, (max_idx-4)..(max_idx+4)]             (9 elements, clamped to [0, 359])
 //!     cents  = sum(cent_table[window_idx] * y[window_idx]) / sum(y[window_idx])
-//!     voiced = max_val > threshold                        (0.05 default — upstream)
+//!     voiced = max_val > threshold                        (0.006 public-infer default)
 //!     f0     = 10 * 2^(cents / 1200) if voiced else 0
 //! ```
 //!
@@ -225,11 +225,12 @@ const V001_N_FFT: u32 = 1024;
 /// v001 pitch class count on the log-frequency grid (RMVPE / torchfcpe
 /// convention).
 const V001_N_PITCH_BINS: u32 = 360;
-/// v001 V/UV threshold on `max(sigmoid(logits))` — upstream
-/// `latent2cents_local_decoder(threshold=0.05)`. The value 0.006 that stood
-/// here before the 2026-07-30 CFNaiveMelPEInfer rewrite matched no upstream
-/// default.
-const V001_CONFIDENCE_THRESHOLD: f32 = 0.05;
+/// v001 V/UV threshold on `max(sigmoid(logits))` — the public waveform-to-F0
+/// wrapper `InferCFNaiveMelPE.forward` / `infer` default. The lower-level
+/// `CFNaiveMelPE.latent2cents_local_decoder` has a separate 0.05 default, but
+/// the official PyPI usage path always reaches it through this wrapper and
+/// passes 0.006 explicitly.
+const V001_CONFIDENCE_THRESHOLD: f32 = 0.006;
 /// v001 model hidden width (`CFNaiveMelPE(hidden_dims=512)`).
 const V001_D_MODEL: u32 = 512;
 /// v001 pre-GLU pointwise expansion width (the Conv1d `inner_dim * 2`
@@ -849,9 +850,9 @@ impl FCPE {
     /// Runs the **real** FCPE forward on `pcm` and returns a per-hop F0
     /// track.
     ///
-    /// The output has exactly `pcm.len() / hop` frames (integer truncation;
-    /// tail samples that do not fill a hop are dropped — the frame-count
-    /// contract callers align buffers against).
+    /// For non-empty PCM the output has exactly `pcm.len() / hop + 1` frames,
+    /// matching upstream `Wav2MelModule`; empty PCM returns no frames. The
+    /// final row is the official duplicate-last-frame alignment row.
     ///
     /// Reachable both under this name and as [`extract`](Self::extract),
     /// which delegates here verbatim. It is fallible on purpose: every
@@ -914,10 +915,10 @@ impl FCPE {
             )));
         }
 
-        let n_frames = pcm.len() / hop;
-        if n_frames == 0 {
+        if pcm.is_empty() {
             return Ok(Vec::new());
         }
+        let n_frames = pcm.len() / hop + 1;
         let sr = sample_rate as f32;
         // Compute mel-spectrogram — the FCPE front-end. A failure here is
         // propagated verbatim: it means the STFT could not run on this PCM
@@ -938,11 +939,11 @@ impl FCPE {
     /// for a PCM buffer of `pcm_len` samples, in seconds from the start of
     /// the buffer.
     ///
-    /// `result.len()` is the frame-count contract (`pcm_len / hop`,
-    /// integer-truncated); `result[i]` is the hop-aligned left edge of frame
-    /// `i`. A `hop` of 0 yields an empty slice (the timebase is undefined),
-    /// and a `sample_rate` of `0` is clamped to `1` so the column stays
-    /// finite rather than `NaN` / `±inf`.
+    /// For non-empty PCM, `result.len()` is the upstream frame-count contract
+    /// (`pcm_len / hop + 1`); empty PCM returns no rows. `result[i]` is the
+    /// hop-aligned left edge of frame `i`. A `hop` of 0 yields an empty slice
+    /// (the timebase is undefined), and a `sample_rate` of `0` is clamped to
+    /// `1` so the column stays finite rather than `NaN` / `±inf`.
     ///
     /// This runs no weights and cannot fail: it is pure arithmetic over the
     /// config, for callers that need to size or align a buffer before (or
@@ -957,7 +958,8 @@ impl FCPE {
             return Vec::new();
         }
         let sr = sample_rate.max(1) as f32;
-        (0..pcm_len / hop).map(|i| (i * hop) as f32 / sr).collect()
+        let frames = if pcm_len == 0 { 0 } else { pcm_len / hop + 1 };
+        (0..frames).map(|i| (i * hop) as f32 / sr).collect()
     }
 
     /// Returns the configured hop length (samples per frame).
@@ -1296,7 +1298,8 @@ impl FCPE {
         out
     }
 
-    /// Log-mel-spectrogram front-end (STFT power → Mel filterbank → log).
+    /// Official torchfcpe log-mel front-end (padded STFT magnitude → librosa
+    /// Mel filterbank → log).
     ///
     /// Errors carry the reason rather than the `()` this used to return: the
     /// sole caller now propagates them to the user, and "the STFT refused
@@ -1307,8 +1310,34 @@ impl FCPE {
         pcm: &[f32],
         n_frames: usize,
     ) -> Result<Vec<f32>, vokra_core::VokraError> {
-        let stft_attrs = StftAttrs::new(self.cfg.n_fft as usize, self.cfg.hop as usize);
-        let spec = stft(pcm, &stft_attrs)?;
+        let n_fft = self.cfg.n_fft as usize;
+        let hop = self.cfg.hop as usize;
+        if n_fft < hop {
+            return Err(vokra_core::VokraError::InvalidArgument(format!(
+                "fcpe: stft n_fft ({n_fft}) is smaller than hop ({hop}); upstream's \
+                 Wav2Mel padding `(n_fft - hop) / 2` is undefined for this checkpoint \
+                 (FR-EX-08)"
+            )));
+        }
+
+        // torchfcpe MelModule(center=False) pads by half the analysis overlap,
+        // not by torch.stft's n_fft/2 centered default:
+        //   left  = (win_size - hop) / 2
+        //   right = max((win_size - hop + 1) / 2,
+        //               win_size - pcm_len - left)
+        // It uses reflect padding when that right pad fits inside the input,
+        // otherwise constant zero padding for short clips.
+        let overlap = n_fft - hop;
+        let pad_left = overlap / 2;
+        let min_pad_right = (overlap + 1) / 2;
+        let fill_pad_right = n_fft.saturating_sub(pcm.len().saturating_add(pad_left));
+        let pad_right = min_pad_right.max(fill_pad_right);
+        let reflect = pad_right < pcm.len();
+        let padded = pad_fcpe_pcm(pcm, pad_left, pad_right, reflect);
+
+        let mut stft_attrs = StftAttrs::new(n_fft, hop);
+        stft_attrs.center = false;
+        let spec = stft(&padded, &stft_attrs)?;
         if spec.frames == 0 {
             return Err(vokra_core::VokraError::InvalidArgument(format!(
                 "fcpe: the STFT produced 0 frames from {} PCM sample(s) at n_fft={} / \
@@ -1325,15 +1354,26 @@ impl FCPE {
             self.cfg.n_mels as usize,
         );
         let fb = MelFilterbank::new(&mel_attrs);
-        let power = spec.power();
-        let mel_full = fb.apply(&power, spec.frames);
+        // Upstream uses sqrt(real^2 + imag^2 + 1e-9), then projects that
+        // magnitude spectrum. Using power here changes every mel value while
+        // still producing plausible pitch, which made the old smoke test an
+        // ineffective numerical oracle.
+        let magnitude: Vec<f32> = spec
+            .re
+            .iter()
+            .zip(&spec.im)
+            .map(|(&re, &im)| (re * re + im * im + 1.0e-9).sqrt())
+            .collect();
+        let mel_full = fb.apply(&magnitude, spec.frames);
         // Convert to log-mel (dynamic-range floor 1e-5 = torchfcpe default).
         let n_mels = self.cfg.n_mels as usize;
         let mut mel_log = vec![0.0f32; spec.frames * n_mels];
         for (dst, &src) in mel_log.iter_mut().zip(mel_full.iter()) {
             *dst = src.max(1e-5).ln();
         }
-        // Trim / left-pad to n_frames rows.
+        // Wav2MelModule requests `pcm_len / hop + 1` rows. Its STFT normally
+        // emits exactly one fewer row and the wrapper duplicates the final
+        // row; `align_frames` mirrors that crop/duplicate-last behavior.
         Ok(align_frames(&mel_log, spec.frames, n_frames, n_mels))
     }
 }
@@ -1639,7 +1679,44 @@ fn local_argmax_centroid(probs: &[f32], cent_grid: &[f32], peak_idx: usize) -> f
 
 // -- Front-end frame alignment + cent grid -----------------------------------
 
-/// Best-effort mel-frame count alignment: crops if the STFT emitted extra
+/// torch.nn.functional.pad-compatible padding used by the official FCPE
+/// Wav2Mel front-end. `reflect=false` is constant-zero padding; reflection
+/// excludes the boundary sample (NumPy/PyTorch reflect semantics).
+fn pad_fcpe_pcm(pcm: &[f32], left: usize, right: usize, reflect: bool) -> Vec<f32> {
+    let mut out = Vec::with_capacity(left + pcm.len() + right);
+    if reflect && !pcm.is_empty() {
+        for index in 0..left {
+            let source = reflect_fcpe_index(-((left - index) as isize), pcm.len());
+            out.push(pcm[source]);
+        }
+    } else {
+        out.resize(left, 0.0);
+    }
+    out.extend_from_slice(pcm);
+    if reflect && !pcm.is_empty() {
+        for index in 1..=right {
+            let source = reflect_fcpe_index((pcm.len() - 1 + index) as isize, pcm.len());
+            out.push(pcm[source]);
+        }
+    } else {
+        out.resize(out.len() + right, 0.0);
+    }
+    out
+}
+
+fn reflect_fcpe_index(index: isize, len: usize) -> usize {
+    if len <= 1 {
+        return 0;
+    }
+    let period = 2 * (len as isize - 1);
+    let mut wrapped = ((index % period) + period) % period;
+    if wrapped >= len as isize {
+        wrapped = period - wrapped;
+    }
+    wrapped as usize
+}
+
+/// Upstream Wav2Mel frame-count alignment: crops if the STFT emitted extra
 /// frames, right-pads with the last available frame if it emitted fewer.
 fn align_frames(src: &[f32], src_frames: usize, want_frames: usize, n_mels: usize) -> Vec<f32> {
     if src_frames == want_frames {
@@ -1786,6 +1863,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fcpe_frontend_padding_matches_torch_reflect_and_constant_modes() {
+        let reflected = pad_fcpe_pcm(&[10.0, 20.0, 30.0], 2, 2, true);
+        assert_eq!(reflected, vec![30.0, 20.0, 10.0, 20.0, 30.0, 20.0, 10.0]);
+
+        let constant = pad_fcpe_pcm(&[10.0, 20.0], 2, 3, false);
+        assert_eq!(constant, vec![0.0, 0.0, 10.0, 20.0, 0.0, 0.0, 0.0]);
+    }
+
     /// Metadata-only GGUF: config parses, no real weights bound.
     /// `frame_times` still honors the frame-count contract (bare timestamps,
     /// nothing readable as pitch), and `extract` refuses LOUDLY instead of
@@ -1803,7 +1889,7 @@ mod tests {
         let pcm = vec![0.0f32; hop * 10];
 
         let times = fcpe.frame_times(pcm.len(), 16_000);
-        assert_eq!(times.len(), pcm.len() / hop);
+        assert_eq!(times.len(), pcm.len() / hop + 1);
         for (i, t) in times.iter().enumerate() {
             let expected = (i * hop) as f32 / 16_000.0;
             assert!(
@@ -2220,8 +2306,8 @@ mod tests {
 
     /// Real-forward smoke test with a tiny synthetic FCPE checkpoint —
     /// exercises the mel front-end + input stack + encoder + head + local-
-    /// argmax path end-to-end and asserts finite output + one frame per
-    /// hop.
+    /// argmax path end-to-end and asserts finite output + the official final
+    /// duplicate-last alignment frame.
     #[test]
     fn fcpe_forward_end_to_end_smoke() {
         let tmp =
@@ -2235,7 +2321,7 @@ mod tests {
         let frames = fcpe
             .extract(&pcm, 16_000)
             .expect("bound weights at the declared rate must produce a real track");
-        assert_eq!(frames.len(), pcm.len() / hop_u);
+        assert_eq!(frames.len(), pcm.len() / hop_u + 1);
         for f in &frames {
             assert!(f.hz.is_finite(), "hz must be finite (got {})", f.hz);
             assert!(f.hz >= 0.0);
@@ -2258,7 +2344,7 @@ mod tests {
         let fcpe = FCPE::from_gguf(&tmp).expect("load complete synthetic FCPE");
         let weights = fcpe.weights.as_ref().expect("fixture binds weights");
         let pcm = synthetic_sine_pcm(hop, 20);
-        let frames = pcm.len() / hop as usize;
+        let frames = pcm.len() / hop as usize + 1;
         let mel = fcpe.compute_mel(&pcm, frames).expect("FCPE mel");
         let scalar = fcpe.forward_scalar(&mel, frames, weights);
         let compute = Compute::cpu();
@@ -2633,6 +2719,125 @@ mod tests {
         for f in frames {
             assert!(f.hz.is_finite() && f.hz >= 0.0);
         }
+    }
+
+    /// Independent public-checkpoint parity against the official
+    /// `torchfcpe-0.0.4` waveform-to-F0 path. The committed fixture was
+    /// generated by `tools/parity/fcpe_dump_reference.py`, which imports the
+    /// upstream wheel rather than mirroring this Rust implementation.
+    ///
+    /// The real GGUF remains external because it contains the 43 MB upstream
+    /// weight. Set `VOKRA_FCPE_REAL_GGUF` to the freshly converted strict
+    /// artifact; an unset variable is a visible skip rather than a synthetic
+    /// substitute.
+    #[test]
+    fn fcpe_official_torchfcpe_v001_parity() {
+        let Ok(gguf) = std::env::var("VOKRA_FCPE_REAL_GGUF") else {
+            eprintln!("VOKRA_FCPE_REAL_GGUF unset — skipping official torchfcpe FCPE parity");
+            return;
+        };
+        let fcpe = FCPE::from_gguf(Path::new(&gguf)).expect("strict real FCPE GGUF must bind");
+        assert!(fcpe.has_real_weights());
+        assert!(
+            (fcpe.config().confidence_threshold - 0.006).abs() <= f32::EPSILON,
+            "public inference threshold must be the official wrapper default"
+        );
+
+        let samples = parse_pcm16_wav_16k_mono(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/parity/fcpe/input.wav"
+        )))
+        .expect("committed FCPE parity WAV is PCM16 mono @ 16 kHz");
+        let expected_mel = fixture_f32(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/parity/fcpe/mel.f32"
+        )));
+        let expected_latent = fixture_f32(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/parity/fcpe/latent.f32"
+        )));
+        let expected_f0 = fixture_f32(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/parity/fcpe/f0.f32"
+        )));
+        let frames = expected_f0.len();
+        assert_eq!(frames, 33, "fixture frame contract drifted");
+        assert_eq!(expected_mel.len(), frames * fcpe.config().n_mels as usize);
+        assert_eq!(
+            expected_latent.len(),
+            frames * fcpe.config().n_pitch_bins as usize
+        );
+
+        let mel = fcpe
+            .compute_mel(&samples, frames)
+            .expect("official FCPE Wav2Mel front-end");
+        let mel_metrics = parity_metrics(&mel, &expected_mel);
+        eprintln!(
+            "fcpe official mel parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
+            mel_metrics.0, mel_metrics.1, mel_metrics.2
+        );
+        assert!(
+            mel_metrics.0 <= 3.0e-4,
+            "official FCPE mel max_abs={:.9e} exceeds 3e-4",
+            mel_metrics.0
+        );
+
+        let weights = fcpe.weights.as_ref().expect("real weights bound");
+        let latent = fcpe.forward_scalar(&mel, frames, weights);
+        let latent_metrics = parity_metrics(&latent, &expected_latent);
+        eprintln!(
+            "fcpe official latent parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
+            latent_metrics.0, latent_metrics.1, latent_metrics.2
+        );
+        assert!(
+            latent_metrics.0 <= 3.0e-4,
+            "official FCPE latent max_abs={:.9e} exceeds 3e-4",
+            latent_metrics.0
+        );
+
+        let track = fcpe
+            .extract_real(&samples, 16_000)
+            .expect("official FCPE end-to-end track");
+        let got_f0: Vec<f32> = track.iter().map(|frame| frame.hz).collect();
+        let f0_metrics = parity_metrics(&got_f0, &expected_f0);
+        eprintln!(
+            "fcpe official f0 parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
+            f0_metrics.0, f0_metrics.1, f0_metrics.2
+        );
+        assert!(
+            f0_metrics.0 <= 5.0e-2,
+            "official FCPE F0 max_abs={:.9e} Hz exceeds 0.05 Hz",
+            f0_metrics.0
+        );
+    }
+
+    fn fixture_f32(bytes: &[u8]) -> Vec<f32> {
+        assert_eq!(bytes.len() % 4, 0, "f32 fixture is truncated");
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
+            .collect()
+    }
+
+    /// Returns `(max_abs, mean_abs, rmse)` for two same-shaped buffers.
+    fn parity_metrics(got: &[f32], expected: &[f32]) -> (f32, f32, f32) {
+        assert_eq!(got.len(), expected.len(), "parity shape mismatch");
+        assert!(!got.is_empty(), "parity buffers must not be empty");
+        let mut max_abs = 0.0f32;
+        let mut sum_abs = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        for (&actual, &reference) in got.iter().zip(expected) {
+            let delta = (actual - reference).abs();
+            max_abs = max_abs.max(delta);
+            sum_abs += f64::from(delta);
+            sum_sq += f64::from(delta) * f64::from(delta);
+        }
+        let count = got.len() as f64;
+        (
+            max_abs,
+            (sum_abs / count) as f32,
+            (sum_sq / count).sqrt() as f32,
+        )
     }
 
     /// Best-effort 16 kHz mono PCM16 WAV parse — used exclusively by the
