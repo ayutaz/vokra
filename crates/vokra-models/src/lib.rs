@@ -133,6 +133,8 @@ pub mod codec;
 pub mod compute;
 pub mod cosyvoice2;
 pub mod dac;
+/// Native DeepFilterNet3 enhancement wrapper with CPU / Metal dispatch.
+pub mod deepfilternet3;
 mod strict_checkpoint;
 // SoTA plan Phase 3 (2026-07-24): FunAudioLLM Fun-CosyVoice3-0.5B TTS
 // (apache-2.0). Same architecture as CosyVoice2 — Qwen2 LLM backbone +

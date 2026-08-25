@@ -1666,16 +1666,9 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
             (rate, output)
         }
         "denoise" => {
-            if a.backend != vokra_core::BackendKind::Cpu {
-                return Err(format!(
-                    "run (denoise): arch `denoise` (DeepFilterNet3) does not support \
-                     --backend {} yet; its dedicated Conv2d/GRU graph is CPU-only. \
-                     Refusing a silent CPU fallback (FR-EX-08); re-run with --backend cpu",
-                    backend_flag_name(a.backend)
-                ));
-            }
-            let model = vokra_ops::DenoiseModel::from_gguf(session.gguf())
-                .map_err(|error| error.to_string())?;
+            let model = vokra_models::deepfilternet3::DeepFilterNet3::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
             let rate = model.config().sample_rate;
             if clip.sample_rate != rate {
                 return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
@@ -5641,32 +5634,6 @@ mod tests {
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
-    }
-
-    #[test]
-    fn deepfilternet_rejects_metal_before_binding_weights() {
-        let suffix = std::process::id();
-        let model = std::env::temp_dir().join(format!("vokra-cli-dfn3-{suffix}.gguf"));
-        let input = std::env::temp_dir().join(format!("vokra-cli-dfn3-{suffix}.wav"));
-        let mut builder = vokra_core::gguf::GgufBuilder::new();
-        builder.add_string("vokra.model.arch", "denoise");
-        std::fs::write(&model, builder.to_bytes().expect("serialize metadata GGUF")).unwrap();
-        wav::write_wav(&input, &[0.0; 480], 48_000).expect("write input WAV");
-
-        let err = main(&args(&[
-            "--model",
-            model.to_str().unwrap(),
-            "--input",
-            input.to_str().unwrap(),
-            "--backend",
-            "metal",
-        ]))
-        .unwrap_err();
-        let _ = std::fs::remove_file(model);
-        let _ = std::fs::remove_file(input);
-        assert!(err.contains("DeepFilterNet3"), "{err}");
-        assert!(err.contains("does not support --backend metal"), "{err}");
-        assert!(err.contains("silent CPU fallback"), "{err}");
     }
 
     #[test]
