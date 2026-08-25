@@ -53,6 +53,7 @@ struct GemmDims {
     uint has_bias;
 };
 
+#pragma clang fp contract(off)
 kernel void vokra_gemm_f32(
     device const float*   A    [[buffer(0)]],
     device const float*   B    [[buffer(1)]],
@@ -66,13 +67,10 @@ kernel void vokra_gemm_f32(
     if (row >= dims.M || col >= dims.N) {
         return;
     }
-    float acc = 0.0f;
+    float acc = (dims.has_bias != 0u) ? bias[col] : 0.0f;
     const uint arow = row * dims.K;
     for (uint k = 0; k < dims.K; ++k) {
         acc += A[arow + k] * B[k * dims.N + col];
-    }
-    if (dims.has_bias != 0u) {
-        acc += bias[col];
     }
     C[row * dims.N + col] = acc;
 }
@@ -247,6 +245,66 @@ kernel void vokra_layer_norm_f32(
     const float inv_std = 1.0f / sqrt(var + d.eps);
     for (uint c = 0; c < d.cols; ++c) {
         out[base + c] = (inp[base + c] - mean) * inv_std * gamma[c] + beta[c];
+    }
+}
+
+// ---- one-group GroupNorm: channel-major [channels, positions] ---------------
+// SepFormer's mask network reduces 130k–384k values per group. A single long
+// FP32 left fold loses enough low bits for the dual-path stack to amplify, so
+// this kernel uses 256 strided partials and a fixed pairwise reduction tree.
+struct GroupNormDims {
+    uint channels;
+    uint positions;
+    float eps;
+};
+
+kernel void vokra_group_norm_f32(
+    device const float*     inp   [[buffer(0)]],
+    device const float*     gamma [[buffer(1)]],
+    device const float*     beta  [[buffer(2)]],
+    device float*           out   [[buffer(3)]],
+    constant GroupNormDims& d     [[buffer(4)]],
+    uint                    gid   [[thread_position_in_grid]])
+{
+    if (gid != 0u) {
+        return;
+    }
+    constexpr uint partial_count = 256u;
+    const uint total = d.channels * d.positions;
+    thread float partial[partial_count];
+    for (uint lane = 0u; lane < partial_count; ++lane) {
+        float sum = 0.0f;
+        for (uint index = lane; index < total; index += partial_count) {
+            sum += inp[index];
+        }
+        partial[lane] = sum;
+    }
+    for (uint width = partial_count / 2u; width > 0u; width /= 2u) {
+        for (uint index = 0u; index < width; ++index) {
+            partial[index] += partial[index + width];
+        }
+    }
+    const float mean = partial[0] / (float)total;
+
+    for (uint lane = 0u; lane < partial_count; ++lane) {
+        float sum = 0.0f;
+        for (uint index = lane; index < total; index += partial_count) {
+            const float delta = inp[index] - mean;
+            sum += delta * delta;
+        }
+        partial[lane] = sum;
+    }
+    for (uint width = partial_count / 2u; width > 0u; width /= 2u) {
+        for (uint index = 0u; index < width; ++index) {
+            partial[index] += partial[index + width];
+        }
+    }
+    const float inv_std = 1.0f / sqrt(partial[0] / (float)total + d.eps);
+    for (uint channel = 0u; channel < d.channels; ++channel) {
+        for (uint position = 0u; position < d.positions; ++position) {
+            const uint index = channel * d.positions + position;
+            out[index] = (inp[index] - mean) * inv_std * gamma[channel] + beta[channel];
+        }
     }
 }
 
@@ -1636,6 +1694,16 @@ struct LayerNormDims {
     eps: f32,
 }
 
+/// One-group GroupNorm dims (`setBytes:` index 4). Mirrors the MSL
+/// `struct GroupNormDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GroupNormDims {
+    channels: u32,
+    positions: u32,
+    eps: f32,
+}
+
 /// GELU dims (`setBytes:` index 2). Mirrors the MSL `struct GeluDims`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2213,6 +2281,7 @@ pub struct MetalContext {
     softmax_pipeline: Id,
     softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
+    group_norm_pipeline: Id,
     gelu_pipeline: Id,
     conv1d_pipeline: Id,
     col_gather_pipeline: Id,
@@ -2437,6 +2506,9 @@ impl MetalContext {
         let layer_norm_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_layer_norm_f32") }?;
         // SAFETY: as above.
+        let group_norm_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_f32") }?;
+        // SAFETY: as above.
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
         // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
@@ -2551,6 +2623,7 @@ impl MetalContext {
             softmax_pipeline: softmax_pipeline.into_raw(),
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
+            group_norm_pipeline: group_norm_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
@@ -3153,6 +3226,60 @@ impl MetalContext {
             grid,
             tg,
             "layer_norm",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Affine GroupNorm with one group over channel-major
+    /// `[channels, positions]`, using the same 256-partial pairwise reduction
+    /// as the CPU kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        validate_group_norm(input, out, channels, positions, gamma, beta)?;
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_group_norm(input, out, channels, positions, gamma, beta, eps);
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_group_norm(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let gamma_buf = self.new_buffer_from_slice(gamma)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = GroupNormDims {
+            channels: channels as u32,
+            positions: positions as u32,
+            eps,
+        };
+        let (grid, tg) = grid_1d(1);
+        self.dispatch_compute(
+            self.group_norm_pipeline,
+            &[&in_buf, &gamma_buf, &beta_buf, &out_buf],
+            (&dims as *const GroupNormDims).cast::<c_void>(),
+            size_of::<GroupNormDims>(),
+            grid,
+            tg,
+            "group_norm",
         )?;
         read_back(&out_buf, out)
     }
@@ -7223,6 +7350,7 @@ impl Drop for MetalContext {
             release(self.col_gather_pipeline);
             release(self.conv1d_pipeline);
             release(self.gelu_pipeline);
+            release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);
             release(self.softmax_causal_pipeline);
             release(self.softmax_pipeline);
@@ -8235,6 +8363,26 @@ fn validate_layer_norm(
     validate_rows_cols(input, out, rows, cols)?;
     expect_len("layer_norm gamma", gamma.len(), cols)?;
     expect_len("layer_norm beta", beta.len(), cols)
+}
+
+fn validate_group_norm(
+    input: &[f32],
+    out: &[f32],
+    channels: usize,
+    positions: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Result<()> {
+    if channels == 0 || positions == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm channels and positions must be non-zero, got {channels}x{positions}"
+        )));
+    }
+    let total = checked_mul(channels, positions, "group_norm channels*positions")?;
+    expect_len("group_norm input", input.len(), total)?;
+    expect_len("group_norm out", out.len(), total)?;
+    expect_len("group_norm gamma", gamma.len(), channels)?;
+    expect_len("group_norm beta", beta.len(), channels)
 }
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {

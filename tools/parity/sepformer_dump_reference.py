@@ -84,6 +84,17 @@ def main() -> int:
     )
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument("--savedir", type=Path, required=True)
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float64"),
+        default="float32",
+        help="official model compute dtype; float64 is the high-precision oracle",
+    )
+    parser.add_argument(
+        "--trace-stages",
+        action="store_true",
+        help="dump official mask-network stage tensors captured by forward hooks",
+    )
     args = parser.parse_args()
 
     np.random.seed(1234)
@@ -102,11 +113,59 @@ def main() -> int:
     )
     for module in model.mods.values():
         module.eval()
+        if args.dtype == "float64":
+            module.double()
+
+    traced: dict[str, torch.Tensor] = {}
+    hooks: list[torch.utils.hooks.RemovableHandle] = []
+    if args.trace_stages:
+        masknet = model.mods.masknet
+
+        def capture(name: str):
+            def hook(
+                _module: torch.nn.Module,
+                _inputs: tuple[torch.Tensor, ...],
+                output: torch.Tensor,
+            ) -> None:
+                if not isinstance(output, torch.Tensor):
+                    raise RuntimeError(
+                        f"official SepFormer stage {name} returned {type(output)!r}"
+                    )
+                traced[name] = output.detach().cpu().contiguous()
+
+            return hook
+
+        modules = {
+            "mask_norm": masknet.norm,
+            "mask_input": masknet.conv1d,
+            "dual_block_0": masknet.dual_mdl[0],
+            "dual_block_1": masknet.dual_mdl[1],
+            "prelu": masknet.prelu,
+            "speaker_projection": masknet.conv2d,
+            "output": masknet.output,
+            "output_gate": masknet.output_gate,
+            "end": masknet.end_conv1x1,
+            "masknet": masknet,
+        }
+        for block_index, block in enumerate(masknet.dual_mdl):
+            modules.update(
+                {
+                    f"dual_{block_index}_intra_transformer": block.intra_mdl,
+                    f"dual_{block_index}_intra_norm": block.intra_norm,
+                    f"dual_{block_index}_inter_transformer": block.inter_mdl,
+                    f"dual_{block_index}_inter_norm": block.inter_norm,
+                }
+            )
+        hooks = [module.register_forward_hook(capture(name)) for name, module in modules.items()]
 
     pcm = deterministic_pcm()
     mixture = torch.from_numpy(pcm).unsqueeze(0)
+    if args.dtype == "float64":
+        mixture = mixture.double()
     encoder = model.mods.encoder(mixture)
     separated = model.separate_batch(mixture)
+    for hook in hooks:
+        hook.remove()
     if separated.ndim != 3 or tuple(separated.shape[:2]) != (1, PCM_SAMPLES):
         raise SystemExit(f"unexpected separated shape {tuple(separated.shape)}")
     output_streams = int(separated.shape[2])
@@ -121,9 +180,14 @@ def main() -> int:
     write_f32(output / "pcm.f32.bin", pcm)
     write_f32(output / "encoder.f32.bin", encoder[0].cpu().numpy())
     write_f32(output / "separated.f32.bin", separated[0].cpu().numpy())
+    if args.trace_stages:
+        traced["gated"] = traced["output"] * traced["output_gate"]
+        for name, values in traced.items():
+            write_f32(output / f"stage-{name}.f32.bin", values.numpy())
 
     manifest = {
         "format": "vokra-sepformer-reference-v1",
+        "compute_dtype": args.dtype,
         "model_id": model_id,
         "revision": args.revision,
         "source": args.source,
@@ -139,6 +203,10 @@ def main() -> int:
         "torchaudio": torchaudio.__version__,
         "speechbrain": speechbrain.__version__,
     }
+    if args.trace_stages:
+        manifest["trace_stages"] = {
+            name: list(values.shape) for name, values in sorted(traced.items())
+        }
     (output / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

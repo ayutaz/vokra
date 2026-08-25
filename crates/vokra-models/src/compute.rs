@@ -44,6 +44,7 @@
 //! entry, threading `&Compute` down. That keeps the engines `Send + Sync` while
 //! the `!Send` context lives only for the call.
 
+use vokra_backend_cpu::IsaPath;
 use vokra_backend_cpu::kernels;
 use vokra_backend_cpu::kernels::KQuantDtype;
 use vokra_core::backend::BackendKind;
@@ -80,6 +81,9 @@ pub enum HotOp {
     Softmax,
     /// Affine layer normalisation (`layer_norm_f32`) — Whisper pre-norm blocks.
     LayerNorm,
+    /// One-group affine GroupNorm over channel-major audio features. SepFormer
+    /// uses this for the full mask tensor and needs a stable large reduction.
+    GroupNorm,
     /// Exact (erf) GELU (`gelu_f32`) — Whisper MLP / conv stem.
     Gelu,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
@@ -415,6 +419,7 @@ impl HotOp {
                 | HotOp::Gemv
                 | HotOp::Softmax
                 | HotOp::LayerNorm
+                | HotOp::GroupNorm
                 | HotOp::Gelu
                 | HotOp::Conv1d
                 | HotOp::GroupedConv1d
@@ -585,6 +590,7 @@ impl HotOp {
 /// directly is a single branch.
 pub struct Compute {
     be: Be,
+    cpu_isa: Option<IsaPath>,
 }
 
 /// The explicit refusal every GPU arm of [`Compute::gemm_q_f32`] returns
@@ -641,7 +647,24 @@ impl Compute {
     /// its methods reproduce the pre-seam kernel calls bit-for-bit.
     #[must_use]
     pub fn cpu() -> Self {
-        Compute { be: Be::Cpu }
+        Compute {
+            be: Be::Cpu,
+            cpu_isa: None,
+        }
+    }
+
+    /// Builds the requested backend while forcing the portable scalar CPU
+    /// kernels only when `kind` is [`BackendKind::Cpu`]. GPU selections remain
+    /// unchanged and never fall back to the CPU.
+    pub(crate) fn for_backend_with_scalar_cpu(
+        kind: BackendKind,
+        required: &[HotOp],
+    ) -> Result<Self> {
+        let mut compute = Self::for_backend(kind, required)?;
+        if kind == BackendKind::Cpu {
+            compute.cpu_isa = Some(IsaPath::Scalar);
+        }
+        Ok(compute)
     }
 
     /// Builds a dispatcher for `kind`, requiring it to cover every op in
@@ -687,6 +710,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::Metal(Box::new(vokra_backend_metal::MetalContext::new()?)),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -701,6 +725,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::Cuda(Box::new(vokra_backend_cuda::CudaContext::new()?)),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(
@@ -748,6 +773,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::WebGpu(vokra_backend_webgpu::WebGpuContext::new()?),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
@@ -918,7 +944,10 @@ impl Compute {
         out: &mut [f32],
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::gemm_f32(m, n, k, a, b, bias, out),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::gemm_f32_on(isa, m, n, k, a, b, bias, out),
+                None => kernels::gemm_f32(m, n, k, a, b, bias, out),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -1002,7 +1031,10 @@ impl Compute {
         cols: usize,
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::softmax_f32(input, out, rows, cols),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::softmax_f32_on(isa, input, out, rows, cols),
+                None => kernels::softmax_f32(input, out, rows, cols),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.softmax_f32(input, out, rows, cols),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -1026,13 +1058,49 @@ impl Compute {
         eps: f32,
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => {
+                    kernels::layer_norm_f32_on(isa, input, out, rows, cols, gamma, beta, eps)
+                }
+                None => kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+        }
+    }
+
+    /// One-group affine GroupNorm over channel-major `[channels, positions]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::group_norm_f32(input, out, channels, positions, gamma, beta, eps),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.group_norm_f32(input, out, channels, positions, gamma, beta, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_f32 has no wired CUDA kernel; Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_f32 has no wired WebGPU kernel; Vokra does not silently run the op \
+                 on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -1066,9 +1134,14 @@ impl Compute {
         out: &mut [f32],
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::conv1d_f32(
-                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
-            ),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::conv1d_f32_on(
+                    isa, input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+                None => kernels::conv1d_f32(
+                    input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,

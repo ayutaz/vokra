@@ -1,0 +1,26 @@
+{
+  "compute_dtype": "float64",
+  "encoder_shape": [
+    1,
+    256,
+    511
+  ],
+  "format": "vokra-sepformer-reference-v1",
+  "model_id": "speechbrain/sepformer-wham16k-enhancement",
+  "numpy": "2.3.5",
+  "output_streams": 1,
+  "pcm_generation_sample_rate": 16000,
+  "pcm_samples": 4096,
+  "python": "3.12.7",
+  "revision": "90b3c5c3ffe3e04387b566715ab5fff36ec7b9d9",
+  "sample_rate": 16000,
+  "separated_shape": [
+    1,
+    4096,
+    1
+  ],
+  "source": "speechbrain/sepformer-wham16k-enhancement",
+  "speechbrain": "1.0.3",
+  "torch": "2.13.0",
+  "torchaudio": "2.11.0"
+}

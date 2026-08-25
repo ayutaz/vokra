@@ -1,0 +1,26 @@
+{
+  "compute_dtype": "float64",
+  "encoder_shape": [
+    1,
+    256,
+    511
+  ],
+  "format": "vokra-sepformer-reference-v1",
+  "model_id": "speechbrain/sepformer-libri3mix",
+  "numpy": "2.3.5",
+  "output_streams": 3,
+  "pcm_generation_sample_rate": 16000,
+  "pcm_samples": 4096,
+  "python": "3.12.7",
+  "revision": "1f2d824e2333aec9e60d0030fb144885c1afc426",
+  "sample_rate": 8000,
+  "separated_shape": [
+    1,
+    4096,
+    3
+  ],
+  "source": "speechbrain/sepformer-libri3mix",
+  "speechbrain": "1.0.3",
+  "torch": "2.13.0",
+  "torchaudio": "2.11.0"
+}

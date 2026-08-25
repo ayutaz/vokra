@@ -186,6 +186,44 @@ fn layer_norm_metal_matches_cpu() {
 }
 
 #[test]
+fn group_norm_metal_matches_cpu_on_sepformer_shapes() {
+    let ctx = ctx_or_skip!("group_norm");
+    let eps = 1e-8;
+    let shapes = [(2usize, 4usize), (256, 511), (256, 1_500)];
+    let mut worst = 0.0f32;
+    for &(channels, positions) in &shapes {
+        let input = rand_vec(
+            0x6A09 ^ ((channels * 89 + positions) as u64),
+            channels * positions,
+        );
+        let gamma = rand_vec(0x6A11 ^ (channels as u64), channels);
+        let beta = rand_vec(0xBE7A ^ (channels as u64), channels);
+        let mut gpu = vec![f32::NAN; input.len()];
+        ctx.group_norm_f32(&input, &mut gpu, channels, positions, &gamma, &beta, eps)
+            .expect("metal group_norm");
+        let mut cpu_out = vec![0.0f32; input.len()];
+        cpu::group_norm_f32(
+            &input,
+            &mut cpu_out,
+            channels,
+            positions,
+            &gamma,
+            &beta,
+            eps,
+        )
+        .expect("cpu group_norm");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("group_norm channels={channels:<4} positions={positions:<5} max|Δ|={delta:.3e}");
+        assert!(
+            delta <= 1e-5,
+            "group_norm channels={channels} positions={positions}: {delta} > 1e-5"
+        );
+        worst = worst.max(delta);
+    }
+    eprintln!("group_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol 1e-5)");
+}
+
+#[test]
 fn gelu_metal_matches_cpu() {
     let ctx = ctx_or_skip!("gelu");
     // Element-wise; a few sizes plus a wide-range input to stress erf.

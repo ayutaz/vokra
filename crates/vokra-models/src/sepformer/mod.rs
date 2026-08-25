@@ -56,8 +56,13 @@ const GROUP_NORM_EPS: f32 = 1e-8;
 const TENSOR_COUNT: usize = 417;
 
 /// Complete learned-op registry for native CPU/Metal SepFormer inference.
-pub const SEPFORMER_HOT_OPS: &[HotOp] =
-    &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Conv1d];
+pub const SEPFORMER_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::GroupNorm,
+    HotOp::Conv1d,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Supported public SpeechBrain SepFormer checkpoints.
@@ -607,6 +612,19 @@ impl SepFormer {
         self
     }
 
+    fn compute(&self) -> Result<Compute> {
+        if self.config.variant == SepformerVariant::Dns4Enhancement {
+            // DNS4's mask network is unusually ill-conditioned: the NEON FMA
+            // reduction order amplifies an otherwise sub-ulp encoder delta
+            // past the independently measured FP64 waveform boundary. Keep
+            // the portable reduction order for this CPU variant only. Metal
+            // remains a fully GPU-dispatched backend with no CPU fallback.
+            Compute::for_backend_with_scalar_cpu(self.backend, SEPFORMER_HOT_OPS)
+        } else {
+            Compute::for_backend(self.backend, SEPFORMER_HOT_OPS)
+        }
+    }
+
     /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
@@ -682,7 +700,7 @@ impl SepFormer {
                 "sepformer: synthesized test handle has no learned weights".to_owned(),
             )
         })?;
-        let compute = Compute::for_backend(self.backend, SEPFORMER_HOT_OPS)?;
+        let compute = self.compute()?;
         separate_network(mixed_pcm, self.config.n_out as usize, weights, &compute)
     }
 
@@ -700,7 +718,7 @@ impl SepFormer {
                 "sepformer: synthesized test handle has no learned weights".to_owned(),
             )
         })?;
-        let compute = Compute::for_backend(self.backend, SEPFORMER_HOT_OPS)?;
+        let compute = self.compute()?;
         encode_network(mixed_pcm, &weights.encoder, &compute)
     }
 }
@@ -899,20 +917,15 @@ fn group_norm(
     beta: &[f32],
     compute: &Compute,
 ) -> Result<()> {
-    let mut expanded_gamma = vec![0.0f32; CHANNELS * positions];
-    let mut expanded_beta = vec![0.0f32; CHANNELS * positions];
-    for channel in 0..CHANNELS {
-        expanded_gamma[channel * positions..(channel + 1) * positions].fill(gamma[channel]);
-        expanded_beta[channel * positions..(channel + 1) * positions].fill(beta[channel]);
-    }
-    let normalized = layer_norm(
+    let mut normalized = vec![0.0f32; values.len()];
+    compute.group_norm_f32(
         values,
-        1,
-        values.len(),
-        &expanded_gamma,
-        &expanded_beta,
+        &mut normalized,
+        CHANNELS,
+        positions,
+        gamma,
+        beta,
         GROUP_NORM_EPS,
-        compute,
     )?;
     values.copy_from_slice(&normalized);
     Ok(())

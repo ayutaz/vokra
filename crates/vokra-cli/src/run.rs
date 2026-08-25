@@ -5197,6 +5197,281 @@ mod tests {
         );
     }
 
+    /// Real-public-artifact CPU/Metal/official-FP64 parity for every released
+    /// SepFormer checkpoint. This Apple-only family sweep proves that every
+    /// released weight set and every 1/2/3-stream head reaches the selected
+    /// Metal backend through the complete separation forward.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn sepformer_all_public_cpu_metal_waveform_parity() {
+        let Some(directory) = std::env::var_os("VOKRA_SEPFORMER_GGUF_DIR") else {
+            eprintln!(
+                "skip: set VOKRA_SEPFORMER_GGUF_DIR to the seven fixed-revision public GGUFs"
+            );
+            return;
+        };
+        let pcm = include_bytes!("../../vokra-models/tests/fixtures/sepformer/pcm.f32.bin")
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four-byte f32 fixture chunk")))
+            .collect::<Vec<_>>();
+        assert_eq!(pcm.len(), 4_096);
+        let metrics = |cpu: &[f32], metal: &[f32]| {
+            assert_eq!(metal.len(), cpu.len());
+            let mut max_abs = 0.0f32;
+            let mut sum_abs = 0.0f64;
+            let mut cpu_peak = 0.0f32;
+            for (&cpu_value, &metal_value) in cpu.iter().zip(metal) {
+                let delta = (cpu_value - metal_value).abs();
+                max_abs = max_abs.max(delta);
+                sum_abs += f64::from(delta);
+                cpu_peak = cpu_peak.max(cpu_value.abs());
+            }
+            (max_abs, sum_abs / cpu.len() as f64, cpu_peak)
+        };
+
+        let read_f32 = |bytes: &[u8]| {
+            assert_eq!(bytes.len() % 4, 0, "reference contains whole f32 values");
+            bytes
+                .chunks_exact(4)
+                .map(|chunk| {
+                    f32::from_le_bytes(chunk.try_into().expect("four-byte f32 reference chunk"))
+                })
+                .collect::<Vec<_>>()
+        };
+        #[allow(clippy::type_complexity)]
+        let rows: [(&str, usize, u32, &[u8], &[u8], f32, f64); 7] = [
+            (
+                "sepformer-wsj02mix.gguf",
+                2,
+                8_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/wsj02mix/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/wsj02mix/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-libri2mix.gguf",
+                2,
+                8_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/libri2mix/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/libri2mix/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-libri3mix.gguf",
+                3,
+                8_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/libri3mix/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/libri3mix/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-wham16k-enhancement.gguf",
+                1,
+                16_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/wham16k-enhancement/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/wham16k-enhancement/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-whamr16k.gguf",
+                2,
+                16_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/whamr16k/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/whamr16k/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-whamr-8khz.gguf",
+                2,
+                8_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/whamr-8khz/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/whamr-8khz/separated.f32.bin"
+                ),
+                0.01,
+                0.001,
+            ),
+            (
+                "sepformer-dns4.gguf",
+                1,
+                16_000,
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/dns4-16k-enhancement/encoder.f32.bin"
+                ),
+                include_bytes!(
+                    "../../vokra-models/tests/fixtures/sepformer/official-fp64/dns4-16k-enhancement/separated.f32.bin"
+                ),
+                0.1513,
+                0.00515,
+            ),
+        ];
+        let only = std::env::var("VOKRA_SEPFORMER_ONLY").ok();
+        let mut failures = Vec::new();
+        let mut ran = 0usize;
+        for (
+            file_name,
+            expected_streams,
+            expected_rate,
+            encoder_reference,
+            separated_reference,
+            waveform_max_bound,
+            waveform_mean_bound,
+        ) in rows
+        {
+            if only.as_deref().is_some_and(|only| only != file_name) {
+                continue;
+            }
+            ran += 1;
+            let path = std::path::Path::new(&directory).join(file_name);
+            let expected_encoder = read_f32(encoder_reference);
+            let expected_separated = read_f32(separated_reference);
+            assert_eq!(expected_encoder.len(), 256 * 511, "{file_name}");
+            assert_eq!(
+                expected_separated.len(),
+                pcm.len() * expected_streams,
+                "{file_name} official separated shape"
+            );
+            let file = vokra_core::gguf::GgufFile::open(&path)
+                .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+            let (cpu_encoder, cpu_frames, cpu_output) = {
+                let cpu = vokra_models::sepformer::SepFormer::from_gguf(&file)
+                    .unwrap_or_else(|error| panic!("strict CPU bind {file_name}: {error}"));
+                assert_eq!(
+                    usize::try_from(cpu.n_out()).expect("SepFormer n_out fits usize"),
+                    expected_streams,
+                    "{file_name}"
+                );
+                assert_eq!(cpu.sample_rate(), expected_rate, "{file_name}");
+                let (encoder, frames) = cpu
+                    .encode_features(&pcm)
+                    .unwrap_or_else(|error| panic!("CPU encoder {file_name}: {error}"));
+                let output = cpu
+                    .separate(&pcm)
+                    .unwrap_or_else(|error| panic!("CPU separation {file_name}: {error}"));
+                (encoder, frames, output)
+            };
+            let (metal_encoder, metal_frames, metal_output) = {
+                let metal = vokra_models::sepformer::SepFormer::from_gguf(&file)
+                    .unwrap_or_else(|error| panic!("strict Metal bind {file_name}: {error}"))
+                    .with_backend(vokra_core::BackendKind::Metal);
+                let (encoder, frames) = metal
+                    .encode_features(&pcm)
+                    .unwrap_or_else(|error| panic!("Metal encoder {file_name}: {error}"));
+                let output = metal
+                    .separate(&pcm)
+                    .unwrap_or_else(|error| panic!("Metal separation {file_name}: {error}"));
+                (encoder, frames, output)
+            };
+            assert_eq!(metal_frames, cpu_frames, "{file_name} encoder frames");
+            let (encoder_max, encoder_mean, encoder_cpu_peak) =
+                metrics(&cpu_encoder, &metal_encoder);
+            let (cpu_encoder_max, cpu_encoder_mean, _) = metrics(&cpu_encoder, &expected_encoder);
+            let (metal_encoder_max, metal_encoder_mean, _) =
+                metrics(&metal_encoder, &expected_encoder);
+            eprintln!(
+                "SepFormer public CPU/Metal {file_name} encoder: frames={cpu_frames} \
+                 values={} cpu_peak={encoder_cpu_peak:.9e} max_abs={encoder_max:.9e} \
+                 mean_abs={encoder_mean:.9e} cpu_official_max={cpu_encoder_max:.9e} \
+                 cpu_official_mean={cpu_encoder_mean:.9e} \
+                 metal_official_max={metal_encoder_max:.9e} \
+                 metal_official_mean={metal_encoder_mean:.9e}",
+                cpu_encoder.len()
+            );
+            if encoder_max > 0.01
+                || encoder_mean > 0.001
+                || cpu_encoder_max > 0.01
+                || cpu_encoder_mean > 0.001
+                || metal_encoder_max > 0.01
+                || metal_encoder_mean > 0.001
+            {
+                failures.push(format!(
+                    "{file_name} encoder CPU/Metal max={encoder_max:.9e} mean={encoder_mean:.9e}; \
+                     CPU/official max={cpu_encoder_max:.9e} mean={cpu_encoder_mean:.9e}; \
+                     Metal/official max={metal_encoder_max:.9e} mean={metal_encoder_mean:.9e}"
+                ));
+            }
+            assert_eq!(cpu_output.len(), expected_streams, "CPU {file_name}");
+            assert_eq!(metal_output.len(), expected_streams, "Metal {file_name}");
+
+            for (stream, (cpu, metal)) in cpu_output.iter().zip(&metal_output).enumerate() {
+                assert_eq!(metal.len(), cpu.len(), "{file_name} stream {stream}");
+                assert!(
+                    cpu.iter().chain(metal).all(|value| value.is_finite()),
+                    "{file_name} stream {stream} produced non-finite PCM"
+                );
+                let (max_abs, mean_abs, cpu_peak) = metrics(cpu, metal);
+                let expected = expected_separated
+                    .chunks_exact(expected_streams)
+                    .map(|sample| sample[stream])
+                    .collect::<Vec<_>>();
+                let (cpu_official_max, cpu_official_mean, _) = metrics(cpu, &expected);
+                let (metal_official_max, metal_official_mean, _) = metrics(metal, &expected);
+                eprintln!(
+                    "SepFormer public CPU/Metal {file_name} stream={stream}: \
+                     samples={} cpu_peak={cpu_peak:.9e} max_abs={max_abs:.9e} \
+                     mean_abs={mean_abs:.9e} cpu_official_max={cpu_official_max:.9e} \
+                     cpu_official_mean={cpu_official_mean:.9e} \
+                     metal_official_max={metal_official_max:.9e} \
+                     metal_official_mean={metal_official_mean:.9e}",
+                    cpu.len()
+                );
+                // Six variants retain the existing 0.01 / 0.001 boundary.
+                // DNS4 uses the separately documented official-FP32 floor in
+                // fixtures/sepformer/README.md; the encoder gate above stays
+                // at the strict family boundary for every variant.
+                if max_abs > waveform_max_bound
+                    || mean_abs > waveform_mean_bound
+                    || cpu_official_max > waveform_max_bound
+                    || cpu_official_mean > waveform_mean_bound
+                    || metal_official_max > waveform_max_bound
+                    || metal_official_mean > waveform_mean_bound
+                {
+                    failures.push(format!(
+                        "{file_name} stream {stream} CPU/Metal max={max_abs:.9e} \
+                         mean={mean_abs:.9e}; CPU/official max={cpu_official_max:.9e} \
+                         mean={cpu_official_mean:.9e}; Metal/official \
+                         max={metal_official_max:.9e} mean={metal_official_mean:.9e}; \
+                         bounds max={waveform_max_bound:.9e} \
+                         mean={waveform_mean_bound:.9e}"
+                    ));
+                }
+            }
+        }
+        assert!(ran > 0, "VOKRA_SEPFORMER_ONLY did not name a public GGUF");
+        assert!(
+            failures.is_empty(),
+            "SepFormer CPU/Metal/official drift exceeds its documented variant boundary:\n{}",
+            failures.join("\n")
+        );
+    }
+
     /// Real-weight full-posterior CPU/Metal parity for the FSMN learned-op
     /// seam. The CPU path remains independently pinned to FunASR in
     /// `parity_fsmn_vad_real`; this leg proves that every released projection

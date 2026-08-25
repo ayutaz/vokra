@@ -566,6 +566,81 @@ pub fn layer_norm_f32_on(
     Ok(())
 }
 
+// ---- one-group GroupNorm (SepFormer mask network) ---------------------------
+
+/// Affine GroupNorm with one group over channel-major `[channels, positions]`.
+///
+/// The reduction uses 256 strided partial sums followed by a fixed pairwise
+/// tree.  This avoids feeding SepFormer's 130k–384k-element group through the
+/// ordinary one-row LayerNorm accumulator, whose long FP32 left fold loses
+/// enough precision to be amplified by the dual-path stack.  The Metal sibling
+/// uses the same reduction topology.
+#[allow(clippy::too_many_arguments)]
+pub fn group_norm_f32(
+    input: &[f32],
+    out: &mut [f32],
+    channels: usize,
+    positions: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    const PARTIALS: usize = 256;
+
+    if channels == 0 || positions == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm channels and positions must be non-zero, got {channels}x{positions}"
+        )));
+    }
+    let total = checked_mul(channels, positions, "group_norm channels*positions")?;
+    expect_len("group_norm input", input.len(), total)?;
+    expect_len("group_norm out", out.len(), total)?;
+    expect_len("group_norm gamma", gamma.len(), channels)?;
+    expect_len("group_norm beta", beta.len(), channels)?;
+
+    let mut partial = [0.0f32; PARTIALS];
+    for (lane, lane_sum) in partial.iter_mut().enumerate() {
+        let mut index = lane;
+        while index < total {
+            *lane_sum += input[index];
+            index += PARTIALS;
+        }
+    }
+    let mut width = PARTIALS / 2;
+    while width > 0 {
+        for index in 0..width {
+            partial[index] += partial[index + width];
+        }
+        width /= 2;
+    }
+    let mean = partial[0] / total as f32;
+
+    partial.fill(0.0);
+    for (lane, lane_sum) in partial.iter_mut().enumerate() {
+        let mut index = lane;
+        while index < total {
+            let delta = input[index] - mean;
+            *lane_sum += delta * delta;
+            index += PARTIALS;
+        }
+    }
+    let mut width = PARTIALS / 2;
+    while width > 0 {
+        for index in 0..width {
+            partial[index] += partial[index + width];
+        }
+        width /= 2;
+    }
+    let inv_std = 1.0 / (partial[0] / total as f32 + eps).sqrt();
+    for channel in 0..channels {
+        for position in 0..positions {
+            let index = channel * positions + position;
+            out[index] = (input[index] - mean) * inv_std * gamma[channel] + beta[channel];
+        }
+    }
+    Ok(())
+}
+
 // ---- conv1d via im2col + GEMM (M0-08-T08) ----
 
 /// 1-D convolution via im2col + [`gemm_f32`], so it rides the dispatched
@@ -1047,6 +1122,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn group_norm_one_group_matches_hand_fixture() {
+        let input = [1.0, 2.0, 3.0, 4.0];
+        let gamma = [2.0, 0.5];
+        let beta = [1.0, -1.0];
+        let mut out = [0.0; 4];
+        group_norm_f32(&input, &mut out, 2, 2, &gamma, &beta, 0.0).unwrap();
+        let inv_std = 1.0 / 1.25f32.sqrt();
+        let expected = [
+            (1.0 - 2.5) * inv_std * 2.0 + 1.0,
+            (2.0 - 2.5) * inv_std * 2.0 + 1.0,
+            (3.0 - 2.5) * inv_std * 0.5 - 1.0,
+            (4.0 - 2.5) * inv_std * 0.5 - 1.0,
+        ];
+        for (actual, expected) in out.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn group_norm_rejects_invalid_shapes() {
+        assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 0, 2, &[], &[], 1e-8).is_err());
+        assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 2, 2, &[1.0], &[0.0; 2], 1e-8,).is_err());
     }
 
     #[test]
