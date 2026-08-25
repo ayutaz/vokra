@@ -1,0 +1,42 @@
+{
+  "checkpoint_sha256": "96ae783e6ec0177aa810e2a645aec5d136a6f4992fdea26ee92b7b04d9688ad0",
+  "config_sha256": "207def0d31bf7623e20f4a5e690f217747661bf495319c0139303122b6debcc3",
+  "files": {
+    "bert_position_major.f32": "de676bae28a480011d3d012db14bef539324e62a841a9627863c689bea168af3",
+    "decoder_latent_position_major.f32": "99d1f6af81de3b427ed145a99e39ea77542d0701b22d2d870b3a9277d6fe8f20",
+    "durations.i32": "9638834d1f629557d9b80fa7eeb64409e238c0ef2e3149a55a39c3796f66e19a",
+    "expanded_log_scale_position_major.f32": "901a65fb71171c6ea72e5944a9a863875c64024d3c941650748d058cdba5d15b",
+    "expanded_mean_position_major.f32": "7cd8c55bd4dec8baa89523c5447c70991fb2a39aec91b127bb2794e89d6dc260",
+    "features.vmf": "f366fecf634cc9fd0d58b0e347bf81ba692b0143d0fd19c0f49486452a038246",
+    "hidden_position_major.f32": "bafe72c62da03bb36fd2bdfc8e22388887af75d00c8acd38969f66a9f232b714",
+    "ja_bert_position_major.f32": "a89f2a8d5fc485fcdb939e4a4f96099bd3516487545861827d98005c9ed895db",
+    "language_ids.u32": "56cb0d047180b47a14c5cbf73cd1f71ed3d8f672188f45ad24969ee29449b64e",
+    "log_duration.f32": "97ef0c53ee743cb5e3b67ec215a413d56269007a2830e8687bdddc87b468f7d5",
+    "log_scale_position_major.f32": "901a65fb71171c6ea72e5944a9a863875c64024d3c941650748d058cdba5d15b",
+    "mean_position_major.f32": "7cd8c55bd4dec8baa89523c5447c70991fb2a39aec91b127bb2794e89d6dc260",
+    "pcm.f32": "a8f0c987c2b70ade75455d1a7d22ef67925339646f3174278a948bfba16bd556",
+    "phoneme_ids.u32": "aed978e59a3ada6a19b4196d20d078e99fe5cc3724dd9ead459b64796f5dfca6",
+    "speaker_conditioning.f32": "c01dd0961bbe1effca4ed378d2969d6fbd9b579133b722f6968db5cf4d22281e",
+    "tones.u32": "4fb5563a06c35f520b81f2831faa957fb6d4dfade833381e57bedde28f5312b7"
+  },
+  "format": "vokra-melotts-reference-v1",
+  "frame_count": 6,
+  "length_scale": 0.05,
+  "oracle": "myshell-ai/MeloTTS official PyTorch acoustic modules",
+  "pcm_samples": 3072,
+  "sequence_len": 6,
+  "source_revision": "209145371cff8fc3bd60d7be902ea69cbdb7965a",
+  "speaker_id": 0,
+  "symbols": [
+    "_",
+    "hh",
+    "ah",
+    "l",
+    "ow",
+    "_"
+  ],
+  "torch": "2.13.0+cpu",
+  "upstream_hf": "myshell-ai/MeloTTS-Japanese",
+  "upstream_revision": "367f8795464b531b4e97c1515bddfc1243e60891",
+  "variant": "japanese"
+}
