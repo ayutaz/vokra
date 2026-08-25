@@ -10,7 +10,8 @@ dependencies.
 
 Run through the repository Python 3.12 environment::
 
-    uv run --project tools/parity python tools/parity/melotts_dump_reference.py \
+    uv run --project tools/parity/melotts \
+      python tools/parity/melotts_dump_reference.py \
       --source-root /path/to/myshell-ai-MeloTTS-at-2091453 \
       --variant english \
       --output crates/vokra-models/tests/fixtures/melotts_english
