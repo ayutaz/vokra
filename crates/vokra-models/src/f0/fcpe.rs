@@ -2776,12 +2776,6 @@ mod tests {
             "fcpe official mel parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
             mel_metrics.0, mel_metrics.1, mel_metrics.2
         );
-        assert!(
-            mel_metrics.0 <= 3.0e-4,
-            "official FCPE mel max_abs={:.9e} exceeds 3e-4",
-            mel_metrics.0
-        );
-
         let weights = fcpe.weights.as_ref().expect("real weights bound");
         let latent = fcpe.forward_scalar(&mel, frames, weights);
         let latent_metrics = parity_metrics(&latent, &expected_latent);
@@ -2789,12 +2783,6 @@ mod tests {
             "fcpe official latent parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
             latent_metrics.0, latent_metrics.1, latent_metrics.2
         );
-        assert!(
-            latent_metrics.0 <= 3.0e-4,
-            "official FCPE latent max_abs={:.9e} exceeds 3e-4",
-            latent_metrics.0
-        );
-
         let track = fcpe
             .extract_real(&samples, 16_000)
             .expect("official FCPE end-to-end track");
@@ -2803,6 +2791,19 @@ mod tests {
         eprintln!(
             "fcpe official f0 parity: max_abs={:.9e} mean_abs={:.9e} rmse={:.9e}",
             f0_metrics.0, f0_metrics.1, f0_metrics.2
+        );
+        // Evaluate the gates only after all boundaries have been measured so
+        // one failing stage never hides whether the discrepancy grows or
+        // attenuates through the learned forward and decoder.
+        assert!(
+            mel_metrics.0 <= 3.0e-4,
+            "official FCPE mel max_abs={:.9e} exceeds 3e-4",
+            mel_metrics.0
+        );
+        assert!(
+            latent_metrics.0 <= 3.0e-4,
+            "official FCPE latent max_abs={:.9e} exceeds 3e-4",
+            latent_metrics.0
         );
         assert!(
             f0_metrics.0 <= 5.0e-2,
