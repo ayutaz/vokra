@@ -52,6 +52,13 @@ SAMPLE_RATE = 16_000
 MAX_LENGTH = 1_024
 NUM_MELS = 128
 NUM_LABELS = 527
+FRAME_LENGTH = 400
+FRAME_SHIFT = 160
+FFT_SIZE = 512
+PREEMPHASIS = 0.97
+LOW_FREQ = 20.0
+NORMALIZE_MEAN = -4.2677393
+NORMALIZE_STD = 4.5689974
 
 
 def sha256_file(path: Path) -> str:
@@ -91,6 +98,70 @@ def read_pcm16_mono(path: Path) -> np.ndarray:
 def write_f32(path: Path, tensor: torch.Tensor) -> None:
     array = tensor.detach().cpu().to(torch.float32).contiguous().numpy()
     path.write_bytes(np.asarray(array, dtype="<f4").tobytes(order="C"))
+
+
+def numpy_f64_input_values(pcm: np.ndarray) -> np.ndarray:
+    """Secondary, independent float64 Kaldi-equation cross-check.
+
+    The primary oracle remains the official TorchAudio-backed feature
+    extractor. This cross-check quantifies the expected float32 FFT/window/log
+    drift, especially in near-floor high-frequency mel bins.
+    """
+    num_fft_bins = FFT_SIZE // 2
+    bin_hz = np.arange(num_fft_bins, dtype=np.float64) * SAMPLE_RATE / FFT_SIZE
+
+    def hz_to_mel(freq: np.ndarray | float) -> np.ndarray | float:
+        return 1127.0 * np.log(1.0 + np.asarray(freq) / 700.0)
+
+    low_mel = float(hz_to_mel(LOW_FREQ))
+    high_mel = float(hz_to_mel(SAMPLE_RATE / 2))
+    delta_mel = (high_mel - low_mel) / (NUM_MELS + 1)
+    bin_mel = hz_to_mel(bin_hz)
+    banks = np.zeros((NUM_MELS, FFT_SIZE // 2 + 1), dtype=np.float64)
+    for mel in range(NUM_MELS):
+        left = low_mel + mel * delta_mel
+        center = left + delta_mel
+        right = center + delta_mel
+        up = (bin_mel - left) / (center - left)
+        down = (right - bin_mel) / (right - center)
+        weights = np.maximum(0.0, np.minimum(up, down))
+        weights[(bin_mel <= left) | (bin_mel >= right)] = 0.0
+        banks[mel, :num_fft_bins] = weights
+
+    pcm64 = pcm.astype(np.float64)
+    frames = 1 + (pcm64.size - FRAME_LENGTH) // FRAME_SHIFT
+    kept = min(frames, MAX_LENGTH)
+    raw = np.zeros((MAX_LENGTH, NUM_MELS), dtype=np.float64)
+    window = np.hanning(FRAME_LENGTH)
+    floor = float(np.finfo(np.float32).eps)
+    for frame in range(kept):
+        start = frame * FRAME_SHIFT
+        values = pcm64[start : start + FRAME_LENGTH].copy()
+        values -= values.mean()
+        emphasized = values.copy()
+        emphasized[1:] = values[1:] - PREEMPHASIS * values[:-1]
+        emphasized[0] = values[0] - PREEMPHASIS * values[0]
+        padded = np.zeros(FFT_SIZE, dtype=np.float64)
+        padded[:FRAME_LENGTH] = emphasized * window
+        spectrum = np.fft.rfft(padded)
+        power = spectrum.real**2 + spectrum.imag**2
+        raw[frame] = np.log(np.maximum(banks @ power, floor))
+    normalized = (raw - NORMALIZE_MEAN) / (NORMALIZE_STD * 2.0)
+    return normalized
+
+
+def error_metrics(actual: np.ndarray, expected: np.ndarray) -> dict[str, object]:
+    delta = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
+    index = int(delta.argmax())
+    return {
+        "max_abs": float(delta[index]),
+        "max_index": index,
+        "max_frame": index // NUM_MELS,
+        "max_mel": index % NUM_MELS,
+        "rmse": float(np.sqrt(np.mean(delta**2))),
+        "p99": float(np.quantile(delta, 0.99)),
+        "p999": float(np.quantile(delta, 0.999)),
+    }
 
 
 def main() -> int:
@@ -154,6 +225,10 @@ def main() -> int:
         raise RuntimeError(f"unexpected logits shape {tuple(logits.shape)}")
     if not bool(torch.isfinite(input_values).all() and torch.isfinite(logits).all()):
         raise RuntimeError("official AST oracle emitted non-finite values")
+    numpy_input_values = numpy_f64_input_values(pcm)
+    frontend_cross_check = error_metrics(
+        input_values.detach().cpu().numpy(), numpy_input_values
+    )
 
     args.output.mkdir(parents=True, exist_ok=True)
     input_path = args.output / "input_values.f32le"
@@ -208,6 +283,7 @@ def main() -> int:
                 "sha256": sha256_file(logits_path),
             },
         },
+        "secondary_numpy_f64_frontend_cross_check": frontend_cross_check,
         "top10": top10,
         "environment": {
             "platform": platform.platform(),
