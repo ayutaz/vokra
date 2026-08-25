@@ -323,6 +323,10 @@ pub(crate) enum ModelTask {
     /// concrete strict bundle binds in run/bench and routes every learned
     /// convolution/dense reduction through the selected CPU/Metal GEMM.
     Dnsmos,
+    /// NISQA v2 multidimensional quality scoring. The strict public
+    /// checkpoint emits overall MOS plus noisiness, discontinuity, coloration
+    /// and loudness through one complete CPU/Metal backend route.
+    Nisqa,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -447,6 +451,8 @@ const ARCH_AST: &str = "ast";
 const ARCH_UTMOS: &str = "utmos";
 /// Microsoft DNSMOS P.808 + P.835 quality bundle.
 const ARCH_DNSMOS: &str = "dnsmos";
+/// Gabriel Mittag NISQA v2 multidimensional quality predictor.
+const ARCH_NISQA: &str = "nisqa_v2_weight";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -1434,6 +1440,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::Dnsmos))
         }
+        ARCH_NISQA => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on NISQA v2 quality scoring"
+                ));
+            }
+            Ok((session, ModelTask::Nisqa))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1463,7 +1477,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -1929,12 +1943,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     // --- Quality metrics --------------------------------------------------
     BoundArch {
-        arch: "nisqa_v2_weight",
-        module: "vokra_models::nisqa",
-        entry: "Nisqa::from_gguf → Nisqa::score",
-        probe: Some(|g: &GgufFile| vokra_models::nisqa::Nisqa::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "utmosv2",
         module: "vokra_models::utmosv2",
         entry: "Utmosv2::from_gguf → Utmosv2::predict_mos",
@@ -2112,6 +2120,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("dnsmos session builds (bare)");
         assert_eq!(task, ModelTask::Dnsmos);
+    }
+
+    #[test]
+    fn load_session_routes_nisqa_to_multidimensional_quality_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_NISQA);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-nisqa-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("nisqa session builds (bare)");
+        assert_eq!(task, ModelTask::Nisqa);
     }
 
     #[test]

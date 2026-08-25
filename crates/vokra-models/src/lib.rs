@@ -1260,40 +1260,27 @@ pub mod utmosv2;
 // layout, so reading the prose order would silently swap two
 // plausible-looking scores.
 //
-// REAL: strict `vokra.model.arch` verification that refuses foreign GGUFs
-// loudly with the `category = "eval"` sibling fleet enumerated (`dnsmos`
-// P.808+P.835 CNN / `utmos` SaruLab wav2vec2 regression / `utmosv2` /
-// `torchaudio_squim` STOI-PESQ-SI-SDR + MOS); manifest-derived variant
-// discrimination (`pool_layers.` = upstream `class NISQA_DIM`, five cloned
-// attention-pooling heads, vs `pool.` = upstream `class NISQA`, one head)
-// with a per-clone presence gate so a missing head cannot silently shorten
-// the score vector; framewise-CNN presence gate; non-empty tensor gate;
-// the optional all-or-nothing `vokra.nisqa.*` front-end + topology groups
-// including the upstream odd-`seg_length` parity requirement; and
-// weight-license surfacing that fail-closes to `LicenseClass::Unknown`.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a) 「loud-partial は fake-complete より
-// honest」): `Nisqa::score` / `Nisqa::score_overall` return
-// `VokraError::UnsupportedOp` naming three concrete blockers — (i) the
-// MISSING PRIMITIVE `F.adaptive_max_pool2d`, which upstream `AdaptCNN`
-// calls three times and which `vokra-ops` does not provide in any form
-// (fixed-kernel pooling cannot reproduce it for a variable-length input);
-// (ii) the MISSING METADATA, i.e. the three adaptive-pool output sizes and
-// `td_sa_nhead`, which appear in NO weight tensor at all (`AdaptCNN` pool
-// extents are pure config, and `nn.MultiheadAttention` packs every head
-// into one `in_proj_weight`), plus the whole mel front-end; (iii) the
-// MISSING SIDECAR `tools/parity/nisqa_v2_weight_prepare_checkpoint.py`,
-// which the converter's docstring names but which has never been written.
-// No fabricated MOS is ever emitted (FR-EX-08).
+// NATIVE CPU/METAL: the exact public 94-tensor `NISQA_DIM` release is pinned
+// by its complete name/shape manifest and provenance. The official
+// checkpoint args are stamped by
+// `tools/parity/nisqa_v2_weight_prepare_checkpoint.py`; the historical public
+// GGUF is accepted only through the same exact manifest and receives those
+// audited values in memory. STFT/mel, inference BatchNorm, ReLU, layout glue
+// and exact PyTorch-bin adaptive max pooling are deterministic host work.
+// Every learned Conv/Linear/attention reduction uses the selected Compute
+// backend's GEMM/softmax/LayerNorm after a whole-model preflight, so Metal
+// never falls back to CPU. `score_at_sample_rate` requires the real WAV rate
+// because the release keeps native sample rate; the legacy rate-less entry
+// fails explicitly rather than guessing 48 kHz.
 //
 // LICENSING: the upstream README states verbatim that the CODE is MIT but
 // that the released WEIGHTS (`nisqa.tar` / `nisqa_mos_only.tar` /
 // `nisqa_tts.tar`) are CC-BY-NC-SA-4.0 →
 // `LicenseClass::NonCommercialShareAlike` = **T4 / research-only**: never
 // publishable without `publish-one.sh --allow-noncommercial`, and the
-// share-alike obligation cascades to any derived GGUF. The converter's own
-// `DEFAULT_LICENSE_SPDX = "cc-by-nc-sa-4.0"` handling was cross-checked
-// against that primary source and is CORRECT — no discrepancy found.
+// share-alike obligation cascades to any derived GGUF. The strict converter
+// rejects conflicting `--license` overrides, so the canonical weights cannot
+// be relabelled as permissive.
 // `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
 // `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
 //

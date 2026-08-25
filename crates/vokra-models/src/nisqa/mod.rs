@@ -60,13 +60,9 @@
 //!   `publish-one.sh --allow-noncommercial`.
 //! - Share-alike cascades: a GGUF derived from these weights is itself
 //!   CC-BY-NC-SA-4.0 and cannot be relabelled.
-//! - The converter also accepts a `license` **override** (used by its
-//!   `license_override_replaces_default` test with `apache-2.0`).
-//!   Passing an override for the canonical `gabrielmittag/NISQA`
-//!   checkpoint would misrepresent it. This binder therefore reports
-//!   whatever class was actually stamped ([`Nisqa::weight_license`]) and
-//!   offers [`Nisqa::is_research_only`] so a caller can gate; a GGUF
-//!   with no stamp at all fail-closes to [`LicenseClass::Unknown`].
+//! - The strict converter refuses a conflicting license override, so the
+//!   canonical weights cannot be relabelled as permissive. The binder also
+//!   requires the non-commercial-share-alike provenance class.
 //! - The `docs/license-audit.md` §3.1 sign-off column stays **blank** —
 //!   owner-only, CC does not sign (memory
 //!   `[[feedback-license-signoff-primary-source]]`).
@@ -75,7 +71,7 @@
 //!
 //! ```text
 //! PCM (mono f32)
-//!   -> librosa mel-spectrogram                       ← REAL spec, deferred wiring
+//!   -> librosa-compatible mel-spectrogram            ← native host DSP
 //!        `get_librosa_melspec`: power=1.0 (amplitude,
 //!        NOT power), window='hann', center=True,
 //!        pad_mode='reflect', fmin=0.0, htk=False,
@@ -85,23 +81,22 @@
 //!        `ms_win_length` are in **seconds** and are
 //!        multiplied by `sr` inside the function —
 //!        librosa's own arguments are in samples.
-//!   -> `segment_specs`: slide a `ms_seg_length`-wide       ← REAL spec, deferred wiring
+//!   -> `segment_specs`: slide a `ms_seg_length`-wide       ← native host glue
 //!        window over the time axis (must be ODD; upstream
 //!        raises `ValueError` otherwise), stride
 //!        `ms_seg_hop_length`, pad to `ms_max_segments`.
 //!        [H x W] -> [W-(seg_length-1) x 1 x H x seg_length]
-//!   -> `AdaptCNN` framewise stage                    ← **loud-partial**
+//!   -> `AdaptCNN` framewise stage                    ← Compute GEMM + host glue
 //!        6x (Conv2d -> BatchNorm2d -> ReLU) with
 //!        `F.adaptive_max_pool2d` after conv1 / conv2 /
 //!        conv4 to `cnn_pool_1` / `_2` / `_3`.
-//!        **`adaptive_max_pool2d` does not exist in
-//!        `vokra-ops`** — that is the missing primitive.
-//!   -> `SelfAttention` time-dependency stage         ← **loud-partial**
+//!        adaptive max pooling uses exact PyTorch floor/ceil bins.
+//!   -> `SelfAttention` time-dependency stage         ← Compute backend
 //!        Linear(fan_out, d_model) -> LayerNorm ->
 //!        `td_sa_num_layers` x SelfAttentionLayer
 //!        (MultiheadAttention + FFN), positional
 //!        encoding off in the standard config.
-//!   -> `Pooling` = `PoolAttFF` attention-pooling      ← **loud-partial**
+//!   -> `Pooling` = `PoolAttFF` attention-pooling      ← Compute backend
 //!        att = Linear(h,1)(dropout(relu(Linear(d,h)(x))));
 //!        masked softmax over valid windows; bmm; Linear.
 //!   -> NISQA_DIM: **5 cloned pooling heads**, concatenated
@@ -141,12 +136,10 @@
 //!
 //! # `vokra.nisqa.*` chunk group (the flip-the-switch contract)
 //!
-//! The converter currently stamps **only** arch / name / category /
-//! provenance. It does not stamp the checkpoint's `args` dict, and the
-//! sidecar it names (`tools/parity/nisqa_v2_weight_prepare_checkpoint.py`)
-//! **does not exist yet**. This module therefore reads the
-//! `vokra.nisqa.*` group as *optional*: absent today (so a converted
-//! GGUF still binds), validated loudly when present.
+//! The strict converter stamps the checkpoint-derived `vokra.nisqa.*` group.
+//! The historical public GGUF predates that group; it is accepted only after
+//! the exact complete 94-tensor manifest and generic provenance match, then
+//! receives the same audited checkpoint values in memory.
 //!
 //! Which hyper-parameters actually have to be stamped is a real
 //! question, and the answer is narrower than "all of them":
@@ -200,11 +193,24 @@
 //! # No ONNX / no pickle (permanent)
 //!
 //! Upstream ships torch `.tar` pickles only. They are flattened to
-//! safetensors offline by the (future) sidecar; neither pickle nor ONNX
+//! safetensors offline by the pinned sidecar; neither pickle nor ONNX
 //! ever enters the runtime (FR-LD-05 / NFR-DS-02).
 
-use vokra_core::gguf::{GgufFile, chunks};
+mod nn;
+#[cfg(test)]
+mod tests;
+mod weights;
+
+use std::sync::Arc;
+
+use vokra_core::backend::BackendKind;
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
+
+use crate::compute::{Compute, HotOp};
+use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
+
+pub use self::weights::NisqaWeights;
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of
@@ -245,6 +251,49 @@ pub const UPSTREAM_URL: &str = "github.com/gabrielmittag/NISQA";
 /// share-alike obligation cascades to derived artefacts.
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 
+/// Learned tensors in the exact public multidimensional checkpoint.
+pub const TENSOR_COUNT: usize = 94;
+
+/// Backend-dispatched learned reductions required by the native forward.
+pub const NISQA_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm];
+
+const SOURCE_REVISION: &str = "fe84f0f252abec382b24367d5b22498a7ce34dbb";
+const SOURCE_MODEL_DEF_SHA256: &str =
+    "f3ace1c00e21ae06e5d0fed9710f4e988c13685b2316a3b3ded46607fb25b71e";
+const SOURCE_CONFIG_SHA256: &str =
+    "afa752835c45f5d052787c024b10eab26eba980e0bde85632e674dbe557ec764";
+const SOURCE_WEIGHT_LICENSE_SHA256: &str =
+    "5b8e7938e1b5e0a675869ffe429cc8e7cc187d76a7c6ea1e0546c412782a43da";
+const SOURCE_CHECKPOINT_SHA256: &str =
+    "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c";
+const PUBLIC_HF: &str = "vokra/nisqa-v2-weight";
+const PUBLIC_REVISION: &str = "89718b026e17d3d048aa394ef8c8ddd14fee9cd8";
+const PUBLIC_GGUF_SHA256: &str = "a2cacbe6f81ea2e8255eb0e2137d70d245823758e1cc4bb180c6b7cccc131e07";
+const MANIFEST_SHA256: &str = "4845124c35587de7417acecac877e0f7bb131183d4aace79e47f361b7dc673f4";
+
+const KEY_SOURCE_REVISION: &str = "vokra.nisqa.source_revision";
+const KEY_SOURCE_MODEL_DEF_SHA256: &str = "vokra.nisqa.source_model_def_sha256";
+const KEY_SOURCE_CONFIG_SHA256: &str = "vokra.nisqa.source_config_sha256";
+const KEY_SOURCE_WEIGHT_LICENSE_SHA256: &str = "vokra.nisqa.source_weight_license_sha256";
+const KEY_SOURCE_CHECKPOINT_SHA256: &str = "vokra.nisqa.source_checkpoint_sha256";
+const KEY_PUBLIC_HF: &str = "vokra.nisqa.public_hf";
+const KEY_PUBLIC_REVISION: &str = "vokra.nisqa.public_revision";
+const KEY_PUBLIC_GGUF_SHA256: &str = "vokra.nisqa.public_gguf_sha256";
+const KEY_MANIFEST_SHA256: &str = "vokra.nisqa.manifest_sha256";
+
+pub(super) const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
+    label: "nisqa",
+    arch: ARCH,
+    model_name: NAME,
+    model_name_alias: None,
+    tensor_count: TENSOR_COUNT,
+    manifest_sha256: [
+        0x48, 0x45, 0x12, 0x4c, 0x35, 0x58, 0x7d, 0xe7, 0x41, 0x7a, 0xce, 0xca, 0xc8, 0x77, 0xe0,
+        0xf7, 0xbb, 0x13, 0x11, 0x83, 0xd4, 0xaa, 0xce, 0x79, 0xe4, 0x7f, 0x36, 0x1b, 0x7d, 0xc6,
+        0x73, 0xf4,
+    ],
+};
+
 /// GGUF metadata key: model category tag (mirror of the converter's
 /// local const).
 pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
@@ -254,8 +303,7 @@ pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 pub const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
 
 // ---------------------------------------------------------------------------
-// Primary-source anchors — echoed in the loud-partial diagnostics so a
-// reader has fully specified places to walk.
+// Primary-source anchors used by the audited converter/parity chain.
 // ---------------------------------------------------------------------------
 
 /// Primary-source anchor: reference implementation + weight release.
@@ -273,9 +321,8 @@ pub const PRIMARY_SOURCE_MODEL_DEF: &str = "gabrielmittag/NISQA/nisqa/NISQA_lib.
 /// `cnn_*` / `td_*` keys the [`KEY_NISQA_SAMPLE_RATE`] group mirrors.
 pub const PRIMARY_SOURCE_CONFIG: &str = "gabrielmittag/NISQA/config/train_nisqa_cnn_sa_ap.yaml";
 
-/// The sidecar the converter's docstring names but which does not exist
-/// yet — flattens the upstream `.tar` pickle to safetensors and is the
-/// place the `vokra.nisqa.*` group must be emitted from.
+/// Pinned offline sidecar that flattens the upstream `.tar` pickle to
+/// safetensors after source/checkpoint validation.
 pub const SIDECAR_PATH: &str = "tools/parity/nisqa_v2_weight_prepare_checkpoint.py";
 
 // ---------------------------------------------------------------------------
@@ -460,7 +507,7 @@ impl NisqaScore {
     /// upstream tensor order (see [`HEAD_ORDER`]).
     ///
     /// This is the only place the head-index → field mapping is written,
-    /// so a future real forward cannot re-derive (and re-misorder) it.
+    /// so the native forward cannot re-derive (and re-misorder) it.
     ///
     /// # Errors
     ///
@@ -573,8 +620,8 @@ impl NisqaVariant {
 /// The mel front-end hyper-parameters, read from the optional
 /// `vokra.nisqa.*` group (upstream `ms_*` args).
 ///
-/// Absent from every GGUF the current converter produces — see the
-/// module docstring's "flip-the-switch contract".
+/// Stamped by the strict converter; reconstructed only for the exact
+/// historical public manifest that predates the group.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NisqaFrontEndSpec {
     /// Resample target in Hz; `0` means "keep the native rate"
@@ -791,6 +838,25 @@ impl NisqaTopologySpec {
     }
 }
 
+/// Exact front-end arguments embedded in upstream `weights/nisqa.tar`.
+pub const CANONICAL_FRONT_END: NisqaFrontEndSpec = NisqaFrontEndSpec {
+    sample_rate: 0,
+    n_fft: 4096,
+    hop_length_sec: 0.01,
+    win_length_sec: 0.02,
+    n_mels: 48,
+    fmax: 20_000.0,
+    seg_length: 15,
+    seg_hop_length: 4,
+    max_segments: 1300,
+};
+
+/// Exact non-shape topology arguments embedded in upstream `weights/nisqa.tar`.
+pub const CANONICAL_TOPOLOGY: NisqaTopologySpec = NisqaTopologySpec {
+    cnn_pool: [[24, 7], [12, 5], [6, 3]],
+    td_sa_nhead: 1,
+};
+
 // ---------------------------------------------------------------------------
 // Metadata read helpers.
 // ---------------------------------------------------------------------------
@@ -945,150 +1011,68 @@ impl NisqaConfig {
 }
 
 // ---------------------------------------------------------------------------
-// NisqaWeights — tensor manifest with a non-empty gate.
-// ---------------------------------------------------------------------------
-
-/// Weight tensors bound from a NISQA v2 GGUF.
-///
-/// Names + GGUF-side dims only: the forward is a loud-partial, so
-/// preloading every tensor into RAM would buy nothing. The follow-up
-/// wave that lands the real forward picks its own caching shape.
-#[derive(Debug)]
-pub struct NisqaWeights {
-    tensors: Vec<(String, Vec<usize>)>,
-}
-
-impl NisqaWeights {
-    /// Scans `gguf` for the NISQA `state_dict` tensors, refusing an empty
-    /// manifest (FR-EX-08).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors.
-    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        let mut tensors: Vec<(String, Vec<usize>)> = Vec::new();
-        for info in gguf.tensors() {
-            let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
-            tensors.push((info.name.clone(), dims));
-        }
-        if tensors.is_empty() {
-            return Err(VokraError::ModelLoad(format!(
-                "nisqa: GGUF carries zero tensors — refusing to bind an all-zero \
-                 forward (FR-EX-08). A legitimate NISQA v2 checkpoint carries the \
-                 six-layer `AdaptCNN` framewise stage, the self-attention \
-                 time-dependency stage and the attention-pooling head(s) \
-                 (arch={ARCH}, name={NAME}). Re-run \
-                 `vokra-cli convert --model nisqa-v2-weight` against a \
-                 `{UPSTREAM_URL}` checkpoint flattened by `{SIDECAR_PATH}`."
-            )));
-        }
-        Ok(Self { tensors })
-    }
-
-    /// Number of tensors bound from the GGUF.
-    #[must_use]
-    pub fn tensor_count(&self) -> usize {
-        self.tensors.len()
-    }
-
-    /// The bound tensor names with their GGUF-side dims — a diagnostic
-    /// accessor for the follow-up forward wave.
-    #[must_use]
-    pub fn tensors(&self) -> &[(String, Vec<usize>)] {
-        &self.tensors
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Nisqa — the runtime binder handle.
 // ---------------------------------------------------------------------------
 
-/// NISQA v2 (`gabrielmittag/NISQA`, weights **CC-BY-NC-SA-4.0**) runtime
-/// binder.
+/// Strict native NISQA v2 multidimensional scorer.
 ///
-/// Bind with [`from_gguf`](Self::from_gguf), then call
-/// [`score`](Self::score) for the full five-dimension [`NisqaScore`] or
-/// [`score_overall`](Self::score_overall) for the overall MOS alone. Both
-/// forwards are loud-partials today — see the module doc for exactly
-/// which primitive is missing.
-#[derive(Debug)]
+/// The learned CNN, attention and pooling reductions run through one selected
+/// [`Compute`] backend. Front-end DSP, activations, layout changes, inference
+/// BatchNorm and adaptive pooling are deterministic host glue, not a fallback.
+#[derive(Debug, Clone)]
 pub struct Nisqa {
     cfg: NisqaConfig,
-    // Held (real, counted) but not yet consumed: the forward is a
-    // loud-partial. Same posture as the emotion2vec / panns / RMVPE
-    // binders.
-    #[allow(dead_code)]
-    weights: NisqaWeights,
+    weights: Arc<NisqaWeights>,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl Nisqa {
-    /// Binds a NISQA v2 GGUF: validates the arch tag strictly, derives
-    /// the variant from the tensor manifest, reads the optional
-    /// `vokra.nisqa.*` groups, and surfaces the stamped weight-license
-    /// class.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
-    ///   is not [`ARCH`] (a sibling `eval`-family GGUF handed here by
-    ///   mistake fails with a specific message rather than a downstream
-    ///   missing-tensor error).
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors,
-    ///   carries no pooling head, is missing one of the five cloned
-    ///   heads, or carries a malformed `vokra.nisqa.*` group.
+    /// Strictly binds the exact public 94-tensor multidimensional release.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        // 1. Arch check first, always — a `dnsmos` / `utmos` / `utmosv2`
-        //    / `torchaudio_squim` GGUF handed here by mistake must fail
-        //    with a clear message, not a downstream shape error.
-        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
-            Some(a) if a == ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "nisqa: GGUF arch is `{other}`, expected `{ARCH}` (was this GGUF \
-                     produced by `vokra-cli convert --model nisqa-v2-weight`? The \
-                     sibling `category = \"eval\"` MOS-predictor arch tags — \
-                     `dnsmos` (Microsoft DNS-Challenge CNN, P.808 scalar + P.835 \
-                     SIG/BAK/OVRL triple), `utmos` (SaruLab UTMOS22-strong, \
-                     wav2vec2 regression to a single MOS), `utmosv2` (UTMOS v2), \
-                     `torchaudio_squim` (Meta SQUIM, objective STOI/PESQ/SI-SDR + \
-                     subjective MOS) — all live in the same non-intrusive \
-                     quality-prediction neighbourhood but have completely different \
-                     topologies and output widths. NISQA v2's five-head \
-                     multidimensional output ({HEAD_ORDER:?}) has no analog in any \
-                     sibling; silently aliasing arch would mis-route runtime \
-                     dispatch (FR-EX-08 — no silent partial load)."
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(format!(
-                    "nisqa: GGUF is missing `vokra.model.arch` — this is not a \
-                     Vokra-native nisqa GGUF (was it produced by `vokra-cli convert \
-                     --model nisqa-v2-weight`? that converter stamps \
-                     `vokra.model.arch = {ARCH}`)."
-                )));
-            }
+        let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
+        require_string(file, chunks::KEY_PROVENANCE_MODEL_ID, NAME)?;
+        require_string(file, KEY_MODEL_CATEGORY, CATEGORY)?;
+        require_string(file, KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL)?;
+        require_string(file, chunks::KEY_PROVENANCE_LICENSE, DEFAULT_LICENSE_SPDX)?;
+        require_string(
+            file,
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::NonCommercialShareAlike.as_str(),
+        )?;
+        validate_additive_contract(file)?;
+
+        let mut cfg = NisqaConfig::from_gguf(file)?;
+        if cfg.variant != NisqaVariant::MultiDim {
+            return Err(VokraError::ModelLoad(
+                "nisqa: the pinned public release must carry five `pool_layers.*` heads".to_owned(),
+            ));
         }
-
-        // 2. Tensor manifest with the non-emptiness gate, then the
-        //    manifest-derived config.
-        let weights = NisqaWeights::from_gguf(file)?;
-        let cfg = NisqaConfig::from_gguf(file)?;
-
-        // 3. Provenance surfacing. The converter stamps
-        //    `cc-by-nc-sa-4.0` by default, which resolves to
-        //    NonCommercialShareAlike; a GGUF with no stamp fail-closes to
-        //    Unknown (memory `[[feedback-license-signoff-primary-source]]`).
-        let weight_license = file
-            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-            .and_then(|v| v.as_str())
-            .and_then(LicenseClass::from_class_str)
-            .unwrap_or(LicenseClass::Unknown);
+        match cfg.front_end {
+            Some(actual) if actual != CANONICAL_FRONT_END => {
+                return Err(VokraError::ModelLoad(format!(
+                    "nisqa: stamped front-end {actual:?} differs from the audited checkpoint args {CANONICAL_FRONT_END:?}"
+                )));
+            }
+            None => cfg.front_end = Some(CANONICAL_FRONT_END),
+            Some(_) => {}
+        }
+        match cfg.topology {
+            Some(actual) if actual != CANONICAL_TOPOLOGY => {
+                return Err(VokraError::ModelLoad(format!(
+                    "nisqa: stamped topology {actual:?} differs from the audited checkpoint args {CANONICAL_TOPOLOGY:?}"
+                )));
+            }
+            None => cfg.topology = Some(CANONICAL_TOPOLOGY),
+            Some(_) => {}
+        }
+        let weights = Arc::new(NisqaWeights::bind(file)?);
 
         Ok(Self {
             cfg,
             weights,
-            weight_license,
+            weight_license: checkpoint.weight_license(),
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -1101,6 +1085,33 @@ impl Nisqa {
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let gguf = GgufFile::open(path)?;
         Self::from_gguf(&gguf)
+    }
+
+    /// Strictly binds a GGUF and preflights one complete backend route.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        Compute::for_backend(backend, NISQA_HOT_OPS)?;
+        Ok(Self::from_gguf(file)?.with_backend(backend))
+    }
+
+    /// Opens a GGUF and preflights one complete backend route.
+    pub fn from_path_with_backend(
+        path: impl AsRef<std::path::Path>,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        Self::from_gguf_with_backend(&GgufFile::open(path)?, backend)
+    }
+
+    /// Selects a backend; availability is checked again before scoring.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Selected backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
     }
 
     /// The manifest-derived config.
@@ -1148,119 +1159,93 @@ impl Nisqa {
         self.weight_license.requires_research_flag()
     }
 
-    /// Predicts all five NISQA v2 dimensions for a mono `f32` PCM clip.
+    /// Legacy rate-less entry point.
     ///
-    /// # Loud-partial (this WP)
-    ///
-    /// Returns [`VokraError::UnsupportedOp`]. The forward needs
-    /// `F.adaptive_max_pool2d`, which **does not exist anywhere in
-    /// `vokra-ops`** — see [`score_forward_loud_partial`] for the full
-    /// message and the flip-the-switch recipe. **No fabricated MOS is
-    /// ever emitted** (FR-EX-08).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] when the bound checkpoint is the
-    ///   single-output variant — it has one pooling head, so four of the
-    ///   five dimensions do not exist and padding them would fabricate
-    ///   sub-scores. Call [`Self::score_overall`] instead.
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate.
-    pub fn score(&self, pcm: &[f32]) -> Result<NisqaScore> {
-        if self.cfg.variant != NisqaVariant::MultiDim {
-            return Err(VokraError::InvalidArgument(format!(
-                "nisqa: cannot produce the five-dimension score from a \
-                 `{short}` checkpoint (upstream `{class}`) — it carries a single \
-                 attention-pooling head, so noisiness / discontinuity / coloration \
-                 / loudness were never trained and do not exist in the weights. \
-                 Fabricating them as zeros or copies of the overall MOS would be a \
-                 silent wrong answer (FR-EX-08). Use `score_overall()` for this \
-                 checkpoint, or convert `nisqa.tar` (the `NISQA_DIM` release) for \
-                 the full {N_HEADS} dimensions.",
-                short = self.cfg.variant.short(),
-                class = self.cfg.variant.upstream_class(),
-            )));
-        }
-        // The gate fires BEFORE any front-end work so a caller can never
-        // observe a partial computation that looks like a real forward.
-        let _ = pcm;
-        Err(score_forward_loud_partial(self.cfg.variant))
+    /// The released checkpoint keeps the file's native sample rate, so the
+    /// caller must use [`Self::score_at_sample_rate`]. Guessing 48 kHz here
+    /// would silently change STFT window and hop sizes for 16/44.1 kHz input.
+    pub fn score(&self, _pcm: &[f32]) -> Result<NisqaScore> {
+        Err(VokraError::InvalidArgument(
+            "nisqa: native input sample rate is required; call `score_at_sample_rate(pcm, sample_rate)`"
+                .to_owned(),
+        ))
     }
 
-    /// Predicts the overall quality MOS alone (head index 0 on the
-    /// multidimensional variant, the sole head on the single-output
-    /// variant).
-    ///
-    /// # Loud-partial (this WP)
-    ///
-    /// Same gate as [`Self::score`] — see
-    /// [`score_forward_loud_partial`].
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate.
-    pub fn score_overall(&self, pcm: &[f32]) -> Result<f32> {
-        let _ = pcm;
-        Err(score_forward_loud_partial(self.cfg.variant))
+    /// Predicts all five NISQA v2 dimensions for mono PCM at `sample_rate`.
+    pub fn score_at_sample_rate(&self, pcm: &[f32], sample_rate: u32) -> Result<NisqaScore> {
+        let compute = Compute::for_backend(self.backend, NISQA_HOT_OPS)?;
+        let front_end = self.cfg.front_end.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad("nisqa: audited front-end is unavailable".to_owned())
+        })?;
+        let topology = self.cfg.topology.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad("nisqa: audited topology is unavailable".to_owned())
+        })?;
+        nn::score(
+            &compute,
+            &self.weights,
+            front_end,
+            topology,
+            pcm,
+            sample_rate,
+        )
+    }
+
+    /// Legacy rate-less overall-MOS entry point; see [`Self::score`].
+    pub fn score_overall(&self, _pcm: &[f32]) -> Result<f32> {
+        Err(VokraError::InvalidArgument(
+            "nisqa: native input sample rate is required; call `score_overall_at_sample_rate(pcm, sample_rate)`"
+                .to_owned(),
+        ))
+    }
+
+    /// Predicts the overall MOS (head zero) for mono PCM at `sample_rate`.
+    pub fn score_overall_at_sample_rate(&self, pcm: &[f32], sample_rate: u32) -> Result<f32> {
+        Ok(self.score_at_sample_rate(pcm, sample_rate)?.mos)
     }
 }
 
-/// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// every `score*` path until the missing pieces land.
-///
-/// The message names all three blockers so a reader (or the follow-up
-/// wave) knows exactly where to flip the switch:
-///
-/// 1. **The missing primitive** — `F.adaptive_max_pool2d`. `AdaptCNN`
-///    calls it three times with configured output sizes; `vokra-ops` has
-///    no adaptive pooling at all (the existing `conv2d` helpers live
-///    private inside `speaker/`, `f0/crepe.rs` and `f0/rmvpe.rs`, and
-///    none of them pool adaptively).
-/// 2. **The missing metadata** — the `vokra.nisqa.*` groups. The
-///    adaptive-pool output sizes and the attention head count appear in
-///    no weight tensor, so they cannot be recovered from the manifest.
-/// 3. **The missing sidecar** — [`SIDECAR_PATH`], which the converter's
-///    docstring names but which has never been written; the upstream
-///    release is a torch pickle and pickles never enter the runtime
-///    (FR-LD-05).
-#[must_use]
-pub fn score_forward_loud_partial(variant: NisqaVariant) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "nisqa score (loud-partial): the {short} forward (upstream `{class}`) is \
-         deferred; three pieces must land before a real MOS can be emitted. \
-         (1) MISSING PRIMITIVE: `F.adaptive_max_pool2d` — upstream `AdaptCNN` in \
-         `{PRIMARY_SOURCE_MODEL_DEF}` calls it after conv1, conv2 and conv4 with \
-         the configured `cnn_pool_1` / `cnn_pool_2` / `cnn_pool_3` output sizes, \
-         and `vokra-ops` has no adaptive pooling operator at all (fixed-kernel \
-         pooling cannot reproduce it for a variable-length input). \
-         (2) MISSING METADATA: the `vokra.nisqa.*` groups — the three \
-         adaptive-pool output sizes (`{KEY_NISQA_CNN_POOL_1_H}` ... \
-         `{KEY_NISQA_CNN_POOL_3_W}`) and `{KEY_NISQA_TD_SA_NHEAD}` appear in NO \
-         weight tensor, and the whole mel front-end (`{KEY_NISQA_N_MELS}`, \
-         `{KEY_NISQA_SEG_LENGTH}`, `{KEY_NISQA_HOP_LENGTH_SEC}` in seconds, ...) \
-         is pure hyper-parameter. Best-guessing them from the upstream training \
-         yaml would be silent-wrong whenever the shipped checkpoint's `args` dict \
-         differs. \
-         (3) MISSING SIDECAR: `{SIDECAR_PATH}` does not exist — it must flatten \
-         the upstream `.tar` pickle to safetensors AND emit the `vokra.nisqa.*` \
-         groups from the checkpoint's own `args` dict. \
-         Output width once real: {N_HEADS} dimensions in the load-bearing tensor \
-         order {HEAD_ORDER:?} = [overall MOS, noisiness, discontinuity, \
-         coloration, loudness] — note discontinuity precedes coloration here, \
-         opposite to the paper's prose order. Primary sources: code {code}, paper \
-         {paper}, model definition {model_def}, standard config {config}. Runtime \
-         cannot fabricate a MOS (FR-EX-08 — no silent partial output).",
-        short = variant.short(),
-        class = variant.upstream_class(),
-        code = PRIMARY_SOURCE_CODE,
-        paper = PRIMARY_SOURCE_PAPER,
-        model_def = PRIMARY_SOURCE_MODEL_DEF,
-        config = PRIMARY_SOURCE_CONFIG,
-    ))
+fn validate_additive_contract(file: &GgufFile) -> Result<()> {
+    let keys = [
+        KEY_SOURCE_REVISION,
+        KEY_SOURCE_MODEL_DEF_SHA256,
+        KEY_SOURCE_CONFIG_SHA256,
+        KEY_SOURCE_WEIGHT_LICENSE_SHA256,
+        KEY_SOURCE_CHECKPOINT_SHA256,
+        KEY_PUBLIC_HF,
+        KEY_PUBLIC_REVISION,
+        KEY_PUBLIC_GGUF_SHA256,
+        KEY_MANIFEST_SHA256,
+    ];
+    // The historical public artifact predates the richer pins. Its exact
+    // complete manifest plus generic provenance is the compatibility proof.
+    if !keys.iter().any(|key| file.get(key).is_some()) {
+        return Ok(());
+    }
+    for (key, expected) in [
+        (KEY_SOURCE_REVISION, SOURCE_REVISION),
+        (KEY_SOURCE_MODEL_DEF_SHA256, SOURCE_MODEL_DEF_SHA256),
+        (KEY_SOURCE_CONFIG_SHA256, SOURCE_CONFIG_SHA256),
+        (
+            KEY_SOURCE_WEIGHT_LICENSE_SHA256,
+            SOURCE_WEIGHT_LICENSE_SHA256,
+        ),
+        (KEY_SOURCE_CHECKPOINT_SHA256, SOURCE_CHECKPOINT_SHA256),
+        (KEY_PUBLIC_HF, PUBLIC_HF),
+        (KEY_PUBLIC_REVISION, PUBLIC_REVISION),
+        (KEY_PUBLIC_GGUF_SHA256, PUBLIC_GGUF_SHA256),
+        (KEY_MANIFEST_SHA256, MANIFEST_SHA256),
+    ] {
+        require_string(file, key, expected)?;
+    }
+    Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests;
+fn require_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = file.get(key).and_then(GgufMetadataValue::as_str);
+    if actual != Some(expected) {
+        return Err(VokraError::ModelLoad(format!(
+            "nisqa: metadata `{key}`={actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}

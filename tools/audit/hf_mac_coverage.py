@@ -146,6 +146,7 @@ METAL_CODE_ARCHES = {
     "moonshine",
     "nkf_aec",
     "neucodec",
+    "nisqa_v2_weight",
     "nsnet2",
     "parakeet-ctc",
     "parakeet-tdt",

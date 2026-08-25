@@ -850,6 +850,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AudioClassificationAst
         | ModelTask::Utmos
         | ModelTask::Dnsmos
+        | ModelTask::Nisqa
         | ModelTask::Segment
         | ModelTask::Separation
         | ModelTask::Tts
@@ -1254,6 +1255,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::Dnsmos => {
             run_dnsmos(&session, &a)?;
         }
+        ModelTask::Nisqa => {
+            run_nisqa(&session, &a)?;
+        }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
         }
@@ -1366,6 +1370,25 @@ fn run_dnsmos(session: &Session, args: &RunArgs) -> Result<(), String> {
         score.sig.expect("strict DNSMOS bundle always has SIG"),
         score.bak.expect("strict DNSMOS bundle always has BAK"),
         score.ovrl.expect("strict DNSMOS bundle always has OVRL")
+    );
+    Ok(())
+}
+
+/// Runs the strict NISQA v2 five-dimension quality scorer.
+fn run_nisqa(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (NISQA): --input <mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::nisqa::Nisqa::from_gguf_with_backend(session.gguf(), args.backend)
+        .map_err(|error| format!("run (NISQA): {error}"))?;
+    let score = model
+        .score_at_sample_rate(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (NISQA): {error}"))?;
+    println!(
+        "nisqa: mos={:.9} noisiness={:.9} discontinuity={:.9} coloration={:.9} loudness={:.9}",
+        score.mos, score.noisiness, score.discontinuity, score.coloration, score.loudness
     );
     Ok(())
 }

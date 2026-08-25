@@ -818,6 +818,27 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("dnsmos", audio_seconds, samples)
         }
+        ModelTask::Nisqa => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (NISQA): --input <mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let sample_rate = clip.sample_rate;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(sample_rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::nisqa::Nisqa::from_gguf_with_backend(session.gguf(), args.backend)
+                    .map_err(|error| format!("bench (NISQA): {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model
+                    .score_at_sample_rate(&pcm, sample_rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("nisqa", audio_seconds, samples)
+        }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = args
                 .input

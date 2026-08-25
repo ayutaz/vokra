@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (NISQA v2 CPU/Metal runtime)
+
+The exact public 94-tensor multidimensional NISQA release gains a strict
+native forward and CLI/bench route. No C symbol, ownership rule or allocation
+ABI changes. The rate-aware API is required because the official checkpoint
+keeps the WAV's native sample rate.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::nisqa` | `Nisqa`, `NisqaWeights`, `NisqaScore`, `NISQA_HOT_OPS` | Changed/Added | strict bind/backend selection; `score_at_sample_rate(&[f32], u32) -> Result<NisqaScore>`; five fields in `mos,noi,dis,col,loud` order | Owns decoded F32 weights. Learned Conv/Linear/attention uses one CPU/Metal GEMM/softmax/LayerNorm route; front-end, BatchNorm and adaptive pooling are deterministic host glue | no for exact public bundle; generic/count-only files now fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=nisqa_v2_weight` | Added (behavior only) | native-rate mono WAV to five quality dimensions | Missing rate, non-finite PCM, oversized segment count, unsupported backend and provenance mismatches fail explicitly | no | (TBD) |
+| `gguf:vokra.nisqa.*` | source/public identity plus exact front-end/topology group | Added/enforced | revision/hash strings; native-rate sentinel, FFT/hop/window/mel/segment/pool/head values | New converters stamp the complete additive group. The exact historical public GGUF may omit it only because its full manifest and generic provenance are independently pinned; a partial group fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (DNSMOS P.808/P.835 CPU/Metal runtime)
 
 The exact public 38-tensor DNSMOS bundle gains strict native P.808 and P.835
@@ -3200,6 +3213,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.moss_tts.*` | **14** keys — `audio_vocab_size`, `llm.family`, `llm.ffn_dim`, `llm.head_dim`, …  | `u32` + `f32` + `string` | persisted | `moss_tts` — written by `crates/vokra-convert/src/models/moss_tts.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.mt3.*` | **9** keys — `d_ff`, `d_kv`, `d_model`, `music_vocab_size`, …  | `u32` | persisted | `mt3-multitrack`, `github.com/magenta/mt3` — written by `crates/vokra-convert/src/models/mt3.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `382addc` (2026-08-14) |
 | backfill | `vokra.neucodec.*` | **1** keys — `variant` | `string` | persisted | `neucodec`, `neuphonic/neucodec` — written by `crates/vokra-convert/src/models/neucodec.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+| runtime-gap | `vokra.nisqa.*` | **25** keys — `source_revision`, four source/checkpoint hashes, `public_hf`, `public_revision`, `public_gguf_sha256`, `manifest_sha256`, `sample_rate`, `n_fft`, `hop_length_sec`, `win_length_sec`, `n_mels`, `fmax`, `seg_length`, `seg_hop_length`, `max_segments`, six adaptive-pool extents, `td_sa_nhead` | `string` + `u32` + `f32` | persisted | `nisqa_v2_weight` — written by the strict converter and read by `vokra-models::nisqa`. Values come from the pinned official checkpoint args, not training-YAML guesses. The exact historical 94-tensor public GGUF may omit the group only while its immutable manifest and generic non-commercial-share-alike provenance match; any partial or conflicting group fails closed. | working tree (2026-08-26) |
 | backfill | `vokra.nsnet2.*` | **8** keys — `fc1_dim`, `fc2_dim`, `hidden_dim`, `hop`, …  | `u32` | persisted | `nsnet2-20ms-baseline`, `github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline` — written by `crates/vokra-convert/src/models/nsnet2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.omniasr_ctc.*` | **20** keys — `arch.encoder.feature_dim`, `arch.encoder.feature_extractor_bias`, `arch.encoder.feature_extractor_kernel.`, `arch.encoder.feature_extractor_layer_count`, …  | `u32` | persisted | `omniasr-ctc-1b` — written by `crates/vokra-convert/src/models/omniasr_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
 | backfill | `vokra.parakeet_ctc.*` | **18** keys — `arch.encoder.attention_bias`, `arch.encoder.conv_kernel_size`, `arch.encoder.convolution_bias`, `arch.encoder.d_model`, …  | `u32` | persisted | `parakeet-ctc-1.1b` — written by `crates/vokra-convert/src/models/parakeet_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
