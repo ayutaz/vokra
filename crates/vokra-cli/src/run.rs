@@ -5239,6 +5239,92 @@ mod tests {
         );
     }
 
+    /// Real public-checkpoint CPU/Metal parity for FCPE's complete learned
+    /// path. The independent CPU-vs-torchfcpe oracle lives in the models
+    /// crate; this Apple-only leg proves the selected Metal backend preserves
+    /// the final unrounded F0/confidence track and voiced decisions.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn fcpe_real_cpu_metal_track_parity() {
+        let Some(model_path) =
+            std::env::var_os("VOKRA_FCPE_REAL_GGUF").map(std::path::PathBuf::from)
+        else {
+            eprintln!("skip: set VOKRA_FCPE_REAL_GGUF to the strict FCPE v001 GGUF");
+            return;
+        };
+        let wav_path = std::env::var_os("VOKRA_FCPE_REAL_WAV").map_or_else(
+            || {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/parity/fcpe/input.wav")
+            },
+            std::path::PathBuf::from,
+        );
+        let clip = wav::read_wav(&wav_path).expect("read committed FCPE parity WAV");
+        assert_eq!(clip.sample_rate, 16_000);
+
+        let cpu =
+            vokra_models::f0::fcpe::FCPE::from_gguf(&model_path).expect("bind strict FCPE for CPU");
+        let metal = vokra_models::f0::fcpe::FCPE::from_gguf(&model_path)
+            .expect("bind strict FCPE for Metal")
+            .with_backend(vokra_core::BackendKind::Metal);
+        let cpu_track = cpu
+            .extract_real(&clip.samples, clip.sample_rate)
+            .expect("FCPE CPU track");
+        let metal_track = metal
+            .extract_real(&clip.samples, clip.sample_rate)
+            .expect("FCPE Metal track");
+        assert_eq!(metal_track.len(), cpu_track.len());
+        assert!(!cpu_track.is_empty());
+
+        let mut voiced_mismatches = 0usize;
+        let mut max_f0_abs = 0.0f32;
+        let mut sum_f0_abs = 0.0f64;
+        let mut max_confidence_abs = 0.0f32;
+        let mut sum_confidence_abs = 0.0f64;
+        for (cpu_frame, metal_frame) in cpu_track.iter().zip(&metal_track) {
+            assert_eq!(
+                metal_frame.time_sec.to_bits(),
+                cpu_frame.time_sec.to_bits(),
+                "CPU/Metal FCPE timebase diverged"
+            );
+            voiced_mismatches += usize::from(cpu_frame.voiced != metal_frame.voiced);
+            let f0_delta = (cpu_frame.hz - metal_frame.hz).abs();
+            max_f0_abs = max_f0_abs.max(f0_delta);
+            sum_f0_abs += f64::from(f0_delta);
+            let confidence_delta = (cpu_frame.confidence - metal_frame.confidence).abs();
+            max_confidence_abs = max_confidence_abs.max(confidence_delta);
+            sum_confidence_abs += f64::from(confidence_delta);
+        }
+        let count = cpu_track.len() as f64;
+        let mean_f0_abs = sum_f0_abs / count;
+        let mean_confidence_abs = sum_confidence_abs / count;
+        eprintln!(
+            "FCPE real CPU/Metal: frames={} voiced_mismatches={} \
+             f0_max_abs={max_f0_abs:.9e} f0_mean_abs={mean_f0_abs:.9e} \
+             confidence_max_abs={max_confidence_abs:.9e} \
+             confidence_mean_abs={mean_confidence_abs:.9e}",
+            cpu_track.len(),
+            voiced_mismatches,
+        );
+        assert_eq!(voiced_mismatches, 0, "CPU/Metal voiced decisions diverged");
+        // M1 8-core GPU measurement on the committed 33-frame official input:
+        // f0 max/mean = 1.526e-4 / 3.560e-5 Hz; confidence max/mean =
+        // 1.013e-6 / 2.254e-7. The fixed bounds leave modest device/compiler
+        // headroom while remaining far below a perceptible or decision-level
+        // difference. A Metal-unavailable host errors before reaching here;
+        // there is no CPU fallback.
+        assert!(
+            max_f0_abs <= 2.5e-4 && mean_f0_abs <= 5.0e-5,
+            "FCPE CPU/Metal F0 drift max={max_f0_abs:.9e} mean={mean_f0_abs:.9e} Hz \
+             exceeds 2.5e-4 / 5e-5 Hz"
+        );
+        assert!(
+            max_confidence_abs <= 2.0e-6 && mean_confidence_abs <= 3.0e-7,
+            "FCPE CPU/Metal confidence drift max={max_confidence_abs:.9e} \
+             mean={mean_confidence_abs:.9e} exceeds 2e-6 / 3e-7"
+        );
+    }
+
     #[test]
     fn vocoder_feature_bytes_enforce_shape_and_finite_contract() {
         let bytes: Vec<u8> = [0.25_f32, -0.5, 1.0, 2.0]
