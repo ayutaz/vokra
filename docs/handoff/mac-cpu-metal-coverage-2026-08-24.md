@@ -546,6 +546,10 @@ releases. VoxLingua107 is 60-mel → 256-d ECAPA → XVector MLP + log-softmax,
 whereas CommonLanguage is 80-mel → 192-d ECAPA → cosine classifier. Both keep
 the `lang_id_ecapa` family dispatch tag, but the converter stamps and validates
 their different frontend, embedding, classifier and ordered-label metadata.
+Prepared layout v2 also canonicalizes the complete official classifier state
+and persists the three ECAPA residual-block kernel and dilation values; a v1
+sidecar or a classifier with extra/unclaimed state is rejected rather than
+being interpreted heuristically.
 
 The SHA-256 above is the value on the live fixed-revision model card and the
 downloaded 83,239,808-byte file; it corrects a stale ledger transcription that

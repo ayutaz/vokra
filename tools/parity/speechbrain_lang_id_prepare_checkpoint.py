@@ -4,9 +4,11 @@
 The input oracle is ``speechbrain.inference.classifiers.EncoderClassifier``
 loaded from one immutable Hugging Face revision.  This script does not mirror
 ECAPA or either classifier in Python.  It asks the official package to build
-and load the release, then serializes its two real inference modules under the
-unambiguous ``embedding_model.`` and ``classifier.`` prefixes.  BatchNorm
-training counters are the only state entries removed.
+and load the release, then serializes the real embedding module under the
+unambiguous ``embedding_model.`` prefix.  The classifier is reduced to a
+small, version-independent canonical tensor vocabulary after its official
+class and complete state layout have been checked.  BatchNorm training
+counters are the only inference-irrelevant state entries removed.
 
 The label encoder and the runtime contract are stored in safetensors
 ``__metadata__``.  The Rust converter requires that metadata and refuses the
@@ -73,7 +75,7 @@ except Exception as error:  # noqa: BLE001 - loud official-loader failure
     ) from error
 
 
-FORMAT = "vokra-speechbrain-lang-id-prepared-v1"
+FORMAT = "vokra-speechbrain-lang-id-prepared-v2"
 DEFAULT_SOURCE = "speechbrain/lang-id-voxlingua107-ecapa"
 DEFAULT_REVISION = "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
 SUPPORTED_SOURCES = {
@@ -123,6 +125,14 @@ def float_state(prefix: str, module: torch.nn.Module) -> tuple[dict[str, torch.T
     return output, counters
 
 
+def finite_contiguous(name: str, value: torch.Tensor) -> torch.Tensor:
+    if not value.is_floating_point():
+        raise RuntimeError(f"{name}: non-floating inference state is unsupported")
+    if not torch.isfinite(value).all():
+        raise RuntimeError(f"{name}: official checkpoint contains non-finite values")
+    return value.detach().cpu().contiguous()
+
+
 def classifier_kind(module: torch.nn.Module) -> str:
     identity = f"{type(module).__module__}.{type(module).__name__}"
     if identity == "speechbrain.lobes.models.Xvector.Classifier":
@@ -169,7 +179,157 @@ def classifier_dims(
     return input_dim, label_count, hidden_dim
 
 
-def ecapa_contract_dims(state: dict[str, torch.Tensor]) -> tuple[int, int, int, int]:
+def canonical_matrix(
+    name: str, value: torch.Tensor, output_dim: int, input_dim: int
+) -> torch.Tensor:
+    shape = tuple(int(dim) for dim in value.shape)
+    if shape == (output_dim, input_dim):
+        return finite_contiguous(name, value)
+    if shape == (input_dim, output_dim):
+        return finite_contiguous(name, value.transpose(0, 1))
+    raise RuntimeError(
+        f"{name}: projection shape {shape}, expected {(output_dim, input_dim)} "
+        f"or its transpose"
+    )
+
+
+def canonical_classifier_state(
+    module: torch.nn.Module,
+    kind: str,
+    input_dim: int,
+    class_count: int,
+    hidden_dim: int | None,
+) -> tuple[dict[str, torch.Tensor], list[str], dict[str, str]]:
+    state = module.state_dict()
+    counters = sorted(name for name in state if name.endswith(".num_batches_tracked"))
+    float_values = {
+        name: finite_contiguous(name, value)
+        for name, value in state.items()
+        if name not in counters
+    }
+    provenance: dict[str, str] = {}
+    if kind == "ecapa-cosine-v1":
+        rank2 = [(name, value) for name, value in float_values.items() if value.ndim == 2]
+        if len(rank2) != 1:
+            raise RuntimeError(
+                "official cosine classifier does not expose exactly one rank-2 tensor: "
+                f"{[(name, tuple(value.shape)) for name, value in rank2]}"
+            )
+        source_name, source = rank2[0]
+        unclaimed = sorted(name for name in float_values if name != source_name)
+        if unclaimed:
+            raise RuntimeError(
+                f"official cosine classifier has unsupported extra state: {unclaimed}"
+            )
+        canonical = canonical_matrix(
+            source_name, source, output_dim=class_count, input_dim=input_dim
+        )
+        provenance["classifier.cosine.weight"] = source_name
+        return {"classifier.cosine.weight": canonical}, counters, provenance
+
+    if kind != "xvector-mlp-log-softmax-v1" or hidden_dim is None:
+        raise RuntimeError(f"cannot canonicalize classifier kind={kind} hidden={hidden_dim}")
+
+    rank2 = [(name, value) for name, value in float_values.items() if value.ndim == 2]
+    hidden_candidates = [
+        (name, value)
+        for name, value in rank2
+        if sorted(value.shape) == sorted((input_dim, hidden_dim))
+    ]
+    output_candidates = [
+        (name, value)
+        for name, value in rank2
+        if sorted(value.shape) == sorted((hidden_dim, class_count))
+    ]
+    if len(hidden_candidates) != 1 or len(output_candidates) != 1:
+        raise RuntimeError(
+            "official XVector classifier does not expose exactly one hidden and output "
+            f"projection: rank2={[(name, tuple(value.shape)) for name, value in rank2]}"
+        )
+
+    used: set[str] = set()
+    output: dict[str, torch.Tensor] = {}
+    for canonical_name, (source_name, source), out_dim, in_dim in [
+        (
+            "classifier.hidden.weight",
+            hidden_candidates[0],
+            hidden_dim,
+            input_dim,
+        ),
+        (
+            "classifier.output.weight",
+            output_candidates[0],
+            class_count,
+            hidden_dim,
+        ),
+    ]:
+        output[canonical_name] = canonical_matrix(source_name, source, out_dim, in_dim)
+        provenance[canonical_name] = source_name
+        used.add(source_name)
+
+    bn_groups: list[tuple[str, int]] = []
+    for name, value in float_values.items():
+        if not name.endswith(".running_mean"):
+            continue
+        prefix = name.removesuffix(".running_mean")
+        width = int(value.numel())
+        for suffix in ("weight", "bias", "running_mean", "running_var"):
+            key = f"{prefix}.{suffix}"
+            candidate = float_values.get(key)
+            if candidate is None or tuple(candidate.shape) != (width,):
+                raise RuntimeError(f"official BatchNorm group {prefix} is incomplete at {key}")
+        bn_groups.append((prefix, width))
+    for canonical_prefix, width in [
+        ("classifier.input_norm", input_dim),
+        ("classifier.hidden_norm", hidden_dim),
+    ]:
+        candidates = [prefix for prefix, found_width in bn_groups if found_width == width]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"official classifier has {len(candidates)} BatchNorm groups at width {width}: {bn_groups}"
+            )
+        source_prefix = candidates[0]
+        for suffix in ("weight", "bias", "running_mean", "running_var"):
+            source_name = f"{source_prefix}.{suffix}"
+            canonical_name = f"{canonical_prefix}.{suffix}"
+            output[canonical_name] = float_values[source_name]
+            provenance[canonical_name] = source_name
+            used.add(source_name)
+
+    remaining_rank1 = [
+        (name, value)
+        for name, value in float_values.items()
+        if value.ndim == 1 and name not in used
+    ]
+    for canonical_name, width in [
+        ("classifier.hidden.bias", hidden_dim),
+        ("classifier.output.bias", class_count),
+    ]:
+        candidates = [
+            (name, value) for name, value in remaining_rank1 if value.numel() == width
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                f"official classifier has {len(candidates)} unclaimed biases at width {width}: "
+                f"{[(name, tuple(value.shape)) for name, value in remaining_rank1]}"
+            )
+        source_name, source = candidates[0]
+        output[canonical_name] = source
+        provenance[canonical_name] = source_name
+        used.add(source_name)
+        remaining_rank1 = [entry for entry in remaining_rank1 if entry[0] != source_name]
+
+    unclaimed = sorted(name for name in float_values if name not in used)
+    if unclaimed:
+        raise RuntimeError(f"official XVector classifier has unclaimed state: {unclaimed}")
+    if len(output) != 12:
+        raise RuntimeError(f"canonical XVector classifier has {len(output)} tensors, expected 12")
+    return output, counters, provenance
+
+
+def ecapa_contract_dims(
+    state: dict[str, torch.Tensor]
+) -> tuple[int, int, int, int, list[int]]:
     def shape(name: str) -> tuple[int, ...]:
         value = state.get(name)
         if value is None:
@@ -185,7 +345,34 @@ def ecapa_contract_dims(state: dict[str, torch.Tensor]) -> tuple[int, int, int, 
         raise RuntimeError(f"unexpected official ECAPA MFA shape {mfa}")
     if len(attention) != 3 or attention[1] != mfa[0] * 3 or attention[2] != 1:
         raise RuntimeError(f"unexpected official ECAPA attention shape {attention}")
-    return stem[1], stem[0], mfa[0], attention[0]
+    block_kernels: list[int] = []
+    for block in range(1, 4):
+        block_shape = shape(
+            f"embedding_model.blocks.{block}.res2net_block.blocks.0.conv.conv.weight"
+        )
+        if len(block_shape) != 3 or block_shape[2] <= 0:
+            raise RuntimeError(
+                f"unexpected official ECAPA block {block} shape {block_shape}"
+            )
+        block_kernels.append(block_shape[2])
+    return stem[1], stem[0], mfa[0], attention[0], block_kernels
+
+
+def ecapa_block_dilations(module: torch.nn.Module) -> list[int]:
+    output: list[int] = []
+    for block in range(1, 4):
+        conv = module.blocks[block].res2net_block.blocks[0].conv
+        dilation = getattr(conv, "dilation", None)
+        if dilation is None:
+            dilation = getattr(getattr(conv, "conv", None), "dilation", None)
+        if isinstance(dilation, tuple):
+            if len(dilation) != 1:
+                raise RuntimeError(f"official ECAPA block {block} dilation={dilation}")
+            dilation = dilation[0]
+        if not isinstance(dilation, int) or dilation <= 0:
+            raise RuntimeError(f"official ECAPA block {block} has invalid dilation={dilation}")
+        output.append(dilation)
+    return output
 
 
 def batch_norm_eps(module: torch.nn.Module) -> float:
@@ -240,11 +427,6 @@ def main() -> int:
     classifier.eval()
     labels = contiguous_labels(inference.hparams.label_encoder)
     embedding_state, embedding_counters = float_state("embedding_model.", embedding)
-    classifier_state, classifier_counters = float_state("classifier.", classifier)
-    tensors = {**embedding_state, **classifier_state}
-    if len(tensors) != len(embedding_state) + len(classifier_state):
-        raise RuntimeError("embedding/classifier tensor names collide after prefixing")
-
     kind = classifier_kind(classifier)
     input_dim, class_count, hidden_dim = classifier_dims(classifier, kind, len(labels))
     if class_count != len(labels):
@@ -252,7 +434,17 @@ def main() -> int:
             f"classifier outputs {class_count} classes but label encoder has {len(labels)}"
         )
     embedding_dim = input_dim
-    n_mels, tdnn_channels, mfa_channels, attention_channels = ecapa_contract_dims(tensors)
+    classifier_state, classifier_counters, classifier_sources = canonical_classifier_state(
+        classifier, kind, input_dim, class_count, hidden_dim
+    )
+    tensors = {**embedding_state, **classifier_state}
+    if len(tensors) != len(embedding_state) + len(classifier_state):
+        raise RuntimeError("embedding/classifier tensor names collide after prefixing")
+
+    n_mels, tdnn_channels, mfa_channels, attention_channels, block_kernels = (
+        ecapa_contract_dims(tensors)
+    )
+    block_dilations = ecapa_block_dilations(embedding)
     res2net_indices = {
         int(name.split("res2net_block.blocks.", 1)[1].split(".", 1)[0])
         for name in embedding_state
@@ -273,6 +465,8 @@ def main() -> int:
         "mfa_channels": mfa_channels,
         "attention_channels": attention_channels,
         "res2net_scale": res2net_scale,
+        "block_kernels": block_kernels,
+        "block_dilations": block_dilations,
         "embedding_dim": embedding_dim,
         "classifier_kind": kind,
         "classifier_hidden_dim": hidden_dim,
@@ -288,7 +482,7 @@ def main() -> int:
     }
     metadata = {
         "vokra.lang_id.contract": json.dumps(contract, sort_keys=True, separators=(",", ":")),
-        "vokra.lang_id.transform": "official-modules-prefix-and-remove-bn-counters-only",
+        "vokra.lang_id.transform": "official-embedding-prefix-canonical-classifier-v2",
         "vokra.lang_id.speechbrain_version": speechbrain.__version__,
         "vokra.lang_id.torch_version": torch.__version__,
         "vokra.lang_id.python_version": platform.python_version(),
@@ -302,6 +496,7 @@ def main() -> int:
         "classifier_tensors": len(classifier_state),
         "embedding_counters_removed": embedding_counters,
         "classifier_counters_removed": classifier_counters,
+        "classifier_canonical_sources": classifier_sources,
         "tensor_manifest": {
             name: list(value.shape) for name, value in sorted(tensors.items())
         },

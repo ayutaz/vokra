@@ -74,7 +74,7 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const PREPARED_CONTRACT_KEY: &str = "vokra.lang_id.contract";
-const PREPARED_FORMAT: &str = "vokra-speechbrain-lang-id-prepared-v1";
+const PREPARED_FORMAT: &str = "vokra-speechbrain-lang-id-prepared-v2";
 
 pub const KEY_UPSTREAM_REVISION: &str = "vokra.lang_id.upstream_revision";
 pub const KEY_SAMPLE_RATE: &str = "vokra.lang_id.sample_rate";
@@ -83,6 +83,8 @@ pub const KEY_TDNN_CHANNELS: &str = "vokra.lang_id.tdnn_channels";
 pub const KEY_MFA_CHANNELS: &str = "vokra.lang_id.mfa_channels";
 pub const KEY_ATTENTION_CHANNELS: &str = "vokra.lang_id.attention_channels";
 pub const KEY_RES2NET_SCALE: &str = "vokra.lang_id.res2net_scale";
+pub const KEY_BLOCK_KERNELS: &str = "vokra.lang_id.block_kernels";
+pub const KEY_BLOCK_DILATIONS: &str = "vokra.lang_id.block_dilations";
 pub const KEY_EMBEDDING_DIM: &str = "vokra.lang_id.embedding_dim";
 pub const KEY_CLASSIFIER_KIND: &str = "vokra.lang_id.classifier_kind";
 pub const KEY_CLASSIFIER_HIDDEN_DIM: &str = "vokra.lang_id.classifier_hidden_dim";
@@ -92,7 +94,7 @@ pub const KEY_BN_EPS: &str = "vokra.lang_id.bn_eps";
 pub const KEY_STATS_EPS: &str = "vokra.lang_id.stats_eps";
 pub const KEY_LEAKY_RELU_SLOPE: &str = "vokra.lang_id.leaky_relu_slope";
 pub const KEY_ARTIFACT_LAYOUT: &str = "vokra.lang_id.artifact_layout";
-pub const ARTIFACT_LAYOUT: &str = "speechbrain-lang-id-prepared-v1";
+pub const ARTIFACT_LAYOUT: &str = "speechbrain-lang-id-prepared-v2";
 
 /// Which upstream variant to stamp on the GGUF.
 ///
@@ -133,6 +135,8 @@ struct PreparedContract {
     mfa_channels: u32,
     attention_channels: u32,
     res2net_scale: u32,
+    block_kernels: Vec<u32>,
+    block_dilations: Vec<u32>,
     embedding_dim: u32,
     classifier_kind: String,
     classifier_hidden_dim: Option<u32>,
@@ -291,6 +295,8 @@ impl PreparedContract {
             mfa_channels: json_u32(&contract, "mfa_channels")?,
             attention_channels: json_u32(&contract, "attention_channels")?,
             res2net_scale: json_u32(&contract, "res2net_scale")?,
+            block_kernels: json_u32_array(&contract, "block_kernels", 3)?,
+            block_dilations: json_u32_array(&contract, "block_dilations", 3)?,
             embedding_dim: json_u32(&contract, "embedding_dim")?,
             classifier_kind,
             classifier_hidden_dim,
@@ -334,6 +340,22 @@ impl PreparedContract {
                 self.tdnn_channels * 3
             )));
         }
+        for (name, values) in [
+            ("block_kernels", &self.block_kernels),
+            ("block_dilations", &self.block_dilations),
+        ] {
+            if values.len() != 3 || values.contains(&0) {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: contract `{name}` must contain three positive values"
+                )));
+            }
+        }
+        if self.block_kernels.iter().any(|value| value % 2 == 0) {
+            return Err(ConvertError::Parse(
+                "lang_id_ecapa: ECAPA block kernels must be odd for SpeechBrain same padding"
+                    .into(),
+            ));
+        }
         for (name, value) in [("bn_eps", self.bn_eps), ("stats_eps", self.stats_eps)] {
             if !value.is_finite() || value <= 0.0 {
                 return Err(ConvertError::Parse(format!(
@@ -359,6 +381,8 @@ impl PreparedContract {
         builder.add_u32(KEY_MFA_CHANNELS, self.mfa_channels);
         builder.add_u32(KEY_ATTENTION_CHANNELS, self.attention_channels);
         builder.add_u32(KEY_RES2NET_SCALE, self.res2net_scale);
+        builder.add_metadata(KEY_BLOCK_KERNELS, u32_array(&self.block_kernels));
+        builder.add_metadata(KEY_BLOCK_DILATIONS, u32_array(&self.block_dilations));
         builder.add_u32(KEY_EMBEDDING_DIM, self.embedding_dim);
         builder.add_string(KEY_CLASSIFIER_KIND, &self.classifier_kind);
         if let Some(hidden) = self.classifier_hidden_dim {
@@ -412,6 +436,29 @@ fn json_u32(root: &JsonValue, key: &str) -> Result<u32, ConvertError> {
     json_value_u32(value, key)
 }
 
+fn json_u32_array(
+    root: &JsonValue,
+    key: &str,
+    expected_len: usize,
+) -> Result<Vec<u32>, ConvertError> {
+    let values = root.get(key).and_then(JsonValue::as_array).ok_or_else(|| {
+        ConvertError::Parse(format!(
+            "lang_id_ecapa: contract `{key}` is missing or not an array"
+        ))
+    })?;
+    if values.len() != expected_len {
+        return Err(ConvertError::Parse(format!(
+            "lang_id_ecapa: contract `{key}` has {} values, expected {expected_len}",
+            values.len()
+        )));
+    }
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| json_value_u32(value, &format!("{key}[{index}]")))
+        .collect()
+}
+
 fn json_f32(root: &JsonValue, key: &str) -> Result<f32, ConvertError> {
     let value = match root.get(key) {
         Some(JsonValue::Int(value)) => *value as f32,
@@ -438,6 +485,13 @@ fn string_array(values: &[String]) -> GgufMetadataValue {
             .cloned()
             .map(GgufMetadataValue::String)
             .collect(),
+    })
+}
+
+fn u32_array(values: &[u32]) -> GgufMetadataValue {
+    GgufMetadataValue::Array(GgufArray {
+        element_type: GgufValueType::U32,
+        values: values.iter().copied().map(GgufMetadataValue::U32).collect(),
     })
 }
 
@@ -528,6 +582,12 @@ fn validate_prepared_tensors(
     let mut embedding_count = 0_usize;
     let mut classifier_count = 0_usize;
     for tensor in st.tensors() {
+        if !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: prepared tensor `{}` has non-floating dtype {:?}",
+                tensor.name, tensor.dtype
+            )));
+        }
         if tensor.name.starts_with("embedding_model.") {
             embedding_count += 1;
         } else if tensor.name.starts_with("classifier.") {
@@ -556,6 +616,21 @@ fn validate_prepared_tensors(
         "embedding_model.blocks.0.conv.conv.weight",
         &[contract.tdnn_channels as u64, contract.n_mels as u64, 5],
     )?;
+    let res2net_channels = contract.tdnn_channels / contract.res2net_scale;
+    for (index, kernel) in contract.block_kernels.iter().enumerate() {
+        require_tensor_shape(
+            st,
+            &format!(
+                "embedding_model.blocks.{}.res2net_block.blocks.0.conv.conv.weight",
+                index + 1
+            ),
+            &[
+                res2net_channels as u64,
+                res2net_channels as u64,
+                *kernel as u64,
+            ],
+        )?;
+    }
     require_tensor_shape(
         st,
         "embedding_model.mfa.conv.conv.weight",
@@ -584,33 +659,55 @@ fn validate_prepared_tensors(
         ],
     )?;
 
-    let classifier_rank2 = st
-        .tensors()
-        .iter()
-        .filter(|tensor| tensor.name.starts_with("classifier.") && tensor.shape.len() == 2)
-        .collect::<Vec<_>>();
-    if classifier_rank2.is_empty() {
-        return Err(ConvertError::Parse(
-            "lang_id_ecapa: classifier has no rank-2 learned projection".into(),
-        ));
-    }
-    let has_embedding_axis = classifier_rank2.iter().any(|tensor| {
-        tensor
-            .shape
-            .iter()
-            .any(|&dim| dim == contract.embedding_dim as u64)
-    });
-    let has_class_axis = classifier_rank2.iter().any(|tensor| {
-        tensor
-            .shape
-            .iter()
-            .any(|&dim| dim == contract.class_count as u64)
-    });
-    if !has_embedding_axis || !has_class_axis {
-        return Err(ConvertError::Parse(format!(
-            "lang_id_ecapa: classifier rank-2 tensors do not expose both embedding_dim={} and class_count={} axes",
-            contract.embedding_dim, contract.class_count
-        )));
+    validate_classifier_tensors(st, contract, classifier_count)?;
+    Ok(())
+}
+
+fn validate_classifier_tensors(
+    st: &SafetensorsFile,
+    contract: &PreparedContract,
+    classifier_count: usize,
+) -> Result<(), ConvertError> {
+    let embedding = contract.embedding_dim as u64;
+    let classes = contract.class_count as u64;
+    match contract.classifier_kind.as_str() {
+        "ecapa-cosine-v1" => {
+            if classifier_count != 1 {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: cosine classifier has {classifier_count} tensors, expected exactly 1"
+                )));
+            }
+            require_tensor_shape(st, "classifier.cosine.weight", &[classes, embedding])?;
+        }
+        "xvector-mlp-log-softmax-v1" => {
+            if classifier_count != 12 {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: XVector classifier has {classifier_count} tensors, expected exactly 12"
+                )));
+            }
+            let hidden = contract.classifier_hidden_dim.ok_or_else(|| {
+                ConvertError::Parse(
+                    "lang_id_ecapa: XVector classifier is missing hidden width".into(),
+                )
+            })? as u64;
+            for (prefix, width) in [
+                ("classifier.input_norm", embedding),
+                ("classifier.hidden_norm", hidden),
+            ] {
+                for suffix in ["weight", "bias", "running_mean", "running_var"] {
+                    require_tensor_shape(st, &format!("{prefix}.{suffix}"), &[width])?;
+                }
+            }
+            require_tensor_shape(st, "classifier.hidden.weight", &[hidden, embedding])?;
+            require_tensor_shape(st, "classifier.hidden.bias", &[hidden])?;
+            require_tensor_shape(st, "classifier.output.weight", &[classes, hidden])?;
+            require_tensor_shape(st, "classifier.output.bias", &[classes])?;
+        }
+        other => {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: unsupported classifier kind `{other}`"
+            )));
+        }
     }
     Ok(())
 }
@@ -653,29 +750,39 @@ mod tests {
     }
 
     fn contract_json(variant: Variant) -> String {
-        let (model_name, source, n_mels, embedding_dim, classifier_kind, hidden, slope) =
-            match variant {
-                Variant::VoxLingua107 => (
-                    NAME_VOXLINGUA107,
-                    UPSTREAM_HF_VOXLINGUA107,
-                    60,
-                    256,
-                    "xvector-mlp-log-softmax-v1",
-                    "512",
-                    "0.01",
-                ),
-                Variant::CommonLanguage => (
-                    NAME_COMMONLANGUAGE,
-                    UPSTREAM_HF_COMMONLANGUAGE,
-                    80,
-                    192,
-                    "ecapa-cosine-v1",
-                    "null",
-                    "null",
-                ),
-            };
+        let (
+            model_name,
+            source,
+            n_mels,
+            embedding_dim,
+            block_kernels,
+            classifier_kind,
+            hidden,
+            slope,
+        ) = match variant {
+            Variant::VoxLingua107 => (
+                NAME_VOXLINGUA107,
+                UPSTREAM_HF_VOXLINGUA107,
+                60,
+                256,
+                "[3,3,3]",
+                "xvector-mlp-log-softmax-v1",
+                "512",
+                "0.01",
+            ),
+            Variant::CommonLanguage => (
+                NAME_COMMONLANGUAGE,
+                UPSTREAM_HF_COMMONLANGUAGE,
+                80,
+                192,
+                "[3,3,1]",
+                "ecapa-cosine-v1",
+                "null",
+                "null",
+            ),
+        };
         format!(
-            r#"{{"format":"{PREPARED_FORMAT}","model_name":"{model_name}","source":"{source}","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sample_rate":16000,"n_mels":{n_mels},"tdnn_channels":1024,"mfa_channels":3072,"attention_channels":128,"res2net_scale":8,"embedding_dim":{embedding_dim},"classifier_kind":"{classifier_kind}","classifier_hidden_dim":{hidden},"class_count":2,"labels":["en","ja"],"bn_eps":0.00001,"stats_eps":0.000000000001,"leaky_relu_slope":{slope}}}"#
+            r#"{{"format":"{PREPARED_FORMAT}","model_name":"{model_name}","source":"{source}","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sample_rate":16000,"n_mels":{n_mels},"tdnn_channels":1024,"mfa_channels":3072,"attention_channels":128,"res2net_scale":8,"block_kernels":{block_kernels},"block_dilations":[2,3,4],"embedding_dim":{embedding_dim},"classifier_kind":"{classifier_kind}","classifier_hidden_dim":{hidden},"class_count":2,"labels":["en","ja"],"bn_eps":0.00001,"stats_eps":0.000000000001,"leaky_relu_slope":{slope}}}"#
         )
     }
 
@@ -707,6 +814,8 @@ mod tests {
         .unwrap();
         assert_eq!(vox.n_mels, 60);
         assert_eq!(vox.embedding_dim, 256);
+        assert_eq!(vox.block_kernels, [3, 3, 3]);
+        assert_eq!(vox.block_dilations, [2, 3, 4]);
         assert_eq!(vox.classifier_hidden_dim, Some(512));
         assert_eq!(vox.labels, ["en", "ja"]);
 
@@ -717,6 +826,7 @@ mod tests {
         .unwrap();
         assert_eq!(common.n_mels, 80);
         assert_eq!(common.embedding_dim, 192);
+        assert_eq!(common.block_kernels, [3, 3, 1]);
         assert_eq!(common.classifier_hidden_dim, None);
         assert_eq!(common.classifier_kind, "ecapa-cosine-v1");
     }
@@ -755,6 +865,19 @@ mod tests {
         assert_eq!(
             file.get(KEY_EMBEDDING_DIM).and_then(|value| value.as_u64()),
             Some(256)
+        );
+        let kernels = file
+            .get(KEY_BLOCK_KERNELS)
+            .and_then(GgufMetadataValue::as_array)
+            .unwrap();
+        assert_eq!(kernels.element_type, GgufValueType::U32);
+        assert_eq!(
+            kernels
+                .values
+                .iter()
+                .filter_map(GgufMetadataValue::as_u64)
+                .collect::<Vec<_>>(),
+            [3, 3, 3]
         );
         let labels = file
             .get(KEY_LABELS)
