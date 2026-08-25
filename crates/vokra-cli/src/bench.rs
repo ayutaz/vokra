@@ -790,6 +790,34 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("utmos", audio_seconds, samples)
         }
+        ModelTask::Dnsmos => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (DNSMOS): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::dnsmos_p808_p835::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (DNSMOS): {path} is {} Hz, expected {} Hz — resample explicitly before scoring (FR-EX-08)",
+                    clip.sample_rate,
+                    vokra_models::dnsmos_p808_p835::SAMPLE_RATE
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::dnsmos_p808_p835::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf_with_backend(
+                session.gguf(),
+                args.backend,
+            )
+            .map_err(|error| format!("bench (DNSMOS): {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model.score_all(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("dnsmos", audio_seconds, samples)
+        }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = args
                 .input

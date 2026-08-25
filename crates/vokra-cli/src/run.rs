@@ -849,6 +849,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::SmartTurn
         | ModelTask::AudioClassificationAst
         | ModelTask::Utmos
+        | ModelTask::Dnsmos
         | ModelTask::Segment
         | ModelTask::Separation
         | ModelTask::Tts
@@ -1250,6 +1251,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::Utmos => {
             run_utmos(&session, &a)?;
         }
+        ModelTask::Dnsmos => {
+            run_dnsmos(&session, &a)?;
+        }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
         }
@@ -1331,6 +1335,38 @@ fn run_utmos(session: &Session, args: &RunArgs) -> Result<(), String> {
         .score(&clip.samples, clip.sample_rate)
         .map_err(|error| format!("run (UTMOS22-strong): {error}"))?;
     println!("utmos: score={score:.9}");
+    Ok(())
+}
+
+/// Runs the strict Microsoft DNSMOS P.808 + P.835 bundle.
+fn run_dnsmos(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (DNSMOS): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let rate = vokra_models::dnsmos_p808_p835::SAMPLE_RATE;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (DNSMOS): {path} is {} Hz, expected {rate} Hz — resample explicitly before scoring (FR-EX-08)",
+            clip.sample_rate
+        ));
+    }
+    let model = vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf_with_backend(
+        session.gguf(),
+        args.backend,
+    )
+    .map_err(|error| format!("run (DNSMOS): {error}"))?;
+    let score = model
+        .score_all(&clip.samples)
+        .map_err(|error| format!("run (DNSMOS): {error}"))?;
+    println!(
+        "dnsmos: p808={:.9} sig={:.9} bak={:.9} ovrl={:.9}",
+        score.p808.expect("strict DNSMOS bundle always has P.808"),
+        score.sig.expect("strict DNSMOS bundle always has SIG"),
+        score.bak.expect("strict DNSMOS bundle always has BAK"),
+        score.ovrl.expect("strict DNSMOS bundle always has OVRL")
+    );
     Ok(())
 }
 

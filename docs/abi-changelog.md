@@ -250,6 +250,18 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (DNSMOS P.808/P.835 CPU/Metal runtime)
+
+The exact public 38-tensor DNSMOS bundle gains strict native P.808 and P.835
+forwards plus CLI/bench routing. No ONNX dependency enters the runtime and no
+C symbol, ownership rule, or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::dnsmos_p808_p835` | `Dnsmos`, `DnsmosWeights`, `DNSMOS_HOT_OPS` | Changed/Added | strict `from_gguf` / `from_path`, backend selection, `score_p808`, `score_p835`, `score_all`, `MosScorerEngine` | Owns decoded F32 weights; all learned Conv2d/dense/STFT projections use one CPU/Metal GEMM backend with no fallback | no for exact public bundle; malformed/count-only files now fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=dnsmos` | Added (behavior only) | 16 kHz mono WAV to P.808/SIG/BAK/OVRL scores | Wrong rate, non-finite PCM, incomplete bundle, unsupported backend and provenance mismatches fail explicitly | no | (TBD) |
+| `gguf:vokra.dnsmos.*` | source/public identity and exact frontend/topology group | Added/enforced | revision/hash strings; `u32` input length, frame/window/hop/bin/mel values; existing bundle/checkpoint/sample-rate keys retained | New converters stamp the complete additive group. The exact historical public GGUF may omit only the new group because its complete manifest and generic provenance are independently pinned; a partial new group fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (Facebook Denoiser DNS48 CPU/Metal runtime)
 
 The exact historical public DNS48 GGUF gains a strict native utterance
@@ -3107,8 +3119,6 @@ Notes:
 | `vokra-convert`                 | `models::voxcpm2::VoxCpm2Variant` (enum, crate-priv) | Added   | `enum VoxCpm2Variant { HalfB, TwoB }`                                                                                                                                                                              | Selected by `models::voxcpm2::detect_variant(&SafetensorsFile)` from `base_lm.embed_tokens.weight`'s hidden dim (1024 → HalfB, 2048 → TwoB). Any other value is a loud `ConvertError::Parse` — no silent default (FR-EX-08). Not a C ABI symbol; recorded here so the GGUF metadata delta above has a symmetrical Rust-surface entry.                                                                                                                    | no        | —    |
 | `vokra-convert`                 | `models::voxcpm2::VoxCpm2Report::variant`             | Added   | `pub(crate) variant: Option<VoxCpm2Variant>`                                                                                                                                                                       | Report field so the CLI trailer surfaces the detected variant. `None` reserved for pre-detection shape (currently unused — every successful `convert` sets it, every failure returns early).                                                                                                                                                                                                                                                          | no        | —    |
 | `vokra-core:license_class`      | `voxcpm2-0.5b` / `voxcpm2-2b` / `voxcpm2-` prefix     | Added   | `LicenseClass::Permissive` (apache-2.0 end-to-end)                                                                                                                                                                | The registry accepts every canonical + underscore + `-base` spelling of both variants, plus the `voxcpm2-` prefix guard for future 2B-lineage variants. The pre-existing `voxcpm-` prefix + `voxcpm-0.5b` explicit entries stay live for backward compat with legacy GGUFs.                                                                                                                                                                              | no        | —    |
-
-Note: `vokra.dnsmos.*` is **reserved but deliberately not designed** — DNSMOS is license fail-closed until the owner's M4-18 T03 verification (no keys are invented ahead of it).
 
 ### 2026-08-15 — model-converter chunk backfill (50 prefixes, retroactive)
 

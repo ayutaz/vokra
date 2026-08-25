@@ -19,13 +19,12 @@
 #
 #   THE SHARPEST SHAPE — a parity gate made permanently vacuous.
 #   `crates/vokra-models/tests/parity_dnsmos.rs` carried a five-step recipe
-#   whose step 3 ran `tools/parity/dnsmos_score_reference.py`. That file has
-#   never existed, so `VOKRA_DNSMOS_REFERENCE_JSONL` could not be produced by
-#   anything, so the MOS-comparison test always took its skip branch — while
-#   the module doc asserted a skip is "never a fabricated pass". It had become
-#   exactly that. Its SIBLING `dnsmos_prepare_checkpoint.py` does exist, which
-#   is why nobody noticed: the recipe is half-runnable, and steps 1, 2, 4 and 5
-#   all work.
+#   whose step 3 ran `tools/parity/dnsmos_score_reference.py`. At the
+#   2026-08-15 baseline that file had never existed, so
+#   `VOKRA_DNSMOS_REFERENCE_JSONL` could not be produced by anything and the
+#   MOS-comparison test always took its skip branch. The independent official
+#   oracle and real comparison harness landed on 2026-08-26; this historical
+#   incident remains the reason the general citation gate exists.
 #
 #   The tree already knew this class existed — `vokra-models/src/lib.rs` calls
 #   out "the MISSING SIDECAR `tools/parity/nisqa_v2_weight_prepare_checkpoint.py`,

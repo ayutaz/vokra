@@ -63,6 +63,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "wespeaker",
             "titanet-large",
             "denoise",
+            "dnsmos",
             "utmos",
             "metricgan_plus",
             "miocodec",
@@ -137,6 +138,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         utmos = audit.RepoRecord(
             "vokra/utmos22-strong", "abc", ("model.gguf",), "utmos"
         )
+        dnsmos = audit.RepoRecord(
+            "vokra/dnsmos-p808-p835", "abc", ("model.gguf",), "dnsmos"
+        )
         metricgan = audit.RepoRecord(
             "vokra/metricgan-plus-voicebank",
             "abc",
@@ -201,6 +205,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(deepfilternet, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(utmos, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(utmos, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(dnsmos, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(dnsmos, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")

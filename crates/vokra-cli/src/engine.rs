@@ -319,6 +319,10 @@ pub(crate) enum ModelTask {
     /// it from this session's GGUF and route all learned primitives through
     /// CPU or Metal without loading the weights a second time.
     Utmos,
+    /// Microsoft DNSMOS P.808 + P.835 non-intrusive quality scoring. The
+    /// concrete strict bundle binds in run/bench and routes every learned
+    /// convolution/dense reduction through the selected CPU/Metal GEMM.
+    Dnsmos,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -441,6 +445,8 @@ const ARCH_SMART_TURN: &str = "smart_turn";
 const ARCH_AST: &str = "ast";
 /// SaruLab UTMOS22-strong neural MOS predictor.
 const ARCH_UTMOS: &str = "utmos";
+/// Microsoft DNSMOS P.808 + P.835 quality bundle.
+const ARCH_DNSMOS: &str = "dnsmos";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -1420,6 +1426,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // concrete scorer from this already mmap-opened GGUF exactly once.
             Ok((session, ModelTask::Utmos))
         }
+        ARCH_DNSMOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on DNSMOS quality scoring"
+                ));
+            }
+            Ok((session, ModelTask::Dnsmos))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1449,7 +1463,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -1915,14 +1929,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     // --- Quality metrics --------------------------------------------------
     BoundArch {
-        arch: "dnsmos",
-        module: "vokra_models::dnsmos_p808_p835",
-        entry: "Dnsmos::from_gguf → Dnsmos::score_all",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "nisqa_v2_weight",
         module: "vokra_models::nisqa",
         entry: "Nisqa::from_gguf → Nisqa::score",
@@ -2092,6 +2098,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("utmos session builds (bare)");
         assert_eq!(task, ModelTask::Utmos);
+    }
+
+    #[test]
+    fn load_session_routes_dnsmos_to_quality_score_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_DNSMOS);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-dnsmos-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("dnsmos session builds (bare)");
+        assert_eq!(task, ModelTask::Dnsmos);
     }
 
     #[test]
@@ -2367,7 +2387,7 @@ mod tests {
     /// A `magnet_small_10secs` arch GGUF is loud-rejected at load time
     /// with a scaffold message naming the ADR — the runtime forward is
     /// deferred, so the CLI never pretends a working task exists
-    /// (FR-EX-08). Mirror of the RMVPE / DNSMOS loud-partial posture.
+    /// (FR-EX-08).
     #[test]
     fn load_session_rejects_magnet_small_arch_with_scaffold_message() {
         let mut b = vokra_core::gguf::GgufBuilder::new();

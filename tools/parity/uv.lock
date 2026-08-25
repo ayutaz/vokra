@@ -1732,6 +1732,24 @@ wheels = [
 ]
 
 [[package]]
+name = "onnxruntime"
+version = "1.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d4/80/381c1e9efed9cc32d00aa7cab0547dc84116cec906c3ffe3613686d6963a/onnxruntime-1.29.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:3a3814c041251d6a77fdf513fb282056538ee826d2f1178a0df3c549d3fff6ba", size = 21430049, upload-time = "2026-08-17T22:53:48.286Z" },
+    { url = "https://files.pythonhosted.org/packages/30/12/4be0e345d38fe707a701ca07e8f63c05b152a2e6285d1e43a7faf63fedd2/onnxruntime-1.29.0-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:d2fb19e848f7c33ed8d3182b52504aaa11c5e8da438bbb47296f85b133cbcf6b", size = 20816870, upload-time = "2026-08-17T22:53:51.169Z" },
+    { url = "https://files.pythonhosted.org/packages/96/eb/e6968f5e41aac3125f2ff5708855f09cb0b70d85ed3115b625b0b58305ba/onnxruntime-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:2b80d8c7ec2cc7438e4da3760b88c24568cba72c9ace96d668800a6c79419acb", size = 23136745, upload-time = "2026-08-17T22:53:53.92Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/80/5b28f1f1111210fc4a336ddbc6950f468ebf9a6a265420568f4f43fa33ce/onnxruntime-1.29.0-cp312-cp312-win_amd64.whl", hash = "sha256:4acf2b4948b7ede87221ca6332344b8facdc8059d6ac751a7d367d04532b02dd", size = 14001407, upload-time = "2026-08-17T22:53:56.486Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/d6/6883f89ea4b044e6e8447ebfaf9bcecdf457b7d80a683635e130b25498e0/onnxruntime-1.29.0-cp312-cp312-win_arm64.whl", hash = "sha256:dc61a79cb39afd66ab3f01fd2c23591a7f01de89c1668e1fb6315067fc279164", size = 13746981, upload-time = "2026-08-17T22:53:58.977Z" },
+]
+
+[[package]]
 name = "opentelemetry-api"
 version = "1.44.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3138,13 +3156,18 @@ dependencies = [
     { name = "numpy" },
     { name = "omegaconf" },
     { name = "onnx" },
+    { name = "onnxruntime" },
+    { name = "pandas" },
     { name = "pyannote-audio" },
+    { name = "requests" },
     { name = "safetensors" },
     { name = "sentencepiece" },
     { name = "snac" },
+    { name = "soundfile" },
     { name = "speechbrain" },
     { name = "torch" },
     { name = "torchaudio" },
+    { name = "tqdm" },
     { name = "transformers" },
     { name = "vocos" },
 ]
@@ -3169,14 +3192,19 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "omegaconf", specifier = "==2.3.0" },
     { name = "onnx", specifier = ">=1.22.0" },
+    { name = "onnxruntime", specifier = ">=1.23.0" },
+    { name = "pandas", specifier = ">=2.2.0" },
     { name = "pyannote-audio", specifier = ">=4.0.7" },
+    { name = "requests", specifier = ">=2.32.0" },
     { name = "safetensors", specifier = ">=0.8.0" },
     { name = "sentencepiece", specifier = ">=0.2.2" },
     { name = "snac", git = "https://github.com/hubertsiuzdak/snac?rev=8f79a718f1ad71f94f79999f0071348227aff22e" },
+    { name = "soundfile", specifier = ">=0.13.0" },
     { name = "speechbrain", specifier = "==1.0.3" },
     { name = "tensorflow", marker = "extra == 'crepe'", specifier = ">=2.20.0" },
     { name = "torch", specifier = ">=2.0" },
     { name = "torchaudio", specifier = ">=2.11.0" },
+    { name = "tqdm", specifier = ">=4.67.0" },
     { name = "transformers", specifier = "==5.15.0" },
     { name = "vocos", specifier = "==0.1.0" },
 ]

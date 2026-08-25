@@ -125,6 +125,7 @@ METAL_CODE_ARCHES = {
     "deberta_v3",
     "denoise",
     "distil-whisper",
+    "dnsmos",
     "ecapa_tdnn",
     "facebook_denoiser",
     "fcpe",
