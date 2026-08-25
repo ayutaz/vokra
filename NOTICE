@@ -503,6 +503,29 @@ not link or bundle Microsoft code, ONNX Runtime, or protobuf. No upstream
 weight is bundled in this source repository.
 
 --------------------------------------------------------------------------
+17c. Meta Facebook Denoiser DNS48 — CC-BY-NC-4.0 research-only
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal speech-enhancement runtime
+target the causal DNS48 release from `facebookresearch/denoiser` at source
+revision 8afd7c166699bb3c8b2d95b6dd706f71e1075df0. The source and released
+weights are distributed under the Creative Commons Attribution-
+NonCommercial 4.0 International license. Commercial use is not authorized.
+
+  Meta Facebook Denoiser DNS48
+  Copyright (c) Facebook, Inc. and its affiliates
+  Licensed under CC-BY-NC 4.0
+  Source: https://github.com/facebookresearch/denoiser
+  Paper: https://arxiv.org/abs/2006.12847
+
+The native Rust runtime reimplements the official waveform U-Net, causal
+LSTM and fixed sinc resampling forward without linking PyTorch, ONNX Runtime
+or upstream code. No upstream checkpoint is bundled in this source
+repository. Converted weights remain `non-commercial`; default loading and
+Hugging Face publication require the explicit research/non-commercial opt-in
+documented by Vokra's compliance gate.
+
+--------------------------------------------------------------------------
 18. Maintaining this file
 --------------------------------------------------------------------------
 

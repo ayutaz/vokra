@@ -126,6 +126,7 @@ METAL_CODE_ARCHES = {
     "denoise",
     "distil-whisper",
     "ecapa_tdnn",
+    "facebook_denoiser",
     "fcpe",
     "firered_vad",
     "focalcodec",

@@ -2031,9 +2031,22 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             (rate, output)
         }
+        "facebook_denoiser" => {
+            let model = vokra_models::facebook_denoiser::FbDenoiser::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
+            let rate = vokra_models::facebook_denoiser::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .denoise(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
         other => {
             return Err(format!(
-                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, or mp_senet"
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, or facebook_denoiser"
             ));
         }
     };

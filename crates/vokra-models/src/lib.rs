@@ -919,42 +919,14 @@ pub mod emotion2vec;
 // backends fail explicitly until the composed attention path is wired. No new
 // runtime dependency is introduced.
 pub mod moonshine;
-// Wave 8 2026-08-14 audit follow-up (LIB.RS RULE append at end with
-// Wave 8 comment marker): Facebook Denoiser
-// (`facebookresearch/denoiser`, **CC-BY-NC-4.0** — T4 tier
-// research-only per docs/license-audit.md line 457 ☑ Research-only
-// 2026-08-04 yousan sign-off, publish requires `--allow-noncommercial`)
-// — real-time speech-enhancement waveform U-Net + LSTM (Defossez et al.
-// 2020 arXiv:2006.12847 "Real Time Speech Enhancement in the Waveform
-// Domain") runtime binder for the `facebook_denoiser` converter arch
-// (Wave D T4, 2026-08-04, converter side already landed at
-// `crates/vokra-convert/src/models/facebook_denoiser.rs`). Real
-// `from_gguf` (arch check + non-empty tensor gate + weight-license
-// class surfacing; converter does NOT stamp
-// `vokra.facebook_denoiser.*` topology chunks — plain BF16 pass-through
-// per NKF-AEC / RNNoise / NSNet2 GitHub-native precedent, so this
-// binder mirrors the arch-only-gate posture rather than the strict
-// axis-array `wavlm_sv` / `storm` posture); `denoise()` returns
-// `UnsupportedOp` naming (i) 5-block time-domain waveform U-Net
-// encoder (Conv1d(k=8, stride=4) + GLU stack, channel growth
-// `H · 2^L`, causal denoiser H=48), (ii) 2-layer LSTM bottleneck
-// (unidirectional for causal `denoiser_causal.th`, bidirectional for
-// offline `master64.th`), (iii) 5-block symmetric transposed-conv
-// decoder (`ConvTranspose1d(k=8, s=4)` + additive encoder-side skip
-// connections BEFORE the transposed conv — NOT a HiFi-GAN upsampler
-// which has no encoder-side skip and mel-input not waveform-input).
-// Primary sources: `github.com/facebookresearch/denoiser` +
-// arXiv:2006.12847. Distinct-arch discipline: sibling enhancement /
-// denoise arches enumerated (`denoise` DFN3, `rnnoise`, `nsnet2`,
-// `dnsmos`, `gtcrn`, `dtln_aec`, `mp_senet`, `frcrn`, `metricgan_plus`,
-// `mossformer2_ss_16k`, `storm`, `sepformer`, `conv_tasnet`, `demucs`)
-// — facebook-denoiser is the FIRST time-domain waveform U-Net + LSTM
-// entry on the enhancement arm, sharing arch with any sibling would
-// mis-route runtime dispatch (FR-EX-08). §3.1 sign-off already
-// ☑ Research-only 2026-08-04 yousan (docs/license-audit.md line 457,
-// Wave D T4 precedent, cc-by-nc-4.0 → NonCommercial T4 tier) — no
-// additional license-audit action needed this wave (row already
-// present).
+// Meta Facebook Denoiser DNS48 (`facebookresearch/denoiser`,
+// CC-BY-NC-4.0 research-only): strict 48-F32-tensor binder and native
+// utterance forward. The exact official sinc resampling, five Conv1d+GLU
+// encoder blocks, two-layer causal LSTM, additive skips, and five
+// Conv1d+GLU+ConvTranspose1d decoder blocks run on Mac CPU or Apple Metal.
+// Every learned reduction goes through `Compute`; unsupported backends fail
+// before PCM processing and never fall back silently. Runtime remains free of
+// pickle, ONNX, protobuf, and external dependencies.
 pub mod facebook_denoiser;
 // Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
 // Wave 9 comment marker): Voila (`maitrix-org/Voila`, MIT, 2025) —

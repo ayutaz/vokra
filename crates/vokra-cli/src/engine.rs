@@ -453,6 +453,8 @@ const ARCH_DENOISE: &str = "denoise";
 const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
 /// JacobLinCool MP-SENet DNS magnitude/phase enhancer.
 const ARCH_MP_SENET: &str = "mp_senet";
+/// Meta causal DNS48 waveform U-Net + LSTM enhancer.
+const ARCH_FACEBOOK_DENOISER: &str = "facebook_denoiser";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -1114,7 +1116,12 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE | ARCH_METRICGAN_PLUS | ARCH_MP_SENET => {
+        ARCH_NSNET2
+        | ARCH_RNNOISE
+        | ARCH_DENOISE
+        | ARCH_METRICGAN_PLUS
+        | ARCH_MP_SENET
+        | ARCH_FACEBOOK_DENOISER => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
@@ -1443,7 +1450,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -1804,14 +1811,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::gtcrn",
         entry: "Gtcrn::from_gguf → Gtcrn::denoise",
         probe: Some(|g: &GgufFile| vokra_models::gtcrn::Gtcrn::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "facebook_denoiser",
-        module: "vokra_models::facebook_denoiser",
-        entry: "FbDenoiser::from_gguf → FbDenoiser::denoise",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::facebook_denoiser::FbDenoiser::from_gguf(g).map(|_| ())
-        }),
     },
     BoundArch {
         arch: "storm",
@@ -2555,7 +2554,8 @@ mod tests {
         );
     }
 
-    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, MetricGAN+, or MP-SENet GGUF dispatches to
+    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, MetricGAN+,
+    /// MP-SENet, or Facebook Denoiser GGUF dispatches to
     /// [`ModelTask::Denoise`] with
     /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
@@ -2569,6 +2569,12 @@ mod tests {
         let (_session, task) = with_arch_only_gguf(ARCH_MP_SENET, "mp-senet-arch", |p| {
             load_session(p).expect("MP-SENet session builds (bare)")
         });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_FACEBOOK_DENOISER, "facebook-denoiser-arch", |p| {
+                load_session(p).expect("Facebook Denoiser session builds (bare)")
+            });
         assert_eq!(task, ModelTask::Denoise);
 
         let (_session, task) = with_arch_only_gguf("rnnoise", "rnnoise-arch", |p| {
@@ -3282,6 +3288,7 @@ mod tests {
             ARCH_DENOISE,
             ARCH_METRICGAN_PLUS,
             ARCH_MP_SENET,
+            ARCH_FACEBOOK_DENOISER,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
             ARCH_FCPE,

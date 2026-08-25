@@ -34,6 +34,13 @@
 > one-repository code-reachability move is reflected below; VAST typecheck,
 > independent official-reference CPU parity and Apple-device Metal parity are
 > still pending, so no numerical pass is claimed.
+>
+> **2026-08-26 Facebook Denoiser source wave:**
+> `vokra/facebook-denoiser` now has an exact 48-F32-tensor DNS48 binder,
+> official waveform U-Net + two-layer causal LSTM forward, and CLI/bench CPU
+> and Metal routes. The one-repository reachability move is reflected below;
+> VAST typecheck/reference CPU parity and Apple-device Metal parity remain
+> pending, so this is not yet a numerical-pass verdict.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -52,6 +59,7 @@ At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
 MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
+Facebook Denoiser DNS48,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -60,13 +68,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 98 |
-| Route/binder present, released-artifact CPU forward incomplete | 49 |
+| Complete CPU route for the live public artifact | 99 |
+| Route/binder present, released-artifact CPU forward incomplete | 48 |
 | No complete runtime binder | 46 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 98 |
+| Complete Metal code route among the CPU-complete set | 99 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 95 |
+| Metal blocked by missing/partial CPU forward | 94 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -79,7 +87,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 97 repositories with a complete Metal code route are the Audiobox
+The 99 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -109,6 +117,7 @@ They also include the decode-only 25 Hz / 44.1 kHz codec
 They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
 They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
+They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
 live-artifact-complete list (see below). RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
@@ -116,7 +125,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 96 Metal-blocked repositories first need a complete released-
+remaining 94 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2249,6 +2258,50 @@ an exact clean checkout of reference revision
 pinned source paths, byte counts and SHA-256 values. A live read-only Hub audit
 then reported CPU `full=98`, `partial=49`, `no-runtime-binder=46`,
 `not-artifact=1` and Metal `full=98`, `blocked-by-cpu=95`, `not-artifact=1`.
+
+### Facebook Denoiser DNS48 source wave
+
+The public `vokra/facebook-denoiser` GGUF at revision
+`f50187791c52af3a90e479fcbacba3f267702eaa` is a 72.0 MB all-F32 artifact
+with exactly 48 tensors and SHA-256
+`c0b23707a2f255b5eb108c5b08b92f310fede6870106e799b195282d6a375e74`.
+Its complete sorted name/shape manifest is
+`bd25704cddfa2acd15f57f4ebb27d6c9a3c22f08121c7335287cbf6af4602ff1`.
+The strict loader additionally requires the historical public identity,
+enhancement category, GitHub upstream and CC-BY-NC-4.0/non-commercial
+provenance. New conversion accepts only the exact causal DNS48 topology and
+adds immutable source revision, source-file hashes, public artifact identity,
+sample rate and topology parameters. A conflicting commercial license
+override is refused.
+
+The native forward reproduces the official correction=1 waveform
+normalization, exact 112-tap symmetric-Hann sinc up/downsampling, five
+`Conv1d(k=8,stride=4) + ReLU + Conv1d(1) + GLU` encoder stages, two
+unidirectional 768-wide LSTM layers, and five additive-skip
+`Conv1d(1) + GLU + ConvTranspose1d(k=8,stride=4)` decoder stages. Conv1d,
+LSTM input/recurrent projections and the transposed-convolution GEMM lowering
+use one selected `Compute` backend. Fixed resampling, layout changes,
+activations, recurrent state and overlap scatter are explicit host glue, not a
+second CPU model. An unavailable backend fails before PCM is processed.
+
+`tools/parity/facebook_denoiser_dump_reference.py` imports
+`denoiser.pretrained.dns48` from clean source revision
+`8afd7c166699bb3c8b2d95b6dd706f71e1075df0`, verifies the exact `demucs.py`,
+`resample.py`, `pretrained.py` and CC-BY-NC-4.0 LICENSE hashes, strict-loads
+the official checkpoint and calls `Demucs.forward` while recording every
+encoder/LSTM/decoder stage. It never imports Vokra or defines a mirror model.
+The Rust real-weight parity test compares CPU with that independent waveform
+and Metal with CPU; all four bounds remain required environment inputs until
+the first measured VAST/Apple runs.
+
+No Facebook Denoiser inference or `vokra-models`/workspace Cargo command ran
+on the maintainer Mac. The source-only manifest/header audit reads only the
+3,533-byte public GGUF prefix. VAST compilation/reference CPU parity and
+Apple-device Metal parity remain pending, and no Hugging Face upload or
+artifact replacement was performed or authorized. The live code-reachability
+totals move to CPU `full=99`, `partial=48`, `no-runtime-binder=46`,
+`not-artifact=1` and Metal `full=99`, `blocked-by-cpu=94`,
+`not-artifact=1`.
 
 ## Remaining execution order
 

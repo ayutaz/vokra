@@ -977,8 +977,9 @@ pub mod conv_tasnet_libri1mix;
 pub mod seamless_m4t_v2_large;
 // ---------------------------------------------------------------------------
 // coverage-audit-2026-08-03 Wave D (T4 non-commercial batch, 2026-08-04):
-// 5 BF16 pass-through skeletons on the same shared verify surface as the
-// Wave B fast-track fleet. All T4 tier (Research-only) per X-Codec-2
+// 5 original T4 converters. Facebook Denoiser now enforces its exact DNS48
+// 48-F32-tensor contract; the other entries retain their original pass-through
+// posture. All T4 tier (Research-only) per X-Codec-2
 // (2026-07-28) / Sortformer diar 4spk / MusicGen family precedent —
 // publish requires `--allow-noncommercial`, runtime M2-13 gate refuses
 // commercial-mode load. Two flavors: HF-hosted (chattts /

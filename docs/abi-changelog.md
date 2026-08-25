@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Facebook Denoiser DNS48 CPU/Metal runtime)
+
+The exact historical public DNS48 GGUF gains a strict native utterance
+forward and CLI/bench route. No C symbol, ownership rule or allocation ABI
+changes. New conversion adds a self-describing topology/source metadata group;
+the historical public file remains compatible through its complete immutable
+manifest and generic provenance tuple.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::facebook_denoiser` | `FbDenoiser`, `FbDenoiserWeights`, `FACEBOOK_DENOISER_HOT_OPS` | Changed/Added | strict `from_gguf` / `open`, `with_backend`, `denoise(&[f32]) -> Result<Vec<f32>>`, utterance-buffered `DenoiseEngine` and one-stream `SeparationEngine` | Owns decoded F32 weights and returned PCM; Conv1d/LSTM/ConvTranspose projections use one CPU/Metal backend with no fallback | no for exact public DNS48; malformed/count-only files now fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=facebook_denoiser` | Added (behavior only) | 16 kHz mono WAV to same-length enhanced WAV | Wrong rate, non-finite PCM, unsupported backend and non-commercial policy violations fail explicitly | no | (TBD) |
+| `gguf:vokra.facebook_denoiser.*` | source/public identity and fixed DNS48 topology group | Added/enforced | strings for revisions/hashes/URLs; `u32` checkpoint bytes/topology/correction values; `f32` floor; `bool` causal/GLU/normalize | New converters stamp the complete group. The exact historical 48-tensor public file may omit it; a partial new group fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (AudioSeal CPU/Metal runtime)
 
 The previously published four-checkpoint AudioSeal GGUF gains a strict native

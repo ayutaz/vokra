@@ -1248,7 +1248,8 @@ pub enum ModelKind {
     /// et al. 2020 arXiv:2006.12847). GitHub-only upstream (no HF
     /// mirror), category = `enhancement`. Distinct arch tag from
     /// sibling denoise / rnnoise / nsnet2 / frcrn. Convert with
-    /// `convert_facebook_denoiser_file` — publish requires
+    /// `convert_facebook_denoiser_file`, which accepts only the exact
+    /// 48-F32-tensor causal DNS48 checkpoint. Publish requires
     /// `--allow-noncommercial`.
     FacebookDenoiser,
     /// **NISQA v2 weight** (`gabrielmittag/NISQA`, **cc-by-nc-sa-4.0**,
@@ -8388,10 +8389,9 @@ pub fn convert_file_licensed(
             let report =
                 models::facebook_denoiser::convert_facebook_denoiser_file(input, output, license)?;
             let notes = vec![format!(
-                "facebook-denoiser: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped (cc-by-nc-4.0 default, NonCommercial fail-closed — publish \
-                 requires --allow-noncommercial per T4 precedent; runtime binder deferred to \
-                 owner sign-off)",
+                "facebook-denoiser: {} exact DNS48 F32 weights written ({} BF16, {} non-float); \
+                 strict 48-tensor manifest, CC-BY-NC-4.0 NonCommercial fail-closed, publish \
+                 requires --allow-noncommercial",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {

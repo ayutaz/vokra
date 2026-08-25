@@ -1,40 +1,15 @@
-//! **Facebook Denoiser** (`facebookresearch/denoiser`, **cc-by-nc-4.0**):
-//! safetensors → GGUF conversion (coverage-audit-2026-08-03 Wave D T4).
+//! Exact converter for Meta's causal DNS48 Facebook Denoiser checkpoint.
 //!
-//! Meta's real-time speech-enhancement U-Net (Defossez et al. 2020
-//! "Real Time Speech Enhancement in the Waveform Domain",
-//! arXiv:2006.12847). Time-domain encoder / decoder waveform-in
-//! architecture with LSTM bottleneck, distributed via GitHub only
-//! (`github.com/facebookresearch/denoiser`) — no HF mirror, so
-//! provenance rides `vokra.provenance.upstream_url` (the NKF-AEC /
-//! RNNoise / NSNet2 GitHub-native precedent). Weight license is
-//! **CC-BY-NC-4.0** (research-only, T4 tier — X-Codec-2 / Sortformer
-//! diar 4spk precedent), so publish requires `--allow-noncommercial`
-//! and the runtime M2-13 gate refuses commercial-mode load.
+//! The audited release is `facebookresearch/denoiser::pretrained.dns48` at
+//! source revision [`SOURCE_REVISION`]. It contains exactly 48 F32 tensors:
+//! five waveform encoder blocks, a two-layer unidirectional LSTM, and five
+//! symmetric decoder blocks. Missing, extra, renamed, reshaped, or non-F32
+//! tensors are rejected before an output file is written.
 //!
-//! # BF16 pass-through (mirror of nkf_aec / sensevoicesmall / neucodec)
-//!
-//! F32 / F16 / BF16 all ride the verbatim pass-through arm — no
-//! convert-time widening. BF16 stays GGUF type 30
-//! ([`GgmlType::BF16`]); the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream torch state-dict keys
-//! verbatim** (the sibling NKF-AEC / RNNoise / DFN3 contract — the
-//! `.th` / `.pt` pickle is pre-flattened offline to safetensors, and
-//! this converter accepts safetensors only). A dedicated
-//! `tools/parity/facebook_denoiser_prepare_checkpoint.py` is **not yet
-//! written**; the generic `tools/parity/nemo_pt_to_safetensors.py`
-//! bridge is what exists today.
-//!
-//! # No ONNX (permanent)
-//!
-//! The upstream release ships torch `.th` / `.pt` pickles; this
-//! converter **never** touches ONNX (FR-LD-05).
+//! The upstream `.th` pickle is decoded only by the offline Python sidecar;
+//! neither this converter nor the runtime executes pickle or ONNX.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -43,343 +18,331 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` value for Facebook Denoiser GGUFs. Distinct from
-/// every sibling enhancement / denoise family — silently sharing an
-/// arch tag with `denoise` (DeepFilterNet3), `rnnoise`, `nsnet2`, or
-/// `frcrn` would mis-route the runtime dispatch (each is a distinct
-/// topology: DFN3 = complex-Conv + ERB deep-filter, RNNoise = GRU +
-/// Bark, NSNet2 = GRU + STFT mask, FRCRN = complex U-Net + FR-LSTM,
-/// facebook-denoiser = time-domain waveform U-Net + LSTM bottleneck).
 pub const ARCH: &str = "facebook_denoiser";
-
-/// `vokra.model.name` value written for the canonical
-/// `facebookresearch/denoiser` release.
 pub const NAME: &str = "facebook_denoiser";
-
-/// `vokra.model.category` value written for every Facebook Denoiser
-/// GGUF. Sibling of DFN3 / RNNoise / NSNet2 (`enhancement` /
-/// `denoise` family).
 pub const CATEGORY: &str = "enhancement";
-
-/// Primary redistribution source (author's GitHub repository — there is
-/// no HF mirror). Written under [`KEY_PROVENANCE_UPSTREAM_URL`].
 pub const UPSTREAM_URL: &str = "github.com/facebookresearch/denoiser";
-
-/// Default upstream weight licence (SPDX). Verified against the
-/// upstream release notice — CC-BY-NC-4.0 (research-only, non-commercial,
-/// T4 tier per X-Codec-2 precedent).
+pub const SOURCE_REVISION: &str = "8afd7c166699bb3c8b2d95b6dd706f71e1075df0";
+pub const CHECKPOINT_URL: &str =
+    "https://dl.fbaipublicfiles.com/adiyoss/denoiser/dns48-11decc9d8e3f0998.th";
+pub const CHECKPOINT_BYTES: u64 = 75_478_395;
+/// The official filename embeds PyTorch's checked SHA-256 prefix. The full
+/// digest is intentionally not fabricated; the VAST reference run records it.
+pub const CHECKPOINT_SHA256_PREFIX: &str = "11decc9d8e3f0998";
+pub const SOURCE_DEMUCS_SHA256: &str =
+    "8e9c21935c647e24f31cefcc63a298cb2a1c25bc99aab44bbe63a7b5570836be";
+pub const SOURCE_RESAMPLE_SHA256: &str =
+    "3e8ea258036660b7d33415794fe09ee010510f4d760bdfc5d5de268d6efb40f5";
+pub const SOURCE_PRETRAINED_SHA256: &str =
+    "885ad1ddd6cee5d4ecf5b4bc32784ceee97dc37ae19570b7ce0f9869b360d108";
+pub const SOURCE_LICENSE_SHA256: &str =
+    "336255dc30193e8e15d689d9481bb05673d89055718f3a96923a7ffb99adbbaf";
+pub const PUBLIC_HF: &str = "vokra/facebook-denoiser";
+pub const PUBLIC_REVISION: &str = "f50187791c52af3a90e479fcbacba3f267702eaa";
+pub const PUBLIC_GGUF_SHA256: &str =
+    "c0b23707a2f255b5eb108c5b08b92f310fede6870106e799b195282d6a375e74";
+pub const MANIFEST_SHA256: &str =
+    "bd25704cddfa2acd15f57f4ebb27d6c9a3c22f08121c7335287cbf6af4602ff1";
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-4.0";
 
-/// `vokra.model.category` metadata key. Local per the established
-/// sensevoicesmall / nkf_aec / funcodec convention (not yet centralized
-/// in `vokra-core::gguf::chunks`).
-pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+pub const TENSOR_COUNT: usize = 48;
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const HIDDEN: u32 = 48;
+pub const DEPTH: u32 = 5;
+pub const KERNEL_SIZE: u32 = 8;
+pub const STRIDE: u32 = 4;
+pub const RESAMPLE: u32 = 4;
+pub const GROWTH: u32 = 2;
+pub const MAX_HIDDEN: u32 = 10_000;
+pub const RESAMPLE_ZEROS: u32 = 56;
+pub const NORMALIZATION_FLOOR: f32 = 1.0e-3;
 
-/// `vokra.provenance.upstream_url` — the primary redistribution source
-/// URL for GitHub-only releases (parallel to the HF-hosted
-/// `vokra.provenance.upstream_hf` key). Same convention as NKF-AEC /
-/// RNNoise / NSNet2.
-pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+pub const KEY_SOURCE_REVISION: &str = "vokra.facebook_denoiser.source_revision";
+pub const KEY_CHECKPOINT_URL: &str = "vokra.facebook_denoiser.checkpoint_url";
+pub const KEY_CHECKPOINT_BYTES: &str = "vokra.facebook_denoiser.checkpoint_bytes";
+pub const KEY_CHECKPOINT_SHA256_PREFIX: &str = "vokra.facebook_denoiser.checkpoint_sha256_prefix";
+pub const KEY_SOURCE_DEMUCS_SHA256: &str = "vokra.facebook_denoiser.source_demucs_sha256";
+pub const KEY_SOURCE_RESAMPLE_SHA256: &str = "vokra.facebook_denoiser.source_resample_sha256";
+pub const KEY_SOURCE_PRETRAINED_SHA256: &str = "vokra.facebook_denoiser.source_pretrained_sha256";
+pub const KEY_SOURCE_LICENSE_SHA256: &str = "vokra.facebook_denoiser.source_license_sha256";
+pub const KEY_PUBLIC_HF: &str = "vokra.facebook_denoiser.public_hf";
+pub const KEY_PUBLIC_REVISION: &str = "vokra.facebook_denoiser.public_revision";
+pub const KEY_PUBLIC_GGUF_SHA256: &str = "vokra.facebook_denoiser.public_gguf_sha256";
+pub const KEY_MANIFEST_SHA256: &str = "vokra.facebook_denoiser.manifest_sha256";
+pub const KEY_SAMPLE_RATE: &str = "vokra.facebook_denoiser.sample_rate";
+pub const KEY_HIDDEN: &str = "vokra.facebook_denoiser.hidden";
+pub const KEY_DEPTH: &str = "vokra.facebook_denoiser.depth";
+pub const KEY_KERNEL_SIZE: &str = "vokra.facebook_denoiser.kernel_size";
+pub const KEY_STRIDE: &str = "vokra.facebook_denoiser.stride";
+pub const KEY_RESAMPLE: &str = "vokra.facebook_denoiser.resample";
+pub const KEY_GROWTH: &str = "vokra.facebook_denoiser.growth";
+pub const KEY_MAX_HIDDEN: &str = "vokra.facebook_denoiser.max_hidden";
+pub const KEY_RESAMPLE_ZEROS: &str = "vokra.facebook_denoiser.resample_zeros";
+pub const KEY_NORMALIZATION_FLOOR: &str = "vokra.facebook_denoiser.normalization_floor";
+pub const KEY_NORMALIZE: &str = "vokra.facebook_denoiser.normalize";
+pub const KEY_GLU: &str = "vokra.facebook_denoiser.glu";
+pub const KEY_CAUSAL: &str = "vokra.facebook_denoiser.causal";
+pub const KEY_STD_CORRECTION: &str = "vokra.facebook_denoiser.std_correction";
 
-/// Outcome of a Facebook Denoiser conversion. Mirrors the sibling
-/// BF16-passthrough converters' counter shape — the invariant
-/// `read == written + skipped_non_float` is auditable at the report
-/// level.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Auditable counters for one strict DNS48 conversion.
 pub struct FacebookDenoiserReport {
-    /// Total tensor entries observed on the safetensors input side.
+    /// Input tensors inspected after parsing.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Exact F32 DNS48 tensors written to GGUF.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter — the safetensors
-    /// reader accepts only `F32` / `F16` / `BF16` at parse time, so any
-    /// tensor reaching this counter would signal a reader change
-    /// upstream; kept for parity with the sibling converters).
+    /// Always zero for a successful strict conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in [`Self::written`], how many were BF16 (subset
-    /// counter). Emits GGUF type 30 verbatim; the runtime widens BF16
-    /// → f32 losslessly. A silent widen / downcast regression would
-    /// surface as this counter drifting away from the input BF16 count.
+    /// Always zero because DNS48 is pinned to F32.
     pub bf16_passthrough: usize,
 }
 
-/// Converts a Facebook Denoiser safetensors checkpoint at `input`
-/// (pre-flattened from the upstream torch `.th` pickle — a dedicated
-/// `tools/parity/facebook_denoiser_prepare_checkpoint.py` is not yet
-/// written, so today that means the generic
-/// `tools/parity/nemo_pt_to_safetensors.py`) into a Vokra-native GGUF
-/// at `output`, returning a [`FacebookDenoiserReport`].
-///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// state-dict key; the `vokra.model.*` (arch / name / category) and
-/// `vokra.provenance.*` (weight_license / license / model_id / source /
-/// upstream_url) chunks are stamped for the runtime compliance gate.
-///
-/// `license` optionally overrides the stamped weight license (raw SPDX
-/// string; the [`LicenseClass`] is re-derived via
-/// [`LicenseClass::from_license_str`]). The default is
-/// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-4.0"`) which resolves to
-/// [`LicenseClass::NonCommercial`] (T4 fail-closed).
-///
-/// # Errors
-///
-/// - [`ConvertError::Io`] on read/write failure.
-/// - [`ConvertError::Parse`] on malformed safetensors input.
-/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+/// Converts an offline-prepared DNS48 safetensors file into a strict GGUF.
 pub fn convert_facebook_denoiser_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<FacebookDenoiserReport, ConvertError> {
+    let spdx = require_official_license(license)?;
     let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
+    let tensors = SafetensorsFile::parse(bytes)?;
+    validate_input_manifest(&tensors)?;
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    let mut builder = GgufBuilder::new();
+    stamp_contract(&mut builder, spdx);
+    for tensor in tensors.tensors() {
+        builder.add_tensor(
+            &tensor.name,
+            tensor.dtype,
+            tensor.shape.clone(),
+            tensors.tensor_bytes(tensor).to_vec(),
+        )?;
+    }
+    std::fs::write(output, builder.to_bytes()?)?;
+    Ok(FacebookDenoiserReport {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+    })
+}
 
-    let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
-    let effective_class = LicenseClass::from_license_str(effective_spdx);
+fn require_official_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
+    let requested = license.unwrap_or(DEFAULT_LICENSE_SPDX).trim();
+    if !requested.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
+        return Err(parse_error(format!(
+            "license override {requested:?} conflicts with the pinned CC-BY-NC-4.0 DNS48 checkpoint"
+        )));
+    }
+    Ok(DEFAULT_LICENSE_SPDX)
+}
+
+fn stamp_contract(builder: &mut GgufBuilder, spdx: &str) {
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
+    builder.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    builder.add_string(KEY_CHECKPOINT_URL, CHECKPOINT_URL);
+    builder.add_u32(
+        KEY_CHECKPOINT_BYTES,
+        u32::try_from(CHECKPOINT_BYTES).expect("DNS48 checkpoint size fits u32"),
+    );
+    builder.add_string(KEY_CHECKPOINT_SHA256_PREFIX, CHECKPOINT_SHA256_PREFIX);
+    builder.add_string(KEY_SOURCE_DEMUCS_SHA256, SOURCE_DEMUCS_SHA256);
+    builder.add_string(KEY_SOURCE_RESAMPLE_SHA256, SOURCE_RESAMPLE_SHA256);
+    builder.add_string(KEY_SOURCE_PRETRAINED_SHA256, SOURCE_PRETRAINED_SHA256);
+    builder.add_string(KEY_SOURCE_LICENSE_SHA256, SOURCE_LICENSE_SHA256);
+    builder.add_string(KEY_PUBLIC_HF, PUBLIC_HF);
+    builder.add_string(KEY_PUBLIC_REVISION, PUBLIC_REVISION);
+    builder.add_string(KEY_PUBLIC_GGUF_SHA256, PUBLIC_GGUF_SHA256);
+    builder.add_string(KEY_MANIFEST_SHA256, MANIFEST_SHA256);
+    builder.add_u32(KEY_SAMPLE_RATE, SAMPLE_RATE);
+    builder.add_u32(KEY_HIDDEN, HIDDEN);
+    builder.add_u32(KEY_DEPTH, DEPTH);
+    builder.add_u32(KEY_KERNEL_SIZE, KERNEL_SIZE);
+    builder.add_u32(KEY_STRIDE, STRIDE);
+    builder.add_u32(KEY_RESAMPLE, RESAMPLE);
+    builder.add_u32(KEY_GROWTH, GROWTH);
+    builder.add_u32(KEY_MAX_HIDDEN, MAX_HIDDEN);
+    builder.add_u32(KEY_RESAMPLE_ZEROS, RESAMPLE_ZEROS);
+    builder.add_f32(KEY_NORMALIZATION_FLOOR, NORMALIZATION_FLOOR);
+    builder.add_bool(KEY_NORMALIZE, true);
+    builder.add_bool(KEY_GLU, true);
+    builder.add_bool(KEY_CAUSAL, true);
+    builder.add_u32(KEY_STD_CORRECTION, 1);
     vokra_core::stamp_provenance(
-        &mut b,
-        effective_class,
-        effective_spdx,
+        builder,
+        LicenseClass::NonCommercial,
+        spdx,
         Some(NAME),
         Some(
-            "github.com/facebookresearch/denoiser (Meta real-time speech-enhancement \
-             waveform U-Net + LSTM, Defossez et al. 2020, CC-BY-NC-4.0 — owner §3.1 \
-             sign-off required, publish requires --allow-noncommercial)",
+            "facebookresearch/denoiser DNS48 causal waveform U-Net + LSTM; CC-BY-NC-4.0 research-only",
         ),
     );
+}
 
-    let mut report = FacebookDenoiserReport::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+fn validate_input_manifest(tensors: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    if expected.len() != TENSOR_COUNT || tensors.tensors().len() != TENSOR_COUNT {
+        return Err(parse_error(format!(
+            "checkpoint has {} tensors, expected exactly {TENSOR_COUNT} for DNS48",
+            tensors.tensors().len()
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for tensor in tensors.tensors() {
+        let shape = expected
+            .get(&tensor.name)
+            .ok_or_else(|| parse_error(format!("unexpected tensor {}", tensor.name)))?;
+        if &tensor.shape != shape {
+            return Err(parse_error(format!(
+                "tensor {} has shape {:?}, expected {shape:?}",
+                tensor.name, tensor.shape
+            )));
         }
+        if tensor.dtype != GgmlType::F32 {
+            return Err(parse_error(format!(
+                "tensor {} is {:?}, expected F32 for DNS48",
+                tensor.name, tensor.dtype
+            )));
+        }
+        seen.insert(tensor.name.as_str());
+    }
+    if let Some(missing) = expected.keys().find(|name| !seen.contains(name.as_str())) {
+        return Err(parse_error(format!(
+            "checkpoint is missing tensor {missing}"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_error(message: impl Into<String>) -> ConvertError {
+    ConvertError::Parse(format!("facebook_denoiser: {}", message.into()))
+}
+
+pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut manifest = BTreeMap::new();
+    let channels = [48u64, 96, 192, 384, 768];
+    let mut input = 1u64;
+    for (stage, &output) in channels.iter().enumerate() {
+        insert(
+            &mut manifest,
+            format!("encoder.{stage}.0.weight"),
+            &[output, input, 8],
+        );
+        insert(&mut manifest, format!("encoder.{stage}.0.bias"), &[output]);
+        insert(
+            &mut manifest,
+            format!("encoder.{stage}.2.weight"),
+            &[2 * output, output, 1],
+        );
+        insert(
+            &mut manifest,
+            format!("encoder.{stage}.2.bias"),
+            &[2 * output],
+        );
+        input = output;
     }
 
-    let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
-    Ok(report)
+    let decoder_inputs = [768u64, 384, 192, 96, 48];
+    let decoder_outputs = [384u64, 192, 96, 48, 1];
+    for (stage, (&input, &output)) in decoder_inputs
+        .iter()
+        .zip(decoder_outputs.iter())
+        .enumerate()
+    {
+        insert(
+            &mut manifest,
+            format!("decoder.{stage}.0.weight"),
+            &[2 * input, input, 1],
+        );
+        insert(
+            &mut manifest,
+            format!("decoder.{stage}.0.bias"),
+            &[2 * input],
+        );
+        insert(
+            &mut manifest,
+            format!("decoder.{stage}.2.weight"),
+            &[input, output, 8],
+        );
+        insert(&mut manifest, format!("decoder.{stage}.2.bias"), &[output]);
+    }
+
+    for layer in 0..2 {
+        for kind in ["bias_hh", "bias_ih"] {
+            insert(&mut manifest, format!("lstm.lstm.{kind}_l{layer}"), &[3072]);
+        }
+        for kind in ["weight_hh", "weight_ih"] {
+            insert(
+                &mut manifest,
+                format!("lstm.lstm.{kind}_l{layer}"),
+                &[3072, 768],
+            );
+        }
+    }
+    debug_assert_eq!(manifest.len(), TENSOR_COUNT);
+    manifest
+}
+
+fn insert(manifest: &mut BTreeMap<String, Vec<u64>>, name: String, shape: &[u64]) {
+    assert!(
+        manifest.insert(name.clone(), shape.to_vec()).is_none(),
+        "duplicate tensor {name}"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use vokra_core::gguf::GgufFile;
+    use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 
-    fn scratch_path(tag: &str, ext: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-facebook-denoiser-{tag}-{}-{}.{ext}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        p
-    }
-
-    struct TempFileGuard(PathBuf);
-    impl Drop for TempFileGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    fn bf16_bytes(values: &[f32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect()
+    #[test]
+    fn exact_dns48_manifest_is_complete() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        assert_eq!(manifest["encoder.4.2.weight"], vec![1536, 768, 1]);
+        assert_eq!(manifest["decoder.0.2.weight"], vec![768, 384, 8]);
+        assert_eq!(manifest["decoder.4.2.weight"], vec![48, 1, 8]);
+        assert_eq!(manifest["lstm.lstm.weight_hh_l1"], vec![3072, 768]);
     }
 
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let payload = bf16_bytes(&values);
-        assert_eq!(payload.len(), 12, "6 elements × 2 bytes BF16");
-        let header = r#"{"encoder.0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&payload);
-
-        let input_path = scratch_path("bf16-in", "safetensors");
-        let output_path = scratch_path("bf16-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report =
-            convert_facebook_denoiser_file(&input_path, &output_path, None).expect("convert BF16");
-        assert_eq!(report.read, 1, "one BF16 tensor observed");
+    fn conflicting_license_override_is_rejected() {
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of nkf_aec / sensevoicesmall)"
+            require_official_license(Some("CC-BY-NC-4.0")).unwrap(),
+            DEFAULT_LICENSE_SPDX
         );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 tensor must increment the observability counter"
-        );
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("encoder.0.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            payload.as_slice(),
-            "BF16 payload must be byte-identical to input (no silent widen)"
-        );
+        let error = require_official_license(Some("mit")).unwrap_err();
+        assert!(error.to_string().contains("conflicts"));
     }
 
     #[test]
-    fn f32_and_f16_tensors_pass_through_and_default_license_is_fail_closed() {
-        let f32_vals: [f32; 2] = [7.0, -8.25];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let f16_patterns: [u16; 2] = [0x3C00, 0x4000]; // 1.0, 2.0 in IEEE half.
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 8);
-        assert_eq!(f16_bytes.len(), 4);
-
-        let header = format!(
-            r#"{{"encoder.1.norm.weight":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"decoder.0.bias":{{"dtype":"F16","shape":[2],"data_offsets":[{},{}]}}}}"#,
-            f32_bytes.len(),
-            f32_bytes.len(),
-            f32_bytes.len() + f16_bytes.len(),
-        );
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-        input_bytes.extend_from_slice(&f16_bytes);
-
-        let input_path = scratch_path("mixed-in", "safetensors");
-        let output_path = scratch_path("mixed-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_facebook_denoiser_file(&input_path, &output_path, None)
-            .expect("convert F32 + F16 mixed");
-        assert_eq!(report.read, 2);
-        assert_eq!(report.written, 2, "F32 and F16 must both pass through");
-        assert_eq!(report.skipped_non_float, 0);
+    fn additive_contract_pins_source_topology_and_public_artifact() {
+        let mut builder = GgufBuilder::new();
+        stamp_contract(&mut builder, DEFAULT_LICENSE_SPDX);
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32 / F16 must NOT increment the BF16 counter"
-        );
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let f32_info = file
-            .tensor_info("encoder.1.norm.weight")
-            .expect("F32 tensor");
-        assert_eq!(f32_info.dtype, GgmlType::F32);
-        assert_eq!(f32_info.dimensions, vec![1, 2]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_bytes.as_slice());
-        let f16_info = file.tensor_info("decoder.0.bias").expect("F16 tensor");
-        assert_eq!(f16_info.dtype, GgmlType::F16);
-        assert_eq!(f16_info.dimensions, vec![2]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
-
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
+            file.get(KEY_SOURCE_REVISION)
+                .and_then(GgufMetadataValue::as_str),
+            Some(SOURCE_REVISION)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            file.get(KEY_MANIFEST_SHA256)
+                .and_then(GgufMetadataValue::as_str),
+            Some(MANIFEST_SHA256)
         );
         assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_URL)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_URL)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
-        );
-        // cc-by-nc-4.0 resolves to NonCommercial (fail-closed T4 tier).
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::NonCommercial.as_str()),
-            "cc-by-nc-4.0 must resolve to NonCommercial (T4 fail-closed)"
-        );
-    }
-
-    #[test]
-    fn license_override_replaces_default() {
-        let f32_bytes: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let header = r#"{"encoder.0.weight":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-
-        let input_path = scratch_path("lic-in", "safetensors");
-        let output_path = scratch_path("lic-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        // A downstream re-trainer on a permissive corpus overrides to
-        // apache-2.0 — the classifier reclassifies to Permissive.
-        let report = convert_facebook_denoiser_file(&input_path, &output_path, Some("apache-2.0"))
-            .expect("convert with override");
-        assert_eq!(report.written, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0"),
-            "override replaces the raw SPDX string"
+            file.get(KEY_CAUSAL).and_then(GgufMetadataValue::as_bool),
+            Some(true)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "apache-2.0 reclassifies away from the NonCommercial default"
+                .and_then(GgufMetadataValue::as_str),
+            Some(LicenseClass::NonCommercial.as_str())
         );
     }
 }
