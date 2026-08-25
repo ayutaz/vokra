@@ -151,7 +151,7 @@ def numpy_f64_input_values(pcm: np.ndarray) -> np.ndarray:
 
 
 def error_metrics(actual: np.ndarray, expected: np.ndarray) -> dict[str, object]:
-    delta = np.abs(actual.astype(np.float64) - expected.astype(np.float64))
+    delta = np.abs(actual.astype(np.float64) - expected.astype(np.float64)).reshape(-1)
     index = int(delta.argmax())
     return {
         "max_abs": float(delta[index]),
