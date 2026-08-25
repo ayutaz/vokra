@@ -420,12 +420,31 @@ produced the exact official code sequence.
 
 The measured CPU gates are max-abs `4e-4` / relative L1 `1e-5` for the
 encoder, `5e-6` / `1e-7` for RVQ and `1.5e-6` / `4e-6` for the decoder, with
-the corresponding cosine floors committed beside the fixtures. Linux VAST
-cannot execute Metal, and current host policy forbids a local
-`vokra-models` real-weight Cargo run, so the feature-gated 24/44 kHz Apple
-hardware comparison remains open. This is recorded as an unrun device gate,
-not imputed from the passing CPU result or primitive Metal tests. No Hub
-upload or artifact replacement was performed.
+the corresponding cosine floors committed beside the fixtures. The initial
+Linux VAST wave could not execute Metal, and host policy forbade a local
+`vokra-models` real-weight Cargo run, so that wave left the Apple device gate
+open rather than imputing it from CPU or primitive Metal tests.
+
+The standalone route provided a policy-safe follow-up at commit `20408cc7`:
+the two unchanged public GGUFs decoded their CPU-produced, GGUF-fingerprint-
+pinned `VKRSNAC1` containers through both CPU and real Metal on an Apple M1.
+Both routes produced equal geometry and finite IEEE-float mono WAVs:
+
+| Variant | Samples | Different samples | max abs CPU/Metal | RMSE CPU/Metal |
+|---|---:|---:|---:|---:|
+| 24 kHz | 1,567 | 1,533 | `9.126961231e-7` | `1.728146126e-7` |
+| 44.1 kHz | 5,003 | 4,690 | `3.129243851e-7` | `6.654532390e-8` |
+
+The unchanged `0.01` FP32 bound passed for both public artifacts. A Seatbelt
+probe returned the explicit `no system default Metal device` error instead of
+falling back; the device runs then completed outside that restriction after
+macOS reported Apple M1 Metal support. Focused Metal-feature CLI tests
+reported `5 passed; 0 failed`. The 17-file evidence ledger is at
+`/private/tmp/vokra-snac-mac-20408cc7`; its `SHA256SUMS` digest is
+`1009a198d098417769bb26881a58e2037973d82892d34d109f2b850374708600`.
+This closes public-artifact Metal **decode** for both checkpoints. Metal encode
+remains explicitly unsupported at nearest-codebook search and is not claimed
+as GPU-capable. No Hub upload or artifact replacement was performed.
 
 ### SNAC standalone CLI reachability
 
@@ -451,8 +470,9 @@ replacement occurred.
 The post-route live Hub audit reported 194 public repositories / 193 GGUF
 repositories: CPU `full=72`, `partial=49`, `no-runtime-binder=72`,
 `not-artifact=1`; Metal `full=72`, `blocked-by-cpu=121`, `not-artifact=1`.
-This is code reachability plus the SNAC real-file CPU evidence above, not a
-claim that the still-open Apple-device SNAC Metal comparison has run.
+Those historical counts describe code reachability plus the VAST CPU wave.
+The Apple-device SNAC decode comparison was subsequently completed as
+recorded above; it does not change the route-count classification.
 
 ### Piper Plus CLI/C ABI reachability
 
