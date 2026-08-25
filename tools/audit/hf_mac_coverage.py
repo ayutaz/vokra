@@ -139,6 +139,7 @@ METAL_CODE_ARCHES = {
     "metricgan_plus",
     "mimi",
     "miocodec",
+    "mp_senet",
     "moshi",
     "moonshine",
     "nkf_aec",

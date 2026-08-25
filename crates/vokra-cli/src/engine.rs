@@ -451,6 +451,8 @@ const ARCH_RNNOISE: &str = "rnnoise";
 const ARCH_DENOISE: &str = "denoise";
 /// SpeechBrain MetricGAN+ VoiceBank spectral-mask enhancer.
 const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
+/// JacobLinCool MP-SENet DNS magnitude/phase enhancer.
+const ARCH_MP_SENET: &str = "mp_senet";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -1112,7 +1114,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE | ARCH_METRICGAN_PLUS => {
+        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE | ARCH_METRICGAN_PLUS | ARCH_MP_SENET => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
@@ -1441,7 +1443,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -2553,7 +2555,7 @@ mod tests {
         );
     }
 
-    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, or MetricGAN+ GGUF dispatches to
+    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, MetricGAN+, or MP-SENet GGUF dispatches to
     /// [`ModelTask::Denoise`] with
     /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
@@ -2561,6 +2563,11 @@ mod tests {
     fn load_session_detects_nsnet2_as_denoise_task() {
         let (_session, task) = with_arch_only_gguf("nsnet2", "nsnet2-arch", |p| {
             load_session(p).expect("nsnet2 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) = with_arch_only_gguf(ARCH_MP_SENET, "mp-senet-arch", |p| {
+            load_session(p).expect("MP-SENet session builds (bare)")
         });
         assert_eq!(task, ModelTask::Denoise);
 
@@ -3274,6 +3281,7 @@ mod tests {
             ARCH_RNNOISE,
             ARCH_DENOISE,
             ARCH_METRICGAN_PLUS,
+            ARCH_MP_SENET,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
             ARCH_FCPE,

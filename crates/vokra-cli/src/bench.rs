@@ -41,6 +41,7 @@ enum DenoiseBenchModel {
     Rnnoise(vokra_models::rnnoise::RnnoiseV02),
     DeepFilterNet3(Box<vokra_models::deepfilternet3::DeepFilterNet3>),
     MetricGanPlus(vokra_models::metricgan_plus::MetricGanPlus),
+    MpSenet(vokra_models::mp_senet::MpSenet),
 }
 
 impl DenoiseBenchModel {
@@ -67,8 +68,12 @@ impl DenoiseBenchModel {
                 .map(|model| model.with_backend(backend))
                 .map(Self::MetricGanPlus)
                 .map_err(|error| error.to_string()),
+            "mp_senet" => vokra_models::mp_senet::MpSenet::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
+                .map(Self::MpSenet)
+                .map_err(|error| error.to_string()),
             other => Err(format!(
-                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, or metricgan_plus"
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, or mp_senet"
             )),
         }
     }
@@ -79,6 +84,7 @@ impl DenoiseBenchModel {
             Self::Rnnoise(_) => vokra_models::rnnoise::SAMPLE_RATE,
             Self::DeepFilterNet3(model) => model.config().sample_rate,
             Self::MetricGanPlus(_) => vokra_models::metricgan_plus::SAMPLE_RATE,
+            Self::MpSenet(_) => vokra_models::mp_senet::SAMPLE_RATE,
         }
     }
 
@@ -88,6 +94,7 @@ impl DenoiseBenchModel {
             Self::Rnnoise(model) => model.denoise_pcm(pcm),
             Self::DeepFilterNet3(model) => model.enhance(pcm),
             Self::MetricGanPlus(model) => model.enhance(pcm),
+            Self::MpSenet(model) => model.enhance(pcm),
         }
         .map_err(|error| error.to_string())
     }

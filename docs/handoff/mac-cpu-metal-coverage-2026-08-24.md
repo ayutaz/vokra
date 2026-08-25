@@ -26,6 +26,14 @@
 > code-reachability move is reflected below. The independent official-import
 > dumper is ready, but VAST typecheck/CPU parity and Apple-device Metal parity
 > remain pending, so these totals are not a numerical-pass claim.
+>
+> **2026-08-26 MP-SENet source wave:** `vokra/mp-senet-dns` now has an exact
+> 247-F32-tensor binder, native magnitude/phase enhancement forward and
+> CLI/bench routes for CPU and Metal. The released package's
+> `batch_first=false` attention-axis behaviour is preserved deliberately. The
+> one-repository code-reachability move is reflected below; VAST typecheck,
+> independent official-reference CPU parity and Apple-device Metal parity are
+> still pending, so no numerical pass is claimed.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -43,7 +51,7 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
-MioCodec's decode-only route, both TIGER separator routes,
+MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -52,13 +60,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 97 |
+| Complete CPU route for the live public artifact | 98 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 47 |
+| No complete runtime binder | 46 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 97 |
+| Complete Metal code route among the CPU-complete set | 98 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 96 |
+| Metal blocked by missing/partial CPU forward | 95 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -2124,7 +2132,7 @@ metadata, shell-policy, Python syntax/unit checks and the package-safe
 `vokra-models`/workspace Cargo command.
 
 The read-only live inventory after the subsequent source waves is the
-97/49/47 CPU split and 97/96 Metal split recorded at the top of this ledger.
+98/49/46 CPU split and 98/95 Metal split recorded at the top of this ledger.
 Heavy verification
 must still run on a disposable VAST instance, retrieve its evidence and
 destroy the instance. This does not authorize any Hugging Face upload or
@@ -2168,15 +2176,79 @@ parity test requires explicitly recorded max-absolute and relative-L1 bounds;
 it cannot silently pass with guessed tolerances. Its stdlib-only self-test,
 the three focused converter contract tests, architecture handshake, bound-arch
 coverage gate, formatting, diff check and Mac-coverage audit unit tests pass.
-The live read-only audit reports CPU `full=97`, `partial=49`,
-`no-runtime-binder=47`, `not-artifact=1` and Metal `full=97`,
-`blocked-by-cpu=96`, `not-artifact=1`.
+The later MP-SENet source wave moves the live read-only totals to CPU
+`full=98`, `partial=49`, `no-runtime-binder=46`, `not-artifact=1` and Metal
+`full=98`, `blocked-by-cpu=95`, `not-artifact=1`.
 
 No TIGER model inference, `vokra-models` Cargo command or workspace Cargo
 command ran on the maintainer Mac. VAST real-weight compilation and official
 CPU parity are waiting for a rotated working VAST credential; Apple Metal
 waveform parity remains a separate explicitly scheduled Mac run. No Hugging
 Face upload or public artifact replacement was performed or authorized.
+
+### MP-SENet DNS source wave
+
+The public `vokra/mp-senet-dns` revision
+`6017b7d70cf779c03f2fe061b56aa475e870d739` carries two names for the same
+9,075,040-byte GGUF object. Its SHA-256 is
+`26eec4a59c0eb8d31ea5115b3cb7d890f5b3745703ef0f0974b4e08c58e8da95`;
+the 247 all-F32 tensor name/shape manifest is
+`84f05f3ca25e7c8f56e217d57458ea63dd7a0516cad0aeae3e6a1880c3bfd8fe`.
+The strict loader also pins the exact model identity, MIT/permissive
+provenance and upstream repository. New conversion requires the exact
+`JacobLinCool/MP-SENet-DNS` revision
+`8b78493f536df1aa53bd3bcbb2f620f705e8589c`; its checkpoint and config
+SHA-256 values are recorded in `docs/license-audit.md` and the converter.
+The initial package publication revision
+`a65c76f340a0c8a885fbbf1893d5ec0ea009d718` is recorded separately from
+reference revision `958141ca51703c5b1e0c30362ab5b1c8b0e49957`, the exact later
+package commit that introduced bounded segment processing and fixed the
+short-segment path without changing the 247-tensor topology. The reference
+`mpsenet.py` is 11,002 bytes with SHA-256
+`e629e2858836489a598f9b325aa3abfc2a2360c72fc676d45c458c17efcaa7e8`.
+
+The native forward implements the centered periodic-Hann 400/100 STFT,
+compressed magnitude and phase input, causal-time dense encoder, four
+time/frequency Transformer blocks, parallel learnable-mask and phase decoders,
+decompression, iSTFT, global energy normalization and the package's
+32,000-sample tail-joining segmentation. It deliberately preserves the
+released package's `nn.MultiheadAttention` default `batch_first=false`: the
+checkpoint therefore attends over the first `[b*axis]` dimension instead of
+silently applying the later upstream recommendation. Correcting that quirk
+would change the released model rather than reproduce it.
+
+Conv2d is lowered through bounded chunked im2col + GEMM so a 32,000-sample
+segment does not allocate the several-hundred-megabyte full patch matrix.
+Attention, bidirectional GRU gates and normalization use the same selected
+`Compute` backend; STFT/iSTFT, reshapes and scalar activations are host glue.
+CLI and bench route `mp_senet` as a 16 kHz denoiser and pass the requested
+backend through. Unsupported backends fail before inference; there is no
+silent CPU model fallback. `tools/parity/mp_senet_dump_reference.py` imports
+the real model and STFT helpers from the exact clean
+`JacobLinCool/MPSENet` segment-wrapper commit, strictly loads the pinned
+upstream safetensors/config pair, calls the package's public waveform entry
+and records official intermediate tensors. It never imports Vokra or defines
+a mirror network. `crates/vokra-models/tests/parity_mp_senet_real.rs` compares
+the native CPU waveform with that independent oracle and Metal with CPU. Its
+four CPU/Metal maximum-absolute and relative-L1 bounds remain required
+environment inputs until the first recorded VAST/Apple measurements; no
+tolerance was invented in advance.
+
+No MP-SENet inference or `vokra-models` Cargo command ran on the maintainer
+Mac. VAST typecheck and independent official CPU parity, followed by
+Apple-device CPU/Metal parity, remain pending. No Hugging Face upload or public
+artifact replacement was performed or authorized.
+
+The maintainer-Mac source-only gate passed `cargo fmt --all -- --check`,
+`git diff --check`, the three focused `vokra-convert` MP-SENet tests,
+`check-arch-handshake.sh`, `check-bound-arch-coverage.sh`,
+`check-zero-deps.sh`, `check-forbidden-symbols.sh` and
+`check-abi-changelog.sh`. The parity dumper's stdlib self-test also validated
+an exact clean checkout of reference revision
+`958141ca51703c5b1e0c30362ab5b1c8b0e49957`, including the
+pinned source paths, byte counts and SHA-256 values. A live read-only Hub audit
+then reported CPU `full=98`, `partial=49`, `no-runtime-binder=46`,
+`not-artifact=1` and Metal `full=98`, `blocked-by-cpu=95`, `not-artifact=1`.
 
 ## Remaining execution order
 

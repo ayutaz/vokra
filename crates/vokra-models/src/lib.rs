@@ -2482,6 +2482,10 @@ pub mod data2vec_audio;
 // the official Hamming-STFT / two-layer BiLSTM spectral-mask pipeline; all
 // learned projections use one explicit CPU/Metal backend.
 pub mod metricgan_plus;
+// Mac CPU/Metal coverage wave (2026-08-26): exact 247-tensor MP-SENet DNS
+// binder and native magnitude/phase enhancement graph. The released
+// batch_first=false attention-axis quirk is preserved for checkpoint parity.
+pub mod mp_senet;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

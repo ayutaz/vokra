@@ -14,6 +14,7 @@ Run through the repository Python policy:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import struct
@@ -143,9 +144,17 @@ def parse_header(data: bytes) -> dict[str, Any]:
                 "offset": offset,
             }
         )
+    canonical_manifest = bytearray()
+    for tensor in sorted(tensors, key=lambda item: item["name"]):
+        canonical_manifest.extend(tensor["name"].encode("utf-8"))
+        canonical_manifest.append(0)
+        canonical_manifest.extend(struct.pack("<Q", len(tensor["shape"])))
+        for dimension in tensor["shape"]:
+            canonical_manifest.extend(struct.pack("<Q", dimension))
     return {
         "version": version,
         "tensor_count": tensor_count,
+        "manifest_sha256": hashlib.sha256(canonical_manifest).hexdigest(),
         "metadata_count": metadata_count,
         "header_bytes": reader.pos,
         "metadata": metadata,
