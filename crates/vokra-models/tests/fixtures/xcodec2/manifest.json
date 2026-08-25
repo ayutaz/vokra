@@ -1,0 +1,31 @@
+{
+  "code_count": 4,
+  "decoded_shape": [
+    1,
+    1,
+    1280
+  ],
+  "decoder_source_sha256": "8a770d35c4d90a3a82b38869b7b39bd6fab6ab7b2079a44915c7740549f19282",
+  "feature_shape": [
+    1,
+    1024,
+    4
+  ],
+  "files": {
+    "codes.u32le": "3bab5738a2c63b11352ad1211664346c1f1ff19de67bd750e1b8a61408c353ea",
+    "decoded_pcm.f32": "fac4ac18b9781df6934fbe99f3b38a8eb32522b3883935c0950463f7af6a8ceb",
+    "features.f32": "acf8f5ce29a035eebb121517f85b252ddd80f86c6b9d6d1794ae6b21a5c38c4d"
+  },
+  "format": "vokra-xcodec2-reference-v1",
+  "gguf_sha256": "7ab4b94006068226b0741930081f7e149316e045511c1cddb94769e7f598698e",
+  "official_defaulted_deterministic_buffers": [],
+  "official_state_tensors_loaded": 117,
+  "oracle": "official xcodec2==0.1.5 CodecDecoderVocos FSQ + forward",
+  "source_distribution": "xcodec2==0.1.5",
+  "source_distribution_sha256": "dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b",
+  "torch": "2.5.0+cu124",
+  "torchtune": "0.3.1",
+  "torchtune_rope_sha256": "8d79a03e1334fe6ecaff14b1e6a2d554e7e6209c95db058846973de013f92b80",
+  "transformer_source_sha256": "54786751f363ed6ea510c7a4a13d5c093cd392f79c545ce31dedcd745d6662d0",
+  "vector_quantize_pytorch": "1.17.8"
+}
