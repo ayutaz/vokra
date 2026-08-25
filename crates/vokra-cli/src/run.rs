@@ -43,6 +43,7 @@ USAGE:
     vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <deepfilternet3.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <sepformer.gguf> --input <mixture.wav> [--output <separated.wav>]
     vokra-cli run --model <conv-tasnet.gguf> --input <noisy.wav> [--output <enhanced.wav>]
@@ -1610,7 +1611,7 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The native NSNet2 / RNNoise speech-enhancement path.
+/// The native NSNet2 / RNNoise / DeepFilterNet3 speech-enhancement path.
 ///
 /// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
 /// to `--output` (or its duration is reported when the flag is absent, the
@@ -1664,9 +1665,29 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             (rate, output)
         }
+        "denoise" => {
+            if a.backend != vokra_core::BackendKind::Cpu {
+                return Err(format!(
+                    "run (denoise): arch `denoise` (DeepFilterNet3) does not support \
+                     --backend {} yet; its dedicated Conv2d/GRU graph is CPU-only. \
+                     Refusing a silent CPU fallback (FR-EX-08); re-run with --backend cpu",
+                    backend_flag_name(a.backend)
+                ));
+            }
+            let model = vokra_ops::DenoiseModel::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?;
+            let rate = model.config().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .enhance(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
         other => {
             return Err(format!(
-                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, or denoise"
             ));
         }
     };
@@ -5619,6 +5640,32 @@ mod tests {
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);
+    }
+
+    #[test]
+    fn deepfilternet_rejects_metal_before_binding_weights() {
+        let suffix = std::process::id();
+        let model = std::env::temp_dir().join(format!("vokra-cli-dfn3-{suffix}.gguf"));
+        let input = std::env::temp_dir().join(format!("vokra-cli-dfn3-{suffix}.wav"));
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "denoise");
+        std::fs::write(&model, builder.to_bytes().expect("serialize metadata GGUF")).unwrap();
+        wav::write_wav(&input, &[0.0; 480], 48_000).expect("write input WAV");
+
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--input",
+            input.to_str().unwrap(),
+            "--backend",
+            "metal",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(model);
+        let _ = std::fs::remove_file(input);
+        assert!(err.contains("DeepFilterNet3"), "{err}");
+        assert!(err.contains("does not support --backend metal"), "{err}");
+        assert!(err.contains("silent CPU fallback"), "{err}");
     }
 
     #[test]

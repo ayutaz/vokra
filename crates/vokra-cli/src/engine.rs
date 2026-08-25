@@ -418,6 +418,9 @@ const ARCH_AST: &str = "ast";
 const ARCH_NSNET2: &str = "nsnet2";
 /// Xiph RNNoise v0.2 native waveform denoiser.
 const ARCH_RNNOISE: &str = "rnnoise";
+/// DeepFilterNet3 native waveform denoiser (the converter/runtime arch is
+/// intentionally the generic historical `denoise` tag).
+const ARCH_DENOISE: &str = "denoise";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -1046,7 +1049,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 | ARCH_RNNOISE => {
+        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
@@ -1356,7 +1359,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -2460,7 +2463,8 @@ mod tests {
         );
     }
 
-    /// An `nsnet2` or `rnnoise` GGUF dispatches to [`ModelTask::Denoise`] with
+    /// An `nsnet2`, `rnnoise`, or DeepFilterNet3 `denoise` GGUF dispatches to
+    /// [`ModelTask::Denoise`] with
     /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
     #[test]
@@ -2472,6 +2476,11 @@ mod tests {
 
         let (_session, task) = with_arch_only_gguf("rnnoise", "rnnoise-arch", |p| {
             load_session(p).expect("rnnoise session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) = with_arch_only_gguf("denoise", "dfn3-arch", |p| {
+            load_session(p).expect("DeepFilterNet3 session builds (bare)")
         });
         assert_eq!(task, ModelTask::Denoise);
     }
@@ -3132,6 +3141,7 @@ mod tests {
             ARCH_SMART_TURN,
             ARCH_NSNET2,
             ARCH_RNNOISE,
+            ARCH_DENOISE,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
             ARCH_FCPE,

@@ -39,23 +39,38 @@ const DEFAULT_BENCH_TEXT: &str = "the quick brown fox jumps over the lazy dog";
 enum DenoiseBenchModel {
     Nsnet2(vokra_models::nsnet2::Nsnet2V1),
     Rnnoise(vokra_models::rnnoise::RnnoiseV02),
+    DeepFilterNet3(vokra_ops::DenoiseModel),
 }
 
 impl DenoiseBenchModel {
-    fn bind(gguf: &vokra_core::gguf::GgufFile) -> Result<Self, String> {
+    fn bind(gguf: &vokra_core::gguf::GgufFile, backend: BackendKind) -> Result<Self, String> {
         let arch = gguf
             .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
             .and_then(|value| value.as_str())
             .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
         match arch {
             "nsnet2" => vokra_models::nsnet2::Nsnet2V1::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
                 .map(Self::Nsnet2)
                 .map_err(|error| error.to_string()),
             "rnnoise" => vokra_models::rnnoise::RnnoiseV02::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
                 .map(Self::Rnnoise)
                 .map_err(|error| error.to_string()),
+            "denoise" => {
+                if backend != BackendKind::Cpu {
+                    return Err(format!(
+                        "bench (denoise): arch `denoise` (DeepFilterNet3) does not support \
+                         --backend {backend:?} yet; its dedicated Conv2d/GRU graph is \
+                         CPU-only. Refusing a silent CPU fallback (FR-EX-08)"
+                    ));
+                }
+                vokra_ops::DenoiseModel::from_gguf(gguf)
+                    .map(Self::DeepFilterNet3)
+                    .map_err(|error| error.to_string())
+            }
             other => Err(format!(
-                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, or denoise"
             )),
         }
     }
@@ -64,6 +79,7 @@ impl DenoiseBenchModel {
         match self {
             Self::Nsnet2(model) => model.config().sample_rate,
             Self::Rnnoise(_) => vokra_models::rnnoise::SAMPLE_RATE,
+            Self::DeepFilterNet3(model) => model.config().sample_rate,
         }
     }
 
@@ -71,6 +87,7 @@ impl DenoiseBenchModel {
         match self {
             Self::Nsnet2(model) => model.denoise_pcm(pcm),
             Self::Rnnoise(model) => model.denoise_pcm(pcm),
+            Self::DeepFilterNet3(model) => model.enhance(pcm),
         }
         .map_err(|error| error.to_string())
     }
@@ -737,7 +754,7 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
                 .and_then(|value| value.as_str())
                 .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
-            let model = DenoiseBenchModel::bind(session.gguf())?;
+            let model = DenoiseBenchModel::bind(session.gguf(), args.backend)?;
             let rate = model.sample_rate();
             if clip.sample_rate != rate {
                 return Err(format!(
@@ -1453,6 +1470,21 @@ mod tests {
             parse_backend("nnapi").is_err(),
             "nnapi must never parse (FR-BE-07)"
         );
+    }
+
+    #[test]
+    fn deepfilternet_bench_rejects_metal_before_binding_weights() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "denoise");
+        let gguf =
+            vokra_core::gguf::GgufFile::parse(builder.to_bytes().expect("serialize metadata GGUF"))
+                .expect("parse metadata GGUF");
+        let Err(err) = DenoiseBenchModel::bind(&gguf, BackendKind::Metal) else {
+            panic!("DeepFilterNet3 Metal bench must fail loudly");
+        };
+        assert!(err.contains("DeepFilterNet3"), "{err}");
+        assert!(err.contains("CPU-only"), "{err}");
+        assert!(err.contains("silent CPU fallback"), "{err}");
     }
 
     // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------
