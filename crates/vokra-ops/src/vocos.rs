@@ -350,13 +350,48 @@ pub fn vocos_decode_with_ops<O: VocosBackendOps>(
     attrs: &VocosAttrs,
     ops: &O,
 ) -> Result<Vec<f32>> {
-    weights.validate(attrs)?;
     if frames == 0 {
         return Err(VokraError::InvalidArgument(
             "vocos: frames must be positive".to_owned(),
         ));
     }
     check_len("features", features, attrs.input_channels * frames)?;
+    let x = ops.conv1d_same(
+        features,
+        attrs.input_channels,
+        frames,
+        attrs.dim,
+        &weights.embed_weight,
+        &weights.embed_bias,
+        7,
+    )?;
+    vocos_decode_from_embedded_with_ops(x, frames, condition_id, weights, attrs, ops)
+}
+
+/// Runs the shared Vocos normalization, ConvNeXt and iSTFT head from an
+/// already embedded channel-major `[dim, frames]` activation.
+///
+/// WavTokenizer inserts its released positional ResNet/attention stack
+/// between `backbone.embed` and `backbone.norm`; this entry keeps the common
+/// downstream arithmetic in one implementation while allowing that exact
+/// upstream ordering. The caller must route the embedding and any inserted
+/// learned operations through the same selected backend before calling this
+/// function.
+pub fn vocos_decode_from_embedded_with_ops<O: VocosBackendOps>(
+    mut x: Vec<f32>,
+    frames: usize,
+    condition_id: Option<usize>,
+    weights: &VocosWeights,
+    attrs: &VocosAttrs,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    weights.validate(attrs)?;
+    if frames == 0 {
+        return Err(VokraError::InvalidArgument(
+            "vocos: frames must be positive".to_owned(),
+        ));
+    }
+    check_len("embedded", &x, attrs.dim * frames)?;
     let condition = match (attrs.num_conditions, condition_id) {
         (0, None) => 0,
         (0, Some(id)) => {
@@ -377,15 +412,6 @@ pub fn vocos_decode_with_ops<O: VocosBackendOps>(
         }
     };
 
-    let mut x = ops.conv1d_same(
-        features,
-        attrs.input_channels,
-        frames,
-        attrs.dim,
-        &weights.embed_weight,
-        &weights.embed_bias,
-        7,
-    )?;
     norm_channel_major_with_ops(ops, &mut x, frames, attrs.dim, &weights.norm, condition)?;
 
     for block in &weights.blocks {

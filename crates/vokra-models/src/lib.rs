@@ -583,6 +583,8 @@ pub mod bigvgan;
 // Rust port.
 pub mod mt3;
 pub mod vocos;
+/// Native WavTokenizer large-speech 75 token/s codec decoder.
+pub mod wavtokenizer;
 // Wave 4 2026-08-14 audit follow-up (LIB.RS RULE — append at end
 // with Wave 4 comment marker): ReDimNet2 speaker encoder
 // (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM, apache-2.0). 2D

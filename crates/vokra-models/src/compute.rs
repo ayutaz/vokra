@@ -86,6 +86,11 @@ pub enum HotOp {
     GroupNorm,
     /// Exact (erf) GELU (`gelu_f32`) — Whisper MLP / conv stem.
     Gelu,
+    /// Element-wise SiLU / Swish (`x * sigmoid(x)`). WavTokenizer's
+    /// positional ResNet applies this after every GroupNorm. The CPU arm is
+    /// the scalar mathematical reference; Metal dispatches the existing
+    /// `vokra_silu_f32` kernel. Other backends remain explicitly uncovered.
+    Silu,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
     /// Mimi (Kyutai) residual vector quantization codec decode
@@ -421,6 +426,7 @@ impl HotOp {
                 | HotOp::LayerNorm
                 | HotOp::GroupNorm
                 | HotOp::Gelu
+                | HotOp::Silu
                 | HotOp::Conv1d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
@@ -1114,6 +1120,41 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gelu_f32(x, out),
+        }
+    }
+
+    /// Element-wise SiLU / Swish (`out = x * sigmoid(x)`).
+    ///
+    /// Metal uses its native MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms because listing [`HotOp::Silu`] must never
+    /// conceal a host fallback.
+    pub fn silu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        if x.len() != out.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "silu_f32: input length {} != output length {}",
+                x.len(),
+                out.len()
+            )));
+        }
+        match &self.be {
+            Be::Cpu => {
+                for (output, &value) in out.iter_mut().zip(x) {
+                    *output = value / (1.0 + (-value).exp());
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.silu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "silu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "silu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -3944,6 +3985,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
@@ -4015,6 +4057,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::Gelu,
+            HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
