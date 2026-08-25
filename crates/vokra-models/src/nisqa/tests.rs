@@ -147,3 +147,126 @@ fn score_head_order_round_trips_without_swapping_dimensions() {
     assert_eq!(score.coloration, 4.0);
     assert_eq!(score.to_heads(), [1.0, 2.0, 3.0, 4.0, 5.0]);
 }
+
+fn read_f32(path: &std::path::Path) -> Vec<f32> {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+    assert_eq!(bytes.len() % 4, 0, "{} is not F32-aligned", path.display());
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four bytes")))
+        .collect()
+}
+
+fn validate_reference_manifest(reference: &std::path::Path) {
+    let path = reference.join("manifest.json");
+    let manifest = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+    for needle in [
+        "official gabrielmittag/NISQA NISQA_lib.NISQA_DIM direct import",
+        SOURCE_REVISION,
+        SOURCE_CHECKPOINT_SHA256,
+        "\"sample_rate\": 48000",
+        "\"mos\"",
+        "\"noi\"",
+        "\"dis\"",
+        "\"col\"",
+        "\"loud\"",
+    ] {
+        assert!(
+            manifest.contains(needle),
+            "{} does not contain pinned contract {needle:?}",
+            path.display()
+        );
+    }
+}
+
+fn measure(label: &str, actual: &[f32], expected: &[f32]) {
+    assert_eq!(actual.len(), expected.len(), "{label} length");
+    assert!(!actual.is_empty(), "{label} must not be empty");
+    assert!(
+        actual.iter().chain(expected).all(|value| value.is_finite()),
+        "{label} must be finite"
+    );
+    let mut max_abs = 0.0f64;
+    let mut sum_abs = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    let mut worst = 0usize;
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        let delta = (f64::from(actual) - f64::from(expected)).abs();
+        if delta > max_abs {
+            max_abs = delta;
+            worst = index;
+        }
+        sum_abs += delta;
+        sum_sq += delta * delta;
+        eprintln!(
+            "NISQA_MEASUREMENT label={label} head={} actual={actual:.9e} \
+             expected={expected:.9e} abs={delta:.9e}",
+            HEAD_ORDER[index]
+        );
+    }
+    let count = actual.len() as f64;
+    eprintln!(
+        "NISQA_MEASUREMENT_SUMMARY label={label} heads={} max_abs={max_abs:.9e} \
+         worst_head={} mean_abs={:.9e} rms={:.9e}",
+        actual.len(),
+        HEAD_ORDER[worst],
+        sum_abs / count,
+        (sum_sq / count).sqrt(),
+    );
+}
+
+fn real_case() -> (GgufFile, Vec<f32>, Vec<f32>) {
+    let gguf = std::env::var_os("VOKRA_NISQA_GGUF")
+        .expect("VOKRA_NISQA_GGUF must point at the strict public or regenerated GGUF");
+    let reference = std::env::var_os("VOKRA_NISQA_REFERENCE_DIR")
+        .expect("VOKRA_NISQA_REFERENCE_DIR must point at the independent official dump");
+    let reference = std::path::PathBuf::from(reference);
+    validate_reference_manifest(&reference);
+    let file = GgufFile::open(gguf).expect("open real NISQA GGUF");
+    let pcm = read_f32(&reference.join("pcm.f32le"));
+    let expected = read_f32(&reference.join("score.f32le"));
+    assert_eq!(expected.len(), N_HEADS, "official score width");
+    (file, pcm, expected)
+}
+
+#[test]
+#[ignore = "requires VAST-prepared public GGUF and independent pinned NISQA fixture"]
+fn measure_real_cpu_against_official_nisqa() {
+    let (file, pcm, expected) = real_case();
+    let model =
+        Nisqa::from_gguf_with_backend(&file, BackendKind::Cpu).expect("strict real NISQA CPU bind");
+    let actual = model
+        .score_at_sample_rate(&pcm, 48_000)
+        .expect("real NISQA CPU forward")
+        .to_heads();
+    measure("cpu_vs_official", &actual, &expected);
+    eprintln!("NISQA_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED");
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+#[ignore = "requires Apple Silicon, public GGUF and independent pinned NISQA fixture"]
+fn measure_real_metal_against_cpu_and_official_nisqa() {
+    if vokra_backend_metal::vokra_metal_probe().is_err() {
+        eprintln!("skipping NISQA Metal measurement: no system Metal device");
+        return;
+    }
+    let (file, pcm, expected) = real_case();
+    let cpu = Nisqa::from_gguf_with_backend(&file, BackendKind::Cpu)
+        .expect("strict real NISQA CPU bind")
+        .score_at_sample_rate(&pcm, 48_000)
+        .expect("real NISQA CPU forward")
+        .to_heads();
+    let metal = Nisqa::from_gguf_with_backend(&file, BackendKind::Metal)
+        .expect("strict real NISQA Metal bind")
+        .score_at_sample_rate(&pcm, 48_000)
+        .expect("real NISQA Metal forward")
+        .to_heads();
+    measure("metal_vs_cpu", &metal, &cpu);
+    measure("metal_vs_official", &metal, &expected);
+    eprintln!(
+        "NISQA_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED"
+    );
+}
