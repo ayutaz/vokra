@@ -98,6 +98,39 @@ results establish native CPU/reference behavior. The Metal route is complete
 in code, but this wave has not yet recorded an Apple-device execution for
 these newly completed encoders; that distinction is kept explicit below.
 
+### CAM++ public speaker encoder
+
+The current `vokra/campplus-speaker-encoder` revision
+`7963b5f8e21a75d900e4fc4d6b342ba3f989f6f9` carries one 27,684,640-byte,
+619-tensor `campplus.gguf` with SHA-256
+`c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea`.
+The cached file used below matched the live fixed-revision LFS size and digest.
+
+The pre-existing independent ONNX Runtime campaign used the official Alibaba
+distribution of `iic/speech_campplus`, with a separately implemented
+torchaudio frontend. Across three real WAVs, the native CPU embeddings had
+component max-abs at most `1.87e-5`, cosine at least `0.99999999998`, and the
+same speaker-similarity ranking to six decimals. The committed intermediate
+fixture independently covers all seven recorded graph surfaces at the
+registered `0.01` bound.
+
+The follow-up at commit `bcff8c1f` used the exact public GGUF and one
+93,680-sample LibriSpeech utterance. The CLI exported the complete native
+embedding on CPU and real Apple M1 Metal:
+
+| Dimension | Different values | max abs CPU/Metal | mean abs | relative L1 | cosine |
+|---:|---:|---:|---:|---:|---:|
+| 192 | 180 | `1.668930054e-6` | `4.522735253e-7` | `5.783065861e-7` | `1.000000000` |
+
+The complete embedding passed the unchanged `0.01` FP32 bound. A Seatbelt
+probe returned the explicit `no system default Metal device` error rather
+than falling back; the real device run then completed outside that restriction
+after macOS reported Apple M1 Metal support. The real-file CLI output gate
+reported `1 passed; 0 failed`. The 12-file evidence package is at
+`/private/tmp/vokra-campplus-mac-bcff8c1f`; its `SHA256SUMS` digest is
+`dcb17a401418e4b20b313b75459678bb77bb74fd586e826c7539d4219c189523`.
+No public upload or replacement was performed.
+
 ### SepFormer seven-checkpoint family
 
 SepFormer now implements the full learned forward: encoder, GroupNorm,
