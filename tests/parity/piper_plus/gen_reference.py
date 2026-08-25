@@ -10,12 +10,15 @@ and the decoder-input latent z) as little-endian f32 files plus a manifest.
 onnxruntime is used only here, offline — never in the runtime or CI
 (FR-LD-05). Regenerate with:
 
-    python gen_reference.py <voice.onnx> <config.json> <out_dir>
+    uv run --project tools/parity --with onnxruntime==1.23.2 \
+        python tests/parity/piper_plus/gen_reference.py \
+        <voice.onnx> <config.json> <out_dir> [upstream_repo] [upstream_revision]
 
 Fixtures are committed; the voice model itself is not (too large — the native
 parity test is gated on $VOKRA_PIPER_GGUF, like Whisper's).
 """
 import json
+import hashlib
 import struct
 import sys
 
@@ -52,6 +55,8 @@ def write_f32(path, arr):
 
 def main():
     onnx_path, config_path, out_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+    upstream_repo = sys.argv[4] if len(sys.argv) > 4 else None
+    upstream_revision = sys.argv[5] if len(sys.argv) > 5 else None
 
     with open(config_path) as f:
         config = json.load(f)
@@ -75,9 +80,16 @@ def main():
         "scales": np.array([NOISE_SCALE, LENGTH_SCALE, NOISE_W], dtype=np.float32),
         "lid": np.array([LID], dtype=np.int64),
         "prosody_features": np.zeros((1, t, 3), dtype=np.int64),
-        "speaker_embedding": np.zeros((1, 256), dtype=np.float32),
-        "speaker_embedding_mask": np.zeros((1, 1), dtype=np.int64),
     }
+    # Older CSS10 exports expose the optional speaker/mask inputs even though
+    # the mask selects language-only conditioning. The public Mera export has
+    # no speaker inputs at all. Feed them only when the official graph declares
+    # them, so the same independent dumper covers both released variants.
+    input_names = {item.name for item in sess.get_inputs()}
+    if "speaker_embedding" in input_names:
+        feeds["speaker_embedding"] = np.zeros((1, 256), dtype=np.float32)
+    if "speaker_embedding_mask" in input_names:
+        feeds["speaker_embedding_mask"] = np.zeros((1, 1), dtype=np.int64)
 
     out_names = ["output", "durations"] + list(INTERMEDIATES.values())
     outputs = sess.run(out_names, feeds)
@@ -101,7 +113,7 @@ def main():
     t_frames = dec_input.shape[2]
 
     manifest = [
-        "# piper-plus MB-iSTFT-VITS2 parity fixture (M0-07-T21)",
+        "# piper-plus official-ONNX parity fixture (M0-07-T21)",
         "# Generated offline by gen_reference.py via onnxruntime (deterministic).",
         f"piper_version = {piper_version}",
         f"phoneme_ids = {' '.join(str(x) for x in PHONEME_IDS)}",
@@ -114,7 +126,15 @@ def main():
         f"t_frames = {t_frames}",
         f"pcm_len = {n_pcm}",
         f"sample_rate = {config['audio']['sample_rate']}",
+        f"onnx_file = {onnx_path.split('/')[-1]}",
+        f"onnx_sha256 = {hashlib.sha256(open(onnx_path, 'rb').read()).hexdigest()}",
+        f"config_sha256 = {hashlib.sha256(open(config_path, 'rb').read()).hexdigest()}",
+        f"reference_engine = onnxruntime {ort.__version__}",
     ]
+    if upstream_repo is not None:
+        manifest.append(f"upstream_repo = {upstream_repo}")
+    if upstream_revision is not None:
+        manifest.append(f"upstream_revision = {upstream_revision}")
     with open(f"{out_dir}/manifest.txt", "w") as f:
         f.write("\n".join(manifest) + "\n")
 

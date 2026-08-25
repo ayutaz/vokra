@@ -1,6 +1,7 @@
-//! MB-iSTFT decoder (M0-07-T18/T19): latent → fullband PCM.
+//! Piper-plus decoder variants: latent → fullband PCM.
 //!
-//! Follows piper-plus `vits/mb_istft.py::MBiSTFTGenerator`, supporting both
+//! The CSS10 and zero-shot v7 voices follow piper-plus
+//! `vits/mb_istft.py::MBiSTFTGenerator`, supporting both
 //! conditioning modes (`docs/piper-plus-integration.md` §2.4): the distributed
 //! single-speaker voices (`piper_version` 1.11.0) use a single additive
 //! `x + cond(g)` after `conv_pre` (`dec.cond` is `[256, 512, 1]`); the zero-shot
@@ -14,9 +15,17 @@
 //! / v7 voices are the canonical **two** stride-4 / kernel-16 stages: total
 //! upsample = 4·4 (ups) · 4 (iSTFT hop) · 4 (PQMF) = 256 samples/frame.
 //!
+//! The public Mera multilingual voice instead carries the standard piper VITS
+//! waveform head: three HiFi-GAN stages with `(kernel, stride)` `(16,8)`,
+//! `(16,8)`, `(8,4)`, followed by `conv_post → tanh`. The GGUF predates a
+//! decoder-kind metadata key, so the mutually-exclusive real head tensors
+//! (`dec.subband_conv_post.weight` vs `dec.conv_post.weight`) are the
+//! fail-closed discriminator. A malformed artifact with both or neither is
+//! rejected at load time.
+//!
 //! The sub-band iSTFT is the **first real consumer of the M0-04 `istft` op**
 //! (`vokra-ops`), which is the point of doing piper-plus natively (ADR-0002
-//! reason b). One caveat is recorded at [`Decoder::subband_istft`].
+//! reason b). One caveat is recorded at [`MbIstftHead::subband_istft`].
 
 use vokra_core::ir::graph::IstftAttrs;
 use vokra_ops::{Spectrogram, istft};
@@ -28,7 +37,7 @@ use super::config::{
 use super::nn;
 use super::weights::TensorStore;
 use crate::compute::Compute;
-use vokra_core::Result;
+use vokra_core::{Result, VokraError};
 
 /// A HiFi-GAN ResBlock2: two dilated convs, each `x += conv(leaky_relu(x))`.
 struct ResBlock {
@@ -126,11 +135,9 @@ enum Cond {
     },
 }
 
-/// One transposed-conv upsample stage: weights + the per-stage geometry the
-/// generalized loader derives (kernel from the tensor shape, stride uniform,
-/// pad = (kernel − stride)/2). The shipping css10 / v7 voices have two uniform
-/// kernel-16 / stride-4 / pad-6 stages; a voice with per-stage-varying kernels
-/// (the general MB-iSTFT geometry) loads here without a hard-coded kernel.
+/// One transposed-conv upsample stage: weights + per-stage geometry. The
+/// MB-iSTFT head uses stride 4; the waveform head uses the official HiFi-GAN
+/// `stride = kernel / 2` rule recovered from the public Mera ONNX graph.
 struct UpStage {
     /// `dec.ups.{i}.weight` `[in_ch, out_ch, kernel]`.
     w: Vec<f32>,
@@ -143,27 +150,44 @@ struct UpStage {
     pad: usize,
 }
 
-/// The MB-iSTFT decoder.
+#[derive(Clone, Copy)]
+enum DecoderKind {
+    MbIstft,
+    Waveform,
+}
+
+struct MbIstftHead {
+    /// Input width of the sub-band post-conv (last upsample output width).
+    in_ch: usize,
+    subband_conv_post: (Vec<f32>, Vec<f32>),
+    pqmf_updown: Vec<f32>,
+    pqmf_synthesis: Vec<f32>,
+    n_fft: usize,
+    hop: usize,
+    subbands: usize,
+    window: Vec<f32>,
+    const_wss: f32,
+}
+
+struct WaveformHead {
+    in_ch: usize,
+    conv_post_weight: Vec<f32>,
+    conv_post_bias: Option<Vec<f32>>,
+    kernel: usize,
+}
+
+enum DecoderHead {
+    MbIstft(MbIstftHead),
+    Waveform(WaveformHead),
+}
+
+/// Shared piper-plus generator body plus an MB-iSTFT or waveform output head.
 pub(super) struct Decoder {
     conv_pre: (Vec<f32>, Vec<f32>), // [256, 192, 7]
     cond: Cond,                     // additive (1.11.0) or FiLM (v7)
     ups: Vec<UpStage>,
     resblocks: Vec<ResBlock>,
-    /// Input-channel count the sub-band post-conv expects = the last upsample
-    /// stage's output width (`dec_up_out[n_ups−1]`; 64 for css10 / v7, where it
-    /// equals the former `DEC_INITIAL/4` constant).
-    subband_in_ch: usize,
-    subband_conv_post: (Vec<f32>, Vec<f32>), // [subbands·(n_fft+2), subband_in_ch, 7]
-    pqmf_updown: Vec<f32>,                   // [4, 1, 4]
-    pqmf_synthesis: Vec<f32>,                // [1, 4, 63]
-    n_fft: usize,
-    hop: usize,
-    subbands: usize,
-    /// Periodic-Hann synthesis window (length `n_fft`) and its constant WSS —
-    /// used to re-normalise the op output to piper's convention (see
-    /// [`Decoder::subband_istft`]).
-    window: Vec<f32>,
-    const_wss: f32,
+    head: DecoderHead,
 }
 
 /// Below this window energy the M0-04 op leaves a sample un-normalised; the
@@ -178,19 +202,45 @@ impl Decoder {
         hop: usize,
         subbands: usize,
     ) -> Result<Self> {
+        let kind = match (
+            store.contains("dec.subband_conv_post.weight"),
+            store.contains("dec.conv_post.weight"),
+        ) {
+            (true, false) => DecoderKind::MbIstft,
+            (false, true) => DecoderKind::Waveform,
+            (true, true) => {
+                return Err(VokraError::InvalidArgument(
+                    "piper voice GGUF has both MB-iSTFT and waveform decoder heads".into(),
+                ));
+            }
+            (false, false) => {
+                return Err(VokraError::InvalidArgument(
+                    "piper voice GGUF has neither dec.subband_conv_post.weight nor dec.conv_post.weight"
+                        .into(),
+                ));
+            }
+        };
+
         // Upsample stages, shape-driven from Dims: `ups[i]` maps
         // `dec_channels[i] → dec_up_out[i]` (`== dec_channels[i+1]`). The kernel
-        // is per-stage (`dec_up_kernel[i]`, shape-derived — the former
-        // `DEC_UP_KERNEL = 16` hard-assert is gone), the stride is uniform
-        // (`DEC_UP_STRIDE`, not shape-derivable), and the pad follows the
-        // `(kernel − stride)/2` same-padding convention. For css10 / v7 (kernel
-        // 16, stride 4) that is pad 6 — the former `DEC_UP_PAD` constant.
+        // is per-stage (`dec_up_kernel[i]`, shape-derived). MB-iSTFT uses the
+        // piper-plus stride-4 rule; waveform HiFi-GAN uses `kernel / 2`, as
+        // verified directly from the public Mera ONNX ConvTranspose attrs.
+        // Both use `(kernel − stride)/2` symmetric padding.
         let mut ups = Vec::with_capacity(dims.n_ups);
         for i in 0..dims.n_ups {
             let in_ch = dims.dec_channels[i];
             let out_ch = dims.dec_up_out[i];
             let kernel = dims.dec_up_kernel[i];
-            let stride = DEC_UP_STRIDE;
+            let stride = match kind {
+                DecoderKind::MbIstft => DEC_UP_STRIDE,
+                DecoderKind::Waveform if kernel >= 2 && kernel % 2 == 0 => kernel / 2,
+                DecoderKind::Waveform => {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "piper waveform decoder: upsample kernel {kernel} at stage {i} cannot encode the required kernel/2 stride"
+                    )));
+                }
+            };
             let pad = kernel.saturating_sub(stride) / 2;
             ups.push(UpStage {
                 w: store.tensor_shaped(&format!("dec.ups.{i}.weight"), &[in_ch, out_ch, kernel])?,
@@ -264,11 +314,55 @@ impl Decoder {
             }
         };
 
-        let sub_out = subbands * (n_fft + 2);
-        // The sub-band post-conv consumes the last upsample stage's output
-        // (64 for css10 / v7 = the former `DEC_INITIAL/4` constant); shape-driven
-        // so a voice whose final stage is not 64 wide still loads.
-        let subband_in_ch = *dims.dec_channels.last().expect("n_ups >= 1 (Dims::derive)");
+        let head_in_ch = *dims.dec_channels.last().expect("n_ups >= 1 (Dims::derive)");
+        let head = match kind {
+            DecoderKind::MbIstft => {
+                let sub_out = subbands * (n_fft + 2);
+                let window = periodic_hann(n_fft);
+                DecoderHead::MbIstft(MbIstftHead {
+                    in_ch: head_in_ch,
+                    subband_conv_post: (
+                        store.tensor_shaped(
+                            "dec.subband_conv_post.weight",
+                            &[sub_out, head_in_ch, 7],
+                        )?,
+                        store.tensor_shaped("dec.subband_conv_post.bias", &[sub_out])?,
+                    ),
+                    pqmf_updown: store
+                        .tensor_shaped("dec.pqmf.updown_filter", &[subbands, 1, subbands])?,
+                    pqmf_synthesis: store.tensor_shaped(
+                        "dec.pqmf.synthesis_filter",
+                        &[1, subbands, PQMF_TAPS + 1],
+                    )?,
+                    n_fft,
+                    hop,
+                    subbands,
+                    const_wss: window.iter().map(|w| w * w).sum::<f32>() * hop as f32
+                        / n_fft as f32,
+                    window,
+                })
+            }
+            DecoderKind::Waveform => {
+                let shape = store.shape("dec.conv_post.weight")?;
+                if shape.len() != 3 || shape[0] != 1 || shape[1] != head_in_ch || shape[2] == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "piper waveform decoder: dec.conv_post.weight shape {shape:?}, expected [1, {head_in_ch}, kernel]"
+                    )));
+                }
+                let kernel = shape[2];
+                DecoderHead::Waveform(WaveformHead {
+                    in_ch: head_in_ch,
+                    conv_post_weight: store
+                        .tensor_shaped("dec.conv_post.weight", &[1, head_in_ch, kernel])?,
+                    conv_post_bias: if store.contains("dec.conv_post.bias") {
+                        Some(store.tensor_shaped("dec.conv_post.bias", &[1])?)
+                    } else {
+                        None
+                    },
+                    kernel,
+                })
+            }
+        };
         Ok(Self {
             conv_pre: (
                 store.tensor_shaped("dec.conv_pre.weight", &[DEC_INITIAL, HIDDEN, 7])?,
@@ -277,23 +371,7 @@ impl Decoder {
             cond,
             ups,
             resblocks,
-            subband_in_ch,
-            subband_conv_post: (
-                store
-                    .tensor_shaped("dec.subband_conv_post.weight", &[sub_out, subband_in_ch, 7])?,
-                store.tensor_shaped("dec.subband_conv_post.bias", &[sub_out])?,
-            ),
-            pqmf_updown: store.tensor_shaped("dec.pqmf.updown_filter", &[subbands, 1, subbands])?,
-            pqmf_synthesis: store
-                .tensor_shaped("dec.pqmf.synthesis_filter", &[1, subbands, PQMF_TAPS + 1])?,
-            n_fft,
-            hop,
-            subbands,
-            window: periodic_hann(n_fft),
-            const_wss: {
-                let win = periodic_hann(n_fft);
-                win.iter().map(|w| w * w).sum::<f32>() * hop as f32 / n_fft as f32
-            },
+            head,
         })
     }
 
@@ -381,39 +459,63 @@ impl Decoder {
             }
         }
 
-        // subband_conv_post → [subbands*(n_fft+2), T]. Its input width is the
-        // last upsample stage's output (`subband_in_ch`, shape-driven; 64 for
-        // css10 / v7 = the former `DEC_INITIAL/4`).
-        nn::leaky_relu(&mut x, LRELU_SLOPE);
-        let sub_out = self.subbands * (self.n_fft + 2);
-        let (sw, sb) = &self.subband_conv_post;
-        let (spec_raw, _) = nn::conv1d(
-            compute,
-            &x,
-            self.subband_in_ch,
-            t,
-            sw,
-            sub_out,
-            7,
-            Some(sb),
-            1,
-            3,
-            1,
-            1,
-        );
+        match &self.head {
+            DecoderHead::Waveform(head) => {
+                // Official piper Generator calls bare F.leaky_relu here, whose
+                // default alpha is 0.01 (the upsample/MRF body uses 0.1).
+                nn::leaky_relu(&mut x, 0.01);
+                let (mut pcm, _) = nn::conv1d(
+                    compute,
+                    &x,
+                    head.in_ch,
+                    t,
+                    &head.conv_post_weight,
+                    1,
+                    head.kernel,
+                    head.conv_post_bias.as_deref(),
+                    1,
+                    head.kernel / 2,
+                    1,
+                    1,
+                );
+                for sample in &mut pcm {
+                    *sample = vokra_math::tanh(*sample);
+                }
+                Ok(pcm)
+            }
+            DecoderHead::MbIstft(head) => {
+                // subband_conv_post → [subbands*(n_fft+2), T].
+                nn::leaky_relu(&mut x, LRELU_SLOPE);
+                let sub_out = head.subbands * (head.n_fft + 2);
+                let (sw, sb) = &head.subband_conv_post;
+                let (spec_raw, _) = nn::conv1d(
+                    compute,
+                    &x,
+                    head.in_ch,
+                    t,
+                    sw,
+                    sub_out,
+                    7,
+                    Some(sb),
+                    1,
+                    3,
+                    1,
+                    1,
+                );
 
-        // Per-subband iSTFT → sub-band waveforms, trimmed to T·hop.
-        let sub_len = t * self.hop;
-        let mut subbands_sig = vec![0.0f32; self.subbands * sub_len];
-        for s in 0..self.subbands {
-            let wav = self.subband_istft(&spec_raw, s, t)?;
-            subbands_sig[s * sub_len..(s + 1) * sub_len].copy_from_slice(&wav[..sub_len]);
+                let sub_len = t * head.hop;
+                let mut subbands_sig = vec![0.0f32; head.subbands * sub_len];
+                for s in 0..head.subbands {
+                    let wav = head.subband_istft(&spec_raw, s, t)?;
+                    subbands_sig[s * sub_len..(s + 1) * sub_len].copy_from_slice(&wav[..sub_len]);
+                }
+                Ok(head.pqmf_synthesis(compute, &subbands_sig, sub_len))
+            }
         }
-
-        // PQMF synthesis → fullband [1, T·256].
-        Ok(self.pqmf_synthesis(compute, &subbands_sig, sub_len))
     }
+}
 
+impl MbIstftHead {
     /// iSTFT of sub-band `s` via the M0-04 `istft` op.
     ///
     /// `mag = exp(x[:n_half])`, `phase = sin(x[n_half:])·π`, then `real =
@@ -602,16 +704,15 @@ mod tests {
         .expect("add synthetic tensor");
     }
 
-    /// Assembles a `TensorStore` + matching `Dims` for an `n_ups`-stage additive
-    /// (single-speaker) MB-iSTFT decoder with the given per-stage upsample
-    /// kernels and output widths. Only the tensors `Decoder::load` reads are
-    /// written; the ResBlock channel of stage `s` is `dec_up_out[s]` and the
-    /// sub-band post-conv input width is the last stage output.
+    /// Assembles a `TensorStore` + matching `Dims` for an `n_ups`-stage
+    /// additive decoder. `waveform` selects the standard conv_post/tanh head;
+    /// otherwise the synthetic voice carries the MB-iSTFT/PQMF head.
     fn synth_store(
         kernels: &[usize],
         dec_up_out: &[usize],
         n_fft: usize,
         subbands: usize,
+        waveform: bool,
     ) -> (TensorStore, Dims) {
         let n_ups = kernels.len();
         assert_eq!(dec_up_out.len(), n_ups);
@@ -619,7 +720,6 @@ mod tests {
         dec_channels.extend_from_slice(dec_up_out);
         let subband_in = *dec_channels.last().unwrap();
         let num_kernels = RESBLOCK_KERNELS.len();
-        let sub_out = subbands * (n_fft + 2);
 
         let mut b = GgufBuilder::new();
         // conv_pre + additive cond (fixed medium widths).
@@ -673,25 +773,31 @@ mod tests {
                 );
             }
         }
-        add(
-            &mut b,
-            "dec.subband_conv_post.weight",
-            &[sub_out, subband_in, 7],
-            400,
-        );
-        add(&mut b, "dec.subband_conv_post.bias", &[sub_out], 401);
-        add(
-            &mut b,
-            "dec.pqmf.updown_filter",
-            &[subbands, 1, subbands],
-            402,
-        );
-        add(
-            &mut b,
-            "dec.pqmf.synthesis_filter",
-            &[1, subbands, PQMF_TAPS + 1],
-            403,
-        );
+        if waveform {
+            // Mera's official waveform head is bias-less.
+            add(&mut b, "dec.conv_post.weight", &[1, subband_in, 7], 400);
+        } else {
+            let sub_out = subbands * (n_fft + 2);
+            add(
+                &mut b,
+                "dec.subband_conv_post.weight",
+                &[sub_out, subband_in, 7],
+                400,
+            );
+            add(&mut b, "dec.subband_conv_post.bias", &[sub_out], 401);
+            add(
+                &mut b,
+                "dec.pqmf.updown_filter",
+                &[subbands, 1, subbands],
+                402,
+            );
+            add(
+                &mut b,
+                "dec.pqmf.synthesis_filter",
+                &[1, subbands, PQMF_TAPS + 1],
+                403,
+            );
+        }
 
         let file = GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse");
         let store = TensorStore::new(file);
@@ -723,7 +829,7 @@ mod tests {
     /// `for stage in 0..2` built only 6, so `forward` would index 6..8 (OOB).
     #[test]
     fn synth_3stage_loads_with_nups_deep_resblock_table() {
-        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], 4, 2);
+        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], 4, 2, false);
         let dec = Decoder::load(&store, &dims, 4, 2, 2).expect("load 3-stage decoder");
         assert_eq!(dec.ups.len(), 3, "3 upsample stages");
         assert_eq!(
@@ -736,7 +842,10 @@ mod tests {
         assert_eq!(dec.ups[2].kernel, 8);
         assert_eq!(dec.ups[0].pad, (16 - DEC_UP_STRIDE) / 2);
         assert_eq!(dec.ups[2].pad, (8 - DEC_UP_STRIDE) / 2);
-        assert_eq!(dec.subband_in_ch, 8);
+        assert!(
+            matches!(dec.head, DecoderHead::MbIstft(ref head) if head.in_ch == 8),
+            "synthetic MB-iSTFT head must consume the final 8 channels"
+        );
     }
 
     /// `forward` completes for the 3-stage voice (no `resblocks` OOB) and emits
@@ -746,7 +855,7 @@ mod tests {
     #[test]
     fn synth_3stage_forward_output_length_matches_geometry() {
         let (n_fft, hop, subbands) = (4, 2, 2);
-        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], n_fft, subbands);
+        let (store, dims) = synth_store(&[16, 16, 8], &[8, 8, 8], n_fft, subbands, false);
         let dec = Decoder::load(&store, &dims, n_fft, hop, subbands).expect("load");
         let t_frames = 4usize;
         let z = pat(HIDDEN * t_frames, 9);
@@ -770,10 +879,13 @@ mod tests {
     #[test]
     fn synth_2stage_reduces_to_six_resblocks() {
         let (n_fft, hop, subbands) = (4, 4, 4);
-        let (store, dims) = synth_store(&[16, 16], &[128, 64], n_fft, subbands);
+        let (store, dims) = synth_store(&[16, 16], &[128, 64], n_fft, subbands, false);
         let dec = Decoder::load(&store, &dims, n_fft, hop, subbands).expect("load 2-stage");
         assert_eq!(dec.resblocks.len(), 6, "2-stage table is 6 deep");
-        assert_eq!(dec.subband_in_ch, 64, "last stage width = DEC_INITIAL/4");
+        assert!(
+            matches!(dec.head, DecoderHead::MbIstft(ref head) if head.in_ch == 64),
+            "last stage width = DEC_INITIAL/4"
+        );
         let t_frames = 3usize;
         let pcm = dec
             .forward(
@@ -784,5 +896,33 @@ mod tests {
             )
             .expect("2-stage forward");
         assert_eq!(pcm.len(), t_frames * DEC_UP_STRIDE.pow(2) * hop * subbands);
+    }
+
+    /// The public Mera topology selects the mutually-exclusive waveform head,
+    /// recovers strides `[8, 8, 4]` from kernels `[16, 16, 8]`, applies the
+    /// bias-less conv_post/tanh path, and emits exactly 256 samples per frame.
+    #[test]
+    fn synth_mera_waveform_head_uses_hifigan_geometry() {
+        let kernels = [16, 16, 8];
+        let (store, dims) = synth_store(&kernels, &[8, 8, 8], 4, 2, true);
+        let dec = Decoder::load(&store, &dims, 4, 2, 2).expect("load waveform decoder");
+        assert_eq!(
+            dec.ups.iter().map(|stage| stage.stride).collect::<Vec<_>>(),
+            [8, 8, 4]
+        );
+        assert!(matches!(dec.head, DecoderHead::Waveform(_)));
+
+        let t_frames = 2;
+        let pcm = dec
+            .forward(
+                &Compute::cpu(),
+                &pat(HIDDEN * t_frames, 13),
+                t_frames,
+                &pat(GIN, 14),
+            )
+            .expect("waveform forward");
+        assert_eq!(pcm.len(), t_frames * 8 * 8 * 4);
+        assert!(pcm.iter().all(|sample| sample.is_finite()));
+        assert!(pcm.iter().all(|sample| sample.abs() <= 1.0));
     }
 }
