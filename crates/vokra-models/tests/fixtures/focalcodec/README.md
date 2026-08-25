@@ -30,7 +30,7 @@ Example VAST invocation:
 
 ```sh
 VOKRA_FOCALCODEC_GGUF=/root/models/focalcodec-50hz.gguf \
-VOKRA_FOCALCODEC_PARITY_DIR=crates/vokra-models/tests/fixtures/focalcodec/50hz \
+VOKRA_FOCALCODEC_PARITY_DIR="$PWD/crates/vokra-models/tests/fixtures/focalcodec/50hz" \
   CARGO_BUILD_JOBS=1 cargo test -p vokra-models \
   --test parity_focalcodec_real -- --nocapture
 ```
