@@ -15,20 +15,20 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2 and AST
-CPU/Metal waves, it reported:
+CPU/Metal waves plus the DeepFilterNet3 CPU route, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 89 |
+| Complete CPU code route | 90 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 55 |
+| No complete runtime binder | 54 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
 | Complete Metal code route among the CPU-complete set | 89 |
-| CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 104 |
+| CPU-complete but Metal-unsupported | 1 |
+| Metal blocked by missing/partial CPU forward | 103 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -66,10 +66,11 @@ omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
-There are no CPU-complete, Metal-unsupported repositories in this inventory.
-The remaining 104 Metal-blocked repositories first need a complete released-
-artifact CPU runtime; they are not counted as Metal implementations merely
-because a converter or partial binder exists.
+`vokra/deepfilternet3` is the one CPU-complete, Metal-unsupported repository.
+Its non-CPU selection is an explicit error; it never silently runs the model
+on CPU. The remaining 103 Metal-blocked repositories first need a complete
+released-artifact CPU runtime; they are not counted as Metal implementations
+merely because a converter or partial binder exists.
 
 The routed-partial set deliberately includes `csm`, `nsnet2`,
 `pyannote-segmentation`, `rmvpe` and `sbv2`. CSM still constructs synthesized
@@ -83,6 +84,44 @@ released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
 
 ## 2026-08-24 implementation wave
+
+### DeepFilterNet3 public CPU route
+
+`vokra/deepfilternet3` revision
+`d90bcdab8093ad9c7dbd53eaf420c017f9a972b2` contains the 8,618,144-byte
+`dfn3.gguf` with SHA-256
+`448c391760a5bc7e6acb63698796dadc959c7439cd2fb56cca59e0bdd7a68b1e`.
+The native DeepFilterNet3 graph, strict GGUF binder and 21-stage independent
+upstream parity gate already existed in `vokra-ops`; the missing piece was the
+public `vokra-cli run` / `bench` dispatch for the historical `denoise` arch.
+Commit `49f699df` connects that route without changing model arithmetic.
+
+On disposable VAST instance `48659428`, the first full `vokra-cli` package run
+found one stale pre-existing expected codec list that omitted WavTokenizer,
+NeuCodec and X-Codec2. Commit `141e5fb9` synchronizes that assertion, and
+`6a50bfed` boxes the large DeepFilterNet bench state identified by
+warnings-as-errors Clippy. The final commit passed all 240 CLI tests (234 unit,
+4 policy integration and 2 real-weight quantization tests), focused new
+DeepFilterNet tests 2/2, and Clippy with `-D warnings`. The exact public GGUF
+then processed a deterministic 4,800-sample 48 kHz WAV through the new CLI
+route and emitted 4,800 samples. The output SHA-256 was
+`e9854823146b8e50cef36a20dee119174c312ca8f444219d19f0389baf38646e`,
+with finite, non-degenerate peak `2.093709111e-1` and RMS
+`4.448162481e-2`. The Apple Silicon `aarch64-apple-darwin` CLI check with
+`--features metal` passed, proving the build remains intact.
+
+DeepFilterNet3 itself remains CPU-only: its private grouped Conv2D,
+transposed-Conv2D, grouped-linear and recurrent GRU graph has not yet been
+moved onto the shared Metal compute seam. `run` and `bench` therefore reject
+Metal, CUDA and other non-CPU selectors before binding weights, with an
+explicit no-silent-fallback diagnostic. This row is counted as complete CPU /
+CPU-only Metal, not as complete Metal. No model was processed on the
+maintainer Mac, and no Hugging Face upload or replacement occurred. The ten
+final evidence files were pulled to
+`/private/tmp/vokra-dfn3-vast-48659428`; their `SHA256SUMS` file has SHA-256
+`1aef2b0be5db1b3b9f08e4405365eba3eda719e396eab7fbd0a1d671da4c1d59`.
+Instance `48659428` was destroyed rather than stopped, and the post-destroy
+VAST inventory contained zero instances.
 
 ### AST AudioSet classification
 
