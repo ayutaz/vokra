@@ -653,6 +653,11 @@ pub mod conv_tasnet;
 // unresolved) landed just above — SepFormer's §3.1 rows remain commercial
 // (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
 pub mod sepformer;
+// Standalone execution front door for the three public BERT-family sidecars
+// used by SBV2. Their learned forwards remain in `vokra-bert`; this binder
+// adds strict arch/licence/input gates and an explicit CPU-only backend
+// contract so the released GGUFs can execute without a parent TTS model.
+pub mod bert_runtime;
 // Wave 6 2026-08-14 audit follow-up (denoise runtime binder — LIB.RS
 // RULE append at end with Wave 6 comment marker): GTCRN
 // (Xiaobin-Rong/gtcrn, MIT, ~23K params, arXiv:2211.02063) —

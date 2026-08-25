@@ -56,6 +56,7 @@ USAGE:
     vokra-cli run --model <nkf-aec.gguf> --input <mic.wav> --far-end <reference.wav> \
                   [--output <clean.wav>]
     vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv> [--output <restored.txt>]
+    vokra-cli run --model <bert-family.gguf> --token-ids <u32,u32,...> [--output <hidden.f32>]
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
@@ -167,6 +168,12 @@ OPTIONS:
                                 `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
                                 caller token strings paired with the exact ids
                                 passed to the model; no tokenizer is inferred.
+    --token-ids <ids>          standalone bert_base/deberta_v2/deberta_v3 only:
+                                comma-separated u32 ids (whitespace around ids
+                                is allowed). Runs the final-hidden-state encoder;
+                                no tokenizer or unknown-token substitution is
+                                inferred. --output writes row-major `[T,D]`
+                                little-endian f32.
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -275,6 +282,8 @@ struct RunArgs {
     output: Option<String>,
     /// CT-Punc-only versioned TSV pairing token ids and escaped UTF-8 tokens.
     tokens: Option<String>,
+    /// Standalone BERT-family comma-separated input ids.
+    token_ids: Option<String>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -376,6 +385,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
     let mut tokens: Option<String> = None;
+    let mut token_ids: Option<String> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut bandwidth_id: Option<usize> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
@@ -425,6 +435,14 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--tokens" => {
                 tokens = Some(args.get(i + 1).ok_or("--tokens requires a path")?.clone());
+                i += 2;
+            }
+            "--token-ids" => {
+                token_ids = Some(
+                    args.get(i + 1)
+                        .ok_or("--token-ids requires a comma-separated u32 list")?
+                        .clone(),
+                );
                 i += 2;
             }
             "--codec-mode" => {
@@ -599,6 +617,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         text,
         output,
         tokens,
+        token_ids,
         codec_mode,
         bandwidth_id,
         backend,
@@ -662,6 +681,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::AlignCharsiu => Some("Charsiu forced alignment"),
         ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
+        ModelTask::TextEncoder => Some("standalone BERT-family text encoder"),
         ModelTask::VocoderBigVgan => None,
         ModelTask::VocoderHifiGan => None,
         ModelTask::S2s => Some("CSM speech-to-speech"),
@@ -737,6 +757,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err(
             "run: --tokens is only supported for the ct_punc arch — it supplies the \
              versioned, paired token-string/token-id input to CtPunc::restore"
+                .to_owned(),
+        );
+    }
+    if a.token_ids.is_some() && task != ModelTask::TextEncoder {
+        return Err(
+            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3 arches"
                 .to_owned(),
         );
     }
@@ -1041,6 +1067,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::CtPunc => {
             run_ct_punc(&session, &a)?;
+        }
+        ModelTask::TextEncoder => {
+            run_bert_encoder(&session, &a)?;
         }
         ModelTask::MimiCodec => {
             run_mimi_codec(&session, &a)?;
@@ -1931,6 +1960,79 @@ fn run_ct_punc(session: &Session, a: &RunArgs) -> Result<(), String> {
         );
     } else {
         println!("ct_punc: {restored}");
+    }
+    Ok(())
+}
+
+fn parse_bert_token_ids(raw: &str) -> Result<Vec<u32>, String> {
+    if raw.trim().is_empty() {
+        return Err("run (BERT encoder): --token-ids must not be empty".to_owned());
+    }
+    raw.split(',')
+        .enumerate()
+        .map(|(index, field)| {
+            let field = field.trim();
+            if field.is_empty() {
+                return Err(format!(
+                    "run (BERT encoder): --token-ids field {index} is empty"
+                ));
+            }
+            field.parse::<u32>().map_err(|error| {
+                format!(
+                    "run (BERT encoder): --token-ids field {index} `{field}` is not u32: {error}"
+                )
+            })
+        })
+        .collect()
+}
+
+/// Standalone BERT-family final-hidden-state execution.
+///
+/// The GGUF may carry a tokenizer for an SBV2 parent, but this generic route
+/// intentionally accepts exact ids only: the three public sidecars use three
+/// different tokenisation schemes. Inferring the wrong one would produce a
+/// valid-shaped but semantically wrong hidden state.
+fn run_bert_encoder(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (BERT encoder): use --token-ids <u32,u32,...>; --input/--text/--tokens are not standalone BERT inputs"
+                .to_owned(),
+        );
+    }
+    let raw = a
+        .token_ids
+        .as_deref()
+        .ok_or("run (BERT encoder): --token-ids <u32,u32,...> is required")?;
+    let token_ids = parse_bert_token_ids(raw)?;
+    let model = vokra_models::bert_runtime::BertRuntime::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?;
+    let hidden = model
+        .encode(&token_ids, a.backend)
+        .map_err(|error| error.to_string())?;
+
+    if let Some(output) = a.output.as_deref() {
+        let mut bytes = Vec::with_capacity(hidden.len() * std::mem::size_of::<f32>());
+        for value in &hidden {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (BERT encoder): --output {output}: {error}"))?;
+        println!(
+            "bert-hidden: arch={} tokens={} hidden={} f32 -> {output}",
+            model.kind().arch(),
+            token_ids.len(),
+            model.d_model(),
+        );
+    } else {
+        let min = hidden.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = hidden.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let mean = hidden.iter().map(|value| f64::from(*value)).sum::<f64>() / hidden.len() as f64;
+        println!(
+            "bert-hidden: arch={} tokens={} hidden={} min={min:.6e} max={max:.6e} mean={mean:.6e} (no --output; features discarded)",
+            model.kind().arch(),
+            token_ids.len(),
+            model.d_model(),
+        );
     }
     Ok(())
 }
@@ -5733,6 +5835,46 @@ mod tests {
         assert!(
             err.contains("SBV2 (Style-Bert-VITS2 v2) TTS"),
             "names the engine: {err}"
+        );
+    }
+
+    #[test]
+    fn bert_token_id_parser_is_strict_and_whitespace_tolerant() {
+        assert_eq!(parse_bert_token_ids("101, 42,102").unwrap(), [101, 42, 102]);
+        for invalid in ["", "101,,102", "-1", "101,text"] {
+            assert!(
+                parse_bert_token_ids(invalid).is_err(),
+                "invalid input `{invalid}` must fail"
+            );
+        }
+    }
+
+    #[test]
+    fn non_cpu_backend_on_standalone_bert_is_rejected_before_weight_load() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "deberta_v3");
+        let model = std::env::temp_dir().join(format!(
+            "vokra-cli-bert-backend-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&model, builder.to_bytes().expect("serialize GGUF")).unwrap();
+        let error = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "metal",
+            "--token-ids",
+            "1,2",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(model);
+        assert!(
+            error.contains("--backend metal is not supported"),
+            "names the refused backend: {error}"
+        );
+        assert!(
+            error.contains("standalone BERT-family text encoder"),
+            "names the CPU-only engine: {error}"
         );
     }
 

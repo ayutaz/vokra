@@ -238,6 +238,11 @@ pub(crate) enum ModelTask {
     /// punctuation-engine slot, so `run` binds [`vokra_models::ct_punc::CtPunc`]
     /// from `session.gguf()` and consumes the versioned paired token/id TSV.
     CtPunc,
+    /// Standalone final-hidden-state execution for plain BERT / DeBERTa v2 /
+    /// DeBERTa v3 sidecar GGUFs. The concrete encoder binds in the `run` arm;
+    /// it is CPU-only until the shared `vokra-bert` hot path gains a Compute
+    /// seam, and non-CPU selection is rejected explicitly.
+    TextEncoder,
     /// Standalone Mimi codec encode/decode. `run` binds the real encoder,
     /// effective RVQ tables, and neural decoder from the same GGUF and uses
     /// the versioned portable code container between the two modes.
@@ -367,6 +372,13 @@ const ARCH_MAGNET_MEDIUM: &str = "magnet_medium_30secs";
 /// reverse-ODE editing inversion driver + the DiT block stack need to
 /// land before this reject can flip to a bare session dispatch.
 const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
+
+/// Standalone SBV2 Chinese plain-BERT sidecar.
+const ARCH_BERT_BASE: &str = "bert_base";
+/// Standalone SBV2 Japanese DeBERTa-v2 sidecar.
+const ARCH_DEBERTA_V2: &str = "deberta_v2";
+/// Standalone SBV2 English DeBERTa-v3 sidecar.
+const ARCH_DEBERTA_V3: &str = "deberta_v3";
 
 // ---- Wave G (2026-08-15) — arches whose binder has a REAL forward ---------
 
@@ -1245,6 +1257,17 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  FR-EX-08 gate, not a converter bug."
             ))
         }
+        ARCH_BERT_BASE | ARCH_DEBERTA_V2 | ARCH_DEBERTA_V3 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on standalone text-encoder arch `{arch}`"
+                ));
+            }
+            // Bind late in `run`, after its CPU-only backend guard. This
+            // avoids materialising a large encoder only to reject a Metal /
+            // CUDA / Vulkan selection that `vokra-bert` cannot honor yet.
+            Ok((session, ModelTask::TextEncoder))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1281,6 +1304,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
                  `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_SNAC}` / \
                  `{ARCH_FOCALCODEC}` / \
+                 `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
@@ -2905,6 +2929,20 @@ mod tests {
             load_session(p).expect("ct-punc session builds (bare)")
         });
         assert_eq!(task, ModelTask::CtPunc);
+    }
+
+    #[test]
+    fn standalone_bert_family_arches_route_to_text_encoder() {
+        for arch in [ARCH_BERT_BASE, ARCH_DEBERTA_V2, ARCH_DEBERTA_V3] {
+            let (_session, task) = with_arch_only_gguf(arch, "bert-sidecar-routed", |path| {
+                load_session(path).expect("standalone BERT-family session builds bare")
+            });
+            assert_eq!(task, ModelTask::TextEncoder, "arch={arch}");
+            assert!(
+                BOUND_ARCHES.iter().all(|binding| binding.arch != arch),
+                "routed standalone BERT arch `{arch}` must not retain a bound-only row"
+            );
+        }
     }
 
     #[test]

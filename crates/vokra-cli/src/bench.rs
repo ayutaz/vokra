@@ -624,6 +624,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TextEncoder => {
+            return Err(
+                "bench: standalone BERT-family encoders have no audio-time denominator; use `vokra-cli run --model <bert.gguf> --token-ids <u32,u32,...> [--output hidden.f32]` (FR-EX-08: refusing to report a fabricated RTF)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input
