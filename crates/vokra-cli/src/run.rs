@@ -60,6 +60,8 @@ USAGE:
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
+    vokra-cli run --model <wavtokenizer.gguf> --codec-mode decode --input <codes.u32le> \
+                  [--bandwidth-id <0..3>] --output <out.wav>
     vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
@@ -86,6 +88,8 @@ OPTIONS:
                                 decode it is a `VKRMCODE` v1 code container.
                                 For DAC decode it is raw time-major
                                 `[frames,n_codebooks]` little-endian u32.
+                                For WavTokenizer decode it is one raw
+                                little-endian u32 code per 75 Hz frame.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
                                 For FocalCodec encode it is a 16 kHz mono WAV;
@@ -181,6 +185,10 @@ OPTIONS:
                                 frame rate, topology, and codebook SHA-256.
                                 dac: `decode` only, from raw time-major u32le
                                 codes; unsupported encode is an explicit error.
+                                wavtokenizer: `decode` only, from one raw u32le
+                                code per frame. CPU and Metal cover the full
+                                released token-to-waveform graph; encode is an
+                                explicit error until its Encodec parity wave.
                                 snac: `encode` (CPU mono WAV -> versioned
                                 stage-major container) or `decode` (container ->
                                 WAV on CPU/Metal). Metal encode is an explicit
@@ -191,8 +199,9 @@ OPTIONS:
                                 16 kHz WAV). CPU and Metal both run the complete
                                 learned-op set; uncovered backends fail before
                                 inference and never fall back to CPU.
-    --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
-                                condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
+    --bandwidth-id <0..3>       vocos-encodec-24khz or WavTokenizer only:
+                                AdaLayerNorm condition. WavTokenizer defaults
+                                to upstream's documented inference id 0.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
                                 Honored for `voxtral` (n-best beam) and, with
                                 --word-timestamps, for `whisper`. An arch whose
@@ -711,6 +720,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Speaker
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
+        | ModelTask::WavTokenizerCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
         | ModelTask::S2sDuplex
@@ -769,17 +779,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.codec_mode.is_some()
         && task != ModelTask::MimiCodec
         && task != ModelTask::DacCodec
+        && task != ModelTask::WavTokenizerCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/snac/focalcodec arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/snac/focalcodec arches"
                 .to_owned(),
         );
     }
-    if a.bandwidth_id.is_some() && task != ModelTask::VocoderVocos {
+    if a.bandwidth_id.is_some()
+        && task != ModelTask::VocoderVocos
+        && task != ModelTask::WavTokenizerCodec
+    {
         return Err(
-            "run: --bandwidth-id is only supported for the vocos encodec_24khz variant".to_owned(),
+            "run: --bandwidth-id is only supported for the vocos encodec_24khz variant or wavtokenizer"
+                .to_owned(),
         );
     }
     // `--word-timestamps` is a Whisper-only surface (cross-attention DTW,
@@ -1076,6 +1091,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::DacCodec => {
             run_dac_codec(&session, &a)?;
+        }
+        ModelTask::WavTokenizerCodec => {
+            run_wavtokenizer_codec(&session, &a)?;
         }
         ModelTask::SnacCodec => {
             run_snac_codec(&session, &a)?;
@@ -2263,6 +2281,84 @@ fn run_dac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     println!(
         "dac decode: {frames} frames x {} codebooks -> {} samples @ {} Hz -> {output_path}",
         model.n_codebooks(),
+        pcm.len(),
+        model.sample_rate()
+    );
+    Ok(())
+}
+
+/// WavTokenizer's released single-codebook token-to-waveform path.
+///
+/// Input is one headerless little-endian u32 code per 75 Hz frame. The model
+/// validates every index against the 4096-entry public codebook. Upstream's
+/// documented inference condition id is zero; callers may select another
+/// released AdaLayerNorm row explicitly with `--bandwidth-id`.
+fn run_wavtokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (wavtokenizer): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (wavtokenizer): encode is not implemented yet; the public runtime currently exposes the complete released token-to-PCM path, and never substitutes a different encoder"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err("run (wavtokenizer): --codec-mode decode is required".to_owned());
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (wavtokenizer): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (wavtokenizer): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (wavtokenizer decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (wavtokenizer decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let condition_id = a.bandwidth_id.unwrap_or(0);
+    let model = vokra_models::wavtokenizer::WavTokenizer::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let pcm = model
+        .decode_codes_with_condition(&codes, condition_id)
+        .map_err(|error| error.to_string())?;
+    let expected = codes
+        .len()
+        .checked_mul(model.hop_length())
+        .ok_or("run (wavtokenizer decode): output sample count overflow")?;
+    if pcm.len() != expected {
+        return Err(format!(
+            "run (wavtokenizer decode): decoder emitted {} samples, expected {expected} from {} frames x hop {}",
+            pcm.len(),
+            codes.len(),
+            model.hop_length()
+        ));
+    }
+    wav::write_wav(output_path, &pcm, model.sample_rate())
+        .map_err(|error| format!("run (wavtokenizer decode): --output {output_path}: {error}"))?;
+    println!(
+        "wavtokenizer decode: {} codes / condition {condition_id} -> {} samples @ {} Hz -> {output_path}",
+        codes.len(),
         pcm.len(),
         model.sample_rate()
     );
@@ -5269,6 +5365,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);

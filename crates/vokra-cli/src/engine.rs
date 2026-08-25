@@ -251,6 +251,11 @@ pub(crate) enum ModelTask {
     /// non-causal, so this is deliberately a whole-code-matrix task rather
     /// than the causal generic streaming codec handle.
     DacCodec,
+    /// WavTokenizer large-speech 75 token/s single-codebook decode. The run
+    /// route binds the strict public GGUF and dispatches every learned op to
+    /// CPU or Metal; encode remains an explicit error until the Encodec
+    /// encoder parity wave lands.
+    WavTokenizerCodec,
     /// SNAC 24/44 kHz hierarchical codec encode/decode. The run route uses a
     /// versioned stage-major code container because stage lengths differ.
     /// CPU supports encode/decode; Metal supports complete decode and rejects
@@ -429,6 +434,8 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 const ARCH_MIMI: &str = "mimi";
 /// Descript DAC 16/24/44.1 kHz codec family.
 const ARCH_DAC: &str = "dac";
+/// WavTokenizer large-speech 75 token/s codec.
+const ARCH_WAVTOKENIZER: &str = "wavtokenizer";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
 const ARCH_SNAC: &str = "snac";
 /// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
@@ -1142,6 +1149,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::DacCodec))
         }
+        ARCH_WAVTOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_WAVTOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::WavTokenizerCodec))
+        }
         ARCH_SNAC => {
             if hint.is_some() {
                 return Err(format!(
@@ -1301,7 +1316,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_SNAC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_SNAC}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -2969,6 +2984,21 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_wavtokenizer_to_the_single_codebook_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_WAVTOKENIZER, "wavtokenizer-routed", |path| {
+                load_session(path).expect("WavTokenizer session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::WavTokenizerCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_WAVTOKENIZER),
+            "the routed WavTokenizer codec must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_snac_to_the_hierarchical_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_SNAC, "snac-routed", |path| {
             load_session(path).expect("snac session builds (bare)")
@@ -3039,6 +3069,7 @@ mod tests {
             ARCH_CT_PUNC,
             ARCH_MIMI,
             ARCH_DAC,
+            ARCH_WAVTOKENIZER,
             ARCH_SNAC,
             ARCH_FOCALCODEC,
             ARCH_BIGVGAN,
