@@ -624,6 +624,64 @@ to `PiperPlusTts`, and `TtsEngine::backend` / `Tts::backend` make that wiring
 observable. A non-CPU selection is no longer rejected before it can reach the
 existing Metal implementation.
 
+The two unchanged public GGUFs exposed two independent compatibility gaps.
+Both are legacy language-only voices and therefore do not carry the zero-shot
+`spk_proj` group; the runtime now uses `emb_lang[lid]` directly and rejects a
+caller-supplied speaker embedding explicitly. Their decoder heads also differ:
+CSS10 is MB-iSTFT plus PQMF, while Mera is a standard three-stage HiFi-GAN
+waveform decoder with a biasless post-convolution, final LeakyReLU alpha 0.01
+and tanh. The loader requires exactly one complete head and rejects both/neither
+instead of guessing or substituting a CPU path.
+
+| Public repository | Revision | GGUF SHA-256 | Bytes |
+|---|---|---|---:|
+| `vokra/piper-plus-css10-ja-6lang` | `25e963b334ad77f89d77a07928e6dfdf7ff1fbf5` | `a3a17b9b020ef223efaa28d534271c3439774951c9486b95c5231b70cbe1340c` | 77,369,504 |
+| `vokra/piper-plus-mera-multilingual` | `91837920abbe7bea8d81a2b843fdbdcf90aee16a` | `2b65e6b3f6a3052918edccae89e33591d76ef5239bb27cae767a6857ba3d5deb` | 76,904,480 |
+
+The independent CPU oracles are the official upstream ONNX files, not a
+Vokra-side mirror. CSS10 is pinned to
+`ayousanz/piper-plus-css10-ja-6lang@bf70fae2e21f9670456ebb40e8df131f146f1821`
+(`onnx_sha256=5ebc51dbf897238523f3df0d6e0f6c93033bc5cda3f8602a8379ebe2a4738c42`),
+and Mera to
+`kizuna-intelligence/piper-plus-mera-multilingual@d5ed57f04a1fd1cada7940ecd79a51d523b83462`
+(`onnx_sha256=97952c17fd60d47c4db2a6bf3903184df2054b6fa97396c971102bc60a9f135f`).
+Both fixtures were generated with onnxruntime 1.23.2 and record the exact config
+hash in their manifest.
+
+| Official ONNX CPU comparison | max abs |
+|---|---:|
+| CSS10 encoder `m_p` | `3.0e-6` |
+| CSS10 duration / exact ceil | `3.0e-6` / exact |
+| CSS10 reverse-flow latent | `1.1e-5` |
+| CSS10 decoder and end-to-end PCM | `4.0e-6` |
+| Mera encoder `m_p` | `1.311302e-6` |
+| Mera reverse-flow latent | `5.245209e-5` |
+| Mera waveform PCM | `2.003741e-6` |
+
+Commit `41bfb570` passed both official fixtures, both public-file load/synthesis
+tests, the legacy-speaker explicit-error test, decoder/conditioning unit tests,
+CSS10 geometry and `vokra-models` test-target Clippy on disposable VAST
+instance `48629407`. The logs are under
+`/private/tmp/vokra-piper-vast-41bfb570/piper-evidence`; the instance was
+destroyed, and the subsequent API inventory returned zero instances.
+
+The same public files then synthesized the identical `aiueo` request on CPU
+and real Apple M1 Metal through `vokra-cli`:
+
+| Public artifact | Samples | Different samples | max abs CPU/Metal | RMSE | cosine |
+|---|---:|---:|---:|---:|---:|
+| CSS10 | 3,328 | 3,320 | `7.823109627e-8` | `1.204062987e-8` | `0.9999999999` |
+| Mera | 9,728 | 1,061 | `3.576278687e-7` | `4.090683373e-8` | `1.0000000000` |
+
+Both comparisons passed the unchanged `0.01` FP32 bound with equal sample
+rate/geometry and finite PCM. A Seatbelt probe returned the explicit
+`backend unavailable: no system default Metal device` error; it did not fall
+back to CPU. The real device run used macOS 26.3, Apple M1 (8 GPU cores) and
+Metal 4. The nine-file evidence package is at
+`/private/tmp/vokra-piper-mac-41bfb570`; its verified `SHA256SUMS` digest is
+`9ed247bf45acc7d8edf27d48771459bc8c0f713f6f5941385bffe43720d55641`.
+No Hub upload or artifact replacement was performed.
+
 ### Moonshine composed attention
 
 Moonshine already dispatched projections, softmax, normalization, GELU and

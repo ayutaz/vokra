@@ -14,6 +14,13 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- Both public Piper Plus GGUFs now load and synthesize through the native CPU
+  and Metal routes. Legacy language-only voices no longer require an invented
+  zero-shot speaker projection, and supplying a speaker embedding to them is
+  an explicit error. The decoder selects exactly one released head: CSS10's
+  MB-iSTFT/PQMF path or Mera's three-stage HiFi-GAN waveform path with its
+  biasless post-convolution and final tanh. Fixed official ONNX fixtures cover
+  both public checkpoints; no unsupported head or backend falls back to CPU.
 - The five public MeloTTS acoustic GGUFs now route through `vokra-cli run` on
   explicit CPU or Metal backends. A dependency-free `VKRMELO1` v1 input
   container pins the language variant, speaker, phoneme/tone/language ids and
