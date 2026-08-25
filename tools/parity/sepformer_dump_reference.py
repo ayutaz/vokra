@@ -3,7 +3,8 @@
 
 The oracle is the pinned ``speechbrain==1.0.3`` implementation and official
 three-part checkpoint.  It never reads a Vokra GGUF and has no local layer
-mirror fallback.
+mirror fallback.  The output shape is read from the official model so the same
+dumper covers the released one-, two-, and three-stream SepFormer family.
 """
 
 from __future__ import annotations
@@ -53,6 +54,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--source", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--model-id",
+        help="pinned upstream org/repo identity when --source is a local directory",
+    )
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument("--savedir", type=Path, required=True)
     args = parser.parse_args()
@@ -64,6 +69,7 @@ def main() -> int:
 
     source_path = Path(args.source)
     revision = None if source_path.exists() else args.revision
+    model_id = args.model_id or (DEFAULT_MODEL if source_path.exists() else args.source)
     model = SepformerSeparation.from_hparams(
         source=args.source,
         revision=revision,
@@ -77,22 +83,30 @@ def main() -> int:
     mixture = torch.from_numpy(pcm).unsqueeze(0)
     encoder = model.mods.encoder(mixture)
     separated = model.separate_batch(mixture)
-    if tuple(separated.shape) != (1, PCM_SAMPLES, 1):
+    if separated.ndim != 3 or tuple(separated.shape[:2]) != (1, PCM_SAMPLES):
         raise SystemExit(f"unexpected separated shape {tuple(separated.shape)}")
+    output_streams = int(separated.shape[2])
+    if output_streams < 1:
+        raise SystemExit("official SepFormer emitted zero output streams")
+    model_sample_rate = int(model.hparams.sample_rate)
+    if model_sample_rate <= 0:
+        raise SystemExit(f"invalid official model sample rate {model_sample_rate}")
 
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
     write_f32(output / "pcm.f32.bin", pcm)
     write_f32(output / "encoder.f32.bin", encoder[0].cpu().numpy())
-    write_f32(output / "separated.f32.bin", separated[0, :, 0].cpu().numpy())
+    write_f32(output / "separated.f32.bin", separated[0].cpu().numpy())
 
     manifest = {
         "format": "vokra-sepformer-reference-v1",
-        "model_id": DEFAULT_MODEL,
-        "revision": DEFAULT_REVISION,
+        "model_id": model_id,
+        "revision": args.revision,
         "source": args.source,
-        "sample_rate": SAMPLE_RATE,
+        "sample_rate": model_sample_rate,
+        "pcm_generation_sample_rate": SAMPLE_RATE,
         "pcm_samples": PCM_SAMPLES,
+        "output_streams": output_streams,
         "encoder_shape": list(encoder.shape),
         "separated_shape": list(separated.shape),
         "python": platform.python_version(),
