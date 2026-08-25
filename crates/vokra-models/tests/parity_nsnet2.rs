@@ -8,11 +8,14 @@
 //! hard: a missing / malformed / wrong-shaped fixture is a loud panic
 //! (FR-EX-08).
 //!
-//! # Fixture recipe (owner-side)
+//! # Fixture recipe (VAST / Apple-runner side)
 //!
-//! The upstream Microsoft `DNS-Challenge` NSNet2-baseline release ships
-//! `NSNet2-baseline/nsnet2-20ms-baseline.onnx` (~10.8 MB). Bridge it
-//! offline to Vokra GGUF via the landed sidecar + converter:
+//! The existing public `vokra/nsnet2` file can be supplied directly: its exact
+//! historical numeric-initializer contract is repaired by the strict runtime
+//! binder. To regenerate the canonical semantic schema instead, the upstream
+//! Microsoft `DNS-Challenge` release ships
+//! `NSNet2-baseline/nsnet2-20ms-baseline.onnx` (~10.8 MB); bridge it offline via
+//! the landed sidecar + converter:
 //!
 //! ```text
 //! # 1. Fetch the ONNX from the DNS-Challenge repo:
@@ -39,8 +42,9 @@
 //!
 //! NSNet2 is a per-bin gain predictor; the cleaned PCM is deterministic
 //! (no stochastic sampler, no dropout on the ONNX release), and the
-//! reference is ONNX Runtime — the same graph the upstream authors
-//! evaluated. The parity check has two legs:
+//! reference executes the same official ONNX graph through ONNX's independent
+//! `ReferenceEvaluator`, with Microsoft's pinned NumPy frontend/synthesis
+//! transcribed separately. The parity check has two legs:
 //!
 //! - **Structural (fixture-free)**: opens the real GGUF, binds the
 //!   config + every tensor, runs the forward on a short synthetic PCM
@@ -73,7 +77,7 @@ const GGUF_ENV: &str = "VOKRA_NSNET2_REAL_GGUF";
 const WAV_ENV: &str = "VOKRA_NSNET2_REAL_WAV";
 
 /// Optional side-car: if set, points at a 16 kHz mono WAV containing
-/// the upstream ONNX Runtime pipeline's cleaned output on the same
+/// the independent official-ONNX pipeline's cleaned output on the same
 /// noisy input. When present, the parity test also runs a per-sample
 /// max-|Δ| leg against it (bound [`PCM_ATOL`]).
 #[allow(dead_code)]
@@ -82,8 +86,8 @@ const REFERENCE_WAV_ENV: &str = "VOKRA_NSNET2_REFERENCE_WAV";
 /// Per-sample max-|Δ| tolerance when [`REFERENCE_WAV_ENV`] is set.
 /// NSNet2's forward is a straight Linear + GRU + Linear chain plus
 /// sigmoid; float ordering differences between Vokra's row-major
-/// scalar GEMV and ONNX Runtime's optimised backends produce ULP-scale
-/// residuals per multiply, accumulating over 400×161 dot products. A
+/// scalar GEMV and the independent ONNX evaluator produce ULP-scale
+/// residuals per multiply, accumulating over 400×161 dot products.
 /// The pinned official ONNX (`88429b62…`) measured max |Δ| = 2.92e-6 on
 /// `tests/parity/silero_vad/test_16k.wav` for both CPU and Metal on
 /// 2026-08-24. A 5e-5 bound retains >17× margin for platform GEMM/FFT
@@ -132,7 +136,8 @@ fn parity_nsnet2_gguf_smoke() {
         cfg.sample_rate, SAMPLE_RATE_DEFAULT,
         "real GGUF must ship the canonical 16 kHz sample rate"
     );
-    // Every documented upstream hparam must be present.
+    // Canonical metadata or the exact historical public header must resolve to
+    // the same documented upstream topology.
     assert_eq!(cfg.n_bins, 161, "upstream NSNet2 has 161 STFT bins");
     assert_eq!(cfg.hidden_dim, 400, "upstream NSNet2 has 400-wide GRU");
     assert_eq!(cfg.n_fft, 320);

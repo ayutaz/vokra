@@ -54,13 +54,16 @@
 //!
 //! # Real-weight parity posture
 //!
-//! Real-weight parity against the upstream ONNX Runtime pipeline is
-//! deferred to the owner (env-gated harness
-//! `crates/vokra-models/tests/parity_nsnet2.rs`, `VOKRA_NSNET2_REAL_GGUF`
-//! + `VOKRA_NSNET2_REAL_WAV`). This module ships:
+//! The canonical 14-tensor artifact passed the env-gated independent official
+//! ONNX reference and CPU/Metal PCM legs on 2026-08-24 (fixed `5e-5` bound;
+//! see `docs/handoff/mac-cpu-metal-coverage-2026-08-24.md`). The same harness
+//! (`crates/vokra-models/tests/parity_nsnet2.rs`,
+//! `VOKRA_NSNET2_REAL_GGUF` + `VOKRA_NSNET2_REAL_WAV`) accepts either the
+//! canonical conversion or the exact historical public Hub contract. This
+//! module ships:
 //!
-//! - the exact tensor / hparam contract [`Nsnet2V1::from_gguf`] binds
-//!   against;
+//! - the exact canonical tensor / hparam contract and the immutable historical
+//!   public header contract [`Nsnet2V1::from_gguf`] binds against;
 //! - synthetic-weight structural tests pinning FR-EX-08 (loud errors on
 //!   every shape / rate / tensor-name mismatch);
 //! - identity-gain sanity: a synthetic mask that forces the sigmoid
@@ -71,7 +74,7 @@ use std::sync::Arc;
 
 use vokra_core::backend::BackendKind;
 use vokra_core::engines::{DenoiseEngine, DenoiseStreamHandle};
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::ir::graph::{IstftAttrs, IstftStreamingAttrs, StftAttrs, Window, WindowSymmetry};
 use vokra_core::{Result, VokraError};
 use vokra_ops::{IstftStreamingState, Spectrogram, stft};
@@ -132,15 +135,25 @@ pub const KEY_WIN_LENGTH: &str = "vokra.nsnet2.win_length";
 /// GGUF metadata key: PCM sample rate (u32 Hz; upstream = 16 000).
 pub const KEY_SAMPLE_RATE: &str = "vokra.nsnet2.sample_rate";
 
+const HPARAM_KEYS: &[&str] = &[
+    KEY_N_BINS,
+    KEY_HIDDEN_DIM,
+    KEY_FC1_DIM,
+    KEY_FC2_DIM,
+    KEY_N_FFT,
+    KEY_HOP,
+    KEY_WIN_LENGTH,
+    KEY_SAMPLE_RATE,
+];
+
 // ---- tensor-name convention ---------------------------------------------
 //
-// The prep sidecar (`tools/parity/nsnet2_prepare_checkpoint.py`) emits
-// upstream ONNX initializer names verbatim (mirror of the CSM / Kokoro /
-// emotion2vec contract). NSNet2's initializer names are unqualified —
-// `fc_in.weight` / `gru_1.W` / `mask.bias` — so no module-prefix walk is
-// needed. These `TENSOR_*` constants are the single-source-of-truth
-// spelling; the parity sidecar's audit step pins these against the real
-// ONNX before the real-weight wave lands.
+// The prep sidecar (`tools/parity/nsnet2_prepare_checkpoint.py`) preserves the
+// numeric ONNX initializer names. The canonical converter validates that fixed
+// source manifest, then renames it to the semantic `fc_in.weight` / `gru_1.W`
+// / `mask.bias` contract below and normalizes MatMul axes. These `TENSOR_*`
+// constants are the runtime spelling; the exact old numeric layout is isolated
+// in `LEGACY_PUBLIC_TENSORS`.
 
 /// Input Linear weight `[hidden_dim, n_bins]` (`fc_in.weight`).
 pub const TENSOR_FC_IN_WEIGHT: &str = "fc_in.weight";
@@ -171,6 +184,130 @@ pub const TENSOR_FC_2_BIAS: &str = "fc_2.bias";
 pub const TENSOR_MASK_WEIGHT: &str = "mask.weight";
 /// Mask head Linear bias `[n_bins]` (`mask.bias`).
 pub const TENSOR_MASK_BIAS: &str = "mask.bias";
+
+const CANONICAL_TENSOR_NAMES: &[&str] = &[
+    TENSOR_FC_IN_WEIGHT,
+    TENSOR_FC_IN_BIAS,
+    TENSOR_GRU_1_W,
+    TENSOR_GRU_1_R,
+    TENSOR_GRU_1_B,
+    TENSOR_GRU_2_W,
+    TENSOR_GRU_2_R,
+    TENSOR_GRU_2_B,
+    TENSOR_FC_1_WEIGHT,
+    TENSOR_FC_1_BIAS,
+    TENSOR_FC_2_WEIGHT,
+    TENSOR_FC_2_BIAS,
+    TENSOR_MASK_WEIGHT,
+    TENSOR_MASK_BIAS,
+];
+
+// The first public `vokra/nsnet2` GGUF predates the strict semantic tensor
+// schema.  Its header was audited remotely (Range request: no tensor payload)
+// at this immutable Hub revision. Keep its source revision and content digest
+// beside the header contract as audit evidence. The runtime gates the complete
+// header, not the whole-file digest; a bit-identical payload hash is rechecked
+// by publication/verification tooling. Missing metadata never becomes an
+// unbounded "use defaults" rule.
+const LEGACY_PUBLIC_REVISION: &str = "983e1cc1397810201f93a121a9daf60cf247813b";
+const LEGACY_PUBLIC_SHA256: &str =
+    "abeca882165909fb0897b39b97882d0ebd9f95cf176a4d2e58482e52a8b19e13";
+const LEGACY_PUBLIC_SOURCE: &str = "Microsoft DNS-Challenge NSNet2-baseline (MIT end-to-end)";
+const LEGACY_PUBLIC_UPSTREAM_URL: &str =
+    "github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline";
+const LEGACY_PUBLIC_SCHEMA_PRODUCER: &str = "vokra-core 0.1.0-alpha.0";
+const CURRENT_SCHEMA_PRODUCER: &str = concat!("vokra-core ", env!("CARGO_PKG_VERSION"));
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+
+#[derive(Debug, Clone, Copy)]
+struct LegacyTensorSpec {
+    name: &'static str,
+    dimensions: &'static [u64],
+    offset: u64,
+}
+
+// Exact tensor directory observed at the immutable Hub revision above.  The
+// offset is relative to the tensor-data region, as GGUF v3 specifies.  Names,
+// order, dtype, dimensions and offsets must all match before fixed topology is
+// repaired.  This is intentionally stricter than count-only compatibility.
+const LEGACY_PUBLIC_TENSORS: &[LegacyTensorSpec] = &[
+    LegacyTensorSpec {
+        name: "172",
+        dimensions: &[161, 400],
+        offset: 0,
+    },
+    LegacyTensorSpec {
+        name: "192",
+        dimensions: &[1, 1200, 400],
+        offset: 257_600,
+    },
+    LegacyTensorSpec {
+        name: "193",
+        dimensions: &[1, 1200, 400],
+        offset: 2_177_600,
+    },
+    LegacyTensorSpec {
+        name: "194",
+        dimensions: &[1, 2400],
+        offset: 4_097_600,
+    },
+    LegacyTensorSpec {
+        name: "212",
+        dimensions: &[1, 1200, 400],
+        offset: 4_107_200,
+    },
+    LegacyTensorSpec {
+        name: "213",
+        dimensions: &[1, 1200, 400],
+        offset: 6_027_200,
+    },
+    LegacyTensorSpec {
+        name: "214",
+        dimensions: &[1, 2400],
+        offset: 7_947_200,
+    },
+    LegacyTensorSpec {
+        name: "215",
+        dimensions: &[400, 600],
+        offset: 7_956_800,
+    },
+    LegacyTensorSpec {
+        name: "216",
+        dimensions: &[600, 600],
+        offset: 8_916_800,
+    },
+    LegacyTensorSpec {
+        name: "217",
+        dimensions: &[600, 161],
+        offset: 10_356_800,
+    },
+    LegacyTensorSpec {
+        name: "fc_in.0.bias",
+        dimensions: &[400],
+        offset: 10_743_200,
+    },
+    LegacyTensorSpec {
+        name: "fc_out.0.bias",
+        dimensions: &[600],
+        offset: 10_744_800,
+    },
+    LegacyTensorSpec {
+        name: "fc_out.2.bias",
+        dimensions: &[600],
+        offset: 10_747_200,
+    },
+    LegacyTensorSpec {
+        name: "fc_out.4.bias",
+        dimensions: &[161],
+        offset: 10_749_600,
+    },
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactLayout {
+    Canonical,
+    LegacyPublic,
+}
 
 /// Official floor inside `log10(max(power, floor))`.
 const POWER_FLOOR: f32 = 1e-12;
@@ -390,8 +527,15 @@ impl Nsnet2V1 {
             }
         }
 
-        let cfg = Nsnet2Config::from_gguf(gguf)?;
-        let weights = load_weights(gguf, &cfg)?;
+        let layout = resolve_artifact_layout(gguf)?;
+        let cfg = match layout {
+            ArtifactLayout::Canonical => Nsnet2Config::from_gguf(gguf)?,
+            ArtifactLayout::LegacyPublic => Nsnet2Config::upstream_default(),
+        };
+        let weights = match layout {
+            ArtifactLayout::Canonical => load_canonical_weights(gguf, &cfg)?,
+            ArtifactLayout::LegacyPublic => load_legacy_public_weights(gguf)?,
+        };
         Ok(Self {
             cfg,
             weights: Arc::new(weights),
@@ -799,7 +943,170 @@ fn synthesis_istft_attrs(cfg: &Nsnet2Config) -> IstftStreamingAttrs {
 // Loader helper
 // -------------------------------------------------------------------------
 
-fn load_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2Weights> {
+fn resolve_artifact_layout(gguf: &GgufFile) -> Result<ArtifactLayout> {
+    let hparam_count = HPARAM_KEYS
+        .iter()
+        .filter(|key| gguf.get(key).is_some())
+        .count();
+    let canonical_count = CANONICAL_TENSOR_NAMES
+        .iter()
+        .filter(|name| gguf.tensor_info(name).is_some())
+        .count();
+    let legacy_count = LEGACY_PUBLIC_TENSORS
+        .iter()
+        .filter(|spec| gguf.tensor_info(spec.name).is_some())
+        .count();
+
+    if hparam_count != 0 && hparam_count != HPARAM_KEYS.len() {
+        let missing = HPARAM_KEYS
+            .iter()
+            .filter(|key| gguf.get(key).is_none())
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(VokraError::ModelLoad(format!(
+            "nsnet2: partial `vokra.nsnet2.*` metadata ({hparam_count}/{} keys); \
+             missing {missing:?}. Refusing topology repair",
+            HPARAM_KEYS.len(),
+        )));
+    }
+    if canonical_count > 0 && legacy_count > 0 {
+        return Err(VokraError::ModelLoad(format!(
+            "nsnet2: mixed canonical and historical public tensor schemas \
+             ({canonical_count}/{} canonical, {legacy_count}/{} legacy); refusing ambiguous precedence",
+            CANONICAL_TENSOR_NAMES.len(),
+            LEGACY_PUBLIC_TENSORS.len(),
+        )));
+    }
+
+    if hparam_count == HPARAM_KEYS.len() {
+        if legacy_count > 0 {
+            return Err(VokraError::ModelLoad(
+                "nsnet2: historical numeric initializer names cannot be combined with the \
+                 canonical `vokra.nsnet2.*` metadata group"
+                    .to_owned(),
+            ));
+        }
+        return Ok(ArtifactLayout::Canonical);
+    }
+
+    if legacy_count == LEGACY_PUBLIC_TENSORS.len() && canonical_count == 0 {
+        validate_legacy_public_contract(gguf)?;
+        return Ok(ArtifactLayout::LegacyPublic);
+    }
+    if legacy_count > 0 {
+        return Err(VokraError::ModelLoad(format!(
+            "nsnet2: incomplete historical public tensor schema ({legacy_count}/{} tensors); \
+             only the complete header contract audited from Hub revision \
+             {LEGACY_PUBLIC_REVISION} (source SHA-256 {LEGACY_PUBLIC_SHA256}) may repair \
+             missing topology metadata",
+            LEGACY_PUBLIC_TENSORS.len(),
+        )));
+    }
+    if canonical_count > 0 {
+        return Err(VokraError::ModelLoad(format!(
+            "nsnet2: canonical tensor schema is present but all {} required \
+             `vokra.nsnet2.*` metadata keys are absent; refusing implicit defaults",
+            HPARAM_KEYS.len(),
+        )));
+    }
+
+    Err(VokraError::ModelLoad(format!(
+        "nsnet2: GGUF contains neither the canonical semantic tensor schema nor the exact \
+         historical public schema from revision {LEGACY_PUBLIC_REVISION}"
+    )))
+}
+
+fn validate_legacy_public_contract(gguf: &GgufFile) -> Result<()> {
+    // These provenance values are the exact observed identity of the old Hub
+    // object, not an endorsement of its MIT/permissive classification. The
+    // fixed Microsoft source revision separates MIT code from CC-BY-4.0
+    // released content; the live-repository audit therefore remains partial
+    // until an authorized gated replacement corrects the model provenance and
+    // attribution. Runtime topology repair must still pin the mis-stamped
+    // historical header exactly so unrelated files cannot enter this branch.
+    if gguf.metadata().len() != 10 {
+        return Err(legacy_public_error(format!(
+            "metadata count is {}, expected exactly 10",
+            gguf.metadata().len(),
+        )));
+    }
+
+    for (key, expected) in [
+        (chunks::KEY_MODEL_ARCH, ARCH),
+        (chunks::KEY_MODEL_NAME, DEFAULT_NAME),
+        (KEY_MODEL_CATEGORY, CATEGORY),
+        (chunks::KEY_PROVENANCE_LICENSE, "mit"),
+        (chunks::KEY_PROVENANCE_MODEL_ID, DEFAULT_NAME),
+        (chunks::KEY_PROVENANCE_SOURCE, LEGACY_PUBLIC_SOURCE),
+        (chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive"),
+        ("vokra.provenance.upstream_url", LEGACY_PUBLIC_UPSTREAM_URL),
+    ] {
+        let actual = gguf.get(key).and_then(|value| value.as_str());
+        if actual != Some(expected) {
+            return Err(legacy_public_error(format!(
+                "metadata `{key}` is {actual:?}, expected {expected:?}",
+            )));
+        }
+    }
+    if gguf
+        .get(chunks::KEY_SCHEMA_VERSION)
+        .and_then(|value| value.as_u64())
+        != Some(1)
+    {
+        return Err(legacy_public_error(
+            "`vokra.schema.version` must be unsigned integer 1".to_owned(),
+        ));
+    }
+    let producer = gguf
+        .get(chunks::KEY_SCHEMA_PRODUCER)
+        .and_then(|value| value.as_str());
+    if producer != Some(LEGACY_PUBLIC_SCHEMA_PRODUCER) && producer != Some(CURRENT_SCHEMA_PRODUCER)
+    {
+        return Err(legacy_public_error(format!(
+            "`vokra.schema.producer` is {producer:?}, expected the audited original \
+             {LEGACY_PUBLIC_SCHEMA_PRODUCER:?} or current first-party writer {CURRENT_SCHEMA_PRODUCER:?}",
+        )));
+    }
+
+    if gguf.tensors().len() != LEGACY_PUBLIC_TENSORS.len() {
+        return Err(legacy_public_error(format!(
+            "tensor count is {}, expected exactly {}",
+            gguf.tensors().len(),
+            LEGACY_PUBLIC_TENSORS.len(),
+        )));
+    }
+    for (index, (actual, expected)) in gguf.tensors().iter().zip(LEGACY_PUBLIC_TENSORS).enumerate()
+    {
+        if actual.name != expected.name
+            || actual.dtype != GgmlType::F32
+            || actual.dimensions.as_slice() != expected.dimensions
+            || actual.offset != expected.offset
+        {
+            return Err(legacy_public_error(format!(
+                "tensor directory row {index} is name={:?} dtype={:?} dims={:?} offset={}, \
+                 expected name={:?} dtype=F32 dims={:?} offset={}",
+                actual.name,
+                actual.dtype,
+                actual.dimensions,
+                actual.offset,
+                expected.name,
+                expected.dimensions,
+                expected.offset,
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn legacy_public_error(detail: String) -> VokraError {
+    VokraError::ModelLoad(format!(
+        "nsnet2: historical public GGUF contract mismatch: {detail}. Only the \
+         header contract audited from vokra/nsnet2 revision {LEGACY_PUBLIC_REVISION} \
+         (source SHA-256 {LEGACY_PUBLIC_SHA256}) is eligible for metadata repair"
+    ))
+}
+
+fn load_canonical_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2Weights> {
     let load_f32 = |name: &str, expect: usize| -> Result<Vec<f32>> {
         let v = gguf.tensor_f32(name).map_err(|e| {
             VokraError::ModelLoad(format!("nsnet2: tensor `{name}` load failed: {e}"))
@@ -895,6 +1202,80 @@ fn load_weights(gguf: &GgufFile, cfg: &Nsnet2Config) -> Result<Nsnet2Weights> {
         mask_weight,
         mask_bias,
     })
+}
+
+/// Binds the exact 2026-08-03 public GGUF layout into the same canonical
+/// in-memory weights used by [`load_canonical_weights`].  The public file kept
+/// ONNX initializer names and axes: MatMul matrices are `[in, out]`, while GRU
+/// tensors retain their singleton direction axis.  No arithmetic changes here;
+/// matrices are transposed once and singleton axes disappear by reading the
+/// identical flat payload under the already-validated shape contract.
+fn load_legacy_public_weights(gguf: &GgufFile) -> Result<Nsnet2Weights> {
+    let load = |name: &str, expected: usize| -> Result<Vec<f32>> {
+        let values = gguf.tensor_f32(name).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "nsnet2: historical public tensor `{name}` load failed: {error}"
+            ))
+        })?;
+        if values.len() != expected {
+            return Err(VokraError::ModelLoad(format!(
+                "nsnet2: historical public tensor `{name}` has {} elements, expected {expected}",
+                values.len(),
+            )));
+        }
+        Ok(values)
+    };
+
+    let fc_in_weight = transpose_row_major(&load("172", 161 * 400)?, 161, 400);
+    let fc_in_bias = load("fc_in.0.bias", 400)?;
+
+    let gru_1_w_raw = load("192", 3 * 400 * 400)?;
+    let gru_1_r_raw = load("193", 3 * 400 * 400)?;
+    let gru_1_b_raw = load("194", 6 * 400)?;
+    let gru_2_w_raw = load("212", 3 * 400 * 400)?;
+    let gru_2_r_raw = load("213", 3 * 400 * 400)?;
+    let gru_2_b_raw = load("214", 6 * 400)?;
+    let (gru_1_w_ih, gru_1_w_hh, gru_1_bias_ih, gru_1_bias_hh) =
+        permute_onnx_gru(&gru_1_w_raw, &gru_1_r_raw, &gru_1_b_raw, 400, 400);
+    let (gru_2_w_ih, gru_2_w_hh, gru_2_bias_ih, gru_2_bias_hh) =
+        permute_onnx_gru(&gru_2_w_raw, &gru_2_r_raw, &gru_2_b_raw, 400, 400);
+
+    let fc_1_weight = transpose_row_major(&load("215", 400 * 600)?, 400, 600);
+    let fc_1_bias = load("fc_out.0.bias", 600)?;
+    let fc_2_weight = transpose_row_major(&load("216", 600 * 600)?, 600, 600);
+    let fc_2_bias = load("fc_out.2.bias", 600)?;
+    let mask_weight = transpose_row_major(&load("217", 600 * 161)?, 600, 161);
+    let mask_bias = load("fc_out.4.bias", 161)?;
+
+    Ok(Nsnet2Weights {
+        fc_in_weight,
+        fc_in_bias,
+        gru_1_w_ih,
+        gru_1_w_hh,
+        gru_1_bias_ih,
+        gru_1_bias_hh,
+        gru_2_w_ih,
+        gru_2_w_hh,
+        gru_2_bias_ih,
+        gru_2_bias_hh,
+        fc_1_weight,
+        fc_1_bias,
+        fc_2_weight,
+        fc_2_bias,
+        mask_weight,
+        mask_bias,
+    })
+}
+
+fn transpose_row_major(values: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    debug_assert_eq!(values.len(), rows * cols);
+    let mut transposed = vec![0.0; values.len()];
+    for row in 0..rows {
+        for col in 0..cols {
+            transposed[col * rows + row] = values[row * cols + col];
+        }
+    }
+    transposed
 }
 
 /// Permutes an ONNX GRU triplet (`W [Z;R;H]`, `R [Z;R;H]`, `B [Wb_ZRH; Rb_ZRH]`)

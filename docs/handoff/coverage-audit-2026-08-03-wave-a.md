@@ -41,7 +41,8 @@
 - **`cc66fd3`** feat(convert/nkf-aec): Wave A ticket = aec/NEC (MIT, 5.3 KB)
 - **`e8b8c21`** feat(convert): Wave A top-4 + 5 §3.1 signoff (coverage-audit 2026-08-03)
   - rnnoise / nsnet2 / dnsmos / frcrn converter Rust + prep script (uv Python 3.12) + tests
-  - docs/license-audit.md §3.1 に 5 rows sign-off (all Permissive, CC 判断)
+  - docs/license-audit.md §3.1 に5 rows sign-off（当時all Permissiveと記録。
+    NSNet2は2026-08-26再監査でCC-BY-4.0 / AttributionRequiredへ訂正）
   - scripts/publish/signoff_match.py に 5 slug entry (APPROVED gate 通過)
 
 ### verify (main tree HEAD e8b8c21)
@@ -57,7 +58,7 @@
 |---|------|------|--------|-------|
 | 1 | **nkf-aec** | 23.7 KB GGUF | ✅ **HTTP 200** published | upstream = `github.com/fjiang9/NKF-AEC/src/nkf_epoch70.pt` (README `pretrained/nkf.pt` 記述と異なる = 実 file は `src/`)、prep script 動作確認済 |
 | 2 | rnnoise-v0.2 | 4,469,280 B canonical GGUF (2026-08-22 VAST verification artifact) | ✅ native waveform runtime complete / ⚠ public artifact replacement not authorized | Official v0.2 の36 arraysをstrict bindし、32-band/65-feature frontend、pitch search、recurrent network、delayed gain、OLA、stream/CLIまで実装。portable Xiph C oracle に対し network `1.4901161e-7`、PCM `7.196754e-3`、VAD `3.1113923e-3`。既公開の旧opaque-blob GGUFは未変更。 |
-| 3 | nsnet2 | TBD | ⏸ upstream barrier | DNS-Challenge master にも interspeech2020/master にも `NSNet2-baseline` dir 不在。`download-dns-challenge-5-baseline.sh` 経由の **1.4 GB Baseline.zip** DL 要 (Azure blob URL、authorization 不要だが time cost 大)。**owner or 別 phase 対応** |
+| 3 | nsnet2 | 10,751,584 B public GGUF | ✅ native CPU/Metal code route / ⚠ public provenance replacement not authorized | Fixed Microsoft commit `8b87a33b…` contains the 10,752,263-byte ONNX. Public `vokra/nsnet2@983e1cc` has the correct 14 F32 / 161-bin initializer topology and is accepted through an exact legacy-header binder, but it incorrectly stamps MIT/permissive. Canonical conversion now stamps CC-BY-4.0 / AttributionRequired; the live repo remains partial until an explicitly authorized gated replacement. Direct public-file VAST execution is pending. |
 | 4 | dnsmos-p808-p835 | ✅ **HTTP 200** published (2026-08-04) | commit `343750a` で prep script に empty-shape scalar + INT graph-metadata skip logic を追加、Wave A residual publish で published (UPDATE #1 参照)。 |
 | 5 | frcrn | TBD | ⏸ upstream barrier | `github.com/alibabasglab/FRCRN` は README のみで pretrained checkpoint 不在。ModelScope 経由 (`damo/speech_frcrn_ans_cirm_16k`) で `pytorch_model.bin` を DL 必要。HF mirror (`alibabasglab/FRCRN`) = 401 (不在)。**owner ModelScope authentication + `uv add modelscope`** |
 

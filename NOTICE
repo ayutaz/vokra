@@ -457,6 +457,31 @@ canonical `attribution-required` weight class into the GGUF. No upstream
 weight is bundled in this source repository.
 
 --------------------------------------------------------------------------
+17a. Microsoft DNS-Challenge NSNet2 — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's NSNet2 converter and native CPU/Metal runtime target the 20 ms
+baseline model at Microsoft DNS-Challenge commit
+8b87a33b2892f147b5c7ad39ea978453730db269. That revision licenses source code
+under MIT in `LICENSE-CODE`, while the root `LICENSE` and README Legal Notices
+place documentation and other released content under the Creative Commons
+Attribution 4.0 International license. Vokra therefore treats the released
+ONNX model and converted weights as CC-BY-4.0 content. Commercial use is
+permitted; attribution is required.
+
+  NSNet2 20 ms baseline model content
+  Creator: Microsoft DNS-Challenge project
+  Licensed under CC-BY 4.0
+  Source: https://github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline
+  License: https://github.com/microsoft/DNS-Challenge/blob/8b87a33b2892f147b5c7ad39ea978453730db269/LICENSE
+
+Changes by Vokra: the ONNX initializer payload is converted to GGUF; numeric
+initializer names and matrix axes may be normalized to the native runtime
+schema. The native Rust signal-processing and inference implementation does
+not link or bundle Microsoft code, ONNX Runtime, or protobuf. No upstream
+weight is bundled in this source repository.
+
+--------------------------------------------------------------------------
 18. Maintaining this file
 --------------------------------------------------------------------------
 

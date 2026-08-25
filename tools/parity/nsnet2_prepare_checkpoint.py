@@ -5,9 +5,9 @@
 
 **Offline sidecar tool (FR-LD-05: no Python / ONNX ever enters the runtime).**
 The upstream release
-``github.com/microsoft/DNS-Challenge/tree/master/NSNet2-baseline`` ships
-``nsnet2-20ms-baseline.onnx`` (~2 MB) — a 2-layer GRU + 3-Linear noise-
-suppression baseline over the 257-bin STFT log-magnitude of 16 kHz PCM. The
+``github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline`` ships
+``nsnet2-20ms-baseline.onnx`` (10,752,263 bytes) — a 2-layer GRU + 3-Linear
+noise-suppression baseline over the 161-bin STFT log-power of 16 kHz PCM. The
 Rust converter (``crates/vokra-convert/src/models/nsnet2.rs``) consumes
 safetensors only (zero-dep NFR-DS-02: no ONNX / protobuf in the runtime), so
 this script performs the ONNX → safetensors flatten off-band with:
@@ -23,11 +23,10 @@ this script performs the ONNX → safetensors flatten off-band with:
   script can run without the ``safetensors`` package if a downstream user
   wants to keep the venv minimal.
 
-Every ONNX initializer is emitted verbatim under its upstream name (Vokra's
-converter does not rename tensors — the ``emotion2vec`` / ``ecapa_tdnn`` /
-``qwen3_tts`` contract). No hparam side-car is written; the downstream Rust
-converter stamps the model card entirely from ``docs/license-audit.md`` and
-the primary upstream URL constants embedded in ``models::nsnet2``.
+Every ONNX initializer is emitted verbatim under its upstream name. The Rust
+converter validates the exact 14-entry manifest, assigns semantic tensor
+names, transposes MatMul axes and stamps the complete topology/provenance
+metadata. No hparam side-car is written.
 
 # Loud-error posture (FR-EX-08)
 

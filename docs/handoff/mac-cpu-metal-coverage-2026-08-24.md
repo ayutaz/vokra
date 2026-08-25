@@ -18,12 +18,12 @@ Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
-| Inventory / code reachability | Public repos |
+| Inventory / live-artifact reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 93 |
+| Complete CPU route for the live public artifact | 93 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
 | No complete runtime binder | 51 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
@@ -31,9 +31,11 @@ it reported:
 | CPU-complete but Metal-unsupported | 0 |
 | Metal blocked by missing/partial CPU forward | 100 |
 
-These are deliberately **code reachability** counts. They are not a claim that
-the current Hub file loads, that its sidecars are complete, or that its
-real-weight CPU/Metal parity has passed. The TSV form prints the per-repository
+These are deliberately **live-public-artifact reachability** counts. They are
+not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
+routes and artifact-specific provenance/completeness separate: a complete
+backend implementation can remain partial when the live file is corrupt,
+incomplete or incorrectly licensed. The TSV form prints the per-repository
 revision, GGUF count, architecture and classification:
 
 ```text
@@ -76,16 +78,23 @@ remaining 100 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
-The routed-partial set deliberately includes `csm`, `nsnet2`,
-`pyannote-segmentation`, `rmvpe` and `sbv2`. CSM still constructs synthesized
+The routed-partial set deliberately includes `csm`, `pyannote-segmentation`,
+`rmvpe` and `sbv2`. CSM still constructs synthesized
 model weights in its public GGUF loader, and SBV2's public conversion does not
-satisfy the strict runtime tensor-name contract. NSNet2's 2026-08-03 Hub
-artifact predates its strict metadata and complete tensor contract. Pyannote's
+satisfy the strict runtime tensor-name contract. Pyannote's
 real forward is disabled by default pending independent parity; RMVPE omits
 the released U-Net decoder skip-concat and explicitly warns that real values
-diverge. All five have substantial code, but none is a
+diverge. All four have substantial code, but none is a
 released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
+
+NSNet2 is no longer in that generic routed-partial set: its exact historical
+tensor header has a complete native CPU/Metal code route. It remains a separate
+public-artifact blocker because the live GGUF claims MIT/permissive while the
+fixed Microsoft source revision places released non-code content under
+CC-BY-4.0. Runtime layout compatibility does not certify redistribution
+provenance; a correctly attributed gated replacement still needs explicit
+upload permission.
 
 ## 2026-08-24 implementation wave
 
@@ -1111,11 +1120,30 @@ expanded learned matrix-vector products dispatched through the backend.
 The current public revision
 `983e1cc1397810201f93a121a9daf60cf247813b` (GGUF SHA-256
 `abeca882165909fb0897b39b97882d0ebd9f95cf176a4d2e58482e52a8b19e13`)
-still fails at missing `vokra.nsnet2.n_bins` and carries the incompatible old
-tensor/topology contract. NSNet2 therefore remains **routed partial in the
-live Hub count** even though the corrected local artifact passes CPU, real
-Metal, and official-ONNX parity. Moving the public repo to complete requires an
-explicitly authorized replacement through `scripts/publish/publish-one.sh`.
+was re-audited by a payload-free HF Range read on 2026-08-26. It carries the
+correct official 161-bin graph weights as 14 F32 ONNX initializers, but predates
+the eight `vokra.nsnet2.*` keys and keeps numeric MatMul names / singleton GRU
+direction axes. The runtime now accepts only that exact historical contract:
+all ten metadata values, tensor order, dtype, dimensions and relative offsets
+must match. It then supplies the fixed official topology, transposes the four
+MatMul payloads and removes only the singleton axes before entering the same
+canonical CPU/Metal forward. Partial metadata, mixed old/new tensor names,
+extra tensors, or provenance drift fail explicitly.
+
+This completes the native CPU/Metal **code route** without requiring tensor
+reconversion. It does not move the live repository into the complete count:
+the same public object incorrectly stamps `mit` / `permissive`, while the fixed
+Microsoft revision licenses code under MIT and released non-code content under
+CC-BY-4.0. The canonical converter now stamps `cc-by-4.0` /
+`attribution-required`, and NOTICE §17a records the attribution. A corrected
+Hub artifact remains a separately authorized gated replacement; no upload was
+performed here.
+
+The prior regenerated canonical artifact retains the recorded official-ONNX
+and real-Metal numerical evidence above. Compilation of the compatibility path
+and direct execution of the unchanged public GGUF remain pending the next VAST
+lifecycle. Consequently NSNet2 stays public-artifact partial in the live 93/93
+count even though its code route is complete.
 
 ### Vocos ConvNeXt / iSTFT vocoders
 

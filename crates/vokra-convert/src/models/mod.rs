@@ -271,15 +271,16 @@ pub mod nkf_aec;
 // converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
 // no C / Python enters the runtime, NFR-DS-02).
 pub mod rnnoise;
-// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (MIT
-// Permissive) — the DNS Challenge NR baseline (2-layer GRU + 3-Linear mask
-// predictor over 257-bin STFT log-magnitude, 20 ms frame @ 16 kHz). Distinct
+// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (code MIT,
+// released model content CC-BY-4.0 / AttributionRequired) — the DNS Challenge
+// NR baseline (2-layer GRU + 3-Linear mask predictor over 161-bin STFT
+// log-power, 20 ms frame @ 16 kHz). Distinct
 // arch tag from `denoise` (DeepFilterNet3) because the two topologies share
 // only the `enhancement` category, not their internal layout. Upstream is
 // ONNX-only; `tools/parity/nsnet2_prepare_checkpoint.py` bridges ONNX →
 // safetensors so this converter's zero-dep posture (no ONNX / protobuf in the
-// runtime, FR-LD-05, NFR-DS-02) is preserved. F32 / F16 / BF16 pass through
-// verbatim following the `emotion2vec` / `ecapa_tdnn` contract.
+// runtime, FR-LD-05, NFR-DS-02) is preserved. The fixed official manifest is
+// F32; semantic renaming and MatMul transposition are strict.
 pub mod nsnet2;
 // coverage-audit Wave A ticket `dnsmos-p808-p835` (2026-08-03): Microsoft
 // DNSMOS P.808 + P.835 MOS predictors (MIT weight, category `eval`) —

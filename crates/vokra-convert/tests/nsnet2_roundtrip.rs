@@ -154,14 +154,14 @@ fn nsnet2_safetensors_roundtrips_through_convert_file() {
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_LICENSE)
             .and_then(|v| v.as_str()),
-        Some("mit"),
-        "MIT default license stamped verbatim"
+        Some("cc-by-4.0"),
+        "released-model CC-BY-4.0 default stamped verbatim"
     );
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
             .and_then(|v| v.as_str()),
-        Some(LicenseClass::Permissive.as_str()),
-        "MIT normalises to Permissive"
+        Some(LicenseClass::AttributionRequired.as_str()),
+        "CC-BY-4.0 normalises to AttributionRequired"
     );
 
     let _ = std::fs::remove_file(&input);

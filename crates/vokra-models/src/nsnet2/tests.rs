@@ -110,6 +110,43 @@ fn add_all_zero_tensors(b: &mut GgufBuilder, cfg: &Nsnet2Config) {
     add_f32(b, TENSOR_MASK_BIAS, vec![n_bins as u64], &vec![0.0; n_bins]);
 }
 
+fn add_legacy_public_metadata(b: &mut GgufBuilder) {
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    b.add_string(chunks::KEY_MODEL_NAME, DEFAULT_NAME);
+    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_string(chunks::KEY_PROVENANCE_LICENSE, "mit");
+    b.add_string(
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        LicenseClass::Permissive.as_str(),
+    );
+    b.add_string(chunks::KEY_PROVENANCE_MODEL_ID, DEFAULT_NAME);
+    b.add_string(chunks::KEY_PROVENANCE_SOURCE, LEGACY_PUBLIC_SOURCE);
+    b.add_string("vokra.provenance.upstream_url", LEGACY_PUBLIC_UPSTREAM_URL);
+}
+
+fn legacy_public_gguf() -> GgufFile {
+    let mut b = GgufBuilder::new();
+    add_legacy_public_metadata(&mut b);
+    for spec in LEGACY_PUBLIC_TENSORS {
+        let elements = spec
+            .dimensions
+            .iter()
+            .try_fold(1usize, |count, &axis| count.checked_mul(axis as usize))
+            .expect("legacy public tensor element count");
+        let mut values = vec![0.0; elements];
+        match spec.name {
+            "172" => values[7 * 400 + 23] = 1.25,
+            "215" => values[5 * 600 + 17] = -2.5,
+            "216" => values[3 * 600 + 11] = 3.75,
+            "217" => values[9 * 161 + 13] = -4.5,
+            _ => {}
+        }
+        add_f32(&mut b, spec.name, spec.dimensions.to_vec(), &values);
+    }
+    GgufFile::parse(b.to_bytes().expect("build legacy public GGUF"))
+        .expect("parse legacy public GGUF")
+}
+
 // -------------------------------------------------------------------------
 // Config round-trip
 // -------------------------------------------------------------------------
@@ -214,6 +251,56 @@ fn from_gguf_rejects_missing_hparam() {
     let err = Nsnet2V1::from_gguf(&gguf).unwrap_err();
     let msg = format!("{err}");
     assert!(msg.contains("hidden_dim"));
+}
+
+#[test]
+fn exact_historical_public_contract_binds_to_canonical_weights() {
+    let gguf = legacy_public_gguf();
+    let model = Nsnet2V1::from_gguf(&gguf).expect("bind exact historical public contract");
+    assert_eq!(model.config(), &Nsnet2Config::upstream_default());
+
+    // The old artifact stores MatMul matrices as [in, out]. The runtime must
+    // transpose every one of them into the canonical [out, in] layout,
+    // including the square fc_2 matrix where a shape-only check cannot expose
+    // a missing transpose.
+    assert_eq!(model.weights.fc_in_weight[23 * 161 + 7], 1.25);
+    assert_eq!(model.weights.fc_1_weight[17 * 400 + 5], -2.5);
+    assert_eq!(model.weights.fc_2_weight[11 * 600 + 3], 3.75);
+    assert_eq!(model.weights.mask_weight[13 * 600 + 9], -4.5);
+}
+
+#[test]
+fn historical_public_contract_rejects_manifest_drift() {
+    let mut b = GgufBuilder::new();
+    add_legacy_public_metadata(&mut b);
+    for spec in LEGACY_PUBLIC_TENSORS {
+        // Keep every audited name present so layout detection reaches the
+        // exact directory validator, then change every shape/offset cheaply.
+        add_f32(&mut b, spec.name, vec![1], &[0.0]);
+    }
+    let gguf = GgufFile::parse(b.to_bytes().expect("build drifted GGUF")).unwrap();
+    let err = Nsnet2V1::from_gguf(&gguf).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("historical public GGUF contract mismatch")
+            && msg.contains("tensor directory row"),
+        "expected exact legacy manifest rejection, got: {msg}"
+    );
+}
+
+#[test]
+fn from_gguf_rejects_mixed_canonical_and_legacy_names() {
+    let mut b = GgufBuilder::new();
+    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    add_f32(&mut b, TENSOR_FC_IN_WEIGHT, vec![1], &[0.0]);
+    add_f32(&mut b, "172", vec![1], &[0.0]);
+    let gguf = GgufFile::parse(b.to_bytes().expect("build mixed GGUF")).unwrap();
+    let err = Nsnet2V1::from_gguf(&gguf).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("mixed canonical and historical public tensor schemas"),
+        "expected mixed-schema rejection, got: {msg}"
+    );
 }
 
 #[test]

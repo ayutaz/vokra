@@ -12940,8 +12940,9 @@ pub use models::dtln_aec::{DtlnAecReport, DtlnVariant, convert_dtln_aec_file};
 // `upstream_url` rather than `upstream_hf`. File-based entry mirroring
 // the nkf_aec / speaker_3d / ecapa_tdnn re-export pattern.
 pub use models::rnnoise::{RnnoiseReport, convert_rnnoise_file};
-// coverage-audit-2026-08-03 Wave A: Microsoft NSNet2 (MIT Permissive) —
-// the DNS Challenge NR baseline. Standalone file-based entry point
+// coverage-audit-2026-08-03 Wave A: Microsoft NSNet2 (code MIT; released model
+// content CC-BY-4.0 / AttributionRequired) — the DNS Challenge NR baseline.
+// Standalone file-based entry point
 // re-exported so external callers (integration tests / a future
 // `vokra-cli` `--model nsnet2` invocation) can reach it without the
 // private `models::nsnet2` module. Also routed through `ModelKind::Nsnet2`
@@ -15578,8 +15579,8 @@ mod modelkind_alias_and_roundtrip_tests {
                 &["rnnoise", "rnnoise-v0.2", "rnnoise-v0_2", "xiph/rnnoise"],
             ),
             // Coverage-audit 2026-08-03 Wave A — Microsoft NSNet2 NR
-            // baseline. Every alias resolves to the same `--allow-noncommercial`-
-            // free MIT skeleton path.
+            // baseline. Every alias resolves to the same commercial-use,
+            // attribution-required converter path.
             (
                 ModelKind::Nsnet2,
                 &[

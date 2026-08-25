@@ -782,11 +782,22 @@ FSMN-VAD, Silero VAD, FireRedVAD, TEN-VAD, RNNoise, NKF-AEC, HiFi-GAN,
 BigVGAN, FCPE, SmartTurn and both executable Parakeet variants. RMVPE and
 Pyannote also gained backend-dispatched learned primitives but remain
 CPU-partial for the reasons above. Unsupported backends still fail explicitly.
-Public Moonshine, NSNet2, FSMN-VAD, Vocos Encodec, RNNoise and SmartTurn
+Public Moonshine, FSMN-VAD, Vocos Encodec, RNNoise and SmartTurn
 artifacts are known to predate or contradict their strict runtime contracts.
 The current Parakeet TDT artifact also lacks its tokenizer, while the current
 Parakeet CTC artifact stamps `convolution_bias=false` against the pinned
 official `true` contract. All require separately authorized gated replacement.
+
+2026-08-26 correction: NSNet2 no longer needs tensor/topology reconversion. A
+payload-free audit of public revision `983e1cc1397810201f93a121a9daf60cf247813b`
+proved that its fourteen F32 tensors are the correct official 161-bin ONNX
+initializers; only metadata and layout normalization were missing. The runtime
+now accepts that exact closed legacy header contract and normalizes it to the
+already validated canonical forward. However, the same public object
+mis-stamps the model as MIT/permissive: Microsoft's fixed revision separates
+MIT code from CC-BY-4.0 released content. The live repo therefore still needs
+a separately authorized gated provenance/attribution replacement before it is
+counted complete; runtime layout compatibility is not publication sign-off.
 
 Disposable VAST instances `48524614` and `48525871` ran the combined workspace
 test and all-target Clippy suites successfully after the source corrections

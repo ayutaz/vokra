@@ -323,13 +323,14 @@ pub mod moshi;
 pub mod nanocodec;
 pub mod neucodec;
 pub mod xcodec2;
-// Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
-// runtime binder). A denoise-family runtime binder alongside DFN3
+// Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551; code MIT,
+// released model content CC-BY-4.0 — 2026-08-05 runtime binder). A
+// denoise-family runtime binder alongside DFN3
 // (`vokra_ops::denoise`) and the RNNoise v0.2 real-weight neural binder.
 // NSNet2 itself is a deliberately-weaker
 // industry-baseline reference for quantization-CI cross-checks
 // (CLAUDE.md audio dialect §"Speech Enhancement / AGC / AEC"). REAL forward:
-// STFT (n_fft=512, hop=160, win=320, causal / non-center) → log-power
+// STFT (n_fft=320, hop=160, win=320, causal / non-center) → log-power
 // feature → fc_in + 2×GRU + fc_1/fc_2/mask + sigmoid → gated STFT → streaming
 // iSTFT. Reuses the tested `vokra_ops::rnnoise_gru_forward` primitive with
 // an ONNX `[Z;R;H]` → rnnoise `[R;Z;H]` load-time permutation. Env-gated

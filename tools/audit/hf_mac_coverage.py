@@ -44,7 +44,6 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_small_10secs",
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
-    "nsnet2",
     "pyannote-segmentation",
     "rmvpe",
     "sbv2",
@@ -54,6 +53,13 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/nsnet2": (
+        "partial",
+        "the exact public tensor header is runtime-compatible, but the live GGUF "
+        "mis-stamps the released model as MIT/permissive; Microsoft's fixed source "
+        "revision assigns released non-code content to CC-BY-4.0, so corrected "
+        "provenance and attribution require an authorized gated replacement",
+    ),
     "vokra/conv-tasnet-libri1mix": (
         "partial",
         "the public GGUF stamps conflicting CC-BY-SA-3.0 provenance and the old "
@@ -127,6 +133,7 @@ METAL_CODE_ARCHES = {
     "moonshine",
     "nkf_aec",
     "neucodec",
+    "nsnet2",
     "parakeet-ctc",
     "parakeet-tdt",
     "piper-plus-mb-istft-vits2",
@@ -295,7 +302,8 @@ def _summary_lines(
         f"gguf_files={sum(len(record.gguf_files) for record in records)}",
         "cpu_code=" + ",".join(f"{key}:{cpu[key]}" for key in sorted(cpu)),
         "metal_code=" + ",".join(f"{key}:{metal[key]}" for key in sorted(metal)),
-        "note=code reachability only; real public-artifact load/parity is a separate gate",
+        "note=live-artifact reachability; full code routes can remain partial on "
+        "artifact-specific blockers, and real-weight parity is a separate gate",
     ]
 
 

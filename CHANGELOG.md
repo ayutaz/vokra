@@ -167,9 +167,10 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   graph: 161-bin/320-point square-root-Hann log-power analysis, exact numeric
   initializer mapping/transposition, separate ONNX GRU biases,
   `linear_before_reset=1`, `-80 dB` gain floor, and raw overlap-add synthesis.
-  The old 257-bin pass-through artifacts fail closed. An independent ONNX
-  reference measured max waveform error `3.61e-7` on CPU and Metal; the
-  real-weight gate is tightened to `5e-5`.
+  The exact historical public 161-bin initializer layout is normalized only
+  after its full header contract matches; partial or unrelated legacy layouts
+  fail closed. An independent ONNX reference measured max waveform error
+  `3.61e-7` on CPU and Metal; the real-weight gate is tightened to `5e-5`.
 - `DenoiseStreamHandle::finalize` now provides an additive tail-flush seam;
   NSNet2 uses it to emit the final right-padded frame and iSTFT overlap tail,
   while frame-complete denoisers retain the empty default.
