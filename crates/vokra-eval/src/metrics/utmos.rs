@@ -1,44 +1,26 @@
-//! UTMOS neural MOS predictor — config-driven wav2vec2-SSL + regression-head
-//! **skeleton** (M4-18 T06/T07; FR-OP-93, FR-TL-03, NFR-QL-02).
+//! UTMOS neural MOS predictor — the upstream-pinned SaruLab UTMOS22-strong
+//! wav2vec2-SSL + conditioned BLSTM regression stack (FR-OP-93, FR-TL-03,
+//! NFR-QL-02).
 //!
-//! # Status: weight-deferred skeleton (M4-18 kickoff gate = NO-GO-defer)
+//! # Status: real v1 runtime + independent upstream parity
 //!
-//! The M4-18 kickoff-week gate fired the ratified auto-defer rule (UTMOS
-//! weight + license had not arrived from the owner — see
-//! `docs/adr/M4-18-utmos-gate.md`): the **weight-dependent** halves (upstream
-//! checkpoint converter mapping, real-reference parity fixtures, upstream
-//! architecture pinning) are deferred to a v1.0.x patch. What lands here is
-//! the **weight-independent** half:
-//!
-//! - a fully config-driven forward skeleton for the ratified
-//!   characterization "wav2vec2 SSL + regression head"
-//!   (`docs/m4-scope-expansion-2026-07-13.md` §BIG-7) — CNN feature encoder →
-//!   bidirectional transformer encoder → regression head → one MOS scalar;
-//! - synthesized, seed-deterministic weights ([`UtmosWeights::synthesized`],
-//!   SplitMix64 + Xavier — the M3-09 `LlmWeights::synthesized` precedent) so
-//!   shape / determinism / finiteness are machine-verified **without** the
-//!   real checkpoint;
-//! - the GGUF binding ([`Utmos::from_gguf`]) for the `vokra.utmos.*` schema
-//!   (ADR `docs/adr/M4-18-utmos-arch.md` §(c)/(d)) so the owner-side
-//!   flip-the-switch only needs the converter + fixtures, no runtime change.
-//!
-//! **No numerical agreement with upstream SaruLab UTMOS22 is claimed here.**
-//! The exact upstream layer stack (feature-encoder normalization, positional
-//! conv, listener/domain embeddings, BLSTM …) is pinned at flip time against
-//! the upstream implementation — inventing those constants now would violate
-//! the CLAUDE.md hallucination ban. The [`ARCH_VARIANT_V0`] string is the
-//! guard: a GGUF converted for a *different* variant is rejected loudly
-//! (never silently mis-scored, FR-EX-08).
+//! M5-15 lifted the original M4-18 weight defer. The `vokra-convert --model
+//! utmos` converter, the real `wav2vec2_regression.v1` topology and independent
+//! upstream-imported score/stage fixtures are all present. The legacy
+//! [`ARCH_VARIANT_V0`] synthesized scaffold remains additive for schema and
+//! regression testing; released UTMOS22-strong artefacts use
+//! [`ARCH_VARIANT_V1`]. Unknown variants are rejected loudly rather than
+//! mis-scored.
 //!
 //! # Crate placement (ADR `docs/adr/M4-18-utmos-arch.md` §(a))
 //!
-//! Lives in `vokra-eval` (option B'): the CLI (`vokra-eval utmos …`) and the
-//! degradation gates wire it without the banned `vokra-eval → vokra-models`
-//! edge. The GEMM / conv / softmax / layer-norm / GELU bodies are the
-//! first-party `vokra-backend-cpu::kernels` safe wrappers — the same kernels
-//! the models' Compute seam dispatches, so nothing is re-implemented
-//! (NFR-DS-02 stays zero-dep; this is a *downward* first-party edge).
-//! CPU-only by design: eval is an offline/CI path, not an RTF surface.
+//! Lives in `vokra-eval` (option B'): the evaluation CLI and degradation gates
+//! use the parity-pinned scalar CPU entry point. [`UtmosBackendOps`] is a
+//! downward-neutral injection seam: the umbrella runtime CLI can implement it
+//! with `vokra-models::Compute` without adding the banned
+//! `vokra-eval → vokra-models` edge. Learned conv/GEMM/GEMV/norm/GELU/softmax
+//! work then runs on the selected backend; transposes, residuals, embedding
+//! broadcast, pooling and recurrent gate equations remain explicit host glue.
 //!
 //! # No silent fallback (FR-EX-08)
 //!
@@ -57,6 +39,183 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 use super::{AudioMosMetric, Direction, Metric};
+
+/// Backend seam for every learned UTMOS primitive.
+///
+/// Layout-changing transposes, residual addition, conditioning-table lookup,
+/// pooling and the scalar LSTM gate equations remain host control/glue. An
+/// implementation must execute each method on its declared backend or return
+/// an explicit error; silently substituting a CPU kernel is forbidden.
+pub trait UtmosBackendOps: crate::nn::BiLstmBackendOps {
+    /// Dense 1-D convolution over channel-major audio features.
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()>;
+
+    /// Grouped 1-D convolution over channel-major features.
+    #[allow(clippy::too_many_arguments)]
+    fn grouped_conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()>;
+
+    /// Affine GroupNorm over channel-major `[channels, len]`.
+    #[allow(clippy::too_many_arguments)]
+    fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        len: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()>;
+
+    /// Exact GELU.
+    fn gelu_f32(&self, input: &[f32], out: &mut [f32]) -> Result<()>;
+
+    /// Row-wise softmax.
+    fn softmax_f32(&self, input: &[f32], out: &mut [f32], rows: usize, cols: usize) -> Result<()>;
+
+    /// Affine row-wise LayerNorm.
+    #[allow(clippy::too_many_arguments)]
+    fn layer_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()>;
+}
+
+struct ScalarUtmosBackendOps;
+
+impl crate::nn::BiLstmBackendOps for ScalarUtmosBackendOps {
+    fn gemm_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        kernels::gemm_f32(m, n, k, a, b, bias, out)
+    }
+
+    fn gemv_f32(
+        &self,
+        m: usize,
+        k: usize,
+        a: &[f32],
+        x: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        kernels::gemv_f32(m, k, a, x, bias, out)
+    }
+}
+
+impl UtmosBackendOps for ScalarUtmosBackendOps {
+    fn conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        kernels::conv1d_f32(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+        )
+    }
+
+    fn grouped_conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        crate::nn::grouped_conv1d_f32(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+        )
+    }
+
+    fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        len: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        crate::nn::group_norm_f32(input, out, channels, len, groups, gamma, beta, eps)
+    }
+
+    fn gelu_f32(&self, input: &[f32], out: &mut [f32]) -> Result<()> {
+        kernels::gelu_f32(input, out)
+    }
+
+    fn softmax_f32(&self, input: &[f32], out: &mut [f32], rows: usize, cols: usize) -> Result<()> {
+        kernels::softmax_f32(input, out, rows, cols)
+    }
+
+    fn layer_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps)
+    }
+}
 
 /// `vokra.model.arch` value for UTMOS GGUFs.
 pub const ARCH: &str = "utmos";
@@ -1335,7 +1494,22 @@ impl Utmos {
     /// - empty / non-finite input;
     /// - input shorter than the conv stack's receptive field.
     pub fn score(&self, audio: &[f32], sample_rate: u32) -> Result<f64> {
-        self.forward(audio, sample_rate, None)
+        self.forward_with_ops(audio, sample_rate, None, &ScalarUtmosBackendOps)
+    }
+
+    /// Scores one clip while dispatching every learned primitive through
+    /// `ops`.
+    ///
+    /// This is the runtime/GPU entry point. [`Self::score`] remains the
+    /// parity-pinned scalar CPU oracle. Backend failures propagate unchanged;
+    /// no operation is retried on the CPU.
+    pub fn score_with_backend_ops<O: UtmosBackendOps + ?Sized>(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        ops: &O,
+    ) -> Result<f64> {
+        self.forward_with_ops(audio, sample_rate, None, ops)
     }
 
     /// Scores `audio` **and** records the intermediate stage tensors, for the
@@ -1348,15 +1522,29 @@ impl Utmos {
     /// extra.
     pub fn score_with_taps(&self, audio: &[f32], sample_rate: u32) -> Result<(f64, UtmosTaps)> {
         let mut taps = UtmosTaps::default();
-        let score = self.forward(audio, sample_rate, Some(&mut taps))?;
+        let score =
+            self.forward_with_ops(audio, sample_rate, Some(&mut taps), &ScalarUtmosBackendOps)?;
         Ok((score, taps))
     }
 
-    fn forward(
+    /// Backend-dispatched counterpart of [`Self::score_with_taps`].
+    pub fn score_with_backend_ops_and_taps<O: UtmosBackendOps + ?Sized>(
+        &self,
+        audio: &[f32],
+        sample_rate: u32,
+        ops: &O,
+    ) -> Result<(f64, UtmosTaps)> {
+        let mut taps = UtmosTaps::default();
+        let score = self.forward_with_ops(audio, sample_rate, Some(&mut taps), ops)?;
+        Ok((score, taps))
+    }
+
+    fn forward_with_ops<O: UtmosBackendOps + ?Sized>(
         &self,
         audio: &[f32],
         sample_rate: u32,
         mut taps: Option<&mut UtmosTaps>,
+        ops: &O,
     ) -> Result<f64> {
         let c = &self.config;
         if sample_rate != c.sample_rate {
@@ -1387,7 +1575,7 @@ impl Utmos {
         for (li, layer) in self.weights.conv.iter().enumerate() {
             let out_len = (len - layer.kernel) / layer.stride + 1;
             let mut out = vec![0.0f32; layer.c_out * out_len];
-            kernels::conv1d_f32(
+            ops.conv1d_f32(
                 &cur,
                 layer.c_in,
                 len,
@@ -1413,7 +1601,7 @@ impl Utmos {
                         .as_ref()
                         .map_or(1e-5, |spec| spec.group_norm_eps);
                     let mut normed = vec![0.0f32; out.len()];
-                    crate::nn::group_norm_f32(
+                    ops.group_norm_f32(
                         &out,
                         &mut normed,
                         layer.c_out,
@@ -1428,7 +1616,7 @@ impl Utmos {
             }
             let mut act = vec![0.0f32; out.len()];
             match self.config.conv_activation {
-                ConvActivation::Gelu => kernels::gelu_f32(&out, &mut act)?,
+                ConvActivation::Gelu => ops.gelu_f32(&out, &mut act)?,
             }
             cur = act;
             len = out_len;
@@ -1451,7 +1639,9 @@ impl Utmos {
 
         // ---- v1: LayerNorm on the feature-extractor output ------------------
         let x = match (&self.weights.v1, &self.config.v1) {
-            (Some(v1w), Some(_)) => layer_norm(&v1w.feature_ln, &x, t, c_last, c.ln_eps)?,
+            (Some(v1w), Some(_)) => {
+                layer_norm_with_ops(&v1w.feature_ln, &x, t, c_last, c.ln_eps, ops)?
+            }
             _ => x,
         };
         if let Some(tp) = taps.as_deref_mut() {
@@ -1460,7 +1650,7 @@ impl Utmos {
 
         // ---- optional feature projection to the transformer width ----------
         let mut h = match &self.weights.feat_proj {
-            Some(proj) => linear_forward(proj, &x, t)?,
+            Some(proj) => linear_forward_with_ops(proj, &x, t, ops)?,
             None => x,
         };
         if let Some(tp) = taps.as_deref_mut() {
@@ -1469,7 +1659,7 @@ impl Utmos {
 
         // ---- v1: positional conv (residual) + encoder input LayerNorm -------
         if let (Some(v1w), Some(_spec)) = (&self.weights.v1, &self.config.v1) {
-            let pos = self.pos_conv_forward(&v1w.pos_conv, &h, t)?;
+            let pos = self.pos_conv_forward(&v1w.pos_conv, &h, t, ops)?;
             if let Some(tp) = taps.as_deref_mut() {
                 // Channel-major, matching the upstream hook (which sees the
                 // pre-transpose Conv1d output).
@@ -1483,7 +1673,7 @@ impl Utmos {
                 tp.pos_conv = chan;
             }
             h = add(&h, &pos)?;
-            h = layer_norm(&v1w.enc_in_ln, &h, t, c.hidden_dim, c.ln_eps)?;
+            h = layer_norm_with_ops(&v1w.enc_in_ln, &h, t, c.hidden_dim, c.ln_eps, ops)?;
             if let Some(tp) = taps.as_deref_mut() {
                 tp.enc_in_ln = h.clone();
             }
@@ -1491,13 +1681,13 @@ impl Utmos {
 
         // ---- bidirectional transformer encoder ------------------------------
         for blk in &self.weights.blocks {
-            h = self.encoder_block(blk, h, t)?;
+            h = self.encoder_block(blk, h, t, ops)?;
             if let Some(tp) = taps.as_deref_mut() {
                 tp.enc_blocks.push(h.clone());
             }
         }
         if let Some(ln) = &self.weights.enc_ln {
-            h = layer_norm(ln, &h, t, c.hidden_dim, c.ln_eps)?;
+            h = layer_norm_with_ops(ln, &h, t, c.hidden_dim, c.ln_eps, ops)?;
         }
 
         // ---- v1: constant-embedding conditioning + BLSTM --------------------
@@ -1529,7 +1719,7 @@ impl Utmos {
                 row[c.hidden_dim..c.hidden_dim + spec.domain_dim].copy_from_slice(dom);
                 row[c.hidden_dim + spec.domain_dim..].copy_from_slice(jud);
             }
-            h = v1w.blstm.forward(&cond, t)?;
+            h = v1w.blstm.forward_with_backend_ops(&cond, t, ops)?;
             width = 2 * spec.blstm_hidden;
             if let Some(tp) = taps.as_deref_mut() {
                 tp.blstm_out = h.clone();
@@ -1544,7 +1734,7 @@ impl Utmos {
             HeadPool::MeanBefore => {
                 let mut cur = mean_over_time(&h, t, width);
                 for (i, lin) in self.weights.head.iter().enumerate() {
-                    cur = linear_forward(lin, &cur, 1)?;
+                    cur = linear_forward_with_ops(lin, &cur, 1, ops)?;
                     cur = apply_head_activation(head_act, cur, i, self.weights.head.len())?;
                 }
                 cur[0]
@@ -1552,7 +1742,7 @@ impl Utmos {
             HeadPool::MeanAfter => {
                 let mut cur = h;
                 for (i, lin) in self.weights.head.iter().enumerate() {
-                    cur = linear_forward(lin, &cur, t)?;
+                    cur = linear_forward_with_ops(lin, &cur, t, ops)?;
                     cur = apply_head_activation(head_act, cur, i, self.weights.head.len())?;
                 }
                 if let Some(tp) = taps {
@@ -1577,7 +1767,13 @@ impl Utmos {
     ///
     /// The transposes are because `kernels::conv1d_f32` is channel-major
     /// (`[c, t]`) while the encoder carries frame-major `[t, c]`.
-    fn pos_conv_forward(&self, pc: &PosConv, h: &[f32], t: usize) -> Result<Vec<f32>> {
+    fn pos_conv_forward<O: UtmosBackendOps + ?Sized>(
+        &self,
+        pc: &PosConv,
+        h: &[f32],
+        t: usize,
+        ops: &O,
+    ) -> Result<Vec<f32>> {
         let d = self.config.hidden_dim;
         // [t, d] -> [d, t]
         let mut chan = vec![0.0f32; d * t];
@@ -1597,7 +1793,7 @@ impl Utmos {
         }
         let raw_len = padded - pc.kernel + 1;
         let mut out = vec![0.0f32; d * raw_len];
-        crate::nn::grouped_conv1d_f32(
+        ops.grouped_conv1d_f32(
             &chan,
             d,
             t,
@@ -1625,7 +1821,7 @@ impl Utmos {
         }
         // GELU, and back to frame-major [t, d].
         let mut act = vec![0.0f32; d * raw_len];
-        kernels::gelu_f32(&out, &mut act)?;
+        ops.gelu_f32(&out, &mut act)?;
         let mut frame = vec![0.0f32; t * d];
         for c in 0..d {
             for tt in 0..t {
@@ -1637,39 +1833,51 @@ impl Utmos {
 
     /// One encoder block over frame-major `h = [t, d]`, honoring the
     /// config's norm placement.
-    fn encoder_block(&self, blk: &EncBlock, h: Vec<f32>, t: usize) -> Result<Vec<f32>> {
+    fn encoder_block<O: UtmosBackendOps + ?Sized>(
+        &self,
+        blk: &EncBlock,
+        h: Vec<f32>,
+        t: usize,
+        ops: &O,
+    ) -> Result<Vec<f32>> {
         let d = self.config.hidden_dim;
         let eps = self.config.ln_eps;
         match self.config.norm {
             TransformerNorm::Pre => {
                 // x + Attn(LN1(x)); x + MLP(LN2(x)).
-                let n1 = layer_norm(&blk.ln1, &h, t, d, eps)?;
-                let attn = self.mhsa(blk, &n1, t)?;
+                let n1 = layer_norm_with_ops(&blk.ln1, &h, t, d, eps, ops)?;
+                let attn = self.mhsa(blk, &n1, t, ops)?;
                 let h1 = add(&h, &attn)?;
-                let n2 = layer_norm(&blk.ln2, &h1, t, d, eps)?;
-                let mlp = mlp_forward(blk, &n2, t)?;
+                let n2 = layer_norm_with_ops(&blk.ln2, &h1, t, d, eps, ops)?;
+                let mlp = mlp_forward_with_ops(blk, &n2, t, ops)?;
                 add(&h1, &mlp)
             }
             TransformerNorm::Post => {
                 // LN1(x + Attn(x)); LN2(x + MLP(x)).
-                let attn = self.mhsa(blk, &h, t)?;
-                let h1 = layer_norm(&blk.ln1, &add(&h, &attn)?, t, d, eps)?;
-                let mlp = mlp_forward(blk, &h1, t)?;
-                layer_norm(&blk.ln2, &add(&h1, &mlp)?, t, d, eps)
+                let attn = self.mhsa(blk, &h, t, ops)?;
+                let h1 = layer_norm_with_ops(&blk.ln1, &add(&h, &attn)?, t, d, eps, ops)?;
+                let mlp = mlp_forward_with_ops(blk, &h1, t, ops)?;
+                layer_norm_with_ops(&blk.ln2, &add(&h1, &mlp)?, t, d, eps, ops)
             }
         }
     }
 
     /// Bidirectional (unmasked) multi-head self-attention over `[t, d]`,
     /// scale `1/sqrt(d_head)`, per-head GEMM + row softmax.
-    fn mhsa(&self, blk: &EncBlock, x: &[f32], t: usize) -> Result<Vec<f32>> {
+    fn mhsa<O: UtmosBackendOps + ?Sized>(
+        &self,
+        blk: &EncBlock,
+        x: &[f32],
+        t: usize,
+        ops: &O,
+    ) -> Result<Vec<f32>> {
         let d = self.config.hidden_dim;
         let n_head = self.config.n_head;
         let dh = d / n_head;
         let scale = 1.0 / (dh as f32).sqrt();
-        let q = linear_forward(&blk.q, x, t)?;
-        let k = linear_forward(&blk.k, x, t)?;
-        let v = linear_forward(&blk.v, x, t)?;
+        let q = linear_forward_with_ops(&blk.q, x, t, ops)?;
+        let k = linear_forward_with_ops(&blk.k, x, t, ops)?;
+        let v = linear_forward_with_ops(&blk.v, x, t, ops)?;
         let mut ctx = vec![0.0f32; t * d];
         let mut qh = vec![0.0f32; t * dh];
         let mut kh_t = vec![0.0f32; dh * t];
@@ -1688,27 +1896,32 @@ impl Utmos {
                     vh[tt * dh + j] = v[tt * d + off + j];
                 }
             }
-            kernels::gemm_f32(t, t, dh, &qh, &kh_t, None, &mut scores)?;
+            ops.gemm_f32(t, t, dh, &qh, &kh_t, None, &mut scores)?;
             for s in scores.iter_mut() {
                 *s *= scale;
             }
-            kernels::softmax_f32(&scores, &mut probs, t, t)?;
-            kernels::gemm_f32(t, dh, t, &probs, &vh, None, &mut out_h)?;
+            ops.softmax_f32(&scores, &mut probs, t, t)?;
+            ops.gemm_f32(t, dh, t, &probs, &vh, None, &mut out_h)?;
             for tt in 0..t {
                 ctx[tt * d + off..tt * d + off + dh]
                     .copy_from_slice(&out_h[tt * dh..(tt + 1) * dh]);
             }
         }
-        linear_forward(&blk.o, &ctx, t)
+        linear_forward_with_ops(&blk.o, &ctx, t, ops)
     }
 }
 
 // --- forward primitives (thin wrappers over vokra-backend-cpu kernels) ------
 
 /// `Y[rows, d_out] = X[rows, d_in] @ w_t (+ bias)` — one row-major GEMM.
-fn linear_forward(lin: &Linear, x: &[f32], rows: usize) -> Result<Vec<f32>> {
+fn linear_forward_with_ops<O: UtmosBackendOps + ?Sized>(
+    lin: &Linear,
+    x: &[f32],
+    rows: usize,
+    ops: &O,
+) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; rows * lin.d_out];
-    kernels::gemm_f32(
+    ops.gemm_f32(
         rows,
         lin.d_out,
         lin.d_in,
@@ -1721,18 +1934,30 @@ fn linear_forward(lin: &Linear, x: &[f32], rows: usize) -> Result<Vec<f32>> {
 }
 
 /// Row-wise LayerNorm over `[rows, cols]` with the block's affine.
-fn layer_norm(ln: &LayerNormW, x: &[f32], rows: usize, cols: usize, eps: f32) -> Result<Vec<f32>> {
+fn layer_norm_with_ops<O: UtmosBackendOps + ?Sized>(
+    ln: &LayerNormW,
+    x: &[f32],
+    rows: usize,
+    cols: usize,
+    eps: f32,
+    ops: &O,
+) -> Result<Vec<f32>> {
     let mut out = vec![0.0f32; x.len()];
-    kernels::layer_norm_f32(x, &mut out, rows, cols, &ln.gamma, &ln.beta, eps)?;
+    ops.layer_norm_f32(x, &mut out, rows, cols, &ln.gamma, &ln.beta, eps)?;
     Ok(out)
 }
 
 /// The GELU MLP: `fc2(gelu(fc1(x)))`.
-fn mlp_forward(blk: &EncBlock, x: &[f32], t: usize) -> Result<Vec<f32>> {
-    let inner = linear_forward(&blk.fc1, x, t)?;
+fn mlp_forward_with_ops<O: UtmosBackendOps + ?Sized>(
+    blk: &EncBlock,
+    x: &[f32],
+    t: usize,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    let inner = linear_forward_with_ops(&blk.fc1, x, t, ops)?;
     let mut act = vec![0.0f32; inner.len()];
-    kernels::gelu_f32(&inner, &mut act)?;
-    linear_forward(&blk.fc2, &act, t)
+    ops.gelu_f32(&inner, &mut act)?;
+    linear_forward_with_ops(&blk.fc2, &act, t, ops)
 }
 
 /// Applies the head's inter-linear activation after linear `i` of `total`.
@@ -1847,6 +2072,113 @@ mod tests {
         (0..n)
             .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16_000.0).sin())
             .collect()
+    }
+
+    struct RejectAtFirstLearnedOp;
+
+    impl crate::nn::BiLstmBackendOps for RejectAtFirstLearnedOp {
+        fn gemm_f32(
+            &self,
+            _m: usize,
+            _n: usize,
+            _k: usize,
+            _a: &[f32],
+            _b: &[f32],
+            _bias: Option<&[f32]>,
+            _out: &mut [f32],
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+
+        fn gemv_f32(
+            &self,
+            _m: usize,
+            _k: usize,
+            _a: &[f32],
+            _x: &[f32],
+            _bias: Option<&[f32]>,
+            _out: &mut [f32],
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+    }
+
+    impl UtmosBackendOps for RejectAtFirstLearnedOp {
+        fn conv1d_f32(
+            &self,
+            _input: &[f32],
+            _in_ch: usize,
+            _in_len: usize,
+            _weight: &[f32],
+            _out_ch: usize,
+            _kernel: usize,
+            _bias: Option<&[f32]>,
+            _stride: usize,
+            _padding: usize,
+            _out: &mut [f32],
+        ) -> Result<()> {
+            Err(VokraError::UnsupportedOp(
+                "synthetic device rejected utmos conv1d; no CPU fallback".to_owned(),
+            ))
+        }
+
+        fn grouped_conv1d_f32(
+            &self,
+            _input: &[f32],
+            _in_ch: usize,
+            _in_len: usize,
+            _weight: &[f32],
+            _out_ch: usize,
+            _kernel: usize,
+            _bias: Option<&[f32]>,
+            _stride: usize,
+            _padding: usize,
+            _groups: usize,
+            _out: &mut [f32],
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+
+        fn group_norm_f32(
+            &self,
+            _input: &[f32],
+            _out: &mut [f32],
+            _channels: usize,
+            _len: usize,
+            _groups: usize,
+            _gamma: &[f32],
+            _beta: &[f32],
+            _eps: f32,
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+
+        fn gelu_f32(&self, _input: &[f32], _out: &mut [f32]) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+
+        fn softmax_f32(
+            &self,
+            _input: &[f32],
+            _out: &mut [f32],
+            _rows: usize,
+            _cols: usize,
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
+
+        fn layer_norm_f32(
+            &self,
+            _input: &[f32],
+            _out: &mut [f32],
+            _rows: usize,
+            _cols: usize,
+            _gamma: &[f32],
+            _beta: &[f32],
+            _eps: f32,
+        ) -> Result<()> {
+            unreachable!("the feature convolution must fail first")
+        }
     }
 
     fn u32_array(values: &[u32]) -> GgufMetadataValue {
@@ -2499,6 +2831,17 @@ mod tests {
         // Different audio must move the score (the whole chain is wired).
         let z = m.score(&vec![0.0f32; 4096], 16_000).unwrap();
         assert_ne!(a.to_bits(), z.to_bits());
+    }
+
+    #[test]
+    fn backend_failure_is_propagated_without_cpu_retry() {
+        let model = Utmos::synthesized(tiny_v1_config(), SEED).unwrap();
+        let error = model
+            .score_with_backend_ops(&sine(256), 16_000, &RejectAtFirstLearnedOp)
+            .expect_err("the declared backend must fail");
+        let message = error.to_string();
+        assert!(message.contains("synthetic device rejected"), "{message}");
+        assert!(message.contains("no CPU fallback"), "{message}");
     }
 
     #[test]

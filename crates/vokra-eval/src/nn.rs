@@ -50,6 +50,68 @@
 use vokra_backend_cpu::kernels;
 use vokra_core::{Result, VokraError};
 
+/// Backend seam for the two learned projections in [`BiLstm`].
+///
+/// Gate nonlinearities and recurrent state bookkeeping remain host control
+/// flow. Implementations must execute both projections on their declared
+/// backend or return an explicit error; they must never substitute a CPU
+/// kernel for an unavailable device operation.
+pub trait BiLstmBackendOps {
+    /// Row-major matrix multiplication with optional per-column bias.
+    #[allow(clippy::too_many_arguments)]
+    fn gemm_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()>;
+
+    /// Row-major matrix-vector multiplication with optional per-row bias.
+    #[allow(clippy::too_many_arguments)]
+    fn gemv_f32(
+        &self,
+        m: usize,
+        k: usize,
+        a: &[f32],
+        x: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()>;
+}
+
+struct ScalarBiLstmBackendOps;
+
+impl BiLstmBackendOps for ScalarBiLstmBackendOps {
+    fn gemm_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        kernels::gemm_f32(m, n, k, a, b, bias, out)
+    }
+
+    fn gemv_f32(
+        &self,
+        m: usize,
+        k: usize,
+        a: &[f32],
+        x: &[f32],
+        bias: Option<&[f32]>,
+        out: &mut [f32],
+    ) -> Result<()> {
+        kernels::gemv_f32(m, k, a, x, bias, out)
+    }
+}
+
 /// Row-wise GroupNorm over a **channel-major** `[channels, len]` buffer.
 ///
 /// Normalizes each of the `groups` contiguous channel blocks over the joint
@@ -286,6 +348,22 @@ impl BiLstm {
     /// [`VokraError::InvalidArgument`] on a mis-shaped parameter set, an empty
     /// sequence, or an `x` whose length is not `t · input`.
     pub fn forward(&self, x: &[f32], t: usize) -> Result<Vec<f32>> {
+        self.forward_with_backend_ops(x, t, &ScalarBiLstmBackendOps)
+    }
+
+    /// Runs the layer while dispatching both learned projections through
+    /// `ops`.
+    ///
+    /// The recurrent sigmoid/tanh equations and state updates deliberately
+    /// remain host scalar glue. A device implementation therefore owns every
+    /// learned matrix operation without changing the parity-pinned equation
+    /// order.
+    pub fn forward_with_backend_ops<O: BiLstmBackendOps + ?Sized>(
+        &self,
+        x: &[f32],
+        t: usize,
+        ops: &O,
+    ) -> Result<Vec<f32>> {
         self.validate()?;
         if t == 0 {
             return Err(VokraError::InvalidArgument(
@@ -310,7 +388,7 @@ impl BiLstm {
             // Whole-sequence input projection: [t, input] @ [input, 4h].
             let mut gates = vec![0.0f32; t * 4 * h];
             let w_ih_t = transpose(&dir.w_ih, 4 * h, self.input);
-            kernels::gemm_f32(
+            ops.gemm_f32(
                 t,
                 4 * h,
                 self.input,
@@ -328,7 +406,7 @@ impl BiLstm {
                 // Recurrent term: W_hh [4h, h] @ h_prev [h] + b_hh. The
                 // checkpoint's storage order is already `[4h, h]`, so this is
                 // `gemv_f32`'s native layout — no transpose, no copy.
-                kernels::gemv_f32(4 * h, h, &dir.w_hh, &h_prev, Some(&dir.b_hh), &mut rec)?;
+                ops.gemv_f32(4 * h, h, &dir.w_hh, &h_prev, Some(&dir.b_hh), &mut rec)?;
                 let g = &gates[tt * 4 * h..(tt + 1) * 4 * h];
                 let base = if is_reverse { h } else { 0 };
                 for j in 0..h {
