@@ -252,6 +252,18 @@ impl FocalCodec {
         self.variant.frame_hop()
     }
 
+    /// Number of entries in the released binary spherical codebook.
+    #[must_use]
+    pub const fn codebook_size(&self) -> usize {
+        CODEBOOK_SIZE
+    }
+
+    /// Number of binary dimensions represented by each token.
+    #[must_use]
+    pub const fn code_dimension(&self) -> usize {
+        CODE_DIM
+    }
+
     /// Whether the exact old 50 Hz publication without a variant tag was
     /// repaired after matching its complete manifest and identity tuple.
     #[must_use]

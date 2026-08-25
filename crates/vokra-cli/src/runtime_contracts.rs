@@ -315,6 +315,161 @@ impl MimiCodesV1 {
     }
 }
 
+/// FocalCodec single-codebook container magic (`VKRFOC01`) and version.
+const FOCALCODEC_MAGIC: &[u8; 8] = b"VKRFOC01";
+const FOCALCODEC_VERSION: u16 = 1;
+const FOCALCODEC_HEADER_LEN: usize = 96;
+
+/// Portable FocalCodec BSQ token container, version 1.
+///
+/// Tokens are one unsigned little-endian u32 per time step. The topology
+/// fields distinguish the released 50 / 25 / 12.5 Hz variants, while the
+/// tensor fingerprint prevents a sibling or modified checkpoint from decoding
+/// a stream whose integer range happens to be compatible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FocalCodecCodesV1 {
+    pub(crate) sample_rate: u32,
+    pub(crate) token_hz_times_two: u32,
+    pub(crate) frame_hop: u32,
+    pub(crate) codebook_size: u32,
+    pub(crate) code_dimension: u32,
+    pub(crate) token_count: u64,
+    pub(crate) pcm_samples: u64,
+    pub(crate) model_sha256: [u8; 32],
+    pub(crate) tokens: Vec<u32>,
+}
+
+impl FocalCodecCodesV1 {
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        let payload_len = self
+            .tokens
+            .len()
+            .checked_mul(4)
+            .ok_or("FocalCodec token payload size overflow")?;
+        let mut out = Vec::with_capacity(FOCALCODEC_HEADER_LEN + payload_len);
+        out.extend_from_slice(FOCALCODEC_MAGIC);
+        out.extend_from_slice(&FOCALCODEC_VERSION.to_le_bytes());
+        out.extend_from_slice(&(FOCALCODEC_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // flags, reserved
+        out.extend_from_slice(&self.sample_rate.to_le_bytes());
+        out.extend_from_slice(&self.token_hz_times_two.to_le_bytes());
+        out.extend_from_slice(&self.frame_hop.to_le_bytes());
+        out.extend_from_slice(&self.codebook_size.to_le_bytes());
+        out.extend_from_slice(&self.code_dimension.to_le_bytes());
+        out.extend_from_slice(&self.token_count.to_le_bytes());
+        out.extend_from_slice(&self.pcm_samples.to_le_bytes());
+        out.extend_from_slice(&self.model_sha256);
+        out.extend_from_slice(&[0u8; 12]); // reserved for additive v1 fields
+        debug_assert_eq!(out.len(), FOCALCODEC_HEADER_LEN);
+        for token in &self.tokens {
+            out.extend_from_slice(&token.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < FOCALCODEC_HEADER_LEN {
+            return Err(format!(
+                "FocalCodec code container is truncated: {} bytes, need at least {FOCALCODEC_HEADER_LEN}",
+                bytes.len()
+            ));
+        }
+        if &bytes[..8] != FOCALCODEC_MAGIC {
+            return Err(
+                "FocalCodec code container has wrong magic; expected `VKRFOC01`".to_owned(),
+            );
+        }
+        let version = read_u16(bytes, 8)?;
+        if version != FOCALCODEC_VERSION {
+            return Err(format!(
+                "FocalCodec code container version {version} is unsupported; this build reads version {FOCALCODEC_VERSION}"
+            ));
+        }
+        let header_len = read_u16(bytes, 10)? as usize;
+        if header_len != FOCALCODEC_HEADER_LEN {
+            return Err(format!(
+                "FocalCodec code container v1 header length {header_len} != {FOCALCODEC_HEADER_LEN}"
+            ));
+        }
+        if read_u32(bytes, 12)? != 0 || bytes[84..96].iter().any(|&byte| byte != 0) {
+            return Err("FocalCodec code container v1 has non-zero reserved fields".to_owned());
+        }
+        let token_count = read_u64(bytes, 36)?;
+        let token_count_host = usize::try_from(token_count)
+            .map_err(|_| "FocalCodec token count does not fit this host".to_owned())?;
+        let expected = FOCALCODEC_HEADER_LEN
+            .checked_add(
+                token_count_host
+                    .checked_mul(4)
+                    .ok_or("FocalCodec payload size overflow")?,
+            )
+            .ok_or("FocalCodec container size overflow")?;
+        if bytes.len() != expected {
+            return Err(format!(
+                "FocalCodec code container length {} != header {FOCALCODEC_HEADER_LEN} + {token_count_host} u32 tokens ({expected})",
+                bytes.len()
+            ));
+        }
+        let mut model_sha256 = [0u8; 32];
+        model_sha256.copy_from_slice(&bytes[52..84]);
+        let tokens = bytes[FOCALCODEC_HEADER_LEN..]
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        let parsed = Self {
+            sample_rate: read_u32(bytes, 16)?,
+            token_hz_times_two: read_u32(bytes, 20)?,
+            frame_hop: read_u32(bytes, 24)?,
+            codebook_size: read_u32(bytes, 28)?,
+            code_dimension: read_u32(bytes, 32)?,
+            token_count,
+            pcm_samples: read_u64(bytes, 44)?,
+            model_sha256,
+            tokens,
+        };
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.sample_rate == 0
+            || self.token_hz_times_two == 0
+            || self.frame_hop == 0
+            || self.codebook_size == 0
+            || self.code_dimension == 0
+            || self.token_count == 0
+            || self.pcm_samples == 0
+        {
+            return Err(
+                "FocalCodec code container v1 has a zero rate, axis, token, or PCM length"
+                    .to_owned(),
+            );
+        }
+        let expected = usize::try_from(self.token_count)
+            .map_err(|_| "FocalCodec token count does not fit this host")?;
+        if self.tokens.len() != expected {
+            return Err(format!(
+                "FocalCodec token vector has {} entries, expected token_count = {expected}",
+                self.tokens.len()
+            ));
+        }
+        if let Some((index, token)) = self
+            .tokens
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, token)| *token >= self.codebook_size)
+        {
+            return Err(format!(
+                "FocalCodec token {token} at payload index {index} is outside codebook_size {}",
+                self.codebook_size
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// SNAC hierarchical-code container magic (`VKRSNAC1`) and current version.
 const SNAC_MAGIC: &[u8; 8] = b"VKRSNAC1";
 const SNAC_VERSION: u16 = 1;
@@ -802,6 +957,57 @@ mod tests {
 
         let mut value = sample_codes();
         value.codes[2] = value.codebook_size;
+        assert!(
+            value
+                .to_bytes()
+                .unwrap_err()
+                .contains("outside codebook_size")
+        );
+    }
+
+    fn sample_focalcodec_codes() -> FocalCodecCodesV1 {
+        FocalCodecCodesV1 {
+            sample_rate: 16_000,
+            token_hz_times_two: 25,
+            frame_hop: 1_280,
+            codebook_size: 8_192,
+            code_dimension: 13,
+            token_count: 3,
+            pcm_samples: 3_200,
+            model_sha256: sha256(b"focalcodec-model"),
+            tokens: vec![1, 4_096, 8_191],
+        }
+    }
+
+    #[test]
+    fn focalcodec_v1_round_trips_single_codebook_tokens() {
+        let value = sample_focalcodec_codes();
+        let bytes = value.to_bytes().unwrap();
+        assert_eq!(&bytes[..8], b"VKRFOC01");
+        assert_eq!(&bytes[96..100], &1u32.to_le_bytes());
+        assert_eq!(FocalCodecCodesV1::from_bytes(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn focalcodec_v1_rejects_truncation_reserved_bits_and_token_range() {
+        let mut bytes = sample_focalcodec_codes().to_bytes().unwrap();
+        bytes.pop();
+        assert!(
+            FocalCodecCodesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("length")
+        );
+
+        let mut bytes = sample_focalcodec_codes().to_bytes().unwrap();
+        bytes[84] = 1;
+        assert!(
+            FocalCodecCodesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("reserved")
+        );
+
+        let mut value = sample_focalcodec_codes();
+        value.tokens[1] = value.codebook_size;
         assert!(
             value
                 .to_bytes()

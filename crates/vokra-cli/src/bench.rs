@@ -843,6 +843,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::FocalCodec => {
+            return Err(
+                "bench: arch `focalcodec` uses explicit encode/decode modes and a versioned BSQ token container; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <focalcodec.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
         ModelTask::VocoderBigVgan => {
             return Err(
                 "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"

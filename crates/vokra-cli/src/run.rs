@@ -16,7 +16,9 @@ use vokra_core::engines::{KwsEngine, SeparationEngine};
 use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
-use crate::runtime_contracts::{MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256};
+use crate::runtime_contracts::{
+    FocalCodecCodesV1, MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256,
+};
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
@@ -57,6 +59,8 @@ USAGE:
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
     vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
+    vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
+    vokra-cli run --model <focalcodec.gguf> --codec-mode decode --input <codes.vfc> --output <out.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -81,6 +85,9 @@ OPTIONS:
                                 `[frames,n_codebooks]` little-endian u32.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
+                                For FocalCodec encode it is a 16 kHz mono WAV;
+                                for decode it is a `VKRFOC01` v1 BSQ token
+                                container pinned to the exact checkpoint.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -140,7 +147,9 @@ OPTIONS:
                                 Mimi requires it: code container for encode,
                                 WAV for decode. DAC decode also requires a WAV
                                 output. SNAC requires a `.vsc` code container
-                                for encode and a WAV for decode. Vocoders write
+                                for encode and a WAV for decode. FocalCodec
+                                requires a `.vfc` token container for encode and
+                                a WAV for decode. Vocoders write
                                 waveform WAV.
                                 Multi-speaker SepFormer models derive
                                 `<stem>.sourceN.wav` paths from this value.
@@ -162,6 +171,11 @@ OPTIONS:
                                 WAV on CPU/Metal). Metal encode is an explicit
                                 unsupported-operation error; it never falls
                                 back to CPU.
+                                focalcodec: `encode` (16 kHz mono WAV ->
+                                versioned BSQ tokens) or `decode` (tokens ->
+                                16 kHz WAV). CPU and Metal both run the complete
+                                learned-op set; uncovered backends fail before
+                                inference and never fall back to CPU.
     --bandwidth-id <0..3>       vocos-encodec-24khz only: required AdaLayerNorm
                                 condition. Maps to 1.5, 3.0, 6.0, or 12.0 kbps.
     --beam-size <N>             ASR beam-search width (default 1 = greedy).
@@ -669,6 +683,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
         | ModelTask::SnacCodec
+        | ModelTask::FocalCodec
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -720,9 +735,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MimiCodec
         && task != ModelTask::DacCodec
         && task != ModelTask::SnacCodec
+        && task != ModelTask::FocalCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/snac codec arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/snac/focalcodec arches"
                 .to_owned(),
         );
     }
@@ -1022,6 +1038,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::SnacCodec => {
             run_snac_codec(&session, &a)?;
+        }
+        ModelTask::FocalCodec => {
+            run_focalcodec(&session, &a)?;
         }
         ModelTask::VocoderBigVgan => {
             run_bigvgan(&session, &a)?;
@@ -2129,27 +2148,30 @@ fn run_dac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
 /// license, and the complete manifest. This ledger pins every tensor's name,
 /// dtype, shape, and payload so a code container cannot be decoded with a
 /// sibling or modified checkpoint that happens to share the same topology.
-fn snac_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
-    const DOMAIN: &[u8] = b"vokra-snac-gguf-tensor-fingerprint-v1";
+fn codec_model_fingerprint(
+    file: &vokra_core::gguf::GgufFile,
+    domain: &[u8],
+    label: &str,
+) -> Result<[u8; 32], String> {
     let mut ledger = Vec::new();
-    ledger.extend_from_slice(DOMAIN);
+    ledger.extend_from_slice(domain);
     ledger.extend_from_slice(
         &u64::try_from(file.tensors().len())
-            .map_err(|_| "run (snac): tensor count exceeds u64")?
+            .map_err(|_| format!("run ({label}): tensor count exceeds u64"))?
             .to_le_bytes(),
     );
     for info in file.tensors() {
         let name = info.name.as_bytes();
         ledger.extend_from_slice(
             &u64::try_from(name.len())
-                .map_err(|_| "run (snac): tensor name length exceeds u64")?
+                .map_err(|_| format!("run ({label}): tensor name length exceeds u64"))?
                 .to_le_bytes(),
         );
         ledger.extend_from_slice(name);
         ledger.extend_from_slice(&info.dtype.tag().to_le_bytes());
         ledger.extend_from_slice(
             &u32::try_from(info.dimensions.len())
-                .map_err(|_| "run (snac): tensor rank exceeds u32")?
+                .map_err(|_| format!("run ({label}): tensor rank exceeds u32"))?
                 .to_le_bytes(),
         );
         for &dimension in &info.dimensions {
@@ -2158,12 +2180,24 @@ fn snac_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32],
         let payload = file.tensor_bytes(info);
         ledger.extend_from_slice(
             &u64::try_from(payload.len())
-                .map_err(|_| "run (snac): tensor byte length exceeds u64")?
+                .map_err(|_| format!("run ({label}): tensor byte length exceeds u64"))?
                 .to_le_bytes(),
         );
         ledger.extend_from_slice(&sha256(payload));
     }
     Ok(sha256(&ledger))
+}
+
+fn snac_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
+    codec_model_fingerprint(file, b"vokra-snac-gguf-tensor-fingerprint-v1", "snac")
+}
+
+fn focalcodec_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
+    codec_model_fingerprint(
+        file,
+        b"vokra-focalcodec-gguf-tensor-fingerprint-v1",
+        "focalcodec",
+    )
 }
 
 fn validate_snac_codes_for_model(
@@ -2354,6 +2388,163 @@ fn run_snac_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
                 "snac decode: {} base frames / {} hierarchical stages -> {} samples @ {} Hz -> {output_path}",
                 container.base_frames,
                 container.n_stages,
+                pcm.len(),
+                model.sample_rate()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_focalcodec_codes_for_model(
+    codes: &FocalCodecCodesV1,
+    model: &vokra_models::focalcodec::FocalCodec,
+    model_sha256: [u8; 32],
+) -> Result<(), String> {
+    let frame_hop = u32::try_from(model.frame_hop())
+        .map_err(|_| "run (focalcodec decode): frame hop exceeds u32")?;
+    let codebook_size = u32::try_from(model.codebook_size())
+        .map_err(|_| "run (focalcodec decode): codebook size exceeds u32")?;
+    let code_dimension = u32::try_from(model.code_dimension())
+        .map_err(|_| "run (focalcodec decode): code dimension exceeds u32")?;
+    if codes.sample_rate != model.sample_rate()
+        || codes.token_hz_times_two != model.variant().token_hz_times_two()
+        || codes.frame_hop != frame_hop
+        || codes.codebook_size != codebook_size
+        || codes.code_dimension != code_dimension
+    {
+        return Err(format!(
+            "run (focalcodec decode): container/model contract mismatch: container \
+             rate={} token_hz_times_two={} hop={} bins={} dim={}, model \
+             rate={} token_hz_times_two={} hop={} bins={} dim={}",
+            codes.sample_rate,
+            codes.token_hz_times_two,
+            codes.frame_hop,
+            codes.codebook_size,
+            codes.code_dimension,
+            model.sample_rate(),
+            model.variant().token_hz_times_two(),
+            frame_hop,
+            codebook_size,
+            code_dimension
+        ));
+    }
+    if codes.model_sha256 != model_sha256 {
+        return Err(format!(
+            "run (focalcodec decode): model SHA-256 mismatch (container {}, model {}); \
+             BSQ tokens must be decoded by the exact GGUF tensors that encoded them",
+            hex_digest(&codes.model_sha256),
+            hex_digest(&model_sha256)
+        ));
+    }
+    Ok(())
+}
+
+/// FocalCodec 50 / 25 / 12.5 Hz waveform encode and BSQ-token decode.
+///
+/// The versioned container pins the complete tensor fingerprint and the
+/// variant timebase. Decode reproduces upstream's explicit `output_length`
+/// contract: excess decoder samples are truncated and a short decoder output
+/// is extended by repeating its final sample. This is deterministic host glue;
+/// all learned encoder, compressor, decompressor, and Vocos operations dispatch
+/// through the selected `Compute` backend.
+fn run_focalcodec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (focalcodec): --text/--tokens are not codec inputs; use --input plus \
+             --codec-mode encode|decode"
+                .to_owned(),
+        );
+    }
+    let mode = a
+        .codec_mode
+        .ok_or("run (focalcodec): --codec-mode encode|decode is required")?;
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (focalcodec): --input <16k-mono.wav|codes.vfc> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (focalcodec): --output <codes.vfc|out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+    let model = vokra_models::focalcodec::FocalCodec::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let model_sha256 = focalcodec_model_fingerprint(session.gguf())?;
+
+    match mode {
+        CodecMode::Encode => {
+            let clip = wav::read_wav(input_path)
+                .map_err(|error| format!("run (focalcodec encode): {input_path}: {error}"))?;
+            if clip.sample_rate != model.sample_rate() {
+                return Err(format!(
+                    "run (focalcodec encode): {input_path} is {} Hz, model requires {} Hz — \
+                     resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate,
+                    model.sample_rate()
+                ));
+            }
+            let tokens = model
+                .encode(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            let container = FocalCodecCodesV1 {
+                sample_rate: model.sample_rate(),
+                token_hz_times_two: model.variant().token_hz_times_two(),
+                frame_hop: u32::try_from(model.frame_hop())
+                    .map_err(|_| "run (focalcodec encode): frame hop exceeds u32")?,
+                codebook_size: u32::try_from(model.codebook_size())
+                    .map_err(|_| "run (focalcodec encode): codebook size exceeds u32")?,
+                code_dimension: u32::try_from(model.code_dimension())
+                    .map_err(|_| "run (focalcodec encode): code dimension exceeds u32")?,
+                token_count: u64::try_from(tokens.len())
+                    .map_err(|_| "run (focalcodec encode): token count exceeds u64")?,
+                pcm_samples: u64::try_from(clip.samples.len())
+                    .map_err(|_| "run (focalcodec encode): PCM sample count exceeds u64")?,
+                model_sha256,
+                tokens,
+            };
+            let token_count = container.token_count;
+            std::fs::write(output_path, container.to_bytes()?).map_err(|error| {
+                format!("run (focalcodec encode): --output {output_path}: {error}")
+            })?;
+            println!(
+                "focalcodec {} encode: {} samples -> {token_count} BSQ tokens -> {output_path}",
+                model.variant().tag(),
+                clip.samples.len()
+            );
+        }
+        CodecMode::Decode => {
+            let bytes = std::fs::read(input_path)
+                .map_err(|error| format!("run (focalcodec decode): {input_path}: {error}"))?;
+            let container = FocalCodecCodesV1::from_bytes(&bytes)?;
+            validate_focalcodec_codes_for_model(&container, &model, model_sha256)?;
+            let mut pcm = model
+                .decode(&container.tokens)
+                .map_err(|error| error.to_string())?;
+            let raw_samples = pcm.len();
+            let original_samples = usize::try_from(container.pcm_samples)
+                .map_err(|_| "run (focalcodec decode): PCM sample count does not fit this host")?;
+            if pcm.len() > original_samples {
+                pcm.truncate(original_samples);
+            } else if pcm.len() < original_samples {
+                let tail = *pcm
+                    .last()
+                    .ok_or("run (focalcodec decode): decoder returned empty PCM")?;
+                pcm.resize(original_samples, tail);
+            }
+            wav::write_wav(output_path, &pcm, model.sample_rate()).map_err(|error| {
+                format!("run (focalcodec decode): --output {output_path}: {error}")
+            })?;
+            println!(
+                "focalcodec {} decode: {} BSQ tokens / {raw_samples} raw samples -> {} samples @ {} Hz -> {output_path}",
+                model.variant().tag(),
+                container.token_count,
                 pcm.len(),
                 model.sample_rate()
             );
@@ -4118,11 +4309,9 @@ mod tests {
         assert!(err.contains("--tokens is only supported for the ct_punc arch"));
 
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
-        assert!(
-            err.contains(
-                "--codec-mode is only supported for standalone mimi/dac/snac codec arches"
-            )
-        );
+        assert!(err.contains(
+            "--codec-mode is only supported for standalone mimi/dac/snac/focalcodec arches"
+        ));
     }
 
     /// A campplus-arch GGUF whose tensors do not bind fails loudly at the
@@ -4798,6 +4987,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFsmn), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VocoderVocos), None);

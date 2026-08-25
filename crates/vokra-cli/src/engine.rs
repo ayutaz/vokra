@@ -242,6 +242,10 @@ pub(crate) enum ModelTask {
     /// CPU supports encode/decode; Metal supports complete decode and rejects
     /// encode explicitly until GPU nearest-codebook search exists.
     SnacCodec,
+    /// FocalCodec 50 / 25 / 12.5 Hz single-codebook speech codec. Both encode
+    /// and decode route every learned hot op through the selected backend and
+    /// exchange a versioned, exact-checkpoint-pinned BSQ token container.
+    FocalCodec,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -402,6 +406,8 @@ const ARCH_MIMI: &str = "mimi";
 const ARCH_DAC: &str = "dac";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
 const ARCH_SNAC: &str = "snac";
+/// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
+const ARCH_FOCALCODEC: &str = "focalcodec";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
@@ -1107,6 +1113,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::SnacCodec))
         }
+        ARCH_FOCALCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FOCALCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::FocalCodec))
+        }
         ARCH_BIGVGAN => {
             if hint.is_some() {
                 return Err(format!(
@@ -1241,6 +1255,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
                  `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_SNAC}` / \
+                 `{ARCH_FOCALCODEC}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
@@ -2857,6 +2872,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_focalcodec_to_the_single_codebook_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FOCALCODEC, "focalcodec-routed", |path| {
+            load_session(path).expect("focalcodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::FocalCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FOCALCODEC),
+            "the routed FocalCodec must not retain an unreachable registry row"
+        );
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
@@ -2903,6 +2932,7 @@ mod tests {
             ARCH_MIMI,
             ARCH_DAC,
             ARCH_SNAC,
+            ARCH_FOCALCODEC,
             ARCH_BIGVGAN,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
