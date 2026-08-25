@@ -30,9 +30,10 @@
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //! - Any AGPL derivative of the above.
 
+use crate::backend::BertBackendOps;
 use crate::deberta_v2::{AttnWeights, DisentangledAttention, EncoderLayer, FfnBlock, LayerNorm};
 use vokra_core::gguf::GgufFile;
-use vokra_core::VokraError;
+use vokra_core::{Result as VokraResult, VokraError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GgufTensorSchema {
@@ -138,6 +139,29 @@ impl DebertaV3Encoder {
             hidden = layer.forward(&hidden, seq_len);
         }
         hidden
+    }
+
+    /// Backend-dispatched sibling of [`Self::forward`].
+    pub fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        ids: &[u32],
+    ) -> VokraResult<Vec<f32>> {
+        let seq_len = ids.len();
+        let mut hidden = vec![0.0; seq_len * self.d_model];
+        for (position, &id) in ids.iter().enumerate() {
+            let id = id as usize;
+            assert!(id < self.vocab_size);
+            hidden[position * self.d_model..(position + 1) * self.d_model]
+                .copy_from_slice(&self.embed[id * self.d_model..(id + 1) * self.d_model]);
+        }
+        hidden = self
+            .embed_ln
+            .forward_with_backend(backend, &hidden, seq_len, self.d_model)?;
+        for layer in &self.layers {
+            hidden = layer.forward_with_backend(backend, &hidden, seq_len)?;
+        }
+        Ok(hidden)
     }
 
     pub fn get_d_model(&self) -> usize {

@@ -90,12 +90,15 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
 # CPU arch; the unit test and live main path enforce that. Artifact-specific
 # real-weight parity remains a separate ledger column outside this script.
 METAL_CODE_ARCHES = {
+    "bert_base",
     "bigvgan",
     "campplus",
     "conv_tasnet",
     "crisper-whisper",
     "dac",
     "data2vec_audio",
+    "deberta_v2",
+    "deberta_v3",
     "distil-whisper",
     "ecapa_tdnn",
     "fcpe",

@@ -64,6 +64,7 @@ impl BertEncoder for bert_base::BertBaseEncoder {
     }
 }
 
+pub mod backend;
 pub mod bert_base;
 pub mod deberta_v2;
 pub mod deberta_v3;
@@ -72,9 +73,67 @@ pub mod wordpiece;
 
 #[cfg(test)]
 mod tests {
+    use super::backend::TestBackend;
+
+    fn assert_close(expected: &[f32], actual: &[f32], bound: f32) {
+        assert_eq!(actual.len(), expected.len());
+        let max_abs = actual
+            .iter()
+            .zip(expected)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0, f32::max);
+        assert!(
+            max_abs <= bound,
+            "backend seam max|delta|={max_abs:.9e} exceeds {bound:.9e}"
+        );
+    }
+
     #[test]
     fn crate_compiles_and_trait_object_safe() {
         // Trait must exist and be nameable.
         let _: Option<Box<dyn super::BertEncoder>> = None;
+    }
+
+    #[test]
+    fn plain_bert_backend_seam_matches_scalar_forward() {
+        let config = super::bert_base::BertConfig {
+            vocab_size: 16,
+            hidden_size: 8,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            intermediate_size: 32,
+            max_position_embeddings: 16,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
+        };
+        let encoder = super::bert_base::BertBaseEncoder::synthetic_for_test(&config);
+        let ids = [1, 2, 3, 4];
+        let expected = encoder.forward(&ids, None);
+        let actual = encoder
+            .forward_with_backend(&TestBackend, &ids, None)
+            .expect("backend forward");
+        assert_close(&expected, &actual, 1e-5);
+    }
+
+    #[test]
+    fn deberta_v2_backend_seam_matches_scalar_forward() {
+        let encoder = super::deberta_v2::DebertaV2Encoder::synthetic_for_test(2, 8, 2, 16, 8);
+        let ids = [1, 2, 3, 4];
+        let expected = encoder.forward(&ids);
+        let actual = encoder
+            .forward_with_backend(&TestBackend, &ids)
+            .expect("backend forward");
+        assert_close(&expected, &actual, 1e-5);
+    }
+
+    #[test]
+    fn deberta_v3_backend_seam_matches_scalar_forward() {
+        let encoder = super::deberta_v3::DebertaV3Encoder::synthetic_for_test(2, 8, 2, 16, 8);
+        let ids = [1, 2, 3, 4];
+        let expected = encoder.forward(&ids);
+        let actual = encoder
+            .forward_with_backend(&TestBackend, &ids)
+            .expect("backend forward");
+        assert_close(&expected, &actual, 1e-5);
     }
 }

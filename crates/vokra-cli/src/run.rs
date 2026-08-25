@@ -681,7 +681,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::AlignCharsiu => Some("Charsiu forced alignment"),
         ModelTask::TextNormalize => Some("WeTextProcessing normalization"),
         ModelTask::CtPunc => Some("CT-Punc punctuation restoration"),
-        ModelTask::TextEncoder => Some("standalone BERT-family text encoder"),
+        ModelTask::TextEncoder => None,
         ModelTask::VocoderBigVgan => None,
         ModelTask::VocoderHifiGan => None,
         ModelTask::S2s => Some("CSM speech-to-speech"),
@@ -5255,6 +5255,7 @@ mod tests {
             cpu_only_engine_label(ModelTask::CtPunc),
             Some("CT-Punc punctuation restoration")
         );
+        assert_eq!(cpu_only_engine_label(ModelTask::TextEncoder), None);
         // Backend-honoring arches bind `.with_backend(...)` → guard must NOT
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
@@ -5850,9 +5851,16 @@ mod tests {
     }
 
     #[test]
-    fn non_cpu_backend_on_standalone_bert_is_rejected_before_weight_load() {
+    fn metal_backend_on_standalone_bert_passes_former_cpu_only_guard() {
         let mut builder = vokra_core::gguf::GgufBuilder::new();
         builder.add_string("vokra.model.arch", "deberta_v3");
+        vokra_core::stamp_provenance(
+            &mut builder,
+            vokra_core::LicenseClass::Permissive,
+            "Apache-2.0",
+            Some("microsoft/deberta-v3-large"),
+            None,
+        );
         let model = std::env::temp_dir().join(format!(
             "vokra-cli-bert-backend-{}.gguf",
             std::process::id()
@@ -5869,13 +5877,68 @@ mod tests {
         .unwrap_err();
         let _ = std::fs::remove_file(model);
         assert!(
-            error.contains("--backend metal is not supported"),
-            "names the refused backend: {error}"
+            !error.contains("--backend metal is not supported"),
+            "Metal must pass the former CPU-only guard: {error}"
         );
         assert!(
-            error.contains("standalone BERT-family text encoder"),
-            "names the CPU-only engine: {error}"
+            error.contains("missing required GGUF metadata"),
+            "metadata-only fixture should reach the concrete binder: {error}"
         );
+    }
+
+    /// Exact public-artifact Apple CPU/Metal sweep for the three standalone
+    /// BERT-family encoders. The 5e-4 boundary is the repository's established
+    /// FP32 device-parity envelope; it was not widened for these models.
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn standalone_bert_all_public_cpu_metal_hidden_parity() {
+        let Some(directory) = std::env::var_os("VOKRA_BERT_PUBLIC_GGUF_DIR") else {
+            eprintln!(
+                "skip: set VOKRA_BERT_PUBLIC_GGUF_DIR to the three fixed-revision public GGUFs"
+            );
+            return;
+        };
+        let cases: [(&str, &[u32]); 3] = [
+            ("chinese-roberta-wwm-ext-large.gguf", &[101, 102]),
+            ("deberta-v2-large-japanese-char-wwm.gguf", &[1, 2]),
+            ("deberta-v3-large.gguf", &[1, 2]),
+        ];
+        for (filename, token_ids) in cases {
+            let path = std::path::Path::new(&directory).join(filename);
+            let file = vokra_core::gguf::GgufFile::open(&path)
+                .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+            let model = vokra_models::bert_runtime::BertRuntime::from_gguf(&file)
+                .unwrap_or_else(|error| panic!("bind {}: {error}", path.display()));
+            let cpu = model
+                .encode(token_ids, vokra_core::BackendKind::Cpu)
+                .unwrap_or_else(|error| panic!("CPU {}: {error}", path.display()));
+            let metal = model
+                .encode(token_ids, vokra_core::BackendKind::Metal)
+                .unwrap_or_else(|error| panic!("Metal {}: {error}", path.display()));
+            assert_eq!(metal.len(), cpu.len());
+            let mut max_abs = 0.0_f32;
+            let mut sum_abs = 0.0_f64;
+            let mut cpu_peak = 0.0_f32;
+            for (&expected, &actual) in cpu.iter().zip(&metal) {
+                let delta = (expected - actual).abs();
+                max_abs = max_abs.max(delta);
+                sum_abs += f64::from(delta);
+                cpu_peak = cpu_peak.max(expected.abs());
+            }
+            let mean_abs = sum_abs / cpu.len() as f64;
+            eprintln!(
+                "bert-public-metal: {filename} values={} max_abs={max_abs:.9e} mean_abs={mean_abs:.9e}",
+                cpu.len()
+            );
+            assert!(
+                cpu_peak > 1e-4,
+                "{filename}: CPU negative control is degenerate (peak={cpu_peak:.9e})"
+            );
+            assert!(
+                max_abs <= 5e-4 && mean_abs <= 1e-4,
+                "{filename}: CPU/Metal parity exceeded 5e-4/1e-4 (max={max_abs:.9e}, mean={mean_abs:.9e})"
+            );
+        }
     }
 
     /// (c) No regression on a backend-honoring arch: `--backend metal` on a

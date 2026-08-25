@@ -3245,8 +3245,10 @@ impl MetalContext {
         eps: f32,
     ) -> Result<()> {
         validate_group_norm(input, out, channels, positions, gamma, beta)?;
+        // SAFETY: token consumed by the matching pop below.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let result = self.run_group_norm(input, out, channels, positions, gamma, beta, eps);
+        // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         result
     }

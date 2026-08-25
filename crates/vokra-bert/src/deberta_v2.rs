@@ -10,9 +10,10 @@
 //!
 //! - github.com/litagin02/Style-Bert-VITS2 (AGPL-3.0)
 
+use crate::backend::{gather_head, linear_with_backend, transpose_rows, BertBackendOps};
 use crate::bert_base::gelu_exact;
 use vokra_core::gguf::GgufFile;
-use vokra_core::VokraError;
+use vokra_core::{Result as VokraResult, VokraError};
 
 /// Log-scale relative position bucket per DeBERTa v2 (§3.2, "disentangled
 /// attention"). Positions closer to `q` get finer buckets; positions far
@@ -289,6 +290,155 @@ impl DisentangledAttention {
         self.matmul_bias(&out, &self.w.w_out, &self.w.bout, seq_len)
     }
 
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        hidden: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        assert_eq!(hidden.len(), seq_len * self.d_model);
+        let q = linear_with_backend(
+            backend,
+            hidden,
+            &self.w.wq,
+            Some(&self.w.bq),
+            seq_len,
+            self.d_model,
+            self.d_model,
+        )?;
+        let k = linear_with_backend(
+            backend,
+            hidden,
+            &self.w.wk,
+            Some(&self.w.bk),
+            seq_len,
+            self.d_model,
+            self.d_model,
+        )?;
+        let v = linear_with_backend(
+            backend,
+            hidden,
+            &self.w.wv,
+            Some(&self.w.bv),
+            seq_len,
+            self.d_model,
+            self.d_model,
+        )?;
+        let position_rows = self.n_pos_buckets as usize;
+        let q_position = linear_with_backend(
+            backend,
+            &self.w.pos_embed,
+            &self.w.wq_pos,
+            Some(self.w.bq_pos.as_deref().unwrap_or(&self.w.bq)),
+            position_rows,
+            self.d_model,
+            self.d_model,
+        )?;
+        let k_position = linear_with_backend(
+            backend,
+            &self.w.pos_embed,
+            &self.w.wk_pos,
+            Some(self.w.bk_pos.as_deref().unwrap_or(&self.w.bk)),
+            position_rows,
+            self.d_model,
+            self.d_model,
+        )?;
+        let scale = 1.0 / vokra_math::sqrt((3 * self.head_dim) as f32);
+        let mut output = vec![0.0; seq_len * self.d_model];
+
+        for head in 0..self.n_heads {
+            let offset = head * self.head_dim;
+            let q_head = gather_head(&q, seq_len, self.d_model, offset, self.head_dim);
+            let k_head = gather_head(&k, seq_len, self.d_model, offset, self.head_dim);
+            let v_head = gather_head(&v, seq_len, self.d_model, offset, self.head_dim);
+            let qp_head = gather_head(
+                &q_position,
+                position_rows,
+                self.d_model,
+                offset,
+                self.head_dim,
+            );
+            let kp_head = gather_head(
+                &k_position,
+                position_rows,
+                self.d_model,
+                offset,
+                self.head_dim,
+            );
+            let content = linear_with_backend(
+                backend,
+                &q_head,
+                &k_head,
+                None,
+                seq_len,
+                self.head_dim,
+                seq_len,
+            )?;
+            let content_to_position = linear_with_backend(
+                backend,
+                &q_head,
+                &kp_head,
+                None,
+                seq_len,
+                self.head_dim,
+                position_rows,
+            )?;
+            let position_to_content = linear_with_backend(
+                backend,
+                &qp_head,
+                &k_head,
+                None,
+                position_rows,
+                self.head_dim,
+                seq_len,
+            )?;
+            let mut scores = vec![0.0; seq_len * seq_len];
+            for query in 0..seq_len {
+                for key in 0..seq_len {
+                    let bucket = relative_position_bucket(
+                        query as i32,
+                        key as i32,
+                        self.n_pos_buckets,
+                        self.max_pos_dist,
+                    ) as usize;
+                    scores[query * seq_len + key] = (content[query * seq_len + key]
+                        + content_to_position[query * position_rows + bucket]
+                        + position_to_content[bucket * seq_len + key])
+                        * scale;
+                }
+            }
+            let mut probabilities = vec![0.0; scores.len()];
+            backend.softmax_f32(&scores, &mut probabilities, seq_len, seq_len)?;
+            let value_out_in = transpose_rows(&v_head, seq_len, self.head_dim);
+            let context = linear_with_backend(
+                backend,
+                &probabilities,
+                &value_out_in,
+                None,
+                seq_len,
+                seq_len,
+                self.head_dim,
+            )?;
+            for position in 0..seq_len {
+                output[position * self.d_model + offset
+                    ..position * self.d_model + offset + self.head_dim]
+                    .copy_from_slice(
+                        &context[position * self.head_dim..(position + 1) * self.head_dim],
+                    );
+            }
+        }
+
+        linear_with_backend(
+            backend,
+            &output,
+            &self.w.w_out,
+            Some(&self.w.bout),
+            seq_len,
+            self.d_model,
+            self.d_model,
+        )
+    }
+
     /// Naive matmul: y[i,o] = sum_d x[i,d] * w[o,d] + b[o]. Row-major.
     /// (Optimization = Stage B follow-up if hot path shows up. Correctness first.)
     fn matmul_bias(&self, x: &[f32], w: &[f32], b: &[f32], n_rows: usize) -> Vec<f32> {
@@ -368,6 +518,34 @@ impl FfnBlock {
         }
         y
     }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        input: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let projected = linear_with_backend(
+            backend,
+            input,
+            &self.w1,
+            Some(&self.b1),
+            seq_len,
+            self.d_model,
+            self.d_ff,
+        )?;
+        let mut activated = vec![0.0; projected.len()];
+        backend.gelu_f32(&projected, &mut activated)?;
+        linear_with_backend(
+            backend,
+            &activated,
+            &self.w2,
+            Some(&self.b2),
+            seq_len,
+            self.d_ff,
+            self.d_model,
+        )
+    }
 }
 
 /// Per-row LayerNorm: `y = (x - mean) / sqrt(var + eps) * gamma + beta`.
@@ -401,6 +579,28 @@ impl LayerNorm {
             }
         }
         y
+    }
+
+    pub(crate) fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        input: &[f32],
+        seq_len: usize,
+        d: usize,
+    ) -> VokraResult<Vec<f32>> {
+        assert_eq!(input.len(), seq_len * d);
+        assert_eq!(self.gamma.len(), d);
+        let mut output = vec![0.0; input.len()];
+        backend.layer_norm_f32(
+            input,
+            &mut output,
+            seq_len,
+            d,
+            &self.gamma,
+            &self.beta,
+            self.eps,
+        )?;
+        Ok(output)
     }
 }
 
@@ -567,6 +767,40 @@ impl EncoderConv {
         }
         self.ln.forward(&combined, seq_len, d)
     }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        conv_input: &[f32],
+        residual: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let d = self.d_model;
+        let padding = (self.kernel_size - 1) / 2;
+        let input_channel_major = transpose_rows(conv_input, seq_len, d);
+        let mut convolution_channel_major = vec![0.0; seq_len * d];
+        backend.conv1d_f32(
+            &input_channel_major,
+            d,
+            seq_len,
+            &self.conv_weight,
+            d,
+            self.kernel_size,
+            Some(&self.conv_bias),
+            1,
+            padding,
+            &mut convolution_channel_major,
+        )?;
+        let mut activated_channel_major = vec![0.0; convolution_channel_major.len()];
+        backend.gelu_f32(&convolution_channel_major, &mut activated_channel_major)?;
+        let activated = transpose_rows(&activated_channel_major, d, seq_len);
+        let combined: Vec<f32> = activated
+            .iter()
+            .zip(residual)
+            .map(|(value, skip)| value + skip)
+            .collect();
+        self.ln.forward_with_backend(backend, &combined, seq_len, d)
+    }
 }
 
 /// One DeBERTa v2 transformer block, **post-norm** order — matches
@@ -627,6 +861,34 @@ impl EncoderLayer {
             y[i] = h[i] + ffn_out[i];
         }
         self.ln2.forward(&y, seq_len, d)
+    }
+
+    pub(crate) fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        hidden: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let d = self.ln1.gamma.len();
+        let attention = self.attn.forward_with_backend(backend, hidden, seq_len)?;
+        let attention_residual: Vec<f32> = attention
+            .iter()
+            .zip(hidden)
+            .map(|(value, skip)| value + skip)
+            .collect();
+        let attention_hidden =
+            self.ln1
+                .forward_with_backend(backend, &attention_residual, seq_len, d)?;
+        let ffn = self
+            .ffn
+            .forward_with_backend(backend, &attention_hidden, seq_len)?;
+        let output_residual: Vec<f32> = ffn
+            .iter()
+            .zip(&attention_hidden)
+            .map(|(value, skip)| value + skip)
+            .collect();
+        self.ln2
+            .forward_with_backend(backend, &output_residual, seq_len, d)
     }
 }
 
@@ -690,6 +952,40 @@ impl DebertaV2Encoder {
             }
         }
         hidden
+    }
+
+    /// Backend-dispatched sibling of [`Self::forward`].
+    ///
+    /// Token lookup, residual addition, relative-bucket gathering and layout
+    /// transposes remain host glue. Every learned projection, attention dot
+    /// product, softmax, GELU, LayerNorm and the optional encoder Conv1D is
+    /// delegated to the supplied single-backend implementation.
+    pub fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        ids: &[u32],
+    ) -> VokraResult<Vec<f32>> {
+        let seq_len = ids.len();
+        let mut hidden = vec![0.0; seq_len * self.d_model];
+        for (position, &id) in ids.iter().enumerate() {
+            let id = id as usize;
+            assert!(id < self.vocab_size);
+            hidden[position * self.d_model..(position + 1) * self.d_model]
+                .copy_from_slice(&self.embed[id * self.d_model..(id + 1) * self.d_model]);
+        }
+        hidden = self
+            .embed_ln
+            .forward_with_backend(backend, &hidden, seq_len, self.d_model)?;
+        let embed_ln_output = self.encoder_conv.as_ref().map(|_| hidden.clone());
+        for (index, layer) in self.layers.iter().enumerate() {
+            hidden = layer.forward_with_backend(backend, &hidden, seq_len)?;
+            if index == 0 {
+                if let (Some(convolution), Some(input)) = (&self.encoder_conv, &embed_ln_output) {
+                    hidden = convolution.forward_with_backend(backend, input, &hidden, seq_len)?;
+                }
+            }
+        }
+        Ok(hidden)
     }
 
     pub fn get_d_model(&self) -> usize {
@@ -937,6 +1233,7 @@ impl DebertaV2Encoder {
 #[cfg(test)]
 mod activation_tests {
     use super::*;
+    use crate::backend::TestBackend;
 
     #[test]
     fn ffn_uses_exact_erf_gelu() {
@@ -950,5 +1247,30 @@ mod activation_tests {
             (got - tanh).abs() > 1e-5,
             "fixture must distinguish exact GELU from tanh approximation"
         );
+    }
+
+    #[test]
+    fn encoder_conv_backend_seam_matches_scalar_forward() {
+        let convolution = EncoderConv::new(
+            vec![
+                0.1, 0.2, 0.3, -0.1, 0.4, 0.2, 0.3, -0.2, 0.1, 0.2, 0.1, -0.3,
+            ],
+            vec![0.05, -0.02],
+            LayerNorm::new(vec![1.0, 0.8], vec![0.0, 0.1], 1e-7),
+            2,
+            3,
+        );
+        let input = [0.2, -0.1, 0.4, 0.3, -0.2, 0.5];
+        let residual = [0.1, 0.2, -0.3, 0.4, 0.5, -0.2];
+        let expected = convolution.forward(&input, &residual, 3);
+        let actual = convolution
+            .forward_with_backend(&TestBackend, &input, &residual, 3)
+            .expect("backend conv forward");
+        let max_abs = actual
+            .iter()
+            .zip(&expected)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0, f32::max);
+        assert!(max_abs <= 1e-6, "encoder conv max|delta|={max_abs:.9e}");
     }
 }

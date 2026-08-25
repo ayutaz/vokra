@@ -240,8 +240,8 @@ pub(crate) enum ModelTask {
     CtPunc,
     /// Standalone final-hidden-state execution for plain BERT / DeBERTa v2 /
     /// DeBERTa v3 sidecar GGUFs. The concrete encoder binds in the `run` arm;
-    /// it is CPU-only until the shared `vokra-bert` hot path gains a Compute
-    /// seam, and non-CPU selection is rejected explicitly.
+    /// CPU preserves the scalar oracle and Metal reaches the shared Compute
+    /// seam without fallback.
     TextEncoder,
     /// Standalone Mimi codec encode/decode. `run` binds the real encoder,
     /// effective RVQ tables, and neural decoder from the same GGUF and uses
@@ -1263,9 +1263,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                     "task hint {hint:?} is not supported on standalone text-encoder arch `{arch}`"
                 ));
             }
-            // Bind late in `run`, after its CPU-only backend guard. This
-            // avoids materialising a large encoder only to reject a Metal /
-            // CUDA / Vulkan selection that `vokra-bert` cannot honor yet.
+            // Bind late in `run` so the selected CPU/Metal backend reaches the
+            // complete concrete text encoder after input validation.
             Ok((session, ModelTask::TextEncoder))
         }
         // Wave G (2026-08-15): before declaring the arch unknown, check the

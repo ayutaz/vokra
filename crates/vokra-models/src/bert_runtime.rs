@@ -7,16 +7,21 @@
 //! an SBV2 checkpoint.  This module supplies that surface without duplicating
 //! any learned operation.
 //!
-//! CPU is the only complete backend today.  [`BertRuntime::encode`] takes an
-//! explicit [`BackendKind`] and rejects every non-CPU selection with
-//! [`VokraError::UnsupportedOp`].  It never labels a scalar CPU forward as a
-//! Metal/CUDA/Vulkan execution (FR-EX-08).
+//! CPU preserves the established scalar oracle. Metal routes every learned
+//! projection, attention reduction, softmax, normalization, GELU and (for
+//! DeBERTa v2) encoder Conv1D through the existing [`Compute`] kernels. Layout
+//! transposes, embedding lookup, residual addition and relative-position index
+//! gathering remain host glue. Other backends are rejected explicitly; no
+//! scalar CPU forward is labelled as device execution (FR-EX-08).
 
+use vokra_bert::backend::BertBackendOps;
 use vokra_bert::bert_base::BertBaseEncoder;
 use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{BackendKind, CompliancePolicy, Result, VokraError, check_weight_license};
+
+use crate::compute::{Compute, HotOp};
 
 /// Plain BERT GGUF architecture tag.
 pub const ARCH_BERT_BASE: &str = "bert_base";
@@ -24,6 +29,108 @@ pub const ARCH_BERT_BASE: &str = "bert_base";
 pub const ARCH_DEBERTA_V2: &str = "deberta_v2";
 /// DeBERTa v3 GGUF architecture tag.
 pub const ARCH_DEBERTA_V3: &str = "deberta_v3";
+
+/// Complete learned-op set for plain BERT and DeBERTa v3.
+pub const BERT_TRANSFORMER_HOT_OPS: &[HotOp] =
+    &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu];
+
+/// DeBERTa v2 additionally carries its released encoder-input Conv1D.
+pub const DEBERTA_V2_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+    HotOp::Conv1d,
+];
+
+struct ComputeBertBackend<'a> {
+    compute: &'a Compute,
+}
+
+impl BertBackendOps for ComputeBertBackend<'_> {
+    fn linear_f32(
+        &self,
+        input: &[f32],
+        weight_out_in: &[f32],
+        bias: Option<&[f32]>,
+        rows: usize,
+        input_dim: usize,
+        output_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let mut weight_in_out = vec![0.0; weight_out_in.len()];
+        for output_channel in 0..output_dim {
+            for input_channel in 0..input_dim {
+                weight_in_out[input_channel * output_dim + output_channel] =
+                    weight_out_in[output_channel * input_dim + input_channel];
+            }
+        }
+        self.compute.gemm_f32(
+            rows,
+            output_dim,
+            input_dim,
+            input,
+            &weight_in_out,
+            bias,
+            output,
+        )
+    }
+
+    fn softmax_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        self.compute.softmax_f32(input, output, rows, cols)
+    }
+
+    fn layer_norm_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        self.compute
+            .layer_norm_f32(input, output, rows, cols, gamma, beta, eps)
+    }
+
+    fn gelu_f32(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.compute.gelu_f32(input, output)
+    }
+
+    fn conv1d_f32(
+        &self,
+        input: &[f32],
+        input_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        output_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        self.compute.conv1d_f32(
+            input,
+            input_channels,
+            input_len,
+            weight,
+            output_channels,
+            kernel,
+            bias,
+            stride,
+            padding,
+            output,
+        )
+    }
+}
 
 /// Runtime discriminator read strictly from `vokra.model.arch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,12 +254,6 @@ impl BertRuntime {
     /// low-level API uses assertions for invalid ids.  The public model-level
     /// surface therefore returns typed errors rather than panicking.
     pub fn encode(&self, token_ids: &[u32], backend: BackendKind) -> Result<Vec<f32>> {
-        if backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(format!(
-                "standalone BERT runtime `{}` has no complete {backend:?} route: its layer-norm, GELU, softmax and transformer GEMMs currently execute in the scalar `vokra-bert` CPU implementation. Re-run with BackendKind::Cpu; no silent CPU fallback was performed (FR-EX-08)",
-                self.kind.arch(),
-            )));
-        }
         if token_ids.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "standalone BERT runtime requires at least one token id".to_owned(),
@@ -180,10 +281,39 @@ impl BertRuntime {
             )));
         }
 
-        let hidden = match &self.encoder {
-            Encoder::BertBase(encoder) => encoder.forward(token_ids, None),
-            Encoder::DebertaV2(encoder) => encoder.forward(token_ids),
-            Encoder::DebertaV3(encoder) => encoder.forward(token_ids),
+        let hidden = match backend {
+            BackendKind::Cpu => match &self.encoder {
+                Encoder::BertBase(encoder) => encoder.forward(token_ids, None),
+                Encoder::DebertaV2(encoder) => encoder.forward(token_ids),
+                Encoder::DebertaV3(encoder) => encoder.forward(token_ids),
+            },
+            BackendKind::Metal => {
+                let required = match self.kind {
+                    BertRuntimeKind::DebertaV2 => DEBERTA_V2_HOT_OPS,
+                    BertRuntimeKind::BertBase | BertRuntimeKind::DebertaV3 => {
+                        BERT_TRANSFORMER_HOT_OPS
+                    }
+                };
+                let compute = Compute::for_backend(backend, required)?;
+                let backend = ComputeBertBackend { compute: &compute };
+                match &self.encoder {
+                    Encoder::BertBase(encoder) => {
+                        encoder.forward_with_backend(&backend, token_ids, None)?
+                    }
+                    Encoder::DebertaV2(encoder) => {
+                        encoder.forward_with_backend(&backend, token_ids)?
+                    }
+                    Encoder::DebertaV3(encoder) => {
+                        encoder.forward_with_backend(&backend, token_ids)?
+                    }
+                }
+            }
+            unsupported => {
+                return Err(VokraError::UnsupportedOp(format!(
+                    "standalone BERT runtime `{}` supports only CPU and Metal, not {unsupported:?}; no silent CPU fallback was performed (FR-EX-08)",
+                    self.kind.arch(),
+                )));
+            }
         };
         let expected = token_ids
             .len()
