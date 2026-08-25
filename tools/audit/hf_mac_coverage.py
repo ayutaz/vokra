@@ -100,6 +100,7 @@ METAL_CODE_ARCHES = {
     "ecapa_tdnn",
     "fcpe",
     "firered_vad",
+    "focalcodec",
     "fsmn-vad",
     "hifigan_vocoder",
     "hubert",

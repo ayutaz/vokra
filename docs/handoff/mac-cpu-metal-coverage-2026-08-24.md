@@ -13,20 +13,20 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-25, after the DAC 16/24/44.1 kHz wave, it reported:
+At 2026-08-25, after the SNAC and FocalCodec waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 70 |
-| Route/binder present, released-artifact CPU forward incomplete | 51 |
-| No complete runtime binder | 72 |
+| Complete CPU code route | 75 |
+| Route/binder present, released-artifact CPU forward incomplete | 49 |
+| No complete runtime binder | 69 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 70 |
+| Complete Metal code route among the CPU-complete set | 75 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 123 |
+| Metal blocked by missing/partial CPU forward | 118 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -37,13 +37,15 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 70 repositories with a complete Metal code route are the four BigVGAN
+The 75 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
-the three DAC checkpoints (16, 24 and 44.1 kHz), FireRedVAD, FSMN-VAD,
+the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
+checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
 HiFi-GAN LibriTTS, both Kokoro checkpoints,
 Kotoba-Whisper, Mimi, Moshiko-7B, Moonshine Tiny/Base, NKF-AEC, Parakeet CTC
 1.1B, Parakeet TDT 0.6B v3, both Piper Plus checkpoints, RNNoise, both Silero
-VAD checkpoints, SmartTurn v2, SpeechT5 HiFi-GAN, TEN-VAD, both Vocos
+VAD checkpoints, both SNAC checkpoints (24 and 44.1 kHz), SmartTurn v2,
+SpeechT5 HiFi-GAN, TEN-VAD, both Vocos
 checkpoints, the three Voxtral checkpoints, nine plain Whisper checkpoints,
 Whisper-Medusa-v1, all seven Wav2Vec2 CTC checkpoints, Data2Vec Audio Base,
 HuBERT Large LS960, all seven SepFormer checkpoints, and both SpeechBrain
@@ -1066,6 +1068,72 @@ Apple-hardware Metal comparison remain open. The four sibling releases share
 the acoustic topology, but each public file still needs its own real-artifact
 verdict before it can inherit the English result; Linux VAST cannot execute
 the Metal leg.
+
+### FocalCodec 50 / 25 / 12.5 Hz family
+
+All three public FocalCodec releases now have a strict native binder, complete
+waveform encode and BSQ-token decode, CLI routing, and a versioned `VKRFOC01`
+container. The container records the exact GGUF tensor fingerprint, sample
+rate, frame hop, token rate, codebook size and original PCM length; a sibling,
+modified checkpoint or out-of-range token is rejected before decoding. Every
+learned GEMM, Softmax, LayerNorm, GELU, Conv1D, grouped Conv1D and Snake
+activation uses the selected `Compute` backend. There is no CPU fallback in
+the Metal path.
+
+The public artifacts used for the final gates were:
+
+| Variant | Public revision | GGUF SHA-256 | Bytes |
+|---|---|---|---:|
+| 50 Hz | `f9b5504c2e4fd7c4545e4b1a1344968b54f81813` | `3d19613193fe8cd4f3725209fa83c278e33d8b1e96fde43594b6c4328cf18d93` | 568,542,752 |
+| 25 Hz | `346b834d7399b5276419c57683cef235b2c84e0f` | `1b11f8deb5fb0447b3f3b6a8cbdacbdb43e2aeb02604aff93bbfe1c8c4c57be6` | 576,931,392 |
+| 12.5 Hz | `213e11c0105a71d6ea3f0883ab7e1f7509cf4ce2` | `d17de845cd25ec434d05df56e6befca0c992cb3c072d1d76c97285371c39e4cb` | 581,125,728 |
+
+The independent upstream oracle is pinned to FocalCodec source commit
+`912b7f2c0cd43d54a8aed296bbcc925dec7d4ea3`. On VAST, all three official
+fixtures produced exact token IDs. Final decoded-PCM errors against the
+independent reference were:
+
+| Variant | max abs | RMSE |
+|---|---:|---:|
+| 50 Hz | `1.169741154e-6` | `2.094736810e-7` |
+| 25 Hz | `1.396238804e-5` | `2.263951977e-6` |
+| 12.5 Hz | `6.938353181e-7` | `9.222271064e-8` |
+
+VAST instance `48606474` then validated commit `51a0681c`: the complete CLI
+run reported `219 + 4 + 2` tests passed with zero failures, package Clippy
+with warnings denied passed, and every public GGUF completed real CPU CLI
+encode/decode. The resulting 50/25/12.5 Hz containers held 9/5/3 tokens and
+had SHA-256 values `57ebef3d83cb773b85453c5139b2e3a63c3dd9d363883c82455781b9ac12b34a`,
+`bb5f854b13df36093e7160d1b957194fdd604c5e36721e34d444fadf6682190a`
+and `d9a2d1d3fc8e5f39178872664a5353f5947e1c38f5b7c5c9c69bda72e821c438`.
+The 38-file log/fixture/environment set was pulled to
+`/private/tmp/vokra-vast-48606474-results` and passed its locally re-run SHA
+ledger; the ledger SHA-256 is
+`c3962ea9f83dd5b662d65999f8b86923af92686fab10aede94b36fdf27710073`.
+The instance was destroyed rather than stopped. The post-delete inventory
+contained only the unrelated `tiny-s2s-m2-{judge,generator}` instances and no
+Vokra-labelled instance.
+
+The same three fixed public GGUFs were then exercised on the maintainer's
+Apple M1 with one identical 3,200-sample input. CPU and Metal produced
+bitwise-identical containers for all three variants, including the same hashes
+as the VAST CPU run. Decoding the same tokens through CPU and Metal produced:
+
+| Variant | samples | max abs CPU/Metal | RMSE CPU/Metal |
+|---|---:|---:|---:|
+| 50 Hz | 3,200 | `1.627951860428e-6` | `2.565435226431e-7` |
+| 25 Hz | 3,200 | `3.869179636240e-6` | `8.217389695893e-7` |
+| 12.5 Hz | 3,200 | `1.234409864992e-6` | `1.822034192231e-7` |
+
+Every sample was finite and all three comparisons remain far below the
+unchanged FP32 `atol = 0.01` gate. A first sandboxed probe correctly returned
+an explicit `no system default Metal device` error rather than falling back;
+the Apple-device measurements above were run outside that Seatbelt restriction
+after macOS independently reported the M1 GPU as Metal-capable. The 20-file
+Mac log/output/environment set is under
+`/private/tmp/vokra-focalcodec-mac-51a0681c`; its locally verified SHA-ledger
+digest is
+`887d3c047ff8dfbaa75f50ed06bcc5ad602dc82282940fed726fa0ed0b2cc3bb`.
 
 ## Remaining execution order
 
