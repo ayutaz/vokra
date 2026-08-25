@@ -1,0 +1,16 @@
+[project]
+name = "vokra-ast-parity"
+version = "0.1.0"
+description = "Pinned independent Hugging Face AST AudioSet parity oracle"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "huggingface-hub==0.29.3",
+    "numpy==2.0.2",
+    "safetensors==0.4.5",
+    "torch==2.5.0",
+    "torchaudio==2.5.0",
+    "transformers==4.45.2",
+]
+
+[tool.uv]
+package = false

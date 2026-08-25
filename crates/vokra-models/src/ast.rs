@@ -315,7 +315,8 @@ impl AstAudioSet {
             }
         };
         let backend = ComputeViTBackend { compute: &compute };
-        let mel = ast_features(pcm)?;
+        let frame_major = extract_features(pcm, sample_rate)?;
+        let mel = transpose_features(&frame_major);
         let (hidden, grid) = self
             .encoder
             .forward_with_backend(&mel, NUM_MELS, MAX_LENGTH, &backend)?;
@@ -356,7 +357,15 @@ impl AstAudioSet {
 
 /// Official AST frontend: TorchAudio Kaldi fbank, right pad/truncate to 1024,
 /// AudioSet normalization, then transpose `[frames, mels] -> [mels, frames]`.
-fn ast_features(pcm: &[f32]) -> Result<Vec<f32>> {
+/// Extracts the official normalized AST input matrix as row-major
+/// `[MAX_LENGTH, 128]`. This is the exact tensor accepted by the upstream
+/// `ASTForAudioClassification` forward before its patch-convolution transpose.
+pub fn extract_features(pcm: &[f32], sample_rate: u32) -> Result<Vec<f32>> {
+    if sample_rate != SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "AST feature extractor expects {SAMPLE_RATE} Hz mono PCM, got {sample_rate} Hz"
+        )));
+    }
     let opts = KaldiFbankOpts::ast_audioset();
     let (features, frames) = kaldi_fbank_with_window(pcm, &opts, KaldiFbankWindow::Hanning)?;
     let kept = frames.min(MAX_LENGTH);
@@ -366,13 +375,18 @@ fn ast_features(pcm: &[f32]) -> Result<Vec<f32>> {
     for value in &mut frame_major {
         *value = (*value - NORMALIZE_MEAN) / denom;
     }
+    Ok(frame_major)
+}
+
+fn transpose_features(frame_major: &[f32]) -> Vec<f32> {
+    debug_assert_eq!(frame_major.len(), MAX_LENGTH * NUM_MELS);
     let mut mel_major = vec![0.0f32; frame_major.len()];
     for frame in 0..MAX_LENGTH {
         for mel in 0..NUM_MELS {
             mel_major[mel * MAX_LENGTH + frame] = frame_major[frame * NUM_MELS + mel];
         }
     }
-    Ok(mel_major)
+    mel_major
 }
 
 struct ComputeViTBackend<'a> {
@@ -483,9 +497,9 @@ mod tests {
     #[test]
     fn frontend_pads_then_normalizes_like_transformers() {
         let pcm = vec![0.0f32; 400];
-        let features = ast_features(&pcm).expect("one exact frame");
+        let features = extract_features(&pcm, SAMPLE_RATE).expect("one exact frame");
         assert_eq!(features.len(), NUM_MELS * MAX_LENGTH);
         let normalized_padding = (0.0 - NORMALIZE_MEAN) / (NORMALIZE_STD * 2.0);
-        assert!((features[MAX_LENGTH - 1] - normalized_padding).abs() <= f32::EPSILON);
+        assert!((features[NUM_MELS] - normalized_padding).abs() <= f32::EPSILON);
     }
 }
