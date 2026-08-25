@@ -461,11 +461,61 @@ The public `vokra/dac-44khz` GGUF at revision
 | M1 Metal, official codes through RVQ + decoder | `1.013278961e-6` | `2.209130372e-7` | `1.024974133e-6` | `1.000000000` |
 
 The committed gates were tightened after measurement to max-abs `2e-6`,
-relative L1 `2.5e-6` and cosine at least `0.9999995`. The shared strict
-definitions cover the released 16/24 kHz manifest contracts, but those two
-siblings still require their own official fixture and real public-artifact
-runs; the 44.1 kHz result is not imputed to them. No Hub upload or artifact
-replacement was performed.
+relative L1 `2.5e-6` and cosine at least `0.9999995`. Those bounds were not
+widened for the sibling runs.
+
+The 16/24 kHz follow-up uses its own independent official fixtures rather
+than imputing the 44.1 kHz result. A dedicated Python 3.12 environment pins
+`descript-audio-codec==1.0.0`, `torch==2.13.0` and `numpy==2.5.2`; the dumper
+calls the public `ResidualVectorQuantize.from_codes` and `DAC.decode` APIs.
+The 16 kHz fixture pins release tag `0.0.5` `weights_16khz.pth` at SHA-256
+`95ab7176b67137d4d4c6c54b8d6ef3cea797faec228cb03ad084badcad570b4d`;
+the 24 kHz fixture pins tag `0.0.4` `weights_24khz.pth` at SHA-256
+`44bad592fc393e03eb0be7a5120b7d487fe9612fa41269dc03fca3d4b87e20ad`.
+
+The unchanged public artifacts used by both VAST and Apple were:
+
+| Variant | Public revision | GGUF SHA-256 | Bytes |
+|---|---|---|---:|
+| 16 kHz | `10e37fc86b57320d9f7339f3d2ee831af9655ac0` | `7e631db79a05ad8b083d39231ac655efb1f7824eb277aacf44c59e9b2754192f` | 297,568,448 |
+| 24 kHz | `d4e6bbff62e70c99dfe8a08d3779cf243e104cf5` | `c2a603c74acacbe359b0a8a7b9e9bb03ddc4e0b9e95123b8e02c6b16ddd8d4f2` | 301,108,032 |
+
+One complete official-code RVQ-plus-decoder frame produced 312 PCM samples
+for each sibling. The numerical results were:
+
+| Public artifact / backend vs official PCM | max abs | mean abs | relative L1 | cosine |
+|---|---:|---:|---:|---:|
+| 16 kHz VAST x86 CPU | `2.831220627e-7` | `6.683871590e-8` | `1.039660447e-6` | `0.9999999404` |
+| 16 kHz M1 CPU | `2.831220627e-7` | `6.708078451e-8` | `1.043425419e-6` | `1.0000000000` |
+| 16 kHz M1 Metal | `3.650784492e-7` | `8.340243650e-8` | `1.297304778e-6` | `1.0000000000` |
+| 24 kHz VAST x86 CPU | `9.238719940e-7` | `1.238024652e-7` | `8.231455695e-7` | `0.9999998212` |
+| 24 kHz M1 CPU | `7.748603821e-7` | `1.206719436e-7` | `8.023315547e-7` | `1.0000000000` |
+| 24 kHz M1 Metal | `8.344650269e-7` | `1.261479412e-7` | `8.387407279e-7` | `1.0000000000` |
+
+Commit `a6d6e79e` records both fixtures and three env-gated public-artifact
+tests. Disposable VAST instance `48625896` checked both fixed-revision GGUF
+hashes, passed the focused test (`4 passed; 0 failed`), format and
+`vokra-models` test-target Clippy with warnings denied. Its pulled log set is
+under `/private/tmp/vokra-dac-vast-a6d6e79e/dac-evidence`; the locally
+rechecked SHA-ledger digest is
+`fc3a326c1500206bc7378bc91f28207d03827ff367238f4e8465ecf11da75656`.
+The instance was then destroyed rather than stopped, and the Vast API returned
+`instances: null` for that ID.
+
+The same fixed GGUFs and committed official codes were exercised through the
+public CLI on the maintainer Apple M1. CPU and Metal produced the same sample
+geometry and the direct official comparisons above; CPU/Metal max-abs was
+`1.415610313e-7` at 16 kHz and `3.576278687e-7` at 24 kHz. A sandboxed Metal
+probe returned the explicit error `backend unavailable: no system default
+Metal device`; it did not fall back. The Mac log/WAV/environment set is under
+`/private/tmp/vokra-dac-siblings-mac-a6d6e79e`; its locally rechecked
+SHA-ledger digest is
+`dfee5811b0dfa07f82c9aa0accc5d28dec4e4148ec324eb9756ed08b42cc518e`.
+
+Therefore all three public DAC GGUFs now have their own independent
+official-reference CPU verdict and real Apple-device Metal verdict for the
+complete token-to-waveform path. Encoding remains an explicit unsupported
+operation. No Hub upload or artifact replacement was performed.
 
 ### SNAC bidirectional CPU and Metal decode
 
