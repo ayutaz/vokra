@@ -226,7 +226,7 @@ mod tests {
     use vokra_core::gguf::GgufBuilder;
 
     fn parse(builder: GgufBuilder) -> GgufFile {
-        GgufFile::parse(builder.build().expect("build GGUF")).expect("parse GGUF")
+        GgufFile::parse(builder.to_bytes().expect("build GGUF")).expect("parse GGUF")
     }
 
     #[test]
