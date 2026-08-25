@@ -15,14 +15,38 @@ import math
 import platform
 from pathlib import Path
 
+import huggingface_hub
 import numpy as np
 import torch
 import torchaudio
+from huggingface_hub.errors import RemoteEntryNotFoundError
+from requests.exceptions import HTTPError
 
 # SpeechBrain 1.0.3 probes an API removed by newer torchaudio.  The model path
 # below consumes an in-memory tensor and never asks torchaudio to decode audio.
 if not hasattr(torchaudio, "list_audio_backends"):
     torchaudio.list_audio_backends = lambda: []  # type: ignore[attr-defined]
+
+# SpeechBrain 1.0.3 still passes the retired ``use_auth_token`` keyword to
+# huggingface_hub.  Keep the parity tree's newer client usable without changing
+# model code or checkpoint resolution: translate only that transport keyword
+# to its current spelling before SpeechBrain imports the module.
+_hf_hub_download = huggingface_hub.hf_hub_download
+
+
+def _hf_hub_download_compat(*args: object, **kwargs: object) -> str:
+    use_auth_token = kwargs.pop("use_auth_token", None)
+    if use_auth_token is not None and "token" not in kwargs:
+        kwargs["token"] = use_auth_token
+    try:
+        return _hf_hub_download(*args, **kwargs)
+    except RemoteEntryNotFoundError as error:
+        # SpeechBrain 1.0.3 recognizes the requests-era 404 type and turns it
+        # into ValueError so its optional custom.py probe remains optional.
+        raise HTTPError(f"404 Client Error: {error}") from error
+
+
+huggingface_hub.hf_hub_download = _hf_hub_download_compat
 
 import speechbrain  # noqa: E402
 from speechbrain.inference.separation import SepformerSeparation  # noqa: E402
