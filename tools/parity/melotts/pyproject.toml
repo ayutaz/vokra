@@ -7,6 +7,9 @@ dependencies = [
     # Offline oracle only. None of these packages enter the zero-dependency
     # Rust runtime or its distribution.
     "huggingface-hub==0.29.3",
+    # MeloTTS imports melo.monotonic_align.core from melo.models; that module
+    # imports numba directly (the upstream requirements pull it via librosa).
+    "numba==0.67.0",
     "numpy==2.5.2",
     "torch==2.13.0",
 ]
