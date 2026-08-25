@@ -238,7 +238,7 @@ The canonical `vokra/ecapa-tdnn` repository now has a strict native speaker
 embedding runtime. Its live revision is
 `24be4349d49c23bb3b80b5afccf37538e8d616b4`; `model.gguf` is 83,239,808 bytes,
 has SHA-256
-`207cebb84e53f6eab77d6da65dab4546489dbeb5d4cfc799f64b6e34588a118c`, and
+`207cebb8ee3da5e306b05d782215411954a2d8ca76ecd9d32b7ec52ffaaa5fc3`, and
 contains the exact 200-tensor SpeechBrain inference manifest. The learned
 forward implements the three scale-8 SE-Res2Net blocks, multi-layer feature
 aggregation, global-context attentive statistics pooling and the final
@@ -269,9 +269,28 @@ remain fail-closed rather than being counted as runnable:
 | `vokra/voice-gender-classifier` | Mis-stamped as canonical ECAPA, but carries a distinct 202-tensor `conv1/layer1-3/attention/fc6/fc7` classifier topology and incorrect provenance; the 200-tensor binder rejects it. |
 | `vokra/lang-id-voxlingua107` | Carries the same 200 embedding tensors but no language classifier head or 107-entry label map; the shared ECAPA trunk is implemented, while classification remains an explicit artifact error pending a correctly licensed, gated replacement. |
 
-No public upload or replacement was performed. Linux VAST cannot execute
-Metal, so a real Apple-device comparison remains required before recording a
-Metal artifact pass.
+The SHA-256 above is the value on the live fixed-revision model card and the
+downloaded 83,239,808-byte file; it corrects a stale ledger transcription that
+started with the same eight characters but did not match the artifact.
+
+Linux VAST could not execute Metal, so the initial CPU wave left the Apple
+device gate open. The follow-up at commit `13dc415c` ran the canonical public
+GGUF against the pinned upstream example WAV on CPU and real Apple M1 Metal:
+
+| Samples | Dimension | Different values | max abs CPU/Metal | mean abs | relative L1 | cosine |
+|---:|---:|---:|---:|---:|---:|---:|
+| 52,173 | 192 | 190 | `8.010864258e-5` | `2.169384000e-5` | `1.240711873e-6` | `1.000000000` |
+
+The complete embedding passed the unchanged `0.01` FP32 bound. A Seatbelt
+probe returned the explicit `no system default Metal device` error rather
+than falling back; the real device run then completed outside that restriction
+after macOS reported Apple M1 Metal support. The real-file CLI output gate
+reported `1 passed; 0 failed`. The 12-file evidence package is at
+`/private/tmp/vokra-ecapa-mac-13dc415c`; its `SHA256SUMS` digest is
+`1f2320cb86e45027852360605191723f8eb5c0d26311a671528e2eca162da6bb`.
+This closes Metal for the canonical artifact only; the three related files
+retain the explicit blockers in the table above. No public upload or
+replacement was performed.
 
 ### WeSpeaker ResNet34-LM two-artifact family
 
