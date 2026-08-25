@@ -100,6 +100,11 @@ pub(crate) enum ModelTask {
     /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
     /// the selected CPU/Metal backend reaches its complete WavLM forward.
     AudioQualityAudiobox,
+    /// AudioSeal 16-bit watermark generation/detection. The concrete four-
+    /// checkpoint bundle binds in the run/bench arm so malformed audio is
+    /// rejected before decoding weights and the selected CPU/Metal backend
+    /// reaches the complete SEANet/LSTM graph.
+    WatermarkAudioseal,
     /// Text-to-speech through SBV2 (Style-Bert-VITS2 v2 = Task 38).
     ///
     /// Like [`ModelTask::TtsKokoro`] / [`ModelTask::AsrVoxtral`] /
@@ -369,6 +374,7 @@ const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
 const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
+const ARCH_AUDIOSEAL: &str = "audioseal_real_weight";
 const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
@@ -907,6 +913,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // and thread the caller-selected backend through every hot op.
             Ok((session, ModelTask::AudioQualityAudiobox))
         }
+        ARCH_AUDIOSEAL => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_AUDIOSEAL}`"
+                ));
+            }
+            // Bare session: run/bench owns the task-specific embed/detect
+            // surface and binds the complete four-checkpoint bundle once.
+            Ok((session, ModelTask::WatermarkAudioseal))
+        }
         ARCH_SBV2 => {
             if hint.is_some() {
                 return Err(format!(
@@ -1409,7 +1425,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -2777,6 +2793,16 @@ mod tests {
         assert_eq!(task, ModelTask::AudioQualityAudiobox);
     }
 
+    /// AudioSeal has a concrete CPU/Metal task. The task-specific arm binds
+    /// the strict 310-tensor bundle after validating its WAV input contract.
+    #[test]
+    fn load_session_routes_audioseal_task() {
+        let result =
+            with_arch_only_gguf(ARCH_AUDIOSEAL, "audioseal-arch", |path| load_session(path));
+        let (_session, task) = result.expect("AudioSeal session builds (bare)");
+        assert_eq!(task, ModelTask::WatermarkAudioseal);
+    }
+
     /// DTLN-AEC (`vokra_models::aec::dtln_aec`) — loud-partial `process`
     /// (the generic LSTM primitive is absent from `vokra-ops`).
     #[test]
@@ -3237,6 +3263,7 @@ mod tests {
             ARCH_HIFIGAN_VOCODER,
             ARCH_VOCOS,
             ARCH_CHARSIU,
+            ARCH_AUDIOSEAL,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,

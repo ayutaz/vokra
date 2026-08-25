@@ -112,6 +112,7 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
 # real-weight parity remains a separate ledger column outside this script.
 METAL_CODE_ARCHES = {
     "audiobox-aesthetics",
+    "audioseal_real_weight",
     "ast",
     "bert_base",
     "bigvgan",

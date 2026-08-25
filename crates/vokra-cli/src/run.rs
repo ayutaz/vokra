@@ -22,7 +22,7 @@ use crate::runtime_contracts::{
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
-vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker / language ID
+vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker / language ID / watermark
 
 USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
@@ -37,6 +37,10 @@ USAGE:
     vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav> [--output <scores.f32>]
     vokra-cli run --model <audiobox-aesthetics.gguf> --input <16k-mono.wav> \
                   [--output <ce-cu-pc-pq.f32>]
+    vokra-cli run --model <audioseal.gguf> --input <16k-mono.wav> \
+                  [--watermark-mode detect] [--watermark-variant base|streaming]
+    vokra-cli run --model <audioseal.gguf> --input <16k-mono.wav> --watermark-mode embed \
+                  --watermark-message <16-bits> [--watermark-alpha <gain>] [--output <out.wav>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
@@ -164,6 +168,14 @@ OPTIONS:
                                 precedence over --voice.
     --length-scale <s>          kokoro or melotts: duration multiplier
                                 (reciprocal of upstream `speed`) [default 1.0]
+    --watermark-mode <mode>     audioseal only: `detect` (default) or `embed`.
+    --watermark-variant <name>  audioseal only: `base` (default, non-causal)
+                                or `streaming` (causal checkpoint evaluated as
+                                one complete buffer; no chunk state implied).
+    --watermark-message <bits>  audioseal embed only: exactly 16 ASCII 0/1
+                                characters. Detect recovers and prints all 16.
+    --watermark-alpha <gain>    audioseal embed only: finite watermark mix
+                                gain in `pcm + gain * watermark` [default 1.0].
     --output <path>             WAV file for audio-producing tasks. An encoder-
                                 only Wav2Vec2 GGUF writes time-major raw f32
                                 `[frames, hidden]` features. Charsiu
@@ -390,6 +402,16 @@ struct RunArgs {
     /// Rejected loudly on every non-sbv2 arch (FR-EX-08 — other archs
     /// have their own speaker paths, e.g. Kokoro's `--voice`/`--style`).
     speaker_embedding: Option<String>,
+    /// AudioSeal task direction. Absent means detect on that arch; any
+    /// presence is rejected on non-AudioSeal models.
+    watermark_mode: Option<WatermarkMode>,
+    /// AudioSeal official checkpoint variant. Absent means base.
+    watermark_variant: Option<vokra_models::audioseal::AudiosealVariant>,
+    /// Exact 16-bit AudioSeal message, required for embed and invalid for
+    /// detect.
+    watermark_message: Option<[u8; vokra_models::audioseal::NBITS]>,
+    /// AudioSeal watermark mixing gain. Absent means 1.0.
+    watermark_alpha: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +430,40 @@ impl CodecMode {
             )),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatermarkMode {
+    Detect,
+    Embed,
+}
+
+impl WatermarkMode {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "detect" => Ok(Self::Detect),
+            "embed" => Ok(Self::Embed),
+            other => Err(format!(
+                "unknown --watermark-mode `{other}` (expected detect or embed)"
+            )),
+        }
+    }
+}
+
+fn parse_watermark_message(value: &str) -> Result<[u8; vokra_models::audioseal::NBITS], String> {
+    if value.len() != vokra_models::audioseal::NBITS
+        || !value.bytes().all(|byte| matches!(byte, b'0' | b'1'))
+    {
+        return Err(format!(
+            "--watermark-message must be exactly {} ASCII 0/1 characters (got `{value}`)",
+            vokra_models::audioseal::NBITS
+        ));
+    }
+    let mut message = [0u8; vokra_models::audioseal::NBITS];
+    for (destination, byte) in message.iter_mut().zip(value.bytes()) {
+        *destination = byte - b'0';
+    }
+    Ok(message)
 }
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
@@ -444,6 +500,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut bert_ja: Option<String> = None;
     let mut bert_en: Option<String> = None;
     let mut speaker_embedding: Option<String> = None;
+    let mut watermark_mode: Option<WatermarkMode> = None;
+    let mut watermark_variant: Option<vokra_models::audioseal::AudiosealVariant> = None;
+    let mut watermark_message: Option<[u8; vokra_models::audioseal::NBITS]> = None;
+    let mut watermark_alpha: Option<f32> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -638,6 +698,48 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 speaker_embedding = Some(v.clone());
                 i += 2;
             }
+            "--watermark-mode" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--watermark-mode requires detect or embed")?;
+                watermark_mode = Some(WatermarkMode::parse(value)?);
+                i += 2;
+            }
+            "--watermark-variant" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--watermark-variant requires base or streaming")?;
+                watermark_variant = Some(match value.as_str() {
+                    "base" => vokra_models::audioseal::AudiosealVariant::Base,
+                    "streaming" => vokra_models::audioseal::AudiosealVariant::Streaming,
+                    other => {
+                        return Err(format!(
+                            "unknown --watermark-variant `{other}` (expected base or streaming)"
+                        ));
+                    }
+                });
+                i += 2;
+            }
+            "--watermark-message" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--watermark-message requires exactly 16 bits")?;
+                watermark_message = Some(parse_watermark_message(value)?);
+                i += 2;
+            }
+            "--watermark-alpha" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--watermark-alpha requires a finite float")?;
+                let alpha = value
+                    .parse::<f32>()
+                    .map_err(|error| format!("--watermark-alpha must be a float: {error}"))?;
+                if !alpha.is_finite() {
+                    return Err(format!("--watermark-alpha must be finite (got {alpha})"));
+                }
+                watermark_alpha = Some(alpha);
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -672,6 +774,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         bert_ja,
         bert_en,
         speaker_embedding,
+        watermark_mode,
+        watermark_variant,
+        watermark_message,
+        watermark_alpha,
     })
 }
 
@@ -744,6 +850,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Speaker
         | ModelTask::LangId
         | ModelTask::AudioQualityAudiobox
+        | ModelTask::WatermarkAudioseal
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
         | ModelTask::WavTokenizerCodec
@@ -824,6 +931,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     {
         return Err(
             "run: --bandwidth-id is only supported for the vocos encodec_24khz variant or wavtokenizer"
+                .to_owned(),
+        );
+    }
+    if (a.watermark_mode.is_some()
+        || a.watermark_variant.is_some()
+        || a.watermark_message.is_some()
+        || a.watermark_alpha.is_some())
+        && task != ModelTask::WatermarkAudioseal
+    {
+        return Err(
+            "run: --watermark-mode / --watermark-variant / --watermark-message / \
+             --watermark-alpha are only supported for the audioseal_real_weight arch"
                 .to_owned(),
         );
     }
@@ -1076,6 +1195,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::AudioQualityAudiobox => {
             run_audiobox_aesthetics(&session, &a)?;
         }
+        ModelTask::WatermarkAudioseal => {
+            run_audioseal(&session, &a)?;
+        }
         ModelTask::Sbv2 => {
             run_sbv2(&session, &a)?;
         }
@@ -1273,6 +1395,89 @@ fn run_audiobox_aesthetics(session: &Session, args: &RunArgs) -> Result<(), Stri
         std::fs::write(output, bytes)
             .map_err(|error| format!("run (Audiobox Aesthetics): --output {output}: {error}"))?;
         println!("audiobox-aesthetics: CE/CU/PC/PQ f32 -> {output}");
+    }
+    Ok(())
+}
+
+/// Runs the strict four-checkpoint AudioSeal generator/detector. Explicit use
+/// here does not change the separate global TTS watermark policy, whose
+/// `WatermarkConfig::backend_status()` remains Deferred.
+fn run_audioseal(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (AudioSeal): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != vokra_models::audioseal::SAMPLE_RATE {
+        return Err(format!(
+            "run (AudioSeal): {path} is {} Hz, expected {} Hz — resample explicitly before watermarking (FR-EX-08)",
+            clip.sample_rate,
+            vokra_models::audioseal::SAMPLE_RATE
+        ));
+    }
+    let model = vokra_models::audioseal::Audioseal::from_file(session.gguf())
+        .map_err(|error| format!("run (AudioSeal): {error}"))?
+        .with_backend(args.backend);
+    let mode = args.watermark_mode.unwrap_or(WatermarkMode::Detect);
+    let variant = args
+        .watermark_variant
+        .unwrap_or(vokra_models::audioseal::AudiosealVariant::Base);
+    let variant_name = match variant {
+        vokra_models::audioseal::AudiosealVariant::Base => "base",
+        vokra_models::audioseal::AudiosealVariant::Streaming => "streaming",
+    };
+
+    match mode {
+        WatermarkMode::Detect => {
+            if args.watermark_message.is_some() || args.watermark_alpha.is_some() {
+                return Err(
+                    "run (AudioSeal detect): --watermark-message and --watermark-alpha are \
+                     embed-only; refusing to ignore them"
+                        .to_owned(),
+                );
+            }
+            if args.output.is_some() {
+                return Err(
+                    "run (AudioSeal detect): --output is not defined for detection; results \
+                     are printed, so refusing to ignore the path"
+                        .to_owned(),
+                );
+            }
+            let detection = model
+                .detect_pcm(&clip.samples, clip.sample_rate, variant)
+                .map_err(|error| format!("run (AudioSeal detect): {error}"))?;
+            let message = detection
+                .message
+                .iter()
+                .map(|&bit| char::from(b'0' + bit))
+                .collect::<String>();
+            let message_probabilities = detection
+                .message_probabilities
+                .iter()
+                .map(|probability| format!("{probability:.9}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            println!(
+                "audioseal-detect: variant={variant_name} probability={:.9} samples={} message={message} message_probabilities={message_probabilities}",
+                detection.detection_probability,
+                detection.positive_probabilities.len()
+            );
+        }
+        WatermarkMode::Embed => {
+            let message = args.watermark_message.as_ref().ok_or(
+                "run (AudioSeal embed): --watermark-message <exactly-16-bits> is required",
+            )?;
+            let alpha = args.watermark_alpha.unwrap_or(1.0);
+            let output = model
+                .embed_pcm(&clip.samples, clip.sample_rate, message, alpha, variant)
+                .map_err(|error| format!("run (AudioSeal embed): {error}"))?;
+            emit_audio(
+                &format!("audioseal-embed-{variant_name}"),
+                &output,
+                clip.sample_rate,
+                args.output.as_deref(),
+            )?;
+        }
     }
     Ok(())
 }
@@ -5702,6 +5907,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn audioseal_cli_parses_exact_message_and_variant() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "audioseal.gguf",
+            "--watermark-mode",
+            "embed",
+            "--watermark-variant",
+            "streaming",
+            "--watermark-message",
+            "1010101010101010",
+            "--watermark-alpha",
+            "0.75",
+        ]))
+        .expect("valid AudioSeal flags");
+        assert_eq!(parsed.watermark_mode, Some(WatermarkMode::Embed));
+        assert_eq!(
+            parsed.watermark_variant,
+            Some(vokra_models::audioseal::AudiosealVariant::Streaming)
+        );
+        assert_eq!(
+            parsed.watermark_message,
+            Some([1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0])
+        );
+        assert_eq!(parsed.watermark_alpha, Some(0.75));
+    }
+
+    #[test]
+    fn audioseal_cli_rejects_ambiguous_messages_and_modes() {
+        for bad in [
+            "",
+            "1010",
+            "101010101010101x",
+            "１０１０１０１０１０１０１０１０",
+        ] {
+            let error = parse_watermark_message(bad).unwrap_err();
+            assert!(error.contains("exactly 16 ASCII 0/1"), "{bad:?}: {error}");
+        }
+        let error = WatermarkMode::parse("watermark").unwrap_err();
+        assert!(error.contains("expected detect or embed"), "{error}");
+    }
+
     // ---- cc-36: FR-EX-08 guard for a non-CPU --backend on a CPU-only arch --
 
     /// Every `ModelTask` is classified: the CPU-only engines (whose `run`
@@ -5737,6 +5984,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::WatermarkAudioseal), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);

@@ -5,6 +5,12 @@
 > The live `vokra/rmvpe` repository remains artifact-partial because its GGUF
 > incorrectly stamps the unlicensed `yxlllc/RMVPE` source/weight as
 > MIT/permissive. The live-artifact totals below therefore do not change.
+>
+> **2026-08-26 AudioSeal source wave:** `vokra/audioseal-real-weight` now has a
+> strict native four-checkpoint binder plus explicit base/streaming embed and
+> detect routes for CPU and Metal. The one-repository code-reachability change
+> is reflected below. VAST typecheck and official-reference CPU/Metal parity
+> remain pending, so these totals are not a numerical-pass claim.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -21,7 +27,8 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 
 At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
-Audiobox Aesthetics CPU/Metal waves plus the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
+Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route
+and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
 | Inventory / live-artifact reachability | Public repos |
@@ -29,13 +36,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 93 |
+| Complete CPU route for the live public artifact | 94 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 51 |
+| No complete runtime binder | 50 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 93 |
+| Complete Metal code route among the CPU-complete set | 94 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 100 |
+| Metal blocked by missing/partial CPU forward | 99 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -48,8 +55,9 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 93 repositories with a complete Metal code route are the Audiobox
-Aesthetics scorer, four BigVGAN checkpoints, CAM++, CrisperWhisper,
+The 94 repositories with a complete Metal code route are the Audiobox
+Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
+checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
 checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
@@ -81,7 +89,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 100 Metal-blocked repositories first need a complete released-
+remaining 99 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -109,6 +117,36 @@ provenance; a correctly attributed gated replacement still needs explicit
 upload permission.
 
 ## 2026-08-24 implementation wave
+
+### AudioSeal explicit watermark runtime
+
+`vokra/audioseal-real-weight` is a single 310-tensor F32 GGUF containing the
+official base and streaming generator/detector checkpoint pairs. The strict
+binder accepts the exact historical public header only after its complete
+manifest and fixed identity/provenance match, or a canonical conversion with
+the full `vokra.audioseal.*` topology group. Partial metadata, an extra or
+missing tensor, shape/dtype drift, a foreign source, or a non-MIT weight class
+fails before inference.
+
+The native forward reconstructs the four-stage SEANet encoder/decoder,
+weight-normalized Conv1D/ConvTranspose1D, two-layer LSTMs, 16-bit message
+conditioning and the detector's sample-level softmax/message aggregation.
+Learned convolutions, recurrent/dense projections and softmax execute through
+one selected `Compute` backend; backend coverage is validated up front and no
+CPU fallback is available. CLI `run` exposes explicit `detect` and `embed`
+modes, base or streaming-trained weights, an exact 16-bit message and a finite
+mixing gain. The streaming variant currently means causal weights evaluated
+over one complete buffer; it does not claim a state-carrying chunk API.
+
+The independent dumper imports the official AudioSeal package at source
+revision `e63a8a0e5cdf7bb797159c92ba15961557fe9bd2`, verifies the four official
+checkpoint hashes at HF revision
+`3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba`, and records generator and detector
+intermediates. Only the dumper's syntax/self-test and source-level repository
+gates have run locally; no checkpoint tensor or model forward was processed on
+the maintainer Mac. VAST must still typecheck/test `vokra-models`, generate the
+official reference and measure CPU deltas. A real Apple device must then run
+Metal/CPU parity before any numerical tolerance or pass verdict is recorded.
 
 ### Audiobox Aesthetics four-axis scorer
 

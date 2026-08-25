@@ -85,9 +85,10 @@ declare -a EXPECTED_GAPS=(
   # "we ship this" one.
   # AudioSeal (Meta) entry removed 2026-08-06: audioseal-real-weight converter
   # + publish landed in PR #24 (Wave A) at crates/vokra-convert/src/models/audioseal_real_weight.rs
-  # + vokra/audioseal-real-weight (MIT, 178MB). Runtime watermark embedding
-  # remains deferred (2026-07-04 drop, M5-05 T04 ADR pending owner) — that's
-  # tracked in docs/handoff/m5-13.md, not the catalog ledger.
+  # + vokra/audioseal-real-weight (MIT, 178MB). The explicit standalone
+  # base/streaming embed+detect CPU/Metal runtime now lives in
+  # crates/vokra-models/src/audioseal.rs; only automatic WatermarkConfig →
+  # every TTS/VC output policy integration remains Deferred.
   # Vocos previously listed here as anchor-only; converter implementation
   # landed in the vocos wave (2026-08-01) at
   # crates/vokra-convert/src/models/vocos.rs (BF16 pass-through skeleton,

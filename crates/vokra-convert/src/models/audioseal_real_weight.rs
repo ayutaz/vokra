@@ -114,12 +114,13 @@ pub fn convert_audioseal_real_weight_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudiosealRealWeightReport, ConvertError> {
+    let license = require_official_license(license)?;
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
     validate_input_manifest(&st)?;
 
     let mut builder = GgufBuilder::new();
-    stamp_contract(&mut builder, license.unwrap_or(DEFAULT_LICENSE_SPDX));
+    stamp_contract(&mut builder, license);
 
     for tensor in st.tensors() {
         builder.add_tensor(
@@ -137,6 +138,16 @@ pub fn convert_audioseal_real_weight_file(
         skipped_non_float: 0,
         bf16_passthrough: 0,
     })
+}
+
+fn require_official_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
+    let requested = license.unwrap_or(DEFAULT_LICENSE_SPDX).trim();
+    if !requested.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
+        return Err(parse_error(format!(
+            "license override `{requested}` conflicts with the pinned official MIT checkpoints"
+        )));
+    }
+    Ok(DEFAULT_LICENSE_SPDX)
 }
 
 fn stamp_contract(builder: &mut GgufBuilder, spdx: &str) {
@@ -482,5 +493,13 @@ mod tests {
         let file = SafetensorsFile::parse(bytes).expect("synthetic safetensors");
         let error = validate_input_manifest(&file).expect_err("must reject 1/310 tensors");
         assert!(format!("{error}").contains("expected exactly 310"));
+    }
+
+    #[test]
+    fn license_override_cannot_relabel_the_pinned_weights() {
+        assert_eq!(require_official_license(None).unwrap(), "mit");
+        assert_eq!(require_official_license(Some(" MIT ")).unwrap(), "mit");
+        let error = require_official_license(Some("apache-2.0")).unwrap_err();
+        assert!(format!("{error}").contains("conflicts with the pinned official MIT"));
     }
 }

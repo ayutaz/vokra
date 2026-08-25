@@ -650,6 +650,33 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("audiobox-aesthetics", audio_seconds, samples)
         }
+        ModelTask::WatermarkAudioseal => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (AudioSeal detect): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::audioseal::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (AudioSeal detect): {path} is {} Hz, expected {rate} Hz — resample explicitly before detection (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::audioseal::Audioseal::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let detection = model
+                    .detect_pcm(&pcm, rate, vokra_models::audioseal::AudiosealVariant::Base)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(detection);
+                Ok(())
+            })?;
+            ("audioseal-detect-base", audio_seconds, samples)
+        }
         // SBV2 (Task 38): the `run` arm needs the `--bert-ja` / `--bert-en`
         // side-car GGUFs `bench`'s generic `--model`-only dispatch has no
         // flags for, and — separately — `SbV2Model::from_gguf`'s loaded

@@ -457,7 +457,28 @@ canonical `attribution-required` weight class into the GGUF. No upstream
 weight is bundled in this source repository.
 
 --------------------------------------------------------------------------
-17a. Microsoft DNS-Challenge NSNet2 — CC-BY-4.0 attribution
+17a. Meta AudioSeal — MIT
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal watermark runtime target the
+four official `facebook/audioseal` generator/detector checkpoints at immutable
+Hugging Face revision 3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba and source
+revision e63a8a0e5cdf7bb797159c92ba15961557fe9bd2. The source code and model
+weights are distributed under the MIT License.
+
+  Meta AudioSeal
+  Copyright (c) Meta Platforms, Inc. and affiliates
+  Licensed under the MIT License
+  Source: https://github.com/facebookresearch/audioseal
+          https://huggingface.co/facebook/audioseal
+
+The native Rust runtime independently implements the complete-buffer base and
+streaming-trained SEANet generator/detector forwards without linking PyTorch,
+ONNX Runtime or another upstream runtime dependency. No upstream weight is
+bundled in this source repository.
+
+--------------------------------------------------------------------------
+17b. Microsoft DNS-Challenge NSNet2 — CC-BY-4.0 attribution
 --------------------------------------------------------------------------
 
 Vokra's NSNet2 converter and native CPU/Metal runtime target the 20 ms

@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (AudioSeal CPU/Metal runtime)
+
+The previously published four-checkpoint AudioSeal GGUF gains a strict native
+Rust binder and explicit CLI embed/detect route. Automatic application through
+`WatermarkConfig` remains Deferred. No C symbol, ownership rule or allocation
+ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::audioseal` | `Audioseal`, `AudiosealVariant`, `AudiosealDetection`, `AUDIOSEAL_HOT_OPS` | Added | strict `from_gguf` / `from_file`, `with_backend`, `watermark_pcm`, `embed_pcm`, `detect_pcm`, `detect_pcm_with_thresholds` | Owns decoded FP32 weights and returned vectors; complete-buffer base/streaming variants dispatch Conv1D, transposed-convolution projections, LSTM projections and softmax through one CPU/Metal backend with no fallback | no | (TBD) |
+| `vokra-cli run` / `bench` | `arch=audioseal_real_weight`; `--watermark-{mode,variant,message,alpha}` | Added (behavior only) | 16 kHz mono WAV to detector report or watermarked WAV; message is exactly 16 ASCII bits | Non-AudioSeal flag use, wrong rate, non-finite gain, missing message and unsupported backend fail explicitly; streaming means causal weights over a complete buffer, not a stateful chunk API | no | (TBD) |
+| `gguf:vokra.audioseal.*` | fixed topology/revision metadata group | Added/enforced | 24 fixed keys plus exactly 310 F32 tensors across four variants | Canonical conversions are self-describing. The exact historical public header is accepted only through full manifest and identity/provenance validation; partial groups fail closed. | no for the audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (RMVPE exact E2E0 behavior correction)
 
 No Rust or C signature is added. The existing default `RMVPE` loader/forward
