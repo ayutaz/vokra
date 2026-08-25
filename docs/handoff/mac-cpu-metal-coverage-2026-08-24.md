@@ -560,6 +560,16 @@ path completion only: independent real-checkpoint CPU parity and Apple Metal
 parity remain open until the VAST credential is rotated, and the current live
 embedding-only Hub artifact remains intentionally unrunnable.
 
+The pending parity path is now executable rather than prose-only.
+`crates/vokra-models/tests/parity_speechbrain_lang_id_real.rs` validates the
+immutable source/revision, official ordered labels and exact variant axes, then
+reports frontend, embedding, isolated classifier, complete network and
+end-to-end metrics. It is deliberately an ignored measurement harness with no
+invented tolerance; the VAST CPU and remote Apple-silicon Metal recipes are
+recorded in `docs/handoff/parity-speechbrain-lang-id-real.md`. Numeric parity
+will be claimed only after those measurements are reviewed and converted into
+committed gates.
+
 The SHA-256 above is the value on the live fixed-revision model card and the
 downloaded 83,239,808-byte file; it corrects a stale ledger transcription that
 started with the same eight characters but did not match the artifact.

@@ -54,12 +54,28 @@ except Exception as error:  # noqa: BLE001 - loud independent-oracle failure
 
 
 DEFAULT_SOURCE = "speechbrain/lang-id-voxlingua107-ecapa"
-DEFAULT_REVISION = "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
 SAMPLE_RATE = 16_000
 EXPECTED = {
     "speechbrain/lang-id-voxlingua107-ecapa": (60, 256, 107),
     "speechbrain/lang-id-commonlanguage_ecapa": (80, 192, 45),
 }
+PINNED_REVISIONS = {
+    "speechbrain/lang-id-voxlingua107-ecapa": (
+        "0253049ae131d6a4be1c4f0d8b0ff483a0f8c8e9"
+    ),
+    "speechbrain/lang-id-commonlanguage_ecapa": (
+        "70a742bbc513f693efcf73d6d64a5ed14b3a34a4"
+    ),
+}
+
+
+def resolve_revision(source: str, revision: str | None) -> str:
+    resolved = revision or PINNED_REVISIONS[source]
+    if len(resolved) != 40 or any(
+        character not in "0123456789abcdefABCDEF" for character in resolved
+    ):
+        raise SystemExit("--revision must be a full 40-hex commit")
+    return resolved.lower()
 
 
 def sha256(path: Path) -> str:
@@ -112,14 +128,13 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--wav", type=Path, required=True)
     parser.add_argument("--source", choices=sorted(EXPECTED), default=DEFAULT_SOURCE)
-    parser.add_argument("--revision", default=DEFAULT_REVISION)
+    parser.add_argument(
+        "--revision",
+        help="full upstream commit (defaults to the source-specific audited pin)",
+    )
     parser.add_argument("--savedir", type=Path, required=True)
     args = parser.parse_args()
-
-    if len(args.revision) != 40 or any(
-        character not in "0123456789abcdefABCDEF" for character in args.revision
-    ):
-        raise SystemExit("--revision must be a full 40-hex commit")
+    revision = resolve_revision(args.source, args.revision)
 
     torch.manual_seed(1234)
     torch.set_grad_enabled(False)
@@ -127,7 +142,7 @@ def main() -> int:
     try:
         inference = EncoderClassifier.from_hparams(
             source=args.source,
-            revision=args.revision,
+            revision=revision,
             savedir=args.savedir,
             run_opts={"device": "cpu"},
         )
@@ -193,7 +208,7 @@ def main() -> int:
     manifest = {
         "format": "vokra-speechbrain-lang-id-reference-v1",
         "source": args.source,
-        "revision": args.revision,
+        "revision": revision,
         "sample_rate": SAMPLE_RATE,
         "pcm_samples": int(pcm.size),
         "raw_feature_shape": list(raw_features.shape),

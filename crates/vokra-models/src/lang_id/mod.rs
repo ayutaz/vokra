@@ -712,6 +712,14 @@ impl LangIdEcapa {
         self.backbone.embed_features(features, frames, &compute)
     }
 
+    /// Runs only the official classifier on one ECAPA embedding. This stage
+    /// boundary exists so the independent SpeechBrain fixture can distinguish
+    /// classifier drift from frontend or backbone drift.
+    pub fn classify_embedding(&self, embedding: &[f32]) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(self.backend, LANG_ID_HOT_OPS)?;
+        self.classifier.forward(embedding, &compute)
+    }
+
     /// Runs a row-major `[frames, n_mels]` feature buffer. Exposed for the
     /// independent upstream parity fixture.
     pub fn identify_features(&self, features: &[f32], frames: usize) -> Result<Vec<f32>> {
