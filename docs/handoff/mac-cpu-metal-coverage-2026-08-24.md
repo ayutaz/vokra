@@ -116,7 +116,12 @@ max abs `2.670288086e-5`, RMSE `6.876259031e-6`, cosine
 That cross-build proves the Metal code/feature route compiles, not that an
 Apple GPU executed the public file: real Mac Metal parity remains explicitly
 unrecorded because the heavy public-model work stayed on VAST. No upload or
-public artifact mutation occurred.
+public artifact mutation occurred. Disposable VAST instance `48656597` was
+destroyed after the fixture and five final evidence logs were pulled to
+`/private/tmp/vokra-ast-vast-48656597`; the pulled `SHA256SUMS` file has
+SHA-256
+`ebb6eb752762dd5bdb2c9d95060ec08b322977aba563faf1327701ea3d3899e1`.
+The post-destroy VAST inventory contained zero instances.
 
 ### Wav2Vec2 CTC, Data2Vec Audio and HuBERT
 
