@@ -256,6 +256,10 @@ pub(crate) enum ModelTask {
     /// CPU or Metal; encode remains an explicit error until the Encodec
     /// encoder parity wave lands.
     WavTokenizerCodec,
+    /// Neuphonic NeuCodec base/distill 50 Hz FSQ token-to-waveform decode.
+    /// Both public checkpoints share one strict decoder and honor CPU/Metal;
+    /// waveform-to-code encode remains an explicit unsupported operation.
+    NeuCodec,
     /// SNAC 24/44 kHz hierarchical codec encode/decode. The run route uses a
     /// versioned stage-major code container because stage lengths differ.
     /// CPU supports encode/decode; Metal supports complete decode and rejects
@@ -436,6 +440,8 @@ const ARCH_MIMI: &str = "mimi";
 const ARCH_DAC: &str = "dac";
 /// WavTokenizer large-speech 75 token/s codec.
 const ARCH_WAVTOKENIZER: &str = "wavtokenizer";
+/// Neuphonic NeuCodec base/distill 50 Hz FSQ codec.
+const ARCH_NEUCODEC: &str = "neucodec";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
 const ARCH_SNAC: &str = "snac";
 /// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
@@ -1157,6 +1163,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::WavTokenizerCodec))
         }
+        ARCH_NEUCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NEUCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::NeuCodec))
+        }
         ARCH_SNAC => {
             if hint.is_some() {
                 return Err(format!(
@@ -1316,7 +1330,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_SNAC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_SNAC}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -2999,6 +3013,20 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_neucodec_to_the_fsq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_NEUCODEC, "neucodec-routed", |path| {
+            load_session(path).expect("NeuCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::NeuCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_NEUCODEC),
+            "the routed NeuCodec must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_snac_to_the_hierarchical_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_SNAC, "snac-routed", |path| {
             load_session(path).expect("snac session builds (bare)")
@@ -3070,6 +3098,7 @@ mod tests {
             ARCH_MIMI,
             ARCH_DAC,
             ARCH_WAVTOKENIZER,
+            ARCH_NEUCODEC,
             ARCH_SNAC,
             ARCH_FOCALCODEC,
             ARCH_BIGVGAN,
