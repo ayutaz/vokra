@@ -79,8 +79,31 @@ fn real_ast_frontend_and_logits_match_official() {
     assert_eq!(wav.sample_rate, SAMPLE_RATE);
     let actual_features = extract_features(&wav.samples, wav.sample_rate)
         .expect("extract native AST frontend features");
+    if let Some(path) = std::env::var_os("VOKRA_AST_DUMP_FEATURES") {
+        let bytes: Vec<u8> = actual_features
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        std::fs::write(&path, bytes).unwrap_or_else(|error| {
+            panic!(
+                "write AST diagnostic features {}: {error}",
+                Path::new(&path).display()
+            )
+        });
+    }
     let (feature_index, feature_delta) = max_abs(&actual_features, &expected_features);
-    eprintln!("[parity_ast_real] frontend max_abs={feature_delta:.9e} at {feature_index}");
+    let feature_rmse = (actual_features
+        .iter()
+        .zip(&expected_features)
+        .map(|(&actual, &expected)| f64::from(actual - expected).powi(2))
+        .sum::<f64>()
+        / actual_features.len() as f64)
+        .sqrt();
+    eprintln!(
+        "[parity_ast_real] frontend max_abs={feature_delta:.9e} at {feature_index} \
+         (actual={:.9e}, reference={:.9e}), rmse={feature_rmse:.9e}",
+        actual_features[feature_index], expected_features[feature_index]
+    );
     assert!(
         feature_delta <= FEATURE_MAX_ABS,
         "AST frontend max_abs {feature_delta:.9e} exceeds {FEATURE_MAX_ABS:.9e}"
