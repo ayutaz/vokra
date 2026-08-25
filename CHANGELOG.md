@@ -14,6 +14,13 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The public YuE-upsampler GGUF now strict-binds its exact 81-tensor
+  `m-a-p/YuE-upsampler` 151k release and decodes 1024-channel codec features
+  to 44.1 kHz PCM through the existing native Vocos CPU/Metal graph. The
+  converter pins the official checkpoint, PyPI `vocos==0.1.0` oracle, public
+  GGUF, manifest and topology; partial or conflicting contracts fail closed.
+  Real-weight VAST CPU and Apple-device Metal measurements are staged but not
+  yet claimed as numerical parity.
 - The public FRCRN-SE-16K GGUF now has a strict 812-F32-tensor native
   enhancer and CLI/bench CPU/Metal route. The fixed convolutional STFT/iSTFT,
   two complex U-Nets, squeeze/excitation and frequency/central FSMN graph are

@@ -78,6 +78,8 @@ USAGE:
                   --output <out.wav>
     vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
                   --output <out.wav>
+    vokra-cli run --model <yue-upsampler.gguf> --input <1024ch-features.f32> \
+                  [--output <44.1k-out.wav>]
     vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
@@ -3590,15 +3592,28 @@ fn run_hifigan(session: &Session, a: &RunArgs) -> Result<(), String> {
     emit_audio(variant, &pcm, model.sample_rate(), a.output.as_deref())
 }
 
-/// Vocos' explicit raw-feature contract. Encodec features are assumed to have
-/// already been produced by the matching Encodec quantizer; this runtime does
-/// not bundle or silently substitute that neural frontend.
+/// Vocos-family explicit raw-feature contract. Encodec and YuE features are
+/// assumed to have been produced by their matching codec frontend; this
+/// runtime does not bundle or silently substitute a neural frontend.
 fn run_vocos(session: &Session, a: &RunArgs) -> Result<(), String> {
     if a.text.is_some() || a.tokens.is_some() || a.codec_mode.is_some() {
         return Err(
             "run (vocos): --text/--tokens/--codec-mode are not vocoder inputs; pass raw channel-major features with --input"
                 .to_owned(),
         );
+    }
+    let arch = session
+        .gguf()
+        .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+        .and_then(|value| value.as_str())
+        .ok_or("run (vocos): missing model architecture")?;
+    if arch == vokra_models::yue_upsampler::ARCH {
+        return run_yue_upsampler(session, a);
+    }
+    if arch != vokra_models::vocos::ARCH {
+        return Err(format!(
+            "run (vocos): internal dispatch error for architecture {arch:?}"
+        ));
     }
     let input_path = a
         .input
@@ -3630,6 +3645,37 @@ fn run_vocos(session: &Session, a: &RunArgs) -> Result<(), String> {
     }
     .map_err(|error| error.to_string())?;
     emit_audio("vocos", &pcm, model.sample_rate(), a.output.as_deref())
+}
+
+fn run_yue_upsampler(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.bandwidth_id.is_some() {
+        return Err(
+            "run (yue-upsampler): --bandwidth-id is invalid for the plain-LayerNorm YuE release"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (yue-upsampler): --input <1024ch-features.f32> is required")?;
+    let model = vokra_models::yue_upsampler::YueUpsampler::from_gguf_with_backend(
+        session.gguf(),
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (yue-upsampler): --input {input_path}: {error}"))?;
+    let (features, frames) =
+        parse_vocoder_feature_bytes(&bytes, model.input_channels(), input_path, "yue-upsampler")?;
+    let pcm = model
+        .decode(&features, frames)
+        .map_err(|error| error.to_string())?;
+    emit_audio(
+        "yue-upsampler",
+        &pcm,
+        model.sample_rate(),
+        a.output.as_deref(),
+    )
 }
 
 fn parse_vocoder_feature_bytes(

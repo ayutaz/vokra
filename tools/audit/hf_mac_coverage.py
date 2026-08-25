@@ -172,6 +172,7 @@ METAL_CODE_ARCHES = {
     "wespeaker",
     "xcodec2",
     "xvector",
+    "yue_upsampler",
 }
 
 ARCH_ROW = re.compile(

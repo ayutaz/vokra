@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (YuE-upsampler CPU/Metal runtime)
+
+The exact public 81-tensor YuE Vocos decoder gains a strict native
+feature-to-waveform forward and CLI route. No C symbol, ownership rule or
+allocation ABI changes. The public legacy GGUF remains readable through its
+immutable manifest and generic provenance.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::yue_upsampler` | `YueUpsampler`, `YUE_UPSAMPLER_HOT_OPS`, identity/topology constants | Added | strict bind/open/backend selection; `decode(&[f32], frames) -> Result<Vec<f32>>` | Owns decoded F32 weights. Conv1d/grouped-Conv1d/LayerNorm/GELU use one CPU/Metal route; iSTFT is deterministic host DSP | no for exact audited public file; malformed/partial files fail closed | (TBD) |
+| `vokra-cli run` | `arch=yue_upsampler` | Added (behavior only) | channel-major 1024-channel little-endian f32 frames to 44.1 kHz mono WAV | Wrong feature shape, non-finite input, unsupported backend and provenance/manifest mismatches fail explicitly | no | (TBD) |
+| `gguf:vokra.yue_upsampler.*` | 18-key source/checkpoint/public/topology group | Added/enforced | revision/hash strings; byte counts and sample/channel/dim/layer/FFT/hop axes; padding string | New converters stamp the complete group. The exact historical public GGUF may omit it while its full manifest and generic Apache-2.0 provenance match; a partial group fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (FRCRN-SE-16K CPU/Metal runtime)
 
 The exact public 812-tensor FRCRN release gains a strict native enhancement
@@ -3251,6 +3264,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.wav2vec2_ctc.*` | **16** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `do_stable_layer_norm`, …  | `u32` + `f32` + `bool` + `string` | persisted | `wav2vec2_ctc` — written by `crates/vokra-convert/src/models/wav2vec2_ctc.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.wavlm.*` | **19** keys — `conv_dim`, `conv_kernel`, `conv_stride`, `feat_extract_norm_group`, …  | `u32` | persisted | `wavlm-base-plus-sv`, `microsoft/wavlm-base-plus-sv` — written by `crates/vokra-convert/src/models/wavlm_sv.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7a0f823` (2026-08-14) |
 | backfill | `vokra.yue_bundle.*` | **1** keys — `variant` | `string` | persisted | YuE bundle (`yue-upsampler` + `yue-xcodec-mini`, `m-a-p/YuE-upsampler` / `m-a-p/xcodec_mini_infer`) — written by `crates/vokra-convert/src/models/yue_bundle.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| runtime-gap | `vokra.yue_upsampler.*` | **18** keys — `upstream_revision`, `checkpoint_file`, `checkpoint_sha256`, `checkpoint_bytes`, `source_package`, `source_package_sha256`, `tensor_manifest_sha256`, `public_revision`, `public_gguf_sha256`, `public_gguf_bytes`, `sample_rate`, `input_channels`, `dim`, `intermediate_dim`, `num_layers`, `n_fft`, `hop_length`, `padding` | `string` + `u32` | persisted | `yue_upsampler` — written by the strict converter and read by `vokra-models::yue_upsampler`. The group pins the exact official 151k checkpoint, independent `vocos==0.1.0` oracle, historical public artifact and complete 81-tensor/44.1 kHz topology. The audited historical public GGUF may omit the group while its immutable manifest and generic provenance match; a partial/conflicting group fails closed. | working tree (2026-08-26) |
 | backfill | `vokra.zonos.*` | **22** keys — `arch.backbone.causal`, `arch.backbone.d_intermediate`, `arch.backbone.d_model`, `arch.backbone.n_layer`, …  | `u32` + `f32` + `bool` | persisted | `zonos-v0.1` — written by `crates/vokra-convert/src/models/zonos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
 
 **Broken cross-reference repaired by this table**: the 2026-07-24 "SoTA

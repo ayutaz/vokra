@@ -298,9 +298,9 @@ pub(crate) enum ModelTask {
     /// Microsoft SpeechT5 HiFi-GAN mel-to-waveform vocoder. The concrete
     /// model is bound from the session GGUF in the `run` arm.
     VocoderHifiGan,
-    /// Charactr Vocos feature-to-waveform vocoder. The mel variant consumes
-    /// 100-channel features; the Encodec variant consumes 128-channel
-    /// features plus an explicit bandwidth condition.
+    /// Vocos-family feature-to-waveform vocoder. Charactr variants consume
+    /// 100/128-channel features; YuE-upsampler consumes 1024-channel codec
+    /// features and emits 44.1 kHz PCM.
     VocoderVocos,
     /// openWakeWord streaming keyword spotting. The generic Session facade
     /// has no KWS slot, so `run` binds the concrete mutable session once from
@@ -520,6 +520,8 @@ const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
 const ARCH_HIFIGAN_VOCODER: &str = "hifigan_vocoder";
 /// Charactr Fourier-space Vocos vocoder.
 const ARCH_VOCOS: &str = "vocos";
+/// m-a-p YuE 44.1 kHz Vocos upsampler.
+const ARCH_YUE_UPSAMPLER: &str = "yue_upsampler";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -1322,10 +1324,10 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::VocoderHifiGan))
         }
-        ARCH_VOCOS => {
+        ARCH_VOCOS | ARCH_YUE_UPSAMPLER => {
             if hint.is_some() {
                 return Err(format!(
-                    "task hint {hint:?} is not supported on arch `{ARCH_VOCOS}`"
+                    "task hint {hint:?} is not supported on Vocos-family arch `{arch}`"
                 ));
             }
             Ok((session, ModelTask::VocoderVocos))
@@ -3132,6 +3134,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_yue_upsampler_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_YUE_UPSAMPLER, "yue-upsampler-routed", |path| {
+                load_session(path).expect("YuE-upsampler session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::VocoderVocos);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_YUE_UPSAMPLER),
+            "YuE-upsampler has a strict loader, real forward, and CLI route"
+        );
+    }
+
     // ---- Wave 1 (2026-08-21) — newly routed small runtime surfaces -------
 
     /// WeTextProcessing now resolves to a real text task. Binding the grammar
@@ -3353,6 +3370,7 @@ mod tests {
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
             ARCH_VOCOS,
+            ARCH_YUE_UPSAMPLER,
             ARCH_CHARSIU,
             ARCH_AUDIOSEAL,
             ARCH_MAGNET_SMALL,

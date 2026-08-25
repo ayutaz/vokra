@@ -380,8 +380,7 @@ declare -a NO_READER=(
   'ultravox|awaiting a binder: local convert is safe at ~1.83 GB, and the converter header records the runtime binder as a follow-up. Nothing blocks it but wave ordering.'
   'vibevoice_asr|vast.ai-gated (~16.5 GB, eight-shard). The sibling TTS vibevoice is published; the ASR head has neither been converted nor bound.'
   'xtts|T4 Research-only: the Coqui Public Model License maps to LicenseClass::NonCommercial, so publish requires --allow-noncommercial. It is also zero-shot voice cloning, which keeps it out of a main-repo binder under design decision 8.'
-  'yue_upsampler|publish-only BF16 pass-through: the 145 MB Vocos plus iSTFT vocoder half of the YuE bundle. Header reserves the tag for a future native YuE loader.'
-  'yue_xcodec_mini|publish-only BF16 pass-through: the 2.2 GB SoundStream RVQ codec half of the YuE bundle. Same future loader as its yue_upsampler sibling.'
+  'yue_xcodec_mini|publish-only BF16 pass-through: the multi-part SoundStream RVQ + HuBERT semantic + Vocos decoder bundle still needs its own strict codec binder; the standalone yue_upsampler sibling is independently routed.'
 )
 
 # ---------------------------------------------------------------------------
