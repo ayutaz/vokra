@@ -1329,7 +1329,7 @@ impl FCPE {
         // otherwise constant zero padding for short clips.
         let overlap = n_fft - hop;
         let pad_left = overlap / 2;
-        let min_pad_right = (overlap + 1) / 2;
+        let min_pad_right = overlap.div_ceil(2);
         let fill_pad_right = n_fft.saturating_sub(pcm.len().saturating_add(pad_left));
         let pad_right = min_pad_right.max(fill_pad_right);
         let reflect = pad_right < pcm.len();
