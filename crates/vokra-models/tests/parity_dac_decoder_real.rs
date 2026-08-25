@@ -1,22 +1,33 @@
-//! Independent public-artifact parity for Descript DAC 44.1 kHz.
+//! Independent public-artifact parity for Descript DAC 16/24/44.1 kHz.
 //!
 //! The committed oracle was produced by `descript-audio-codec==1.0.0` from
-//! the official release-tag 0.0.1 `weights.pth`, through the public
+//! the official release checkpoints, through the public
 //! `ResidualVectorQuantize.from_codes` and `DAC.decode` APIs.  Vokra code does
-//! not participate in reference generation.  The public GGUF is intentionally
-//! env-gated because the 307 MB weight artifact is not committed.
+//! not participate in reference generation.  The public GGUFs are
+//! intentionally env-gated because their 298–307 MB weight artifacts are not
+//! committed.
 
 use vokra_models::dac::{Dac, DacVariant};
 
-const CODES: &[u8] = include_bytes!("fixtures/dac_44khz/codes.u32");
-const FEATURES: &[u8] = include_bytes!("fixtures/dac_44khz/decoded_features.f32");
-const PCM: &[u8] = include_bytes!("fixtures/dac_44khz/decoded_pcm.f32");
-const MANIFEST: &str = include_str!("fixtures/dac_44khz/manifest.txt");
+const CODES_16: &[u8] = include_bytes!("fixtures/dac_16khz/codes.u32");
+const FEATURES_16: &[u8] = include_bytes!("fixtures/dac_16khz/decoded_features.f32");
+const PCM_16: &[u8] = include_bytes!("fixtures/dac_16khz/decoded_pcm.f32");
+const MANIFEST_16: &str = include_str!("fixtures/dac_16khz/manifest.txt");
+const CODES_24: &[u8] = include_bytes!("fixtures/dac_24khz/codes.u32");
+const FEATURES_24: &[u8] = include_bytes!("fixtures/dac_24khz/decoded_features.f32");
+const PCM_24: &[u8] = include_bytes!("fixtures/dac_24khz/decoded_pcm.f32");
+const MANIFEST_24: &str = include_str!("fixtures/dac_24khz/manifest.txt");
+const CODES_44: &[u8] = include_bytes!("fixtures/dac_44khz/codes.u32");
+const FEATURES_44: &[u8] = include_bytes!("fixtures/dac_44khz/decoded_features.f32");
+const PCM_44: &[u8] = include_bytes!("fixtures/dac_44khz/decoded_pcm.f32");
+const MANIFEST_44: &str = include_str!("fixtures/dac_44khz/manifest.txt");
 
 // The initial pre-measurement envelope was max=2e-4 / relative-L1=2e-3.
 // VAST 48577185 then measured max=1.0133e-6 / relative-L1=1.0840e-6 / cosine
-// 0.999999940 end-to-end, so the committed gate was tightened (never widened)
-// to less than 2.5x the observed error and far below the project FP32 0.01.
+// 0.999999940 end-to-end. The independent 16/24 kHz M1 measurements were
+// smaller still (max 8.35e-7, relative-L1 1.30e-6). The shared committed gate
+// is therefore below the project FP32 0.01 without treating a sibling result
+// as the sibling's oracle.
 const CPU_MAX_ABS_BOUND: f32 = 2.0e-6;
 const CPU_RELATIVE_L1_BOUND: f32 = 2.5e-6;
 const CPU_COSINE_BOUND: f32 = 0.999_999_5;
@@ -113,46 +124,127 @@ fn assert_cpu(metrics: &Metrics) {
     assert!(metrics.cosine >= CPU_COSINE_BOUND, "{metrics:?}");
 }
 
-#[test]
-fn committed_reference_has_pinned_upstream_identity() {
-    assert_eq!(u32s(CODES).len(), 9);
-    assert_eq!(f32s(FEATURES).len(), 1_024);
-    assert_eq!(f32s(PCM).len(), 512);
-    assert!(MANIFEST.contains("descript-audio-codec==1.0.0"));
-    assert!(MANIFEST.contains("official release tag 0.0.1 weights.pth"));
-    assert!(MANIFEST.contains("a88eed82a7024ccc1facdb1e605c4c2f99281c8118c22c9895ffa846d8fb61aa"));
-    assert!(MANIFEST.contains(
-        "sha256 decoded_pcm.f32 4967cc32a8dc5221d0d9a362c257a6877c2d1efcf9de5e87e48bcf7c0ae25d9e"
-    ));
+struct Fixture {
+    label: &'static str,
+    env: &'static str,
+    variant: DacVariant,
+    sample_rate: u32,
+    n_codebooks: usize,
+    codes: &'static [u8],
+    features: &'static [u8],
+    pcm: &'static [u8],
+    manifest: &'static str,
+}
+
+const FIXTURE_16: Fixture = Fixture {
+    label: "16 kHz",
+    env: "VOKRA_DAC_16KHZ_GGUF",
+    variant: DacVariant::Khz16,
+    sample_rate: 16_000,
+    n_codebooks: 12,
+    codes: CODES_16,
+    features: FEATURES_16,
+    pcm: PCM_16,
+    manifest: MANIFEST_16,
+};
+
+const FIXTURE_24: Fixture = Fixture {
+    label: "24 kHz",
+    env: "VOKRA_DAC_24KHZ_GGUF",
+    variant: DacVariant::Khz24,
+    sample_rate: 24_000,
+    n_codebooks: 32,
+    codes: CODES_24,
+    features: FEATURES_24,
+    pcm: PCM_24,
+    manifest: MANIFEST_24,
+};
+
+const FIXTURE_44: Fixture = Fixture {
+    label: "44.1 kHz",
+    env: "VOKRA_DAC_44KHZ_GGUF",
+    variant: DacVariant::Khz44,
+    sample_rate: 44_100,
+    n_codebooks: 9,
+    codes: CODES_44,
+    features: FEATURES_44,
+    pcm: PCM_44,
+    manifest: MANIFEST_44,
+};
+
+fn assert_fixture_identity(
+    fixture: &Fixture,
+    checkpoint_pin: &str,
+    checkpoint_sha256: &str,
+    pcm_samples: usize,
+    pcm_sha256: &str,
+) {
+    assert_eq!(u32s(fixture.codes).len(), fixture.n_codebooks);
+    assert_eq!(f32s(fixture.features).len(), 1_024);
+    assert_eq!(f32s(fixture.pcm).len(), pcm_samples);
+    assert!(fixture.manifest.contains("descript-audio-codec==1.0.0"));
+    assert!(fixture.manifest.contains(checkpoint_pin));
+    assert!(fixture.manifest.contains(checkpoint_sha256));
+    assert!(
+        fixture
+            .manifest
+            .contains(&format!("sha256 decoded_pcm.f32 {pcm_sha256}"))
+    );
 }
 
 #[test]
-fn public_dac_44khz_matches_official_decoder() {
-    let Some(path) = std::env::var_os("VOKRA_DAC_44KHZ_GGUF") else {
+fn committed_references_have_pinned_upstream_identity() {
+    assert_fixture_identity(
+        &FIXTURE_16,
+        "official release tag 0.0.5 weights_16khz.pth",
+        "95ab7176b67137d4d4c6c54b8d6ef3cea797faec228cb03ad084badcad570b4d",
+        312,
+        "8003d2cb8c8e7b0b698f76ea2b5d8f3ccf0a86f790ea47ba5c1dfefb19795bf4",
+    );
+    assert_fixture_identity(
+        &FIXTURE_24,
+        "official release tag 0.0.4 weights_24khz.pth",
+        "44bad592fc393e03eb0be7a5120b7d487fe9612fa41269dc03fca3d4b87e20ad",
+        312,
+        "ef1e5d2af37584c067461a0c3995b51ea64c08a6fb48ca4727f3652b89a7322f",
+    );
+    assert_fixture_identity(
+        &FIXTURE_44,
+        "official release tag 0.0.1 weights.pth",
+        "a88eed82a7024ccc1facdb1e605c4c2f99281c8118c22c9895ffa846d8fb61aa",
+        512,
+        "4967cc32a8dc5221d0d9a362c257a6877c2d1efcf9de5e87e48bcf7c0ae25d9e",
+    );
+}
+
+fn run_public_artifact(fixture: &Fixture) {
+    let Some(path) = std::env::var_os(fixture.env) else {
         eprintln!(
-            "[parity_dac_decoder_real] SKIP: set VOKRA_DAC_44KHZ_GGUF to the public canonical GGUF"
+            "[parity_dac_decoder_real] SKIP {}: set {} to the public canonical GGUF",
+            fixture.label, fixture.env
         );
         return;
     };
-    let model = Dac::from_path(path).expect("strict public DAC 44.1 kHz bind");
-    assert_eq!(model.variant(), DacVariant::Khz44);
-    assert_eq!(model.sample_rate(), 44_100);
-    assert_eq!(model.n_codebooks(), 9);
+    let model = Dac::from_path(path)
+        .unwrap_or_else(|error| panic!("strict public DAC {} bind: {error}", fixture.label));
+    assert_eq!(model.variant(), fixture.variant);
+    assert_eq!(model.sample_rate(), fixture.sample_rate);
+    assert_eq!(model.n_codebooks(), fixture.n_codebooks);
 
-    let codes = u32s(CODES);
-    let features = f32s(FEATURES);
-    let expected = f32s(PCM);
+    let codes = u32s(fixture.codes);
+    let features = f32s(fixture.features);
+    let expected = f32s(fixture.pcm);
     let cpu_decoder = model
         .decode_features(&features)
         .expect("CPU official-feature decoder");
     assert_cpu(&measure(
-        "CPU decoder vs official DAC.decode",
+        &format!("{} CPU decoder vs official DAC.decode", fixture.label),
         &cpu_decoder,
         &expected,
     ));
     let cpu_end_to_end = model.decode_codes(&codes).expect("CPU RVQ + decoder");
     assert_cpu(&measure(
-        "CPU RVQ + decoder vs official",
+        &format!("{} CPU RVQ + decoder vs official", fixture.label),
         &cpu_end_to_end,
         &expected,
     ));
@@ -162,7 +254,7 @@ fn public_dac_44khz_matches_official_decoder() {
         let metal = model.with_backend(vokra_core::BackendKind::Metal);
         let metal_end_to_end = metal.decode_codes(&codes).expect("Metal RVQ + decoder");
         let metrics = measure(
-            "Metal RVQ + decoder vs official",
+            &format!("{} Metal RVQ + decoder vs official", fixture.label),
             &metal_end_to_end,
             &expected,
         );
@@ -173,4 +265,19 @@ fn public_dac_44khz_matches_official_decoder() {
         );
         assert!(metrics.cosine >= METAL_COSINE_BOUND, "{metrics:?}");
     }
+}
+
+#[test]
+fn public_dac_16khz_matches_official_decoder() {
+    run_public_artifact(&FIXTURE_16);
+}
+
+#[test]
+fn public_dac_24khz_matches_official_decoder() {
+    run_public_artifact(&FIXTURE_24);
+}
+
+#[test]
+fn public_dac_44khz_matches_official_decoder() {
+    run_public_artifact(&FIXTURE_44);
 }
