@@ -613,6 +613,17 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        // MeloTTS consumes a versioned feature bundle rather than timed input
+        // audio. A meaningful RTF denominator needs the same explicit bundle
+        // contract in bench; the generic bench parser does not expose it yet.
+        ModelTask::TtsMelo => {
+            return Err(
+                "bench: arch `melotts` has no bench task yet — use `vokra-cli run --model \
+                 <melotts.gguf> --input <features.vmf> [--backend cpu|metal]` \
+                 (FR-EX-08: refusing to fabricate a feature-to-audio denominator)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input

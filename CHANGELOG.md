@@ -14,6 +14,12 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The five public MeloTTS acoustic GGUFs now route through `vokra-cli run` on
+  explicit CPU or Metal backends. A dependency-free `VKRMELO1` v1 input
+  container pins the language variant, speaker, phoneme/tone/language ids and
+  position-major BERT feature matrices; malformed, cross-language or raw-text
+  input fails explicitly because the acoustic files do not embed the five
+  language-specific frontend pipelines. No backend silently falls back to CPU.
 - The three public Descript DAC repositories (16, 24 and 44.1 kHz) now have a
   strict native token-to-waveform runtime. Factorized RVQ, every
   weight-normalized SEANet convolution and every Snake activation honor the

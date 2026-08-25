@@ -17,7 +17,7 @@ use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
 use crate::runtime_contracts::{
-    FocalCodecCodesV1, MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256,
+    FocalCodecCodesV1, MeloTextFeaturesV1, MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256,
 };
 use crate::wav;
 
@@ -37,6 +37,8 @@ USAGE:
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
+    vokra-cli run --model <melotts.gguf> --input <features.vmf> [--length-scale <s>] \
+                  [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
     vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
@@ -88,6 +90,10 @@ OPTIONS:
                                 For FocalCodec encode it is a 16 kHz mono WAV;
                                 for decode it is a `VKRFOC01` v1 BSQ token
                                 container pinned to the exact checkpoint.
+                                For MeloTTS it is a `VKRMELO1` v1 bundle of
+                                release-pinned phoneme/tone/language ids and
+                                position-major BERT/JA-BERT features; raw text
+                                is not inferred from the acoustic GGUF.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -137,8 +143,8 @@ OPTIONS:
                                 ([:style_dim] conditions the decoder,
                                 [style_dim:] the prosody predictor). Takes
                                 precedence over --voice.
-    --length-scale <s>          kokoro only: duration multiplier (reciprocal
-                                of upstream `speed`) [default 1.0]
+    --length-scale <s>          kokoro or melotts: duration multiplier
+                                (reciprocal of upstream `speed`) [default 1.0]
     --output <path>             WAV file for audio-producing tasks. An encoder-
                                 only Wav2Vec2 GGUF writes time-major raw f32
                                 `[frames, hidden]` features. Charsiu
@@ -679,6 +685,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Separation
         | ModelTask::Tts
         | ModelTask::TtsKokoro
+        | ModelTask::TtsMelo
         | ModelTask::Speaker
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
@@ -814,10 +821,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if a.length_scale != 1.0 && task != ModelTask::TtsKokoro {
+    if a.length_scale != 1.0 && task != ModelTask::TtsKokoro && task != ModelTask::TtsMelo {
         return Err(
-            "run: --length-scale is only supported for the kokoro arch (piper-plus exposes its \
-             own scales through the engine API, not the CLI)"
+            "run: --length-scale is only supported for the kokoro or melotts arch \
+             (piper-plus exposes its own scales through the engine API, not the CLI)"
                 .to_owned(),
         );
     }
@@ -992,6 +999,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::Sbv2 => {
             run_sbv2(&session, &a)?;
+        }
+        ModelTask::TtsMelo => {
+            run_melotts(&session, &a)?;
         }
         // ---- Wave G (2026-08-15) — newly routed real forwards ------------
         ModelTask::Denoise => {
@@ -2856,6 +2866,77 @@ fn validate_aec_pair(
     Ok(())
 }
 
+/// The five-release MeloTTS acoustic synthesis path.
+///
+/// `--input` is a `VKRMELO1` v1 bundle containing the exact already-expanded
+/// phoneme/tone/language ids and BERT matrices the official acoustic graph
+/// consumes. The public acoustic GGUFs do not carry language-specific raw-text
+/// frontends; `--text` is therefore rejected rather than ignored or mapped by
+/// a guessed tokenizer. The bundle also pins its release language, preventing
+/// in-range Chinese ids from being accepted by an English embedding table.
+fn run_melotts(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::rng::GaussianSplitMix64;
+    use vokra_models::melotts::{MeloSynthesisOptions, MeloTextFeatures, MeloTtsCheckpoint};
+
+    if a.text.is_some() {
+        return Err(
+            "run (melotts): --text is not accepted because the public acoustic GGUF does not \
+             contain its language-specific G2P/tokenizer/BERT frontend; pass a versioned \
+             `VKRMELO1` feature bundle through --input instead"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (melotts): --input <features.vmf> is required (`VKRMELO1` v1)")?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (melotts): --input {input_path}: {error}"))?;
+    let packed = MeloTextFeaturesV1::from_bytes(&bytes)
+        .map_err(|error| format!("run (melotts): --input {input_path}: {error}"))?;
+
+    let checkpoint = MeloTtsCheckpoint::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+    let expected_variant = checkpoint.variant().tag();
+    if packed.variant.tag() != expected_variant {
+        return Err(format!(
+            "run (melotts): feature bundle variant `{}` does not match model variant `{expected_variant}`; cross-language feature reuse is refused",
+            packed.variant.tag()
+        ));
+    }
+    let model = checkpoint
+        .load_model(session.gguf())
+        .map_err(|e| e.to_string())?;
+    let features = MeloTextFeatures {
+        phoneme_ids: &packed.phoneme_ids,
+        tones: &packed.tones,
+        language_ids: &packed.language_ids,
+        bert: &packed.bert,
+        ja_bert: &packed.ja_bert,
+        speaker_id: packed.speaker_id,
+    };
+    // A fixed first-party seed makes CPU/Metal comparisons reproducible. The
+    // synthesis controls remain the official defaults except for the explicit
+    // caller-selected duration scale.
+    let mut rng = GaussianSplitMix64::new(0x4d45_4c4f_5454_5331);
+    let output = model
+        .synthesize(
+            features,
+            MeloSynthesisOptions {
+                length_scale: a.length_scale,
+                ..MeloSynthesisOptions::default()
+            },
+            &mut rng,
+            a.backend,
+        )
+        .map_err(|e| e.to_string())?;
+    emit_audio(
+        &format!("melotts-{expected_variant}"),
+        &output.pcm,
+        output.sample_rate,
+        a.output.as_deref(),
+    )
+}
+
 /// The SBV2 (Style-Bert-VITS2 v2) synthesis path (Task 38).
 ///
 /// `SbV2Model::from_gguf` needs THREE GGUFs: this model's own weights
@@ -4015,6 +4096,79 @@ mod tests {
         model
     }
 
+    fn melotts_metadata_only_gguf(tag: &str) -> std::path::PathBuf {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "melotts");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let model = std::env::temp_dir().join(format!(
+            "vokra-cli-melotts-meta-{tag}-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&model, &bytes).unwrap();
+        model
+    }
+
+    #[test]
+    fn melotts_requires_versioned_features_and_refuses_raw_text() {
+        let model = melotts_metadata_only_gguf("input-contract");
+        let err = main(&args(&["--model", model.to_str().unwrap()])).unwrap_err();
+        assert!(
+            err.contains("--input <features.vmf> is required") && err.contains("VKRMELO1"),
+            "got: {err}"
+        );
+
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--text",
+            "hello",
+        ]))
+        .unwrap_err();
+        assert!(
+            err.contains("--text is not accepted") && err.contains("G2P/tokenizer/BERT"),
+            "got: {err}"
+        );
+
+        let _ = std::fs::remove_file(&model);
+    }
+
+    #[test]
+    fn melotts_backend_and_length_scale_reach_the_feature_contract() {
+        let model = melotts_metadata_only_gguf("backend-contract");
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--backend",
+            "metal",
+            "--length-scale",
+            "0.5",
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        assert!(err.contains("--input <features.vmf> is required"), "{err}");
+        assert!(!err.contains("runs on the CPU regardless"), "{err}");
+        assert!(!err.contains("only supported for the kokoro"), "{err}");
+    }
+
+    #[test]
+    fn melotts_invalid_feature_container_fails_before_tensor_binding() {
+        let model = melotts_metadata_only_gguf("bad-container");
+        let features =
+            std::env::temp_dir().join(format!("vokra-cli-melotts-bad-{}.vmf", std::process::id()));
+        std::fs::write(&features, b"not a MeloTTS feature bundle").unwrap();
+        let err = main(&args(&[
+            "--model",
+            model.to_str().unwrap(),
+            "--input",
+            features.to_str().unwrap(),
+        ]))
+        .unwrap_err();
+        let _ = std::fs::remove_file(&model);
+        let _ = std::fs::remove_file(&features);
+        assert!(err.contains("feature container is truncated"), "{err}");
+        assert!(!err.contains("missing/non-string"), "{err}");
+    }
+
     /// `run_sbv2`'s three required-argument checks fire in order: `--text`,
     /// then `--bert-ja`, then `--bert-en` — each names the missing flag
     /// rather than a generic failure (FR-EX-08).
@@ -4940,7 +5094,10 @@ mod tests {
             "1.5",
         ]))
         .unwrap_err();
-        assert!(err.contains("only supported for the kokoro arch"), "{err}");
+        assert!(
+            err.contains("only supported for the kokoro or melotts arch"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -4983,6 +5140,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Tts), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);

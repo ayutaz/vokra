@@ -41,6 +41,37 @@ ASR has decoding controls: `--beam-size`, `--word-timestamps`,
   --beam-size 5 --word-timestamps
 ```
 
+### MeloTTS precomputed feature input
+
+The five public MeloTTS GGUFs contain the complete acoustic model, but not the
+language-specific G2P/tokenizer/BERT frontends. They therefore consume a
+versioned `VKRMELO1` v1 feature bundle instead of raw `--text`:
+
+```sh
+./target/release/vokra-cli run --model melotts-english.gguf \
+  --input hello.vmf --backend metal --output hello.wav
+```
+
+The fixed 64-byte little-endian header records the language variant, speaker
+id, sequence length, and the required BERT widths. The payload contains equal
+length phoneme/tone/language `u32` arrays followed by position-major
+`[sequence, 1024]` BERT and `[sequence, 768]` JA-BERT `f32` matrices. A wrong
+language, malformed shape, trailing/truncated bytes, non-finite feature, or
+inactive speaker id is an error. Raw text is also an explicit error; it is
+never fed through a guessed frontend or a silent CPU fallback.
+
+An upstream frontend's little-endian arrays can be packed without adding a
+runtime dependency:
+
+```sh
+uv run --project tools/parity python tools/parity/melotts_pack_features.py \
+  --variant english --speaker-id 0 \
+  --phoneme-ids phoneme_ids.u32 --tones tones.u32 \
+  --language-ids language_ids.u32 \
+  --bert bert_position_major.f32 \
+  --ja-bert ja_bert_position_major.f32 --output hello.vmf
+```
+
 ### CT-Punc paired token input
 
 CT-Punc deliberately does not infer tokenization. Supply the token strings and

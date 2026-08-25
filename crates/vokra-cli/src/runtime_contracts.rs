@@ -143,6 +143,240 @@ fn unescape_ct_punc_token(input: &str, line_no: usize) -> Result<String, String>
     Ok(out)
 }
 
+/// MeloTTS precomputed-feature container magic (`VKRMELO1`) and version.
+const MELOTTS_MAGIC: &[u8; 8] = b"VKRMELO1";
+const MELOTTS_VERSION: u16 = 1;
+const MELOTTS_HEADER_LEN: usize = 64;
+const MELOTTS_BERT_DIMENSION: usize = 1_024;
+const MELOTTS_JA_BERT_DIMENSION: usize = 768;
+
+/// Language identity pinned by a MeloTTS feature container.
+///
+/// The numeric values are part of the `VKRMELO1` v1 file contract. A feature
+/// bundle is deliberately tied to one release language: feeding Chinese phone
+/// and tone ids to the English embedding tables can stay numerically in range
+/// while producing plausible-looking but invalid speech.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MeloFeatureVariantV1 {
+    English = 0,
+    Chinese = 1,
+    Korean = 2,
+    Spanish = 3,
+    Japanese = 4,
+}
+
+impl MeloFeatureVariantV1 {
+    fn from_u32(value: u32) -> Result<Self, String> {
+        match value {
+            0 => Ok(Self::English),
+            1 => Ok(Self::Chinese),
+            2 => Ok(Self::Korean),
+            3 => Ok(Self::Spanish),
+            4 => Ok(Self::Japanese),
+            other => Err(format!(
+                "MeloTTS feature container has unknown variant id {other}; v1 supports 0=english, 1=chinese, 2=korean, 3=spanish, 4=japanese"
+            )),
+        }
+    }
+
+    pub(crate) const fn tag(self) -> &'static str {
+        match self {
+            Self::English => "english",
+            Self::Chinese => "chinese",
+            Self::Korean => "korean",
+            Self::Spanish => "spanish",
+            Self::Japanese => "japanese",
+        }
+    }
+}
+
+/// Portable MeloTTS acoustic-input feature container, version 1.
+///
+/// The payload is little-endian and position-major:
+///
+/// 1. `sequence_len` phoneme `u32` ids;
+/// 2. `sequence_len` tone `u32` ids;
+/// 3. `sequence_len` language `u32` ids;
+/// 4. `[sequence_len, 1024]` BERT `f32` values;
+/// 5. `[sequence_len, 768]` JA-BERT `f32` values.
+///
+/// Raw text is intentionally not accepted here. The five official acoustic
+/// GGUFs do not contain the language-specific G2P/tokenizer/BERT frontends,
+/// so pretending to derive these arrays in the runtime would silently change
+/// the model input.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MeloTextFeaturesV1 {
+    pub(crate) variant: MeloFeatureVariantV1,
+    pub(crate) speaker_id: u32,
+    pub(crate) phoneme_ids: Vec<u32>,
+    pub(crate) tones: Vec<u32>,
+    pub(crate) language_ids: Vec<u32>,
+    pub(crate) bert: Vec<f32>,
+    pub(crate) ja_bert: Vec<f32>,
+}
+
+impl MeloTextFeaturesV1 {
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < MELOTTS_HEADER_LEN {
+            return Err(format!(
+                "MeloTTS feature container is truncated: {} bytes, need at least {MELOTTS_HEADER_LEN}",
+                bytes.len()
+            ));
+        }
+        if &bytes[..8] != MELOTTS_MAGIC {
+            return Err(
+                "MeloTTS feature container has wrong magic; expected `VKRMELO1`".to_owned(),
+            );
+        }
+        let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+        if version != MELOTTS_VERSION {
+            return Err(format!(
+                "MeloTTS feature container version {version} is unsupported; this build reads version {MELOTTS_VERSION}"
+            ));
+        }
+        let header_len = u16::from_le_bytes([bytes[10], bytes[11]]) as usize;
+        if header_len != MELOTTS_HEADER_LEN {
+            return Err(format!(
+                "MeloTTS feature container v1 header length {header_len} != {MELOTTS_HEADER_LEN}"
+            ));
+        }
+        if read_u32(bytes, 12)? != 0 || bytes[36..64].iter().any(|&byte| byte != 0) {
+            return Err("MeloTTS feature container v1 has non-zero reserved fields".to_owned());
+        }
+        let variant = MeloFeatureVariantV1::from_u32(read_u32(bytes, 16)?)?;
+        let sequence_len = usize::try_from(read_u32(bytes, 20)?)
+            .map_err(|_| "MeloTTS sequence length does not fit this host".to_owned())?;
+        if sequence_len == 0 {
+            return Err("MeloTTS feature container has an empty sequence".to_owned());
+        }
+        let speaker_id = read_u32(bytes, 24)?;
+        let bert_dimension = usize::try_from(read_u32(bytes, 28)?)
+            .map_err(|_| "MeloTTS BERT dimension does not fit this host".to_owned())?;
+        let ja_bert_dimension = usize::try_from(read_u32(bytes, 32)?)
+            .map_err(|_| "MeloTTS JA-BERT dimension does not fit this host".to_owned())?;
+        if bert_dimension != MELOTTS_BERT_DIMENSION
+            || ja_bert_dimension != MELOTTS_JA_BERT_DIMENSION
+        {
+            return Err(format!(
+                "MeloTTS feature container dimensions are BERT={bert_dimension}, JA-BERT={ja_bert_dimension}; v1 requires {MELOTTS_BERT_DIMENSION} and {MELOTTS_JA_BERT_DIMENSION}"
+            ));
+        }
+
+        let values_per_position = 3usize
+            .checked_add(bert_dimension)
+            .and_then(|value| value.checked_add(ja_bert_dimension))
+            .ok_or("MeloTTS feature width overflow")?;
+        let payload_values = sequence_len
+            .checked_mul(values_per_position)
+            .ok_or("MeloTTS feature payload size overflow")?;
+        let expected = MELOTTS_HEADER_LEN
+            .checked_add(
+                payload_values
+                    .checked_mul(4)
+                    .ok_or("MeloTTS feature payload size overflow")?,
+            )
+            .ok_or("MeloTTS feature container size overflow")?;
+        if bytes.len() != expected {
+            return Err(format!(
+                "MeloTTS feature container length {} != header {MELOTTS_HEADER_LEN} + {payload_values} four-byte values ({expected})",
+                bytes.len()
+            ));
+        }
+
+        let mut offset = MELOTTS_HEADER_LEN;
+        let phoneme_ids = take_u32_values(bytes, &mut offset, sequence_len);
+        let tones = take_u32_values(bytes, &mut offset, sequence_len);
+        let language_ids = take_u32_values(bytes, &mut offset, sequence_len);
+        let bert = take_f32_values(bytes, &mut offset, sequence_len * MELOTTS_BERT_DIMENSION);
+        let ja_bert = take_f32_values(bytes, &mut offset, sequence_len * MELOTTS_JA_BERT_DIMENSION);
+        debug_assert_eq!(offset, bytes.len());
+        if let Some((label, index, value)) =
+            [("bert", bert.as_slice()), ("ja_bert", ja_bert.as_slice())]
+                .into_iter()
+                .find_map(|(label, values)| {
+                    values
+                        .iter()
+                        .copied()
+                        .enumerate()
+                        .find(|(_, value)| !value.is_finite())
+                        .map(|(index, value)| (label, index, value))
+                })
+        {
+            return Err(format!(
+                "MeloTTS feature container {label}[{index}] is non-finite ({value})"
+            ));
+        }
+        Ok(Self {
+            variant,
+            speaker_id,
+            phoneme_ids,
+            tones,
+            language_ids,
+            bert,
+            ja_bert,
+        })
+    }
+
+    #[cfg(test)]
+    fn to_bytes(&self) -> Vec<u8> {
+        let sequence_len = u32::try_from(self.phoneme_ids.len()).expect("test sequence fits u32");
+        assert_eq!(self.tones.len(), sequence_len as usize);
+        assert_eq!(self.language_ids.len(), sequence_len as usize);
+        assert_eq!(
+            self.bert.len(),
+            sequence_len as usize * MELOTTS_BERT_DIMENSION
+        );
+        assert_eq!(
+            self.ja_bert.len(),
+            sequence_len as usize * MELOTTS_JA_BERT_DIMENSION
+        );
+        let payload_values =
+            sequence_len as usize * (3 + MELOTTS_BERT_DIMENSION + MELOTTS_JA_BERT_DIMENSION);
+        let mut out = Vec::with_capacity(MELOTTS_HEADER_LEN + payload_values * 4);
+        out.extend_from_slice(MELOTTS_MAGIC);
+        out.extend_from_slice(&MELOTTS_VERSION.to_le_bytes());
+        out.extend_from_slice(&(MELOTTS_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(self.variant as u32).to_le_bytes());
+        out.extend_from_slice(&sequence_len.to_le_bytes());
+        out.extend_from_slice(&self.speaker_id.to_le_bytes());
+        out.extend_from_slice(&(MELOTTS_BERT_DIMENSION as u32).to_le_bytes());
+        out.extend_from_slice(&(MELOTTS_JA_BERT_DIMENSION as u32).to_le_bytes());
+        out.extend_from_slice(&[0u8; 28]);
+        for values in [&self.phoneme_ids, &self.tones, &self.language_ids] {
+            for value in values {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        for values in [&self.bert, &self.ja_bert] {
+            for value in values {
+                out.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        out
+    }
+}
+
+fn take_u32_values(bytes: &[u8], offset: &mut usize, count: usize) -> Vec<u32> {
+    let end = *offset + count * 4;
+    let values = bytes[*offset..end]
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    *offset = end;
+    values
+}
+
+fn take_f32_values(bytes: &[u8], offset: &mut usize, count: usize) -> Vec<f32> {
+    let end = *offset + count * 4;
+    let values = bytes[*offset..end]
+        .chunks_exact(4)
+        .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    *offset = end;
+    values
+}
+
 /// Mimi code-container magic (`VKRMCODE`) and current format version.
 const MIMI_MAGIC: &[u8; 8] = b"VKRMCODE";
 const MIMI_VERSION: u16 = 1;
@@ -919,6 +1153,63 @@ mod tests {
             parse_ct_punc_tsv("vokra-ct-punc-tsv-v1\n7\ta\\x\n")
                 .unwrap_err()
                 .contains("unknown escape")
+        );
+    }
+
+    fn sample_melotts_features() -> MeloTextFeaturesV1 {
+        MeloTextFeaturesV1 {
+            variant: MeloFeatureVariantV1::Japanese,
+            speaker_id: 0,
+            phoneme_ids: vec![0, 7],
+            tones: vec![0, 3],
+            language_ids: vec![0, 1],
+            bert: vec![0.25; 2 * MELOTTS_BERT_DIMENSION],
+            ja_bert: vec![-0.5; 2 * MELOTTS_JA_BERT_DIMENSION],
+        }
+    }
+
+    #[test]
+    fn melotts_v1_round_trips_language_pinned_position_major_features() {
+        let value = sample_melotts_features();
+        let bytes = value.to_bytes();
+        assert_eq!(&bytes[..8], b"VKRMELO1");
+        assert_eq!(&bytes[16..20], &4u32.to_le_bytes());
+        assert_eq!(MeloTextFeaturesV1::from_bytes(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn melotts_v1_rejects_wrong_language_shape_truncation_and_nonfinite_values() {
+        let mut bytes = sample_melotts_features().to_bytes();
+        bytes[16..20].copy_from_slice(&99u32.to_le_bytes());
+        assert!(
+            MeloTextFeaturesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("unknown variant")
+        );
+
+        let mut bytes = sample_melotts_features().to_bytes();
+        bytes.pop();
+        assert!(
+            MeloTextFeaturesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("length")
+        );
+
+        let mut bytes = sample_melotts_features().to_bytes();
+        let first_bert = MELOTTS_HEADER_LEN + 2 * 3 * 4;
+        bytes[first_bert..first_bert + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        assert!(
+            MeloTextFeaturesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("bert[0] is non-finite")
+        );
+
+        let mut bytes = sample_melotts_features().to_bytes();
+        bytes[28..32].copy_from_slice(&768u32.to_le_bytes());
+        assert!(
+            MeloTextFeaturesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("requires 1024 and 768")
         );
     }
 

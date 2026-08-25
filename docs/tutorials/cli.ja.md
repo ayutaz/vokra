@@ -40,6 +40,36 @@ ASR には decode 制御がある: `--beam-size` / `--word-timestamps` /
   --beam-size 5 --word-timestamps
 ```
 
+### MeloTTSの事前計算feature入力
+
+公開中のMeloTTS 5 GGUFには音響モデル全体が入っているが、言語別の
+G2P/tokenizer/BERT frontendは含まれない。そのためraw `--text`ではなく、
+versioned `VKRMELO1` v1 feature bundleを入力する:
+
+```sh
+./target/release/vokra-cli run --model melotts-japanese.gguf \
+  --input hello.vmf --backend metal --output hello.wav
+```
+
+固定64-byte little-endian headerは言語variant、speaker ID、sequence長、必須BERT
+幅を保持する。payloadは同じ長さのphoneme/tone/language `u32`列、その後に
+position-major `[sequence, 1024]` BERTと`[sequence, 768]` JA-BERT `f32` matrixを
+格納する。言語不一致、不正shape、余分・不足byte、非finite feature、未登録
+speaker IDはすべて明示エラーになる。raw textも明示エラーであり、推測した
+frontendや暗黙CPU fallbackには渡さない。
+
+upstream frontendが出力したlittle-endian arrayは、runtime依存を追加せずbundle
+化できる:
+
+```sh
+uv run --project tools/parity python tools/parity/melotts_pack_features.py \
+  --variant japanese --speaker-id 0 \
+  --phoneme-ids phoneme_ids.u32 --tones tones.u32 \
+  --language-ids language_ids.u32 \
+  --bert bert_position_major.f32 \
+  --ja-bert ja_bert_position_major.f32 --output hello.vmf
+```
+
 ### CT-Punc のtoken/idペア入力
 
 CT-Puncはtokenizeを推測しない。token文字列とモデルに渡す正確なvocabulary

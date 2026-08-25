@@ -107,6 +107,15 @@ pub(crate) enum ModelTask {
     /// `--bert-ja` / `--bert-en` fresh — keeps this shared function's
     /// signature untouched.
     Sbv2,
+    /// Text-to-speech through one of the five official MeloTTS releases.
+    ///
+    /// The dispatch returns a bare session because the concrete low-level
+    /// acoustic model consumes a versioned precomputed-feature bundle rather
+    /// than the generic [`vokra_core::TtsEngine`] raw-text surface. The `run`
+    /// arm binds [`vokra_models::melotts::MeloTtsCheckpoint`] exactly once,
+    /// validates all 1,051 tensors, and threads the selected backend through
+    /// the complete text/duration/flow/decoder stack.
+    TtsMelo,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -332,6 +341,10 @@ const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
 /// SBV2 / Style-Bert-VITS2 v2 (Task 38) — matches
 /// `vokra-convert::models::sbv2::ARCH` (`crates/vokra-convert/src/models/sbv2.rs`).
 const ARCH_SBV2: &str = "sbv2";
+/// MeloTTS English / Chinese / Korean / Spanish / Japanese acoustic releases.
+/// The exact language is pinned by `vokra.melotts.variant` and the strict
+/// checkpoint identity; all five intentionally share one runtime architecture.
+const ARCH_MELOTTS: &str = "melotts";
 /// MAGNeT Small 10 secs (post-audit CC-gap 2026-08-13 Wave D) — matches
 /// [`vokra_models::magnet::ARCH_SMALL`]. Dispatch here is a **scaffold
 /// stop-gap**: the runtime forward is loud-partial pending
@@ -830,6 +843,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // module doc).
             Ok((session, ModelTask::Sbv2))
         }
+        ARCH_MELOTTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MELOTTS}`"
+                ));
+            }
+            // Bare session: the run arm owns the versioned feature-input
+            // contract and loads the concrete acoustic stack once. A malformed
+            // or stale public artifact fails in MeloTtsCheckpoint::from_gguf;
+            // no generic TTS adapter or CPU fallback is substituted.
+            Ok((session, ModelTask::TtsMelo))
+        }
         ARCH_MOSHI => {
             if hint.is_some() {
                 return Err(format!(
@@ -1246,7 +1271,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
-                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
+                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / \
@@ -2067,6 +2092,52 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("sbv2 session builds (bare)");
         assert_eq!(task, ModelTask::Sbv2);
+    }
+
+    /// A `melotts` arch GGUF dispatches to the dedicated low-level acoustic
+    /// task with a bare session. The run arm owns the versioned feature bundle
+    /// and strict 1,051-tensor load, so architecture detection needs no tensor
+    /// payload.
+    #[test]
+    fn load_session_detects_melotts_as_melotts_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "melotts");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melotts-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("melotts session builds (bare)");
+        assert_eq!(task, ModelTask::TtsMelo);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_MELOTTS));
+    }
+
+    #[test]
+    fn load_session_rejects_hint_on_melotts() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "melotts");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melotts-hint-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on melotts is rejected");
+        assert!(
+            err.contains("not supported on arch `melotts`"),
+            "got: {err}"
+        );
     }
 
     /// Task hints are rejected on the sbv2 arch (FR-EX-08 — no silent hint
