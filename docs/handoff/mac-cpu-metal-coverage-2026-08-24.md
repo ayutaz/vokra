@@ -207,10 +207,30 @@ The raw official `.ckpt` has 37 state entries: 32 floating inference tensors
 plus five integer BatchNorm training counters. The offline preparation tool
 removes only those counters; the Rust converter then validates all 32 names
 and shapes and stamps the upstream revision, exact frontend, TDNN, pooling,
-padding and artifact-layout metadata. No public upload or replacement was
-performed. Linux VAST cannot execute Metal, so the real Apple-device
-CPU/Metal comparison remains a separate gate even though the complete code
-route is now counted.
+padding and artifact-layout metadata. Linux VAST could not execute Metal, so
+the initial CPU wave left the Apple-device comparison as a separate gate even
+though the complete code route was counted.
+
+That gate was closed at commit `20f56ab3`. The public CLI now optionally
+writes a speaker encoder's native embedding as raw little-endian F32, allowing
+the complete vector rather than only its norm or a self-cosine to be audited.
+The two unchanged public GGUFs processed the same 16,000-sample input through
+CPU and real Apple M1 Metal:
+
+| Public X-vector artifact | Dimension | Different values | max abs CPU/Metal | relative L1 | cosine |
+|---|---:|---:|---:|---:|---:|
+| `vokra/xvector-voxceleb` | 512 | 388 | `4.768371582e-6` | `1.102813177e-7` | `1.000000000` |
+| `vokra/xvector` | 512 | 388 | `4.768371582e-6` | `1.102813177e-7` | `1.000000000` |
+
+The two public layouts were bit-identical to each other on CPU and again on
+Metal. Both passed the unchanged `0.01` FP32 bound. A Seatbelt probe returned
+the explicit `no system default Metal device` error rather than falling back;
+the real device runs then completed outside that restriction after macOS
+reported Apple M1 Metal support. The real-file CLI output gate passed once for
+each public GGUF. The 17-file evidence ledger is at
+`/private/tmp/vokra-xvector-mac-20f56ab3`; its `SHA256SUMS` digest is
+`680d66f460eeb58c49df507b35857a7e6fe9c501c80888052031fedc8dc01ce9`.
+No public upload or replacement was performed.
 
 ### SpeechBrain ECAPA-TDNN and related public artifacts
 
