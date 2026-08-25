@@ -14,6 +14,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The exact public deepfake-audio-detection-v2 GGUF now binds as its actual
+  `Wav2Vec2ForSequenceClassification` architecture instead of the historical
+  WavLM placeholder and runs the complete normalized waveform frontend,
+  12-layer encoder, 256-wide projector, mean pool and `[fake, real]` head
+  through explicit CPU/Metal backends. CLI run and bench routes expose both
+  logits/scores without inventing a verdict threshold; malformed contracts,
+  unsupported backends and invalid 16 kHz PCM fail without a CPU fallback.
+  An independent Transformers 4.41.2 VAST oracle and Apple Metal measurement
+  are staged, with numerical bounds intentionally unset until observed.
 - The exact public emotion2vec+ Large GGUF now strict-binds its 185-tensor
   native classifier and runs the 7-layer waveform frontend, grouped positional
   convolutions, learned tokens, 4+8 post-norm ALiBi blocks, mean pool and

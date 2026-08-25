@@ -42,4 +42,4 @@ members = [
     "microwakeword",
     "rmvpe",
 ]
-exclude = ["nanocodec", "conv_tasnet"]
+exclude = ["nanocodec", "conv_tasnet", "deepfake_detection"]

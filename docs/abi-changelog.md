@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (deepfake Wav2Vec2 CPU/Metal runtime)
+
+The exact public 215-F32-tensor deepfake-audio-detection-v2 artifact gains a
+strict native waveform-to-binary-classification forward plus CLI run and bench
+routes. The corrected implementation follows the pinned official
+`Wav2Vec2ForSequenceClassification` contract and retains the audited legacy
+GGUF through its immutable manifest and generic Apache-2.0 provenance. No C
+symbol, ownership rule or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::deepfake_detection` | `DeepfakeDetection`, `DeepfakeDetectionConfig`, `DeepfakeDetectionWeights`, `DeepfakeScore`, topology/identity constants | Tightened/completed | strict open/bind/policy/backend selection; `encode_features(&[f32], 16_000)` and `score_pcm(&[f32], 16_000)`; result order is `0=fake, 1=real` | Owns decoded F32 weights. Conv1D/grouped-Conv1D/GEMM/Softmax/LayerNorm/GELU honor explicit CPU/Metal selection; unsupported backends fail with no fallback. Existing score/threshold APIs remain source-compatible; invalid thresholds now fail explicitly | no for the exact audited public file; malformed, partial or foreign files fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=deepfake_detection` | Added (behavior only) | 16 kHz mono WAV to ranked `[fake, real]` logits/scores; optional output is two little-endian f32 scores | Wrong sample rate, non-finite/short PCM, provenance/manifest drift and unsupported backend fail explicitly; the CLI does not select a deployment threshold | no | (TBD) |
+| `vokra-models::wav2vec2_ctc` | shared positional-convolution binder | Internal extension | accepts exactly one complete weight-norm pair: legacy `weight_g/weight_v` or PyTorch `parametrizations.weight.original0/original1` | Existing CTC GGUFs keep the legacy route; partial or ambiguous pairs fail closed | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (emotion2vec CPU/Metal runtime)
 
 The exact public 185-tensor emotion2vec+ Large artifact gains a strict native

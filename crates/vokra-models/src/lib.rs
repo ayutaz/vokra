@@ -2319,10 +2319,10 @@ pub mod wetextprocessing;
 // `[[feedback-license-signoff-primary-source]]`).
 pub mod lang_id;
 
-// Wave G (2026-08-15) — runtime binder for the `deepfake_detection` converter
-// arch (`MelodyMachine/Deepfake-audio-detection-V2`, apache-2.0): a WavLM-based
-// binary audio-deepfake / spoof-countermeasure classifier. Closes one of the
-// last converter arches that nothing in the workspace read back.
+// Complete native runtime for the canonical `deepfake_detection` converter
+// arch (`MelodyMachine/Deepfake-audio-detection-V2`, apache-2.0). The pinned
+// official config identifies a Wav2Vec2ForSequenceClassification checkpoint,
+// correcting the historical WavLM scaffold.
 //
 // DESIGN: a detector emits a SCORE, not a verdict. There is deliberately no
 // `is_fake() -> bool` — `score()` returns `DeepfakeScore` (raw logits plus a
@@ -2333,27 +2333,11 @@ pub mod lang_id;
 // accountable for it, so `DeepfakeScore::exceeds` takes the threshold as an
 // explicit argument and it shows up at the call site.
 //
-// The same principle, sharper: the GGUF does NOT record which output index
-// means "synthetic" — the converter never stamps the upstream `id2label` —
-// so `spoof_class_index()` is a loud `UnsupportedOp` naming the missing
-// `vokra.deepfake.id2label` chunk rather than a coin flip. An inverted spoof
-// detector reports confidently in the wrong direction and the inversion is
-// invisible at the call site, which is strictly worse than no detector at
-// all. Closing that gap is converter-side work, and the error says so.
-//
-// REAL here: strict `vokra.model.arch` verification, classifier-head
-// resolution against a documented candidate set, the head shape gate
-// (rank 2, out_features == 2 — "binary classifier" enforced rather than
-// merely documented), license surfacing, and all of `DeepfakeScore`.
-// LOUD-PARTIAL: `score()` returns `VokraError::UnsupportedOp` naming the
-// missing primitive — the WavLM gated relative position bias — along with
-// the conv stem and mean pooling, citing all three primary sources. No
-// fabricated detection score is ever emitted; on a spoof-countermeasure
-// model that would be a security control reporting a number it did not
-// compute (FR-EX-08).
-//
-// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
-// `[[feedback-license-signoff-primary-source]]`).
+// Binding pins the complete 215-F32-tensor manifest, immutable provenance,
+// 16 kHz normalized waveform contract, 12-layer base encoder, 256-wide
+// projector and official `0=fake / 1=real` class order. The full encoder and
+// task head run through the shared Compute seam on CPU or Metal. Any other
+// backend fails explicitly; no learned operation silently falls back to CPU.
 pub mod deepfake_detection;
 
 // Wave G (2026-08-15) — runtime binder for the `chattts` converter arch

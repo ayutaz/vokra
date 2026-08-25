@@ -254,6 +254,26 @@ const HUBERT_LARGE_LS960_SPEC: VariantSpec = VariantSpec {
     legacy: LegacyMetadata::None,
 };
 
+// Shared base encoder used by the canonical deepfake sequence classifier.
+// The owning module verifies the distinct arch, complete 215-tensor manifest,
+// metadata and task head before this encoder-only binder decodes weights.
+const DEEPFAKE_SEQUENCE_CLASSIFIER_SPEC: VariantSpec = VariantSpec {
+    model_id: "deepfake-audio-detection-v2",
+    upstream_hf: "MelodyMachine/Deepfake-audio-detection-V2",
+    hidden: 768,
+    layers: 12,
+    heads: 12,
+    ffn: 3072,
+    vocab: 2,
+    stable: false,
+    stem_norm: Norm::GroupFirstOnly,
+    stem_bias: false,
+    has_head: false,
+    tensor_count: 215,
+    vocab_json: None,
+    legacy: LegacyMetadata::None,
+};
+
 /// Resolved, shape-checked Wav2Vec2 inference configuration.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Wav2Vec2CtcConfig {
@@ -404,6 +424,14 @@ impl Wav2Vec2Ctc {
         Self::bind_audited(file, &HUBERT_LARGE_LS960_SPEC, "hubert", false)
     }
 
+    /// Decodes the exact Wav2Vec2-base encoder embedded in the canonical
+    /// deepfake sequence classifier. Identity, manifest and task-head checks
+    /// remain in `crate::deepfake_detection` so this shared implementation
+    /// cannot alias the classifier to the CTC architecture.
+    pub(crate) fn from_deepfake_file(file: &GgufFile) -> Result<Self> {
+        Self::bind_audited(file, &DEEPFAKE_SEQUENCE_CLASSIFIER_SPEC, "wav2vec2", false)
+    }
+
     fn bind_audited(
         file: &GgufFile,
         spec: &VariantSpec,
@@ -471,16 +499,14 @@ impl Wav2Vec2Ctc {
                 &[spec.hidden],
             )?,
         };
+        let position_prefix = format!("{family_prefix}.encoder.pos_conv_embed.conv");
+        let (position_g_name, position_v_name) = positional_weight_names(file, &position_prefix)?;
         let position_v = tensor(
             file,
-            &format!("{family_prefix}.encoder.pos_conv_embed.conv.weight_v"),
+            &position_v_name,
             &[spec.hidden, spec.hidden / POS_GROUPS, POS_KERNEL],
         )?;
-        let position_g = tensor(
-            file,
-            &format!("{family_prefix}.encoder.pos_conv_embed.conv.weight_g"),
-            &[1, 1, POS_KERNEL],
-        )?;
+        let position_g = tensor(file, &position_g_name, &[1, 1, POS_KERNEL])?;
         let position = CharsiuPosConv {
             weight: fold_weight_norm_dim2(
                 &position_g,
@@ -1085,6 +1111,30 @@ pub(crate) fn reject_non_finite(label: &str, values: &[f32]) -> Result<()> {
     Ok(())
 }
 
+fn positional_weight_names(file: &GgufFile, prefix: &str) -> Result<(String, String)> {
+    let legacy = (format!("{prefix}.weight_g"), format!("{prefix}.weight_v"));
+    let parametrized = (
+        format!("{prefix}.parametrizations.weight.original0"),
+        format!("{prefix}.parametrizations.weight.original1"),
+    );
+    let legacy_present = (
+        file.tensor_info(&legacy.0).is_some(),
+        file.tensor_info(&legacy.1).is_some(),
+    );
+    let parametrized_present = (
+        file.tensor_info(&parametrized.0).is_some(),
+        file.tensor_info(&parametrized.1).is_some(),
+    );
+    match (legacy_present, parametrized_present) {
+        ((true, true), (false, false)) => Ok(legacy),
+        ((false, false), (true, true)) => Ok(parametrized),
+        _ => Err(VokraError::ModelLoad(format!(
+            "wav2vec2_ctc: positional convolution `{prefix}` must carry exactly one complete weight-norm pair: legacy ({:?}, {:?}) or PyTorch parametrized ({:?}, {:?}); observed legacy g/v={legacy_present:?}, parametrized original0/original1={parametrized_present:?}",
+            legacy.0, legacy.1, parametrized.0, parametrized.1
+        ))),
+    }
+}
+
 pub(crate) fn fold_weight_norm_dim2(
     g: &[f32],
     v: &[f32],
@@ -1316,7 +1366,20 @@ fn meta_is_u32_array(file: &GgufFile, key: &str, expected: &[usize]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use vokra_core::gguf::{GgmlType, GgufBuilder};
+
     use super::*;
+
+    fn gguf_with_tensor_names(names: &[&str]) -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        for name in names {
+            builder
+                .add_tensor(name, GgmlType::F32, vec![1], vec![0; 4])
+                .expect("add tensor-name fixture");
+        }
+        GgufFile::parse(builder.to_bytes().expect("serialize tensor-name fixture"))
+            .expect("parse tensor-name fixture")
+    }
 
     #[test]
     fn embedded_vocabularies_are_dense_and_pinned() {
@@ -1336,6 +1399,37 @@ mod tests {
         assert_eq!(folded[1], 0.0);
         assert!((folded[2] - 1.6).abs() < 1e-6);
         assert!((folded[3] - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn positional_weight_norm_pair_is_exact_and_unambiguous() {
+        let prefix = "wav2vec2.encoder.pos_conv_embed.conv";
+        let legacy_g = format!("{prefix}.weight_g");
+        let legacy_v = format!("{prefix}.weight_v");
+        let original0 = format!("{prefix}.parametrizations.weight.original0");
+        let original1 = format!("{prefix}.parametrizations.weight.original1");
+
+        let legacy = gguf_with_tensor_names(&[&legacy_g, &legacy_v]);
+        assert_eq!(
+            positional_weight_names(&legacy, prefix).unwrap(),
+            (legacy_g.clone(), legacy_v.clone())
+        );
+        let parametrized = gguf_with_tensor_names(&[&original0, &original1]);
+        assert_eq!(
+            positional_weight_names(&parametrized, prefix).unwrap(),
+            (original0.clone(), original1.clone())
+        );
+
+        let partial = gguf_with_tensor_names(&[&original0]);
+        let partial_error = positional_weight_names(&partial, prefix)
+            .unwrap_err()
+            .to_string();
+        assert!(partial_error.contains("exactly one complete weight-norm pair"));
+        let ambiguous = gguf_with_tensor_names(&[&legacy_g, &legacy_v, &original0, &original1]);
+        let ambiguous_error = positional_weight_names(&ambiguous, prefix)
+            .unwrap_err()
+            .to_string();
+        assert!(ambiguous_error.contains("exactly one complete weight-norm pair"));
     }
 
     #[test]

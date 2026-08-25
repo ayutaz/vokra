@@ -71,6 +71,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "frcrn",
             "miocodec",
             "tiger_separator",
+            "deepfake_detection",
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
@@ -162,6 +163,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         emotion2vec = audit.RepoRecord(
             "vokra/emotion2vec", "abc", ("model.gguf",), "emotion2vec"
         )
+        deepfake = audit.RepoRecord(
+            "vokra/deepfake-audio-detection-v2",
+            "abc",
+            ("deepfake-detection.gguf",),
+            "deepfake_detection",
+        )
         tiger = audit.RepoRecord(
             "vokra/tiger-dnr",
             "abc",
@@ -230,6 +237,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(frcrn, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(emotion2vec, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(emotion2vec, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(deepfake, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(deepfake, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")

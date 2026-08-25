@@ -697,6 +697,36 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("emotion2vec", audio_seconds, samples)
         }
+        ModelTask::DeepfakeClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (deepfake detection): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::deepfake_detection::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (deepfake detection): {path} is {} Hz, expected {rate} Hz — resample explicitly before classification (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::deepfake_detection::DeepfakeDetection::from_gguf_with_backend(
+                    session.gguf(),
+                    args.backend,
+                )
+                .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model
+                    .score_pcm(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("deepfake-detection", audio_seconds, samples)
+        }
         ModelTask::WatermarkAudioseal => {
             let path = args
                 .input

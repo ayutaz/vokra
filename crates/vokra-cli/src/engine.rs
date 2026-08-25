@@ -105,6 +105,11 @@ pub(crate) enum ModelTask {
     /// selected CPU/Metal backend reaches all learned hot operations without
     /// loading the 648 MB public GGUF twice.
     EmotionClassification,
+    /// Binary fake/real speech classification through the canonical
+    /// Wav2Vec2 sequence classifier. The concrete strict binder is created in
+    /// run/bench so the selected CPU/Metal backend reaches the full encoder
+    /// and task head without loading the public GGUF twice.
+    DeepfakeClassification,
     /// AudioSeal 16-bit watermark generation/detection. The concrete four-
     /// checkpoint bundle binds in the run/bench arm so malformed audio is
     /// rejected before decoding weights and the selected CPU/Metal backend
@@ -392,6 +397,7 @@ const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
 const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
 const ARCH_EMOTION2VEC: &str = "emotion2vec";
+const ARCH_DEEPFAKE_DETECTION: &str = "deepfake_detection";
 const ARCH_AUDIOSEAL: &str = "audioseal_real_weight";
 const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
@@ -955,6 +961,17 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: run/bench bind the exact 185-tensor classifier
             // once and thread the selected CPU/Metal backend through it.
             Ok((session, ModelTask::EmotionClassification))
+        }
+        ARCH_DEEPFAKE_DETECTION => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_DEEPFAKE_DETECTION}`"
+                ));
+            }
+            // Bare session: run/bench bind the exact 215-tensor Wav2Vec2
+            // classifier once and thread the selected CPU/Metal backend
+            // through the complete encoder and head.
+            Ok((session, ModelTask::DeepfakeClassification))
         }
         ARCH_AUDIOSEAL => {
             if hint.is_some() {
@@ -1999,14 +2016,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         // here neither loads weights for use nor steps around that gate.
         probe: Some(|g: &GgufFile| vokra_models::chattts::ChatTts::from_gguf(g).map(|_| ())),
     },
-    BoundArch {
-        arch: "deepfake_detection",
-        module: "vokra_models::deepfake_detection",
-        entry: "DeepfakeDetection::from_gguf → DeepfakeDetection::score",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
-        }),
-    },
     // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
     // routed above now that `run` has an explicit far-end WAV contract.
     BoundArch {
@@ -2835,18 +2844,14 @@ mod tests {
         );
     }
 
-    /// Deepfake detection (`vokra_models::deepfake_detection`) — loud-partial
-    /// `score`. A spoof detector misreported as an unknown arch is the worst
-    /// of the five: the caller cannot tell "no such model" from "the model is
-    /// here but its feature extractor is deferred".
+    /// Deepfake detection now has a complete printable fake/real classifier
+    /// task instead of the retired bound-but-not-runnable diagnostic.
     #[test]
-    fn load_session_binds_deepfake_detection_arch() {
-        assert_bound_arch(
-            "deepfake_detection",
-            "deepfake-arch",
-            "vokra_models::deepfake_detection",
-            "DeepfakeDetection::score",
-        );
+    fn load_session_routes_deepfake_detection_to_classification() {
+        with_arch_only_gguf(ARCH_DEEPFAKE_DETECTION, "deepfake-arch", |path| {
+            let (_, task) = load_session(path).expect("deepfake route");
+            assert_eq!(task, ModelTask::DeepfakeClassification);
+        });
     }
 
     /// Spoken-language ID now has a real `run` task. The concrete model binds

@@ -862,6 +862,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::LangId
         | ModelTask::AudioQualityAudiobox
         | ModelTask::EmotionClassification
+        | ModelTask::DeepfakeClassification
         | ModelTask::WatermarkAudioseal
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
@@ -1212,6 +1213,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::EmotionClassification => {
             run_emotion2vec(&session, &a)?;
         }
+        ModelTask::DeepfakeClassification => {
+            run_deepfake_detection(&session, &a)?;
+        }
         ModelTask::WatermarkAudioseal => {
             run_audioseal(&session, &a)?;
         }
@@ -1509,6 +1513,51 @@ fn run_emotion2vec(session: &Session, args: &RunArgs) -> Result<(), String> {
             .map_err(|error| format!("run (emotion2vec): --output {output}: {error}"))?;
         println!(
             "emotion2vec: {} scores in official label order -> {output}",
+            scores.len()
+        );
+    }
+    Ok(())
+}
+
+/// Runs the canonical Wav2Vec2 deepfake classifier. `--output` writes the
+/// two softmax scores as little-endian f32 in `[fake, real]` order. No verdict
+/// threshold is selected by the CLI.
+fn run_deepfake_detection(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (deepfake detection): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::deepfake_detection::DeepfakeDetection::from_gguf_with_backend(
+        session.gguf(),
+        args.backend,
+    )
+    .map_err(|error| format!("run (deepfake detection): {error}"))?;
+    let result = model
+        .score_pcm(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (deepfake detection): {error}"))?;
+    let logits = result.logits();
+    let scores = result.probabilities();
+    let labels = vokra_models::deepfake_detection::DeepfakeDetection::class_labels();
+    let mut ranked = scores.iter().copied().enumerate().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    for (rank, (index, score)) in ranked.into_iter().enumerate() {
+        println!(
+            "deepfake-detection[{}]: index={index} label={} logit={:.9} score={score:.9}",
+            rank + 1,
+            labels[index],
+            logits[index]
+        );
+    }
+    if let Some(output) = args.output.as_deref() {
+        let bytes = scores
+            .iter()
+            .flat_map(|score| score.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (deepfake detection): --output {output}: {error}"))?;
+        println!(
+            "deepfake-detection: {} scores in [fake, real] order -> {output}",
             scores.len()
         );
     }

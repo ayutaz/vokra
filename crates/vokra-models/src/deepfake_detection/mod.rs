@@ -1,1365 +1,1181 @@
-//! **Audio deepfake / spoof-countermeasure detector** — runtime binder for
-//! the `deepfake_detection` converter arch (Wave G 2026-08-15, loud-partial
-//! per the emotion2vec / wavlm / panns / redimnet precedent — CLAUDE.md
-//! 教訓 (a): "loud-partial は fake-complete より honest").
+//! Native deepfake-audio classification on Mac CPU and Metal.
 //!
-//! # Primary sources
-//!
-//! - HF release: <https://huggingface.co/MelodyMachine/Deepfake-audio-detection-V2>
-//!   — recorded by the converter as `UPSTREAM_HF`, and independently in
-//!   `docs/license-audit.md` §3.1 row "Deepfake audio detection V2" as
-//!   `license: apache-2.0, pipeline: audio-classification` (HF cardData API,
-//!   fetched 2026-07-30). Both in-repo records call it a **WavLM-based
-//!   binary classifier** (real vs synthetic speech). CLAUDE.md
-//!   「ハルシネーション厳禁」— nothing below is asserted beyond those two
-//!   records plus the WavLM primary sources named next.
-//! - WavLM reference code (the backbone this checkpoint fine-tunes):
-//!   <https://github.com/microsoft/UniSpeech/tree/main/WavLM>
-//! - WavLM paper: Chen et al. 2021, *"WavLM: Large-Scale Self-Supervised
-//!   Pre-Training for Full Stack Speech Processing"*
-//!   (<https://arxiv.org/abs/2110.13900>)
-//!
-//! # A detector emits a score, not a verdict
-//!
-//! This is the load-bearing design decision of this module, and it is why
-//! there is deliberately **no `is_fake() -> bool`** anywhere in the public
-//! surface.
-//!
-//! A spoof-countermeasure model produces a real-valued score. Turning that
-//! score into "this recording is fake" requires a threshold, and the right
-//! threshold is a *deployment* property, not a *model* property: it depends
-//! on the base rate of synthetic audio in the incoming stream, on the
-//! relative cost of the two error directions, and on who is accountable for
-//! the outcome. Both directions do real harm — a false positive brands a
-//! genuine speaker a forger, and a false negative waves a forgery through a
-//! control that someone is relying on.
-//!
-//! A `bool`-returning convenience method would bury that choice inside this
-//! crate, where the person accountable for the decision cannot see it, review
-//! it, or tune it. So the binder returns [`DeepfakeScore`] — the raw logits
-//! and their softmax — and the caller picks the operating point. The one
-//! comparison helper we do offer, [`DeepfakeScore::exceeds`], takes the
-//! threshold as an explicit argument precisely so it shows up at the call
-//! site.
-//!
-//! This also matches the deployment posture the converter docstring already
-//! records and `docs/legal-compliance.md` §Article 50(3) describes: the
-//! disclosure decision sits with the deployer, not with the runtime.
-//!
-//! ## We also refuse to guess *which class is which*
-//!
-//! There is a second, sharper version of the same hazard, and it is a real
-//! gap in the current artifact rather than a stylistic preference.
-//!
-//! The head is binary, so its output is a 2-vector — but **the GGUF does not
-//! record which index means "synthetic"**. The converter
-//! (`crates/vokra-convert/src/models/deepfake_detection.rs`) copies float
-//! tensors verbatim and stamps `vokra.model.{arch,name,category}` plus the
-//! `vokra.provenance.*` group; it does *not* transcribe the upstream
-//! `config.json` `id2label` map. Nothing in the GGUF pins the ordering.
-//!
-//! Guessing it here would be the single most damaging thing this module
-//! could do: an inverted detector is strictly worse than an absent one,
-//! because it reports confidently and in the wrong direction, and the
-//! inversion is invisible at the call site. So [`DeepfakeScore`] indexes
-//! purely positionally, and [`DeepfakeDetection::spoof_class_index`] is a
-//! *loud* [`VokraError::UnsupportedOp`] naming the missing
-//! [`GGUF_KEY_ID2LABEL`] chunk rather than a coin flip. Closing that gap is
-//! converter-side work (stamp `id2label`), and the error says so.
-//!
-//! # Runtime layout (loud-partial)
+//! The canonical checkpoint is the 215-tensor F32 release
+//! `MelodyMachine/Deepfake-audio-detection-V2` at immutable revision
+//! `de3cde5a29c449bb5268814e421b46bf6ebdcd72`. Its official configuration
+//! declares `Wav2Vec2ForSequenceClassification`, not WavLM. The forward is:
 //!
 //! ```text
-//! raw waveform (mono f32, [T] @ 16 kHz — WavLM lineage convention)
-//!   -> 7-layer 1D conv feature-extractor stem              <- **loud-partial**
-//!        (HuBERT/wav2vec2 lineage strided conv stack that
-//!         downsamples 16 kHz audio to a ~50 Hz feature grid.)
-//!   -> WavLM Transformer encoder                            <- **loud-partial**
-//!        (The WavLM-specific primitive that neither wav2vec2
-//!         nor HuBERT expose, and that no sibling module in
-//!         this tree supplies today: a **gated relative
-//!         position bias** plus a **convolutional
-//!         position-bias fusion** applied around the attention
-//!         softmax. Needs a walk against `WavLM.py`
-//!         `TransformerSentenceEncoderLayer::forward`.)
-//!   -> mean pooling over the encoder time axis              <- **loud-partial**
-//!   -> Linear binary classifier head                        <- **REAL (bound)**
-//!        (This module binds and shape-checks it: see
-//!         [`DeepfakeDetectionWeights`]. Its output width is
-//!         verified to be [`N_CLASSES`] = 2.)
-//!   -> 2 raw logits -> [`DeepfakeScore`]                     <- **REAL (softmax)**
+//! normalized 16 kHz mono PCM
+//!   -> Wav2Vec2-base seven-convolution frontend
+//!   -> 12 post-norm Transformer blocks
+//!   -> per-frame Linear(768, 256)
+//!   -> mean over time
+//!   -> Linear(256, 2)
+//!   -> logits in [fake, real] order
 //! ```
 //!
-//! # Loud-partial classification (CLAUDE.md 教訓 (a))
-//!
-//! - **Real (this WP)**:
-//!   1. [`DeepfakeDetection::from_gguf`] with strict
-//!      `vokra.model.arch == "deepfake_detection"` verification. A sibling
-//!      audio-classification / SSL-lineage GGUF handed here by mistake fails
-//!      with a message naming **both** the expected and the actual arch (see
-//!      "Sibling family distinctness").
-//!   2. [`DeepfakeDetectionWeights::from_gguf`] — a non-empty manifest gate,
-//!      plus real resolution and shape verification of the binary classifier
-//!      head against [`CLASSIFIER_WEIGHT_CANDIDATES`], including the
-//!      out-features == [`N_CLASSES`] check that makes "binary classifier"
-//!      an enforced property rather than a docstring claim.
-//!   3. [`DeepfakeScore`] end to end: numerically stable 2-way softmax,
-//!      positional accessors, and the explicit-threshold
-//!      [`DeepfakeScore::exceeds`] comparison. This is the whole decision
-//!      surface, and it is real and unit-tested — only the feature
-//!      extraction in front of it is deferred.
-//!   4. Weight-license surfacing (fail-closed to [`LicenseClass::Unknown`]
-//!      when the stamp is absent).
-//!
-//! - **Loud-partial (this WP)**: [`DeepfakeDetection::score`] returns
-//!   [`VokraError::UnsupportedOp`] naming the WavLM gated-relative-position-
-//!   bias encoder as the missing primitive and citing all three primary
-//!   sources. **No fabricated detection score is ever emitted** (FR-EX-08 —
-//!   no silent partial output). For this model in particular, a fabricated
-//!   score is not a cosmetic lie: it is a security control reporting a
-//!   number it did not compute.
-//!
-//! # Sibling family distinctness
-//!
-//! [`ARCH`] = `"deepfake_detection"` is deliberately distinct from every
-//! sibling audio-classification / SSL-lineage arch tag verified present in
-//! the converter tree — `wavlm_sv` (WavLM + XVector speaker-verification
-//! head, 512-d embedding), `emotion2vec` (9-class emotion head), `clap`
-//! (contrastive audio-text embedding), `ast` (Audio Spectrogram Transformer
-//! tagger), `hubert` (bare SSL encoder, no fixed head). Several share the
-//! WavLM/HuBERT backbone lineage, but every one exposes a different
-//! downstream head, so silently aliasing the arch would misroute runtime
-//! dispatch onto a loader whose tensor walk expects a different head
-//! entirely (FR-EX-08).
-//!
-//! # Cross-crate constant duplication
-//!
-//! [`ARCH`] / [`NAME`] / [`CATEGORY`] / [`UPSTREAM_HF`] /
-//! [`DEFAULT_LICENSE_SPDX`] are mirrors of the converter's constants — the
-//! same rule the sibling binders use so `vokra-models` does not gain a
-//! dependency edge onto `vokra-convert`, preserving the layering
-//! `vokra-ops -> nothing GGUF-aware`, `vokra-core -> GGUF reader`,
-//! `vokra-models -> GGUF binder`, `vokra-convert -> GGUF writer`.
-//!
-//! # No ONNX / no pickle (permanent)
-//!
-//! The upstream release is consumed as safetensors; this runtime **never**
-//! touches ONNX or pickle (FR-LD-05 / NFR-DS-02). Any `.bin`-only variant is
-//! bridged offline by a `tools/parity/*_prepare_checkpoint.py` sidecar
-//! (uv-managed Python 3.12 per memory `[[feedback-python-uses-uv]]` +
-//! `[[feedback-python-3-12]]`), never in-process.
-//!
-//! # License
-//!
-//! `apache-2.0` ([`LicenseClass::Permissive`]) per the converter stamp and
-//! the `docs/license-audit.md` §3.1 row. This module reads the stamp; it
-//! does not sign anything off (owner-only per
-//! `[[feedback-license-signoff-primary-source]]`).
+//! The Wav2Vec2 encoder is shared with the independently parity-tested CTC
+//! implementation. Every learned convolution, matrix multiplication,
+//! LayerNorm, GELU and softmax in that graph is routed through [`Compute`].
+//! Only CPU and Metal are accepted here; any other backend fails explicitly
+//! before inference and is never replaced with a silent CPU execution.
 
-use vokra_core::gguf::{GgufFile, chunks};
-use vokra_core::{LicenseClass, Result, VokraError};
+use std::path::Path;
 
-// ---------------------------------------------------------------------------
-// Contract constants — mirror of
-// `crates/vokra-convert/src/models/deepfake_detection.rs`. See the module
-// docstring for the cross-crate duplication rationale.
-// ---------------------------------------------------------------------------
+use vokra_core::backend::BackendKind;
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, chunks};
+use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
 
-/// Expected `vokra.model.arch` value written by
-/// `vokra-cli convert --model deepfake-detection`.
-///
-/// Distinct from every sibling audio-classification / SSL-lineage arch tag
-/// verified present in the converter tree (`wavlm_sv`, `emotion2vec`,
-/// `clap`, `ast`, `hubert`) — silently sharing an arch would misroute
-/// runtime dispatch onto a different-head loader (FR-EX-08; see the module
-/// docstring "Sibling family distinctness").
+use crate::align::charsiu::linear_forward_with_compute;
+use crate::compute::{Compute, HotOp};
+use crate::strict_checkpoint::{
+    StrictCheckpoint, StrictCheckpointSpec, load_tensor, require_tensor_shape,
+};
+use crate::wav2vec2_ctc::{WAV2VEC2_CTC_HOT_OPS, Wav2Vec2Ctc, reject_non_finite};
+
+/// Converter/runtime architecture handshake.
 pub const ARCH: &str = "deepfake_detection";
-
-/// Expected `vokra.model.name` value written by the converter — the
-/// canonical mirror slug for `MelodyMachine/Deepfake-audio-detection-V2`.
+/// Canonical public model name.
 pub const NAME: &str = "deepfake-audio-detection-v2";
-
-/// Expected `vokra.model.category` value. Consumed by the model-card
-/// generator and the zoo-manifest tier gate so a classifier is never
-/// advertised as an ASR / TTS release.
+/// Model-zoo task category.
 pub const CATEGORY: &str = "classification";
-
-/// Upstream HuggingFace slug, mirrored from the converter so loud-partial
-/// diagnostics can cite it without re-fetching a manifest.
+/// Immutable upstream repository.
 pub const UPSTREAM_HF: &str = "MelodyMachine/Deepfake-audio-detection-V2";
-
-/// SPDX identifier the converter stamps when the caller passes no
-/// `--license` override. Cross-checked against `docs/license-audit.md` §3.1
-/// (HF cardData API, fetched 2026-07-30).
+/// Immutable upstream checkpoint revision.
+pub const UPSTREAM_REVISION: &str = "de3cde5a29c449bb5268814e421b46bf6ebdcd72";
+/// Canonical checkpoint filename.
+pub const CHECKPOINT_FILE: &str = "model.safetensors";
+/// Canonical checkpoint SHA-256.
+pub const CHECKPOINT_SHA256: &str =
+    "997d9ce59e63151d5e444a6fa7c863986d0e56d515f67321bd705ac3b01bc38c";
+/// Canonical config SHA-256.
+pub const CONFIG_SHA256: &str = "a7ff31ca7ba4dc7fb5c4847d6dff0cb8daa1f0ec512e6ff8190664874c5b2806";
+/// Canonical preprocessor-config SHA-256.
+pub const PREPROCESSOR_SHA256: &str =
+    "8cdfd65ff4115423185a1512bdae100e2e0cd744f5b322417429944aaafd0827";
+/// Owner-signed weight licence.
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
-/// Metadata key the converter writes for the upstream HF slug.
+/// Required mono PCM sample rate.
+pub const SAMPLE_RATE: u32 = 16_000;
+/// Wav2Vec2 residual width.
+pub const HIDDEN_SIZE: usize = 768;
+/// Wav2Vec2 Transformer depth.
+pub const NUM_HIDDEN_LAYERS: usize = 12;
+/// Wav2Vec2 attention-head count.
+pub const NUM_ATTENTION_HEADS: usize = 12;
+/// Wav2Vec2 feed-forward width.
+pub const INTERMEDIATE_SIZE: usize = 3_072;
+/// Sequence-classifier projector width.
+pub const CLASSIFIER_PROJ_SIZE: usize = 256;
+/// Binary output width.
+pub const N_CLASSES: u32 = 2;
+/// Official class order from the pinned config.
+pub const CLASS_LABELS: [&str; 2] = ["fake", "real"];
+/// Metadata key carrying [`CLASS_LABELS`].
+pub const GGUF_KEY_ID2LABEL: &str = "vokra.deepfake.id2label";
+/// Metadata key carrying the immutable upstream repository.
 pub const GGUF_KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-
-/// Metadata key the converter writes for the model category.
+/// Metadata key carrying the model category.
 pub const GGUF_KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 
-/// Metadata key that **would** carry the upstream `config.json` `id2label`
-/// map — the class-index-to-name mapping that says which of the two logits
-/// means "synthetic".
-///
-/// **The converter does not write this key today.** It is named here as the
-/// concrete, addressable gap so that
-/// [`DeepfakeDetection::spoof_class_index`] can point at it instead of
-/// guessing, and so a follow-up converter-side wave has an exact target.
-/// See the module docstring, "We also refuse to guess which class is which".
-pub const GGUF_KEY_ID2LABEL: &str = "vokra.deepfake.id2label";
-
-/// Output width of the binary classifier head: real vs synthetic.
-///
-/// Sourced from the two independent in-repo records that both describe this
-/// checkpoint as a **binary** classifier — the converter module docstring
-/// and the `docs/license-audit.md` §3.1 row. Enforced (not merely
-/// documented) by [`DeepfakeDetectionWeights::from_gguf`], which refuses a
-/// head whose out-features disagree.
-pub const N_CLASSES: u32 = 2;
-
-/// Candidate tensor names for the binary classifier head's weight matrix,
-/// in resolution order.
-///
-/// The converter copies upstream `state_dict` keys through **verbatim**, so
-/// the exact key depends on how the upstream checkpoint was saved rather
-/// than on anything Vokra controls. Rather than hard-coding one name as
-/// though it were certain, [`DeepfakeDetectionWeights::from_gguf`] tries
-/// each in order and — if none is present — fails loudly naming every
-/// candidate it looked for, so the reader can compare against a real
-/// manifest listing (FR-EX-08: never substitute a zero tensor).
-///
-/// The order follows the HuggingFace `*ForSequenceClassification`
-/// convention (a bare `classifier.weight`, optionally namespaced under the
-/// backbone), which is the convention an `audio-classification` pipeline
-/// release is published under.
+/// Official checkpoint page.
+pub const PRIMARY_SOURCE_HF: &str =
+    "https://huggingface.co/MelodyMachine/Deepfake-audio-detection-V2";
+/// Exact Transformers source family used by the checkpoint.
+pub const PRIMARY_SOURCE_TRANSFORMERS_CODE: &str = "https://github.com/huggingface/transformers/blob/v4.41.2/src/transformers/models/wav2vec2/modeling_wav2vec2.py";
+/// Historical public API alias retained after correcting the WavLM mistake.
+#[deprecated(note = "the checkpoint is Wav2Vec2; use PRIMARY_SOURCE_TRANSFORMERS_CODE")]
+pub const PRIMARY_SOURCE_WAVLM_CODE: &str = PRIMARY_SOURCE_TRANSFORMERS_CODE;
+/// Historical public API alias retained after correcting the WavLM mistake.
+#[deprecated(note = "the checkpoint is Wav2Vec2; use PRIMARY_SOURCE_TRANSFORMERS_CODE")]
+pub const PRIMARY_SOURCE_WAVLM_PAPER: &str = "https://arxiv.org/abs/2006.11477";
+/// Historical candidate list retained for source compatibility. Binding is
+/// now exact and accepts only `classifier.weight`.
+#[deprecated(note = "the canonical 215-tensor manifest pins classifier.weight exactly")]
 pub const CLASSIFIER_WEIGHT_CANDIDATES: [&str; 4] = [
     "classifier.weight",
     "classifier.dense.weight",
     "model.classifier.weight",
     "wavlm.classifier.weight",
 ];
+/// Historical loud-partial marker retained for source compatibility.
+#[deprecated(note = "no primitive is missing; the complete Wav2Vec2 forward is implemented")]
+pub const MISSING_PRIMITIVE: &str = "none (native Wav2Vec2 forward implemented)";
 
-/// Primary-source anchor: the upstream HF release.
-pub const PRIMARY_SOURCE_HF: &str = "huggingface.co/MelodyMachine/Deepfake-audio-detection-V2";
-/// Primary-source anchor: WavLM reference code (the fine-tuned backbone).
-pub const PRIMARY_SOURCE_WAVLM_CODE: &str = "github.com/microsoft/UniSpeech/tree/main/WavLM";
-/// Primary-source anchor: the WavLM paper (Chen et al. 2021).
-pub const PRIMARY_SOURCE_WAVLM_PAPER: &str = "arxiv.org/abs/2110.13900";
+const TENSOR_COUNT: usize = 215;
+const LAYER_NORM_EPS: f32 = 1.0e-5;
+const MIN_PCM_SAMPLES: usize = 400;
+const PREFIX: &str = "vokra.deepfake";
+const CONV_DIM: [usize; 7] = [512; 7];
+const CONV_KERNEL: [usize; 7] = [10, 3, 3, 3, 3, 2, 2];
+const CONV_STRIDE: [usize; 7] = [5, 2, 2, 2, 2, 2, 2];
+const MANIFEST_SHA256: [u8; 32] = [
+    0x81, 0xd7, 0x52, 0xd0, 0x0a, 0xbe, 0x58, 0x4c, 0x21, 0x60, 0xe9, 0xba, 0x93, 0x4c, 0x37, 0x8d,
+    0x3e, 0xc7, 0x56, 0x01, 0x04, 0xbc, 0x78, 0xca, 0xe8, 0xb3, 0x38, 0x80, 0x9e, 0xc3, 0x1e, 0xbe,
+];
 
-/// Name of the missing primitive that blocks the real forward, quoted
-/// verbatim in the loud-partial error so a reader diagnosing the gap has an
-/// exact identifier to search for.
-pub const MISSING_PRIMITIVE: &str = "WavLM gated relative position bias";
+const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
+    label: NAME,
+    arch: ARCH,
+    model_name: NAME,
+    model_name_alias: None,
+    tensor_count: TENSOR_COUNT,
+    manifest_sha256: MANIFEST_SHA256,
+};
 
-// ---------------------------------------------------------------------------
-// DeepfakeScore — the real, tested decision surface.
-// ---------------------------------------------------------------------------
+/// Every learned hot operation used by the encoder and classifier head.
+pub const DEEPFAKE_HOT_OPS: &[HotOp] = WAV2VEC2_CTC_HOT_OPS;
 
-/// The detector's output: two raw logits and the arithmetic to read them.
+/// Fixed topology resolved from the immutable upstream configuration.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeepfakeDetectionConfig {
+    pub sample_rate: u32,
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub intermediate_size: usize,
+    pub classifier_proj_size: usize,
+    pub num_classes: usize,
+    pub layer_norm_eps: f32,
+}
+
+impl Default for DeepfakeDetectionConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: SAMPLE_RATE,
+            hidden_size: HIDDEN_SIZE,
+            num_hidden_layers: NUM_HIDDEN_LAYERS,
+            num_attention_heads: NUM_ATTENTION_HEADS,
+            intermediate_size: INTERMEDIATE_SIZE,
+            classifier_proj_size: CLASSIFIER_PROJ_SIZE,
+            num_classes: N_CLASSES as usize,
+            layer_norm_eps: LAYER_NORM_EPS,
+        }
+    }
+}
+
+/// The detector's two raw logits in [`CLASS_LABELS`] order.
 ///
-/// **This type carries a score, never a verdict.** It exposes no
-/// `is_fake()`, and it deliberately does not name its two classes — see the
-/// module docstring for both reasons. Indices are positional and correspond
-/// to the classifier head's output rows in the order the checkpoint stores
-/// them; the mapping from index to meaning is not recoverable from the GGUF
-/// today (see [`GGUF_KEY_ID2LABEL`] and
-/// [`DeepfakeDetection::spoof_class_index`]).
-///
-/// The softmax here is real, numerically stable, and unit-tested — it is not
-/// part of the loud-partial surface. Only the feature extraction that would
-/// *produce* the logits is deferred.
+/// No default verdict threshold is embedded. Threshold selection is a
+/// deployment decision and remains explicit through [`Self::exceeds`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeepfakeScore {
     logits: [f32; 2],
 }
 
 impl DeepfakeScore {
-    /// Wraps two raw classifier logits.
-    ///
-    /// Public so the follow-up wave that lands the WavLM forward — and any
-    /// caller running the head themselves — can construct the same score
-    /// object this module already tests.
-    #[inline]
     #[must_use]
     pub const fn from_logits(logits: [f32; 2]) -> Self {
         Self { logits }
     }
 
-    /// The raw classifier logits, positionally indexed.
-    #[inline]
     #[must_use]
     pub const fn logits(&self) -> [f32; 2] {
         self.logits
     }
 
-    /// Softmax over the two logits, positionally indexed, summing to 1.
-    ///
-    /// Numerically stable: the maximum logit is subtracted before
-    /// exponentiating, so a large-magnitude pair cannot overflow to
-    /// `inf / inf = NaN`.
+    /// Numerically stable binary softmax in `[fake, real]` order.
     #[must_use]
     pub fn probabilities(&self) -> [f32; 2] {
-        let m = if self.logits[0] > self.logits[1] {
-            self.logits[0]
-        } else {
-            self.logits[1]
-        };
-        let e0 = (self.logits[0] - m).exp();
-        let e1 = (self.logits[1] - m).exp();
-        let sum = e0 + e1;
-        [e0 / sum, e1 / sum]
+        let maximum = self.logits[0].max(self.logits[1]);
+        let first = (self.logits[0] - maximum).exp();
+        let second = (self.logits[1] - maximum).exp();
+        let sum = first + second;
+        [first / sum, second / sum]
     }
 
-    /// Probability of one class by positional index.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] when `index >= 2`. An out-of-range
-    ///   index is a caller bug, and for a detector it is the kind of caller
-    ///   bug that silently reads the wrong class, so it fails loudly rather
-    ///   than saturating (FR-EX-08).
     pub fn probability_of(&self, index: usize) -> Result<f32> {
         if index >= N_CLASSES as usize {
             return Err(VokraError::InvalidArgument(format!(
-                "deepfake_detection: class index {index} is out of range for a \
-                 {N_CLASSES}-class head (valid: 0..{last}). Refusing to clamp — a \
-                 silently clamped index on a spoof detector reads the wrong class \
-                 (FR-EX-08).",
-                last = N_CLASSES - 1
+                "deepfake_detection: class index {index} is out of range for {N_CLASSES} classes; valid indices are 0=fake and 1=real"
             )));
         }
         Ok(self.probabilities()[index])
     }
 
-    /// Whether the probability of the class at `index` exceeds
-    /// `threshold`.
-    ///
-    /// The threshold is an **explicit argument on purpose**: it is a
-    /// deployment decision, and passing it here keeps it visible at the call
-    /// site where the person accountable for the operating point can see and
-    /// review it. This crate does not have, and will not grow, a default.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] when `index >= 2` (see
-    ///   [`Self::probability_of`]).
     pub fn exceeds(&self, index: usize, threshold: f32) -> Result<bool> {
+        if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+            return Err(VokraError::InvalidArgument(format!(
+                "deepfake_detection: threshold must be finite and within [0, 1], got {threshold}"
+            )));
+        }
         Ok(self.probability_of(index)? > threshold)
     }
 }
 
-// ---------------------------------------------------------------------------
-// DeepfakeDetectionWeights — real classifier-head resolution + shape gate.
-// ---------------------------------------------------------------------------
-
-/// Weight tensors bound from a `deepfake_detection` GGUF.
-///
-/// [`from_gguf`](Self::from_gguf) is a *loud* verification step and performs
-/// real work: it rejects an empty manifest, resolves the binary classifier
-/// head against [`CLASSIFIER_WEIGHT_CANDIDATES`], and verifies that head's
-/// shape — rank 2 with out-features equal to [`N_CLASSES`]. That last check
-/// is what turns "binary classifier" from a docstring claim into an enforced
-/// property of every artifact this binder accepts.
+/// Strictly bound task-head weights plus the complete tensor manifest view.
 #[derive(Debug, Clone)]
 pub struct DeepfakeDetectionWeights {
     tensors: Vec<(String, Vec<usize>)>,
     classifier_weight: String,
     classifier_bias: Option<String>,
     hidden_size: usize,
+    projector_weight: Vec<f32>,
+    projector_bias: Vec<f32>,
+    classifier_weight_values: Vec<f32>,
+    classifier_bias_values: Vec<f32>,
 }
 
 impl DeepfakeDetectionWeights {
-    /// Scans `gguf`, resolves the classifier head, and verifies its shape.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors.
-    /// - [`VokraError::ModelLoad`] when no candidate classifier-head weight
-    ///   is present — the message names every candidate that was tried.
-    /// - [`VokraError::ModelLoad`] when the head is not rank 2, or when its
-    ///   out-features differ from [`N_CLASSES`] — the message names both the
-    ///   expected and the actual value.
-    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        let mut tensors: Vec<(String, Vec<usize>)> = Vec::new();
-        for info in gguf.tensors() {
-            let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
-            tensors.push((info.name.clone(), dims));
-        }
+    /// Standalone strict head binder retained for the existing public API.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        StrictCheckpoint::bind(file, SPEC)?;
+        validate_canonical_dtypes(file)?;
+        Self::bind_head(file)
+    }
 
-        if tensors.is_empty() {
-            return Err(VokraError::ModelLoad(format!(
-                "deepfake_detection: GGUF carries zero tensors — refusing to bind an \
-                 all-zero forward (FR-EX-08). A legitimate {UPSTREAM_HF} checkpoint \
-                 carries the full WavLM backbone plus a binary classifier head \
-                 (arch={ARCH}, name={NAME}); zero tensors always signals a \
-                 mis-produced GGUF. Re-run `vokra-cli convert --model \
-                 deepfake-detection` against an upstream safetensors checkpoint."
-            )));
-        }
-
-        // Resolve the classifier head. The converter passes upstream
-        // state_dict names through verbatim, so we try the documented
-        // candidate set rather than hard-coding one name as certain.
-        let (classifier_weight, dims) = CLASSIFIER_WEIGHT_CANDIDATES
-            .into_iter()
-            .find_map(|cand| {
-                tensors
-                    .iter()
-                    .find(|(n, _)| n.as_str() == cand)
-                    .map(|(_, d)| (cand, d.clone()))
+    fn bind_head(file: &GgufFile) -> Result<Self> {
+        require_tensor_shape(file, NAME, "wav2vec2.masked_spec_embed", &[HIDDEN_SIZE])?;
+        let tensors = file
+            .tensors()
+            .iter()
+            .map(|tensor| {
+                (
+                    tensor.name.clone(),
+                    tensor
+                        .dimensions
+                        .iter()
+                        .map(|&dimension| dimension as usize)
+                        .collect(),
+                )
             })
-            .ok_or_else(|| classifier_head_absent(&tensors))?;
-
-        if dims.len() != 2 {
-            return Err(VokraError::ModelLoad(format!(
-                "deepfake_detection: classifier head `{classifier_weight}` has rank \
-                 {rank} (dims {dims:?}), expected rank 2 — a Linear head is stored as \
-                 [out_features, in_features]. Refusing to reshape silently \
-                 (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF}",
-                rank = dims.len()
-            )));
-        }
-
-        // The out-features axis is the whole reason this arch exists: a
-        // binary real-vs-synthetic head. Enforce it rather than assume it.
-        if dims[0] != N_CLASSES as usize {
-            return Err(VokraError::ModelLoad(format!(
-                "deepfake_detection: classifier head `{classifier_weight}` has \
-                 out_features {actual} but this arch is a BINARY detector, expected \
-                 {N_CLASSES} (dims {dims:?} = [out_features, in_features]). Both \
-                 in-repo records for {UPSTREAM_HF} — the converter docstring and the \
-                 `docs/license-audit.md` §3.1 row — describe a binary real-vs-synthetic \
-                 classifier, so a wider head means this GGUF is a DIFFERENT detector \
-                 variant (for example a multi-class spoof-attack-type classifier) and \
-                 its class indices would not mean what a caller of this binder expects. \
-                 Refusing to bind (FR-EX-08). Primary source: {PRIMARY_SOURCE_HF}",
-                actual = dims[0]
-            )));
-        }
-        let hidden_size = dims[1];
-
-        // Bias is recorded, not required: a Linear head may legitimately be
-        // constructed with `bias=False`, and nothing in the two in-repo
-        // records pins it either way, so making it a hard gate would be a
-        // guess dressed up as a check.
-        let bias_name = classifier_weight.replace(".weight", ".bias");
-        let has_bias = tensors.iter().any(|(n, _)| n.as_str() == bias_name);
-        let classifier_bias = if has_bias { Some(bias_name) } else { None };
-
+            .collect();
         Ok(Self {
             tensors,
-            classifier_weight: classifier_weight.to_owned(),
-            classifier_bias,
-            hidden_size,
+            classifier_weight: "classifier.weight".to_owned(),
+            classifier_bias: Some("classifier.bias".to_owned()),
+            hidden_size: CLASSIFIER_PROJ_SIZE,
+            projector_weight: load_tensor(
+                file,
+                NAME,
+                "projector.weight",
+                &[CLASSIFIER_PROJ_SIZE, HIDDEN_SIZE],
+            )?,
+            projector_bias: load_tensor(file, NAME, "projector.bias", &[CLASSIFIER_PROJ_SIZE])?,
+            classifier_weight_values: load_tensor(
+                file,
+                NAME,
+                "classifier.weight",
+                &[N_CLASSES as usize, CLASSIFIER_PROJ_SIZE],
+            )?,
+            classifier_bias_values: load_tensor(
+                file,
+                NAME,
+                "classifier.bias",
+                &[N_CLASSES as usize],
+            )?,
         })
     }
 
-    /// Number of tensors bound from the GGUF.
-    #[inline]
     #[must_use]
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
     }
 
-    /// The resolved classifier-head weight tensor name (one of
-    /// [`CLASSIFIER_WEIGHT_CANDIDATES`]).
-    #[inline]
     #[must_use]
     pub fn classifier_weight_name(&self) -> &str {
         &self.classifier_weight
     }
 
-    /// The classifier-head bias tensor name, when the checkpoint carries
-    /// one. `None` for a `bias=False` head.
-    #[inline]
     #[must_use]
     pub fn classifier_bias_name(&self) -> Option<&str> {
         self.classifier_bias.as_deref()
     }
 
-    /// The head's in-features axis — the pooled backbone width feeding the
-    /// classifier, read from the head's own stamped dims rather than from a
-    /// hard-coded topology constant.
-    #[inline]
+    /// Input width of `classifier.weight` (the preceding projector width).
     #[must_use]
-    pub fn hidden_size(&self) -> usize {
+    pub const fn hidden_size(&self) -> usize {
         self.hidden_size
     }
 
-    /// Dims of a tensor on disk, or `None` when it is absent.
     #[must_use]
     pub fn tensor_dims(&self, name: &str) -> Option<&[usize]> {
         self.tensors
             .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, d)| d.as_slice())
+            .find(|(tensor_name, _)| tensor_name == name)
+            .map(|(_, dimensions)| dimensions.as_slice())
     }
 }
 
-/// Builds the loud [`VokraError::ModelLoad`] for a GGUF with no resolvable
-/// classifier head, naming every candidate that was tried plus a sample of
-/// what is actually on disk.
-fn classifier_head_absent(tensors: &[(String, Vec<usize>)]) -> VokraError {
-    let sample: Vec<&str> = tensors.iter().map(|(n, _)| n.as_str()).take(8).collect();
-    VokraError::ModelLoad(format!(
-        "deepfake_detection: required classifier-head weight tensor is absent from \
-         the GGUF. Looked for, in order: {cands:?}. The GGUF carries {count} tensors; \
-         first names on disk: {sample:?}. The converter copies upstream `state_dict` \
-         keys through verbatim, so a miss means the checkpoint namespaces its head \
-         under a prefix not in the candidate list — add it to \
-         `CLASSIFIER_WEIGHT_CANDIDATES` after checking a real manifest listing. \
-         Refusing to substitute a zero tensor, which on a spoof detector would mean \
-         scoring every input with an untrained head (FR-EX-08). Primary source: \
-         {PRIMARY_SOURCE_HF}",
-        cands = CLASSIFIER_WEIGHT_CANDIDATES,
-        count = tensors.len(),
-    ))
-}
-
-// ---------------------------------------------------------------------------
-// DeepfakeDetection — the runtime binder handle.
-// ---------------------------------------------------------------------------
-
-/// Audio deepfake / spoof-countermeasure detector
-/// (`MelodyMachine/Deepfake-audio-detection-V2`, apache-2.0) runtime binder.
-///
-/// Bind with [`from_gguf`](Self::from_gguf), then call
-/// [`score`](Self::score) on a mono f32 PCM waveform (16 kHz, WavLM lineage
-/// convention) to obtain a [`DeepfakeScore`].
-///
-/// **There is no `is_fake()`.** The score is returned; the threshold is the
-/// caller's. See the module docstring for why that is a deliberate,
-/// load-bearing choice rather than an omission.
+/// Complete native Wav2Vec2 deepfake classifier.
 #[derive(Debug, Clone)]
 pub struct DeepfakeDetection {
+    checkpoint: StrictCheckpoint,
+    config: DeepfakeDetectionConfig,
+    encoder: Wav2Vec2Ctc,
     weights: DeepfakeDetectionWeights,
-    weight_license: LicenseClass,
-    name: Option<String>,
-    category: Option<String>,
-    upstream_hf: Option<String>,
+    backend: BackendKind,
+    category: String,
+    upstream_hf: String,
+    legacy_metadata_repaired: bool,
+}
+
+#[derive(Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+struct DeepfakeForward {
+    encoder_features: Vec<f32>,
+    projected_features: Vec<f32>,
+    pooled_embedding: Vec<f32>,
+    frames: usize,
+    score: DeepfakeScore,
 }
 
 impl DeepfakeDetection {
-    /// Binds a `deepfake_detection` GGUF: verifies the arch strictly,
-    /// resolves and shape-checks the binary classifier head, and surfaces
-    /// the stamped weight-license class for the compliance-gate
-    /// cross-checks.
-    ///
-    /// Every failure is a distinct [`VokraError::ModelLoad`] naming the
-    /// missing or wrong key, so a reader diagnosing a mis-produced GGUF has
-    /// exactly one place to walk (FR-EX-08 — never a silent partial bind).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent.
-    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is some other
-    ///   arch — the message names **both** the expected and the actual tag.
-    /// - [`VokraError::ModelLoad`] from
-    ///   [`DeepfakeDetectionWeights::from_gguf`] for an empty manifest, an
-    ///   unresolvable classifier head, or a head whose shape is not
-    ///   `[N_CLASSES, hidden]`.
+    /// Opens and strictly binds a GGUF under the default compliance policy.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let file = GgufFile::open(path)?;
+        Self::from_gguf(&file)
+    }
+
+    /// Strictly binds an already-open GGUF under the default policy.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        // 1. Arch check first, so a mis-routed model fails with a specific
-        //    message instead of a downstream missing-tensor error.
-        match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
-            Some(a) if a == ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "deepfake_detection: GGUF arch is `{other}`, expected `{ARCH}` (was \
-                     this GGUF produced by `vokra-cli convert --model \
-                     deepfake-detection`?). Sibling audio-classification / SSL-lineage \
-                     arch tags in this tree — `wavlm_sv` (WavLM + XVector \
-                     speaker-verification head, 512-d embedding), `emotion2vec` (9-class \
-                     emotion head), `clap` (contrastive audio-text embedding), `ast` \
-                     (Audio Spectrogram Transformer tagger), `hubert` (bare SSL encoder, \
-                     no fixed head) — several share the WavLM/HuBERT backbone lineage but \
-                     every one exposes a different downstream head. This arch's binary \
-                     real-vs-synthetic head has no analog in any sibling, so silently \
-                     aliasing the arch would misroute runtime dispatch and, on a spoof \
-                     detector, would surface another model's logits as a detection score \
-                     (FR-EX-08 — no silent partial load)."
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(format!(
-                    "deepfake_detection: GGUF is missing `vokra.model.arch` — this is \
-                     not a Vokra-native {ARCH} GGUF (was it produced by `vokra-cli \
-                     convert --model deepfake-detection`?). Refusing to guess the arch \
-                     of an unlabeled artifact (FR-EX-08)."
-                )));
-            }
+        Self::from_gguf_with_policy(file, &CompliancePolicy::strict())
+    }
+
+    /// Strictly binds under an explicit compliance policy.
+    pub fn from_gguf_with_policy(file: &GgufFile, policy: &CompliancePolicy) -> Result<Self> {
+        let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
+        validate_canonical_dtypes(file)?;
+        let license = check_weight_license(file, policy)?;
+        if license.class != LicenseClass::Permissive
+            || checkpoint.weight_license() != LicenseClass::Permissive
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "deepfake_detection: weight license resolves to {}, expected Permissive for the owner-signed Apache-2.0 release",
+                license.class.as_str()
+            )));
         }
-
-        // 2. Real weight binding: manifest + classifier head + shape gate.
-        let weights = DeepfakeDetectionWeights::from_gguf(file)?;
-
-        // 3. Provenance surfacing. The converter stamps `Permissive`
-        //    (apache-2.0); a GGUF missing the stamp reads back as `Unknown`
-        //    (fail-closed per `[[feedback-license-signoff-primary-source]]`).
-        let weight_license = file
-            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-            .and_then(|v| v.as_str())
-            .and_then(LicenseClass::from_class_str)
-            .unwrap_or(LicenseClass::Unknown);
-
-        let name = file
-            .get(chunks::KEY_MODEL_NAME)
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned);
-        let category = file
-            .get(GGUF_KEY_MODEL_CATEGORY)
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned);
-        let upstream_hf = file
-            .get(GGUF_KEY_UPSTREAM_HF)
-            .and_then(|v| v.as_str())
-            .map(ToOwned::to_owned);
-
+        let legacy_metadata_repaired = validate_metadata(file)?;
+        let weights = DeepfakeDetectionWeights::bind_head(file)?;
+        let encoder = Wav2Vec2Ctc::from_deepfake_file(file)?;
         Ok(Self {
+            checkpoint,
+            config: DeepfakeDetectionConfig::default(),
+            encoder,
             weights,
-            weight_license,
-            name,
-            category,
-            upstream_hf,
+            backend: BackendKind::Cpu,
+            category: CATEGORY.to_owned(),
+            upstream_hf: UPSTREAM_HF.to_owned(),
+            legacy_metadata_repaired,
         })
     }
 
-    /// The stamped weight-license class from
-    /// `vokra.provenance.weight_license`. The converter stamps
-    /// [`LicenseClass::Permissive`] (apache-2.0); a GGUF missing the stamp
-    /// reads back as [`LicenseClass::Unknown`] (fail-closed at the M2-13
-    /// compliance gate).
-    #[inline]
+    /// Convenience strict binder with an explicit backend selection.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        Ok(Self::from_gguf(file)?.with_backend(backend))
+    }
+
+    /// Selects the execution backend. Unsupported values fail at inference.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.encoder = self.encoder.with_backend(backend);
+        self.backend = backend;
+        self
+    }
+
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    #[must_use]
+    pub const fn config(&self) -> &DeepfakeDetectionConfig {
+        &self.config
+    }
+
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
-        self.weight_license
+        self.checkpoint.weight_license()
     }
 
-    /// The stamped `vokra.model.name`, when present.
-    #[inline]
+    /// Existing optional return shape retained for source compatibility.
     #[must_use]
     pub fn model_name(&self) -> Option<&str> {
-        self.name.as_deref()
+        Some(self.checkpoint.model_name())
     }
 
-    /// The stamped `vokra.model.category`, when present.
-    #[inline]
+    /// Existing optional return shape retained for source compatibility.
     #[must_use]
     pub fn category(&self) -> Option<&str> {
-        self.category.as_deref()
+        Some(&self.category)
     }
 
-    /// The stamped `vokra.provenance.upstream_hf` slug, when present.
-    #[inline]
+    /// Existing optional return shape retained for source compatibility.
     #[must_use]
     pub fn upstream_hf(&self) -> Option<&str> {
-        self.upstream_hf.as_deref()
+        Some(&self.upstream_hf)
     }
 
-    /// The bound weights, including the resolved classifier-head names and
-    /// the head's in-features width.
-    #[inline]
     #[must_use]
     pub const fn weights(&self) -> &DeepfakeDetectionWeights {
         &self.weights
     }
 
-    /// Number of tensors bound from the GGUF.
-    #[inline]
     #[must_use]
-    pub fn tensor_count(&self) -> usize {
-        self.weights.tensor_count()
+    pub const fn tensor_count(&self) -> usize {
+        self.checkpoint.tensor_count()
     }
 
-    /// The classifier head's in-features width, read from the head tensor's
-    /// own dims.
-    #[inline]
+    /// Input width of the final classifier (`256`).
     #[must_use]
-    pub fn hidden_size(&self) -> usize {
-        self.weights.hidden_size()
+    pub const fn hidden_size(&self) -> usize {
+        CLASSIFIER_PROJ_SIZE
     }
 
-    /// The head's output width ([`N_CLASSES`] = 2), verified at bind time.
-    #[inline]
     #[must_use]
     pub const fn num_classes() -> u32 {
         N_CLASSES
     }
 
-    /// Which output index means "synthetic".
-    ///
-    /// # Loud-partial (this WP) — and a deliberate refusal
-    ///
-    /// Always returns [`VokraError::UnsupportedOp`]. The GGUF does not carry
-    /// the upstream `id2label` map (see [`GGUF_KEY_ID2LABEL`]), so the
-    /// mapping from index to meaning is genuinely not recoverable from the
-    /// artifact.
-    ///
-    /// Guessing would be the most damaging thing this module could do: an
-    /// inverted spoof detector reports confidently in the wrong direction,
-    /// and the inversion is invisible at the call site. So this fails loudly
-    /// and names the converter-side fix instead of returning a coin flip.
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::UnsupportedOp`] — always, until the converter stamps
-    ///   [`GGUF_KEY_ID2LABEL`].
-    pub fn spoof_class_index(&self) -> Result<usize> {
-        Err(VokraError::UnsupportedOp(format!(
-            "deepfake_detection spoof_class_index (loud-partial): the GGUF does not \
-             record which of the {N_CLASSES} output indices means \"synthetic\". The \
-             converter copies float tensors verbatim and stamps \
-             `vokra.model.{{arch,name,category}}` plus the `vokra.provenance.*` group, \
-             but it does NOT transcribe the upstream `config.json` `id2label` map, and \
-             no other chunk pins the ordering. The fix is converter-side: stamp \
-             `{GGUF_KEY_ID2LABEL}` from the upstream config, then this accessor becomes \
-             a lookup. Refusing to guess — an inverted spoof detector reports \
-             confidently in the wrong direction and the inversion is invisible at the \
-             call site, which is strictly worse than no detector at all (FR-EX-08 — no \
-             silent partial output). Read {hf} `config.json` for the authoritative \
-             mapping in the meantime.",
-            hf = PRIMARY_SOURCE_HF,
-        )))
+    #[must_use]
+    pub const fn class_labels() -> &'static [&'static str; 2] {
+        &CLASS_LABELS
     }
 
-    /// Scores a PCM waveform for synthetic-speech likelihood.
-    ///
-    /// Returns a [`DeepfakeScore`] — logits and their softmax — **not** a
-    /// verdict. The caller chooses the operating point; see the module
-    /// docstring for why that boundary sits here.
-    ///
-    /// `_pcm` is the raw waveform as mono f32 in `[-1, 1]` at 16 kHz (WavLM
-    /// lineage convention). A rate or shape mismatch will be a loud error
-    /// rather than a resample surprise once the real forward lands.
-    ///
-    /// # Loud-partial (this WP)
-    ///
-    /// Returns [`VokraError::UnsupportedOp`] naming
-    /// [`MISSING_PRIMITIVE`] — the WavLM gated relative position bias (plus
-    /// its convolutional position-bias fusion), which no module in this tree
-    /// supplies today and which cannot be synthesized from the binder
-    /// scaffold without a walk against the WavLM reference code. The
-    /// classifier head in front of it *is* bound and shape-verified, and
-    /// [`DeepfakeScore`]'s arithmetic is real — the gap is exactly the
-    /// feature extractor.
-    ///
-    /// **No fabricated detection score is ever emitted.** For this model
-    /// that is not a stylistic rule: a fabricated score is a security
-    /// control reporting a number it did not compute (FR-EX-08).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
-    ///   deferred WavLM conv stem + Transformer encoder + mean pooling.
-    pub fn score(&self, _pcm: &[f32]) -> Result<DeepfakeScore> {
-        let _ = _pcm;
-        Err(score_forward_loud_partial(
-            self.weights.classifier_weight_name(),
-            self.weights.hidden_size(),
-        ))
+    /// The canonical synthetic/fake class index from the pinned config.
+    pub const fn spoof_class_index(&self) -> Result<usize> {
+        Ok(0)
+    }
+
+    #[must_use]
+    pub const fn legacy_metadata_repaired(&self) -> bool {
+        self.legacy_metadata_repaired
+    }
+
+    /// Runs the normalized waveform frontend and Wav2Vec2 encoder.
+    pub fn encode_features(&self, pcm: &[f32], sample_rate: u32) -> Result<(Vec<f32>, usize)> {
+        validate_pcm(pcm, sample_rate)?;
+        self.ensure_supported_backend()?;
+        self.encoder.encode_features(pcm)
+    }
+
+    /// Scores mono PCM at an explicit sample rate.
+    pub fn score_pcm(&self, pcm: &[f32], sample_rate: u32) -> Result<DeepfakeScore> {
+        Ok(self.forward(pcm, sample_rate)?.score)
+    }
+
+    fn forward(&self, pcm: &[f32], sample_rate: u32) -> Result<DeepfakeForward> {
+        let (features, frames) = self.encode_features(pcm, sample_rate)?;
+        let compute = self.compute()?;
+        let projected = linear_forward_with_compute(
+            &features,
+            frames,
+            HIDDEN_SIZE,
+            &self.weights.projector_weight,
+            &self.weights.projector_bias,
+            CLASSIFIER_PROJ_SIZE,
+            &compute,
+        )?;
+        let pooled = mean_frames(&projected, frames, CLASSIFIER_PROJ_SIZE)?;
+        let logits = linear_forward_with_compute(
+            &pooled,
+            1,
+            CLASSIFIER_PROJ_SIZE,
+            &self.weights.classifier_weight_values,
+            &self.weights.classifier_bias_values,
+            N_CLASSES as usize,
+            &compute,
+        )?;
+        reject_non_finite("deepfake logits", &logits)?;
+        Ok(DeepfakeForward {
+            encoder_features: features,
+            projected_features: projected,
+            pooled_embedding: pooled,
+            frames,
+            score: DeepfakeScore::from_logits([logits[0], logits[1]]),
+        })
+    }
+
+    /// Preserves the original implicit-16 kHz scoring API.
+    pub fn score(&self, pcm: &[f32]) -> Result<DeepfakeScore> {
+        self.score_pcm(pcm, SAMPLE_RATE)
+    }
+
+    fn ensure_supported_backend(&self) -> Result<()> {
+        match self.backend {
+            BackendKind::Cpu | BackendKind::Metal => Ok(()),
+            other => Err(VokraError::UnsupportedOp(format!(
+                "deepfake_detection: backend {other:?} is unsupported; this model implements only Mac CPU and Metal. Vokra will not silently execute learned operations on the CPU (FR-EX-08)"
+            ))),
+        }
+    }
+
+    fn compute(&self) -> Result<Compute> {
+        self.ensure_supported_backend()?;
+        Compute::for_backend(self.backend, DEEPFAKE_HOT_OPS)
     }
 }
 
-/// Builds the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`DeepfakeDetection::score`] until the WavLM feature extractor lands.
-///
-/// Names the missing primitive by exact identifier, states what *is*
-/// already real (the bound head and its width), and cites all three primary
-/// sources so a reader diagnosing the gap has three places to walk.
-fn score_forward_loud_partial(classifier_weight: &str, hidden_size: usize) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "deepfake_detection score (loud-partial): the full forward is deferred. The \
-         missing primitive is the `{MISSING_PRIMITIVE}` — WavLM applies a gated \
-         relative position bias plus a convolutional position-bias fusion around the \
-         attention softmax, which neither wav2vec2 nor HuBERT expose and which no \
-         module in this tree supplies today. Three pieces must land before a real \
-         score can be emitted: (1) the 7-layer 1D conv feature-extractor stem \
-         (HuBERT/wav2vec2-lineage strided stack, 16 kHz -> ~50 Hz feature grid); \
-         (2) the WavLM Transformer encoder carrying the `{MISSING_PRIMITIVE}`, per a \
-         walk against `WavLM.py` `TransformerSentenceEncoderLayer::forward`; \
-         (3) mean pooling over the encoder time axis. What is ALREADY real: the \
-         binary classifier head is bound and shape-verified at \
-         `{classifier_weight}` with dims [{N_CLASSES}, {hidden_size}], and \
-         `DeepfakeScore`'s softmax is implemented and tested — the gap is exactly the \
-         feature extractor in front of it. Primary sources: HF release {hf}, WavLM \
-         reference code {code}, WavLM paper {paper}. The runtime cannot fabricate a \
-         detection score: on a spoof-countermeasure model that would be a security \
-         control reporting a number it did not compute (FR-EX-08 — no silent partial \
-         output).",
-        hf = PRIMARY_SOURCE_HF,
-        code = PRIMARY_SOURCE_WAVLM_CODE,
-        paper = PRIMARY_SOURCE_WAVLM_PAPER,
+fn validate_pcm(pcm: &[f32], sample_rate: u32) -> Result<()> {
+    if sample_rate != SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "deepfake_detection: expected {SAMPLE_RATE} Hz mono PCM, got {sample_rate} Hz; resampling is caller-owned"
+        )));
+    }
+    if pcm.len() < MIN_PCM_SAMPLES {
+        return Err(VokraError::InvalidArgument(format!(
+            "deepfake_detection: PCM has {} samples, but the seven-layer Wav2Vec2 frontend requires at least {MIN_PCM_SAMPLES}",
+            pcm.len()
+        )));
+    }
+    if let Some((index, value)) = pcm
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "deepfake_detection: PCM sample {index} is non-finite ({value})"
+        )));
+    }
+    Ok(())
+}
+
+fn mean_frames(values: &[f32], frames: usize, width: usize) -> Result<Vec<f32>> {
+    if frames == 0 || width == 0 || values.len() != frames * width {
+        return Err(VokraError::InvalidArgument(format!(
+            "deepfake_detection: mean-pool shape mismatch: values={}, frames={frames}, width={width}",
+            values.len()
+        )));
+    }
+    let mut pooled = vec![0.0f32; width];
+    for frame in values.chunks_exact(width) {
+        for (destination, value) in pooled.iter_mut().zip(frame) {
+            *destination += *value;
+        }
+    }
+    let inverse = 1.0 / frames as f32;
+    for value in &mut pooled {
+        *value *= inverse;
+    }
+    Ok(pooled)
+}
+
+fn validate_canonical_dtypes(file: &GgufFile) -> Result<()> {
+    for tensor in file.tensors() {
+        if tensor.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "deepfake_detection: tensor {:?} has {:?}, expected canonical F32",
+                tensor.name, tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
+const KEY_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_CHECKPOINT_FILE: &str = "vokra.provenance.checkpoint_file";
+const KEY_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+const KEY_CONFIG_SHA256: &str = "vokra.provenance.config_sha256";
+const KEY_PREPROCESSOR_SHA256: &str = "vokra.provenance.preprocessor_sha256";
+const LEGACY_SOURCE: &str = "MelodyMachine/Deepfake-audio-detection-V2 (WavLM binary classifier for audio deepfake detection, apache-2.0)";
+const CANONICAL_SOURCE: &str = concat!(
+    "MelodyMachine/Deepfake-audio-detection-V2@",
+    "de3cde5a29c449bb5268814e421b46bf6ebdcd72",
+    "/model.safetensors sha256:",
+    "997d9ce59e63151d5e444a6fa7c863986d0e56d515f67321bd705ac3b01bc38c"
+);
+
+const PROVENANCE_KEYS: &[&str] = &[
+    KEY_UPSTREAM_REVISION,
+    KEY_CHECKPOINT_FILE,
+    KEY_CHECKPOINT_SHA256,
+    KEY_CONFIG_SHA256,
+    KEY_PREPROCESSOR_SHA256,
+];
+
+const CONTRACT_KEYS: &[&str] = &[
+    "vokra.deepfake.architecture",
+    "vokra.deepfake.model_type",
+    "vokra.deepfake.sample_rate",
+    "vokra.deepfake.normalize",
+    "vokra.deepfake.return_attention_mask",
+    "vokra.deepfake.hidden_size",
+    "vokra.deepfake.num_hidden_layers",
+    "vokra.deepfake.num_attention_heads",
+    "vokra.deepfake.intermediate_size",
+    "vokra.deepfake.classifier_proj_size",
+    "vokra.deepfake.num_classes",
+    "vokra.deepfake.layer_norm_eps",
+    "vokra.deepfake.feat_extract_norm",
+    "vokra.deepfake.do_stable_layer_norm",
+    "vokra.deepfake.hidden_act",
+    "vokra.deepfake.num_conv_pos_embeddings",
+    "vokra.deepfake.num_conv_pos_embedding_groups",
+    "vokra.deepfake.use_weighted_layer_sum",
+    "vokra.deepfake.conv_dim",
+    "vokra.deepfake.conv_kernel",
+    "vokra.deepfake.conv_stride",
+    GGUF_KEY_ID2LABEL,
+];
+
+/// Validates exact generic provenance and the all-or-nothing additive groups.
+/// Returns true only for the immutable historical public GGUF.
+fn validate_metadata(file: &GgufFile) -> Result<bool> {
+    require_string(file, GGUF_KEY_MODEL_CATEGORY, CATEGORY)?;
+    require_string(file, chunks::KEY_PROVENANCE_MODEL_ID, NAME)?;
+    require_string(file, GGUF_KEY_UPSTREAM_HF, UPSTREAM_HF)?;
+    let license = required_string(file, chunks::KEY_PROVENANCE_LICENSE)?;
+    if !license.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
+        return Err(metadata_error(
+            chunks::KEY_PROVENANCE_LICENSE,
+            license,
+            DEFAULT_LICENSE_SPDX,
+        ));
+    }
+    let class = required_string(file, chunks::KEY_PROVENANCE_WEIGHT_LICENSE)?;
+    if LicenseClass::from_class_str(class) != Some(LicenseClass::Permissive) {
+        return Err(metadata_error(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            class,
+            "permissive",
+        ));
+    }
+    let source = required_string(file, chunks::KEY_PROVENANCE_SOURCE)?;
+    if source != LEGACY_SOURCE && source != CANONICAL_SOURCE {
+        return Err(VokraError::ModelLoad(format!(
+            "deepfake_detection: unsupported `{}`={source:?}; expected historical {LEGACY_SOURCE:?} or canonical {CANONICAL_SOURCE:?}",
+            chunks::KEY_PROVENANCE_SOURCE
+        )));
+    }
+
+    let provenance_count = count_present(file, PROVENANCE_KEYS);
+    let contract_count = count_present(file, CONTRACT_KEYS);
+    match (provenance_count, contract_count) {
+        (0, 0) => Ok(true),
+        (provenance, contract)
+            if provenance == PROVENANCE_KEYS.len() && contract == CONTRACT_KEYS.len() =>
+        {
+            require_string(file, KEY_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+            require_string(file, KEY_CHECKPOINT_FILE, CHECKPOINT_FILE)?;
+            require_string(file, KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256)?;
+            require_string(file, KEY_CONFIG_SHA256, CONFIG_SHA256)?;
+            require_string(file, KEY_PREPROCESSOR_SHA256, PREPROCESSOR_SHA256)?;
+            validate_contract(file)?;
+            Ok(false)
+        }
+        _ => Err(VokraError::ModelLoad(format!(
+            "deepfake_detection: partial immutable metadata: provenance {provenance_count}/{}, `{PREFIX}.*` contract {contract_count}/{}; refusing topology repair",
+            PROVENANCE_KEYS.len(),
+            CONTRACT_KEYS.len()
+        ))),
+    }
+}
+
+fn validate_contract(file: &GgufFile) -> Result<()> {
+    require_string(
+        file,
+        "vokra.deepfake.architecture",
+        "Wav2Vec2ForSequenceClassification",
+    )?;
+    require_string(file, "vokra.deepfake.model_type", "wav2vec2")?;
+    require_u64(file, "vokra.deepfake.sample_rate", SAMPLE_RATE as u64)?;
+    require_bool(file, "vokra.deepfake.normalize", true)?;
+    require_bool(file, "vokra.deepfake.return_attention_mask", false)?;
+    require_u64(file, "vokra.deepfake.hidden_size", HIDDEN_SIZE as u64)?;
+    require_u64(
+        file,
+        "vokra.deepfake.num_hidden_layers",
+        NUM_HIDDEN_LAYERS as u64,
+    )?;
+    require_u64(
+        file,
+        "vokra.deepfake.num_attention_heads",
+        NUM_ATTENTION_HEADS as u64,
+    )?;
+    require_u64(
+        file,
+        "vokra.deepfake.intermediate_size",
+        INTERMEDIATE_SIZE as u64,
+    )?;
+    require_u64(
+        file,
+        "vokra.deepfake.classifier_proj_size",
+        CLASSIFIER_PROJ_SIZE as u64,
+    )?;
+    require_u64(file, "vokra.deepfake.num_classes", N_CLASSES as u64)?;
+    require_f64(
+        file,
+        "vokra.deepfake.layer_norm_eps",
+        f64::from(LAYER_NORM_EPS),
+    )?;
+    require_string(file, "vokra.deepfake.feat_extract_norm", "group")?;
+    require_bool(file, "vokra.deepfake.do_stable_layer_norm", false)?;
+    require_string(file, "vokra.deepfake.hidden_act", "gelu")?;
+    require_u64(file, "vokra.deepfake.num_conv_pos_embeddings", 128)?;
+    require_u64(file, "vokra.deepfake.num_conv_pos_embedding_groups", 16)?;
+    require_bool(file, "vokra.deepfake.use_weighted_layer_sum", false)?;
+    require_u32_array(file, "vokra.deepfake.conv_dim", &CONV_DIM)?;
+    require_u32_array(file, "vokra.deepfake.conv_kernel", &CONV_KERNEL)?;
+    require_u32_array(file, "vokra.deepfake.conv_stride", &CONV_STRIDE)?;
+    require_string_array(file, GGUF_KEY_ID2LABEL, &CLASS_LABELS)
+}
+
+fn count_present(file: &GgufFile, keys: &[&str]) -> usize {
+    keys.iter().filter(|key| file.get(key).is_some()).count()
+}
+
+fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
+    file.get(key)
+        .and_then(GgufMetadataValue::as_str)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-string `{key}`"))
+        })
+}
+
+fn require_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = required_string(file, key)?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_u64(file: &GgufFile, key: &str, expected: u64) -> Result<()> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_u64)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-u32 `{key}`"))
+        })?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_f64(file: &GgufFile, key: &str, expected: f64) -> Result<()> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_f64)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-f32 `{key}`"))
+        })?;
+    if actual.to_bits() != expected.to_bits() {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_bool(file: &GgufFile, key: &str, expected: bool) -> Result<()> {
+    let actual = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_bool)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-bool `{key}`"))
+        })?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_u32_array(file: &GgufFile, key: &str, expected: &[usize]) -> Result<()> {
+    let array = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_array)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-array `{key}`"))
+        })?;
+    if array.values.len() != expected.len() {
+        return Err(metadata_error(key, array.values.len(), expected.len()));
+    }
+    for (index, (actual, expected)) in array.values.iter().zip(expected).enumerate() {
+        let actual = actual.as_u64().ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "deepfake_detection: `{key}` element {index} is not an unsigned integer"
+            ))
+        })?;
+        if actual != *expected as u64 {
+            return Err(VokraError::ModelLoad(format!(
+                "deepfake_detection: `{key}` element {index}={actual}, expected {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn require_string_array(file: &GgufFile, key: &str, expected: &[&str]) -> Result<()> {
+    let array = file
+        .get(key)
+        .and_then(GgufMetadataValue::as_array)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("deepfake_detection: missing/non-array `{key}`"))
+        })?;
+    if array.values.len() != expected.len() {
+        return Err(metadata_error(key, array.values.len(), expected.len()));
+    }
+    for (index, (actual, expected)) in array.values.iter().zip(expected).enumerate() {
+        let actual = actual.as_str().ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "deepfake_detection: `{key}` element {index} is not a string"
+            ))
+        })?;
+        if actual != *expected {
+            return Err(VokraError::ModelLoad(format!(
+                "deepfake_detection: `{key}` element {index}={actual:?}, expected {expected:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn metadata_error(
+    key: &str,
+    actual: impl std::fmt::Debug,
+    expected: impl std::fmt::Debug,
+) -> VokraError {
+    VokraError::ModelLoad(format!(
+        "deepfake_detection: unsupported `{key}`={actual:?}; expected {expected:?}"
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
-    //! Tests for the `deepfake_detection` runtime binder.
-    //!
-    //! Two kinds of coverage live here. The **real** surface — classifier
-    //! head resolution, the binary-width gate, and every bit of
-    //! [`DeepfakeScore`]'s arithmetic — is tested for actual correct
-    //! behaviour, because it is actually implemented. The **loud-partial**
-    //! surface is tested as negative space: each stated blocker must fire at
-    //! its documented surface point, in the documented error variant, with a
-    //! message naming the missing primitive.
-    //!
-    //! Fabricating a detection output to make a "real forward" test would
-    //! violate CLAUDE.md 教訓 (a) and, for this model specifically, would be
-    //! a test asserting that a security control works when it does not.
+    use std::path::{Path, PathBuf};
+
+    use vokra_core::gguf::{GgufArray, GgufBuilder, GgufValueType};
 
     use super::*;
-    use vokra_core::gguf::{GgmlType, GgufBuilder};
 
-    /// f32 comparison helper for the softmax assertions. The tolerance is
-    /// loose enough to absorb a few ulps of accumulated f32 rounding (the
-    /// log-odds check divides then takes a log) while still being far tighter
-    /// than any of the structural properties under test.
-    fn close(a: f32, b: f32) -> bool {
-        (a - b).abs() < 1e-5
+    fn metadata_builder() -> GgufBuilder {
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+        builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+        builder.add_string(GGUF_KEY_MODEL_CATEGORY, CATEGORY);
+        builder.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, "permissive");
+        builder.add_string(chunks::KEY_PROVENANCE_LICENSE, DEFAULT_LICENSE_SPDX);
+        builder.add_string(chunks::KEY_PROVENANCE_MODEL_ID, NAME);
+        builder.add_string(GGUF_KEY_UPSTREAM_HF, UPSTREAM_HF);
+        builder.add_string(chunks::KEY_PROVENANCE_SOURCE, LEGACY_SOURCE);
+        builder
     }
 
-    /// Builds a well-formed `deepfake_detection` GGUF: arch + name +
-    /// category + upstream slug + optional license stamp, one representative
-    /// WavLM backbone tensor, and a binary classifier head of
-    /// `[N_CLASSES, hidden]`.
-    fn detector_gguf(weight_license_class: Option<LicenseClass>, hidden: u64) -> GgufFile {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        b.add_string(GGUF_KEY_MODEL_CATEGORY, CATEGORY);
-        b.add_string(GGUF_KEY_UPSTREAM_HF, UPSTREAM_HF);
-        if let Some(cls) = weight_license_class {
-            b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
-        }
-        // A representative backbone tensor, using the same realistic
-        // WavLM-derived name the converter's own test module picks.
-        b.add_tensor(
-            "wavlm.encoder.layers.0.attention.q_proj.weight",
-            GgmlType::F32,
-            vec![hidden, hidden],
-            vec![0u8; (hidden * hidden * 4) as usize],
-        )
-        .expect("add_tensor backbone");
-        // The binary classifier head: [out_features, in_features].
-        b.add_tensor(
-            "classifier.weight",
-            GgmlType::F32,
-            vec![u64::from(N_CLASSES), hidden],
-            vec![0u8; (u64::from(N_CLASSES) * hidden * 4) as usize],
-        )
-        .expect("add_tensor head");
-        b.add_tensor(
-            "classifier.bias",
-            GgmlType::F32,
-            vec![u64::from(N_CLASSES)],
-            vec![0u8; (N_CLASSES * 4) as usize],
-        )
-        .expect("add_tensor bias");
-        GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
+    fn add_u32_array(builder: &mut GgufBuilder, key: &str, values: &[usize]) {
+        builder.add_metadata(
+            key,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U32,
+                values: values
+                    .iter()
+                    .map(|&value| GgufMetadataValue::U32(value as u32))
+                    .collect(),
+            }),
+        );
     }
 
-    // -----------------------------------------------------------------------
-    // Test 1 — Contract-constant pin (cross-crate consistency with the
-    //          converter).
-    // -----------------------------------------------------------------------
+    fn add_string_array(builder: &mut GgufBuilder, key: &str, values: &[&str]) {
+        builder.add_metadata(
+            key,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::String,
+                values: values
+                    .iter()
+                    .map(|value| GgufMetadataValue::String((*value).to_owned()))
+                    .collect(),
+            }),
+        );
+    }
+
+    fn stamp_complete_metadata(builder: &mut GgufBuilder, labels: &[&str]) {
+        builder.add_string(chunks::KEY_PROVENANCE_SOURCE, CANONICAL_SOURCE);
+        builder.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+        builder.add_string(KEY_CHECKPOINT_FILE, CHECKPOINT_FILE);
+        builder.add_string(KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256);
+        builder.add_string(KEY_CONFIG_SHA256, CONFIG_SHA256);
+        builder.add_string(KEY_PREPROCESSOR_SHA256, PREPROCESSOR_SHA256);
+        builder.add_string(
+            "vokra.deepfake.architecture",
+            "Wav2Vec2ForSequenceClassification",
+        );
+        builder.add_string("vokra.deepfake.model_type", "wav2vec2");
+        builder.add_u32("vokra.deepfake.sample_rate", SAMPLE_RATE);
+        builder.add_bool("vokra.deepfake.normalize", true);
+        builder.add_bool("vokra.deepfake.return_attention_mask", false);
+        builder.add_u32("vokra.deepfake.hidden_size", HIDDEN_SIZE as u32);
+        builder.add_u32("vokra.deepfake.num_hidden_layers", NUM_HIDDEN_LAYERS as u32);
+        builder.add_u32(
+            "vokra.deepfake.num_attention_heads",
+            NUM_ATTENTION_HEADS as u32,
+        );
+        builder.add_u32("vokra.deepfake.intermediate_size", INTERMEDIATE_SIZE as u32);
+        builder.add_u32(
+            "vokra.deepfake.classifier_proj_size",
+            CLASSIFIER_PROJ_SIZE as u32,
+        );
+        builder.add_u32("vokra.deepfake.num_classes", N_CLASSES);
+        builder.add_f32("vokra.deepfake.layer_norm_eps", LAYER_NORM_EPS);
+        builder.add_string("vokra.deepfake.feat_extract_norm", "group");
+        builder.add_bool("vokra.deepfake.do_stable_layer_norm", false);
+        builder.add_string("vokra.deepfake.hidden_act", "gelu");
+        builder.add_u32("vokra.deepfake.num_conv_pos_embeddings", 128);
+        builder.add_u32("vokra.deepfake.num_conv_pos_embedding_groups", 16);
+        builder.add_bool("vokra.deepfake.use_weighted_layer_sum", false);
+        add_u32_array(builder, "vokra.deepfake.conv_dim", &CONV_DIM);
+        add_u32_array(builder, "vokra.deepfake.conv_kernel", &CONV_KERNEL);
+        add_u32_array(builder, "vokra.deepfake.conv_stride", &CONV_STRIDE);
+        add_string_array(builder, GGUF_KEY_ID2LABEL, labels);
+    }
+
+    fn parse_metadata(builder: GgufBuilder) -> GgufFile {
+        GgufFile::parse(builder.to_bytes().expect("serialize metadata GGUF"))
+            .expect("parse metadata GGUF")
+    }
+
+    fn close(left: f32, right: f32) -> bool {
+        (left - right).abs() < 1.0e-5
+    }
 
     #[test]
-    fn contract_constants_mirror_the_converter() {
-        assert_eq!(ARCH, "deepfake_detection", "arch tag pin");
-        assert_eq!(NAME, "deepfake-audio-detection-v2", "canonical name pin");
-        assert_eq!(CATEGORY, "classification", "category pin");
+    fn immutable_contract_is_wav2vec2_not_wavlm() {
+        assert_eq!(TENSOR_COUNT, 215);
+        assert_eq!(HIDDEN_SIZE, 768);
+        assert_eq!(CLASSIFIER_PROJ_SIZE, 256);
+        assert_eq!(CLASS_LABELS, ["fake", "real"]);
+        assert_eq!(MANIFEST_SHA256.len(), 32);
+        assert!(PRIMARY_SOURCE_TRANSFORMERS_CODE.contains("v4.41.2"));
+    }
+
+    #[test]
+    fn exact_legacy_metadata_is_repaired_but_partial_groups_fail() {
+        assert!(
+            validate_metadata(&parse_metadata(metadata_builder()))
+                .expect("exact historical metadata")
+        );
+        let mut partial = metadata_builder();
+        partial.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+        let error = validate_metadata(&parse_metadata(partial))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("partial immutable metadata"));
+        assert!(error.contains("provenance 1/5"));
+    }
+
+    #[test]
+    fn complete_metadata_and_label_order_are_enforced() {
+        let mut canonical = metadata_builder();
+        stamp_complete_metadata(&mut canonical, &CLASS_LABELS);
+        assert!(!validate_metadata(&parse_metadata(canonical)).expect("canonical metadata"));
+
+        let mut reordered = metadata_builder();
+        stamp_complete_metadata(&mut reordered, &["real", "fake"]);
+        let error = validate_metadata(&parse_metadata(reordered))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(GGUF_KEY_ID2LABEL));
+        assert!(error.contains("element 0"));
+    }
+
+    #[test]
+    fn score_softmax_is_stable_and_threshold_is_explicit() {
+        let score = DeepfakeScore::from_logits([2.0, -1.0]);
+        let probabilities = score.probabilities();
+        assert!(probabilities[0] > probabilities[1]);
+        assert!(close(probabilities[0] + probabilities[1], 1.0));
+        assert!(score.exceeds(0, 0.5).unwrap());
+        assert!(!score.exceeds(0, 0.99).unwrap());
+        assert!(score.exceeds(0, f32::NAN).is_err());
+        assert!(score.probability_of(2).is_err());
+
+        let huge = DeepfakeScore::from_logits([200.0, 100.0]).probabilities();
+        assert!(huge[0].is_finite() && huge[1].is_finite());
+        assert!(close(huge[0] + huge[1], 1.0));
+    }
+
+    #[test]
+    fn mean_pool_matches_transformers_sequence_classifier() {
+        let pooled = mean_frames(&[1.0, 3.0, 5.0, 7.0], 2, 2).unwrap();
+        assert_eq!(pooled, vec![3.0, 5.0]);
+        assert!(mean_frames(&[1.0], 2, 2).is_err());
+    }
+
+    #[test]
+    fn pcm_contract_is_explicit() {
+        assert!(validate_pcm(&vec![0.0; MIN_PCM_SAMPLES], SAMPLE_RATE).is_ok());
+        assert!(validate_pcm(&vec![0.0; MIN_PCM_SAMPLES], 48_000).is_err());
+        assert!(validate_pcm(&vec![0.0; MIN_PCM_SAMPLES - 1], SAMPLE_RATE).is_err());
+        let mut non_finite = vec![0.0; MIN_PCM_SAMPLES];
+        non_finite[4] = f32::INFINITY;
+        assert!(validate_pcm(&non_finite, SAMPLE_RATE).is_err());
+    }
+
+    #[test]
+    fn learned_hot_ops_are_cpu_and_metal_complete() {
+        Compute::for_backend(BackendKind::Cpu, DEEPFAKE_HOT_OPS)
+            .expect("CPU covers every deepfake learned operation");
+        #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+        match Compute::for_backend(BackendKind::Metal, DEEPFAKE_HOT_OPS) {
+            Ok(compute) => assert_eq!(compute.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(error) => panic!("deepfake classifier has a Metal coverage gap: {error}"),
+        }
+    }
+
+    #[test]
+    #[ignore = "requires VAST-prepared public GGUF and official Transformers fixture"]
+    fn measure_official_cpu_against_transformers() {
+        let (model, reference, pcm) = real_case(BackendKind::Cpu);
+        let forward = model
+            .forward(&pcm, SAMPLE_RATE)
+            .expect("native deepfake CPU forward");
+        measure_reference("cpu_vs_transformers", &reference, &pcm, &forward);
+        eprintln!(
+            "DEEPFAKE_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED"
+        );
+    }
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    #[ignore = "requires Apple Silicon, public GGUF and official Transformers fixture"]
+    fn measure_official_metal_against_cpu_and_transformers() {
+        if vokra_backend_metal::vokra_metal_probe().is_err() {
+            eprintln!("skipping deepfake Metal measurement: no system Metal device");
+            return;
+        }
+        let (cpu, reference, pcm) = real_case(BackendKind::Cpu);
+        let cpu_forward = cpu
+            .forward(&pcm, SAMPLE_RATE)
+            .expect("native deepfake CPU forward");
+        let (metal, _, _) = real_case(BackendKind::Metal);
+        let metal_forward = metal
+            .forward(&pcm, SAMPLE_RATE)
+            .expect("native deepfake Metal forward");
+        measure_reference("metal_vs_transformers", &reference, &pcm, &metal_forward);
+        measure_forward_pair("metal_vs_cpu", &metal_forward, &cpu_forward);
+        eprintln!(
+            "DEEPFAKE_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED"
+        );
+    }
+
+    fn real_case(backend: BackendKind) -> (DeepfakeDetection, PathBuf, Vec<f32>) {
+        let gguf = std::env::var("VOKRA_DEEPFAKE_GGUF")
+            .expect("VOKRA_DEEPFAKE_GGUF must point at the strict public GGUF");
+        let reference = std::env::var("VOKRA_DEEPFAKE_REFERENCE_DIR")
+            .expect("VOKRA_DEEPFAKE_REFERENCE_DIR must point at the official dump");
+        let reference = Path::new(&reference).to_path_buf();
+        let pcm = read_f32(&reference.join("input_pcm.f32"));
+        assert_eq!(pcm.len(), SAMPLE_RATE as usize);
+        let model = DeepfakeDetection::open(gguf)
+            .expect("bind public deepfake GGUF")
+            .with_backend(backend);
+        (model, reference, pcm)
+    }
+
+    fn measure_reference(prefix: &str, reference: &Path, pcm: &[f32], forward: &DeepfakeForward) {
+        let normalized = crate::wav2vec2_ctc::zero_mean_unit_var(pcm);
+        let logits = forward.score.logits();
+        let scores = forward.score.probabilities();
+        assert_eq!(forward.encoder_features.len(), forward.frames * HIDDEN_SIZE);
         assert_eq!(
-            UPSTREAM_HF, "MelodyMachine/Deepfake-audio-detection-V2",
-            "upstream HF slug pin (cited in loud-partial diagnostics)"
+            forward.projected_features.len(),
+            forward.frames * CLASSIFIER_PROJ_SIZE
         );
-        assert_eq!(DEFAULT_LICENSE_SPDX, "apache-2.0", "default SPDX pin");
-        assert_eq!(GGUF_KEY_UPSTREAM_HF, "vokra.provenance.upstream_hf");
-        assert_eq!(GGUF_KEY_MODEL_CATEGORY, "vokra.model.category");
-        assert_eq!(
-            N_CLASSES, 2,
-            "this arch is a binary real-vs-synthetic detector"
-        );
-        assert_eq!(DeepfakeDetection::num_classes(), N_CLASSES);
-        assert_eq!(
-            CLASSIFIER_WEIGHT_CANDIDATES[0], "classifier.weight",
-            "the HF *ForSequenceClassification convention resolves first"
-        );
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 2 — Missing arch fails loud (never binds an unlabeled GGUF).
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_missing_arch() {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_NAME, "some-other-name");
-        b.add_tensor(
-            "classifier.weight",
-            GgmlType::F32,
-            vec![2, 8],
-            vec![0u8; 64],
-        )
-        .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when `vokra.model.arch` is absent");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("`vokra.model.arch`"),
-                    "message must name the missing key, got `{m}`"
-                );
-                assert!(
-                    m.contains("deepfake_detection"),
-                    "message must name the expected arch, got `{m}`"
-                );
-                assert!(
-                    m.contains("FR-EX-08"),
-                    "message must cite the FR-EX-08 clause, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+        for (name, actual) in [
+            ("input_pcm", pcm),
+            ("normalized_pcm", normalized.as_slice()),
+            ("encoder_features", forward.encoder_features.as_slice()),
+            ("projected_features", forward.projected_features.as_slice()),
+            ("pooled_embedding", forward.pooled_embedding.as_slice()),
+            ("logits", logits.as_slice()),
+            ("scores", scores.as_slice()),
+        ] {
+            measure_pair(
+                &format!("{prefix}/{name}"),
+                actual,
+                &read_f32(&reference.join(format!("{name}.f32"))),
+            );
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Test 3 — Foreign arch fails loud naming BOTH expected and actual.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_foreign_arch_naming_both() {
-        // `wavlm_sv` shares the WavLM backbone lineage but exposes an
-        // XVector speaker-verification head — exactly the confusion that
-        // must not resolve silently.
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, "wavlm_sv");
-        b.add_string(chunks::KEY_MODEL_NAME, "wavlm-base-plus-sv");
-        b.add_tensor("wavlm.probe", GgmlType::F32, vec![4, 4], vec![0u8; 64])
-            .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when the GGUF carries a foreign arch");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                // BOTH tags must appear — the actual and the expected.
-                assert!(
-                    m.contains("`wavlm_sv`"),
-                    "message must name the ACTUAL arch, got `{m}`"
-                );
-                assert!(
-                    m.contains("`deepfake_detection`"),
-                    "message must name the EXPECTED arch, got `{m}`"
-                );
-                // The sibling neighbourhood must be enumerated so the reader
-                // has fully specified anchors. Every tag below was verified
-                // present in the converter tree.
-                for sibling in ["wavlm_sv", "emotion2vec", "clap", "ast", "hubert"] {
-                    assert!(
-                        m.contains(sibling),
-                        "expected sibling '{sibling}' disambiguation in error: {m}"
-                    );
-                }
-                assert!(
-                    m.contains("FR-EX-08"),
-                    "message must cite the FR-EX-08 clause, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    fn measure_forward_pair(prefix: &str, actual: &DeepfakeForward, expected: &DeepfakeForward) {
+        let actual_logits = actual.score.logits();
+        let expected_logits = expected.score.logits();
+        let actual_scores = actual.score.probabilities();
+        let expected_scores = expected.score.probabilities();
+        for (name, left, right) in [
+            (
+                "encoder_features",
+                actual.encoder_features.as_slice(),
+                expected.encoder_features.as_slice(),
+            ),
+            (
+                "projected_features",
+                actual.projected_features.as_slice(),
+                expected.projected_features.as_slice(),
+            ),
+            (
+                "pooled_embedding",
+                actual.pooled_embedding.as_slice(),
+                expected.pooled_embedding.as_slice(),
+            ),
+            (
+                "logits",
+                actual_logits.as_slice(),
+                expected_logits.as_slice(),
+            ),
+            (
+                "scores",
+                actual_scores.as_slice(),
+                expected_scores.as_slice(),
+            ),
+        ] {
+            measure_pair(&format!("{prefix}/{name}"), left, right);
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Test 4 — A synthetic GGUF with the right tensors binds.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_binds_well_formed_detector() {
-        let file = detector_gguf(Some(LicenseClass::Permissive), 768);
-        let d = DeepfakeDetection::from_gguf(&file).expect("well-formed GGUF must bind");
-
-        assert_eq!(
-            d.weight_license(),
-            LicenseClass::Permissive,
-            "Permissive stamp must round-trip (mirror of the converter's apache-2.0 stamp)"
-        );
-        assert_eq!(d.model_name(), Some(NAME));
-        assert_eq!(d.category(), Some(CATEGORY));
-        assert_eq!(d.upstream_hf(), Some(UPSTREAM_HF));
-        assert_eq!(d.tensor_count(), 3, "backbone + head weight + head bias");
-
-        // The classifier head resolved, and its in-features axis was read
-        // from the tensor's own dims rather than a hard-coded constant.
-        assert_eq!(d.weights().classifier_weight_name(), "classifier.weight");
-        assert_eq!(d.weights().classifier_bias_name(), Some("classifier.bias"));
-        assert_eq!(d.hidden_size(), 768);
-        assert_eq!(
-            d.weights().tensor_dims("classifier.weight"),
-            Some([2_usize, 768].as_slice())
-        );
-
-        // A different backbone width must be read through, not assumed.
-        let narrow = detector_gguf(None, 256);
-        let d2 = DeepfakeDetection::from_gguf(&narrow).expect("narrow GGUF must bind");
-        assert_eq!(d2.hidden_size(), 256);
-        assert_eq!(
-            d2.weight_license(),
-            LicenseClass::Unknown,
-            "a missing license stamp must fail closed to Unknown"
-        );
+    fn read_f32(path: &Path) -> Vec<f32> {
+        let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+        assert_eq!(bytes.len() % 4, 0, "unaligned f32 fixture {path:?}");
+        bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect()
     }
 
-    // -----------------------------------------------------------------------
-    // Test 5 — A missing tensor fails loud, naming it.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_missing_classifier_head_naming_it() {
-        // Correct arch, a backbone tensor present, but no classifier head
-        // under any candidate name.
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        b.add_tensor(
-            "wavlm.encoder.layers.0.attention.q_proj.weight",
-            GgmlType::F32,
-            vec![8, 8],
-            vec![0u8; 256],
-        )
-        .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when the classifier head is absent");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                // Every candidate that was tried must be named.
-                for cand in CLASSIFIER_WEIGHT_CANDIDATES {
-                    assert!(
-                        m.contains(cand),
-                        "message must name candidate tensor `{cand}`, got `{m}`"
-                    );
-                }
-                // And it must show what is actually on disk.
-                assert!(
-                    m.contains("wavlm.encoder.layers.0.attention.q_proj.weight"),
-                    "message must sample the names actually present, got `{m}`"
-                );
-                assert!(
-                    m.contains("FR-EX-08"),
-                    "message must cite the FR-EX-08 clause, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 6 — An empty tensor manifest fails loud.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_empty_tensor_manifest() {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        // No tensors added.
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when the GGUF carries zero tensors");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("zero tensors"),
-                    "message must name the empty-manifest gap, got `{m}`"
-                );
-                assert!(
-                    m.contains("vokra-cli convert --model deepfake-detection"),
-                    "message must include the repro command, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 7 — A non-binary head fails loud naming expected AND actual.
-    //          "Binary classifier" is enforced, not merely documented.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_non_binary_classifier_head() {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, NAME);
-        // A 7-way head — a different detector variant, e.g. a spoof-attack
-        // type classifier, whose class indices would not mean what a caller
-        // of this binder expects.
-        b.add_tensor(
-            "classifier.weight",
-            GgmlType::F32,
-            vec![7, 768],
-            vec![0u8; 7 * 768 * 4],
-        )
-        .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when the head is not binary");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("out_features 7"),
-                    "message must name the ACTUAL width, got `{m}`"
-                );
-                assert!(
-                    m.contains("expected 2"),
-                    "message must name the EXPECTED width, got `{m}`"
-                );
-                assert!(
-                    m.contains("classifier.weight"),
-                    "message must name the offending tensor, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 8 — A rank-1 head fails loud rather than being reshaped.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn from_gguf_rejects_non_rank2_classifier_head() {
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_tensor("classifier.weight", GgmlType::F32, vec![2], vec![0u8; 8])
-            .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-
-        let Err(err) = DeepfakeDetection::from_gguf(&file) else {
-            panic!("expected an error when the head is not rank 2");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("rank 1"),
-                    "message must name the actual rank, got `{m}`"
-                );
-                assert!(
-                    m.contains("expected rank 2"),
-                    "message must name the expected rank, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 9 — The forward loud-partials, and the message names the missing
-    //          primitive.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn score_loud_partials_naming_the_missing_primitive() {
-        let file = detector_gguf(Some(LicenseClass::Permissive), 768);
-        let d = DeepfakeDetection::from_gguf(&file).expect("valid GGUF must bind");
-
-        // 1 s of silence at 16 kHz mono — the WavLM-lineage input convention.
-        let pcm = vec![0.0_f32; 16_000];
-        let Err(err) = d.score(&pcm) else {
-            panic!("expected score() to loud-partial rather than fabricate a detection score");
-        };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                assert!(
-                    msg.contains("deepfake_detection score"),
-                    "the surface must be called out: {msg}"
-                );
-                assert!(msg.contains("loud-partial"), "posture label: {msg}");
-
-                // THE missing primitive, by exact identifier.
-                assert!(
-                    msg.contains(MISSING_PRIMITIVE),
-                    "message must name the missing primitive `{MISSING_PRIMITIVE}`: {msg}"
-                );
-                assert!(
-                    msg.contains("conv feature-extractor stem"),
-                    "message must name the deferred conv stem: {msg}"
-                );
-                assert!(
-                    msg.contains("mean pooling"),
-                    "message must name the deferred pooling step: {msg}"
-                );
-
-                // It must also say what IS real, so the reader knows the gap
-                // is the feature extractor and not the head.
-                assert!(
-                    msg.contains("classifier.weight"),
-                    "message must report the bound head tensor: {msg}"
-                );
-                assert!(
-                    msg.contains("[2, 768]"),
-                    "message must report the verified head dims: {msg}"
-                );
-
-                // All three primary sources cited.
-                for url in [
-                    PRIMARY_SOURCE_HF,
-                    PRIMARY_SOURCE_WAVLM_CODE,
-                    PRIMARY_SOURCE_WAVLM_PAPER,
-                ] {
-                    assert!(
-                        msg.contains(url),
-                        "expected primary source URL '{url}' cited: {msg}"
-                    );
-                }
-                assert!(
-                    msg.contains("FR-EX-08"),
-                    "expected the FR-EX-08 no-fabrication rationale: {msg}"
-                );
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 10 — The class-index mapping is refused, not guessed.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn spoof_class_index_refuses_to_guess() {
-        let file = detector_gguf(Some(LicenseClass::Permissive), 768);
-        let d = DeepfakeDetection::from_gguf(&file).expect("valid GGUF must bind");
-
-        let Err(err) = d.spoof_class_index() else {
-            panic!("expected spoof_class_index to refuse rather than guess a class ordering");
-        };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                assert!(
-                    msg.contains(GGUF_KEY_ID2LABEL),
-                    "message must name the missing metadata key `{GGUF_KEY_ID2LABEL}`: {msg}"
-                );
-                assert!(
-                    msg.contains("id2label"),
-                    "message must name the upstream config field: {msg}"
-                );
-                assert!(
-                    msg.contains("Refusing to guess"),
-                    "message must state the refusal explicitly: {msg}"
-                );
-            }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 11 — DeepfakeScore softmax is REAL: sums to 1, ordered, and
-    //           numerically stable at large magnitudes.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn score_softmax_is_real_and_stable() {
-        // Equal logits -> a flat posterior.
-        let flat = DeepfakeScore::from_logits([0.0, 0.0]);
-        let p = flat.probabilities();
+    fn measure_pair(label: &str, actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len(), "{label} length");
+        assert!(!actual.is_empty(), "{label} must not be empty");
         assert!(
-            close(p[0], 0.5) && close(p[1], 0.5),
-            "flat posterior: {p:?}"
+            actual.iter().chain(expected).all(|value| value.is_finite()),
+            "{label} must be finite"
         );
-
-        // Ordering is preserved, and the two probabilities sum to 1.
-        let skewed = DeepfakeScore::from_logits([2.0, -1.0]);
-        let q = skewed.probabilities();
-        assert!(q[0] > q[1], "the larger logit must carry more mass: {q:?}");
-        assert!(
-            close(q[0] + q[1], 1.0),
-            "probabilities must sum to 1: {q:?}"
-        );
-        // ln-odds of a 2-way softmax equals the logit difference: 2 - (-1).
-        assert!(
-            close((q[0] / q[1]).ln(), 3.0),
-            "2-way softmax log-odds must equal the logit gap: {q:?}"
-        );
-
-        // Numerical stability: naive exp() on these would overflow to inf
-        // and yield NaN. The max-subtraction must keep it finite.
-        let huge = DeepfakeScore::from_logits([200.0, 100.0]);
-        let h = huge.probabilities();
-        assert!(
-            h[0].is_finite() && h[1].is_finite(),
-            "large logits must not overflow: {h:?}"
-        );
-        assert!(
-            close(h[0] + h[1], 1.0),
-            "stable softmax must sum to 1: {h:?}"
-        );
-        assert!(close(h[0], 1.0), "a 100-nat gap saturates to 1: {h:?}");
-
-        // Raw logits round-trip untouched.
-        assert_eq!(skewed.logits(), [2.0, -1.0]);
-    }
-
-    // -----------------------------------------------------------------------
-    // Test 12 — The threshold is the caller's: `exceeds` takes it as an
-    //           explicit argument, and out-of-range indices fail loud.
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn threshold_is_explicit_and_indices_are_checked() {
-        let s = DeepfakeScore::from_logits([2.0, -1.0]);
-        let p0 = s.probability_of(0).expect("index 0 is in range");
-        assert!(close(p0, s.probabilities()[0]));
-
-        // The same score yields opposite answers under different operating
-        // points — which is exactly why this crate does not pick one.
-        assert!(
-            s.exceeds(0, 0.5).expect("index 0 is in range"),
-            "p0 ~= 0.953 must exceed a 0.5 threshold"
-        );
-        assert!(
-            !s.exceeds(0, 0.99).expect("index 0 is in range"),
-            "p0 ~= 0.953 must NOT exceed a 0.99 threshold"
-        );
-
-        // An out-of-range class index is a caller bug that would silently
-        // read the wrong class, so it fails loudly rather than clamping.
-        let Err(err) = s.probability_of(2) else {
-            panic!("expected an error when the class index is out of range");
-        };
-        match err {
-            VokraError::InvalidArgument(m) => {
-                assert!(
-                    m.contains("class index 2 is out of range"),
-                    "message must name the offending index, got `{m}`"
-                );
-                assert!(
-                    m.contains("Refusing to clamp"),
-                    "message must state the refusal, got `{m}`"
-                );
+        let mut max_abs = 0.0f64;
+        let mut sum_abs = 0.0f64;
+        let mut sum_sq = 0.0f64;
+        let mut dot = 0.0f64;
+        let mut actual_sq = 0.0f64;
+        let mut expected_sq = 0.0f64;
+        let mut max_index = 0usize;
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            let actual = f64::from(actual);
+            let expected = f64::from(expected);
+            let error = (actual - expected).abs();
+            if error > max_abs {
+                max_abs = error;
+                max_index = index;
             }
-            other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
+            sum_abs += error;
+            sum_sq += error * error;
+            dot += actual * expected;
+            actual_sq += actual * actual;
+            expected_sq += expected * expected;
         }
-
-        let Err(err) = s.exceeds(9, 0.5) else {
-            panic!("expected an error when exceeds() gets an out-of-range index");
+        let count = actual.len() as f64;
+        let norm_product = actual_sq.sqrt() * expected_sq.sqrt();
+        let cosine = if norm_product == 0.0 {
+            f64::NAN
+        } else {
+            dot / norm_product
         };
-        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        eprintln!(
+            "DEEPFAKE_MEASUREMENT label={label} elements={} max_abs={max_abs:.9e} \
+             worst_index={max_index} mean_abs={:.9e} rms={:.9e} cosine={cosine:.12}",
+            actual.len(),
+            sum_abs / count,
+            (sum_sq / count).sqrt(),
+        );
     }
 }
