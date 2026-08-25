@@ -1,5 +1,11 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 RMVPE correction:** the working tree now implements the exact
+> fixed E2E0 skip U-Net and removes `rmvpe` from the generic code-partial set.
+> The live `vokra/rmvpe` repository remains artifact-partial because its GGUF
+> incorrectly stamps the unlicensed `yxlllc/RMVPE` source/weight as
+> MIT/permissive. The live-artifact totals below therefore do not change.
+
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
 of scope for this wave. Counts below are repository counts, not architecture
@@ -68,8 +74,9 @@ byte-identical, plus `vokra/neucodec`, `vokra/distill-neucodec` and
 `vokra/ast-finetuned-audioset`.
 They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
-Pyannote Segmentation 3.0 and RMVPE are deliberately
-omitted from this list (see below). Each listed repository still needs its own
+Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
+live-artifact-complete list (see below). RMVPE now has a complete code route,
+but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
@@ -78,15 +85,20 @@ remaining 100 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
-The routed-partial set deliberately includes `csm`, `pyannote-segmentation`,
-`rmvpe` and `sbv2`. CSM still constructs synthesized
+The generic routed-partial set deliberately includes `csm`,
+`pyannote-segmentation` and `sbv2`. CSM still constructs synthesized
 model weights in its public GGUF loader, and SBV2's public conversion does not
 satisfy the strict runtime tensor-name contract. Pyannote's
-real forward is disabled by default pending independent parity; RMVPE omits
-the released U-Net decoder skip-concat and explicitly warns that real values
-diverge. All four have substantial code, but none is a
+real forward is disabled by default pending independent parity. These three
+have substantial code, but none is a
 released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
+
+RMVPE is instead an artifact-specific blocker, like NSNet2: the 623 inference
+tensor + 118 counter topology is now exact, while the public header's
+`license=mit` / `weight_license=permissive` contradicts the audited exact
+source. A provenance-corrected replacement needs a valid grant and separate
+upload permission.
 
 NSNet2 is no longer in that generic routed-partial set: its exact historical
 tensor header has a complete native CPU/Metal code route. It remains a separate
@@ -1383,18 +1395,22 @@ error until the owner separately authorizes the gated Hugging Face publish
 chain. Code-route completion and a verified local replacement do not make the
 stale Hub bytes a pass.
 
-### RMVPE code route (still CPU-partial)
+### RMVPE exact code route; live artifact blocked
 
-RMVPE now routes Conv2D/ConvTranspose2D lowering, BiGRU projections and the
-pitch head through GEMM/GEMV for non-CPU backends, with batch normalization,
-pooling, activations, scatter/layout work and pitch decoding on the host. The
-synthetic learned-primitive CPU/Compute checks pass.
+The corrected implementation is transcribed from `yxlllc/RMVPE` commit
+`0aabafba18289ca938a73af0b0297686abf4922d`: 1024-point magnitude HTK mel,
+initial BatchNorm, five encoder layers, four intermediate layers, five decoder
+layers with paired skip-concats, 3×128 collapse, BiGRU, 360-way sigmoid head and
+nine-bin pitch decode. The loader accepts only the fixed 623 inference tensors
+plus optional 118 BatchNorm counters. Conv2D/ConvTranspose2D and GRU/head
+projections route through GEMM/GEMV; unsupported backends never fall back.
 
-RMVPE is nevertheless classified as routed-partial. Its own documented CPU
-forward omits the upstream U-Net decoder skip-concat and discovers topology
-from unverified tensor-name conventions; no real-checkpoint numeric parity has
-closed that gap. Metal cannot be called complete while the CPU oracle is known
-to diverge, even though the implemented primitives have a GPU path.
+The current `vokra/rmvpe` revision
+`3eb5fa8946f1074ba3959074c5cde95ec22b8c91` remains a loud artifact error:
+its tensor payload matches the supported contract, but the header declares
+MIT/permissive despite `yxlllc/RMVPE` having no LICENSE. Independent upstream
+CPU parity on VAST and a remote Apple Metal execution measurement remain
+pending; neither is claimed by the code landing.
 
 ### Parakeet CTC and TDT
 

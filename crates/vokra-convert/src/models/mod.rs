@@ -442,11 +442,13 @@ pub(crate) mod qwen3_tts;
 // `vokra-models <-> vokra-convert` dependency cycle the design doc's
 // original task split would have created -- see `sbv2`'s module doc (same
 // rationale as Task 11's `deberta_v2` / `deberta_v3`).
-// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE` fork of
-// `Dream-High/RMVPE`; primary code Apache-2.0, fork weight licence
-// unstated — fail-closed Unknown). Safetensors →
-// GGUF with the `vokra.rmvpe.*` hparam chunk group; every F32 / F16 /
-// BF16 tensor passes through verbatim under upstream state_dict names.
+// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE`, fixed
+// source revision; it is not a GitHub fork of the separately licensed
+// `Dream-High/RMVPE`). The source and checkpoint terms are unstated, so the
+// converter is fail-closed Unknown. Safetensors → GGUF with the
+// `vokra.rmvpe.*` hparam chunk group; the exact 623 runnable tensors and
+// optional 118 BatchNorm counters retain upstream state_dict names. A complete
+// inference-inert `unet.tf` TimbreFilter is validated and omitted.
 // Distinct arch tag (`rmvpe`) — the first `category = "f0"` binder in
 // the converter tree. Consumed by a native `vokra-models::f0::rmvpe`
 // runtime (U-Net + GRU CNN over a 128-mel spectrogram at 16 kHz →

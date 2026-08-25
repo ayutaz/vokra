@@ -157,6 +157,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         self.assertEqual(audit.classify(pyannote, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(rmvpe, routed, bound).cpu_code, "partial")
+        self.assertEqual(
+            audit.classify(rmvpe, routed, bound).metal_code, "blocked-by-cpu"
+        )
         self.assertEqual(audit.classify(vocos, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(fsmn, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(firered, routed, bound).metal_code, "full")

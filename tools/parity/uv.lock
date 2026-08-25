@@ -2383,19 +2383,23 @@ wheels = [
 
 [[package]]
 name = "rmvpe-parity"
-version = "0.1.0"
+version = "0.2.0"
 source = { virtual = "rmvpe" }
 dependencies = [
+    { name = "librosa" },
     { name = "numpy" },
     { name = "soundfile" },
     { name = "torch" },
+    { name = "torchaudio" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "librosa", specifier = ">=0.10" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "soundfile", specifier = ">=0.13" },
     { name = "torch", specifier = ">=2.0" },
+    { name = "torchaudio", specifier = ">=2.0" },
 ]
 
 [[package]]

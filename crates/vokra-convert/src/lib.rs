@@ -912,14 +912,16 @@ pub enum ModelKind {
     /// estimator required by RVC v2 and reused by GPT-SoVITS /
     /// retrieval-based VC pipelines: a U-Net encoder (5 down blocks) +
     /// intermediate GRU + U-Net decoder (5 up blocks) + 360-pitch-class
-    /// head over a 128-mel spectrogram at 16 kHz PCM in. The primary
-    /// implementation is Apache-2.0, while the checkpoint-publishing
-    /// `yxlllc/RMVPE` repository declares no weight licence; conversion
-    /// therefore defaults to [`vokra_core::LicenseClass::Unknown`]. Every F32 / F16 / BF16 tensor
-    /// passes through verbatim under upstream state_dict names; the
-    /// `vokra.rmvpe.*` chunk group carries the primary-source hparams
-    /// (hop=160, sr=16000, n_mels=128, win_length=1024, n_fft=2048,
-    /// n_class=360, cents_per_class=20.0, base_hz=32.703). Distinct
+    /// head over a 128-mel spectrogram at 16 kHz PCM in. The fixed
+    /// `yxlllc/RMVPE` source revision and its checkpoint publish no licence,
+    /// so conversion defaults to [`vokra_core::LicenseClass::Unknown`]. The
+    /// converter accepts the exact 623-tensor inference manifest plus the
+    /// optional 118 BatchNorm counters. It validates and omits the complete
+    /// 50-tensor `unet.tf` TimbreFilter subgraph because the fixed upstream
+    /// `DeepUnet0.forward` never executes it. The `vokra.rmvpe.*` chunk group
+    /// records that source revision and the primary-source hparams (hop=160,
+    /// sr=16000, n_mels=128, win_length=1024, n_fft=1024, n_class=360,
+    /// cents_per_class=20.0, base_hz=31.7). Distinct
     /// arch tag from every sibling (`ModelKind::Rmvpe` → `rmvpe`) —
     /// silently sharing would misroute the runtime dispatch (an ASR /
     /// TTS backbone would try to interpret the 360-class pitch head).
@@ -9001,18 +9003,18 @@ pub fn convert_file_licensed(
             });
         }
         ModelKind::Rmvpe => {
-            // F0 pitch-extractor tier (2026-07-30): every F32/F16/BF16
-            // tensor passes through verbatim under upstream state_dict
-            // names + the `vokra.rmvpe.*` chunk group carries the
-            // primary-source hparams (hop / sr / n_mels / n_fft /
-            // win_length / n_class / cents_per_class / base_hz).
-            // Provenance = MIT (Permissive — no runtime-side
-            // attribution obligation).
+            // Fixed E2E0 F0 contract: all 623 runnable tensors are required;
+            // the constructed-but-unused `unet.tf.*` family is validated and
+            // omitted. Provenance defaults to Unknown because yxlllc/RMVPE
+            // declares no code or checkpoint terms.
             let report = models::rmvpe::convert_rmvpe_file(input, output, license)?;
             let notes = vec![format!(
                 "rmvpe: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                 inference-inert and {} non-float skipped",
+                report.written,
+                report.bf16_passthrough,
+                report.skipped_inference_inert,
+                report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Rmvpe,

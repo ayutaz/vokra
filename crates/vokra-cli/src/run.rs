@@ -2011,7 +2011,7 @@ fn run_f0_rmvpe(a: &RunArgs) -> Result<(), String> {
     if clip.sample_rate != rate {
         return Err(format!(
             "run (f0): {path}: expected a {rate} Hz mono WAV (the RMVPE mel front-end is \
-             fixed at the rate in `vokra.f0.rmvpe.*`), got {} Hz — resample offline first \
+             fixed at the rate in `vokra.rmvpe.*`), got {} Hz — resample offline first \
              (FR-EX-08: never a silent resample)",
             clip.sample_rate
         ));

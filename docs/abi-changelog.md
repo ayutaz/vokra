@@ -250,6 +250,18 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (RMVPE exact E2E0 behavior correction)
+
+No Rust or C signature is added. The existing default `RMVPE` loader/forward
+changes from a name-discovered reduced graph to the fixed 623-tensor E2E0
+contract. `CnnChainPolicy::Optional` preserves the old structural-fixture path
+only when explicitly requested.
+
+| Surface | Symbol / key | Change | Compatibility | Breaking? | Commit |
+|---|---|---|---|---:|---|
+| `vokra-models::f0::rmvpe` | `RMVPE::{from_gguf,open,extract,extract_real,forward_from_hidden}` | Behavior corrected; signatures unchanged | Default loading now requires the exact five-stage skip U-Net + BiGRU manifest, fixed provenance, and canonical/historical metadata pair. Partial/fork-named and mislicensed public files fail before forward; unsupported Metal ops never fall back. | yes for previously accepted incomplete artifacts; those outputs were not upstream RMVPE | (TBD) |
+| `gguf:vokra.rmvpe.*` | `n_fft`, `base_hz`, `upstream_revision` | Two meanings corrected; one key added | New converter values are 1024 and 31.7 and stamp source commit `0aabafba18289ca938a73af0b0297686abf4922d`. The exact historical public 2048/32.703197 pair is normalized without modifying tensor payload; provenance-corrected legacy copies may omit the new key, while canonical new artifacts require it. | no for the audited historical pair | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (Audiobox Aesthetics CPU/Metal runtime)
 
 The historical public Audiobox GGUF remains loadable only when its complete
@@ -3157,7 +3169,7 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.pyannote_pipeline.*` | **13** keys — `clustering.algorithm`, `clustering.method`, `clustering.min_cluster_size`, `clustering.threshold`, …  | `u32` + `f32` + `bool` + `string` | persisted | `pyannote-speaker-diarization-3.1`, `pyannote/speaker-diarization-3.1` — written by `crates/vokra-convert/src/models/pyannote_speaker_diarization_3_1.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.qwen3_asr.*` | **26** keys — `audio.conv_chunksize`, `audio.d_model`, `audio.downsample_hidden_size`, `audio.ffn_dim`, …  | `u32` + `f32` + `bool` | persisted | `qwen3_asr` — written by `crates/vokra-convert/src/models/qwen3_asr.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | backfill | `vokra.redimnet.*` | **12** keys — `c`, `do_preemph`, `embed_dim`, `f`, …  | `u32` | persisted | `wespeaker-voxceleb-redimnet2-b6-lm`, `Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM` — written by `crates/vokra-convert/src/models/redimnet.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `56581d7` (2026-08-14) |
-| backfill | `vokra.rmvpe.*` | **10** keys — `base_hz`, `cents_per_class`, `fmax`, `fmin`, …  | `u32` + `f32` | persisted | `rmvpe`, `yxlllc/RMVPE` — written by `crates/vokra-convert/src/models/rmvpe.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
+| backfill | `vokra.rmvpe.*` | **11** keys — `base_hz`, `cents_per_class`, `fmax`, `fmin`, `hop`, `n_class`, `n_fft`, `n_mels`, `sample_rate`, `win_length`, `upstream_revision` | `u32` + `f32` + `string` | persisted | `rmvpe`, fixed `yxlllc/RMVPE` commit `0aabafba18289ca938a73af0b0297686abf4922d` — written by `crates/vokra-convert/src/models/rmvpe.rs`. The first ten keys landed in `02664f6`; `upstream_revision` is additive on 2026-08-26. The strict loader permits that key to be absent only on the exact audited historical public metadata pair after provenance is corrected to Unknown. | `02664f6` (2026-08-06); working tree (2026-08-26) |
 | runtime-gap | `vokra.rnnoise.*` | **11** keys — `release_tarball_sha256`, `sample_rate`, `frame_size`, `window_size`, `n_bands`, `n_features`, `conv1_width`, `hidden_size`, `n_gru`, `quantization`, `gate_order` | `u32` + `string` | persisted | Xiph RNNoise v0.2 — written by `crates/vokra-convert/src/models/rnnoise.rs`, read and cross-checked by `crates/vokra-models/src/rnnoise.rs`. The group pins the 36-array canonical network manifest and its signed-int8-in-F32-container semantics; opaque-blob artifacts are rejected. **Additive**: this replaces no existing key, but old blob-only GGUFs do not satisfy the new strict binder. | `235dca6` (2026-08-21) |
 | backfill | `vokra.sbv2.*` | **32** keys — `converter_zero_defaults`, `d_bert`, `d_ff`, `d_model`, …  | `u32` + `f32` + `bool` + `string` | persisted | `sbv2-v2-multilingual-base`, `litagin02/style_bert_vits2` — written by `crates/vokra-convert/src/models/sbv2.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `f7af1ba` (2026-07-28) |
 | backfill | `vokra.sepformer.*` | **2** keys — `n_out`, `variant` | `u32` + `string` | persisted | `sepformer` — written by `crates/vokra-convert/src/models/sepformer.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |

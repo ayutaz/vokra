@@ -1,21 +1,20 @@
 [project]
 name = "rmvpe-parity"
-version = "0.1.0"
-description = "Offline sidecar: yxlllc/RMVPE (or Dream-High/RMVPE fork) fair-use verbatim reference dumper for the vokra-models RMVPE Path B parity harness. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
+version = "0.2.0"
+description = "Offline sidecar importing fixed yxlllc/RMVPE upstream code for the vokra-models RMVPE parity harness. Not shipped in the runtime."
 requires-python = ">=3.12"
 dependencies = [
-    # torch: the primary source (yxlllc/RMVPE and Dream-High/RMVPE) is a
-    #        PyTorch reference. We instantiate the upstream nn.Module,
-    #        load the released .pt checkpoint, and register a pre-forward
-    #        hook on the GRU submodule to capture the post-CNN hidden
-    #        state that Path B (VOKRA_RMVPE_REAL_HIDDEN) binds against.
-    #        Range mirrors the parent workspace (tools/parity/pyproject.toml).
+    # The fixed upstream source is a PyTorch/torchaudio/librosa reference.
+    # uv.lock pins the concrete offline sidecar environment; none of these
+    # packages reaches root Cargo.lock or a Vokra runtime artifact.
     "torch>=2.0",
+    "torchaudio>=2.0",
+    "librosa>=0.10",
     # numpy: raw f32/u32 little-endian buffer materialisation (the parity
     #        harness reads via chunks_exact(4) and does not require an
     #        .npy header — see parity_rmvpe.rs L83-85).
     "numpy>=1.26",
-    # soundfile: WAV in for real-audio dumps (matches the DFN3 dumper
-    #        precedent, tools/parity/dfn3_dump_reference.py L54).
+    # WAV input is required to be 16 kHz so Rust and upstream receive the
+    # same PCM without introducing a second resampler reference.
     "soundfile>=0.13",
 ]

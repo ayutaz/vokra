@@ -1,127 +1,56 @@
-//! Robust Model for Vocal Pitch Estimation (RMVPE) — the pitch
-//! front-end required by RVC v2.
+//! Robust Model for Vocal Pitch Estimation (RMVPE), used by RVC v2.
 //!
-//! # Primary source
+//! # Fixed source and public artifact
 //!
-//! - Upstream reference: <https://github.com/Dream-High/RMVPE> +
-//!   <https://github.com/yxlllc/RMVPE> (fork, same architecture).
-//! - Wei et al. 2023 — "RMVPE: A Robust Model for Vocal Pitch
-//!   Estimation in Polyphonic Music" (INTERSPEECH 2023).
-//! - License: the two upstreams differ, and this file previously claimed
-//!   "MIT (both upstreams)", which is wrong on both halves. Checked against
-//!   the GitHub API on 2026-08-15:
-//!   - `Dream-High/RMVPE` (the paper's reference implementation) is
-//!     **Apache-2.0**, matching what `crate::f0` already recorded.
-//!   - `yxlllc/RMVPE` (the fork this forward transcribes) has **no LICENSE
-//!     file at all** — `raw.githubusercontent.com/yxlllc/RMVPE/main/LICENSE`
-//!     returns 404 — so its terms are unstated, not permissive-by-default.
+//! The production contract is transcribed from `yxlllc/RMVPE` commit
+//! `0aabafba18289ca938a73af0b0297686abf4922d`. The public
+//! `vokra/rmvpe` GGUF at revision
+//! `3eb5fa8946f1074ba3959074c5cde95ec22b8c91` carries that E2E0
+//! state-dict: 623 inference tensors plus 118 scalar BatchNorm counters.
+//! The runtime validates that complete manifest before executing it; it does
+//! not discover a partial topology or silently omit layers.
 //!
-//!   An unstated fork licence is exactly the fail-closed case
-//!   `docs/license-audit.md` §3.1 exists to decide. The converter therefore
-//!   stamps `LicenseClass::Unknown` unless the caller supplies terms they
-//!   independently verified for the exact checkpoint.
+//! `yxlllc/RMVPE` has no LICENSE file. The historical public GGUF is therefore
+//! incorrectly stamped `MIT` / `permissive`; the strict loader rejects that
+//! stamp and requires provenance-corrected `unknown` terms. `Dream-High/RMVPE`
+//! is Apache-2.0, but it is not a GitHub fork relationship and does not prove
+//! terms for the exact `yxlllc` checkpoint. See `docs/license-audit.md`.
 //!
-//! # Architecture
-//!
-//! RMVPE is a small CNN-based polyphonic vocal pitch estimator with a
-//! per-frame voiced / unvoiced (V/UV) flag. The published forward is:
+//! # Exact forward
 //!
 //! ```text
-//! PCM (16 kHz mono)
-//!   -> mel spectrogram (n_mels=128, hop=160, win=1024, n_fft=2048)
-//!   -> U-Net encoder (5 down blocks: Conv2d + BN + LReLU * N, then
-//!      MaxPool2d)
-//!   -> intermediate GRU (bidirectional, hidden ~256)
-//!   -> U-Net decoder (5 up blocks: ConvTranspose2d + skip + Conv2d +
-//!      BN + LReLU * N)
-//!   -> 360-pitch-class head (Conv1d → Sigmoid → per-class probability
-//!      over a log-Hz grid, 20 cents per class starting at ~32.7 Hz)
+//! 16 kHz mono PCM
+//!   -> magnitude log-mel (n_fft=win=1024, hop=160, 128 HTK mels)
+//!   -> initial BatchNorm
+//!   -> 5 encoder layers (4 residual Conv-BN-ReLU blocks + AvgPool2d)
+//!   -> 4 intermediate layers (4 residual Conv-BN-ReLU blocks each)
+//!   -> 5 decoder layers (ConvTranspose-BN-ReLU + paired skip concat
+//!      + 4 residual Conv-BN-ReLU blocks)
+//!   -> Conv2d 16 -> 3, collapse to 384 features/frame
+//!   -> bidirectional GRU (384 -> 256 per direction)
+//!   -> Linear 512 -> 360, sigmoid
+//!   -> nine-bin local-average pitch decode
 //! ```
 //!
-//! Pitch decoding: `argmax → cents → Hz = base_hz * 2^(class *
-//! cents_per_class / 1200)` with a local centroid over the 3 neighbour
-//! classes. A frame is `voiced` when the max sigmoid probability
-//! exceeds `voiced_threshold` (upstream default ≈ 0.03).
+//! Class zero is exactly 31.7 Hz and adjacent classes are 20 cents apart.
+//! The decoder does not clamp voiced estimates to `fmin`/`fmax`, matching
+//! `src/utils.py`. The old public header values (`n_fft=2048`,
+//! `base_hz=32.703197`) are recognized only as one exact historical pair and
+//! normalized to the fixed source values before inference.
 //!
-//! # Divergence from upstream (this runtime)
+//! Conv2d and ConvTranspose2d are lowered to GEMM; GRU gates use GEMV.
+//! [`Compute::for_backend`] validates all learned operations before execution,
+//! so a requested Metal backend never falls back to CPU. The legacy reduced
+//! topology remains reachable only through explicit
+//! [`CnnChainPolicy::Optional`] structural fixtures.
 //!
-//! The block above describes **upstream**. Two things this runtime does
-//! differently, both of which change the numbers a real checkpoint
-//! produces:
+//! # Real-checkpoint parity
 //!
-//! 1. **The decoder has no skip-concat.** Upstream's up blocks are
-//!    `ConvTranspose2d + concat(paired encoder feature) + Conv2d + BN +
-//!    LReLU`; [`RMVPE::extract_real`] applies the `ConvTranspose2d` +
-//!    optional BN + `LeakyReLU` and drops the skip branch, because
-//!    carrying it needs a paired-encoder cache and the fork's exact
-//!    pairing is not primary-source-transcribable from the README.
-//!    Shapes still round-trip, so the forward runs and returns a
-//!    correctly sized track — it is the *values* that diverge. This is
-//!    an owner-gated follow-up, not a solved problem.
-//! 2. **The U-Net topology is discovered from tensor names**, not from
-//!    a hard-coded 5-down/5-up layout: the forward walks
-//!    `unet.encoder.block{i}.conv.weight` / `unet.decoder.block{i}.conv.weight`
-//!    for `i = 0..8` and stops at the first gap. Under the default
-//!    [`CnnChainPolicy::Required`], a checkpoint that flattens its
-//!    U-Net under any other scheme is refused loudly rather than run
-//!    with the CNN silently skipped — see [`CnnChainPolicy`] and
-//!    [`RMVPE::extract_real`].
-//!
-//! Until the owner-side parity wave lands (see below), treat the output
-//! on a real checkpoint as structurally correct and numerically
-//! unverified.
-//!
-//! # Implementation status (F0 tier — forward runs, numerics unverified)
-//!
-//! This module now:
-//!
-//! 1. **Loads the RMVPE hparams verbatim** from the `vokra.rmvpe.*`
-//!    chunk group (with primary-source constant fallback for a GGUF
-//!    that never carried the chunk) — [`RmvpeConfig::from_gguf`].
-//! 2. **Binds weight tensors** via [`RmvpeWeights::from_gguf`], which
-//!    is a *name-prefix* gate, not a manifest check. It requires at
-//!    least one tensor under one of the seven
-//!    `REQUIRED_TENSOR_PREFIXES` entries, and rank / dtype-validates
-//!    whatever tensors are present (`vokra_core::VokraError::ModelLoad`
-//!    on mis-shaped or non-widenable dtype — FR-EX-08). It does **not**
-//!    verify that any particular tensor exists: several of those seven
-//!    prefixes are fork conventions, so a checkpoint can pass this gate
-//!    carrying nothing the forward knows how to walk. The per-tensor
-//!    presence requirements (U-Net block scheme, bidirectional GRU,
-//!    360-class head) are enforced at forward time by
-//!    [`RMVPE::extract_real`], which refuses loudly — including the
-//!    case where zero U-Net blocks are discoverable, which would
-//!    otherwise skip the entire CNN and hand the raw mel to the BiGRU.
-//! 3. **Computes the real mel spectrogram** front-end (STFT + mel
-//!    filterbank at the primary-source n_fft=2048 / win=1024 / hop=160
-//!    / n_mels=128 / sr=16000 axes, matching the upstream RMVPE
-//!    default) — [`RMVPE::mel_spectrogram`].
-//! 4. **Decodes the 360-class head into Hz** with the log-cents grid
-//!    (base_hz=32.703, 20 cents/class) — [`decode_class_to_hz`].
-//! 5. **Runs a real (learnable) forward** through the bound weights
-//!    ([`RMVPE::extract`], which delegates to [`RMVPE::extract_real`] —
-//!    both fallible on purpose). The one accessor that does *not* run
-//!    weights is [`RMVPE::frame_times`], which returns bare `f32`
-//!    timestamps and no pitch column at all. Until 2026-08-15 that
-//!    timebase body sat behind the name `extract`, so the
-//!    obviously-named method handed back a fabricated all-zero track on
-//!    a fully loaded model; the three names now mean the same thing
-//!    across [`super::crepe`] / [`super::fcpe`] / this module. The
-//!    forward implements PyTorch-native
-//!    primitives (`Conv2d(pad=same)` / `BatchNorm2d` / `MaxPool2d(2)` /
-//!    `ConvTranspose2d(s=2)` / `LeakyReLU` / bidirectional `GRU` /
-//!    `Linear` / `sigmoid`), discovers the topology from the bound
-//!    tensor names, and emits `[T, 360]` sigmoid probabilities that
-//!    the log-cents decoder converts to per-hop [`F0Frame`] rows.
-//!
-//! # Real-checkpoint parity (env-gated, owner action)
-//!
-//! Bit-exact numeric parity against the upstream `yxlllc/RMVPE`
-//! reference is gated on the owner-side dumper wave — the fork's
-//! Python source specifies the exact order of Conv → BN → MaxPool
-//! layers per residual block, which is not primary-source-
-//! transcribable from the README alone. Two env vars gate the parity
-//! harness (`crates/vokra-models/tests/parity_rmvpe.rs`):
+//! The env-gated harness in `crates/vokra-models/tests/parity_rmvpe.rs`
+//! consumes fixtures produced by the independent fixed-upstream importer in
+//! `tools/parity/rmvpe/dump_reference.py`. Until a recorded VAST CPU/Metal run
+//! exists, the exact source transcription is implemented but real-weight
+//! numerical parity remains unverified:
 //!
 //! - `VOKRA_RMVPE_REAL_GGUF` — points at the real Vokra GGUF and
 //!   exercises the end-to-end forward on a 1 s 440 Hz sine (shape /
@@ -135,13 +64,9 @@
 //!   exported alongside it (the blob carries no shape), together with
 //!   `VOKRA_RMVPE_REAL_ARGMAX` (raw little-endian `u32`).
 //!
-//! The owner-side dumper that produces those blobs is
-//! `tools/parity/rmvpe/dump_reference.py` — it **has landed**; see
-//! `tools/parity/rmvpe/README.md` for the end-to-end walkthrough
-//! (`--pt-path` / `--upstream-src` / `--out-dir` / one of
-//! `--pcm | --canned`, emitting `hidden.f32` + `argmax.u32` +
-//! `meta.json`). Exporting the env vars flips the parity test from
-//! "harness ready" to "real argmax-match ≥ 99 %" with no Rust change.
+//! The dumper emits `hidden.f32`, `argmax.u32`, and `meta.json`; exporting the
+//! documented variables flips the test from a clean skip to a hard parity
+//! gate. See `tools/parity/rmvpe/README.md` for the VAST-only recipe.
 //!
 //! Absent either env var the harness skips cleanly — never a fabricated
 //! pass. See [`RMVPE::forward_from_hidden`] for the env-gated entry
@@ -166,6 +91,8 @@ use vokra_core::gguf::{GgmlType, GgufFile};
 use crate::compute::{Compute, HotOp};
 
 use super::F0Frame;
+
+mod native;
 
 /// Backend-dispatched learned operators used by RMVPE.
 ///
@@ -200,11 +127,13 @@ pub const GGUF_KEY_N_CLASS: &str = "vokra.rmvpe.n_class";
 pub const GGUF_KEY_CENTS_PER_CLASS: &str = "vokra.rmvpe.cents_per_class";
 /// GGUF metadata key: class-0 anchor frequency in Hz (f32).
 pub const GGUF_KEY_BASE_HZ: &str = "vokra.rmvpe.base_hz";
+/// GGUF metadata key: fixed upstream source revision (string).
+pub const GGUF_KEY_UPSTREAM_REVISION: &str = "vokra.rmvpe.upstream_revision";
 
 // ---------------------------------------------------------------------------
-// Primary-source constants — transcribed from the upstream RMVPE README
-// (github.com/yxlllc/RMVPE, fetched 2026-07-30 —
-// CLAUDE.md「ハルシネーション厳禁」).
+// Primary-source constants — transcribed from the fixed upstream source at
+// `native::UPSTREAM_REVISION` (`src/inference.py`, `src/spec.py`, and
+// `src/constants.py`).
 // ---------------------------------------------------------------------------
 
 /// Default analysis hop in samples (matches the upstream RMVPE default
@@ -216,9 +145,10 @@ pub const DEFAULT_FMIN: f32 = 30.0;
 pub const DEFAULT_FMAX: f32 = 1000.0;
 /// Default mel band count (upstream RMVPE = 128 mels).
 pub const DEFAULT_N_MELS: u32 = 128;
-/// Default FFT size (upstream RMVPE = 2048).
-pub const DEFAULT_N_FFT: u32 = 2048;
-/// Default window length (upstream RMVPE = 1024, zero-padded to n_fft).
+/// Default FFT size. `src/spec.py` uses `n_fft = win_length` when the
+/// caller passes `None`; the fixed E2E0 inference path does exactly that.
+pub const DEFAULT_N_FFT: u32 = 1024;
+/// Default window length (upstream RMVPE = 1024).
 pub const DEFAULT_WIN_LENGTH: u32 = 1024;
 /// Default input sample rate (upstream RMVPE = 16 kHz PCM in).
 pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
@@ -226,10 +156,9 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
 pub const DEFAULT_N_CLASS: u32 = 360;
 /// Default cents per pitch class (20 cents = 12 classes / semitone).
 pub const DEFAULT_CENTS_PER_CLASS: f32 = 20.0;
-/// Default class-0 anchor frequency (~C1 = 32.703 Hz, so class 360 is
-/// well above the fmax cutoff and the head simply saturates unused
-/// classes at the upper tail).
-pub const DEFAULT_BASE_HZ: f32 = 32.703_197;
+/// Default class-0 anchor. Upstream uses
+/// `10 * 2^(1997.3794084376191 / 1200)`, which is exactly 31.7 Hz.
+pub const DEFAULT_BASE_HZ: f32 = 31.7;
 
 // ---------------------------------------------------------------------------
 // RmvpeConfig — the (hop / sr / n_mels / …) hparams
@@ -251,7 +180,7 @@ pub struct RmvpeConfig {
     pub fmax: f32,
     /// Mel band count (default 128).
     pub n_mels: u32,
-    /// FFT size (default 2048).
+    /// FFT size (default 1024).
     pub n_fft: u32,
     /// Window length in samples (default 1024).
     pub win_length: u32,
@@ -261,7 +190,7 @@ pub struct RmvpeConfig {
     pub n_class: u32,
     /// Cents per pitch class in the log-Hz grid (default 20.0).
     pub cents_per_class: f32,
-    /// Class-0 anchor frequency in Hz (default ~32.703).
+    /// Class-0 anchor frequency in Hz (default 31.7).
     pub base_hz: f32,
 }
 
@@ -346,28 +275,22 @@ impl RmvpeConfig {
 // RmvpeWeights — real weight-tensor binding with loud-error on missing
 // ---------------------------------------------------------------------------
 
-/// The RMVPE state_dict tensor-name prefixes the runtime binder scans
-/// for. A GGUF that carries at least one of these is accepted as an
-/// RMVPE checkpoint; a GGUF that has none is refused loudly rather than
-/// silently running an all-zero forward (FR-EX-08).
+/// Broad tensor-name prefixes used by the low-level payload binder and legacy
+/// [`CnnChainPolicy::Optional`] fixtures. The production loader additionally
+/// applies `native::validate_contract`, which requires the exact E2E0 manifest;
+/// matching one prefix is never sufficient for production execution.
 ///
 /// Sourced from the upstream flattened `state_dict` layout: encoder /
 /// decoder blocks, intermediate GRU, terminal 360-class head, and the
 /// mel-extractor buffers used by RMVPE's Python-side front-end (which
 /// this runtime replaces with a Rust-native `mel_spectrogram`).
 ///
-/// # This is an acceptance filter, not a topology contract
+/// # This is a payload filter, not the production topology contract
 ///
-/// Only `unet.` names the upstream layout. The rest are deliberately
-/// broad — `encoder.` / `decoder.` / `cnn.` are *fork* conventions, and
-/// `mel_extractor.` is a front-end buffer the runtime does not consume
-/// at all. Matching one of them proves the artifact looks like some
-/// RMVPE, not that [`RMVPE::extract_real`] can walk it: the forward
-/// discovers its U-Net by the literal `unet.encoder.block{i}.conv.weight`
-/// scheme and nothing else. A fork-convention checkpoint therefore binds
-/// here and is then refused at forward time, by design — the two gates
-/// answer different questions and the error the caller sees names the
-/// scheme that was searched.
+/// The broad names remain only so historical small fixtures can exercise
+/// primitive kernels. The strict path checks all canonical
+/// `unet.{encoder,intermediate,decoder}.*`, `cnn.*`, and `fc.*` names/shapes
+/// before entering the exact native forward.
 const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
     "unet.",          // U-Net encoder + decoder (upstream: `unet.encoder.*` / `unet.decoder.*`)
     "encoder.",       // fallback prefix used by some RMVPE forks
@@ -375,6 +298,7 @@ const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
     "gru.",           // intermediate GRU
     "head.",          // 360-class head
     "cnn.",           // some forks flatten the U-Net under `cnn.*`
+    "fc.",            // canonical E2E0 BiGRU + 360-class Linear head
     "mel_extractor.", // upstream Python-side mel front-end buffers
 ];
 
@@ -392,10 +316,9 @@ const REQUIRED_TENSOR_PREFIXES: &[&str] = &[
 /// (FR-EX-08). A tensor whose payload cannot be dequantized to f32 (or
 /// which has an unexpected non-float dtype) is likewise refused.
 ///
-/// **What it does not check**: that the bound set composes into a
-/// runnable forward. `REQUIRED_TENSOR_PREFIXES` includes fork
-/// conventions, so a checkpoint can bind here with zero tensors the
-/// U-Net walker recognizes. [`RMVPE::extract_real`] owns that gate.
+/// **What it does not check**: the complete production manifest. The default
+/// constructor performs that separate exact header validation; only an
+/// explicitly optional structural fixture can retain broad-prefix behavior.
 #[derive(Debug)]
 pub struct RmvpeWeights {
     /// Tensors indexed by upstream `state_dict` name.
@@ -577,6 +500,19 @@ fn contains_indexed_infix(name: &str, stem: &str) -> bool {
 /// (`crates/vokra-parity/tests/parity_rmvpe.rs`, env
 /// `PARITY_RMVPE_REAL_GGUF`).
 fn validate_tensor_shape(name: &str, dims: &[usize]) -> Result<(), VokraError> {
+    // PyTorch stores `num_batches_tracked` as a scalar. The historical public
+    // GGUF preserves that rank-0 shape, while some safetensors bridges widen
+    // it to `[1]`. It is an unused inference counter, but its manifest entry
+    // is validated so a malformed file still fails loudly.
+    if name.ends_with(".num_batches_tracked") {
+        if !(dims.is_empty() || dims == [1]) {
+            return Err(VokraError::ModelLoad(format!(
+                "rmvpe: tensor `{name}` has dims={dims:?}, expected scalar or \
+                 [1] for BN's num_batches_tracked counter (FR-EX-08)"
+            )));
+        }
+        return Ok(());
+    }
     // No tensor can be zero-dimensional (a scalar cannot be a weight).
     if dims.is_empty() {
         return Err(VokraError::ModelLoad(format!(
@@ -635,15 +571,18 @@ fn validate_tensor_shape(name: &str, dims: &[usize]) -> Result<(), VokraError> {
         }
         return Ok(());
     }
-    if name.ends_with(".num_batches_tracked") {
-        // PyTorch stores this as a 0-dim tensor; safetensors → GGUF
-        // usually widens it to `[1]`. Accept either 0D (caught above)
-        // or 1D with a single element.
-        if dims.len() != 1 || dims[0] != 1 {
+    // Canonical E2E0 stores BatchNorm inside Sequential containers, so their
+    // names use numeric slots rather than a `.bn.` stem. These must be handled
+    // before the generic `.conv{N}.weight` arm below.
+    if name.ends_with(".conv.1.weight")
+        || name.ends_with(".conv.4.weight")
+        || name.ends_with(".conv1.1.weight")
+    {
+        if dims.len() != 1 {
             return Err(VokraError::ModelLoad(format!(
-                "rmvpe: tensor `{name}` has dims={dims:?}, expected rank \
-                 1 with a single element for BN's num_batches_tracked \
-                 counter (FR-EX-08)"
+                "rmvpe: canonical BatchNorm tensor `{name}` has rank {} \
+                 (dims={dims:?}), expected rank 1 [channels] (FR-EX-08)",
+                dims.len()
             )));
         }
         return Ok(());
@@ -2002,22 +1941,13 @@ struct RmvpeHead<'a> {
 // RMVPE — the public engine handle
 // ---------------------------------------------------------------------------
 
-/// Whether [`RMVPE::extract_real`] requires a discoverable U-Net.
-///
-/// The forward finds its CNN by walking the literal upstream scheme
-/// `unet.encoder.block{i}.conv.weight` / `unet.decoder.block{i}.conv.weight`.
-/// A checkpoint that flattens its U-Net under some other convention —
-/// several of which pass the loader's prefix gate — yields zero blocks,
-/// and running anyway would push the raw mel plane straight into the
-/// BiGRU. That produces a full-length, finite, in-band pitch track with
-/// nothing in it to distinguish "the U-Net ran" from "the U-Net was
-/// skipped entirely". This enum exists so that choice is made by a
-/// caller who names it, never by a failed lookup.
+/// Selects the exact production contract or the historical structural-fixture
+/// path. It is an explicit constructor policy; a strict-load failure never
+/// changes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CnnChainPolicy {
-    /// **Default.** Zero discoverable encoder blocks (or zero decoder
-    /// blocks) is a [`VokraError::ModelLoad`] naming the scheme that
-    /// was searched and the prefixes the artifact actually carries.
+    /// **Default.** Require the complete fixed E2E0 manifest and run all five
+    /// encoder/decoder layers with paired skips.
     #[default]
     Required,
     /// Opt-in: tolerate a checkpoint with no discoverable U-Net,
@@ -2038,9 +1968,9 @@ pub enum CnnChainPolicy {
 }
 
 /// Robust Model for Vocal Pitch Estimation (RMVPE) — the pitch
-/// front-end required by RVC v2
-/// (<https://github.com/Dream-High/RMVPE>, Apache-2.0 code; distributed
-/// checkpoint licence unresolved).
+/// front-end required by RVC v2. The exact production contract is the fixed
+/// `yxlllc/RMVPE` source named in the module docs; its code and checkpoint
+/// terms are unresolved and therefore fail-closed.
 ///
 /// Load with [`from_gguf`](Self::from_gguf) / [`open`](Self::open),
 /// then call [`extract`](Self::extract) on a PCM buffer to obtain a
@@ -2090,18 +2020,13 @@ impl RMVPE {
     ///
     /// 1. Be openable by the standard GGUF reader — errors surface as
     ///    [`VokraError::Io`] / [`VokraError::ModelLoad`].
-    /// 2. Carry at least one recognized RMVPE state_dict tensor
-    ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
-    ///    [`RmvpeWeights::from_gguf`] refuses the bind (FR-EX-08).
+    /// 2. Match the complete fixed E2E0 tensor manifest (623 inference
+    ///    tensors and, when present, the 118 BatchNorm counters).
+    /// 3. Carry the exact RMVPE metadata and fail-closed provenance described
+    ///    in the module documentation.
     ///
-    /// Note that (2) is a prefix gate: it does **not** guarantee the
-    /// forward can walk the artifact. A checkpoint whose U-Net is
-    /// flattened under a fork convention loads here and is refused by
-    /// [`extract_real`](Self::extract_real), which is where the
-    /// topology contract lives.
-    ///
-    /// `vokra.rmvpe.*` metadata is optional (absent keys fall back to
-    /// primary-source constants per [`RmvpeConfig::from_gguf`]).
+    /// The historical public metadata pair is normalized as documented, but
+    /// incomplete or differently named topologies are rejected during load.
     pub fn from_gguf(path: &Path) -> Result<Self, VokraError> {
         Self::from_gguf_with_cnn_policy(path, CnnChainPolicy::Required)
     }
@@ -2116,15 +2041,22 @@ impl RMVPE {
     ///
     /// # Errors
     ///
-    /// Same surface as [`from_gguf`](Self::from_gguf) — the policy is
-    /// recorded for forward time and changes nothing about loading.
+    /// Under [`CnnChainPolicy::Required`], the complete public contract is
+    /// checked during load. [`CnnChainPolicy::Optional`] deliberately bypasses
+    /// that contract for small in-tree structural fixtures only.
     pub fn from_gguf_with_cnn_policy(
         path: &Path,
         cnn_policy: CnnChainPolicy,
     ) -> Result<Self, VokraError> {
         let gguf = GgufFile::open(path)?;
-        let config = RmvpeConfig::from_gguf(&gguf);
+        // Bind/shape-check first so a malformed tensor is reported by name
+        // even when the complete public manifest is also incomplete.
         let weights = RmvpeWeights::from_gguf(&gguf)?;
+        let mut config = RmvpeConfig::from_gguf(&gguf);
+        if cnn_policy == CnnChainPolicy::Required {
+            let flavor = native::validate_contract(&gguf)?;
+            native::normalize_config(&mut config, flavor);
+        }
         Ok(Self {
             config,
             backend: BackendKind::Cpu,
@@ -2156,25 +2088,24 @@ impl RMVPE {
         self.cnn_policy
     }
 
-    /// How many U-Net encoder blocks [`extract_real`](Self::extract_real)
-    /// can discover in this artifact, walking
-    /// `unet.encoder.block{i}.conv.weight` from `block0` and stopping at
-    /// the first gap.
-    ///
-    /// `0` means the CNN is invisible to this runtime — under
-    /// [`CnnChainPolicy::Required`] the forward refuses; under
-    /// [`CnnChainPolicy::Optional`] it runs without it. Exposed so the
-    /// parity harness can pin that a real checkpoint's U-Net actually
-    /// ran, which frame count and finiteness cannot distinguish.
+    /// Number of U-Net encoder layers. A strict model has the fixed five-layer
+    /// E2E0 topology; an optional structural fixture reports the historical
+    /// discoverable-block count.
     pub fn encoder_block_count(&self) -> usize {
-        self.weights.encoder_block_count()
+        if self.cnn_policy == CnnChainPolicy::Required {
+            5
+        } else {
+            self.weights.encoder_block_count()
+        }
     }
 
-    /// Decoder-side counterpart of
-    /// [`encoder_block_count`](Self::encoder_block_count), walking
-    /// `unet.decoder.block{i}.conv.weight`.
+    /// Decoder-side counterpart of [`encoder_block_count`](Self::encoder_block_count).
     pub fn decoder_block_count(&self) -> usize {
-        self.weights.decoder_block_count()
+        if self.cnn_policy == CnnChainPolicy::Required {
+            5
+        } else {
+            self.weights.decoder_block_count()
+        }
     }
 
     /// Returns the loaded [`RmvpeConfig`] for downstream inspection.
@@ -2273,88 +2204,40 @@ impl RMVPE {
         ))
     }
 
-    /// Runs the **real** RMVPE forward on `pcm`.
+    /// Runs the exact fixed E2E0 RMVPE forward on `pcm`. The complete
+    /// Conv-BN-ReLU residual U-Net, paired skip connections, 384-feature
+    /// collapse, BiGRU, 360-way head, sigmoid, and nine-bin decoder are
+    /// described in the module documentation. The returned frame count is
+    /// `pcm.len() / hop`; the internal waveform is padded to a multiple of 32
+    /// frames as upstream does, and the extra predictions are discarded.
     ///
-    /// Pipeline:
-    ///
-    /// 1. `mel_spectrogram(pcm)` → `[n_frames, 128]` log-mel.
-    /// 2. CNN encoder — for each contiguous
-    ///    `unet.encoder.block{i}.*` weight family, apply
-    ///    `Conv2d(pad=same)` + `BatchNorm2d` + `LeakyReLU(0.01)` +
-    ///    `MaxPool2d(2, 2)`.
-    /// 3. CNN decoder — for each contiguous
-    ///    `unet.decoder.block{i}.*` weight family, apply
-    ///    `ConvTranspose2d(stride=2)` + `LeakyReLU(0.01)`.
-    /// 4. Collapse `[C, H, W]` to `[H, C * W]` per-frame features.
-    /// 5. Bidirectional `GRU(input_size, hidden_size)` — discovered
-    ///    from `gru.weight_ih_l0` shape. Output = `[T, 2*hidden]`.
-    /// 6. `Linear` head (from `head.weight` at rank 2 or 3; a Conv1d
-    ///    with `kernel = 1` collapses to a Linear along the feature
-    ///    axis) → `[T, 360]`.
-    /// 7. Element-wise `sigmoid` → per-class voiced probability.
-    /// 8. `decode_class_to_hz` per frame → [`F0Frame`].
-    ///
-    /// Reachable both under this name and as
-    /// [`extract`](Self::extract), which delegates here verbatim.
-    ///
-    /// The returned frame count matches the
-    /// [`frame_times`](Self::frame_times) contract
-    /// (`pcm.len() / hop`) — mel runs with centered STFT (which yields
-    /// `pcm.len() / hop + 1` frames), and this method truncates to that
-    /// contract so a consumer that pre-sized a buffer from
-    /// `frame_times` sees no shape drift.
-    ///
-    /// # Where this forward is not upstream RMVPE
-    ///
-    /// Read before treating the output as a measurement:
-    ///
-    /// - **The decoder omits the skip-concat.** Upstream's up block is
-    ///   `ConvTranspose2d + concat(paired encoder feature) + Conv2d +
-    ///   BN + LReLU`; step 3 above runs only the `ConvTranspose2d`,
-    ///   the optional BN and `LeakyReLU`. Carrying the skip needs a
-    ///   paired-encoder cache and the fork's exact pairing is not
-    ///   transcribable from the published README, so it is deferred to
-    ///   the owner-side parity wave. Shapes round-trip; values diverge,
-    ///   by an amount nothing in-tree has measured.
-    /// - **No numeric parity has been run against a real checkpoint.**
-    ///   The harness exists and is env-gated
-    ///   (`VOKRA_RMVPE_REAL_GGUF` / `VOKRA_RMVPE_REAL_HIDDEN`, see
-    ///   `crates/vokra-models/tests/parity_rmvpe.rs`); until an owner
-    ///   exports those, every in-tree assertion about this forward is
-    ///   structural (shape, finiteness, sigmoid range) and none of them
-    ///   would catch a wrong-but-plausible pitch track.
-    /// - **The U-Net must be findable by name.** See
-    ///   [`CnnChainPolicy`]: zero discoverable blocks is a load error,
-    ///   not a quiet mel-into-BiGRU shortcut.
-    /// - **The scheme itself is unverified against a real checkpoint.**
-    ///   `unet.encoder.block{i}.conv.weight` is this runtime's reading
-    ///   of the upstream layout, and `vokra-convert`'s RMVPE converter
-    ///   passes `state_dict` keys through verbatim, so whatever upstream
-    ///   emits is what lands in the GGUF. If upstream names its blocks
-    ///   differently, the first real checkpoint will hit the zero-block
-    ///   error above — which is the intended outcome, because the error
-    ///   prints the artifact's own prefixes and names and is therefore
-    ///   the diagnostic that settles the question. Do not "fix" it by
-    ///   relaxing the gate.
+    /// A model loaded under [`CnnChainPolicy::Optional`] instead takes the
+    /// explicitly requested historical structural-fixture path. Failure of the
+    /// strict topology never selects that path implicitly.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] when no U-Net encoder (or decoder)
-    ///   block is discoverable under
-    ///   `unet.{encoder,decoder}.block{i}.conv.weight` and the handle
-    ///   was loaded under [`CnnChainPolicy::Required`]. The message
-    ///   names the scheme searched and the prefixes the artifact
-    ///   carries, so a fork-convention checkpoint is diagnosable from
-    ///   the error alone.
-    /// - [`VokraError::ModelLoad`] when the bound weight set does not
-    ///   compose (e.g. GRU `input_size` mismatched against the mel /
-    ///   post-CNN feature width, head input width mismatched against
-    ///   BiGRU output, or a required tensor missing under the expected
-    ///   name — FR-EX-08 loud-partial posture).
+    /// - [`VokraError::InvalidArgument`] for non-16-kHz PCM; resampling is
+    ///   never implicit.
+    /// - [`VokraError::ModelLoad`] when validated weights cannot compose.
     /// - [`VokraError::UnsupportedOp`] when a selected non-CPU backend does
     ///   not cover the complete [`RMVPE_HOT_OPS`] set. There is no per-op CPU
     ///   fallback.
     pub fn extract_real(&self, pcm: &[f32], sample_rate: u32) -> Result<Vec<F0Frame>, VokraError> {
+        if self.cnn_policy == CnnChainPolicy::Required {
+            return native::forward(self, pcm, sample_rate);
+        }
+        self.extract_legacy_optional(pcm, sample_rate)
+    }
+
+    /// Historical reduced-topology path retained only for explicitly opted-in
+    /// structural fixtures. Production loaders use the exact native E2E0
+    /// forward above and can never enter this function by failed discovery.
+    fn extract_legacy_optional(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, VokraError> {
         let compute = if self.backend == BackendKind::Cpu {
             None
         } else {
@@ -2565,6 +2448,19 @@ impl RMVPE {
         feature_dim: usize,
         sample_rate: u32,
     ) -> Result<Vec<F0Frame>, VokraError> {
+        if self.cnn_policy == CnnChainPolicy::Required {
+            return native::forward_from_hidden(self, hidden, n_frames, feature_dim, sample_rate);
+        }
+        self.forward_from_hidden_legacy_optional(hidden, n_frames, feature_dim, sample_rate)
+    }
+
+    fn forward_from_hidden_legacy_optional(
+        &self,
+        hidden: &[f32],
+        n_frames: usize,
+        feature_dim: usize,
+        sample_rate: u32,
+    ) -> Result<Vec<F0Frame>, VokraError> {
         let compute = if self.backend == BackendKind::Cpu {
             None
         } else {
@@ -2709,9 +2605,8 @@ fn mel_spectrogram(pcm: &[f32], cfg: &RmvpeConfig) -> Vec<Vec<f32>> {
     };
     let spec = stft(pcm, &stft_attrs).expect("stft with validated attrs must succeed");
     let n_frames = spec.frames;
-    // Power spectrum |X|^2 (librosa `power=2.0` default for
-    // `melspectrogram`).
-    let power = spec.power();
+    // `src/spec.py` multiplies the mel basis by STFT magnitude, not power.
+    let magnitude = spec.magnitude();
 
     let mel_attrs = MelAttrs {
         sample_rate: cfg.sample_rate,
@@ -2719,25 +2614,23 @@ fn mel_spectrogram(pcm: &[f32], cfg: &RmvpeConfig) -> Vec<Vec<f32>> {
         n_mels: cfg.n_mels as usize,
         fmin: cfg.fmin,
         fmax: Some(cfg.sample_rate as f32 / 2.0),
-        scale: MelScale::Slaney,
+        scale: MelScale::Htk,
         norm: MelNorm::Slaney,
         interp: MelInterp::Hz,
     };
     let fb = MelFilterbank::new(&mel_attrs);
-    // Power → mel; layout the returned buffer as `[n_frames][n_mels]`.
-    let mel_flat = fb.apply(&power, n_frames);
+    // Magnitude → mel; layout the returned buffer as `[n_frames][n_mels]`.
+    let mel_flat = fb.apply(&magnitude, n_frames);
     let n_mels = cfg.n_mels as usize;
 
-    // The upstream RMVPE Python code takes `log(mel + 1e-5)` before
-    // feeding the U-Net; do the same so the mel we hand off is
-    // exactly what the CNN was trained on.
+    // Upstream uses `log(clamp(mel, min=1e-5))`.
     const EPS: f32 = 1e-5;
     let mut mel = Vec::with_capacity(n_frames);
     for t in 0..n_frames {
         let mut row = Vec::with_capacity(n_mels);
         for m in 0..n_mels {
-            let v = mel_flat[t * n_mels + m].max(0.0);
-            row.push((v + EPS).ln());
+            let v = mel_flat[t * n_mels + m].max(EPS);
+            row.push(v.ln());
         }
         mel.push(row);
     }
@@ -2753,7 +2646,7 @@ fn mel_spectrogram(pcm: &[f32], cfg: &RmvpeConfig) -> Vec<Vec<f32>> {
 /// Decodes a single RMVPE 360-class sigmoid vector into a
 /// `(hz, voiced, confidence)` triple.
 ///
-/// Applies a local centroid over the 3 neighbour classes around the
+/// Applies a local centroid over the nine classes (`argmax ± 4`) around the
 /// argmax to refine the Hz estimate below the 20-cents-per-class grid
 /// resolution. A frame is `voiced` when the peak sigmoid value clears
 /// `voiced_threshold` (upstream default ≈ 0.03).
@@ -2783,12 +2676,10 @@ pub fn decode_class_to_hz(
         return (0.0, false, peak.clamp(0.0, 1.0));
     }
 
-    // Local centroid over the 3 neighbour classes (upstream RMVPE
-    // `to_local_average_cents`): weighted mean of the class indices,
-    // clipped at the vector edges.
+    // `src/utils.py::to_local_average_cents` uses argmax ± 4 (nine bins).
     let n = probs.len();
-    let lo = argmax.saturating_sub(1);
-    let hi = (argmax + 2).min(n); // exclusive upper
+    let lo = argmax.saturating_sub(4);
+    let hi = (argmax + 5).min(n); // exclusive upper
     let mut num = 0.0f32;
     let mut den = 0.0f32;
     for (i, &p) in probs.iter().enumerate().take(hi).skip(lo) {
@@ -2803,10 +2694,6 @@ pub fn decode_class_to_hz(
     // 1200).
     let hz = cfg.base_hz * (2.0f32).powf(refined * cfg.cents_per_class / 1200.0);
 
-    // Clamp Hz into the config's tracked band before reporting so a
-    // saturated tail class does not surface as a nonsensical
-    // multi-kHz F0.
-    let hz = hz.clamp(cfg.fmin, cfg.fmax);
     (hz, true, peak.clamp(0.0, 1.0))
 }
 
@@ -2944,7 +2831,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write test gguf");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         let hop = m.config.hop as usize;
         // 16 033 samples = 1 s @ 16 kHz + 33 extra — exercises the
         // integer-truncation of `pcm.len() / hop`.
@@ -2977,7 +2865,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write test gguf");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         let times = m.frame_times(16_000, 0);
         assert!(!times.is_empty(), "16 000 samples must yield frames");
         assert!(
@@ -3010,7 +2899,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write test gguf");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         let pcm = vec![0.0f32; 16_000];
         let err = m
             .extract(&pcm, 16_000)
@@ -3141,7 +3031,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load valid gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         let pcm = vec![0.0f32; 16_000];
         let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
             panic!("extract_real must refuse a GGUF without a walkable forward");
@@ -3254,7 +3145,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load smoke gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         // 100 frames of a deterministic-but-non-trivial hidden buffer
         // — mixing sin + a slow trend so the classifier lands on
         // varying argmax positions across frames.
@@ -3300,7 +3192,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load smoke gguf");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         // Buffer length declares 10 frames but supplies 9 * 128 = 1152.
         let hidden = vec![0.0f32; 9 * feature_dim];
         let err = m
@@ -3537,37 +3430,12 @@ mod tests {
     fn extract_real_refuses_fork_prefix_checkpoint_naming_the_scheme() {
         let tmp = write_temp_gguf("fork-prefix", &fork_prefix_cnn_gguf(128, 8));
 
-        let m =
-            RMVPE::from_gguf(&tmp).expect("fork-prefix GGUF still binds — `cnn.` is recognized");
-        assert_eq!(
-            m.encoder_block_count(),
-            0,
-            "fixture precondition: the fork scheme must be invisible to the U-Net walker"
-        );
-
-        let sr = m.config().sample_rate as f32;
-        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
-            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
-            .collect();
-
-        let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
-            panic!(
-                "a checkpoint with zero discoverable U-Net blocks must be refused, \
-                 not run with its CNN silently skipped"
-            );
+        let Err(VokraError::ModelLoad(msg)) = RMVPE::from_gguf(&tmp) else {
+            panic!("the production loader must reject a non-public RMVPE topology");
         };
         assert!(
-            msg.contains("unet.encoder.block{i}.conv.weight"),
-            "the error must name the scheme that was searched, got {msg}"
-        );
-        assert!(
-            msg.contains("cnn."),
-            "the error must list the prefixes the artifact actually carries so a \
-             fork checkpoint is diagnosable from the message alone, got {msg}"
-        );
-        assert!(
-            msg.contains("CnnChainPolicy::Optional"),
-            "the error must name the opt-in that permits the CNN-less path, got {msg}"
+            msg.contains("public-contract tensor") || msg.contains("tensor manifest"),
+            "the error must identify the strict public contract, got {msg}"
         );
         std::fs::remove_file(&tmp).ok();
     }
@@ -3584,11 +3452,9 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
             .collect();
 
-        let strict = RMVPE::from_gguf(&tmp).expect("load");
-        assert_eq!(strict.cnn_policy(), CnnChainPolicy::Required);
         assert!(
-            strict.extract_real(&pcm, 16_000).is_err(),
-            "the default policy must refuse a checkpoint with no discoverable U-Net"
+            RMVPE::from_gguf(&tmp).is_err(),
+            "the default loader must reject a checkpoint outside the exact E2E0 manifest"
         );
 
         let lenient = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
@@ -3605,20 +3471,25 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// The gate must not be a blanket refusal: a checkpoint that *does*
-    /// name its U-Net the upstream way runs under the default policy,
-    /// with the blocks actually applied.
+    /// The historical one-block structural fixture remains runnable only
+    /// through the explicit optional policy. It is not the fixed E2E0 public
+    /// contract and therefore must never pass the production loader.
     ///
     /// `encoder_block_count` / `decoder_block_count` are what separate
     /// "the U-Net ran" from "the U-Net was skipped" — frame count,
     /// finiteness and sigmoid range hold either way, which is precisely
     /// why they were not enough on their own.
     #[test]
-    fn extract_real_runs_a_discoverable_unet_under_the_default_policy() {
+    fn extract_real_runs_a_legacy_discoverable_unet_only_when_opted_in() {
         let tmp = write_temp_gguf("unet-one-block", &one_block_unet_gguf());
 
-        let m = RMVPE::from_gguf(&tmp).expect("load one-block unet gguf");
-        assert_eq!(m.cnn_policy(), CnnChainPolicy::Required);
+        assert!(
+            RMVPE::from_gguf(&tmp).is_err(),
+            "the production loader must reject a reduced one-block topology"
+        );
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load explicitly opted-in one-block structural fixture");
+        assert_eq!(m.cnn_policy(), CnnChainPolicy::Optional);
         assert_eq!(m.encoder_block_count(), 1, "encoder block0 must be found");
         assert_eq!(m.decoder_block_count(), 1, "decoder block0 must be found");
 
@@ -3635,11 +3506,8 @@ mod tests {
             pcm.len() / (m.config().hop as usize),
             "extract_real must honor the frame_times() frame-count contract"
         );
-        // `decode_class_to_hz` clamps both columns before returning, so
-        // these two comparisons catch `NaN` and nothing else. They are
-        // here as a "the chain did not produce garbage" pin, not as
-        // evidence that the numbers are right — no reference is
-        // involved anywhere in this file.
+        // These checks catch non-finite output and invalid probabilities. They
+        // are structural only; no reference is involved in this fixture.
         for (i, f) in frames.iter().enumerate() {
             assert!(f.hz.is_finite(), "frame {i}: hz {} is not finite", f.hz);
             assert!(
@@ -3651,13 +3519,11 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 
-    /// An encoder present but a decoder missing is the mirror hazard:
-    /// the naming convention IS understood, so the walker finds the
-    /// down path and then silently drops every up block. Under the
-    /// default policy that is refused too, and the message says which
-    /// half is missing.
+    /// An encoder-only historical topology is incomplete and the strict loader
+    /// rejects it during the complete manifest check, before any forward can
+    /// silently drop the decoder.
     #[test]
-    fn extract_real_refuses_a_unet_with_no_discoverable_decoder() {
+    fn production_loader_refuses_a_unet_with_no_decoder() {
         // Encoder halves both axes, so the post-CNN width is
         // C_last(2) * W_last(64) = 128 — which happens to equal n_mels,
         // so the GRU and head compose and the forward reaches the end
@@ -3675,22 +3541,12 @@ mod tests {
         let bytes = b.to_bytes().expect("serialize");
         let tmp = write_temp_gguf("unet-no-decoder", &bytes);
 
-        let m = RMVPE::from_gguf(&tmp).expect("load");
-        assert_eq!(m.encoder_block_count(), 1);
-        assert_eq!(m.decoder_block_count(), 0);
-
-        let sr = m.config().sample_rate as f32;
-        let pcm: Vec<f32> = (0..m.config().sample_rate as usize)
-            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
-            .collect();
-
-        let Err(VokraError::ModelLoad(msg)) = m.extract_real(&pcm, 16_000) else {
-            panic!("a U-Net with no discoverable decoder must be refused");
+        let Err(VokraError::ModelLoad(msg)) = RMVPE::from_gguf(&tmp) else {
+            panic!("an incomplete E2E0 manifest must be refused during load");
         };
         assert!(
-            msg.contains("no U-Net decoder block found")
-                && msg.contains("unet.decoder.block{i}.conv.weight"),
-            "the error must name the missing half and its scheme, got {msg}"
+            msg.contains("public-contract tensor") || msg.contains("tensor manifest"),
+            "the error must identify the strict public contract, got {msg}"
         );
         std::fs::remove_file(&tmp).ok();
     }
@@ -3736,18 +3592,16 @@ mod tests {
     fn decode_class_to_hz_matches_analytic_grid() {
         let cfg = RmvpeConfig::default();
 
-        // Case: spike at class 0 → base_hz (bounded by fmin).
+        // Case: spike at class 0 -> base_hz. Upstream does not clamp voiced
+        // estimates to the configured fmin/fmax display range.
         let mut probs = vec![0.0f32; cfg.n_class as usize];
         probs[0] = 1.0;
         let (hz, voiced, conf) = decode_class_to_hz(&probs, &cfg, 0.03);
         assert!(voiced, "peak > threshold must be voiced");
         assert!(conf >= 0.03);
-        // Class 0 corresponds to base_hz (32.703 Hz), which is below
-        // the default fmin (30 Hz was chosen with a 3 Hz margin);
-        // decode_class_to_hz clamps up to fmin.
         assert!(
-            (hz - cfg.base_hz.max(cfg.fmin)).abs() < 0.5,
-            "class-0 Hz must equal max(base_hz, fmin), got {hz}"
+            (hz - cfg.base_hz).abs() < 0.5,
+            "class-0 Hz must equal base_hz, got {hz}"
         );
 
         // Case: spike at class 60 → base_hz * 2^1 (1 octave up).
@@ -3756,11 +3610,11 @@ mod tests {
         let (hz, voiced, _) = decode_class_to_hz(&probs, &cfg, 0.03);
         assert!(voiced);
         let expected = cfg.base_hz * 2.0;
-        // Local centroid over the 3 neighbours of a single-spike
+        // Local centroid over the nine-bin window of a single-spike
         // probability collapses to `argmax` (weight sum = w_argmax), so
         // the analytic value is exact.
         assert!(
-            (hz - expected.clamp(cfg.fmin, cfg.fmax)).abs() < 0.5,
+            (hz - expected).abs() < 0.5,
             "class-60 Hz must equal base_hz * 2 (1 octave), got {hz}"
         );
 
@@ -3789,7 +3643,8 @@ mod tests {
         ));
         std::fs::write(&tmp, &bytes).expect("write");
 
-        let m = RMVPE::from_gguf(&tmp).expect("load");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("load structural fixture");
         // 1 second of 16 kHz PCM (a 440 Hz sine, so the mel has real
         // energy in a specific band — makes the shape test more
         // meaningful than a zero buffer).
@@ -4038,7 +3893,8 @@ mod tests {
         //     shape is at the correct rank.
         const EXPECTED_TENSOR_COUNT: usize = 18;
 
-        let m = RMVPE::from_gguf(&tmp).expect("upstream-shape GGUF must load");
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
+            .expect("legacy-name structural GGUF must load");
         assert_eq!(
             m.tensor_count(),
             EXPECTED_TENSOR_COUNT,
@@ -4330,7 +4186,7 @@ mod tests {
         let bytes = b.to_bytes().expect("serialize");
         let tmp = write_scratch_gguf("unknown-suffix", &bytes);
 
-        let m = RMVPE::from_gguf(&tmp)
+        let m = RMVPE::from_gguf_with_cnn_policy(&tmp, CnnChainPolicy::Optional)
             .expect("unrecognized suffix under known prefix must load (fork tolerance)");
         assert_eq!(m.tensor_count(), 1);
 
@@ -4356,6 +4212,8 @@ mod tests {
         assert!(validate_tensor_shape("unet.encoder.block0.conv.bias", &[4]).is_ok());
         assert!(validate_tensor_shape("unet.encoder.block0.bn.weight", &[4]).is_ok());
         assert!(validate_tensor_shape("unet.encoder.block0.bn.running_mean", &[4]).is_ok());
+        assert!(validate_tensor_shape("unet.encoder.layers.0.conv.0.conv.1.weight", &[16]).is_ok());
+        assert!(validate_tensor_shape("unet.decoder.layers.0.conv1.1.weight", &[256]).is_ok());
         assert!(validate_tensor_shape("gru.weight_ih_l0", &[24, 4]).is_ok());
         assert!(validate_tensor_shape("gru.weight_hh_l0_reverse", &[24, 8]).is_ok());
         assert!(validate_tensor_shape("gru.bias_ih_l0", &[24]).is_ok());

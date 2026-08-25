@@ -14,6 +14,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- RMVPE now targets the fixed `yxlllc/RMVPE` E2E0 contract instead of the
+  historical reduced topology: exact 1024-point magnitude HTK mel analysis,
+  five encoder/decoder stages with paired skips, four intermediate stages,
+  BiGRU, 360-way head and nine-bin F0 decode route through native CPU/Metal
+  GEMM/GEMV seams without fallback. The converter requires all 623 inference
+  tensors and explicitly omits only the unused `unet.tf.*` state. The live
+  `vokra/rmvpe` file remains an explicit load error because it incorrectly
+  stamps the unlicensed `yxlllc` source/weight as MIT/permissive; real CPU and
+  remote-Apple Metal measurements are still pending and are not claimed here.
 - The public X-Codec2 GGUF now strict-binds its complete 1,153-tensor
   pass-through manifest and decodes 50 Hz, 65,536-way FSQ codes to 16 kHz PCM
   through the native CPU/Metal Vocos graph. The exact 3.29 GB artifact matches

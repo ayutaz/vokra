@@ -36,8 +36,9 @@ USER_AGENT = "vokra-hf-mac-coverage/1.0"
 # runtime. MAGNeT/MelodyFlow are loud partial diagnostics; CSM still binds a
 # synthesized model bridge instead of released weights; SBV2's public
 # conversion does not yet satisfy the strict runtime tensor-name contract;
-# Pyannote keeps its real forward behind an owner parity opt-in; RMVPE omits
-# the upstream decoder skip-concat and explicitly documents numeric divergence.
+# Pyannote keeps its real forward behind an owner parity opt-in. RMVPE now has
+# an exact code route, but its live artifact remains blocked below by invalid
+# provenance.
 # Subtracting only BOUND_ARCHES would therefore overstate CPU coverage.
 ROUTED_PARTIAL_ARCHES = {
     "csm",
@@ -45,7 +46,6 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
     "pyannote-segmentation",
-    "rmvpe",
     "sbv2",
 }
 
@@ -97,6 +97,14 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "contract; the strict converter/runtime now require and execute the official prepared "
         "checkpoint, but the live artifact needs an authorized gated replacement",
     ),
+    "vokra/rmvpe": (
+        "partial",
+        "the public 181,010,688-byte GGUF at revision "
+        "3eb5fa8946f1074ba3959074c5cde95ec22b8c91 carries the supported fixed "
+        "E2E0 tensor manifest, but mis-stamps yxlllc/RMVPE as MIT/permissive even "
+        "though that exact repository declares no license; the strict CPU/Metal "
+        "loader rejects it pending an authorized provenance-corrected replacement",
+    ),
 }
 
 # Conservative code-path inventory. Every entry must also be a full routed
@@ -138,6 +146,7 @@ METAL_CODE_ARCHES = {
     "parakeet-tdt",
     "piper-plus-mb-istft-vits2",
     "rnnoise",
+    "rmvpe",
     "silero-vad",
     "snac",
     "sepformer",
