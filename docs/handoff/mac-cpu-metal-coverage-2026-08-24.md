@@ -14,20 +14,20 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper and FCPE waves, it reported:
+Piper, FCPE and standalone BERT-family CPU waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 80 |
+| Complete CPU code route | 83 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 64 |
+| No complete runtime binder | 61 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
 | Complete Metal code route among the CPU-complete set | 80 |
-| CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 113 |
+| CPU-complete but Metal-unsupported | 3 |
+| Metal blocked by missing/partial CPU forward | 110 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -57,6 +57,12 @@ Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
+
+The three CPU-complete, Metal-unsupported repositories are the standalone
+`chinese-roberta-wwm-ext-large`,
+`deberta-v2-large-japanese-char-wwm` and `deberta-v3-large` text encoders.
+Their learned transformer forwards still use the scalar `vokra-bert` path, so
+selecting Metal is rejected before inference rather than silently running CPU.
 
 The routed-partial set deliberately includes `csm`, `nsnet2`,
 `pyannote-segmentation`, `rmvpe` and `sbv2`. CSM still constructs synthesized
@@ -190,6 +196,45 @@ inside the shared boundary. The command
 upload occurred, no VAST-generated artifact required
 pullback, and the instance was destroyed; the live VAST inventory returned
 `[]`.
+
+### Standalone BERT / DeBERTa CPU front door
+
+`BertRuntime` and `vokra-cli run --token-ids` now expose the three public
+standalone text encoders as raw final-hidden features on CPU. Input is an
+explicit comma-separated `u32` token-id sequence; raw text, audio-shaped input
+and empty/out-of-vocabulary sequences fail before forward. Bench refuses to
+invent an audio real-time factor for this non-audio task. Any non-CPU backend,
+including Metal, is an explicit unsupported-operation error.
+
+The exact fixed-revision public files verified on disposable VAST instance
+`48640495` were:
+
+| Public repository | Revision | Bytes | GGUF SHA-256 |
+|---|---|---:|---|
+| `vokra/chinese-roberta-wwm-ext-large` | `42201d07523983914c683d431c2ecce7d88ecf6f` | 1,298,182,944 | `a1a1df298fedb585b5278a2c048c5a11515968e2fdf43b856354f964c3e89b59` |
+| `vokra/deberta-v2-large-japanese-char-wwm` | `fb75652c6bbc2daf39fb1089079ea75a68d9597f` | 1,551,428,992 | `c74f2b6594e5837e5fe49318ec4a2e13bed76e32529e761c21260528be8aea1a` |
+| `vokra/deberta-v3-large` | `a36bdb29209e214b81dee9a3c80484320aa4d66a` | 873,573,120 | `b3c07c6f91ec36bfd556dd511e6c9471ccc417b95a0d75bd605d26feb4666b0d` |
+
+All three completed two-token CPU forwards with `hidden=1024`. The BERT
+artifact took 1.65 seconds, DeBERTa v2 took 24.86 seconds, and DeBERTa v3 took
+25.38 seconds on the rented x86 host. The DeBERTa v3 file exposed an early
+public layout with verbatim Hugging Face `deberta.*` tensor names rather than
+the current converter's canonical `bert.*` layout. The loader now detects the
+two schemas without ambiguous precedence, performs the converter-equivalent
+Q/K sharing and shared-relative-embedding LayerNorm for that exact legacy
+layout, and rejects mixed or incomplete schemas. A differential fixture proves
+the legacy and canonical paths agree within `1e-6`; the existing independent
+real-weight final-hidden parity test retained its original `6e-3` bound and
+passed unchanged.
+
+Commits `52eaccd9`, `b9b24ea3` and `7f766b26` were checked with the local
+`vokra-bert` suite and warnings-as-errors clippy where locally safe. VAST then
+passed the focused `vokra-models` runtime tests and
+`cargo clippy -p vokra-models --all-targets -- -D warnings`. No upload occurred
+and no unique remote artifact needed pullback: the source was already local,
+while all three large files were reproducible public SHA-matched inputs. The
+instance was destroyed rather than stopped, and the live VAST inventory
+returned `[]`.
 
 ### Conv-TasNet Libri1Mix enhancement
 
