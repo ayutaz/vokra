@@ -131,6 +131,7 @@ METAL_CODE_ARCHES = {
     "fcpe",
     "firered_vad",
     "focalcodec",
+    "frcrn",
     "fsmn-vad",
     "hifigan_vocoder",
     "hubert",

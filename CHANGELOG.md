@@ -14,6 +14,19 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The public FRCRN-SE-16K GGUF now has a strict 812-F32-tensor native
+  enhancer and CLI/bench CPU/Metal route. The fixed convolutional STFT/iSTFT,
+  two complex U-Nets, squeeze/excitation and frequency/central FSMN graph are
+  reproduced without ONNX or runtime dependencies; every learned reduction
+  uses the selected GEMM/grouped-Conv1D backend and unsupported backends fail
+  explicitly. Converter/reference identity is pinned, while VAST official
+  CPU parity and Apple-device Metal parity remain pending and are not claimed.
+- The public Research-only NISQA v2 multidimensional GGUF now runs its strict
+  94-F32-tensor AdaptCNN, self-attention and five cloned pooling heads through
+  native CPU/Metal CLI and bench routes. All `mos/noi/dis/col/loud` dimensions
+  are preserved, the CC-BY-NC-SA-4.0 gate remains fail-closed, and VAST/Apple
+  real-weight numerical parity is still pending rather than inferred from the
+  source route.
 - RMVPE now targets the fixed `yxlllc/RMVPE` E2E0 contract instead of the
   historical reduced topology: exact 1024-point magnitude HTK mel analysis,
   five encoder/decoder stages with paired skips, four intermediate stages,

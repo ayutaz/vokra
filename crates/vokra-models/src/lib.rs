@@ -925,6 +925,8 @@ pub mod moonshine;
 // before PCM processing and never fall back silently. Runtime remains free of
 // pickle, ONNX, protobuf, and external dependencies.
 pub mod facebook_denoiser;
+/// Native Alibaba FRCRN-SE-16K enhancement (CPU / Metal).
+pub mod frcrn;
 // Wave 9 2026-08-14 audit follow-up (LIB.RS RULE append at end with
 // Wave 9 comment marker): Voila (`maitrix-org/Voila`, MIT, 2025) —
 // Maitrix's full-duplex speech-to-speech dialog family. Runtime binder

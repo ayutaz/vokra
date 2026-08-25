@@ -64,8 +64,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "titanet-large",
             "denoise",
             "dnsmos",
+            "nisqa_v2_weight",
             "utmos",
             "metricgan_plus",
+            "frcrn",
             "miocodec",
             "tiger_separator",
         }
@@ -147,6 +149,15 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("metricgan-plus.gguf",),
             "metricgan_plus",
         )
+        nisqa = audit.RepoRecord(
+            "vokra/nisqa-v2",
+            "abc",
+            ("nisqa.gguf",),
+            "nisqa_v2_weight",
+        )
+        frcrn = audit.RepoRecord(
+            "vokra/frcrn", "abc", ("frcrn.gguf",), "frcrn"
+        )
         tiger = audit.RepoRecord(
             "vokra/tiger-dnr",
             "abc",
@@ -209,6 +220,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(dnsmos, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(nisqa, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(nisqa, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(frcrn, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(frcrn, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")

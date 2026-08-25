@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (FRCRN-SE-16K CPU/Metal runtime)
+
+The exact public 812-tensor FRCRN release gains a strict native enhancement
+forward and CLI/bench route. No C symbol, ownership rule or allocation ABI
+changes. The additive metadata group pins the official checkpoint/source and
+full fixed-front-end/two-U-Net topology while retaining exact compatibility
+with the separately audited historical public GGUF.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::frcrn` | `Frcrn`, `FRCRN_HOT_OPS`, identity/topology constants | Added | strict `from_gguf`, `from_gguf_with_backend`, `open`, backend selection, `enhance(&[f32]) -> Result<Vec<f32>>`; `DenoiseEngine` and one-stream `SeparationEngine` | Owns decoded F32 weights. Learned complex convolution/affine/FSMN reductions use one CPU/Metal GEMM/grouped-Conv1d route; fixed STFT/iSTFT and scalar complex/layout operations are deterministic host glue | no for exact audited public file; malformed/partial or foreign files now fail closed | (TBD) |
+| `vokra-cli run` / `bench` | `arch=frcrn` | Added (behavior only) | fixed 16 kHz mono WAV to enhanced mono WAV | Wrong rate, short/non-finite PCM, unsupported backend and provenance/manifest mismatches fail explicitly | no | (TBD) |
+| `gguf:vokra.frcrn.*` | 17-key source/checkpoint/frontend/topology group | Added/enforced | revision/hash strings; byte count, sample/window/hop/FFT/feature/depth/channel/FSMN/SE/U-Net values; window type and complex flag | New converters stamp the complete group. The exact historical public GGUF may omit it only while its immutable manifest and generic Apache-2.0 provenance match; a partial group fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (NISQA v2 CPU/Metal runtime)
 
 The exact public 94-tensor multidimensional NISQA release gains a strict

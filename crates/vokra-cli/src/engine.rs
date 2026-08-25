@@ -467,6 +467,8 @@ const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
 const ARCH_MP_SENET: &str = "mp_senet";
 /// Meta causal DNS48 waveform U-Net + LSTM enhancer.
 const ARCH_FACEBOOK_DENOISER: &str = "facebook_denoiser";
+/// Alibaba FRCRN-SE-16K two-complex-U-Net/FSMN waveform enhancer.
+const ARCH_FRCRN: &str = "frcrn";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -1133,7 +1135,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
         | ARCH_DENOISE
         | ARCH_METRICGAN_PLUS
         | ARCH_MP_SENET
-        | ARCH_FACEBOOK_DENOISER => {
+        | ARCH_FACEBOOK_DENOISER
+        | ARCH_FRCRN => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
@@ -1478,7 +1481,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \

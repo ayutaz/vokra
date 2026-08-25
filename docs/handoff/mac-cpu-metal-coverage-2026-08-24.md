@@ -41,6 +41,17 @@
 > and Metal routes. The one-repository reachability move is reflected below;
 > VAST typecheck/reference CPU parity and Apple-device Metal parity remain
 > pending, so this is not yet a numerical-pass verdict.
+>
+> **2026-08-26 NISQA v2 source wave:** `vokra/nisqa-v2-weight` now has an
+> exact 94-F32-tensor multidimensional scorer and CLI/bench routes for CPU and
+> Metal. It preserves all five `mos/noi/dis/col/loud` heads and remains
+> Research-only under CC-BY-NC-SA-4.0. VAST compile/official CPU parity and
+> Apple-device Metal parity remain pending, so no numerical pass is claimed.
+>
+> **2026-08-26 FRCRN source wave:** `vokra/frcrn` now has an exact
+> 812-F32-tensor binder, native two-complex-U-Net/FSMN enhancement forward and
+> CLI/bench routes for CPU and Metal. VAST compile/official CPU parity and
+> Apple-device Metal parity remain pending, so no numerical pass is claimed.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -59,7 +70,7 @@ At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
 MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
-Facebook Denoiser DNS48,
+Facebook Denoiser DNS48, NISQA v2 and FRCRN-SE-16K,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -68,13 +79,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 99 |
-| Route/binder present, released-artifact CPU forward incomplete | 48 |
-| No complete runtime binder | 46 |
+| Complete CPU route for the live public artifact | 102 |
+| Route/binder present, released-artifact CPU forward incomplete | 46 |
+| No complete runtime binder | 45 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 99 |
+| Complete Metal code route among the CPU-complete set | 102 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 94 |
+| Metal blocked by missing/partial CPU forward | 91 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -87,11 +98,11 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 99 repositories with a complete Metal code route are the Audiobox
+The 102 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
-checkpoints, FCPE,
+checkpoints, FCPE, FRCRN-SE-16K,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
 HiFi-GAN LibriTTS, both Kokoro checkpoints, all five MeloTTS checkpoints,
@@ -101,7 +112,7 @@ VAD checkpoints, both SNAC checkpoints (24 and 44.1 kHz), SmartTurn v2,
 SpeechT5 HiFi-GAN, TEN-VAD, both Vocos
 checkpoints, the three Voxtral checkpoints, nine plain Whisper checkpoints,
 Whisper-Medusa-v1, all seven Wav2Vec2 CTC checkpoints, Data2Vec Audio Base,
-HuBERT Large LS960, all seven SepFormer checkpoints, and both SpeechBrain
+HuBERT Large LS960, NISQA v2, all seven SepFormer checkpoints, and both SpeechBrain
 X-vector repositories, the canonical SpeechBrain ECAPA-TDNN repository, the
 public pyannote WeSpeaker ResNet34-LM repository, and both byte-identical
 TitaNet-Large repositories (`vokra/titanet-l` and `vokra/titanet-large`), plus
@@ -2302,6 +2313,78 @@ artifact replacement was performed or authorized. The live code-reachability
 totals move to CPU `full=99`, `partial=48`, `no-runtime-binder=46`,
 `not-artifact=1` and Metal `full=99`, `blocked-by-cpu=94`,
 `not-artifact=1`.
+
+### NISQA v2 multidimensional source wave
+
+The public `vokra/nisqa-v2-weight` revision
+`89718b026e17d3d048aa394ef8c8ddd14fee9cd8` carries a 1,019,776-byte GGUF
+with exactly 94 F32 tensors. Its GGUF SHA-256 is
+`a2cacbe6f81ea2e8255eb0e2137d70d245823758e1cc4bb180c6b7cccc131e07`
+and the complete name/shape manifest SHA-256 is
+`4845124c35587de7417acecac877e0f7bb131183d4aace79e47f361b7dc673f4`.
+The strict converter and binder pin the official
+`gabrielmittag/NISQA@fe84f0f252abec382b24367d5b22498a7ce34dbb` source,
+checkpoint/license hashes and full frontend/topology contract. The weight is
+CC-BY-NC-SA-4.0 and remains Research-only; the runtime does not relabel it as
+commercial.
+
+The native forward implements the official mel frontend, segmented AdaptCNN,
+self-attention time-dependency block and five cloned attention-pooling heads.
+Learned convolution, dense, attention and normalization reductions use one
+selected `Compute` backend; frontend DSP, BatchNorm inference, layouts and
+adaptive pooling are host glue. CLI and bench preserve all five predictions
+in `mos`, `noi`, `dis`, `col`, `loud` order. Unsupported backends fail
+explicitly and cannot fall back to CPU inference.
+
+The converter/reference contract and native source are committed, but no
+`vokra-models` Cargo command or model inference ran on the maintainer Mac.
+VAST compile and independent official CPU parity remain pending, followed by
+Apple-device CPU/Metal parity. No Hugging Face upload or artifact replacement
+was performed or authorized.
+
+### FRCRN-SE-16K source wave
+
+The public `vokra/frcrn` revision
+`e4badbcb1dda0a91a59318f29417dde6c65e9f8b` carries a 57,608,736-byte GGUF
+with exactly 812 F32 tensors and SHA-256
+`04b8810e3f9e6391d9b95158fc34a2050bcac8618a3b25deb534a1b9cd42d7b6`.
+Its complete name/shape manifest SHA-256 is
+`ca71dad1ae5293d3d63628b71127c0efdf004cec684e5a341ab376ce3e2851b7`.
+New conversion pins the official
+`alibabasglab/FRCRN_SE_16K@3766e6a64b0d8cb58f08d913d617bf129f11ed53`
+checkpoint (161,053,751 bytes, SHA-256
+`b22256adbb91b68cf5a3db8f6657a4fb17066eecd5f069803e59c186c1cf3ebb`),
+the exact ClearerVoice-Studio source revision and the Apache-2.0 license
+evidence. The audited historical public GGUF may omit the additive
+`vokra.frcrn.*` group only while its exact legacy provenance and full manifest
+match; partial or conflicting metadata fails closed.
+
+The native forward implements the fixed sqrt-periodic-Hann convolutional
+STFT/iSTFT, two complex U-Nets, complex Conv2d/ConvTranspose2d, separate real
+and imaginary BatchNorm, squeeze/excitation paths and frequency/central FSMN
+memory blocks. Every trained reduction is lowered to `Compute::gemm_f32` or
+`Compute::grouped_conv1d_f32`. Spectral transforms, complex arithmetic,
+layout changes, activations and overlap-add normalization are deterministic
+host DSP/glue, not a second CPU model. CLI and bench route `frcrn` as a fixed
+16 kHz denoiser. Whole-model backend coverage is preflighted; unsupported
+backends fail explicitly and Metal never falls back to CPU inference.
+
+`tools/parity/frcrn_dump_reference.py` verifies a clean pinned
+ClearerVoice-Studio checkout, imports the official `FRCRN_SE_16K`/`DCCRN`
+module directly, strict-loads the real checkpoint and records STFT, both U-Net
+encoder/FSMN/decoder stacks, iSTFT and final waveform taps. It does not import
+Vokra or define a mirror network. The Rust real-weight tests are deliberately
+measurement-only until the first VAST/Apple observations establish honest
+bounds; no tolerance was invented to make an unrun test green.
+
+No FRCRN inference, `vokra-models` Cargo command or workspace Cargo command
+ran on the maintainer Mac. VAST compilation and official CPU parity remain
+pending behind credential rotation; Apple-device CPU/Metal parity is the next
+separate hardware leg. No Hugging Face upload or artifact replacement was
+performed or authorized. The live read-only inventory after the NISQA and
+FRCRN routes reports CPU `full=102`, `partial=46`,
+`no-runtime-binder=45`, `not-artifact=1` and Metal `full=102`,
+`blocked-by-cpu=91`, `not-artifact=1`.
 
 ## Remaining execution order
 

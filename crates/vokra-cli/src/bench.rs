@@ -43,6 +43,7 @@ enum DenoiseBenchModel {
     MetricGanPlus(vokra_models::metricgan_plus::MetricGanPlus),
     MpSenet(vokra_models::mp_senet::MpSenet),
     FacebookDenoiser(vokra_models::facebook_denoiser::FbDenoiser),
+    Frcrn(vokra_models::frcrn::Frcrn),
 }
 
 impl DenoiseBenchModel {
@@ -77,8 +78,11 @@ impl DenoiseBenchModel {
                 .map(|model| model.with_backend(backend))
                 .map(Self::FacebookDenoiser)
                 .map_err(|error| error.to_string()),
+            "frcrn" => vokra_models::frcrn::Frcrn::from_gguf_with_backend(gguf, backend)
+                .map(Self::Frcrn)
+                .map_err(|error| error.to_string()),
             other => Err(format!(
-                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, or facebook_denoiser"
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, or frcrn"
             )),
         }
     }
@@ -91,6 +95,7 @@ impl DenoiseBenchModel {
             Self::MetricGanPlus(_) => vokra_models::metricgan_plus::SAMPLE_RATE,
             Self::MpSenet(_) => vokra_models::mp_senet::SAMPLE_RATE,
             Self::FacebookDenoiser(_) => vokra_models::facebook_denoiser::SAMPLE_RATE,
+            Self::Frcrn(_) => vokra_models::frcrn::SAMPLE_RATE,
         }
     }
 
@@ -102,6 +107,7 @@ impl DenoiseBenchModel {
             Self::MetricGanPlus(model) => model.enhance(pcm),
             Self::MpSenet(model) => model.enhance(pcm),
             Self::FacebookDenoiser(model) => model.denoise(pcm),
+            Self::Frcrn(model) => model.enhance(pcm),
         }
         .map_err(|error| error.to_string())
     }
