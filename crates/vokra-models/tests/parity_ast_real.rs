@@ -71,6 +71,27 @@ fn top_indices(values: &[f32], count: usize) -> Vec<usize> {
 }
 
 #[test]
+fn official_reference_fixture_is_pinned() {
+    let features = read_f32(&repo_fixture("ast/input_values.f32le"));
+    let logits = read_f32(&repo_fixture("ast/logits.f32le"));
+    assert_eq!(features.len(), MAX_LENGTH * NUM_MELS);
+    assert_eq!(logits.len(), NUM_LABELS);
+    let manifest = include_str!("../../../tests/fixtures/ast/manifest.json");
+    for required in [
+        "vokra.ast.official-parity.v1",
+        "f826b80d28226b62986cc218e5cec390b1096902",
+        "ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d",
+        "e951795c5c1787b0552ad7dd67f0dcee5bc73219cb585dad61e5a0e380f96602",
+        "dd03ffc605ee8d9230eeaa7fc30b4db5bee555dd385cbc9bd373496f7a6a4eed",
+    ] {
+        assert!(
+            manifest.contains(required),
+            "AST manifest lost pin {required}"
+        );
+    }
+}
+
+#[test]
 fn real_ast_frontend_and_logits_match_official() {
     let Some(gguf_path) = std::env::var_os("VOKRA_AST_GGUF") else {
         eprintln!(

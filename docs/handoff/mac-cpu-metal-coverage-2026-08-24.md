@@ -14,7 +14,7 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec and X-Codec2
+Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2 and AST
 CPU/Metal waves, it reported:
 
 | Inventory / code reachability | Public repos |
@@ -22,13 +22,13 @@ CPU/Metal waves, it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 88 |
+| Complete CPU code route | 89 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 56 |
+| No complete runtime binder | 55 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 88 |
+| Complete Metal code route among the CPU-complete set | 89 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 105 |
+| Metal blocked by missing/partial CPU forward | 104 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -39,7 +39,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 88 repositories with a complete Metal code route are the four BigVGAN
+The 89 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -59,14 +59,15 @@ encoders.
 They also include `vokra/wavtokenizer-large` and
 `vokra/wavtokenizer-large-speech-75token`, whose GGUF payloads are
 byte-identical, plus `vokra/neucodec`, `vokra/distill-neucodec` and
-`vokra/xcodec2`.
+`vokra/xcodec2`, and the AudioSet classifier
+`vokra/ast-finetuned-audioset`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There are no CPU-complete, Metal-unsupported repositories in this inventory.
-The remaining 105 Metal-blocked repositories first need a complete released-
+The remaining 104 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -82,6 +83,40 @@ released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
 
 ## 2026-08-24 implementation wave
+
+### AST AudioSet classification
+
+`vokra/ast-finetuned-audioset` revision
+`b23eb8b8fdc5514b911afd18077fe00618932b13` contains the 346,398,400-byte
+`ast.gguf` with SHA-256
+`f06bf05078d4267193554ec76e143f8541bd3130c3a81ae2a3d6b5424c8b1ac2`.
+The strict runtime binds all 203 F32 tensors under complete name/shape manifest
+SHA-256
+`cd678a3577fa41e5052ad8b59d33eaf45a86a39e601c942ae0551a2355e64a29`,
+implements the official 16 kHz TorchAudio Kaldi-fbank frontend, the 12-layer
+AST encoder and 527-way AudioSet head, and routes GEMM, Softmax, LayerNorm and
+exact-erf GELU through the selected CPU or Metal `Compute` backend. Other
+backend selections return an explicit error without CPU fallback.
+
+The independent oracle is Transformers `4.45.2` at upstream revision
+`f826b80d28226b62986cc218e5cec390b1096902`; its `model.safetensors` SHA-256 is
+`ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d`.
+On the pinned JFK PCM fixture, the first pre-registered frontend max-only gate
+correctly stopped at `3.234148026e-4`. The maximum was a near-f32-floor high-
+frequency mel bin. An independent NumPy float64 Kaldi-equation cross-check
+showed that the official TorchAudio float32 frontend itself differs by max
+`2.402566649e-4`, RMSE `5.543650282e-6`; the evidence-backed frontend gate is
+therefore max `5e-4`, RMSE `1e-5`, and p99 `2e-5`. Vokra measured max
+`3.234148026e-4`, RMSE `5.267075824e-6`, p99 `1.251697540e-5`.
+
+The full VAST CPU forward then passed the unchanged, pre-registered logit gate:
+max abs `2.670288086e-5`, RMSE `6.876259031e-6`, cosine
+`1.000000000000`, and exact top-5 indices `[0, 1, 5, 7, 4]`. The Apple Silicon
+`aarch64-apple-darwin` build with `--features metal` also passed remotely.
+That cross-build proves the Metal code/feature route compiles, not that an
+Apple GPU executed the public file: real Mac Metal parity remains explicitly
+unrecorded because the heavy public-model work stayed on VAST. No upload or
+public artifact mutation occurred.
 
 ### Wav2Vec2 CTC, Data2Vec Audio and HuBERT
 

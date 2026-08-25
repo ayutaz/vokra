@@ -1,0 +1,114 @@
+{
+  "environment": {
+    "numpy": "2.0.2",
+    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+    "threads": 1,
+    "torch": "2.5.0+cu124",
+    "torchaudio": "2.5.0"
+  },
+  "input": {
+    "audio": "jfk-30s.wav",
+    "audio_sha256": "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f",
+    "sample_rate": 16000,
+    "samples": 176000
+  },
+  "oracle": {
+    "feature_source": "/root/vokra/tools/parity/ast/.venv/lib/python3.12/site-packages/transformers/models/audio_spectrogram_transformer/feature_extraction_audio_spectrogram_transformer.py",
+    "feature_source_sha256": "08b31c754524f1e840d8f0bdc04070bd677af2d20c16d66cc0d8556d5c1759cf",
+    "library": "transformers",
+    "modeling_source": "/root/vokra/tools/parity/ast/.venv/lib/python3.12/site-packages/transformers/models/audio_spectrogram_transformer/modeling_audio_spectrogram_transformer.py",
+    "modeling_source_sha256": "9ce5e09eb5e8bedbebd718729f76580cccff047b234bf7bfa05771717e9e5aac",
+    "version": "4.45.2"
+  },
+  "outputs": {
+    "input_values.f32le": {
+      "dtype": "f32le",
+      "sha256": "e951795c5c1787b0552ad7dd67f0dcee5bc73219cb585dad61e5a0e380f96602",
+      "shape": [
+        1,
+        1024,
+        128
+      ]
+    },
+    "logits.f32le": {
+      "dtype": "f32le",
+      "sha256": "dd03ffc605ee8d9230eeaa7fc30b4db5bee555dd385cbc9bd373496f7a6a4eed",
+      "shape": [
+        1,
+        527
+      ]
+    }
+  },
+  "schema": "vokra.ast.official-parity.v1",
+  "secondary_numpy_f64_frontend_cross_check": {
+    "max_abs": 0.00024025666490468112,
+    "max_frame": 655,
+    "max_index": 83953,
+    "max_mel": 113,
+    "p99": 1.4249432631157541e-05,
+    "p999": 8.351596391704605e-05,
+    "rmse": 5.5436502816544815e-06
+  },
+  "top10": [
+    {
+      "index": 0,
+      "label": "Speech",
+      "logit": 2.6769838333129883
+    },
+    {
+      "index": 1,
+      "label": "Male speech, man speaking",
+      "logit": 1.8134605884552002
+    },
+    {
+      "index": 5,
+      "label": "Narration, monologue",
+      "logit": 1.6950360536575317
+    },
+    {
+      "index": 7,
+      "label": "Speech synthesizer",
+      "logit": -2.2252774238586426
+    },
+    {
+      "index": 4,
+      "label": "Conversation",
+      "logit": -3.0589542388916016
+    },
+    {
+      "index": 2,
+      "label": "Female speech, woman speaking",
+      "logit": -3.900106906890869
+    },
+    {
+      "index": 507,
+      "label": "Inside, large room or hall",
+      "logit": -4.424998760223389
+    },
+    {
+      "index": 509,
+      "label": "Outside, urban or manmade",
+      "logit": -5.1136016845703125
+    },
+    {
+      "index": 524,
+      "label": "Television",
+      "logit": -5.141231536865234
+    },
+    {
+      "index": 72,
+      "label": "Animal",
+      "logit": -5.373746871948242
+    }
+  ],
+  "upstream": {
+    "model_safetensors_sha256": "ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d",
+    "repo": "MIT/ast-finetuned-audioset-10-10-0.4593",
+    "revision": "f826b80d28226b62986cc218e5cec390b1096902"
+  },
+  "vokra_public_gguf": {
+    "repo": "vokra/ast-finetuned-audioset",
+    "revision": "b23eb8b8fdc5514b911afd18077fe00618932b13",
+    "sha256": "f06bf05078d4267193554ec76e143f8541bd3130c3a81ae2a3d6b5424c8b1ac2"
+  }
+}

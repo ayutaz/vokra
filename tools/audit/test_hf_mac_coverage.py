@@ -38,6 +38,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
 
     def test_classification_never_turns_partial_into_metal(self):
         routed = {
+            "ast",
             "whisper",
             "silero-vad",
             "magnet_small_10secs",
@@ -62,6 +63,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
+        ast = audit.RepoRecord("vokra/ast", "abc", ("ast.gguf",), "ast")
         silero = audit.RepoRecord(
             "vokra/silero", "abc", ("model.gguf",), "silero-vad"
         )
@@ -117,6 +119,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
         empty = audit.RepoRecord("vokra/empty", "abc", (), None)
 
         self.assertEqual(audit.classify(full, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(ast, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(snac, routed, bound).cpu_code, "full")
