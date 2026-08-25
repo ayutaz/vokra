@@ -476,8 +476,10 @@ mod tests {
 
     const OFFICIAL_PARITY_ATOL: f32 = 0.01;
 
-    fn melotts_fixture_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/melotts_english")
+    fn melotts_fixture_dir(variant: MeloVariant) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(format!("melotts_{}", variant.tag()))
     }
 
     fn read_f32(path: &Path) -> Vec<f32> {
@@ -685,15 +687,14 @@ mod tests {
         assert!(synthesis.pcm.iter().all(|value| value.is_finite()));
     }
 
-    #[test]
-    #[ignore = "requires VOKRA_MELOTTS_GGUF pointing to the public English GGUF"]
-    fn official_english_acoustic_core_matches_reference() {
-        let path = std::env::var("VOKRA_MELOTTS_GGUF").expect("VOKRA_MELOTTS_GGUF");
-        let file = GgufFile::open(path).expect("open released MeloTTS English GGUF");
-        let checkpoint = MeloTtsCheckpoint::from_gguf(&file).expect("strict bind");
-        assert_eq!(checkpoint.variant(), MeloVariant::English);
+    fn assert_official_variant_parity(path: &Path, variant: MeloVariant) {
+        let file =
+            GgufFile::open(path).unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+        let checkpoint = MeloTtsCheckpoint::from_gguf(&file)
+            .unwrap_or_else(|error| panic!("strict-bind {}: {error}", path.display()));
+        assert_eq!(checkpoint.variant(), variant);
 
-        let fixture = melotts_fixture_dir();
+        let fixture = melotts_fixture_dir(variant);
         let phoneme_ids = read_u32(&fixture.join("phoneme_ids.u32"));
         let tones = read_u32(&fixture.join("tones.u32"));
         let language_ids = read_u32(&fixture.join("language_ids.u32"));
@@ -712,7 +713,11 @@ mod tests {
         let expected_pcm = read_f32(&fixture.join("pcm.f32"));
         let sequence_len = phoneme_ids.len();
         assert_eq!(sequence_len, 6);
-        assert_eq!(expected_durations, vec![1; sequence_len]);
+        let frame_count = expected_durations
+            .iter()
+            .map(|duration| usize::try_from(*duration).expect("positive fixture duration"))
+            .sum::<usize>();
+        assert!(frame_count > 0);
 
         let features = MeloTextFeatures {
             phoneme_ids: &phoneme_ids,
@@ -720,7 +725,13 @@ mod tests {
             language_ids: &language_ids,
             bert: &bert,
             ja_bert: &ja_bert,
-            speaker_id: 0,
+            speaker_id: match variant {
+                MeloVariant::Chinese => 1,
+                MeloVariant::English
+                | MeloVariant::Korean
+                | MeloVariant::Spanish
+                | MeloVariant::Japanese => 0,
+            },
         };
         let encoder = checkpoint
             .load_text_encoder(&file)
@@ -729,13 +740,25 @@ mod tests {
             .encode(features, BackendKind::Cpu)
             .expect("official text encoder forward");
         assert_official_parity(
-            "speaker_conditioning",
+            &format!("{} speaker_conditioning", variant.tag()),
             &encoded.speaker_conditioning,
             &expected_speaker,
         );
-        assert_official_parity("hidden", &encoded.hidden, &expected_hidden);
-        assert_official_parity("mean", &encoded.mean, &expected_mean);
-        assert_official_parity("log_scale", &encoded.log_scale, &expected_log_scale);
+        assert_official_parity(
+            &format!("{} hidden", variant.tag()),
+            &encoded.hidden,
+            &expected_hidden,
+        );
+        assert_official_parity(
+            &format!("{} mean", variant.tag()),
+            &encoded.mean,
+            &expected_mean,
+        );
+        assert_official_parity(
+            &format!("{} log_scale", variant.tag()),
+            &encoded.log_scale,
+            &expected_log_scale,
+        );
         drop(encoder);
 
         let duration = checkpoint
@@ -749,7 +772,11 @@ mod tests {
                 BackendKind::Cpu,
             )
             .expect("official deterministic duration forward");
-        assert_official_parity("log_duration", &log_duration, &expected_log_duration);
+        assert_official_parity(
+            &format!("{} log_duration", variant.tag()),
+            &log_duration,
+            &expected_log_duration,
+        );
         let mut rng = GaussianSplitMix64::new(0x4d45_4c4f);
         let durations = duration
             .predict(
@@ -776,9 +803,13 @@ mod tests {
             &expected_durations,
             INTER_CHANNELS as usize,
         );
-        assert_official_parity("expanded_mean", &expanded_mean, &expected_expanded_mean);
         assert_official_parity(
-            "expanded_log_scale",
+            &format!("{} expanded_mean", variant.tag()),
+            &expanded_mean,
+            &expected_expanded_mean,
+        );
+        assert_official_parity(
+            &format!("{} expanded_log_scale", variant.tag()),
             &expanded_log_scale,
             &expected_expanded_log_scale,
         );
@@ -787,24 +818,28 @@ mod tests {
         let decoder_latent = flow
             .inverse(
                 &expected_expanded_mean,
-                expected_durations.len(),
+                frame_count,
                 &expected_speaker,
                 BackendKind::Cpu,
             )
             .expect("official inverse-flow forward");
-        assert_official_parity("decoder_latent", &decoder_latent, &expected_decoder_latent);
+        assert_official_parity(
+            &format!("{} decoder_latent", variant.tag()),
+            &decoder_latent,
+            &expected_decoder_latent,
+        );
         drop(flow);
 
         let decoder = checkpoint.load_decoder(&file).expect("load decoder");
         let pcm = decoder
             .decode(
                 &expected_decoder_latent,
-                expected_durations.len(),
+                frame_count,
                 &expected_speaker,
                 BackendKind::Cpu,
             )
             .expect("official decoder forward");
-        assert_official_parity("pcm", &pcm, &expected_pcm);
+        assert_official_parity(&format!("{} pcm", variant.tag()), &pcm, &expected_pcm);
         drop(decoder);
 
         let model = checkpoint.load_model(&file).expect("load complete model");
@@ -824,8 +859,95 @@ mod tests {
             )
             .expect("official end-to-end acoustic forward");
         assert_eq!(synthesis.durations, expected_durations);
-        assert_eq!(synthesis.frame_count, expected_durations.len());
+        assert_eq!(synthesis.frame_count, frame_count);
         assert_eq!(synthesis.sample_rate, SAMPLE_RATE);
-        assert_official_parity("end_to_end_pcm", &synthesis.pcm, &expected_pcm);
+        assert_official_parity(
+            &format!("{} end_to_end_pcm", variant.tag()),
+            &synthesis.pcm,
+            &expected_pcm,
+        );
+    }
+
+    #[test]
+    #[ignore = "requires VOKRA_MELOTTS_GGUF_DIR containing all five public GGUFs"]
+    fn official_five_release_acoustic_cores_match_reference() {
+        let dir =
+            PathBuf::from(std::env::var("VOKRA_MELOTTS_GGUF_DIR").expect("VOKRA_MELOTTS_GGUF_DIR"));
+        for variant in [
+            MeloVariant::English,
+            MeloVariant::Chinese,
+            MeloVariant::Korean,
+            MeloVariant::Spanish,
+            MeloVariant::Japanese,
+        ] {
+            let path = dir.join(format!("{}.gguf", variant.model_name()));
+            assert_official_variant_parity(&path, variant);
+        }
+    }
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    #[ignore = "requires VOKRA_MELOTTS_GGUF_DIR containing all five public GGUFs"]
+    fn official_five_release_cpu_metal_pcm_parity() {
+        let dir =
+            PathBuf::from(std::env::var("VOKRA_MELOTTS_GGUF_DIR").expect("VOKRA_MELOTTS_GGUF_DIR"));
+        for variant in [
+            MeloVariant::English,
+            MeloVariant::Chinese,
+            MeloVariant::Korean,
+            MeloVariant::Spanish,
+            MeloVariant::Japanese,
+        ] {
+            let path = dir.join(format!("{}.gguf", variant.model_name()));
+            let file = GgufFile::open(&path)
+                .unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+            let checkpoint = MeloTtsCheckpoint::from_gguf(&file)
+                .unwrap_or_else(|error| panic!("strict-bind {}: {error}", path.display()));
+            assert_eq!(checkpoint.variant(), variant);
+            let fixture = melotts_fixture_dir(variant);
+            let phoneme_ids = read_u32(&fixture.join("phoneme_ids.u32"));
+            let tones = read_u32(&fixture.join("tones.u32"));
+            let language_ids = read_u32(&fixture.join("language_ids.u32"));
+            let bert = read_f32(&fixture.join("bert_position_major.f32"));
+            let ja_bert = read_f32(&fixture.join("ja_bert_position_major.f32"));
+            let features = MeloTextFeatures {
+                phoneme_ids: &phoneme_ids,
+                tones: &tones,
+                language_ids: &language_ids,
+                bert: &bert,
+                ja_bert: &ja_bert,
+                speaker_id: match variant {
+                    MeloVariant::Chinese => 1,
+                    MeloVariant::English
+                    | MeloVariant::Korean
+                    | MeloVariant::Spanish
+                    | MeloVariant::Japanese => 0,
+                },
+            };
+            let options = MeloSynthesisOptions {
+                sdp_ratio: 0.0,
+                noise_scale: 0.0,
+                noise_scale_w: 0.0,
+                length_scale: 0.05,
+                max_frames: 64,
+            };
+            let model = checkpoint.load_model(&file).expect("load complete model");
+            let mut cpu_rng = GaussianSplitMix64::new(0x4d45_4c4f);
+            let cpu = model
+                .synthesize(features, options, &mut cpu_rng, BackendKind::Cpu)
+                .expect("CPU full acoustic forward");
+            let mut metal_rng = GaussianSplitMix64::new(0x4d45_4c4f);
+            let metal = model
+                .synthesize(features, options, &mut metal_rng, BackendKind::Metal)
+                .expect("Metal full acoustic forward");
+            assert_eq!(metal.sample_rate, cpu.sample_rate);
+            assert_eq!(metal.durations, cpu.durations);
+            assert_eq!(metal.frame_count, cpu.frame_count);
+            assert_official_parity(
+                &format!("{} CPU/Metal integrated PCM", variant.tag()),
+                &metal.pcm,
+                &cpu.pcm,
+            );
+        }
     }
 }

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Dump an independent official-MeloTTS acoustic-core reference fixture.
 
-The oracle is MyShell's pinned ``myshell-ai/MeloTTS`` source tree plus the
-official English checkpoint.  Vokra, its GGUF, and its Rust implementation are
-never imported.  Raw-text normalization, G2P, and BERT tokenization are kept
-outside this fixture: deterministic already-expanded BERT features isolate the
-released acoustic graph from language-frontend dependencies.
+The oracle is MyShell's pinned ``myshell-ai/MeloTTS`` source tree plus one of
+the five official language checkpoints. Vokra, its GGUF, and its Rust
+implementation are never imported. Raw-text normalization, G2P, and BERT
+tokenization are kept outside this fixture: deterministic already-expanded
+BERT features isolate the released acoustic graph from language-frontend
+dependencies.
 
 Run through the repository Python 3.12 environment::
 
     uv run --project tools/parity python tools/parity/melotts_dump_reference.py \
       --source-root /path/to/myshell-ai-MeloTTS-at-2091453 \
+      --variant english \
       --output crates/vokra-models/tests/fixtures/melotts_english
 """
 
@@ -21,6 +23,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -29,14 +32,58 @@ from huggingface_hub import hf_hub_download
 
 
 SOURCE_REVISION = "209145371cff8fc3bd60d7be902ea69cbdb7965a"
-UPSTREAM_HF = "myshell-ai/MeloTTS-English"
-UPSTREAM_REVISION = "bb4fb7346d566d277ba8c8c7dbfdf6786139b8ef"
-CHECKPOINT_SHA256 = "acd278040eaf9536908e2b965273df5a731c44d8f0da66cc5fed7972772ed23c"
 SYMBOLS = ("_", "hh", "ah", "l", "ow", "_")
 TONES = (7, 7, 8, 7, 9, 7)
 LANGUAGE_IDS = (2, 2, 2, 2, 2, 2)
-SPEAKER_ID = 0
 LENGTH_SCALE = 0.05
+
+
+@dataclass(frozen=True)
+class VariantSpec:
+    slug: str
+    upstream_hf: str
+    upstream_revision: str
+    checkpoint_sha256: str
+    speaker_id: int
+
+
+VARIANTS = {
+    "english": VariantSpec(
+        "english",
+        "myshell-ai/MeloTTS-English",
+        "bb4fb7346d566d277ba8c8c7dbfdf6786139b8ef",
+        "acd278040eaf9536908e2b965273df5a731c44d8f0da66cc5fed7972772ed23c",
+        0,
+    ),
+    "chinese": VariantSpec(
+        "chinese",
+        "myshell-ai/MeloTTS-Chinese",
+        "af5d207a364ea4208c6f589c89f57f88414bdd16",
+        "a74e9eadffff065c75eb6dfa040efa72cad23e72cfea70d39190bc174fb97093",
+        1,
+    ),
+    "korean": VariantSpec(
+        "korean",
+        "myshell-ai/MeloTTS-Korean",
+        "0207e5adfc90129a51b6b03d89be6d84360ed323",
+        "48e3ff3fd0b5348e095f0468e60ae727507564100f58142ef3a922ead6e0a4d0",
+        0,
+    ),
+    "spanish": VariantSpec(
+        "spanish",
+        "myshell-ai/MeloTTS-Spanish",
+        "dbb5496df39d11a66c1d5f5a9ca357c3c9fb95fb",
+        "9077a7e7e5fd8e42f3f922641c401f1936971c08465a3e7ccb19d57a659e72ae",
+        0,
+    ),
+    "japanese": VariantSpec(
+        "japanese",
+        "myshell-ai/MeloTTS-Japanese",
+        "367f8795464b531b4e97c1515bddfc1243e60891",
+        "96ae783e6ec0177aa810e2a645aec5d136a6f4992fdea26ee92b7b04d9688ad0",
+        0,
+    ),
+}
 
 
 def sha256(path: Path) -> str:
@@ -123,31 +170,33 @@ def load_model(source_root: Path, config_path: Path, checkpoint_path: Path):
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--variant", choices=sorted(VARIANTS), default="english")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    spec = VARIANTS[args.variant]
 
     source_root = args.source_root.resolve()
     require_source_revision(source_root)
     checkpoint_path = args.checkpoint or Path(
         hf_hub_download(
-            repo_id=UPSTREAM_HF,
+            repo_id=spec.upstream_hf,
             filename="checkpoint.pth",
-            revision=UPSTREAM_REVISION,
+            revision=spec.upstream_revision,
         )
     )
     config_path = args.config or Path(
         hf_hub_download(
-            repo_id=UPSTREAM_HF,
+            repo_id=spec.upstream_hf,
             filename="config.json",
-            revision=UPSTREAM_REVISION,
+            revision=spec.upstream_revision,
         )
     )
-    if sha256(checkpoint_path) != CHECKPOINT_SHA256:
+    if sha256(checkpoint_path) != spec.checkpoint_sha256:
         raise RuntimeError(
             f"official checkpoint SHA-256 mismatch: {sha256(checkpoint_path)} != "
-            f"{CHECKPOINT_SHA256}"
+            f"{spec.checkpoint_sha256}"
         )
 
     torch.set_num_threads(1)
@@ -165,7 +214,7 @@ def main() -> int:
     tones = torch.tensor([TONES], dtype=torch.long)
     languages = torch.tensor([LANGUAGE_IDS], dtype=torch.long)
     lengths = torch.tensor([sequence_len], dtype=torch.long)
-    speaker = torch.tensor([SPEAKER_ID], dtype=torch.long)
+    speaker = torch.tensor([spec.speaker_id], dtype=torch.long)
     bert = torch.zeros((1, 1024, sequence_len), dtype=torch.float32)
     positions = torch.arange(sequence_len, dtype=torch.float32).reshape(1, 1, -1) + 1
     dimensions = torch.arange(768, dtype=torch.float32).reshape(1, -1, 1) + 1
@@ -264,17 +313,44 @@ def main() -> int:
     emit_f32("decoder_latent_position_major.f32", position_major(decoder_latent))
     emit_f32("pcm.f32", pcm.reshape(-1))
 
+    features_path = args.output / "features.vmf"
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("melotts_pack_features.py")),
+            "--variant",
+            spec.slug,
+            "--speaker-id",
+            str(spec.speaker_id),
+            "--phoneme-ids",
+            str(args.output / "phoneme_ids.u32"),
+            "--tones",
+            str(args.output / "tones.u32"),
+            "--language-ids",
+            str(args.output / "language_ids.u32"),
+            "--bert",
+            str(args.output / "bert_position_major.f32"),
+            "--ja-bert",
+            str(args.output / "ja_bert_position_major.f32"),
+            "--output",
+            str(features_path),
+        ],
+        check=True,
+    )
+    written.append(features_path)
+
     manifest = {
         "format": "vokra-melotts-reference-v1",
         "oracle": "myshell-ai/MeloTTS official PyTorch acoustic modules",
         "source_revision": SOURCE_REVISION,
-        "upstream_hf": UPSTREAM_HF,
-        "upstream_revision": UPSTREAM_REVISION,
-        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "variant": spec.slug,
+        "upstream_hf": spec.upstream_hf,
+        "upstream_revision": spec.upstream_revision,
+        "checkpoint_sha256": spec.checkpoint_sha256,
         "config_sha256": sha256(config_path),
         "torch": torch.__version__,
         "symbols": list(SYMBOLS),
-        "speaker_id": SPEAKER_ID,
+        "speaker_id": spec.speaker_id,
         "length_scale": LENGTH_SCALE,
         "sequence_len": sequence_len,
         "frame_count": frame_count,
