@@ -91,6 +91,11 @@ pub(crate) enum ModelTask {
     /// from the already-loaded GGUF so both model-specific frontend APIs are
     /// available without loading the weights twice.
     Speaker,
+    /// Spoken-language identification through the complete SpeechBrain ECAPA
+    /// backbone and official classifier. The concrete handle binds in the
+    /// `run` arm so its ordered labels and task-specific result surface stay
+    /// available without adding a generic session trait.
+    LangId,
     /// Text-to-speech through SBV2 (Style-Bert-VITS2 v2 = Task 38).
     ///
     /// Like [`ModelTask::TtsKokoro`] / [`ModelTask::AsrVoxtral`] /
@@ -358,6 +363,7 @@ const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
 const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
+const ARCH_LANG_ID: &str = "lang_id_ecapa";
 const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
@@ -875,6 +881,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // selected backend through complete Compute seams; malformed
             // public artifacts fail before inference.
             Ok((session, ModelTask::Speaker))
+        }
+        ARCH_LANG_ID => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_LANG_ID}`"
+                ));
+            }
+            // Bare session: the run arm binds the task-specific handle once,
+            // preserving ordered labels and the selected backend.
+            Ok((session, ModelTask::LangId))
         }
         ARCH_SBV2 => {
             if hint.is_some() {
@@ -1917,12 +1933,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
             vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
         }),
     },
-    BoundArch {
-        arch: "lang_id_ecapa",
-        module: "vokra_models::lang_id",
-        entry: "LangIdEcapa::from_gguf → LangIdEcapa::identify",
-        probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
-    },
     // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
     // routed above now that `run` has an explicit far-end WAV contract.
     BoundArch {
@@ -2730,16 +2740,13 @@ mod tests {
         );
     }
 
-    /// Spoken-language ID (`vokra_models::lang_id`) — loud-partial `identify`.
-    /// Note the arch tag (`lang_id_ecapa`) is not the module name.
+    /// Spoken-language ID now has a real `run` task. The concrete model binds
+    /// later because its ordered-label result is not a generic Session trait.
     #[test]
-    fn load_session_binds_lang_id_ecapa_arch() {
-        assert_bound_arch(
-            "lang_id_ecapa",
-            "lang-id-arch",
-            "vokra_models::lang_id",
-            "LangIdEcapa::identify",
-        );
+    fn load_session_routes_lang_id_ecapa_task() {
+        let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", |path| load_session(path));
+        let (_session, task) = result.expect("Lang-ID session builds (bare)");
+        assert_eq!(task, ModelTask::LangId);
     }
 
     /// DTLN-AEC (`vokra_models::aec::dtln_aec`) — loud-partial `process`

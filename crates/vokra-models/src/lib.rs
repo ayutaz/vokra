@@ -2356,36 +2356,18 @@ pub mod ct_punc;
 // `[[feedback-license-signoff-primary-source]]`).
 pub mod wetextprocessing;
 
-// Wave G (2026-08-15) — runtime binder for the `lang_id_ecapa` converter arch
-// (`crates/vokra-convert/src/models/speechbrain_lang_id.rs`), which had been
-// stamping `vokra.model.arch = "lang_id_ecapa"` since the TIER 1 F wave with
-// nothing in the workspace reading it back. Covers both upstream SpeechBrain
-// spoken-language-ID releases — `lang-id-voxlingua107-ecapa` (F7) and
-// `lang-id-commonlanguage_ecapa` (F9) — which share one arch tag because they
-// share one ECAPA-TDNN topology; the variant is recovered from
-// `vokra.model.name`.
+// Wave G (2026-08-15) `lang_id_ecapa` binder.
+// Completed natively for Mac CPU/Metal on 2026-08-26. The prepared-v2
+// contract keeps the real topology differences: VoxLingua107 uses 60 mel
+// bins, a 256-d embedding and XVector MLP/log-softmax; CommonLanguage uses 80
+// mel bins, a 192-d embedding and cosine classification. Both consume the
+// reusable strict ECAPA backbone.
 //
-// REAL: strict arch verification refusing the maximally confusable sibling
-// `ecapa_tdnn` (same trunk, same `embedding_model.` naming, 192-d speaker head
-// instead of a language head) by name; a zero-tensor refusal plus a
-// trunk-presence gate on the `embedding_model.` prefix; variant + upstream-slug
-// + weight-licence surfacing (fail-closed to `Unknown`); and disk-truthful head
-// reporting.
-//
-// The language inventory is READ off the artifact, never hardcoded — this
-// module carries no taxonomy constant at all (the `maest` precedent). The
-// converter stamps neither a language list nor a language count, so the
-// language NAMES are unavailable from a converted GGUF; the count is recovered
-// from the classifier head projection's leading dimension when the layout is
-// unambiguous and reported as `None` otherwise, never as a fallback constant.
-//
-// LOUD-PARTIAL: `identify()` returns `VokraError::UnsupportedOp` naming all
-// four deferred primitives — the filterbank front-end (no `vokra.lang_id.*`
-// axis group is stamped, so `kaldi_fbank` opts cannot be derived), the
-// SE-Res2Block ECAPA trunk (no runtime ECAPA trunk binder exists to reuse), the
-// attentive statistics pooling, and the language classifier head — and citing
-// all four primary sources. No fabricated language logits are ever emitted
-// (FR-EX-08).
+// The runtime requires all 200 embedding tensors, the exact canonical
+// classifier manifest and the ordered official label array. Historical public
+// embedding-only files remain explicit load errors. Conv1d, attentive-pooling
+// Softmax and classifier GEMV dispatch through Compute, with no Metal→CPU
+// fallback.
 //
 // `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
 // `[[feedback-license-signoff-primary-source]]`).

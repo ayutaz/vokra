@@ -30,14 +30,115 @@ pub const EMBED_DIM: usize = 192;
 const INPUT_DIM: usize = 80;
 const TDNN_CHANNELS: usize = 1_024;
 const RES2NET_SCALE: usize = 8;
-const RES2NET_CHANNELS: usize = TDNN_CHANNELS / RES2NET_SCALE;
 const MFA_CHANNELS: usize = 3_072;
 const ATTENTION_CHANNELS: usize = 128;
-const STATS_CHANNELS: usize = MFA_CHANNELS * 2;
 const BN_EPS: f32 = 1.0e-5;
 const STATS_EPS: f32 = 1.0e-12;
 const TENSOR_COUNT: usize = 200;
-const ECAPA_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::Softmax];
+pub(crate) const ECAPA_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::Softmax];
+
+/// Exact ECAPA topology needed by the shared speaker/lang-ID backbone.
+///
+/// This stays crate-private: public model handles expose task-specific
+/// constructors, while both binders share one strict implementation.
+#[derive(Debug, Clone)]
+pub(crate) struct EcapaBackboneConfig {
+    pub input_dim: usize,
+    pub tdnn_channels: usize,
+    pub res2net_scale: usize,
+    pub mfa_channels: usize,
+    pub attention_channels: usize,
+    pub embedding_dim: usize,
+    pub block_kernels: [usize; 3],
+    pub block_dilations: [usize; 3],
+    pub bn_eps: f32,
+    pub stats_eps: f32,
+    pub tensor_prefix: &'static str,
+    pub diagnostic: &'static str,
+}
+
+impl EcapaBackboneConfig {
+    fn speaker() -> Self {
+        Self {
+            input_dim: INPUT_DIM,
+            tdnn_channels: TDNN_CHANNELS,
+            res2net_scale: RES2NET_SCALE,
+            mfa_channels: MFA_CHANNELS,
+            attention_channels: ATTENTION_CHANNELS,
+            embedding_dim: EMBED_DIM,
+            block_kernels: [3, 3, 3],
+            block_dilations: [2, 3, 4],
+            bn_eps: BN_EPS,
+            stats_eps: STATS_EPS,
+            tensor_prefix: "",
+            diagnostic: ARCH,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("input_dim", self.input_dim),
+            ("tdnn_channels", self.tdnn_channels),
+            ("res2net_scale", self.res2net_scale),
+            ("mfa_channels", self.mfa_channels),
+            ("attention_channels", self.attention_channels),
+            ("embedding_dim", self.embedding_dim),
+        ] {
+            if value == 0 {
+                return Err(VokraError::ModelLoad(format!(
+                    "{}: ECAPA config `{name}` must be non-zero",
+                    self.diagnostic
+                )));
+            }
+        }
+        if self.res2net_scale < 2 || self.tdnn_channels % self.res2net_scale != 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "{}: tdnn_channels={} is not divisible by res2net_scale={} >= 2",
+                self.diagnostic, self.tdnn_channels, self.res2net_scale
+            )));
+        }
+        if self.mfa_channels != self.tdnn_channels * 3 {
+            return Err(VokraError::ModelLoad(format!(
+                "{}: mfa_channels={} must equal 3 * tdnn_channels={}",
+                self.diagnostic, self.mfa_channels, self.tdnn_channels
+            )));
+        }
+        if self
+            .block_kernels
+            .iter()
+            .any(|&value| value == 0 || value % 2 == 0)
+            || self.block_dilations.contains(&0)
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "{}: ECAPA block kernels must be positive odd values and dilations must be positive",
+                self.diagnostic
+            )));
+        }
+        for (name, value) in [("bn_eps", self.bn_eps), ("stats_eps", self.stats_eps)] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(VokraError::ModelLoad(format!(
+                    "{}: ECAPA `{name}` must be finite and positive",
+                    self.diagnostic
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn tensor_name(&self, relative: &str) -> String {
+        format!("{}{relative}", self.tensor_prefix)
+    }
+
+    fn max_reflect_padding(&self) -> usize {
+        self.block_kernels
+            .iter()
+            .zip(self.block_dilations)
+            .map(|(&kernel, dilation)| (kernel - 1) * dilation / 2)
+            .chain(std::iter::once(2))
+            .max()
+            .unwrap_or(2)
+    }
+}
 
 const KEY_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -82,7 +183,7 @@ struct FoldedBatchNorm {
 }
 
 impl FoldedBatchNorm {
-    fn bind(file: &GgufFile, prefix: &str, channels: usize) -> Result<Self> {
+    fn bind(file: &GgufFile, prefix: &str, channels: usize, eps: f32) -> Result<Self> {
         let gamma = tensor(file, &format!("{prefix}.weight"), &[channels])?;
         let beta = tensor(file, &format!("{prefix}.bias"), &[channels])?;
         let mean = tensor(file, &format!("{prefix}.running_mean"), &[channels])?;
@@ -90,7 +191,7 @@ impl FoldedBatchNorm {
         let mut scale = vec![0.0; channels];
         let mut shift = vec![0.0; channels];
         for channel in 0..channels {
-            scale[channel] = gamma[channel] / (variance[channel] + BN_EPS).sqrt();
+            scale[channel] = gamma[channel] / (variance[channel] + eps).sqrt();
             shift[channel] = beta[channel] - mean[channel] * scale[channel];
         }
         Ok(Self { scale, shift })
@@ -190,6 +291,7 @@ impl TdnnBlock {
         output_channels: usize,
         kernel: usize,
         dilation: usize,
+        bn_eps: f32,
     ) -> Result<Self> {
         Ok(Self {
             conv: Conv1d::bind(
@@ -200,7 +302,12 @@ impl TdnnBlock {
                 kernel,
                 dilation,
             )?,
-            norm: FoldedBatchNorm::bind(file, &format!("{prefix}.norm.norm"), output_channels)?,
+            norm: FoldedBatchNorm::bind(
+                file,
+                &format!("{prefix}.norm.norm"),
+                output_channels,
+                bn_eps,
+            )?,
         })
     }
 
@@ -224,17 +331,25 @@ struct SeRes2NetBlock {
 }
 
 impl SeRes2NetBlock {
-    fn bind(file: &GgufFile, block: usize, dilation: usize) -> Result<Self> {
-        let prefix = format!("blocks.{block}");
-        let res2net = (0..RES2NET_SCALE - 1)
+    fn bind(
+        file: &GgufFile,
+        config: &EcapaBackboneConfig,
+        block: usize,
+        kernel: usize,
+        dilation: usize,
+    ) -> Result<Self> {
+        let prefix = config.tensor_name(&format!("blocks.{block}"));
+        let res2net_channels = config.tdnn_channels / config.res2net_scale;
+        let res2net = (0..config.res2net_scale - 1)
             .map(|inner| {
                 TdnnBlock::bind(
                     file,
                     &format!("{prefix}.res2net_block.blocks.{inner}"),
-                    RES2NET_CHANNELS,
-                    RES2NET_CHANNELS,
-                    3,
+                    res2net_channels,
+                    res2net_channels,
+                    kernel,
                     dilation,
+                    config.bn_eps,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -242,46 +357,56 @@ impl SeRes2NetBlock {
             tdnn1: TdnnBlock::bind(
                 file,
                 &format!("{prefix}.tdnn1"),
-                TDNN_CHANNELS,
-                TDNN_CHANNELS,
+                config.tdnn_channels,
+                config.tdnn_channels,
                 1,
                 1,
+                config.bn_eps,
             )?,
             res2net,
             tdnn2: TdnnBlock::bind(
                 file,
                 &format!("{prefix}.tdnn2"),
-                TDNN_CHANNELS,
-                TDNN_CHANNELS,
+                config.tdnn_channels,
+                config.tdnn_channels,
                 1,
                 1,
+                config.bn_eps,
             )?,
             se_conv1: Conv1d::bind(
                 file,
                 &format!("{prefix}.se_block.conv1.conv"),
-                TDNN_CHANNELS,
-                ATTENTION_CHANNELS,
+                config.tdnn_channels,
+                config.attention_channels,
                 1,
                 1,
             )?,
             se_conv2: Conv1d::bind(
                 file,
                 &format!("{prefix}.se_block.conv2.conv"),
-                ATTENTION_CHANNELS,
-                TDNN_CHANNELS,
+                config.attention_channels,
+                config.tdnn_channels,
                 1,
                 1,
             )?,
         })
     }
 
-    fn forward(&self, input: &[f32], frames: usize, compute: &Compute) -> Result<Vec<f32>> {
+    fn forward(
+        &self,
+        input: &[f32],
+        frames: usize,
+        tdnn_channels: usize,
+        res2net_scale: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         let hidden = self.tdnn1.forward(input, frames, compute)?;
-        let mut res2 = vec![0.0; TDNN_CHANNELS * frames];
-        let chunk_len = RES2NET_CHANNELS * frames;
+        let mut res2 = vec![0.0; tdnn_channels * frames];
+        let res2net_channels = tdnn_channels / res2net_scale;
+        let chunk_len = res2net_channels * frames;
         res2[..chunk_len].copy_from_slice(&hidden[..chunk_len]);
         let mut previous = Vec::new();
-        for chunk in 1..RES2NET_SCALE {
+        for chunk in 1..res2net_scale {
             let start = chunk * chunk_len;
             let mut current = hidden[start..start + chunk_len].to_vec();
             if chunk > 1 {
@@ -294,8 +419,8 @@ impl SeRes2NetBlock {
         }
 
         let mut output = self.tdnn2.forward(&res2, frames, compute)?;
-        let mut squeezed = vec![0.0; TDNN_CHANNELS];
-        for channel in 0..TDNN_CHANNELS {
+        let mut squeezed = vec![0.0; tdnn_channels];
+        for channel in 0..tdnn_channels {
             squeezed[channel] = output[channel * frames..(channel + 1) * frames]
                 .iter()
                 .copied()
@@ -310,7 +435,7 @@ impl SeRes2NetBlock {
         for value in &mut excitation {
             *value = 1.0 / (1.0 + (-*value).exp());
         }
-        for (channel, &scale) in excitation.iter().enumerate().take(TDNN_CHANNELS) {
+        for (channel, &scale) in excitation.iter().enumerate().take(tdnn_channels) {
             for frame in 0..frames {
                 let index = channel * frames + frame;
                 output[index] = output[index] * scale + input[index];
@@ -321,7 +446,7 @@ impl SeRes2NetBlock {
 }
 
 #[derive(Debug)]
-struct EcapaWeights {
+pub(crate) struct EcapaBackbone {
     stem: TdnnBlock,
     blocks: Vec<SeRes2NetBlock>,
     mfa: TdnnBlock,
@@ -329,73 +454,127 @@ struct EcapaWeights {
     asp_conv: Conv1d,
     asp_norm: FoldedBatchNorm,
     projection: Conv1d,
+    config: EcapaBackboneConfig,
 }
 
-impl EcapaWeights {
-    fn bind(file: &GgufFile) -> Result<Self> {
-        verify_manifest(file)?;
+impl EcapaBackbone {
+    pub(crate) fn bind(file: &GgufFile, config: EcapaBackboneConfig) -> Result<Self> {
+        config.validate()?;
+        verify_manifest(file, &config)?;
         Ok(Self {
-            stem: TdnnBlock::bind(file, "blocks.0", INPUT_DIM, TDNN_CHANNELS, 5, 1)?,
-            blocks: [2, 3, 4]
+            stem: TdnnBlock::bind(
+                file,
+                &config.tensor_name("blocks.0"),
+                config.input_dim,
+                config.tdnn_channels,
+                5,
+                1,
+                config.bn_eps,
+            )?,
+            blocks: config
+                .block_kernels
                 .into_iter()
+                .zip(config.block_dilations)
                 .enumerate()
-                .map(|(index, dilation)| SeRes2NetBlock::bind(file, index + 1, dilation))
+                .map(|(index, (kernel, dilation))| {
+                    SeRes2NetBlock::bind(file, &config, index + 1, kernel, dilation)
+                })
                 .collect::<Result<Vec<_>>>()?,
-            mfa: TdnnBlock::bind(file, "mfa", MFA_CHANNELS, MFA_CHANNELS, 1, 1)?,
+            mfa: TdnnBlock::bind(
+                file,
+                &config.tensor_name("mfa"),
+                config.mfa_channels,
+                config.mfa_channels,
+                1,
+                1,
+                config.bn_eps,
+            )?,
             asp_tdnn: TdnnBlock::bind(
                 file,
-                "asp.tdnn",
-                MFA_CHANNELS * 3,
-                ATTENTION_CHANNELS,
+                &config.tensor_name("asp.tdnn"),
+                config.mfa_channels * 3,
+                config.attention_channels,
                 1,
                 1,
+                config.bn_eps,
             )?,
             asp_conv: Conv1d::bind(
                 file,
-                "asp.conv.conv",
-                ATTENTION_CHANNELS,
-                MFA_CHANNELS,
+                &config.tensor_name("asp.conv.conv"),
+                config.attention_channels,
+                config.mfa_channels,
                 1,
                 1,
             )?,
-            asp_norm: FoldedBatchNorm::bind(file, "asp_bn.norm", STATS_CHANNELS)?,
-            projection: Conv1d::bind(file, "fc.conv", STATS_CHANNELS, EMBED_DIM, 1, 1)?,
+            asp_norm: FoldedBatchNorm::bind(
+                file,
+                &config.tensor_name("asp_bn.norm"),
+                config.mfa_channels * 2,
+                config.bn_eps,
+            )?,
+            projection: Conv1d::bind(
+                file,
+                &config.tensor_name("fc.conv"),
+                config.mfa_channels * 2,
+                config.embedding_dim,
+                1,
+                1,
+            )?,
+            config,
         })
     }
 
-    fn embed_features(
+    pub(crate) fn embed_features(
         &self,
         features: &[f32],
         frames: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
-        if features.len() != frames * INPUT_DIM {
+        if features.len() != frames * self.config.input_dim {
             return Err(VokraError::InvalidArgument(format!(
-                "ecapa_tdnn: feature buffer has {} values, expected {frames} x {INPUT_DIM}",
-                features.len()
+                "{}: feature buffer has {} values, expected {frames} x {}",
+                self.config.diagnostic,
+                features.len(),
+                self.config.input_dim
             )));
         }
-        if frames <= 4 {
+        let max_padding = self.config.max_reflect_padding();
+        if frames <= max_padding {
             return Err(VokraError::InvalidArgument(format!(
-                "ecapa_tdnn: {frames} feature frames are too short for dilation-4 reflect padding"
+                "{}: {frames} feature frames are too short for reflect padding {max_padding}",
+                self.config.diagnostic
             )));
         }
-        let mut channel_major = vec![0.0; INPUT_DIM * frames];
+        let mut channel_major = vec![0.0; self.config.input_dim * frames];
         for frame in 0..frames {
-            for channel in 0..INPUT_DIM {
-                channel_major[channel * frames + frame] = features[frame * INPUT_DIM + channel];
+            for channel in 0..self.config.input_dim {
+                channel_major[channel * frames + frame] =
+                    features[frame * self.config.input_dim + channel];
             }
         }
 
         let mut hidden = self.stem.forward(&channel_major, frames, compute)?;
-        let mut aggregate = Vec::with_capacity(MFA_CHANNELS * frames);
+        let mut aggregate = Vec::with_capacity(self.config.mfa_channels * frames);
         for block in &self.blocks {
-            hidden = block.forward(&hidden, frames, compute)?;
+            hidden = block.forward(
+                &hidden,
+                frames,
+                self.config.tdnn_channels,
+                self.config.res2net_scale,
+                compute,
+            )?;
             aggregate.extend_from_slice(&hidden);
         }
         let mfa = self.mfa.forward(&aggregate, frames, compute)?;
-        let mut pooled =
-            attentive_statistics_pool(&mfa, frames, &self.asp_tdnn, &self.asp_conv, compute)?;
+        let mut pooled = attentive_statistics_pool(
+            &mfa,
+            frames,
+            self.config.mfa_channels,
+            self.config.stats_eps,
+            &self.asp_tdnn,
+            &self.asp_conv,
+            compute,
+        )?;
         self.asp_norm.apply(&mut pooled, 1);
         self.projection.forward(&pooled, 1, compute)
     }
@@ -404,7 +583,7 @@ impl EcapaWeights {
 /// Complete native ECAPA-TDNN inference handle.
 #[derive(Debug)]
 pub struct EcapaTdnn {
-    weights: EcapaWeights,
+    weights: EcapaBackbone,
     frontend: SpeechbrainFbankAttrs,
     weight_license: LicenseClass,
     backend: BackendKind,
@@ -422,7 +601,7 @@ impl EcapaTdnn {
             .and_then(|value| value.as_str())
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
-        let weights = EcapaWeights::bind(file)?;
+        let weights = EcapaBackbone::bind(file, EcapaBackboneConfig::speaker())?;
         verify_optional_contract(file)?;
         Ok(Self {
             weights,
@@ -499,20 +678,22 @@ impl SpeakerEngine for EcapaTdnn {
 fn attentive_statistics_pool(
     input: &[f32],
     frames: usize,
+    mfa_channels: usize,
+    stats_eps: f32,
     attention_tdnn: &TdnnBlock,
     attention_conv: &Conv1d,
     compute: &Compute,
 ) -> Result<Vec<f32>> {
-    if input.len() != MFA_CHANNELS * frames || frames == 0 {
+    if input.len() != mfa_channels * frames || frames == 0 {
         return Err(VokraError::InvalidArgument(format!(
             "ecapa_tdnn: attentive pool expected {} x {frames}, got {} values",
-            MFA_CHANNELS,
+            mfa_channels,
             input.len()
         )));
     }
-    let mut context = vec![0.0; MFA_CHANNELS * 3 * frames];
-    context[..MFA_CHANNELS * frames].copy_from_slice(input);
-    for channel in 0..MFA_CHANNELS {
+    let mut context = vec![0.0; mfa_channels * 3 * frames];
+    context[..mfa_channels * frames].copy_from_slice(input);
+    for channel in 0..mfa_channels {
         let row = &input[channel * frames..(channel + 1) * frames];
         let mean = row.iter().copied().sum::<f32>() / frames as f32;
         let variance = row
@@ -523,10 +704,10 @@ fn attentive_statistics_pool(
             })
             .sum::<f32>()
             / frames as f32;
-        let std = variance.max(STATS_EPS).sqrt();
+        let std = variance.max(stats_eps).sqrt();
         for frame in 0..frames {
-            context[(MFA_CHANNELS + channel) * frames + frame] = mean;
-            context[(MFA_CHANNELS * 2 + channel) * frames + frame] = std;
+            context[(mfa_channels + channel) * frames + frame] = mean;
+            context[(mfa_channels * 2 + channel) * frames + frame] = std;
         }
     }
 
@@ -536,10 +717,10 @@ fn attentive_statistics_pool(
     }
     let logits = attention_conv.forward(&attention, frames, compute)?;
     let mut weights = vec![0.0; logits.len()];
-    compute.softmax_f32(&logits, &mut weights, MFA_CHANNELS, frames)?;
+    compute.softmax_f32(&logits, &mut weights, mfa_channels, frames)?;
 
-    let mut pooled = vec![0.0; STATS_CHANNELS];
-    for channel in 0..MFA_CHANNELS {
+    let mut pooled = vec![0.0; mfa_channels * 2];
+    for channel in 0..mfa_channels {
         let row = &input[channel * frames..(channel + 1) * frames];
         let probability = &weights[channel * frames..(channel + 1) * frames];
         let mean = row
@@ -556,7 +737,7 @@ fn attentive_statistics_pool(
             })
             .sum::<f32>();
         pooled[channel] = mean;
-        pooled[MFA_CHANNELS + channel] = variance.max(STATS_EPS).sqrt();
+        pooled[mfa_channels + channel] = variance.max(stats_eps).sqrt();
     }
     Ok(pooled)
 }
@@ -610,66 +791,89 @@ fn expand_dilated_kernel(
     output
 }
 
-fn expected_manifest() -> Vec<(String, Vec<usize>)> {
+fn expected_manifest(config: &EcapaBackboneConfig) -> Vec<(String, Vec<usize>)> {
     let mut expected = Vec::with_capacity(TENSOR_COUNT);
-    push_tdnn(&mut expected, "blocks.0", INPUT_DIM, TDNN_CHANNELS, 5);
+    push_tdnn(
+        &mut expected,
+        &config.tensor_name("blocks.0"),
+        config.input_dim,
+        config.tdnn_channels,
+        5,
+    );
+    let res2net_channels = config.tdnn_channels / config.res2net_scale;
     for block in 1..=3 {
-        let prefix = format!("blocks.{block}");
+        let prefix = config.tensor_name(&format!("blocks.{block}"));
         push_tdnn(
             &mut expected,
             &format!("{prefix}.tdnn1"),
-            TDNN_CHANNELS,
-            TDNN_CHANNELS,
+            config.tdnn_channels,
+            config.tdnn_channels,
             1,
         );
-        for inner in 0..RES2NET_SCALE - 1 {
+        for inner in 0..config.res2net_scale - 1 {
             push_tdnn(
                 &mut expected,
                 &format!("{prefix}.res2net_block.blocks.{inner}"),
-                RES2NET_CHANNELS,
-                RES2NET_CHANNELS,
-                3,
+                res2net_channels,
+                res2net_channels,
+                config.block_kernels[block - 1],
             );
         }
         push_tdnn(
             &mut expected,
             &format!("{prefix}.tdnn2"),
-            TDNN_CHANNELS,
-            TDNN_CHANNELS,
+            config.tdnn_channels,
+            config.tdnn_channels,
             1,
         );
         push_conv(
             &mut expected,
             &format!("{prefix}.se_block.conv1.conv"),
-            TDNN_CHANNELS,
-            ATTENTION_CHANNELS,
+            config.tdnn_channels,
+            config.attention_channels,
             1,
         );
         push_conv(
             &mut expected,
             &format!("{prefix}.se_block.conv2.conv"),
-            ATTENTION_CHANNELS,
-            TDNN_CHANNELS,
+            config.attention_channels,
+            config.tdnn_channels,
             1,
         );
     }
-    push_tdnn(&mut expected, "mfa", MFA_CHANNELS, MFA_CHANNELS, 1);
     push_tdnn(
         &mut expected,
-        "asp.tdnn",
-        MFA_CHANNELS * 3,
-        ATTENTION_CHANNELS,
+        &config.tensor_name("mfa"),
+        config.mfa_channels,
+        config.mfa_channels,
+        1,
+    );
+    push_tdnn(
+        &mut expected,
+        &config.tensor_name("asp.tdnn"),
+        config.mfa_channels * 3,
+        config.attention_channels,
         1,
     );
     push_conv(
         &mut expected,
-        "asp.conv.conv",
-        ATTENTION_CHANNELS,
-        MFA_CHANNELS,
+        &config.tensor_name("asp.conv.conv"),
+        config.attention_channels,
+        config.mfa_channels,
         1,
     );
-    push_norm(&mut expected, "asp_bn.norm", STATS_CHANNELS);
-    push_conv(&mut expected, "fc.conv", STATS_CHANNELS, EMBED_DIM, 1);
+    push_norm(
+        &mut expected,
+        &config.tensor_name("asp_bn.norm"),
+        config.mfa_channels * 2,
+    );
+    push_conv(
+        &mut expected,
+        &config.tensor_name("fc.conv"),
+        config.mfa_channels * 2,
+        config.embedding_dim,
+        1,
+    );
     expected
 }
 
@@ -710,14 +914,19 @@ fn push_norm(expected: &mut Vec<(String, Vec<usize>)>, prefix: &str, channels: u
     }
 }
 
-fn verify_manifest(file: &GgufFile) -> Result<()> {
-    if file.tensors().len() != TENSOR_COUNT {
+fn verify_manifest(file: &GgufFile, config: &EcapaBackboneConfig) -> Result<()> {
+    let backbone_count = file
+        .tensors()
+        .iter()
+        .filter(|tensor| tensor.name.starts_with(config.tensor_prefix))
+        .count();
+    if backbone_count != TENSOR_COUNT {
         return Err(VokraError::ModelLoad(format!(
-            "ecapa_tdnn: unsupported tensor manifest: count={}, expected exactly {TENSOR_COUNT}",
-            file.tensors().len()
+            "{}: unsupported ECAPA tensor manifest under prefix `{}`: count={backbone_count}, expected exactly {TENSOR_COUNT}",
+            config.diagnostic, config.tensor_prefix
         )));
     }
-    let expected = expected_manifest();
+    let expected = expected_manifest(config);
     debug_assert_eq!(expected.len(), TENSOR_COUNT);
     for (name, dims) in expected {
         check_dims(file, &name, &dims)?;
@@ -824,7 +1033,7 @@ mod tests {
 
     #[test]
     fn manifest_is_exactly_the_public_200_tensor_layout() {
-        let manifest = expected_manifest();
+        let manifest = expected_manifest(&EcapaBackboneConfig::speaker());
         assert_eq!(manifest.len(), TENSOR_COUNT);
         let mut names = manifest.iter().map(|(name, _)| name).collect::<Vec<_>>();
         names.sort_unstable();
@@ -832,6 +1041,37 @@ mod tests {
         assert_eq!(names.len(), TENSOR_COUNT);
         assert!(manifest.iter().any(|(name, dims)| {
             name == "asp.tdnn.conv.conv.weight" && dims == &[128, 9_216, 1]
+        }));
+    }
+
+    #[test]
+    fn prefixed_variant_manifest_uses_configured_axes() {
+        let config = EcapaBackboneConfig {
+            input_dim: 60,
+            tdnn_channels: 1_024,
+            res2net_scale: 8,
+            mfa_channels: 3_072,
+            attention_channels: 128,
+            embedding_dim: 256,
+            block_kernels: [3, 3, 1],
+            block_dilations: [2, 3, 4],
+            bn_eps: 1.0e-5,
+            stats_eps: 1.0e-12,
+            tensor_prefix: "embedding_model.",
+            diagnostic: "test_ecapa",
+        };
+        config.validate().unwrap();
+        let manifest = expected_manifest(&config);
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        assert!(manifest.iter().any(|(name, dims)| {
+            name == "embedding_model.blocks.0.conv.conv.weight" && dims == &[1_024, 60, 5]
+        }));
+        assert!(manifest.iter().any(|(name, dims)| {
+            name == "embedding_model.blocks.3.res2net_block.blocks.0.conv.conv.weight"
+                && dims == &[128, 128, 1]
+        }));
+        assert!(manifest.iter().any(|(name, dims)| {
+            name == "embedding_model.fc.conv.weight" && dims == &[256, 6_144, 1]
         }));
     }
 

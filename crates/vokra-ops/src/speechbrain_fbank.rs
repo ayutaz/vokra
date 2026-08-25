@@ -64,8 +64,12 @@ impl SpeechbrainFbankAttrs {
     }
 
     /// Exact 80-bin frontend used by
-    /// `speechbrain/spkrec-ecapa-voxceleb` and the ECAPA trunk of
-    /// `speechbrain/lang-id-voxlingua107-ecapa`.
+    /// `speechbrain/spkrec-ecapa-voxceleb`.
+    ///
+    /// SpeechBrain Lang-ID variants reuse the same frontend algorithm but
+    /// carry their own checked mel width (60 for VoxLingua107, 80 for
+    /// CommonLanguage); their runtime binder updates only `n_mels` after
+    /// validating the prepared-v2 artifact contract.
     #[must_use]
     pub fn ecapa_voxceleb() -> Self {
         Self::voxceleb(80)

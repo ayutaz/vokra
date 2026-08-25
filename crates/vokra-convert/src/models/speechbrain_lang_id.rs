@@ -306,11 +306,11 @@ impl PreparedContract {
             stats_eps: json_f32(&contract, "stats_eps")?,
             leaky_relu_slope,
         };
-        parsed.validate()?;
+        parsed.validate(variant)?;
         Ok(parsed)
     }
 
-    fn validate(&self) -> Result<(), ConvertError> {
+    fn validate(&self, variant: Variant) -> Result<(), ConvertError> {
         for (name, value) in [
             ("sample_rate", self.sample_rate),
             ("n_mels", self.n_mels),
@@ -368,6 +368,53 @@ impl PreparedContract {
         {
             return Err(ConvertError::Parse(format!(
                 "lang_id_ecapa: contract `leaky_relu_slope` must be finite and positive, got {value}"
+            )));
+        }
+        let (n_mels, embedding_dim, block_kernels, class_count, hidden, slope) = match variant {
+            Variant::VoxLingua107 => (60, 256, &[3, 3, 3][..], 107, Some(512), Some(0.01)),
+            Variant::CommonLanguage => (80, 192, &[3, 3, 1][..], 45, None, None),
+        };
+        for (name, actual, expected) in [
+            ("sample_rate", self.sample_rate, 16_000),
+            ("n_mels", self.n_mels, n_mels),
+            ("tdnn_channels", self.tdnn_channels, 1_024),
+            ("mfa_channels", self.mfa_channels, 3_072),
+            ("attention_channels", self.attention_channels, 128),
+            ("res2net_scale", self.res2net_scale, 8),
+            ("embedding_dim", self.embedding_dim, embedding_dim),
+            ("class_count", self.class_count, class_count),
+        ] {
+            if actual != expected {
+                return Err(ConvertError::Parse(format!(
+                    "lang_id_ecapa: {} contract `{name}` is {actual}, expected official value {expected}",
+                    variant.name()
+                )));
+            }
+        }
+        if self.block_kernels.as_slice() != block_kernels
+            || self.block_dilations.as_slice() != &[2, 3, 4]
+        {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: {} block contract is kernels={:?} dilations={:?}, expected kernels={block_kernels:?} dilations=[2, 3, 4]",
+                variant.name(),
+                self.block_kernels,
+                self.block_dilations
+            )));
+        }
+        if self.classifier_hidden_dim != hidden {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: {} classifier hidden width {:?}, expected {hidden:?}",
+                variant.name(),
+                self.classifier_hidden_dim
+            )));
+        }
+        if self.bn_eps.to_bits() != 1.0e-5_f32.to_bits()
+            || self.stats_eps.to_bits() != 1.0e-12_f32.to_bits()
+            || self.leaky_relu_slope.map(f32::to_bits) != slope.map(f32::to_bits)
+        {
+            return Err(ConvertError::Parse(format!(
+                "lang_id_ecapa: {} normalization contract does not match the official release",
+                variant.name()
             )));
         }
         Ok(())
@@ -756,6 +803,7 @@ mod tests {
             n_mels,
             embedding_dim,
             block_kernels,
+            class_count,
             classifier_kind,
             hidden,
             slope,
@@ -766,6 +814,7 @@ mod tests {
                 60,
                 256,
                 "[3,3,3]",
+                107,
                 "xvector-mlp-log-softmax-v1",
                 "512",
                 "0.01",
@@ -776,13 +825,18 @@ mod tests {
                 80,
                 192,
                 "[3,3,1]",
+                45,
                 "ecapa-cosine-v1",
                 "null",
                 "null",
             ),
         };
+        let labels = (0..class_count)
+            .map(|index| format!(r#""label-{index:03}""#))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            r#"{{"format":"{PREPARED_FORMAT}","model_name":"{model_name}","source":"{source}","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sample_rate":16000,"n_mels":{n_mels},"tdnn_channels":1024,"mfa_channels":3072,"attention_channels":128,"res2net_scale":8,"block_kernels":{block_kernels},"block_dilations":[2,3,4],"embedding_dim":{embedding_dim},"classifier_kind":"{classifier_kind}","classifier_hidden_dim":{hidden},"class_count":2,"labels":["en","ja"],"bn_eps":0.00001,"stats_eps":0.000000000001,"leaky_relu_slope":{slope}}}"#
+            r#"{{"format":"{PREPARED_FORMAT}","model_name":"{model_name}","source":"{source}","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sample_rate":16000,"n_mels":{n_mels},"tdnn_channels":1024,"mfa_channels":3072,"attention_channels":128,"res2net_scale":8,"block_kernels":{block_kernels},"block_dilations":[2,3,4],"embedding_dim":{embedding_dim},"classifier_kind":"{classifier_kind}","classifier_hidden_dim":{hidden},"class_count":{class_count},"labels":[{labels}],"bn_eps":0.00001,"stats_eps":0.000000000001,"leaky_relu_slope":{slope}}}"#
         )
     }
 
@@ -817,7 +871,8 @@ mod tests {
         assert_eq!(vox.block_kernels, [3, 3, 3]);
         assert_eq!(vox.block_dilations, [2, 3, 4]);
         assert_eq!(vox.classifier_hidden_dim, Some(512));
-        assert_eq!(vox.labels, ["en", "ja"]);
+        assert_eq!(vox.labels.len(), 107);
+        assert_eq!(vox.labels[0], "label-000");
 
         let common = PreparedContract::parse(
             &prepared_header(Variant::CommonLanguage, true),
@@ -827,6 +882,7 @@ mod tests {
         assert_eq!(common.n_mels, 80);
         assert_eq!(common.embedding_dim, 192);
         assert_eq!(common.block_kernels, [3, 3, 1]);
+        assert_eq!(common.labels.len(), 45);
         assert_eq!(common.classifier_hidden_dim, None);
         assert_eq!(common.classifier_kind, "ecapa-cosine-v1");
     }
@@ -884,13 +940,19 @@ mod tests {
             .and_then(GgufMetadataValue::as_array)
             .unwrap();
         assert_eq!(labels.element_type, GgufValueType::String);
+        let expected_labels = (0..107)
+            .map(|index| format!("label-{index:03}"))
+            .collect::<Vec<_>>();
         assert_eq!(
             labels
                 .values
                 .iter()
                 .filter_map(GgufMetadataValue::as_str)
                 .collect::<Vec<_>>(),
-            ["en", "ja"]
+            expected_labels
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
         );
     }
 }

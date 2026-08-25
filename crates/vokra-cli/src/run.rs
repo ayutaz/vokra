@@ -22,7 +22,7 @@ use crate::runtime_contracts::{
 use crate::wav;
 
 pub(crate) const USAGE: &str = "\
-vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker embedding
+vokra-cli run — load a GGUF and run VAD / ASR / TTS / speaker / language ID
 
 USAGE:
     vokra-cli run --model <model.gguf> [--input <in.wav>] [--text <string>] [--output <out.wav>]
@@ -34,6 +34,7 @@ USAGE:
     vokra-cli run --model <wav2vec2.gguf> --input <16k-mono.wav> [--output <features.f32>]
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
+    vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav> [--output <scores.f32>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
@@ -80,14 +81,14 @@ USAGE:
 
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
-                                speaker embedding / denoise / separation /
+                                speaker / language ID / denoise / separation /
                                 segmentation / F0).
                                 An arch vokra-models binds but this CLI has no
                                 task for is refused with the binding module and
                                 the library entry point to call — never a bare
                                 `unsupported model arch` (FR-EX-08).
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
-                                denoise, separation, segmentation and F0; optional recorded
+                                language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
                                 path, FR-OP-60). For NKF-AEC this is the mic
                                 signal and must be paired with --far-end.
@@ -739,6 +740,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
+        | ModelTask::LangId
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
         | ModelTask::WavTokenizerCodec
@@ -1065,6 +1067,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::Speaker => {
             run_speaker(&session, &a)?;
         }
+        ModelTask::LangId => {
+            run_lang_id(&session, &a)?;
+        }
         ModelTask::Sbv2 => {
             run_sbv2(&session, &a)?;
         }
@@ -1186,6 +1191,45 @@ fn run_utmos(session: &Session, args: &RunArgs) -> Result<(), String> {
         .score(&clip.samples, clip.sample_rate)
         .map_err(|error| format!("run (UTMOS22-strong): {error}"))?;
     println!("utmos: score={score:.9}");
+    Ok(())
+}
+
+/// Runs the strict SpeechBrain Lang-ID frontend/backbone/classifier and prints
+/// the five highest official labels. `--output` writes the complete score
+/// vector as little-endian f32 in label order.
+fn run_lang_id(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (Lang-ID): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let model = vokra_models::lang_id::LangIdEcapa::from_gguf(session.gguf())
+        .map_err(|error| format!("run (Lang-ID): {error}"))?
+        .with_backend(args.backend);
+    let scores = model
+        .identify_pcm(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (Lang-ID): {error}"))?;
+    let mut ranked = scores.iter().copied().enumerate().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
+    for (rank, (index, score)) in ranked.into_iter().take(5).enumerate() {
+        println!(
+            "lang-id[{}]: index={index} label={} score={score:.9}",
+            rank + 1,
+            model.labels()[index]
+        );
+    }
+    if let Some(output) = args.output.as_deref() {
+        let bytes = scores
+            .iter()
+            .flat_map(|score| score.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (Lang-ID): --output {output}: {error}"))?;
+        println!(
+            "lang-id: {} scores in official label order -> {output}",
+            scores.len()
+        );
+    }
     Ok(())
 }
 
@@ -5647,6 +5691,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);

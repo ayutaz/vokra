@@ -616,6 +616,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                  embedding itself (FR-EX-08: refusing to fabricate a measurement)"
                 .to_owned());
         }
+        ModelTask::LangId => {
+            return Err(
+                "bench: arch `lang_id_ecapa` has no settled benchmark task yet — use `vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav>` for the complete CPU/Metal forward"
+                    .to_owned(),
+            );
+        }
         // SBV2 (Task 38): the `run` arm needs the `--bert-ja` / `--bert-en`
         // side-car GGUFs `bench`'s generic `--model`-only dispatch has no
         // flags for, and — separately — `SbV2Model::from_gguf`'s loaded

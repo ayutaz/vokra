@@ -37,7 +37,7 @@ USAGE:
 
 SUBCOMMANDS:
     run       load a GGUF and run its task (VAD probs / ASR text / TTS audio,
-              incl. SBV2 multi-GGUF / speaker embedding + cosine compare)
+              incl. SBV2 multi-GGUF / speaker embedding / spoken-language ID)
     convert   convert an upstream checkpoint to a Vokra GGUF (offline tool,
               incl. --model sbv2 / deberta-v2 / deberta-v3)
     bench     measure RTF / TTFA / jitter / p50-p95-p99, optional regression gate

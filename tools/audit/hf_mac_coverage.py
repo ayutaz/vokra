@@ -88,8 +88,8 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "partial",
         "the public GGUF contains only 200 ECAPA embedding tensors: it omits the official "
         "XVector classifier, ordered 107-label encoder and the variant-specific 60-mel/256-d "
-        "contract; the strict converter now requires the official prepared checkpoint, but "
-        "the live artifact needs an authorized gated replacement",
+        "contract; the strict converter/runtime now require and execute the official prepared "
+        "checkpoint, but the live artifact needs an authorized gated replacement",
     ),
 }
 
@@ -118,6 +118,7 @@ METAL_CODE_ARCHES = {
     "hubert",
     "kokoro-82m-istftnet",
     "kotoba-whisper",
+    "lang_id_ecapa",
     "melotts",
     "metricgan_plus",
     "mimi",

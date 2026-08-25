@@ -539,7 +539,7 @@ remain fail-closed rather than being counted as runnable:
 |---|---|
 | `vokra/speechbrain-spkrec-ecapa-voxceleb` at `3dc7704b2dcb80b8ea8eb2d3db7280f682ac3657` | The 83,239,904-byte `spkrec-ecapa-voxceleb.restamped.gguf` (SHA-256 `75e74d4e41d16bf2af5a0176c189fc1c7f7597fe66aae47cacef17343cbb4c01`) fails GGUF parsing with tensor data out of bounds at `mfa.conv.conv.weight`; it requires a gated replacement. |
 | `vokra/voice-gender-classifier` | Mis-stamped as canonical ECAPA, but carries a distinct 202-tensor `conv1/layer1-3/attention/fc6/fc7` classifier topology and incorrect provenance; the 200-tensor binder rejects it. |
-| `vokra/lang-id-voxlingua107` | Carries 200 embedding tensors but no official XVector classifier, ordered 107-entry label map, or variant-specific 60-mel/256-d contract. The converter now refuses embedding-only inputs and accepts only the output of `tools/parity/speechbrain_lang_id_prepare_checkpoint.py`; runtime classification and an authorized gated replacement remain pending. |
+| `vokra/lang-id-voxlingua107` | Carries 200 embedding tensors but no official XVector classifier, ordered 107-entry label map, or variant-specific 60-mel/256-d contract. The converter and complete CPU/Metal runtime now refuse embedding-only inputs and accept only the output of `tools/parity/speechbrain_lang_id_prepare_checkpoint.py`; an authorized gated replacement and real-device parity remain pending. |
 
 The prepared Lang-ID contract deliberately does not alias the two SpeechBrain
 releases. VoxLingua107 is 60-mel → 256-d ECAPA → XVector MLP + log-softmax,
@@ -550,6 +550,15 @@ Prepared layout v2 also canonicalizes the complete official classifier state
 and persists the three ECAPA residual-block kernel and dilation values; a v1
 sidecar or a classifier with extra/unclaimed state is rejected rather than
 being interpreted heuristically.
+
+The source-tree runtime now reuses the strict 200-tensor ECAPA backbone for
+both variants, executes the official XVector log-softmax or cosine head, and
+routes Conv1d, attentive-pooling Softmax and classifier GEMV through the
+selected CPU/Metal `Compute` backend. `vokra-cli run` prints the five highest
+ordered official labels and can write the complete score vector. This is code
+path completion only: independent real-checkpoint CPU parity and Apple Metal
+parity remain open until the VAST credential is rotated, and the current live
+embedding-only Hub artifact remains intentionally unrunnable.
 
 The SHA-256 above is the value on the live fixed-revision model card and the
 downloaded 83,239,808-byte file; it corrects a stale ledger transcription that
