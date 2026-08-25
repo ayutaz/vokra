@@ -54,7 +54,7 @@ USAGE:
     vokra-cli run --model <metricgan-plus.gguf> --input <16k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <deepfilternet3.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
-    vokra-cli run --model <sepformer.gguf> --input <mixture.wav> [--output <separated.wav>]
+    vokra-cli run --model <separator.gguf> --input <mixture.wav> [--output <separated.wav>]
     vokra-cli run --model <conv-tasnet.gguf> --input <noisy.wav> [--output <enhanced.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
@@ -2067,9 +2067,17 @@ fn run_separation(session: &Session, a: &RunArgs) -> Result<(), String> {
                     .with_backend(a.backend),
             ),
         ),
+        "tiger_separator" => (
+            "tiger",
+            Box::new(
+                vokra_models::tiger::TigerSeparator::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(a.backend),
+            ),
+        ),
         other => {
             return Err(format!(
-                "run (separation): internal dispatch error: arch `{other}` is not sepformer or conv_tasnet"
+                "run (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, or tiger_separator"
             ));
         }
     };

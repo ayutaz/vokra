@@ -880,9 +880,17 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                             .with_backend(args.backend),
                     ),
                 ),
+                "tiger_separator" => (
+                    "tiger",
+                    Box::new(
+                        vokra_models::tiger::TigerSeparator::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
                 other => {
                     return Err(format!(
-                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer or conv_tasnet"
+                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, or tiger_separator"
                     ));
                 }
             };

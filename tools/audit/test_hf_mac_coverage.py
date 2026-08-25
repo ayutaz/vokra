@@ -66,6 +66,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "utmos",
             "metricgan_plus",
             "miocodec",
+            "tiger_separator",
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
@@ -142,6 +143,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("metricgan-plus.gguf",),
             "metricgan_plus",
         )
+        tiger = audit.RepoRecord(
+            "vokra/tiger-dnr",
+            "abc",
+            ("tiger-dnr.gguf",),
+            "tiger_separator",
+        )
         missing = audit.RepoRecord("vokra/other", "abc", ("model.gguf",), "other")
         bad_ecapa = audit.RepoRecord(
             "vokra/voice-gender-classifier", "abc", ("model.gguf",), "ecapa_tdnn"
@@ -196,6 +203,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(utmos, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(metricgan, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(tiger, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(corrupt_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(missing, routed, bound).cpu_code, "no-runtime-binder")

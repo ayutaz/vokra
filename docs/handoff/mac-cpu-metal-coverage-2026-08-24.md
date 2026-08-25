@@ -19,6 +19,13 @@
 > reachability move is reflected below. VAST typecheck and independent
 > official-reference CPU/Metal parity remain pending, so this is not yet a
 > numerical-pass verdict.
+>
+> **2026-08-26 TIGER source wave:** the two public `tiger_separator` GGUFs now
+> have exact 2,304/838-tensor contracts, complete TIGER-DnR/TIGER-speech
+> waveform forwards and CLI/bench routes for CPU and Metal. The two-repository
+> code-reachability move is reflected below. The independent official-import
+> dumper is ready, but VAST typecheck/CPU parity and Apple-device Metal parity
+> remain pending, so these totals are not a numerical-pass claim.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -36,7 +43,7 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
-MioCodec's decode-only route,
+MioCodec's decode-only route, both TIGER separator routes,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -45,13 +52,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 95 |
+| Complete CPU route for the live public artifact | 97 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 49 |
+| No complete runtime binder | 47 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 95 |
+| Complete Metal code route among the CPU-complete set | 97 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 98 |
+| Metal blocked by missing/partial CPU forward | 96 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -64,7 +71,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 95 repositories with a complete Metal code route are the Audiobox
+The 97 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -93,6 +100,7 @@ They also include the decode-only 25 Hz / 44.1 kHz codec
 `vokra/miocodec-25hz-44khz-v2`.
 They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
+They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
 live-artifact-complete list (see below). RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
@@ -100,7 +108,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 98 Metal-blocked repositories first need a complete released-
+remaining 96 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2115,11 +2123,60 @@ metadata, shell-policy, Python syntax/unit checks and the package-safe
 `vokra-convert` tests. It did not run MetricGAN+ inference or a
 `vokra-models`/workspace Cargo command.
 
-The read-only live inventory after both code routes is the 92/49/52 CPU split
-and 92/101 Metal split recorded at the top of this ledger. Heavy verification
+The read-only live inventory after the subsequent source waves is the
+97/49/47 CPU split and 97/96 Metal split recorded at the top of this ledger.
+Heavy verification
 must still run on a disposable VAST instance, retrieve its evidence and
 destroy the instance. This does not authorize any Hugging Face upload or
 artifact replacement.
+
+### TIGER-DnR and TIGER-speech source wave
+
+The public DnR GGUF at revision
+`8c8c78888684ecc8eef6beca3434c7ec9247bb70` is 17,083,840 bytes with 2,304
+F32 tensors and SHA-256
+`8737e4993efefbfec57ed7a0924503d626d07e410f456ff5693402852784017f`.
+The public speech GGUF at revision
+`e50793924eaae3897cee01f7f7791d14c296c7ed` is 3,351,232 bytes with 838
+F32 tensors and SHA-256
+`1fc11c3476bb6938410935e4f1877dcc2fb82005bf4ec0503dc01c013c29e562`.
+Their complete name/shape manifests are pinned independently as
+`f1daf2c510ef2c272711963a940e1dad74b795a1f04b2b1a524e00c61d307c02`
+and `dd0f9c0f252c9df0498d1e4c516df9ec1bf1230b64b6fbeec2147525cb711ee1`.
+New conversion accepts only the exact all-F32 official checkpoints/configs
+and records immutable upstream, source, config, public-artifact and license
+hashes. The audited historical public pair may omit those additive metadata
+keys only while its exact identity, provenance and manifest tuple matches.
+
+The native forward implements the official periodic-Hann centered STFT,
+frequency-band GroupNorm/projection, eight interleaved frequency/frame UConv
+and attention iterations, grouped complex mask heads with the official
+sum-to-one correction, and length-preserving iSTFT. DnR additionally preserves
+the official 12-second-window/4-second-hop overlap wrapper and selects dialog,
+effect and music from the three separately trained cores in the released
+order. Learned GEMM, LayerNorm, Softmax and grouped Conv1D use one selected
+`Compute` backend. Host-side STFT/iSTFT, layouts, interpolation, PReLU and
+sigmoid are explicit deterministic glue; there is no hidden CPU model
+fallback. Unsupported backends fail before the learned forward.
+
+`tools/parity/tiger_dump_reference.py` imports `TIGER` / `TIGERDNR` from the
+exact clean official source revision
+`9f18d4a10a7137e1ce8052cfb62215179f1287b6`, verifies the MIT LICENSE and
+variant source-file hashes, strictly loads the pinned Apache-2.0
+safetensors/config pair, and calls the upstream public forward. The Rust real
+parity test requires explicitly recorded max-absolute and relative-L1 bounds;
+it cannot silently pass with guessed tolerances. Its stdlib-only self-test,
+the three focused converter contract tests, architecture handshake, bound-arch
+coverage gate, formatting, diff check and Mac-coverage audit unit tests pass.
+The live read-only audit reports CPU `full=97`, `partial=49`,
+`no-runtime-binder=47`, `not-artifact=1` and Metal `full=97`,
+`blocked-by-cpu=96`, `not-artifact=1`.
+
+No TIGER model inference, `vokra-models` Cargo command or workspace Cargo
+command ran on the maintainer Mac. VAST real-weight compilation and official
+CPU parity are waiting for a rotated working VAST credential; Apple Metal
+waveform parity remains a separate explicitly scheduled Mac run. No Hugging
+Face upload or public artifact replacement was performed or authorized.
 
 ## Remaining execution order
 

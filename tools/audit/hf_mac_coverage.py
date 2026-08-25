@@ -155,6 +155,7 @@ METAL_CODE_ARCHES = {
     "smart_turn",
     "speecht5_hifigan",
     "ten_vad",
+    "tiger_separator",
     "titanet-large",
     "utmos",
     "vocos",

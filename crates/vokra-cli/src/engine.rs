@@ -201,7 +201,7 @@ pub(crate) enum ModelTask {
     /// model from `session.gguf()` — the [`Session`] facade has no denoise
     /// engine slot (the same reason [`ModelTask::Speaker`] binds late).
     Denoise,
-    /// Speech source separation or single-stream enhancement through SepFormer.
+    /// Speech/music source separation or enhancement through a native separator.
     ///
     /// The dispatch returns a bare session and the run/bench arm binds the
     /// concrete model once from `session.gguf()`, preserving the variant's
@@ -454,6 +454,7 @@ const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
+const ARCH_TIGER: &str = "tiger_separator";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
@@ -1124,7 +1125,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // (FR-EX-08).
             Ok((session, ModelTask::Denoise))
         }
-        ARCH_SEPFORMER | ARCH_CONV_TASNET => {
+        ARCH_SEPFORMER | ARCH_CONV_TASNET | ARCH_TIGER => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on separation arch `{arch}`"
@@ -2676,14 +2677,15 @@ mod tests {
 
     // ---- Wave G (2026-08-15) — bound-but-not-runnable arches -------------
 
-    /// SepFormer left the bound-only registry after its complete native
-    /// forward landed and now routes to the audio-separation task.
+    /// Complete native separator forwards route to the audio-separation task.
     #[test]
-    fn load_session_routes_sepformer_to_separation() {
-        with_arch_only_gguf("sepformer", "sepformer-arch", |p| {
-            let (_, task) = load_session(p).expect("sepformer route");
-            assert_eq!(task, ModelTask::Separation);
-        });
+    fn load_session_routes_native_separators_to_separation() {
+        for arch in ["sepformer", "tiger_separator"] {
+            with_arch_only_gguf(arch, "separator-arch", |p| {
+                let (_, task) = load_session(p).expect("native separator route");
+                assert_eq!(task, ModelTask::Separation);
+            });
+        }
     }
 
     /// A row that carries a probe really loads the binder: the message

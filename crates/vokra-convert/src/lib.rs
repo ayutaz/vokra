@@ -1936,12 +1936,12 @@ pub enum ModelKind {
     /// SFX cinematic source separation trained on the DnR benchmark.
     /// Shares the `models::tiger::ARCH` tag `tiger_separator` +
     /// converter with the `TigerSpeech` sibling; the two differ only
-    /// in training data + `vokra.tiger.variant` / `vokra.model.name` /
-    /// `vokra.provenance.upstream_hf` stamps. Every F32 / F16 / BF16
-    /// tensor passes through verbatim; the internal Time-Frequency
-    /// dual-path body is a `loud-partial` follow-up (real-weight
-    /// forward is deferred). Provenance = **apache-2.0** (Permissive
-    /// — per HF model-card `cardData.license`).
+    /// in training data and the exact `vokra.tiger.*` topology contract.
+    /// Only the pinned all-F32 official manifest is accepted; tensor names,
+    /// shapes, counts, checkpoint/config hashes and revisions are checked
+    /// before writing. The resulting GGUF binds to the complete native
+    /// CPU/Metal forward. Provenance = **apache-2.0** weights with MIT
+    /// reference code (both permissive and stamped separately).
     TigerSeparator,
     /// **JusperLee/TIGER-speech** (Implementer E TIER 1, 2026-07-30).
     /// Category = `enhancement`. Speaker separation on speech mixtures
@@ -11095,9 +11095,8 @@ pub fn convert_file_licensed(
                 models::tiger::TigerVariant::Dnr,
             )?;
             let notes = vec![format!(
-                "tiger-dnr: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "tiger-dnr: exact {}-tensor F32 checkpoint contract written",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::TigerSeparator,
@@ -11116,9 +11115,8 @@ pub fn convert_file_licensed(
                 models::tiger::TigerVariant::Speech,
             )?;
             let notes = vec![format!(
-                "tiger-speech: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "tiger-speech: exact {}-tensor F32 checkpoint contract written",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::TigerSpeech,

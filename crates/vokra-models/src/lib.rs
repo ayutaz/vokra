@@ -668,6 +668,8 @@ pub mod conv_tasnet;
 // unresolved) landed just above — SepFormer's §3.1 rows remain commercial
 // (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
 pub mod sepformer;
+/// Native TIGER-DnR and TIGER-speech CPU / Metal source separators.
+pub mod tiger;
 // Standalone execution front door for the three public BERT-family sidecars
 // used by SBV2. Their learned forwards remain in `vokra-bert`; this binder
 // adds strict arch/licence/input gates and an explicit CPU-only backend
