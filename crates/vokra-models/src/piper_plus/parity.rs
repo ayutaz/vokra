@@ -1,4 +1,5 @@
-//! Numerical parity vs the piper-plus onnxruntime reference (M0-07-T13/T22).
+//! Numerical parity for the public CSS10 piper-plus GGUF vs its independent
+//! official onnxruntime reference (M0-07-T13/T22).
 //!
 //! Fixtures live in `tests/parity/piper_plus/` and are regenerated offline by
 //! `gen_reference.py` (onnxruntime, deterministic — noise scales zeroed, see
@@ -7,15 +8,15 @@
 //! implementation.
 //!
 //! The voice GGUF is far too large to commit (~77 MB FP32), so these tests are
-//! **gated on the `VOKRA_PIPER_GGUF` environment variable** and skip cleanly
+//! **gated on the `VOKRA_PIPER_CSS10_GGUF` environment variable** and skip cleanly
 //! when it is unset (e.g. in CI) — exactly like the Whisper parity tests
-//! (`VOKRA_WHISPER_GGUF`). Set it to the path of a converted tsukuyomi voice to
-//! run them locally:
+//! (`VOKRA_WHISPER_GGUF`). Set it to the public CSS10 GGUF to run them on the
+//! remote verification host:
 //!
 //! ```text
 //! cargo run -p vokra-convert -- --model piper-plus \
-//!     --input tsukuyomi-6lang-fp16.onnx --config config.json --output voice.gguf
-//! VOKRA_PIPER_GGUF=voice.gguf cargo test -p vokra-models piper
+//!     --input css10-ja-6lang-fp16.onnx --config config.json --output voice.gguf
+//! VOKRA_PIPER_CSS10_GGUF=voice.gguf cargo test -p vokra-models piper_plus::parity
 //! ```
 
 use std::collections::HashMap;
@@ -72,9 +73,9 @@ fn phoneme_ids(m: &HashMap<String, String>) -> Vec<i64> {
         .collect()
 }
 
-/// Loads the voice named by `$VOKRA_PIPER_GGUF`, or `None` to skip (CI).
+/// Loads the public CSS10 voice, or returns `None` to skip when absent in CI.
 fn load_voice() -> Option<PiperPlusTts> {
-    let path = std::env::var("VOKRA_PIPER_GGUF").ok()?;
+    let path = std::env::var("VOKRA_PIPER_CSS10_GGUF").ok()?;
     Some(PiperPlusTts::from_path(&path).expect("load piper voice GGUF"))
 }
 
@@ -96,7 +97,7 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 #[test]
 fn encoder_m_p_logs_p_parity() {
     let Some(voice) = load_voice() else {
-        eprintln!("skipping piper encoder parity: set VOKRA_PIPER_GGUF to run");
+        eprintln!("skipping CSS10 encoder parity: set VOKRA_PIPER_CSS10_GGUF to run");
         return;
     };
     let m = manifest();
@@ -119,7 +120,7 @@ fn duration_parity() {
     // Native encoder + stochastic duration predictor (deterministic, noise_w=0)
     // vs the reference durations. Also checks integer w_ceil matches exactly.
     let Some(voice) = load_voice() else {
-        eprintln!("skipping piper duration parity: set VOKRA_PIPER_GGUF to run");
+        eprintln!("skipping CSS10 duration parity: set VOKRA_PIPER_CSS10_GGUF to run");
         return;
     };
     let m = manifest();
@@ -154,7 +155,7 @@ fn flow_latent_parity() {
     // against the reference decoder-input latent (post-flow z·y_mask). Covers
     // length regulation (T15) + the flow (T16/T17) together.
     let Some(voice) = load_voice() else {
-        eprintln!("skipping piper flow parity: set VOKRA_PIPER_GGUF to run");
+        eprintln!("skipping CSS10 flow parity: set VOKRA_PIPER_CSS10_GGUF to run");
         return;
     };
     let m = manifest();
@@ -190,7 +191,7 @@ fn decoder_pcm_parity() {
     // native MB-iSTFT decoder and compare the PCM. Isolates decoder + istft op
     // + PQMF from the flow/duration stages.
     let Some(voice) = load_voice() else {
-        eprintln!("skipping piper decoder parity: set VOKRA_PIPER_GGUF to run");
+        eprintln!("skipping CSS10 decoder parity: set VOKRA_PIPER_CSS10_GGUF to run");
         return;
     };
     let m = manifest();
@@ -214,7 +215,7 @@ fn e2e_pcm_parity() {
     // Full native path: phoneme ids → PCM, deterministic (noise scales 0),
     // vs the onnxruntime reference PCM. The WP completion criterion (T22).
     let Some(voice) = load_voice() else {
-        eprintln!("skipping piper e2e parity: set VOKRA_PIPER_GGUF to run");
+        eprintln!("skipping CSS10 e2e parity: set VOKRA_PIPER_CSS10_GGUF to run");
         return;
     };
     let m = manifest();
@@ -244,10 +245,10 @@ fn session_tts_api_smoke() {
     // The demo's path (M0-07-T20/T23): inject the native voice as a Session TTS
     // engine and synthesize through `session.tts()`. Text → phoneme ids uses
     // the placeholder tokenizer; asserts a non-empty, finite, correct-rate PCM.
-    let path = match std::env::var("VOKRA_PIPER_GGUF") {
+    let path = match std::env::var("VOKRA_PIPER_CSS10_GGUF") {
         Ok(p) => p,
         Err(_) => {
-            eprintln!("skipping piper session smoke: set VOKRA_PIPER_GGUF to run");
+            eprintln!("skipping CSS10 session smoke: set VOKRA_PIPER_CSS10_GGUF to run");
             return;
         }
     };

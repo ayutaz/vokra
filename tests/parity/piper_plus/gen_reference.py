@@ -15,7 +15,7 @@ onnxruntime is used only here, offline — never in the runtime or CI
         <voice.onnx> <config.json> <out_dir> [upstream_repo] [upstream_revision]
 
 Fixtures are committed; the voice model itself is not (too large — the native
-parity test is gated on $VOKRA_PIPER_GGUF, like Whisper's).
+CSS10 parity test is gated on $VOKRA_PIPER_CSS10_GGUF, like Whisper's).
 """
 import json
 import hashlib
@@ -28,7 +28,7 @@ import onnxruntime as ort
 
 
 # Internal graph tensors exposed as extra outputs for component parity
-# (names verified against the distributed tsukuyomi graph).
+# (names verified against the official CSS10 and Mera graphs).
 INTERMEDIATES = {
     "m_p": "/enc_p/Split_output_0",
     "logs_p": "/enc_p/Split_output_1",
