@@ -13,20 +13,21 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-25, after the SNAC and FocalCodec waves, it reported:
+At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling and speaker
+waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 75 |
+| Complete CPU code route | 80 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 69 |
+| No complete runtime binder | 64 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 75 |
+| Complete Metal code route among the CPU-complete set | 80 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 118 |
+| Metal blocked by missing/partial CPU forward | 113 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -37,11 +38,11 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 75 repositories with a complete Metal code route are the four BigVGAN
+The 80 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
-HiFi-GAN LibriTTS, both Kokoro checkpoints,
+HiFi-GAN LibriTTS, both Kokoro checkpoints, all five MeloTTS checkpoints,
 Kotoba-Whisper, Mimi, Moshiko-7B, Moonshine Tiny/Base, NKF-AEC, Parakeet CTC
 1.1B, Parakeet TDT 0.6B v3, both Piper Plus checkpoints, RNNoise, both Silero
 VAD checkpoints, both SNAC checkpoints (24 and 44.1 kHz), SmartTurn v2,

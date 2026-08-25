@@ -106,6 +106,7 @@ METAL_CODE_ARCHES = {
     "hubert",
     "kokoro-82m-istftnet",
     "kotoba-whisper",
+    "melotts",
     "mimi",
     "moshi",
     "moonshine",
