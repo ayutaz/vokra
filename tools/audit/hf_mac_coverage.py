@@ -114,6 +114,7 @@ METAL_CODE_ARCHES = {
     "moshi",
     "moonshine",
     "nkf_aec",
+    "neucodec",
     "parakeet-ctc",
     "parakeet-tdt",
     "piper-plus-mb-istft-vits2",

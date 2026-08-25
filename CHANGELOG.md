@@ -14,6 +14,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The public NeuCodec base and distill GGUFs now strict-bind their distinct
+  811- and 294-tensor manifests and decode 50 Hz FSQ codes to 24 kHz PCM
+  through one native CPU/Metal graph. The base artifact's legacy normalized
+  tensor namespace and the distill pass-through namespace are both handled
+  explicitly; unknown layouts and unsupported backends fail without a CPU
+  fallback. Both public files match the pinned official `CodecDecoderVocos`
+  oracle within `3.57e-6` CPU max-abs error, and Apple M1 Metal on distill
+  matches CPU within `5.23e-6`. Waveform encoding remains explicitly
+  unsupported.
 - Both public WavTokenizer repositories now share a strict native
   token-to-waveform decoder for their byte-identical 1,091-tensor GGUF. The
   single-codebook gather, positional ResNet/attention network, 12 ConvNeXt

@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-25 — 1.0.0-rc.1-dev (NeuCodec token-to-waveform CPU/Metal runtime)
+
+The public NeuCodec base and distill GGUFs now strict-bind their two released
+manifests and decode discrete 50 Hz FSQ frames through Rust and CLI. The
+runtime accepts the base artifact's legacy normalized decoder namespace and
+the distill artifact's pass-through namespace as separate fixed contracts.
+No C function, type, ownership rule or allocation contract changed, and
+waveform encoding remains explicitly unsupported.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::neucodec` | `NeuCodec`, `NeuCodecVariant`, `ARCH`, `SAMPLE_RATE`, `HOP_LENGTH`, `CODEBOOK_SIZE`, `QUANTIZED_DIM`, `HIDDEN_DIM`, `NEUCODEC_DECODE_HOT_OPS` | Added | strict `from_gguf` / `open`, `with_backend`, geometry/accessor methods and `decode_codes(&[u32]) -> Result<Vec<f32>>` | Owns decoded FP32 weights and returned PCM; exact base/distill manifests dispatch FSQ, Conv1D, GroupNorm, RMSNorm, GEMM, Softmax, SiLU and LayerNorm through one selected backend | no | `ddc7b4f2` |
+| `vokra-cli run` | `--codec-mode decode` for `arch=neucodec` | Changed (behavior only) | one little-endian `u32` code per 50 Hz frame to 24 kHz mono WAV; `encode` is an explicit error | Adds a standalone decoder route without claiming an encoder or defining a serialized container ABI | no | `63a2a87b` |
+| `gguf:neucodec` | released manifest and variant/provenance contract | Enforced | base: legacy 811-tensor manifest without `vokra.neucodec.variant`; distill: 294-tensor pass-through manifest with `variant=distill` | Both audited public files remain compatible. Variant recognition is still pinned by complete manifest, model identity and upstream provenance; missing, extra, wrong-shaped or unknown layouts are rejected. | no for exact released files; yes for malformed/partial files | `ddc7b4f2` |
+
 ### 2026-08-25 — 1.0.0-rc.1-dev (WavTokenizer token-to-waveform CPU/Metal runtime)
 
 The two byte-identical public WavTokenizer GGUF repositories now strict-bind

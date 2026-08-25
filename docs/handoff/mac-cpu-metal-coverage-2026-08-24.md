@@ -14,21 +14,21 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE, standalone BERT-family and WavTokenizer CPU/Metal waves, it
-reported:
+Piper, FCPE, standalone BERT-family, WavTokenizer and NeuCodec CPU/Metal
+waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 85 |
+| Complete CPU code route | 87 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 59 |
+| No complete runtime binder | 57 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 85 |
+| Complete Metal code route among the CPU-complete set | 87 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 108 |
+| Metal blocked by missing/partial CPU forward | 106 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -39,7 +39,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 85 repositories with a complete Metal code route are the four BigVGAN
+The 87 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -58,14 +58,14 @@ the standalone Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3 text
 encoders.
 They also include `vokra/wavtokenizer-large` and
 `vokra/wavtokenizer-large-speech-75token`, whose GGUF payloads are
-byte-identical.
+byte-identical, plus `vokra/neucodec` and `vokra/distill-neucodec`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There are no CPU-complete, Metal-unsupported repositories in this inventory.
-The remaining 108 Metal-blocked repositories first need a complete released-
+The remaining 106 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -1648,6 +1648,77 @@ SHA-256 values `826c7dc3ac57cf465842a15a34e6f1be88855e765bb970f2a85d118aa7b22b80
 `764da45a554e243811e7aaac5e6bbce2f4d271885e291d44c753e65d2e32150f`
 and `d2da208390b411708b601b3329fe47005cdaeae63cab10f0289754f63a50a331`.
 The instance was destroyed and the live VAST inventory returned zero
+instances. No Hugging Face upload or public artifact change was performed.
+
+### NeuCodec base and distill 50 Hz decoders
+
+The public base GGUF is 2,519,825,344 bytes with 811 F32 tensors and SHA-256
+`b71d9d7867a4c244562caa2d735e93c9b744c70110c346f3f65e0862e41163fc`.
+It predates the additive `vokra.neucodec.variant` key and uses the normalized
+`acoustic_decoder.*` namespace with separate Q/K/V projections. The public
+distill GGUF is 1,025,417,504 bytes with 294 tensors and SHA-256
+`15e60e7e5f7242255b18e1386b26c2a8f872c77a56ca241ee82c8aa5d8b6327f`.
+It uses the current pass-through `generator.*` namespace and explicitly stamps
+`variant=distill`. The strict runtime pins the complete name/shape manifests
+independently
+(`1b76dc8f93c5c68f01329f9f05b6f34292b41bd39b4c46e08229327daa0102e0`
+for base and
+`8bf4f171559b9da0d1531867a7f2bfec5265cc5932b0df895a51913438744f1b`
+for distill),
+then maps both to one released decoder topology. Unknown variants, manifests,
+shapes and provenance fail before inference.
+
+The native path decodes one 65,536-way `[4; 8]` FSQ code per 50 Hz frame,
+projects 2,048 to 1,024 channels, executes four ResNet blocks and twelve
+non-causal 16-head Transformer blocks, and emits magnitude/phase bins through
+the 1,920-point same-padded iSTFT head. FSQ, Conv1D, GroupNorm, RMSNorm, GEMM,
+Softmax, SiLU and LayerNorm honor the selected CPU or Metal backend. The
+official source's torchtune 0.3.1 RoPE call receives `[B,H,T,D]` despite the
+documented `[B,T,H,D]` contract, so the released head-axis behavior is
+preserved intentionally rather than silently corrected. CLI decode accepts
+one little-endian `u32` per frame and writes 24 kHz mono WAV; encode is an
+explicit unsupported operation.
+
+The independent oracle imports Neuphonic's official source at commit
+`ed3e6cd1bdc374ce14a21355e5eee66a777149ce`, pins
+`vector-quantize-pytorch==1.17.8`, and directly loads the SHA-pinned official
+`torchtune==0.3.1` RoPE source file without importing unrelated torchao
+initializers. It restores each GGUF into the upstream `CodecDecoderVocos` and
+calls the official FSQ plus decoder forward. VAST CPU real-weight results were:
+
+| Public artifact | samples | max abs vs official | RMSE | cosine |
+|---|---:|---:|---:|---:|
+| base | 1,920 | `3.561377525e-6` | `1.159706864e-6` | `0.999999999968` |
+| distill | 1,920 | `3.233551979e-6` | `9.182642293e-7` | `0.999999999981` |
+
+The 2 GB artifact rule keeps the base public file off the maintainer Mac. The
+distill artifact is below that threshold and completed the same fixture on the
+real Apple M1 outside Seatbelt after the sandboxed probe correctly returned
+`no system default Metal device`:
+
+| Comparison | max abs | RMSE | cosine |
+|---|---:|---:|---:|
+| Mac CPU / official | `3.620982170e-6` | `1.103911115e-6` | `0.999999999971` |
+| Apple M1 Metal / official | `7.655471563e-6` | `1.753893327e-6` | `0.999999999927` |
+| Mac CPU / Apple M1 Metal | `5.222856998e-6` | `1.169858302e-6` | `0.999999999967` |
+
+The shared base/distill decoder therefore has a complete Metal code route and
+real Apple-device evidence for distill. A public-file Apple run for the
+2.52 GB base artifact remains unrecorded under the local artifact safety rule;
+its exact public loader and decoder weights have CPU/official parity, while
+the same backend-parametric graph has the distill Metal verdict above.
+
+Disposable VAST instance `48648187` validated exact commit `eb7b9f35`: four
+NeuCodec model tests passed, both real-public CPU parity tests passed, the base
+CLI decoded 4 codes to 1,920 samples, and
+`cargo clippy -p vokra-models --all-targets -- -D warnings` exited zero. The
+six-file evidence set was pulled to
+`/private/tmp/vokra-neucodec-vast-48648187`; its model-test, real-parity and
+Clippy log SHA-256 values are respectively
+`234ae6b3be5d57e2a62abc42b1e610a93ca02889259d6db41d6463df524dbc18`,
+`c3b4dca82457005fc109d8e048b48593547c655cb89a0a5d46b580b558e1cc03`
+and `4ec4b714ceda93c417bed4ebc9845df83bf9a7ce370c7e2b415f47da611868f2`.
+The instance was destroyed, and the live VAST inventory returned zero
 instances. No Hugging Face upload or public artifact change was performed.
 
 ## Remaining execution order
