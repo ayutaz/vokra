@@ -1060,14 +1060,77 @@ Instance `48602407` was destroyed after those checks. The Vast inventory then
 contained only the unrelated `tiny-s2s-m2-{judge,generator}` instances: no
 Vokra-labelled instance remains stopped or running.
 
-This is still not a full five-release MeloTTS completion claim. The English
-low-level feature-to-PCM CPU path now has an independent official numerical
-gate, and all learned decoder convolutions share the explicit CPU/Metal
-backend seam. The five language-specific raw-text/G2P/BERT frontends and the
-Apple-hardware Metal comparison remain open. The four sibling releases share
-the acoustic topology, but each public file still needs its own real-artifact
-verdict before it can inherit the English result; Linux VAST cannot execute
-the Metal leg.
+That first wave was not a full five-release MeloTTS completion claim: only the
+English feature-to-PCM path had an independent official numerical gate, and
+the Apple-hardware comparison was still open. The follow-up wave closed those
+two gaps for every acoustic GGUF actually published under `vokra/melotts-*`.
+It did not fabricate the five language-specific raw-text/G2P/BERT frontends,
+which are not embedded in these acoustic artifacts.
+
+The independent dumper now imports the same pinned MyShell source commit and
+one of five fixed official checkpoints in a dedicated Python 3.12 environment
+(`torch 2.13.0+cpu`, `numpy 2.5.2`, `huggingface-hub 0.29.3`, `numba 0.67.0`).
+The public-artifact and upstream-revision ledger is:
+
+| Variant | Upstream checkpoint revision | Public revision | GGUF SHA-256 | Bytes |
+|---|---|---|---|---:|
+| English | `bb4fb7346d566d277ba8c8c7dbfdf6786139b8ef` | `41fc375b3677373e2141ba5b80cd072581ee4308` | `1196312e86d8e9ba553f505d8cbc151cf6a53c56d0c91dd1c1989c26e2567ee4` | 207,575,360 |
+| Chinese | `af5d207a364ea4208c6f589c89f57f88414bdd16` | `2d02213da50af3d5384c2f972681014a2eb05ab5` | `11f87f890e95cf572ad207aae87f6a961b7c9ebe4eee81c69b0a6c2440376a1e` | 207,484,736 |
+| Korean | `0207e5adfc90129a51b6b03d89be6d84360ed323` | `3737e27dba5f54e98ab3ae816bf610ae6edaeeb2` | `6e27bbc9c55dd5acc756317044be42fac4a85f5315aca38cfb881ac5984f24d9` | 207,575,360 |
+| Spanish | `dbb5496df39d11a66c1d5f5a9ca357c3c9fb95fb` | `1ee8c1c2df484ea59bd7382f88b292b0da95df3e` | `3a293e474c3d51e271a4bcb7e980f5f3e6866cbf2ba9a7c3780cf36f9c10e184` | 207,575,360 |
+| Japanese | `367f8795464b531b4e97c1515bddfc1243e60891` | `5c61fa7b6f723c039e7d4721f3d5ab77b99d867e` | `f12c079ae4df51e59895ac29a8bb0043ae3c78be3aa1ad22ab84de71d4ff81a8` | 207,575,360 |
+
+VAST instance `48616858` generated all five fixtures from the official code,
+then ran the complete speaker conditioning, text encoder, deterministic
+duration, exact integer duration, length regulation, inverse flow, decoder and
+integrated acoustic paths against all five public GGUFs. The largest observed
+per-variant absolute error was:
+
+| Variant | Largest official CPU max abs |
+|---|---:|
+| English | `1.907348633e-6` |
+| Chinese | `2.145767212e-6` |
+| Korean | `1.907348633e-6` |
+| Spanish | `1.907348633e-6` |
+| Japanese | `3.576278687e-6` |
+
+All exact duration checks passed and every value remains far below the
+unchanged FP32 `atol = 0.01`. The five-artifact gate finished in 163.90
+seconds; the complete library run reported `2,548 passed; 0 failed; 6
+ignored`. Format, package check and package Clippy with warnings denied also
+exited zero. The fixture/log/environment archive was pulled to
+`/private/tmp/vokra-melotts-five-vast-48616858-results`; remote and local
+archive SHA-256 both equal
+`c62903a7596309ca7f385f3089aed97aab7b8c8483cd27f88f366ea3cd6acbf0`,
+and its internal SHA ledger was rechecked locally. The five fixtures were
+committed at `766f8255`. The instance was then destroyed rather than stopped.
+
+The exact same five GGUFs and committed `VKRMELO1` inputs were next exercised
+through the public CLI on the maintainer's Apple M1 at commit `766f8255`.
+CPU and Metal produced equal geometry and finite 44.1 kHz float32 WAVs:
+
+| Variant | Samples | Different samples | max abs CPU/Metal | RMSE CPU/Metal |
+|---|---:|---:|---:|---:|
+| English | 3,072 | 439 | `4.768371582e-7` | `5.321865458e-8` |
+| Chinese | 3,072 | 33 | `1.192092896e-7` | `1.235539016e-8` |
+| Korean | 3,584 | 21 | `1.192092896e-7` | `9.125060375e-9` |
+| Spanish | 4,096 | 35 | `1.192092896e-7` | `1.101955731e-8` |
+| Japanese | 3,072 | 18 | `1.192092896e-7` | `9.125060375e-9` |
+
+A sandboxed probe first returned the explicit error `backend unavailable: no
+system default Metal device`; it did not fall back to CPU. The real Apple
+device runs then completed outside Seatbelt, and focused Metal-feature CLI
+tests reported `7 passed; 0 failed`; Metal-feature CLI Clippy with warnings
+denied also exited zero. The 25-file Mac log/WAV/environment set is under
+`/private/tmp/vokra-melotts-mac-766f8255`; its locally rechecked SHA-ledger
+digest is
+`4bd04b0340ff29dd042349cabff3f572cc63aa0a8e58e671e47fd30a1d3015ce`.
+
+Therefore every currently published MeloTTS GGUF has an explicit real-file
+CPU verdict and an Apple-hardware Metal verdict for its complete learned
+acoustic feature-to-wave path. Raw language text still requires caller-side
+normalization, G2P and BERT feature extraction; `--text` is an explicit error
+rather than a silent approximation or CPU fallback.
 
 ### FocalCodec 50 / 25 / 12.5 Hz family
 
