@@ -39,7 +39,7 @@ const DEFAULT_BENCH_TEXT: &str = "the quick brown fox jumps over the lazy dog";
 enum DenoiseBenchModel {
     Nsnet2(vokra_models::nsnet2::Nsnet2V1),
     Rnnoise(vokra_models::rnnoise::RnnoiseV02),
-    DeepFilterNet3(vokra_ops::DenoiseModel),
+    DeepFilterNet3(Box<vokra_ops::DenoiseModel>),
 }
 
 impl DenoiseBenchModel {
@@ -66,6 +66,7 @@ impl DenoiseBenchModel {
                     ));
                 }
                 vokra_ops::DenoiseModel::from_gguf(gguf)
+                    .map(Box::new)
                     .map(Self::DeepFilterNet3)
                     .map_err(|error| error.to_string())
             }
