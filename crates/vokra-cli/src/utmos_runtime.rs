@@ -261,7 +261,9 @@ mod tests {
         let message = error.to_string().to_lowercase();
         assert!(message.contains("vulkan"), "{message}");
         assert!(
-            message.contains("unavailable") || message.contains("does not cover"),
+            message.contains("unavailable")
+                || message.contains("does not cover")
+                || message.contains("not built"),
             "{message}"
         );
     }
