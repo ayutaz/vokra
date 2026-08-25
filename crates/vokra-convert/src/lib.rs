@@ -8589,10 +8589,10 @@ pub fn convert_file_licensed(
                 input, output, license,
             )?;
             let notes = vec![format!(
-                "audioseal-real-weight: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped (mit default, Permissive; runtime binder gated on M5-05 \
-                 T04 ADR ratification)",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "audioseal-real-weight: exact four-checkpoint manifest validated; {} F32 \
+                 tensors written verbatim (generator/detector base + streaming, MIT default, \
+                 Permissive; explicit runtime use is separate from automatic TTS watermark policy)",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::AudiosealRealWeight,
