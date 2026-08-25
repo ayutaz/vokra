@@ -14,6 +14,16 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- FCPE now matches the official `torchfcpe` waveform-to-F0 path instead of a
+  merely plausible pitch track: overlap/reflect padding, magnitude (not power)
+  mel analysis, the upstream `pcm_len / hop + 1` duplicate-last frame contract,
+  and the public wrapper's `0.006` confidence threshold are all pinned by an
+  independent `torchfcpe-0.0.4` fixture. The freshly converted strict v001
+  artifact passes official CPU parity and unrounded Apple M1 CPU/Metal track
+  parity with identical timestamps and voiced decisions. The currently
+  published `vokra/fcpe` GGUF predates all fourteen required metadata axes and
+  remains an explicit load error; replacing it on Hugging Face still requires
+  separate upload authorization.
 - Both public Piper Plus GGUFs now load and synthesize through the native CPU
   and Metal routes. Legacy language-only voices no longer require an invented
   zero-shot speaker projection, and supplying a speaker embedding to them is

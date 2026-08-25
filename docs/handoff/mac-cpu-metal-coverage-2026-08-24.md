@@ -13,8 +13,8 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling and speaker
-waves, it reported:
+At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
+Piper and FCPE waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
@@ -991,6 +991,73 @@ vector, and lacks `vokra.smart_turn.revision`. The canonical converter emits
 pinned hashes. The public file therefore fails on CPU before compute and must
 be regenerated and verified, not accepted through a permissive loader change.
 No replacement upload is authorized by this branch.
+
+### FCPE public artifact, official CPU parity and Apple Metal
+
+The live `vokra/fcpe` revision
+`93271c742e2f926e3ca84fb44b81606f1aa342cf` carries one 43,334,720-byte,
+70-tensor `fcpe.gguf` with SHA-256
+`6f5321ce0db16f9611ecd551204165817fdcc80efe85775508426f813535ce68`.
+The fixed-revision download matched the model card's size and digest, but its
+actual header contains zero of the fourteen required `vokra.f0.fcpe.*` axes.
+The current strict loader therefore stops before inference with an actionable
+error naming the first absent key (`vokra.f0.fcpe.d_model`) and instructing the
+operator to reconvert artifacts produced before 2026-08-15. CPU and Metal have
+the same loader verdict; no backend can silently guess the seven non-tensor
+frontend/decode axes or fall back to CPU. The live card's claim that the full
+hparam group is stamped is therefore stale relative to the bytes users
+download.
+
+The independent oracle is the official PyPI `torchfcpe==0.0.4` wheel
+(SHA-256 `f042c463d850d76c6f4899a0b84f0b694bb560adf05f4de951097a756d17472d`)
+and its bundled `fcpe_c_v001.pt` (SHA-256
+`b9aeaeb673436eeda50ceafd632aa681aa63417e52eae4207503d180c9b10015`).
+`tools/parity/fcpe_dump_reference.py` imports that wheel and commits a
+byte-reproducible 33-frame fixture for the official mel, sigmoid latent and
+local-argmax F0 boundaries. It exposed four errors hidden by the former
+finite-output smoke: the runtime used the wrong STFT padding, projected power
+instead of magnitude, dropped the official final alignment frame, and stamped
+the lower-level decoder's `0.05` default instead of the public waveform
+wrapper's `0.006` threshold.
+
+A current conversion stamps all fourteen axes and produces a 43,335,264-byte
+strict GGUF with SHA-256
+`3c17bd841e750d1cd0ab55bfe85eefd4ab1f158e91f4d9390f633c5c5fa12a9e`.
+VAST instance `48630865` tested commit `4bb308ae` against that exact file:
+
+| Official boundary | max abs | mean abs | RMSE |
+|---|---:|---:|---:|
+| log-mel | `5.890846252e-3` | `1.450321579e-4` | `4.932388547e-4` |
+| sigmoid latent | `1.027882099e-4` | `3.072616437e-7` | `3.500768344e-6` |
+| decoded F0 (Hz) | `8.697509766e-4` | `1.655347442e-4` | `2.678696765e-4` |
+
+The largest log-mel difference is a floor-adjacent bin (reference `-11.3527`,
+while `ln(1e-5) = -11.5129`), where log magnifies a tiny FFT reduction
+difference. Signal-bearing bins above `-9` remain within `1.50681e-4`; the
+test gates overall maximum, mean, active-band maximum and both downstream
+surfaces independently instead of relaxing one global tolerance. The focused
+suite reported `19 passed; 0 failed; 1 ignored`, and all-target package Clippy
+with warnings denied passed. Logs are under
+`/private/tmp/vokra-fcpe-vast-4bb308ae/fcpe-evidence`; the final combined log
+SHA-256 is
+`ee2db13c76a7c8446e2c84b10186cad530c1755cd0b476b3f802fbba1aeb5253`.
+
+At commit `eba4ca07`, the exact same strict GGUF and committed input were run
+through CPU and the real Apple M1 8-core GPU (macOS 26.3 build 25D125,
+Metal 4). All 33 timestamps and voiced decisions were identical. Unrounded
+CPU/Metal differences were F0 max/mean `1.525878906e-4` /
+`3.560384115e-5` Hz and confidence max/mean `1.013278961e-6` /
+`2.254430751e-7`. The Metal-feature CLI parity test and package Clippy with
+warnings denied both passed. The Mac log is
+`/private/tmp/vokra-fcpe-mac-eba4ca07/final.log`, SHA-256
+`ceecee9efcca3047dc86784cac1bb9931349fe6d676e48a32d351f7640c1c82a`.
+
+The VAST evidence was pulled before instance `48630865` was destroyed; the
+post-delete inventory was empty. The strict replacement GGUF has **not** been
+uploaded: the current public revision therefore retains an explicit artifact
+error until the owner separately authorizes the gated Hugging Face publish
+chain. Code-route completion and a verified local replacement do not make the
+stale Hub bytes a pass.
 
 ### RMVPE code route (still CPU-partial)
 
