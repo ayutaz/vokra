@@ -250,6 +250,18 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (emotion2vec strict conversion contract)
+
+The historical pass-through converter now accepts only the immutable official
+emotion2vec+ Large 185-F32-tensor checkpoint and stamps its complete topology.
+No C symbol or allocation ABI changes. The exact historical public GGUF remains
+identifiable by the same complete tensor manifest and generic provenance.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-convert::models::emotion2vec` | `convert_emotion2vec_file`, `Emotion2vecReport`, source/topology constants | Tightened/additive | same conversion signature; exact 185 F32 names/shapes and immutable source/checkpoint required | Canonical official input remains accepted. Partial/foreign/dtype-drifted inputs and conflicting license overrides now fail before output | no for canonical release; intentionally rejects previously loose inputs | (TBD) |
+| `gguf:vokra.emotion2vec.*` | 17-key topology/label group | Added | sample/encoder/Conv axes, normalization flag, arrays and official bilingual labels | New converters stamp the group. The exact historical public GGUF may omit it while its immutable 185-tensor manifest and generic MIT provenance match; partial groups fail closed in the runtime wave | no for audited public file | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (YuE-upsampler CPU/Metal runtime)
 
 The exact public 81-tensor YuE Vocos decoder gains a strict native
@@ -3266,6 +3278,8 @@ Scope limits, stated rather than implied:
 | backfill | `vokra.yue_bundle.*` | **1** keys — `variant` | `string` | persisted | YuE bundle (`yue-upsampler` + `yue-xcodec-mini`, `m-a-p/YuE-upsampler` / `m-a-p/xcodec_mini_infer`) — written by `crates/vokra-convert/src/models/yue_bundle.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `02664f6` (2026-08-06) |
 | runtime-gap | `vokra.yue_upsampler.*` | **18** keys — `upstream_revision`, `checkpoint_file`, `checkpoint_sha256`, `checkpoint_bytes`, `source_package`, `source_package_sha256`, `tensor_manifest_sha256`, `public_revision`, `public_gguf_sha256`, `public_gguf_bytes`, `sample_rate`, `input_channels`, `dim`, `intermediate_dim`, `num_layers`, `n_fft`, `hop_length`, `padding` | `string` + `u32` | persisted | `yue_upsampler` — written by the strict converter and read by `vokra-models::yue_upsampler`. The group pins the exact official 151k checkpoint, independent `vocos==0.1.0` oracle, historical public artifact and complete 81-tensor/44.1 kHz topology. The audited historical public GGUF may omit the group while its immutable manifest and generic provenance match; a partial/conflicting group fails closed. | working tree (2026-08-26) |
 | backfill | `vokra.zonos.*` | **22** keys — `arch.backbone.causal`, `arch.backbone.d_intermediate`, `arch.backbone.d_model`, `arch.backbone.n_layer`, …  | `u32` + `f32` + `bool` | persisted | `zonos-v0.1` — written by `crates/vokra-convert/src/models/zonos.rs`. **Additive**: the whole group is new; no pre-existing `vokra.*` key was renamed or changed meaning. | `7ed0548` (2026-07-26) |
+
+| runtime-gap | `vokra.emotion2vec.*` | **17** keys — `sample_rate`, `embed_dim`, `depth`, `prenet_depth`, `num_heads`, `mlp_dim`, `num_extra_tokens`, `num_classes`, `conv_pos_depth`, `conv_pos_kernel`, `conv_pos_groups`, `layer_norm_eps`, `normalize`, `conv_dim`, `conv_kernel`, `conv_stride`, `class_labels` | `u32` + `f32` + `bool` + `u32[]` + `string[]` | persisted | `emotion2vec-plus-large` — written by the strict converter from the exact official 185-F32-tensor checkpoint. The group pins the 16 kHz waveform frontend, 8 global + 4 context post-norm ALiBi blocks, grouped positional convolutions and official bilingual 9-label order. The exact historical public GGUF may omit this additive group only while its immutable manifest and generic MIT provenance match. | working tree (2026-08-26) |
 
 **Broken cross-reference repaired by this table**: the 2026-07-24 "SoTA
 Phase 2/3/4 + JA" entry above says its model chunks are "recorded here in
