@@ -1634,11 +1634,21 @@ four-code/1,280-sample fixture, the public GGUF produced:
 
 The official fixture is registered at `atol=2e-5` and cosine
 `>=0.999999999`, both derived after the oracle was fixed and without relaxing
-the measured result. Disposable VAST instance `48645355` validated the
+the measured result. Disposable VAST instance `48645355` first validated the
 focused strict-loader/model tests (`4 passed / 0 failed`) and warnings-as-error
-library Clippy at commit `97f3db3e`; its logs were pulled to
+library Clippy at implementation commit `97f3db3e`; its logs were pulled to
 `/private/tmp/vokra-wavtokenizer-vast-48645355` and the instance was destroyed.
-No Hugging Face upload or public artifact change was performed.
+After the official fixture landed, instance `48646449` validated exact commit
+`a409b780`: the same four model tests passed, while the env-gated integration
+binary compiled and exercised its documented no-artifact skip (`5 test
+results / 0 failures` in total); the shared Vocos tests passed (`3 / 0`), and
+`cargo clippy -p vokra-models --all-targets -- -D warnings` exited zero. Its
+three logs were pulled to `/private/tmp/vokra-wavtokenizer-vast-48646449` with
+SHA-256 values `826c7dc3ac57cf465842a15a34e6f1be88855e765bb970f2a85d118aa7b22b80`,
+`764da45a554e243811e7aaac5e6bbce2f4d271885e291d44c753e65d2e32150f`
+and `d2da208390b411708b601b3329fe47005cdaeae63cab10f0289754f63a50a331`.
+The instance was destroyed and the live VAST inventory returned zero
+instances. No Hugging Face upload or public artifact change was performed.
 
 ## Remaining execution order
 
