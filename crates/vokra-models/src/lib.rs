@@ -2486,6 +2486,11 @@ pub mod hubert;
 // Mac CPU/Metal coverage wave (2026-08-24): dedicated Data2Vec Audio
 // binder for its distinct names and five-layer positional-conv stack.
 pub mod data2vec_audio;
+// Mac CPU/Metal coverage wave (2026-08-26): strict native runtime for the
+// public SpeechBrain MetricGAN+ VoiceBank GGUF. The 21-tensor generator runs
+// the official Hamming-STFT / two-layer BiLSTM spectral-mask pipeline; all
+// learned projections use one explicit CPU/Metal backend.
+pub mod metricgan_plus;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 

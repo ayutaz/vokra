@@ -1976,8 +1976,9 @@ pub enum ModelKind {
     /// 2026-07-30). Category = `enhancement`. MetricGAN+ =
     /// generator-only speech-enhancement GAN optimising perceptual
     /// metrics (PESQ). Every F32 / F16 / BF16 tensor passes through
-    /// verbatim; the internal LSTM-stack + spectral-mask head is a
-    /// `loud-partial` follow-up. Provenance = **apache-2.0**
+    /// verbatim; `vokra-models::metricgan_plus` strictly binds the public
+    /// 21-tensor LSTM + spectral-mask manifest and provides the CPU/Metal
+    /// forward. Provenance = **apache-2.0**
     /// (Permissive — SpeechBrain end-to-end Apache-2.0 LICENSE).
     MetricganPlus,
     /// **speechbrain/sepformer-wsj02mix** (Implementer E TIER 1,

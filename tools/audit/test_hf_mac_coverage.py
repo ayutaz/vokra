@@ -62,6 +62,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "titanet-large",
             "denoise",
             "utmos",
+            "metricgan_plus",
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
@@ -114,6 +115,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         utmos = audit.RepoRecord(
             "vokra/utmos22-strong", "abc", ("model.gguf",), "utmos"
         )
+        metricgan = audit.RepoRecord(
+            "vokra/metricgan-plus-voicebank",
+            "abc",
+            ("metricgan-plus.gguf",),
+            "metricgan_plus",
+        )
         missing = audit.RepoRecord("vokra/other", "abc", ("model.gguf",), "other")
         bad_ecapa = audit.RepoRecord(
             "vokra/voice-gender-classifier", "abc", ("model.gguf",), "ecapa_tdnn"
@@ -154,6 +161,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(deepfilternet, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(utmos, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(utmos, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(metricgan, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(metricgan, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(corrupt_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(missing, routed, bound).cpu_code, "no-runtime-binder")

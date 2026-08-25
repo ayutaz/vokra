@@ -44,6 +44,7 @@ USAGE:
     vokra-cli run --model <utmos22-strong.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
+    vokra-cli run --model <metricgan-plus.gguf> --input <16k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <deepfilternet3.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <rnnoise.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <sepformer.gguf> --input <mixture.wav> [--output <separated.wav>]
@@ -1632,7 +1633,7 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// The native NSNet2 / RNNoise / DeepFilterNet3 speech-enhancement path.
+/// The native NSNet2 / RNNoise / DeepFilterNet3 / MetricGAN+ enhancement path.
 ///
 /// `--input` is a mono WAV at the model's trained rate; the denoised PCM goes
 /// to `--output` (or its duration is reported when the flag is absent, the
@@ -1699,9 +1700,22 @@ fn run_denoise(session: &Session, a: &RunArgs) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
             (rate, output)
         }
+        "metricgan_plus" => {
+            let model = vokra_models::metricgan_plus::MetricGanPlus::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(a.backend);
+            let rate = vokra_models::metricgan_plus::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(denoise_rate_error(path, arch, rate, clip.sample_rate));
+            }
+            let output = model
+                .enhance(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            (rate, output)
+        }
         other => {
             return Err(format!(
-                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, or denoise"
+                "run (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, or metricgan_plus"
             ));
         }
     };

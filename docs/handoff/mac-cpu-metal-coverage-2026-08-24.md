@@ -13,22 +13,23 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
+At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2 and AST
-CPU/Metal waves plus the DeepFilterNet3 CPU route, it reported:
+CPU/Metal waves plus the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
+it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 90 |
+| Complete CPU code route | 92 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 54 |
+| No complete runtime binder | 52 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 90 |
+| Complete Metal code route among the CPU-complete set | 92 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 103 |
+| Metal blocked by missing/partial CPU forward | 101 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -39,7 +40,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 90 repositories with a complete Metal code route are the four BigVGAN
+The 92 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, DeepFilterNet3, both Distil-Whisper
 checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
@@ -62,13 +63,15 @@ They also include `vokra/wavtokenizer-large` and
 byte-identical, plus `vokra/neucodec`, `vokra/distill-neucodec` and
 `vokra/xcodec2`, and the AudioSet classifier
 `vokra/ast-finetuned-audioset`.
+They also include `vokra/utmos22-strong` and
+`vokra/metricgan-plus-voicebank`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 103 Metal-blocked repositories first need a complete released-
+remaining 101 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -1896,6 +1899,36 @@ The 3.29 GB GGUF, dependency environment and interrupted HTTP partial were not
 pulled. The instance was destroyed rather than stopped, and the live VAST
 inventory returned zero instances. No Hugging Face upload or public artifact
 change was performed.
+
+### UTMOS22-strong and MetricGAN+ code-route continuation
+
+The UTMOS22-strong wave routes the existing native scorer through CPU and
+Metal from both `run` and `bench`; its public-artifact remote verification is
+still pending. The MetricGAN+ wave adds a strict reader for the exact public
+21-tensor VoiceBank generator and implements the official 16 kHz periodic-
+Hamming STFT, two-layer bidirectional LSTM, `400 -> 300 -> 257` mask head,
+phase reuse, iSTFT and peak normalization. Every learned LSTM projection and
+dense layer uses one selected `Compute` backend. Host-side spectral DSP,
+recurrent state and activations are explicit glue, not a hidden CPU model
+fallback; selecting an unavailable backend fails before frontend execution.
+
+The CLI and benchmark route `metricgan_plus` as enhancement, reject input
+sample rates other than 16 kHz and pass the requested backend into the strict
+model. The independent oracle generator imports
+`speechbrain.inference.enhancement.SpectralMaskEnhancement` from the pinned
+parity environment and hooks the upstream generator instead of defining a
+second Python model. Its real fixture and the public-GGUF CPU result remain
+unmeasured until the VAST lifecycle can run; no fixture values or parity pass
+are claimed in advance. The maintainer Mac performed only formatting,
+metadata, shell-policy, Python syntax/unit checks and the package-safe
+`vokra-convert` tests. It did not run MetricGAN+ inference or a
+`vokra-models`/workspace Cargo command.
+
+The read-only live inventory after both code routes is the 92/49/52 CPU split
+and 92/101 Metal split recorded at the top of this ledger. Heavy verification
+must still run on a disposable VAST instance, retrieve its evidence and
+destroy the instance. This does not authorize any Hugging Face upload or
+artifact replacement.
 
 ## Remaining execution order
 

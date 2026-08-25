@@ -112,6 +112,7 @@ METAL_CODE_ARCHES = {
     "kokoro-82m-istftnet",
     "kotoba-whisper",
     "melotts",
+    "metricgan_plus",
     "mimi",
     "moshi",
     "moonshine",

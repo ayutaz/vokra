@@ -428,6 +428,8 @@ const ARCH_RNNOISE: &str = "rnnoise";
 /// DeepFilterNet3 native waveform denoiser (the converter/runtime arch is
 /// intentionally the generic historical `denoise` tag).
 const ARCH_DENOISE: &str = "denoise";
+/// SpeechBrain MetricGAN+ VoiceBank spectral-mask enhancer.
+const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
 /// SpeechBrain SepFormer separation and enhancement family.
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
@@ -1056,16 +1058,17 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE => {
+        ARCH_NSNET2 | ARCH_RNNOISE | ARCH_DENOISE | ARCH_METRICGAN_PLUS => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
                 ));
             }
-            // Bare session — the `run` arm binds the concrete `Nsnet2V1` from
-            // `session.gguf()` once (the `Session` facade has no denoise
-            // engine slot, the `ModelTask::Speaker` precedent). A GGUF whose
-            // arch tag / tensors do not bind fails loudly there (FR-EX-08).
+            // Bare session — the `run` arm binds the concrete enhancement
+            // model from `session.gguf()` once (the `Session` facade has no
+            // denoise engine slot, the `ModelTask::Speaker` precedent). A
+            // GGUF whose arch tag / tensors do not bind fails loudly there
+            // (FR-EX-08).
             Ok((session, ModelTask::Denoise))
         }
         ARCH_SEPFORMER | ARCH_CONV_TASNET => {
@@ -1376,7 +1379,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -2494,7 +2497,7 @@ mod tests {
         );
     }
 
-    /// An `nsnet2`, `rnnoise`, or DeepFilterNet3 `denoise` GGUF dispatches to
+    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, or MetricGAN+ GGUF dispatches to
     /// [`ModelTask::Denoise`] with
     /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
@@ -2513,6 +2516,12 @@ mod tests {
         let (_session, task) = with_arch_only_gguf("denoise", "dfn3-arch", |p| {
             load_session(p).expect("DeepFilterNet3 session builds (bare)")
         });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_METRICGAN_PLUS, "metricgan-plus-arch", |p| {
+                load_session(p).expect("MetricGAN+ session builds (bare)")
+            });
         assert_eq!(task, ModelTask::Denoise);
     }
 
@@ -3173,6 +3182,7 @@ mod tests {
             ARCH_NSNET2,
             ARCH_RNNOISE,
             ARCH_DENOISE,
+            ARCH_METRICGAN_PLUS,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_RMVPE,
             ARCH_FCPE,
