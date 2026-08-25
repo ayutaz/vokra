@@ -153,6 +153,14 @@ Apple Metal, so actual Apple-device parity remains represented by the
 device-gated Metal test rather than falsely reported as executed. No model
 processing or heavy `vokra-models` build ran on the maintainer Mac.
 
+The 15 final evidence files were pulled to
+`/private/tmp/vokra-dfn3-metal-vast-48661032`; every file passed the remote
+`SHA256SUMS` manifest, whose own SHA-256 is
+`fba5712ec214be25d0b2ee603062bd4397a264ee2913ca1fa1824cefe7b89c32`.
+Instance `48661032` was destroyed rather than stopped after evidence
+recovery. Both the legacy and current VAST inventory APIs then reported zero
+instances (`instances_found=0`).
+
 ### AST AudioSet classification
 
 `vokra/ast-finetuned-audioset` revision
