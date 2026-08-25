@@ -14,6 +14,14 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The public X-Codec2 GGUF now strict-binds its complete 1,153-tensor
+  pass-through manifest and decodes 50 Hz, 65,536-way FSQ codes to 16 kHz PCM
+  through the native CPU/Metal Vocos graph. The exact 3.29 GB artifact matches
+  the pinned official `xcodec2==0.1.5` decoder at CPU
+  `max_abs=8.22e-6`, `RMSE=2.49e-6` and cosine `0.999999999931`.
+  CC-BY-NC-4.0 weights remain fail-closed behind the explicit research-license
+  gate, unsupported backends never fall back to CPU, and waveform encoding is
+  still an explicit error.
 - The public NeuCodec base and distill GGUFs now strict-bind their distinct
   811- and 294-tensor manifests and decode 50 Hz FSQ codes to 24 kHz PCM
   through one native CPU/Metal graph. The base artifact's legacy normalized

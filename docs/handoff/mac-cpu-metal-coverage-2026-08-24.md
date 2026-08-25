@@ -14,21 +14,21 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE, standalone BERT-family, WavTokenizer and NeuCodec CPU/Metal
-waves, it reported:
+Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec and X-Codec2
+CPU/Metal waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 87 |
+| Complete CPU code route | 88 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 57 |
+| No complete runtime binder | 56 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 87 |
+| Complete Metal code route among the CPU-complete set | 88 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 106 |
+| Metal blocked by missing/partial CPU forward | 105 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -39,7 +39,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 87 repositories with a complete Metal code route are the four BigVGAN
+The 88 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -58,14 +58,15 @@ the standalone Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3 text
 encoders.
 They also include `vokra/wavtokenizer-large` and
 `vokra/wavtokenizer-large-speech-75token`, whose GGUF payloads are
-byte-identical, plus `vokra/neucodec` and `vokra/distill-neucodec`.
+byte-identical, plus `vokra/neucodec`, `vokra/distill-neucodec` and
+`vokra/xcodec2`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There are no CPU-complete, Metal-unsupported repositories in this inventory.
-The remaining 106 Metal-blocked repositories first need a complete released-
+The remaining 105 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -1720,6 +1721,64 @@ Clippy log SHA-256 values are respectively
 and `4ec4b714ceda93c417bed4ebc9845df83bf9a7ce370c7e2b415f47da611868f2`.
 The instance was destroyed, and the live VAST inventory returned zero
 instances. No Hugging Face upload or public artifact change was performed.
+
+### X-Codec2 50 Hz decoder
+
+The public `vokra/xcodec2` revision
+`2b6adcf787a8f9ec957b985c8c1664ba2007f7c2` carries one 3,291,064,672-byte
+`model.gguf` with 1,153 F32 tensors and SHA-256
+`7ab4b94006068226b0741930081f7e149316e045511c1cddb94769e7f598698e`.
+The strict binder pins the complete sorted name/shape manifest at
+`ee543e96b5150376101396197bb0add53daf913eb991deb42aad7be74eed33f5`,
+the exact `xcodec2` model identity, `HKUSTAudio/xcodec2` upstream and
+CC-BY-NC-4.0 / non-commercial provenance. A changed manifest, identity,
+upstream or licence fails before inference. CLI loading also remains
+fail-closed unless the caller explicitly enables the research-license policy.
+
+The native decoder preserves the released `[4; 8]` FSQ projection, 2,048 to
+1,024 feature projection, four ResNet blocks, twelve non-causal 16-head
+Transformer blocks and Vocos magnitude/phase head with X-Codec2's 1,280-point
+iSTFT. It shares the audited FSQ/Vocos implementation with distilled
+NeuCodec, but keeps its distinct 16 kHz sample rate and 320-sample hop. FSQ,
+Conv1D, GroupNorm, RMSNorm, GEMM, Softmax, SiLU and LayerNorm honor one
+selected CPU or Metal backend. Other backends and waveform encoding are
+explicit errors; neither path substitutes a CPU model.
+
+The independent oracle pins the official `xcodec2==0.1.5` source distribution
+at SHA-256
+`dc1a73b32090706e65fb73b2469411bc27bb72048677a23b430ab21ad325e45b`,
+`vector-quantize-pytorch==1.17.8` and `torchtune==0.3.1`. It imports and
+executes the official `CodecDecoderVocos`, restores all 117 inference state
+tensors from the SHA-matched GGUF, and never imports Vokra or mirrors the Rust
+forward. The four-code fixture produced 1,280 samples and measured:
+
+| Comparison | max abs | RMSE | cosine |
+|---|---:|---:|---:|
+| VAST CPU / official `xcodec2==0.1.5` | `8.214265108e-6` | `2.488878586e-6` | `0.999999999931` |
+
+The registered limits remain `max_abs <= 2e-4`, `RMSE <= 2e-5` and cosine
+`>= 0.999999`; they were inherited from the shared NeuCodec family before
+observing this row and were not widened. The public artifact exceeds the
+2 GB maintainer-Mac safety threshold, so it was never downloaded to or loaded
+on the Mac. The complete Metal code route uses the same backend-parametric
+decoder that passed the distilled NeuCodec Apple M1 campaign, including its
+FSQ/Vocos hot operations; an exact-public-X-Codec2 Apple-device execution is
+still unrecorded and is not represented as a real-file Metal verdict.
+
+Disposable VAST instance `48653877` generated the official fixture and
+validated implementation commit `7af97b40`: three focused model tests passed,
+the real-public CPU parity test passed, package Clippy with warnings denied
+exited zero, and CLI decode produced a 5,164-byte 16 kHz WAV after first
+proving that the same file is refused without
+`VOKRA_ALLOW_RESEARCH_LICENSE=1`. The fixture was pulled and committed at
+`e08d5084`. The seven-file log/WAV/environment evidence set was pulled to
+`/private/tmp/vokra-xcodec2-vast-48653877.4TMb7j`; all entries passed its
+local SHA ledger, whose own SHA-256 is
+`1fbe2a48181b955ed29070bf3691ba7afde0be06eff4cf905fc4fb606bc739a5`.
+The 3.29 GB GGUF, dependency environment and interrupted HTTP partial were not
+pulled. The instance was destroyed rather than stopped, and the live VAST
+inventory returned zero instances. No Hugging Face upload or public artifact
+change was performed.
 
 ## Remaining execution order
 

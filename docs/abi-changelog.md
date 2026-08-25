@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-25 — 1.0.0-rc.1-dev (X-Codec2 token-to-waveform CPU/Metal runtime)
+
+The public X-Codec2 GGUF now strict-binds its released pass-through manifest
+and decodes discrete 50 Hz FSQ frames through Rust and CLI. No C function,
+type, ownership rule or allocation contract changed. The non-commercial weight
+gate remains mandatory, and waveform encoding remains explicitly unsupported.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::xcodec2` | `XCodec2`, `ARCH`, `SAMPLE_RATE`, `HOP_LENGTH`, `CODEBOOK_SIZE`, `XCODEC2_DECODE_HOT_OPS` | Added | strict `from_gguf` / `open`, `with_backend`, geometry/accessor methods and `decode_codes(&[u32]) -> Result<Vec<f32>>` | Owns decoded FP32 weights and returned PCM; exact released manifest dispatches FSQ, Conv1D, GroupNorm, RMSNorm, GEMM, Softmax, SiLU and LayerNorm through one selected backend | no | `96c5fb62` |
+| `vokra-cli run` | `--codec-mode decode` for `arch=xcodec2` | Changed (behavior only) | one little-endian `u32` code per 50 Hz frame to 16 kHz mono WAV; `encode` is an explicit error | Adds a standalone decoder route without claiming an encoder or defining a serialized container ABI; the existing research-license policy is checked before input/model execution | no | `96c5fb62` |
+| `gguf:xcodec2` | released manifest, provenance and licence contract | Enforced | exactly 1,153 F32 tensors; manifest SHA-256 `ee543e96b5150376101396197bb0add53daf913eb991deb42aad7be74eed33f5`; `HKUSTAudio/xcodec2`, `cc-by-nc-4.0`, `non-commercial` | The audited public file remains compatible. Missing, extra, wrong-shaped, differently identified or differently licensed artifacts are rejected before inference. | no for the exact released file; yes for malformed/partial files | `96c5fb62` |
+
 ### 2026-08-25 — 1.0.0-rc.1-dev (NeuCodec token-to-waveform CPU/Metal runtime)
 
 The public NeuCodec base and distill GGUFs now strict-bind their two released
