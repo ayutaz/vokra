@@ -33,7 +33,7 @@ USAGE:
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
     vokra-cli run --model <wav2vec2.gguf> --input <16k-mono.wav> [--output <features.f32>]
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
-    vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>]
+    vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
@@ -150,6 +150,8 @@ OPTIONS:
                                 `[frames, hidden]` features. Charsiu
                                 writes alignment TSV; CT-Punc
                                 writes exact UTF-8 restored text when present.
+                                Speaker encoders write their native embedding
+                                as raw little-endian f32 (`[dim]`).
                                 Mimi requires it: code container for encode,
                                 WAV for decode. DAC decode also requires a WAV
                                 output. SNAC requires a `.vsc` code container
@@ -1456,6 +1458,18 @@ fn run_speaker(session: &Session, a: &RunArgs) -> Result<(), String> {
     };
 
     let emb_a = embed_clip(input)?;
+    if let Some(output) = a.output.as_deref() {
+        let bytes = emb_a
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (speaker): --output {output}: {error}"))?;
+        println!(
+            "speaker: embedding dim={} raw little-endian f32 -> {output}",
+            emb_a.len()
+        );
+    }
     if let Some(compare) = a.compare.as_deref() {
         let emb_b = embed_clip(compare)?;
         let result = speaker_verify(&emb_a, &emb_b, None).map_err(|e| e.to_string())?;
@@ -4528,18 +4542,22 @@ mod tests {
         wav::write_wav(in_wav.to_str().unwrap(), &samples, 16_000).unwrap();
         let wav8k = dir.join(format!("vokra-cli-spk-e2e8k-{}.wav", std::process::id()));
         wav::write_wav(wav8k.to_str().unwrap(), &samples[..8000], 8_000).unwrap();
-        for (variable, label) in [
-            ("VOKRA_CAMPLUS_GGUF", "CAM++"),
-            ("VOKRA_XVECTOR_GGUF", "X-vector"),
-            ("VOKRA_ECAPA_GGUF", "ECAPA-TDNN"),
-            ("VOKRA_WESPEAKER_GGUF", "WeSpeaker"),
-            ("VOKRA_TITANET_GGUF", "TitaNet-L"),
+        for (variable, label, dimension) in [
+            ("VOKRA_CAMPLUS_GGUF", "CAM++", 192),
+            ("VOKRA_XVECTOR_GGUF", "X-vector", 512),
+            ("VOKRA_ECAPA_GGUF", "ECAPA-TDNN", 192),
+            ("VOKRA_WESPEAKER_GGUF", "WeSpeaker", 256),
+            ("VOKRA_TITANET_GGUF", "TitaNet-L", 192),
         ] {
             let Ok(model) = std::env::var(variable) else {
                 eprintln!("skipping {label} CLI e2e: set {variable} to run");
                 continue;
             };
             // Identical inputs → success and cosine 1.0 on stdout.
+            let output = dir.join(format!(
+                "vokra-cli-spk-e2e-{label}-{}.f32",
+                std::process::id()
+            ));
             let code = main(&args(&[
                 "--model",
                 &model,
@@ -4547,9 +4565,13 @@ mod tests {
                 in_wav.to_str().unwrap(),
                 "--compare",
                 in_wav.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
             ]))
             .unwrap_or_else(|error| panic!("{label} speaker e2e failed: {error}"));
             assert_eq!(code, ExitCode::SUCCESS);
+            assert_eq!(std::fs::metadata(&output).unwrap().len(), dimension * 4);
+            let _ = std::fs::remove_file(&output);
 
             // A non-16 kHz clip is an explicit error (no silent resample).
             let err = main(&args(&[
