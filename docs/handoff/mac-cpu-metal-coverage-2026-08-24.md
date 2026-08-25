@@ -322,9 +322,27 @@ and never reads a Vokra GGUF. VAST instance `48565792` measured:
 
 The strict converter now writes the exact checkpoint/source revisions,
 frontend, block/channel schedule, TSTP and layout contracts and refuses a
-license override incompatible with the audited CC-BY-4.0 checkpoint. No public
-upload or replacement was performed. Linux VAST cannot execute Metal, so the
-Apple-device comparison remains a separate artifact gate.
+license override incompatible with the audited CC-BY-4.0 checkpoint. Linux
+VAST could not execute Metal, so the initial CPU wave left the Apple-device
+comparison as a separate artifact gate.
+
+The follow-up at commit `4244e31d` ran the unchanged canonical 182-tensor GGUF
+on CPU and real Apple M1 Metal with one identical 16,000-sample input:
+
+| Dimension | Different values | max abs CPU/Metal | mean abs | relative L1 | cosine |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 193 | `2.980232239e-8` | `4.696630640e-9` | `1.204850094e-7` | `1.000000000` |
+
+The complete embedding passed the unchanged `0.01` FP32 bound. A Seatbelt
+probe returned the explicit `no system default Metal device` error rather
+than falling back; the real device run then completed outside that restriction
+after macOS reported Apple M1 Metal support. The real-file CLI output gate
+reported `1 passed; 0 failed`. The 12-file evidence package is at
+`/private/tmp/vokra-wespeaker-mac-4244e31d`; its `SHA256SUMS` digest is
+`6a6f3ea000770d459fe73bd4e7ad9e970427057c21c594312274d05ebf54e391`.
+This closes Metal only for the canonical pyannote artifact. The 219-tensor
+`vokra/wespeaker` file remains rejected by its provenance gate and is not
+claimed as a GPU pass. No public upload or replacement was performed.
 
 ### NVIDIA TitaNet-Large two-artifact family
 
