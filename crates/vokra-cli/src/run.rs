@@ -41,6 +41,7 @@ USAGE:
                   [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
     vokra-cli run --model <smart-turn-v2.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <utmos22-strong.gguf> --input <16k-mono.wav>
     vokra-cli run --model <openwakeword.gguf> --input <16k-mono.wav>
     vokra-cli run --model <nsnet2.gguf> --input <noisy.wav> [--output <clean.wav>]
     vokra-cli run --model <deepfilternet3.gguf> --input <48k-noisy.wav> [--output <clean.wav>]
@@ -730,6 +731,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::F0Fcpe
         | ModelTask::SmartTurn
         | ModelTask::AudioClassificationAst
+        | ModelTask::Utmos
         | ModelTask::Segment
         | ModelTask::Separation
         | ModelTask::Tts
@@ -1102,6 +1104,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::AudioClassificationAst => {
             run_ast_classification(&session, &a)?;
         }
+        ModelTask::Utmos => {
+            run_utmos(&session, &a)?;
+        }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
         }
@@ -1165,6 +1170,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the strict UTMOS22-strong scorer and prints its single MOS value.
+fn run_utmos(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (UTMOS22-strong): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let runtime = crate::utmos_runtime::UtmosRuntime::from_gguf(session.gguf(), args.backend)
+        .map_err(|error| format!("run (UTMOS22-strong): {error}"))?;
+    let score = runtime
+        .score(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (UTMOS22-strong): {error}"))?;
+    println!("utmos: score={score:.9}");
+    Ok(())
 }
 
 /// Runs the strict public AST AudioSet classifier and prints the ten highest

@@ -24,6 +24,7 @@ mod npu_bakeoff;
 mod report;
 mod run;
 mod runtime_contracts;
+mod utmos_runtime;
 mod wav;
 
 use std::process::ExitCode;

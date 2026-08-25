@@ -296,6 +296,11 @@ pub(crate) enum ModelTask {
     /// no classifier slot, so run/bench bind the concrete CPU/Metal model once
     /// from the already mmap-opened GGUF.
     AudioClassificationAst,
+    /// SaruLab UTMOS22-strong non-intrusive MOS prediction. The independently
+    /// upstream-parity-verified topology lives in `vokra-eval`; run/bench bind
+    /// it from this session's GGUF and route all learned primitives through
+    /// CPU or Metal without loading the weights a second time.
+    Utmos,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -413,6 +418,8 @@ const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 const ARCH_SMART_TURN: &str = "smart_turn";
 /// MIT Audio Spectrogram Transformer AudioSet classifier.
 const ARCH_AST: &str = "ast";
+/// SaruLab UTMOS22-strong neural MOS predictor.
+const ARCH_UTMOS: &str = "utmos";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -1329,6 +1336,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // reaches the complete concrete classifier graph.
             Ok((session, ModelTask::AudioClassificationAst))
         }
+        ARCH_UTMOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on UTMOS22-strong"
+                ));
+            }
+            // Bare session: the run/bench adapter binds the parity-verified
+            // concrete scorer from this already mmap-opened GGUF exactly once.
+            Ok((session, ModelTask::Utmos))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1358,7 +1375,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -2001,6 +2018,20 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("campplus session builds (bare)");
         assert_eq!(task, ModelTask::Speaker);
+    }
+
+    #[test]
+    fn load_session_routes_utmos_to_quality_score_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_UTMOS);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-utmos-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("utmos session builds (bare)");
+        assert_eq!(task, ModelTask::Utmos);
     }
 
     #[test]
