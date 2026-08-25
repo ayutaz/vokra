@@ -87,8 +87,10 @@ pub(crate) const PROSODY_LANG_ID: i64 = 0;
 pub(crate) struct Dims {
     /// Global conditioning width `g` (`emb_lang.weight` dim 1).
     pub gin: usize,
-    /// External speaker-embedding width (`spk_proj.0.weight` dim 1).
-    pub spk_emb_dim: usize,
+    /// External speaker-embedding width (`spk_proj.0.weight` dim 1), or
+    /// `None` for a legacy language-conditioned voice without zero-shot
+    /// speaker projection.
+    pub spk_emb_dim: Option<usize>,
     /// Text-encoder / flow hidden size (`enc_p.emb.weight` dim 1).
     pub hidden: usize,
     /// Encoder transformer layers (`enc_p.encoder.attn_layers.*` count).
@@ -142,7 +144,11 @@ impl Dims {
     /// malformed voice fails loudly here rather than mid-forward).
     pub(crate) fn derive(store: &TensorStore) -> Result<Self> {
         let gin = axis(store, "emb_lang.weight", 1)?;
-        let spk_emb_dim = axis(store, "spk_proj.0.weight", 1)?;
+        let spk_emb_dim = if store.contains("spk_proj.0.weight") {
+            Some(axis(store, "spk_proj.0.weight", 1)?)
+        } else {
+            None
+        };
         let hidden = axis(store, "enc_p.emb.weight", 1)?;
         let ffn = axis(store, "enc_p.encoder.ffn_layers.0.conv_1.weight", 0)?;
         let dp_filter = axis(store, "dp.pre.weight", 0)?;

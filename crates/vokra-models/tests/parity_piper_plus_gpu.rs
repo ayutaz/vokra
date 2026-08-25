@@ -14,10 +14,10 @@
 //! feature, and a real GPU. The tests are therefore **triply gated** — they
 //! run only when
 //!
-//! 1. `VOKRA_PIPER_V7_GGUF` is set (a converted piper-plus zero-shot v7 voice
-//!    with the M0-07 fixtures, `docs/piper-plus-integration.md` §5). This
-//!    matches the existing `piper_plus/parity_v7.rs` env var: the same voice
-//!    covers both suites.
+//! 1. `VOKRA_PIPER_GPU_GGUF` is set to the voice under test. For backward
+//!    compatibility the zero-shot-only `VOKRA_PIPER_V7_GGUF` is accepted as a
+//!    fallback. The generic variable also exercises public legacy voices that
+//!    use language-only conditioning.
 //! 2. The `metal` or `cuda` feature is enabled at compile time.
 //! 3. `Compute::for_backend` succeeds (`BackendUnavailable` = no device →
 //!    skip, never a silent CPU fall back per FR-EX-08).
@@ -44,13 +44,13 @@ const ATOL_COMPONENT: f32 = 0.01;
 /// existing `piper_plus/parity_v7.rs` decoder-PCM tolerance vs onnxruntime).
 const ATOL_PCM: f32 = 0.05;
 
-/// Loads the voice named by `$VOKRA_PIPER_V7_GGUF`, or `None` to skip cleanly
-/// (CI has neither the env var nor the GGUF file). The path is the *same* env
-/// var the existing `piper_plus/parity_v7.rs` unit-test suite uses, so one
-/// converted voice covers both suites without duplication.
+/// Loads the voice named by `$VOKRA_PIPER_GPU_GGUF`, falling back to the
+/// historical `$VOKRA_PIPER_V7_GGUF`, or returns `None` to skip cleanly.
 fn load_voice() -> Option<PiperPlusTts> {
-    let path = std::env::var("VOKRA_PIPER_V7_GGUF").ok()?;
-    Some(PiperPlusTts::from_path(&path).expect("load piper-plus v7 voice GGUF"))
+    let path = std::env::var("VOKRA_PIPER_GPU_GGUF")
+        .or_else(|_| std::env::var("VOKRA_PIPER_V7_GGUF"))
+        .ok()?;
+    Some(PiperPlusTts::from_path(&path).expect("load piper-plus voice GGUF"))
 }
 
 /// Fixed synthesize inputs — a short deterministic 3-phoneme sequence, no
@@ -220,7 +220,7 @@ fn assert_all_layers_within_atol(
 /// `metal` feature, and a real Metal device — never a silent CPU substitute.
 ///
 /// ```text
-/// VOKRA_PIPER_V7_GGUF=voice.gguf \
+/// VOKRA_PIPER_GPU_GGUF=voice.gguf \
 ///     cargo test -p vokra-models --features metal piper_plus_metal_e2e -- --nocapture
 /// ```
 #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
@@ -230,7 +230,9 @@ fn piper_plus_metal_e2e_matches_cpu() {
     use vokra_core::VokraError;
 
     let Some(voice) = load_voice() else {
-        eprintln!("skip piper-plus Metal e2e parity: set VOKRA_PIPER_V7_GGUF to a converted voice");
+        eprintln!(
+            "skip piper-plus Metal e2e parity: set VOKRA_PIPER_GPU_GGUF to a converted voice"
+        );
         return;
     };
 
@@ -260,7 +262,7 @@ fn piper_plus_metal_e2e_matches_cpu() {
 /// the M2-03-T25 / M3-01 CUDA gate:
 ///
 /// ```text
-/// VOKRA_PIPER_V7_GGUF=voice.gguf \
+/// VOKRA_PIPER_GPU_GGUF=voice.gguf \
 ///     cargo test -p vokra-models --features cuda piper_plus_cuda_e2e -- --nocapture
 /// ```
 #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -270,7 +272,7 @@ fn piper_plus_cuda_e2e_matches_cpu() {
     use vokra_core::VokraError;
 
     let Some(voice) = load_voice() else {
-        eprintln!("skip piper-plus CUDA e2e parity: set VOKRA_PIPER_V7_GGUF to a converted voice");
+        eprintln!("skip piper-plus CUDA e2e parity: set VOKRA_PIPER_GPU_GGUF to a converted voice");
         return;
     };
 

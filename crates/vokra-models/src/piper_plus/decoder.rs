@@ -697,7 +697,7 @@ mod tests {
         let store = TensorStore::new(file);
         let dims = Dims {
             gin: GIN,
-            spk_emb_dim: 192,
+            spk_emb_dim: Some(192),
             hidden: HIDDEN,
             n_enc_layers: 1,
             ffn: 768,

@@ -174,7 +174,9 @@ fn flow_latent_parity() {
         "sum(w_ceil)=t_frames"
     );
 
-    let (z, frames) = voice.expand_and_flow(&ref_m_p, t_phonemes, &w_ceil, lid);
+    let (z, frames) = voice
+        .expand_and_flow(&ref_m_p, t_phonemes, &w_ceil, lid)
+        .expect("expand and reverse flow");
     assert_eq!(frames, t_frames);
     assert_eq!(z.len(), hidden * t_frames);
     let d = max_abs_diff(&z, &ref_dec_input);

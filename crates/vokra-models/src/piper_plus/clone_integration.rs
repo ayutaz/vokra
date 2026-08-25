@@ -82,8 +82,12 @@ fn reference_audio_embeds_and_changes_synthesis() {
     // (b) the embedding changes the global conditioning `g` versus the zero
     // fallback (spk_proj(zeros) ≠ spk_proj(embed)).
     let lid = 0;
-    let g_zero = voice.global_g(None, lid);
-    let g_clone = voice.global_g(Some(&emb), lid);
+    let g_zero = voice
+        .global_g(None, lid)
+        .expect("zero-speaker conditioning");
+    let g_clone = voice
+        .global_g(Some(&emb), lid)
+        .expect("cloned-speaker conditioning");
     let cos_g = cosine(&g_zero, &g_clone);
     eprintln!("clone: cos(g_zero, g_clone) = {cos_g:.6} (embed |·|₁ = {energy:.3})");
     assert!(
