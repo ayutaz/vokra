@@ -14,7 +14,7 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-25, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE and standalone BERT-family CPU waves, it reported:
+Piper, FCPE and standalone BERT-family CPU/Metal waves, it reported:
 
 | Inventory / code reachability | Public repos |
 |---|---:|
@@ -25,8 +25,8 @@ Piper, FCPE and standalone BERT-family CPU waves, it reported:
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
 | No complete runtime binder | 61 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 80 |
-| CPU-complete but Metal-unsupported | 3 |
+| Complete Metal code route among the CPU-complete set | 83 |
+| CPU-complete but Metal-unsupported | 0 |
 | Metal blocked by missing/partial CPU forward | 110 |
 
 These are deliberately **code reachability** counts. They are not a claim that
@@ -38,7 +38,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 80 repositories with a complete Metal code route are the four BigVGAN
+The 83 repositories with a complete Metal code route are the four BigVGAN
 checkpoints, CAM++, CrisperWhisper, both Distil-Whisper checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -52,17 +52,18 @@ Whisper-Medusa-v1, all seven Wav2Vec2 CTC checkpoints, Data2Vec Audio Base,
 HuBERT Large LS960, all seven SepFormer checkpoints, and both SpeechBrain
 X-vector repositories, the canonical SpeechBrain ECAPA-TDNN repository, the
 public pyannote WeSpeaker ResNet34-LM repository, and both byte-identical
-TitaNet-Large repositories (`vokra/titanet-l` and `vokra/titanet-large`).
+TitaNet-Large repositories (`vokra/titanet-l` and `vokra/titanet-large`), plus
+the standalone Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3 text
+encoders.
 Pyannote Segmentation 3.0 and RMVPE are deliberately
 omitted from this list (see below). Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
-The three CPU-complete, Metal-unsupported repositories are the standalone
-`chinese-roberta-wwm-ext-large`,
-`deberta-v2-large-japanese-char-wwm` and `deberta-v3-large` text encoders.
-Their learned transformer forwards still use the scalar `vokra-bert` path, so
-selecting Metal is rejected before inference rather than silently running CPU.
+There are no CPU-complete, Metal-unsupported repositories in this inventory.
+The remaining 110 Metal-blocked repositories first need a complete released-
+artifact CPU runtime; they are not counted as Metal implementations merely
+because a converter or partial binder exists.
 
 The routed-partial set deliberately includes `csm`, `nsnet2`,
 `pyannote-segmentation`, `rmvpe` and `sbv2`. CSM still constructs synthesized
@@ -197,14 +198,21 @@ upload occurred, no VAST-generated artifact required
 pullback, and the instance was destroyed; the live VAST inventory returned
 `[]`.
 
-### Standalone BERT / DeBERTa CPU front door
+### Standalone BERT / DeBERTa CPU and Metal front door
 
 `BertRuntime` and `vokra-cli run --token-ids` now expose the three public
-standalone text encoders as raw final-hidden features on CPU. Input is an
-explicit comma-separated `u32` token-id sequence; raw text, audio-shaped input
-and empty/out-of-vocabulary sequences fail before forward. Bench refuses to
-invent an audio real-time factor for this non-audio task. Any non-CPU backend,
-including Metal, is an explicit unsupported-operation error.
+standalone text encoders as raw final-hidden features on CPU and Metal. Input
+is an explicit comma-separated `u32` token-id sequence; raw text, audio-shaped
+input and empty/out-of-vocabulary sequences fail before forward. Bench refuses
+to invent an audio real-time factor for this non-audio task. CUDA, QNN and any
+other unimplemented backend remain explicit unsupported-operation errors.
+
+The scalar CPU forwards remain unchanged as the comparison path. A backend
+seam sends every learned transformer hot operation through the selected
+`Compute` implementation: GEMM, Softmax, LayerNorm and GELU for all three
+architectures, plus Conv1D for DeBERTa v2/v3. Relative-position bucket lookup,
+residual addition and layout transforms remain host control/pointwise glue;
+they do not invoke a hidden CPU model forward.
 
 The exact fixed-revision public files verified on disposable VAST instance
 `48640495` were:
@@ -227,6 +235,23 @@ the legacy and canonical paths agree within `1e-6`; the existing independent
 real-weight final-hidden parity test retained its original `6e-3` bound and
 passed unchanged.
 
+The exact same public files then completed two-token final-hidden forwards on
+the maintainer's Apple M1 CPU and GPU. All 2,048 output values were compared:
+
+| Public model | CPU time | Metal time | max abs CPU/Metal | mean abs | relative L1 | cosine |
+|---|---:|---:|---:|---:|---:|---:|
+| Chinese RoBERTa | 0.88 s | 2.56 s | `3.814697266e-6` | `4.656343719e-7` | `1.231983967e-6` | `1.000000000` |
+| Japanese DeBERTa v2 | 23.08 s | 3.58 s | `3.406405449e-5` | `7.116260662e-6` | `1.219052028e-5` | `0.999999999925` |
+| DeBERTa v3 | 23.92 s | 3.84 s | `2.861022949e-6` | `4.208982887e-7` | `8.738921501e-7` | `1.000000000` |
+
+Every row passed the pre-registered untuned final-hidden limits
+`max_abs <= 5e-4` and `mean_abs <= 1e-4`; every negative-control CPU/Metal
+comparison contained a non-zero difference. A sandboxed Metal probe first
+returned `no system default Metal device`, while the same command on the real
+Apple device succeeded, demonstrating that the route does not silently fall
+back to CPU. The fixed-revision GGUFs were removed locally after their hashes
+and outputs were recorded.
+
 Commits `52eaccd9`, `b9b24ea3` and `7f766b26` were checked with the local
 `vokra-bert` suite and warnings-as-errors clippy where locally safe. VAST then
 passed the focused `vokra-models` runtime tests and
@@ -235,6 +260,22 @@ and no unique remote artifact needed pullback: the source was already local,
 while all three large files were reproducible public SHA-matched inputs. The
 instance was destroyed rather than stopped, and the live VAST inventory
 returned `[]`.
+
+The Metal follow-up at commit `b17b3d90` passed the local 21-test
+`vokra-bert` suite, the Metal-enabled CLI regression build, real Apple M1
+execution for all three public artifacts, and Metal-enabled CLI Clippy with
+warnings denied. Disposable VAST instance `48644299` then passed the focused
+`vokra-models` BERT runtime tests (`2 passed / 0 failed`) and
+`cargo clippy -p vokra-models --all-targets -- -D warnings`. The logs were
+pulled to `/private/tmp/vokra-bert-metal-vast-48644299.DJoSRg`; their SHA-256
+values are respectively
+`831ef5b87e48ef4a6d8f966787fcabb02a12dad2fdcbec7f7d58c248cb764d5d`
+and
+`d79a0d317c988a7045eceec109da5e3565d76b8db840ac3ee2372e578aa9479d`.
+The first candidate contract (`48644242`) never acquired compute resources and
+was destroyed before any data transfer. Instance `48644299` was destroyed
+after log verification; the paginated live inventory then reported zero
+instances and zero labels.
 
 ### Conv-TasNet Libri1Mix enhancement
 

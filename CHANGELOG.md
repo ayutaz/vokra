@@ -14,15 +14,16 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
-- The three public standalone BERT-family GGUFs now run as CPU text encoders
+- The three public standalone BERT-family GGUFs now run as CPU/Metal text encoders
   through Rust and `vokra-cli run --token-ids`, returning final hidden-state
   features for Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3. The early
   public DeBERTa v3 tensor schema is detected and normalized through the same
   Q/K-sharing and relative-embedding LayerNorm contract as the current
   converter; mixed/incomplete schemas fail closed. All three exact public
-  files completed real CPU forwards on VAST. Metal remains explicitly
-  unsupported for these scalar transformer implementations and never falls
-  back to CPU.
+  files completed real CPU forwards on VAST and real Apple M1 CPU/Metal
+  comparisons. Their largest final-hidden CPU/Metal error was `3.41e-5`;
+  GEMM, Softmax, LayerNorm, GELU and DeBERTa Conv1D honor the selected backend,
+  while unimplemented backends remain explicit errors with no CPU fallback.
 - FCPE now matches the official `torchfcpe` waveform-to-F0 path instead of a
   merely plausible pitch track: overlap/reflect padding, magnitude (not power)
   mel analysis, the upstream `pcm_len / hop + 1` duplicate-last frame contract,
