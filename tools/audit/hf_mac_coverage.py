@@ -133,6 +133,7 @@ METAL_CODE_ARCHES = {
     "whisper",
     "whisper-medusa-v1",
     "wespeaker",
+    "xcodec2",
     "xvector",
 }
 

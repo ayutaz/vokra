@@ -64,6 +64,8 @@ USAGE:
                   [--bandwidth-id <0..3>] --output <out.wav>
     vokra-cli run --model <neucodec.gguf> --codec-mode decode --input <codes.u32le> \
                   --output <out.wav>
+    vokra-cli run --model <xcodec2.gguf> --codec-mode decode --input <codes.u32le> \
+                  --output <out.wav>
     vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
@@ -94,6 +96,8 @@ OPTIONS:
                                 little-endian u32 code per 75 Hz frame.
                                 For NeuCodec base/distill decode it is one raw
                                 little-endian u32 code per 50 Hz frame.
+                                For X-Codec2 decode it is one raw little-endian
+                                u32 code per 50 Hz frame.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
                                 For FocalCodec encode it is a 16 kHz mono WAV;
@@ -197,6 +201,10 @@ OPTIONS:
                                 code per frame. CPU and Metal cover the shared
                                 base/distill token-to-waveform decoder; encode
                                 remains an explicit error.
+                                xcodec2: `decode` only, from one raw u32le code
+                                per frame. CPU and Metal cover the complete
+                                token-to-waveform decoder; encode remains an
+                                explicit error.
                                 snac: `encode` (CPU mono WAV -> versioned
                                 stage-major container) or `decode` (container ->
                                 WAV on CPU/Metal). Metal encode is an explicit
@@ -730,6 +738,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::DacCodec
         | ModelTask::WavTokenizerCodec
         | ModelTask::NeuCodec
+        | ModelTask::XCodec2
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
         | ModelTask::S2sDuplex
@@ -790,11 +799,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::DacCodec
         && task != ModelTask::WavTokenizerCodec
         && task != ModelTask::NeuCodec
+        && task != ModelTask::XCodec2
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/snac/focalcodec arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/snac/focalcodec arches"
                 .to_owned(),
         );
     }
@@ -1107,6 +1117,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::NeuCodec => {
             run_neucodec_codec(&session, &a)?;
+        }
+        ModelTask::XCodec2 => {
+            run_xcodec2_codec(&session, &a)?;
         }
         ModelTask::SnacCodec => {
             run_snac_codec(&session, &a)?;
@@ -2446,6 +2459,80 @@ fn run_neucodec_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     println!(
         "neucodec {:?} decode: {} codes -> {} samples @ {} Hz -> {output_path}",
         model.variant(),
+        codes.len(),
+        pcm.len(),
+        model.sample_rate()
+    );
+    Ok(())
+}
+
+/// X-Codec2 50 Hz FSQ token-to-waveform path.
+///
+/// Input is one headerless little-endian u32 code per frame. The binder pins
+/// the exact public 1,153-tensor GGUF and its CC-BY-NC-4.0 provenance before
+/// the shared decoder is allowed to read any weight.
+fn run_xcodec2_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (xcodec2): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (xcodec2): encode is not implemented yet; the public runtime exposes the complete official token-to-PCM decoder and never substitutes another encoder"
+                    .to_owned(),
+            );
+        }
+        None => return Err("run (xcodec2): --codec-mode decode is required".to_owned()),
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (xcodec2): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (xcodec2): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (xcodec2 decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (xcodec2 decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let model = vokra_models::xcodec2::XCodec2::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let pcm = model
+        .decode_codes(&codes)
+        .map_err(|error| error.to_string())?;
+    let expected = codes
+        .len()
+        .checked_mul(model.hop_length())
+        .ok_or("run (xcodec2 decode): output sample count overflow")?;
+    if pcm.len() != expected {
+        return Err(format!(
+            "run (xcodec2 decode): decoder emitted {} samples, expected {expected} from {} frames x hop {}",
+            pcm.len(),
+            codes.len(),
+            model.hop_length()
+        ));
+    }
+    wav::write_wav(output_path, &pcm, model.sample_rate())
+        .map_err(|error| format!("run (xcodec2 decode): --output {output_path}: {error}"))?;
+    println!(
+        "xcodec2 decode: {} codes -> {} samples @ {} Hz -> {output_path}",
         codes.len(),
         pcm.len(),
         model.sample_rate()
@@ -5455,6 +5542,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::NeuCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::XCodec2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);

@@ -866,6 +866,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::XCodec2 => {
+            return Err(
+                "bench: arch `xcodec2` consumes discrete 50 Hz code frames rather than timed PCM; use `vokra-cli run --model <xcodec2.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::SnacCodec => {
             return Err(
                 "bench: arch `snac` uses hierarchical stage rates and explicit encode/decode modes; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <snac.gguf> --codec-mode encode|decode ...`"

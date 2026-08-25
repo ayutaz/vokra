@@ -260,6 +260,10 @@ pub(crate) enum ModelTask {
     /// Both public checkpoints share one strict decoder and honor CPU/Metal;
     /// waveform-to-code encode remains an explicit unsupported operation.
     NeuCodec,
+    /// HKUST X-Codec2 50 Hz FSQ token-to-waveform decode at 16 kHz. The
+    /// public Research-only checkpoint uses the shared strict Vocos decoder;
+    /// waveform-to-code encode remains an explicit unsupported operation.
+    XCodec2,
     /// SNAC 24/44 kHz hierarchical codec encode/decode. The run route uses a
     /// versioned stage-major code container because stage lengths differ.
     /// CPU supports encode/decode; Metal supports complete decode and rejects
@@ -442,6 +446,8 @@ const ARCH_DAC: &str = "dac";
 const ARCH_WAVTOKENIZER: &str = "wavtokenizer";
 /// Neuphonic NeuCodec base/distill 50 Hz FSQ codec.
 const ARCH_NEUCODEC: &str = "neucodec";
+/// HKUST X-Codec2 50 Hz FSQ codec.
+const ARCH_XCODEC2: &str = "xcodec2";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
 const ARCH_SNAC: &str = "snac";
 /// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
@@ -1171,6 +1177,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::NeuCodec))
         }
+        ARCH_XCODEC2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_XCODEC2}`"
+                ));
+            }
+            Ok((session, ModelTask::XCodec2))
+        }
         ARCH_SNAC => {
             if hint.is_some() {
                 return Err(format!(
@@ -1330,7 +1344,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_SNAC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_SNAC}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -3027,6 +3041,20 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_xcodec2_to_the_fsq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_XCODEC2, "xcodec2-routed", |path| {
+            load_session(path).expect("X-Codec2 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::XCodec2);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_XCODEC2),
+            "the routed X-Codec2 must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_snac_to_the_hierarchical_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_SNAC, "snac-routed", |path| {
             load_session(path).expect("snac session builds (bare)")
@@ -3099,6 +3127,7 @@ mod tests {
             ARCH_DAC,
             ARCH_WAVTOKENIZER,
             ARCH_NEUCODEC,
+            ARCH_XCODEC2,
             ARCH_SNAC,
             ARCH_FOCALCODEC,
             ARCH_BIGVGAN,

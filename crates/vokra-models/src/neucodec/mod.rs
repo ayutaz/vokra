@@ -73,8 +73,8 @@ const BASE_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
     ],
 };
 
-/// Complete learned-op set for official token-to-waveform execution.
-pub const NEUCODEC_DECODE_HOT_OPS: &[HotOp] = &[
+/// Complete learned-op set for the released NeuCodec/X-Codec2 Vocos decoder.
+pub(crate) const FSQ_VOCOS_DECODE_HOT_OPS: &[HotOp] = &[
     HotOp::Xcodec2Fsq,
     HotOp::Conv1d,
     HotOp::GroupNorm,
@@ -84,6 +84,9 @@ pub const NEUCODEC_DECODE_HOT_OPS: &[HotOp] = &[
     HotOp::Silu,
     HotOp::LayerNorm,
 ];
+
+/// Complete learned-op set for official NeuCodec token-to-waveform execution.
+pub const NEUCODEC_DECODE_HOT_OPS: &[HotOp] = FSQ_VOCOS_DECODE_HOT_OPS;
 
 /// Official checkpoint variant. Both variants share the exact decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +151,7 @@ struct TransformerBlock {
 }
 
 #[derive(Debug, Clone)]
-struct DecoderWeights {
+pub(crate) struct DecoderWeights {
     fsq_out_proj: FsqOutProj,
     fc_post_a: Conv1dWeights,
     embed: Conv1dWeights,
@@ -256,83 +259,112 @@ impl NeuCodec {
 
     /// Decodes one batch-free `[frames]` FSQ code sequence to 24 kHz PCM.
     pub fn decode_codes(&self, codes: &[u32]) -> Result<Vec<f32>> {
-        if codes.is_empty() {
-            return Err(VokraError::InvalidArgument(
-                "neucodec: codes must not be empty".to_owned(),
-            ));
-        }
-        let frames = codes.len();
-        let _ = frames.checked_mul(HIDDEN_DIM).ok_or_else(|| {
-            VokraError::InvalidArgument("neucodec: frame activation size overflow".to_owned())
-        })?;
-        let expected_samples = frames.checked_mul(HOP_LENGTH).ok_or_else(|| {
-            VokraError::InvalidArgument("neucodec: output sample count overflow".to_owned())
-        })?;
-        let compute = Compute::for_backend(self.backend, NEUCODEC_DECODE_HOT_OPS)?;
-        let attrs = Xcodec2FsqAttrs {
-            levels: vec![4; FSQ_DIM],
-            d_model: QUANTIZED_DIM,
-        };
-        let quantized =
-            compute.xcodec2_fsq_f32(codes, frames, Some(&self.weights.fsq_out_proj), &attrs)?;
-        let quantized = transpose_frame_to_channel(&quantized, frames, QUANTIZED_DIM);
-        let mut hidden = conv1d_same(
-            &compute,
-            &quantized,
-            QUANTIZED_DIM,
-            frames,
-            HIDDEN_DIM,
-            &self.weights.fc_post_a,
-            1,
-        )?;
-        hidden = conv1d_same(
-            &compute,
-            &hidden,
-            HIDDEN_DIM,
-            frames,
-            HIDDEN_DIM,
-            &self.weights.embed,
-            7,
-        )?;
-        for block in &self.weights.prior_net {
-            hidden = resnet_forward(&compute, &hidden, frames, block)?;
-        }
-        for block in &self.weights.transformers {
-            hidden = transformer_forward(&compute, &hidden, frames, block)?;
-        }
-        for block in &self.weights.post_net {
-            hidden = resnet_forward(&compute, &hidden, frames, block)?;
-        }
-        let frame_major = transpose_channel_to_frame(&hidden, HIDDEN_DIM, frames);
-        let mut normalized = vec![0.0f32; frame_major.len()];
-        compute.layer_norm_f32(
-            &frame_major,
-            &mut normalized,
-            frames,
-            HIDDEN_DIM,
-            &self.weights.final_norm.weight,
-            &self.weights.final_norm.bias,
-            NORM_EPS,
-        )?;
-        let normalized = transpose_frame_to_channel(&normalized, frames, HIDDEN_DIM);
-        let projected = conv1d_same(
-            &compute,
-            &normalized,
-            HIDDEN_DIM,
-            frames,
-            HEAD_OUTPUT_DIM,
-            &self.weights.head,
-            1,
-        )?;
-        let pcm = istft_head(&projected, frames)?;
-        if pcm.len() != expected_samples {
-            return Err(VokraError::InvalidArgument(format!(
-                "neucodec: decoder emitted {} samples, expected {expected_samples}",
-                pcm.len()
-            )));
-        }
-        Ok(pcm)
+        decode_fsq_vocos(&self.weights, self.backend, codes, HOP_LENGTH, "neucodec")
     }
+}
+
+/// Shared released FSQ -> Transformer/Vocos -> iSTFT decoder forward.
+///
+/// NeuCodec and X-Codec2 use the same learned topology and tensor layout, but
+/// have distinct output timebases. Keeping the forward here makes the two
+/// public binders share one numerical implementation while their manifest,
+/// provenance, sample-rate and hop contracts remain separate and strict.
+pub(crate) fn decode_fsq_vocos(
+    weights: &DecoderWeights,
+    backend: BackendKind,
+    codes: &[u32],
+    hop_length: usize,
+    label: &str,
+) -> Result<Vec<f32>> {
+    if codes.is_empty() {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: codes must not be empty"
+        )));
+    }
+    if hop_length == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: hop length must be positive"
+        )));
+    }
+    let frames = codes.len();
+    let _ = frames.checked_mul(HIDDEN_DIM).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{label}: frame activation size overflow"))
+    })?;
+    let expected_samples = frames.checked_mul(hop_length).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{label}: output sample count overflow"))
+    })?;
+    let n_fft = hop_length
+        .checked_mul(4)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: FFT size overflow")))?;
+    let head_output_dim = n_fft
+        .checked_add(2)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: head size overflow")))?;
+    let compute = Compute::for_backend(backend, FSQ_VOCOS_DECODE_HOT_OPS)?;
+    let attrs = Xcodec2FsqAttrs {
+        levels: vec![4; FSQ_DIM],
+        d_model: QUANTIZED_DIM,
+    };
+    let quantized = compute.xcodec2_fsq_f32(codes, frames, Some(&weights.fsq_out_proj), &attrs)?;
+    let quantized = transpose_frame_to_channel(&quantized, frames, QUANTIZED_DIM);
+    let mut hidden = conv1d_same(
+        &compute,
+        &quantized,
+        QUANTIZED_DIM,
+        frames,
+        HIDDEN_DIM,
+        &weights.fc_post_a,
+        1,
+        label,
+    )?;
+    hidden = conv1d_same(
+        &compute,
+        &hidden,
+        HIDDEN_DIM,
+        frames,
+        HIDDEN_DIM,
+        &weights.embed,
+        7,
+        label,
+    )?;
+    for block in &weights.prior_net {
+        hidden = resnet_forward(&compute, &hidden, frames, block, label)?;
+    }
+    for block in &weights.transformers {
+        hidden = transformer_forward(&compute, &hidden, frames, block, label)?;
+    }
+    for block in &weights.post_net {
+        hidden = resnet_forward(&compute, &hidden, frames, block, label)?;
+    }
+    let frame_major = transpose_channel_to_frame(&hidden, HIDDEN_DIM, frames);
+    let mut normalized = vec![0.0f32; frame_major.len()];
+    compute.layer_norm_f32(
+        &frame_major,
+        &mut normalized,
+        frames,
+        HIDDEN_DIM,
+        &weights.final_norm.weight,
+        &weights.final_norm.bias,
+        NORM_EPS,
+    )?;
+    let normalized = transpose_frame_to_channel(&normalized, frames, HIDDEN_DIM);
+    let projected = conv1d_same(
+        &compute,
+        &normalized,
+        HIDDEN_DIM,
+        frames,
+        head_output_dim,
+        &weights.head,
+        1,
+        label,
+    )?;
+    let pcm = istft_head(&projected, frames, hop_length, label)?;
+    if pcm.len() != expected_samples {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: decoder emitted {} samples, expected {expected_samples}",
+            pcm.len()
+        )));
+    }
+    Ok(pcm)
 }
 
 fn resnet_forward(
@@ -340,6 +372,7 @@ fn resnet_forward(
     input: &[f32],
     frames: usize,
     weights: &ResnetBlock,
+    label: &str,
 ) -> Result<Vec<f32>> {
     let mut hidden = group_norm(compute, input, frames, &weights.norm1)?;
     hidden = silu(compute, &hidden)?;
@@ -351,6 +384,7 @@ fn resnet_forward(
         HIDDEN_DIM,
         &weights.conv1,
         3,
+        label,
     )?;
     hidden = group_norm(compute, &hidden, frames, &weights.norm2)?;
     hidden = silu(compute, &hidden)?;
@@ -362,6 +396,7 @@ fn resnet_forward(
         HIDDEN_DIM,
         &weights.conv2,
         3,
+        label,
     )?;
     add_residual(&mut hidden, input);
     Ok(hidden)
@@ -372,6 +407,7 @@ fn transformer_forward(
     input: &[f32],
     frames: usize,
     weights: &TransformerBlock,
+    label: &str,
 ) -> Result<Vec<f32>> {
     let frame_major = transpose_channel_to_frame(input, HIDDEN_DIM, frames);
     let mut normalized = vec![0.0f32; frame_major.len()];
@@ -384,7 +420,7 @@ fn transformer_forward(
         NORM_EPS,
     )?;
     let normalized = transpose_frame_to_channel(&normalized, frames, HIDDEN_DIM);
-    let qkv = biasless_pointwise(compute, &normalized, frames, &weights.c_attn)?;
+    let qkv = biasless_pointwise(compute, &normalized, frames, &weights.c_attn, label)?;
     let mut attended = vec![0.0f32; HIDDEN_DIM * frames];
     let scale = (HEAD_DIM as f32).sqrt().recip();
     for head in 0..ATTENTION_HEADS {
@@ -426,7 +462,7 @@ fn transformer_forward(
             }
         }
     }
-    let projected = biasless_pointwise(compute, &attended, frames, &weights.c_proj)?;
+    let projected = biasless_pointwise(compute, &attended, frames, &weights.c_proj, label)?;
     let mut after_attention = input.to_vec();
     add_residual(&mut after_attention, &projected);
 
@@ -441,9 +477,9 @@ fn transformer_forward(
         NORM_EPS,
     )?;
     let normalized = transpose_frame_to_channel(&normalized, frames, HIDDEN_DIM);
-    let mut hidden = biasless_pointwise(compute, &normalized, frames, &weights.fc1)?;
+    let mut hidden = biasless_pointwise(compute, &normalized, frames, &weights.fc1, label)?;
     hidden = silu(compute, &hidden)?;
-    let output = biasless_pointwise(compute, &hidden, frames, &weights.fc2)?;
+    let output = biasless_pointwise(compute, &hidden, frames, &weights.fc2, label)?;
     add_residual(&mut after_attention, &output);
     Ok(after_attention)
 }
@@ -509,9 +545,10 @@ fn conv1d_same(
     output_channels: usize,
     weights: &Conv1dWeights,
     kernel: usize,
+    label: &str,
 ) -> Result<Vec<f32>> {
     let output_len = output_channels.checked_mul(frames).ok_or_else(|| {
-        VokraError::InvalidArgument("neucodec: convolution output size overflow".to_owned())
+        VokraError::InvalidArgument(format!("{label}: convolution output size overflow"))
     })?;
     let mut output = vec![0.0f32; output_len];
     compute.conv1d_f32(
@@ -534,9 +571,10 @@ fn biasless_pointwise(
     input: &[f32],
     frames: usize,
     weights: &BiaslessLinear,
+    label: &str,
 ) -> Result<Vec<f32>> {
     let output_len = weights.output_dim.checked_mul(frames).ok_or_else(|| {
-        VokraError::InvalidArgument("neucodec: pointwise output size overflow".to_owned())
+        VokraError::InvalidArgument(format!("{label}: pointwise output size overflow"))
     })?;
     let mut output = vec![0.0f32; output_len];
     compute.conv1d_f32(
@@ -561,8 +599,14 @@ fn add_residual(output: &mut [f32], residual: &[f32]) {
     }
 }
 
-fn istft_head(projected: &[f32], frames: usize) -> Result<Vec<f32>> {
-    let bins = N_FFT / 2 + 1;
+fn istft_head(
+    projected: &[f32],
+    frames: usize,
+    hop_length: usize,
+    label: &str,
+) -> Result<Vec<f32>> {
+    let n_fft = hop_length * 4;
+    let bins = n_fft / 2 + 1;
     let mut re = vec![0.0f32; frames * bins];
     let mut im = vec![0.0f32; frames * bins];
     for frame in 0..frames {
@@ -579,13 +623,13 @@ fn istft_head(projected: &[f32], frames: usize) -> Result<Vec<f32>> {
         re,
         im,
     };
-    let mut attrs = IstftAttrs::new(N_FFT, HOP_LENGTH);
+    let mut attrs = IstftAttrs::new(n_fft, hop_length);
     attrs.center = false;
     let pcm = istft(&spectrogram, &attrs)?;
-    let trim = (N_FFT - HOP_LENGTH) / 2;
+    let trim = (n_fft - hop_length) / 2;
     if trim * 2 > pcm.len() {
         return Err(VokraError::InvalidArgument(format!(
-            "neucodec: same-padding trim {trim} exceeds iSTFT length {}",
+            "{label}: same-padding trim {trim} exceeds iSTFT length {}",
             pcm.len()
         )));
     }
@@ -600,47 +644,86 @@ fn load_decoder(file: &GgufFile, variant: NeuCodecVariant) -> Result<DecoderWeig
 }
 
 fn load_distill_decoder(file: &GgufFile) -> Result<DecoderWeights> {
+    load_pass_through_decoder(file, "neucodec", HOP_LENGTH)
+}
+
+/// Loads the released pass-through tensor namespace shared by distilled
+/// NeuCodec and X-Codec2. The caller supplies the audited output timebase;
+/// the full-checkpoint manifest is verified by the model-specific binder
+/// before this function is reached.
+pub(crate) fn load_pass_through_decoder(
+    file: &GgufFile,
+    label: &str,
+    hop_length: usize,
+) -> Result<DecoderWeights> {
+    let n_fft = hop_length
+        .checked_mul(4)
+        .ok_or_else(|| VokraError::ModelLoad(format!("{label}: decoder FFT size overflow")))?;
+    let head_output_dim = n_fft
+        .checked_add(2)
+        .ok_or_else(|| VokraError::ModelLoad(format!("{label}: decoder head size overflow")))?;
     let fsq_out_proj = FsqOutProj::new(
         QUANTIZED_DIM,
         FSQ_DIM,
         load(
             file,
+            label,
             "generator.quantizer.project_out.weight",
             &[QUANTIZED_DIM, FSQ_DIM],
         )?,
         load(
             file,
+            label,
             "generator.quantizer.project_out.bias",
             &[QUANTIZED_DIM],
         )?,
     )
-    .map_err(|error| VokraError::ModelLoad(format!("neucodec FSQ projection: {error}")))?;
+    .map_err(|error| VokraError::ModelLoad(format!("{label} FSQ projection: {error}")))?;
     // Encode-only half of ResidualFSQ. The complete-manifest hash already
     // pins the tensors; shape-check them too so a semantically incompatible
     // re-export cannot pass by preserving only names.
     let _project_in_weight = load(
         file,
+        label,
         "generator.quantizer.project_in.weight",
         &[FSQ_DIM, QUANTIZED_DIM],
     )?;
-    let _project_in_bias = load(file, "generator.quantizer.project_in.bias", &[FSQ_DIM])?;
-    let fc_post_a = load_pointwise(file, "fc_post_a", HIDDEN_DIM, QUANTIZED_DIM)?;
-    let embed = load_conv(file, "generator.backbone.embed", HIDDEN_DIM, HIDDEN_DIM, 7)?;
+    let _project_in_bias = load(
+        file,
+        label,
+        "generator.quantizer.project_in.bias",
+        &[FSQ_DIM],
+    )?;
+    let fc_post_a = load_pointwise(file, label, "fc_post_a", HIDDEN_DIM, QUANTIZED_DIM)?;
+    let embed = load_conv(
+        file,
+        label,
+        "generator.backbone.embed",
+        HIDDEN_DIM,
+        HIDDEN_DIM,
+        7,
+    )?;
     let prior_net = [
-        load_resnet(file, "generator.backbone.prior_net.0")?,
-        load_resnet(file, "generator.backbone.prior_net.1")?,
+        load_resnet(file, label, "generator.backbone.prior_net.0")?,
+        load_resnet(file, label, "generator.backbone.prior_net.1")?,
     ];
     let mut transformers = Vec::with_capacity(TRANSFORMER_LAYERS);
     for layer in 0..TRANSFORMER_LAYERS {
-        transformers.push(load_distill_transformer(file, layer)?);
+        transformers.push(load_pass_through_transformer(file, label, layer)?);
     }
     let post_net = [
-        load_resnet(file, "generator.backbone.post_net.0")?,
-        load_resnet(file, "generator.backbone.post_net.1")?,
+        load_resnet(file, label, "generator.backbone.post_net.0")?,
+        load_resnet(file, label, "generator.backbone.post_net.1")?,
     ];
-    let final_norm = load_affine_norm(file, "generator.backbone.final_layer_norm")?;
-    let head = load_pointwise(file, "generator.head.out", HEAD_OUTPUT_DIM, HIDDEN_DIM)?;
-    let _window = load(file, "generator.head.istft.window", &[N_FFT])?;
+    let final_norm = load_affine_norm(file, label, "generator.backbone.final_layer_norm")?;
+    let head = load_pointwise(
+        file,
+        label,
+        "generator.head.out",
+        head_output_dim,
+        HIDDEN_DIM,
+    )?;
+    let _window = load(file, label, "generator.head.istft.window", &[n_fft])?;
     Ok(DecoderWeights {
         fsq_out_proj,
         fc_post_a,
@@ -659,35 +742,56 @@ fn load_base_decoder(file: &GgufFile) -> Result<DecoderWeights> {
         FSQ_DIM,
         load(
             file,
+            "neucodec",
             "quantizer.project_out.weight",
             &[QUANTIZED_DIM, FSQ_DIM],
         )?,
-        load(file, "quantizer.project_out.bias", &[QUANTIZED_DIM])?,
+        load(
+            file,
+            "neucodec",
+            "quantizer.project_out.bias",
+            &[QUANTIZED_DIM],
+        )?,
     )
     .map_err(|error| VokraError::ModelLoad(format!("neucodec FSQ projection: {error}")))?;
     let _project_in_weight = load(
         file,
+        "neucodec",
         "quantizer.project_in.weight",
         &[FSQ_DIM, QUANTIZED_DIM],
     )?;
-    let _project_in_bias = load(file, "quantizer.project_in.bias", &[FSQ_DIM])?;
-    let fc_post_a = load_pointwise(file, "acoustic_decoder.fc", HIDDEN_DIM, QUANTIZED_DIM)?;
-    let embed = load_conv(file, "acoustic_decoder.embed", HIDDEN_DIM, HIDDEN_DIM, 7)?;
+    let _project_in_bias = load(file, "neucodec", "quantizer.project_in.bias", &[FSQ_DIM])?;
+    let fc_post_a = load_pointwise(
+        file,
+        "neucodec",
+        "acoustic_decoder.fc",
+        HIDDEN_DIM,
+        QUANTIZED_DIM,
+    )?;
+    let embed = load_conv(
+        file,
+        "neucodec",
+        "acoustic_decoder.embed",
+        HIDDEN_DIM,
+        HIDDEN_DIM,
+        7,
+    )?;
     let prior_net = [
-        load_resnet(file, "acoustic_decoder.prior_net.0")?,
-        load_resnet(file, "acoustic_decoder.prior_net.1")?,
+        load_resnet(file, "neucodec", "acoustic_decoder.prior_net.0")?,
+        load_resnet(file, "neucodec", "acoustic_decoder.prior_net.1")?,
     ];
     let mut transformers = Vec::with_capacity(TRANSFORMER_LAYERS);
     for layer in 0..TRANSFORMER_LAYERS {
         transformers.push(load_base_transformer(file, layer)?);
     }
     let post_net = [
-        load_resnet(file, "acoustic_decoder.post_net.0")?,
-        load_resnet(file, "acoustic_decoder.post_net.1")?,
+        load_resnet(file, "neucodec", "acoustic_decoder.post_net.0")?,
+        load_resnet(file, "neucodec", "acoustic_decoder.post_net.1")?,
     ];
-    let final_norm = load_affine_norm(file, "acoustic_decoder.norm")?;
+    let final_norm = load_affine_norm(file, "neucodec", "acoustic_decoder.norm")?;
     let head = load_pointwise(
         file,
+        "neucodec",
         "acoustic_decoder.head.linear",
         HEAD_OUTPUT_DIM,
         HIDDEN_DIM,
@@ -704,40 +808,72 @@ fn load_base_decoder(file: &GgufFile) -> Result<DecoderWeights> {
     })
 }
 
-fn load_resnet(file: &GgufFile, prefix: &str) -> Result<ResnetBlock> {
+fn load_resnet(file: &GgufFile, label: &str, prefix: &str) -> Result<ResnetBlock> {
     Ok(ResnetBlock {
-        norm1: load_affine_norm(file, &format!("{prefix}.norm1"))?,
-        conv1: load_conv(file, &format!("{prefix}.conv1"), HIDDEN_DIM, HIDDEN_DIM, 3)?,
-        norm2: load_affine_norm(file, &format!("{prefix}.norm2"))?,
-        conv2: load_conv(file, &format!("{prefix}.conv2"), HIDDEN_DIM, HIDDEN_DIM, 3)?,
+        norm1: load_affine_norm(file, label, &format!("{prefix}.norm1"))?,
+        conv1: load_conv(
+            file,
+            label,
+            &format!("{prefix}.conv1"),
+            HIDDEN_DIM,
+            HIDDEN_DIM,
+            3,
+        )?,
+        norm2: load_affine_norm(file, label, &format!("{prefix}.norm2"))?,
+        conv2: load_conv(
+            file,
+            label,
+            &format!("{prefix}.conv2"),
+            HIDDEN_DIM,
+            HIDDEN_DIM,
+            3,
+        )?,
     })
 }
 
-fn load_distill_transformer(file: &GgufFile, layer: usize) -> Result<TransformerBlock> {
+fn load_pass_through_transformer(
+    file: &GgufFile,
+    label: &str,
+    layer: usize,
+) -> Result<TransformerBlock> {
     let prefix = format!("generator.backbone.transformers.{layer}");
     Ok(TransformerBlock {
-        att_norm: load(file, &format!("{prefix}.att_norm.weight"), &[HIDDEN_DIM])?,
+        att_norm: load(
+            file,
+            label,
+            &format!("{prefix}.att_norm.weight"),
+            &[HIDDEN_DIM],
+        )?,
         c_attn: load_biasless_linear(
             file,
+            label,
             &format!("{prefix}.att.c_attn.weight"),
             HIDDEN_DIM,
             3 * HIDDEN_DIM,
         )?,
         c_proj: load_biasless_linear(
             file,
+            label,
             &format!("{prefix}.att.c_proj.weight"),
             HIDDEN_DIM,
             HIDDEN_DIM,
         )?,
-        ffn_norm: load(file, &format!("{prefix}.ffn_norm.weight"), &[HIDDEN_DIM])?,
+        ffn_norm: load(
+            file,
+            label,
+            &format!("{prefix}.ffn_norm.weight"),
+            &[HIDDEN_DIM],
+        )?,
         fc1: load_biasless_linear(
             file,
+            label,
             &format!("{prefix}.mlp.fc1.weight"),
             HIDDEN_DIM,
             INTERMEDIATE_DIM,
         )?,
         fc2: load_biasless_linear(
             file,
+            label,
             &format!("{prefix}.mlp.fc2.weight"),
             INTERMEDIATE_DIM,
             HIDDEN_DIM,
@@ -752,6 +888,7 @@ fn load_base_transformer(file: &GgufFile, layer: usize) -> Result<TransformerBlo
     for projection in ["q_proj", "k_proj", "v_proj"] {
         qkv.extend(load(
             file,
+            "neucodec",
             &format!("{attention_prefix}.{projection}.weight"),
             &[HIDDEN_DIM, HIDDEN_DIM],
         )?);
@@ -759,6 +896,7 @@ fn load_base_transformer(file: &GgufFile, layer: usize) -> Result<TransformerBlo
     Ok(TransformerBlock {
         att_norm: load(
             file,
+            "neucodec",
             &format!("{prefix}.input_layernorm.weight"),
             &[HIDDEN_DIM],
         )?,
@@ -769,23 +907,27 @@ fn load_base_transformer(file: &GgufFile, layer: usize) -> Result<TransformerBlo
         },
         c_proj: load_biasless_linear(
             file,
+            "neucodec",
             &format!("{attention_prefix}.o_proj.weight"),
             HIDDEN_DIM,
             HIDDEN_DIM,
         )?,
         ffn_norm: load(
             file,
+            "neucodec",
             &format!("{prefix}.post_attention_layernorm.weight"),
             &[HIDDEN_DIM],
         )?,
         fc1: load_biasless_linear(
             file,
+            "neucodec",
             &format!("{prefix}.mlp.fc1.weight"),
             HIDDEN_DIM,
             INTERMEDIATE_DIM,
         )?,
         fc2: load_biasless_linear(
             file,
+            "neucodec",
             &format!("{prefix}.mlp.fc2.weight"),
             INTERMEDIATE_DIM,
             HIDDEN_DIM,
@@ -793,15 +935,16 @@ fn load_base_transformer(file: &GgufFile, layer: usize) -> Result<TransformerBlo
     })
 }
 
-fn load_affine_norm(file: &GgufFile, prefix: &str) -> Result<AffineNorm> {
+fn load_affine_norm(file: &GgufFile, label: &str, prefix: &str) -> Result<AffineNorm> {
     Ok(AffineNorm {
-        weight: load(file, &format!("{prefix}.weight"), &[HIDDEN_DIM])?,
-        bias: load(file, &format!("{prefix}.bias"), &[HIDDEN_DIM])?,
+        weight: load(file, label, &format!("{prefix}.weight"), &[HIDDEN_DIM])?,
+        bias: load(file, label, &format!("{prefix}.bias"), &[HIDDEN_DIM])?,
     })
 }
 
 fn load_conv(
     file: &GgufFile,
+    label: &str,
     prefix: &str,
     output_dim: usize,
     input_dim: usize,
@@ -810,40 +953,48 @@ fn load_conv(
     Ok(Conv1dWeights {
         weight: load(
             file,
+            label,
             &format!("{prefix}.weight"),
             &[output_dim, input_dim, kernel],
         )?,
-        bias: load(file, &format!("{prefix}.bias"), &[output_dim])?,
+        bias: load(file, label, &format!("{prefix}.bias"), &[output_dim])?,
     })
 }
 
 fn load_pointwise(
     file: &GgufFile,
+    label: &str,
     prefix: &str,
     output_dim: usize,
     input_dim: usize,
 ) -> Result<Conv1dWeights> {
     Ok(Conv1dWeights {
-        weight: load(file, &format!("{prefix}.weight"), &[output_dim, input_dim])?,
-        bias: load(file, &format!("{prefix}.bias"), &[output_dim])?,
+        weight: load(
+            file,
+            label,
+            &format!("{prefix}.weight"),
+            &[output_dim, input_dim],
+        )?,
+        bias: load(file, label, &format!("{prefix}.bias"), &[output_dim])?,
     })
 }
 
 fn load_biasless_linear(
     file: &GgufFile,
+    label: &str,
     name: &str,
     input_dim: usize,
     output_dim: usize,
 ) -> Result<BiaslessLinear> {
     Ok(BiaslessLinear {
-        weight: load(file, name, &[output_dim, input_dim])?,
+        weight: load(file, label, name, &[output_dim, input_dim])?,
         input_dim,
         output_dim,
     })
 }
 
-fn load(file: &GgufFile, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
-    load_tensor(file, "neucodec", name, shape)
+fn load(file: &GgufFile, label: &str, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
+    load_tensor(file, label, name, shape)
 }
 
 fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {

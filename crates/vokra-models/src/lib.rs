@@ -316,6 +316,7 @@ pub mod mimi;
 pub mod moshi;
 pub mod nanocodec;
 pub mod neucodec;
+pub mod xcodec2;
 // Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551, MIT — 2026-08-05
 // runtime binder). A denoise-family runtime binder alongside DFN3
 // (`vokra_ops::denoise`) and the RNNoise v0.2 real-weight neural binder.
