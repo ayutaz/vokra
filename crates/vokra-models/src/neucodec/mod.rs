@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn official_rope_uses_head_axis_not_time_axis() {
-        let mut head_zero = vec![1.0f32, 2.0].repeat(HEAD_DIM / 2 * 2);
+        let mut head_zero = [1.0f32, 2.0].repeat(HEAD_DIM / 2 * 2);
         let original = head_zero.clone();
         apply_official_head_axis_rope(&mut head_zero, 2, 0);
         assert_eq!(head_zero, original, "head zero has position angle zero");
