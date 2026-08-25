@@ -65,6 +65,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "denoise",
             "utmos",
             "metricgan_plus",
+            "miocodec",
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")
@@ -80,6 +81,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("audioseal-real-weight.gguf",),
             "audioseal_real_weight",
+        )
+        miocodec = audit.RepoRecord(
+            "vokra/miocodec-25hz-44khz-v2",
+            "abc",
+            ("miocodec-25hz-44khz-v2.gguf",),
+            "miocodec",
         )
         silero = audit.RepoRecord(
             "vokra/silero", "abc", ("model.gguf",), "silero-vad"
@@ -153,6 +160,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(audiobox, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(audioseal, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(audioseal, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(miocodec, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(snac, routed, bound).cpu_code, "full")

@@ -321,6 +321,8 @@ pub mod omniasr_ctc;
 // ション厳禁); real-checkpoint binding is a follow-up wave (T29-equivalent).
 pub(crate) mod mapped_weights;
 pub mod mimi;
+/// MioCodec 25 Hz / 44.1 kHz v2 native FSQ + AdaLN/iSTFT decoder.
+pub mod miocodec;
 pub mod moshi;
 pub mod nanocodec;
 pub mod neucodec;

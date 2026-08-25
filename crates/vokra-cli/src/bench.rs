@@ -999,6 +999,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::MioCodec => {
+            return Err(
+                "bench: arch `miocodec` consumes a VKRMIO01 token/global-embedding container rather than timed PCM; use `vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::SnacCodec => {
             return Err(
                 "bench: arch `snac` uses hierarchical stage rates and explicit encode/decode modes; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <snac.gguf> --codec-mode encode|decode ...`"

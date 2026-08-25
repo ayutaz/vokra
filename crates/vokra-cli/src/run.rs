@@ -76,6 +76,8 @@ USAGE:
                   --output <out.wav>
     vokra-cli run --model <xcodec2.gguf> --codec-mode decode --input <codes.u32le> \
                   --output <out.wav>
+    vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
+                  --output <out.wav>
     vokra-cli run --model <snac.gguf> --codec-mode encode --input <in.wav> --output <codes.vsc>
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
@@ -223,6 +225,11 @@ OPTIONS:
                                 per frame. CPU and Metal cover the complete
                                 token-to-waveform decoder; encode remains an
                                 explicit error.
+                                miocodec: `decode` only, from a VKRMIO01
+                                container carrying FSQ codes, target samples,
+                                and the required 128-d global embedding. CPU
+                                and Metal cover the complete waveform decoder;
+                                encode remains an explicit error.
                                 snac: `encode` (CPU mono WAV -> versioned
                                 stage-major container) or `decode` (container ->
                                 WAV on CPU/Metal). Metal encode is an explicit
@@ -856,6 +863,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::WavTokenizerCodec
         | ModelTask::NeuCodec
         | ModelTask::XCodec2
+        | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
         | ModelTask::S2sDuplex
@@ -917,11 +925,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::WavTokenizerCodec
         && task != ModelTask::NeuCodec
         && task != ModelTask::XCodec2
+        && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/snac/focalcodec arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec arches"
                 .to_owned(),
         );
     }
@@ -1264,6 +1273,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::XCodec2 => {
             run_xcodec2_codec(&session, &a)?;
+        }
+        ModelTask::MioCodec => {
+            run_miocodec(&session, &a)?;
         }
         ModelTask::SnacCodec => {
             run_snac_codec(&session, &a)?;
@@ -2935,6 +2947,61 @@ fn run_xcodec2_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     println!(
         "xcodec2 decode: {} codes -> {} samples @ {} Hz -> {output_path}",
         codes.len(),
+        pcm.len(),
+        model.sample_rate()
+    );
+    Ok(())
+}
+
+/// MioCodec 25 Hz FSQ + global-embedding to 44.1 kHz waveform path.
+///
+/// VKRMIO01 is versioned because raw codes alone are insufficient: the
+/// official decoder also requires a 128-dimensional global embedding and an
+/// explicit target sample length for its interpolation/iSTFT geometry.
+fn run_miocodec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (miocodec): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (miocodec): encode is not implemented; the official token + global-embedding to waveform decoder is available, and Vokra never substitutes another encoder"
+                    .to_owned(),
+            );
+        }
+        None => return Err("run (miocodec): --codec-mode decode is required".to_owned()),
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (miocodec): --input <tokens.vmi> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (miocodec): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (miocodec decode): {input_path}: {error}"))?;
+    let input = vokra_models::miocodec::MioCodecDecodeInput::from_bytes(&bytes)
+        .map_err(|error| format!("run (miocodec decode): {input_path}: {error}"))?;
+    let model = vokra_models::miocodec::MioCodec::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let pcm = model
+        .decode_input(&input)
+        .map_err(|error| error.to_string())?;
+    wav::write_wav(output_path, &pcm, model.sample_rate())
+        .map_err(|error| format!("run (miocodec decode): --output {output_path}: {error}"))?;
+    println!(
+        "miocodec decode: {} codes / target {} -> {} samples @ {} Hz -> {output_path}",
+        input.codes.len(),
+        input.target_samples,
         pcm.len(),
         model.sample_rate()
     );
@@ -5177,6 +5244,8 @@ mod tests {
         assert!(USAGE.contains("VKRMCODE"));
         assert!(USAGE.contains("snac.gguf"));
         assert!(USAGE.contains("VKRSNAC1"));
+        assert!(USAGE.contains("miocodec.gguf"));
+        assert!(USAGE.contains("VKRMIO01"));
     }
 
     #[test]
@@ -5253,7 +5322,7 @@ mod tests {
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
         assert!(err.contains(
             "--codec-mode is only supported for standalone \
-             mimi/dac/wavtokenizer/neucodec/xcodec2/snac/focalcodec arches"
+             mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec arches"
         ));
     }
 
@@ -5990,6 +6059,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::NeuCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::XCodec2), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);

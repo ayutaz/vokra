@@ -11,6 +11,14 @@
 > detect routes for CPU and Metal. The one-repository code-reachability change
 > is reflected below. VAST typecheck and official-reference CPU/Metal parity
 > remain pending, so these totals are not a numerical-pass claim.
+>
+> **2026-08-26 MioCodec source wave:** `vokra/miocodec-25hz-44khz-v2` now has
+> an exact 350-tensor checkpoint contract and a native decode-only CPU/Metal
+> source route. It consumes a versioned FSQ-code/global-embedding container;
+> PCM encode is an explicit unsupported operation. The one-repository code
+> reachability move is reflected below. VAST typecheck and independent
+> official-reference CPU/Metal parity remain pending, so this is not yet a
+> numerical-pass verdict.
 
 This is the execution ledger for the maintainer request to make the public
 `huggingface.co/vokra` GGUFs usable on Mac CPU and Metal. Qualcomm/QNN is out
@@ -27,7 +35,8 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 
 At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
-Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route
+Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
+MioCodec's decode-only route,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -36,13 +45,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 94 |
+| Complete CPU route for the live public artifact | 95 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 50 |
+| No complete runtime binder | 49 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 94 |
+| Complete Metal code route among the CPU-complete set | 95 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 99 |
+| Metal blocked by missing/partial CPU forward | 98 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -55,7 +64,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 94 repositories with a complete Metal code route are the Audiobox
+The 95 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -80,6 +89,8 @@ They also include `vokra/wavtokenizer-large` and
 byte-identical, plus `vokra/neucodec`, `vokra/distill-neucodec` and
 `vokra/xcodec2`, and the AudioSet classifier
 `vokra/ast-finetuned-audioset`.
+They also include the decode-only 25 Hz / 44.1 kHz codec
+`vokra/miocodec-25hz-44khz-v2`.
 They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
 Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
@@ -89,7 +100,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 99 Metal-blocked repositories first need a complete released-
+remaining 98 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -117,6 +128,46 @@ provenance; a correctly attributed gated replacement still needs explicit
 upload permission.
 
 ## 2026-08-24 implementation wave
+
+### MioCodec 25 Hz / 44.1 kHz v2 decode route
+
+The public `vokra/miocodec-25hz-44khz-v2` GGUF contains the exact 350 F32
+tensors from `Aratako/MioCodec-25Hz-44.1kHz-v2`. The converter now rejects any
+name, shape, dtype or count drift and pins source revision
+`77473544375d57e96cbdfd5d7d257e8f280fa8e3`, Hugging Face revision
+`67faba34153fe74e6665991c432a7327e23c5c1c`, and the fixed model/config
+digests. The runtime accepts the historical public metadata only together with
+that exact full manifest; a new converter's additive topology fields are
+validated whenever present.
+
+The native decode path executes five-dimensional `[8,8,8,5,5]` FSQ, the
+six-layer local Transformer prenet, learned ConvTranspose/interpolation,
+prior/post GroupNorm ResNets, an eight-layer global-embedding-conditioned
+AdaLN-Zero Transformer, two SnakeBeta upsampling stages and a 392-point
+same-padded iSTFT head. FSQ, GEMM, softmax, LayerNorm, GroupNorm, SiLU,
+Conv1D and SnakeBeta use one selected `Compute` backend. ConvTranspose is
+expressed as zero insertion plus a reversed Conv1D on that same backend;
+selecting an unsupported backend fails before execution. Layout changes,
+local masks, RoPE, interpolation and spectral overlap-add remain explicit host
+glue, not a hidden scalar model fallback.
+
+Raw FSQ codes are insufficient for this checkpoint, so CLI decode consumes a
+versioned `VKRMIO01` container carrying the target sample count, one 128-d
+global embedding and the code sequence. The public checkpoint also contains
+WavLM encoder branches, but this source wave exposes only the released
+token/global-embedding-to-waveform route. PCM encoding returns an explicit
+unsupported-operation error; no other encoder is substituted.
+
+The independent oracle imports the official clean source checkout and calls
+`MioCodecModel.decode` after verifying the exact 528,105,436-byte safetensors
+and 2,705-byte config. Forward hooks capture the official FSQ projection,
+prenet, convolutional upsample, ResNet, AdaLN decoder, waveform upsampler,
+iSTFT parameters and final PCM without mirroring the equations. Its default
+fixture exercises codebook boundaries and a nontrivial 16-to-15-frame linear
+interpolation. Only the pure-stdlib container self-test has run locally. The
+official model, `vokra-models` typecheck, CPU deltas and Apple Metal parity
+must run through the VAST/Apple evidence path before tolerances or a pass are
+recorded.
 
 ### AudioSeal explicit watermark runtime
 
