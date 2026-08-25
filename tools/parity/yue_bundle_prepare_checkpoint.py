@@ -106,6 +106,7 @@ apache-2.0.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -152,6 +153,72 @@ INT_DTYPES = {
     "torch.bool",
 }
 KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
+
+UPSAMPLER_REVISION = "c6d7494a60555672be09ca809a40be400d682a53"
+UPSAMPLER_CHECKPOINT_FILE = "decoder_151000.pth"
+UPSAMPLER_CHECKPOINT_BYTES = 72_610_550
+UPSAMPLER_CHECKPOINT_SHA256 = (
+    "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998"
+)
+UPSAMPLER_TENSOR_COUNT = 81
+
+
+def _upsampler_manifest() -> dict[str, list[int]]:
+    out = {
+        "backbone.embed.weight": [512, 1024, 7],
+        "backbone.embed.bias": [512],
+        "backbone.norm.weight": [512],
+        "backbone.norm.bias": [512],
+        "backbone.final_layer_norm.weight": [512],
+        "backbone.final_layer_norm.bias": [512],
+        "head.istft.window": [3528],
+        "head.out.weight": [3530, 512],
+        "head.out.bias": [3530],
+    }
+    for layer in range(8):
+        prefix = f"backbone.convnext.{layer}"
+        out.update(
+            {
+                f"{prefix}.dwconv.weight": [512, 1, 7],
+                f"{prefix}.dwconv.bias": [512],
+                f"{prefix}.norm.weight": [512],
+                f"{prefix}.norm.bias": [512],
+                f"{prefix}.pwconv1.weight": [1536, 512],
+                f"{prefix}.pwconv1.bias": [1536],
+                f"{prefix}.pwconv2.weight": [512, 1536],
+                f"{prefix}.pwconv2.bias": [512],
+                f"{prefix}.gamma": [512],
+            }
+        )
+    assert len(out) == UPSAMPLER_TENSOR_COUNT
+    return out
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_official_upsampler(path: Path) -> None:
+    if path.name != UPSAMPLER_CHECKPOINT_FILE:
+        sys.exit(
+            f"YuE-upsampler public contract requires {UPSAMPLER_CHECKPOINT_FILE}, "
+            f"got {path.name}"
+        )
+    size = path.stat().st_size
+    if size != UPSAMPLER_CHECKPOINT_BYTES:
+        sys.exit(
+            f"{path} has {size} bytes; expected {UPSAMPLER_CHECKPOINT_BYTES} "
+            f"from m-a-p/YuE-upsampler@{UPSAMPLER_REVISION}"
+        )
+    actual = _sha256_file(path)
+    if actual != UPSAMPLER_CHECKPOINT_SHA256:
+        sys.exit(
+            f"{path} SHA-256 {actual}; expected {UPSAMPLER_CHECKPOINT_SHA256}"
+        )
 
 
 def _flatten(prefix: str, obj: Any) -> dict:
@@ -317,6 +384,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if args.variant == "upsampler" and args.snapshot != "151000":
+        ap.error(
+            "the strict public yue-upsampler contract pins snapshot 151000; "
+            "snapshot 131000 is not published under the canonical runtime identity"
+        )
+
     try:
         from safetensors.torch import save_file
         import torch  # noqa: F401
@@ -346,6 +419,8 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.variant == "upsampler":
+            _verify_official_upsampler(f_path)
         role_suffix = f" as role {role!r}" if role else " (no role prefix)"
         print(
             f"  loading {rel} ({f_path.stat().st_size:,} bytes){role_suffix}"
@@ -369,6 +444,32 @@ def main() -> int:
 
     kept, dropped, unknown = _partition(merged, args.allow_strip_any)
 
+    if args.variant == "upsampler":
+        expected = _upsampler_manifest()
+        if len(kept) != UPSAMPLER_TENSOR_COUNT:
+            print(
+                f"strict YuE-upsampler checkpoint has {len(kept)} float tensors; "
+                f"expected exactly {UPSAMPLER_TENSOR_COUNT}",
+                file=sys.stderr,
+            )
+            return 3
+        actual_names = set(kept)
+        expected_names = set(expected)
+        wrong_shapes = [
+            (name, list(kept[name].shape), expected[name])
+            for name in sorted(actual_names & expected_names)
+            if list(kept[name].shape) != expected[name]
+        ]
+        if actual_names != expected_names or wrong_shapes:
+            print(
+                "strict YuE-upsampler manifest mismatch: "
+                f"missing={sorted(expected_names - actual_names)[:5]}, "
+                f"extra={sorted(actual_names - expected_names)[:5]}, "
+                f"wrong_shapes={wrong_shapes[:3]}",
+                file=sys.stderr,
+            )
+            return 3
+
     if unknown and not args.allow_strip_any:
         first = [(n, d, s) for n, d, s in unknown[:3]]
         print(
@@ -386,6 +487,12 @@ def main() -> int:
         "input_dir": str(ckpt_dir),
         "variant": args.variant,
         "snapshot": args.snapshot,
+        "upstream_revision": (
+            UPSAMPLER_REVISION if args.variant == "upsampler" else None
+        ),
+        "checkpoint_sha256": (
+            UPSAMPLER_CHECKPOINT_SHA256 if args.variant == "upsampler" else None
+        ),
         "output": str(args.output),
         "kept_count": len(kept),
         "dropped_count": len(dropped),
