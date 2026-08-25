@@ -81,6 +81,12 @@ pub enum HotOp {
     Softmax,
     /// Affine layer normalisation (`layer_norm_f32`) — Whisper pre-norm blocks.
     LayerNorm,
+    /// Gamma-only RMS normalisation (`rms_norm_f32`): no mean subtraction and
+    /// no bias. NeuCodec's decoder Transformer uses this before attention and
+    /// its MLP. CPU is the scalar reference; Metal dispatches the existing
+    /// `vokra_rms_norm_f32` kernel. Other backends remain explicitly
+    /// uncovered until they gain matching kernels.
+    RmsNorm,
     /// One-group affine GroupNorm over channel-major audio features. SepFormer
     /// uses this for the full mask tensor and needs a stable large reduction.
     GroupNorm,
@@ -424,6 +430,7 @@ impl HotOp {
                 | HotOp::Gemv
                 | HotOp::Softmax
                 | HotOp::LayerNorm
+                | HotOp::RmsNorm
                 | HotOp::GroupNorm
                 | HotOp::Gelu
                 | HotOp::Silu
@@ -1076,6 +1083,67 @@ impl Compute {
             Be::Cuda(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+        }
+    }
+
+    /// Gamma-only RMS normalisation over the innermost axis of a
+    /// `rows × cols` buffer. Unlike [`Self::layer_norm_f32`], this does not
+    /// subtract a mean and has no beta term.
+    pub fn rms_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        if rows == 0 || cols == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: rows and cols must be non-zero, got {rows}x{cols}"
+            )));
+        }
+        if !eps.is_finite() || eps <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: eps must be finite and positive, got {eps}"
+            )));
+        }
+        let expected = rows.checked_mul(cols).ok_or_else(|| {
+            VokraError::InvalidArgument("rms_norm_f32: rows*cols overflow".to_owned())
+        })?;
+        if input.len() != expected || out.len() != expected || gamma.len() != cols {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: expected input/out {expected} and gamma {cols}, got input {}, out {}, gamma {}",
+                input.len(),
+                out.len(),
+                gamma.len()
+            )));
+        }
+        match &self.be {
+            Be::Cpu => {
+                for row in 0..rows {
+                    let start = row * cols;
+                    let src = &input[start..start + cols];
+                    let sum_sq: f32 = src.iter().map(|value| value * value).sum();
+                    let inverse_rms = 1.0 / (sum_sq / cols as f32 + eps).sqrt();
+                    for col in 0..cols {
+                        out[start + col] = src[col] * inverse_rms * gamma[col];
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.rms_norm_f32(input, out, rows, cols, gamma, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "rms_norm_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "rms_norm_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -3976,6 +4044,38 @@ mod tests {
     }
 
     #[test]
+    fn cpu_rms_norm_matches_gamma_only_reference() {
+        let input = [1.0f32, -2.0, 3.0, 4.0, -1.0, 0.5];
+        let gamma = [0.5f32, 1.5, -2.0];
+        let mut actual = [0.0f32; 6];
+        Compute::cpu()
+            .rms_norm_f32(&input, &mut actual, 2, 3, &gamma, 1.0e-6)
+            .expect("cpu RMSNorm");
+        for row in 0..2 {
+            let src = &input[row * 3..row * 3 + 3];
+            let inverse_rms =
+                1.0 / ((src.iter().map(|x| x * x).sum::<f32>() / 3.0) + 1.0e-6).sqrt();
+            for col in 0..3 {
+                let expected = src[col] * inverse_rms * gamma[col];
+                assert!((actual[row * 3 + col] - expected).abs() <= f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_rms_norm_rejects_degenerate_axes_and_epsilon() {
+        let cpu = Compute::cpu();
+        assert!(matches!(
+            cpu.rms_norm_f32(&[], &mut [], 0, 3, &[1.0; 3], 1.0e-6),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            cpu.rms_norm_f32(&[1.0], &mut [0.0], 1, 1, &[1.0], 0.0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn cpu_for_backend_covers_every_op() {
         // The CPU backend covers the full hot-op set unconditionally —
         // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
@@ -3984,6 +4084,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4056,6 +4158,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4249,6 +4353,8 @@ mod tests {
         // `xcodec2_fsq_f32` / `snake_activation_f32` / `snac_decode_f32` /
         // `denoise_apply_mask_f32`).
         for op in [
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Silu,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4329,6 +4435,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4391,6 +4499,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4440,6 +4550,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4506,6 +4618,8 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4685,6 +4799,8 @@ mod tests {
             );
         }
         for op in [
+            HotOp::RmsNorm,
+            HotOp::GroupNorm,
             HotOp::Silu,
             HotOp::MimiRvq,
             HotOp::DacRvq,
