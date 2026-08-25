@@ -1144,14 +1144,13 @@ pub enum ModelKind {
     /// (Zhao et al. ICASSP 2022, `arXiv:2206.07293`) safetensors
     /// checkpoint (coverage-audit wave-a, 2026-08-03). Category =
     /// `denoise`. Monaural speech-enhancement model with a Complex-
-    /// valued U-Net + frequency-recurrent LSTM, distributed from
-    /// `github.com/alibabasglab/FRCRN` and mirrored in the
-    /// ClearerVoice-Studio pipeline. BF16 pass-through skeleton —
-    /// every F32 / F16 / BF16 tensor passes through verbatim under
-    /// its upstream safetensors name. Provenance = **apache-2.0**
-    /// (Permissive). Distinct arch tag from
+    /// valued U-Net + frequency-memory blocks, distributed as
+    /// `alibabasglab/FRCRN_SE_16K` and implemented by the
+    /// ClearerVoice-Studio pipeline. The converter accepts only the
+    /// exact official 812-tensor F32 manifest. Provenance =
+    /// **apache-2.0** (Permissive). Distinct arch tag from
     /// [`ModelKind::Denoise`] (DeepFilterNet3) because the topologies
-    /// are unrelated (Complex U-Net + freq-recurrent LSTM vs the DFN3
+    /// are unrelated (Complex U-Net + frequency-memory blocks vs the DFN3
     /// ERB / DF-net stack); silently aliasing would misroute the
     /// runtime dispatch. Convert with [`convert_frcrn_file`] (or the
     /// generic `convert_file` / `convert_file_licensed`).
@@ -4306,13 +4305,14 @@ impl ModelKind {
                 Some(Self::Dnsmos)
             }
             // coverage-audit wave-a (2026-08-03): FRCRN speech
-            // enhancement. Accept the arch tag, the ClearerVoice-Studio
-            // release id (dnsmos-style path), the original GitHub
-            // repo slug, and the model-scope path used by the
-            // ClearerVoice-Studio download logic. Every spelling routes
-            // to the same Apache-2.0 Complex U-Net + freq-recurrent
-            // LSTM checkpoint.
+            // enhancement. Accept the arch tag, official HF release id,
+            // legacy standalone slug, and ClearerVoice-Studio spellings.
+            // Every spelling routes to the exact Apache-2.0 812-tensor
+            // FRCRN-SE-16K checkpoint contract.
             "frcrn"
+            | "frcrn-se-16k"
+            | "frcrn_se_16k"
+            | "alibabasglab/frcrn_se_16k"
             | "alibabasglab/frcrn"
             | "clearervoice-studio/frcrn"
             | "modelscope/clearervoice-studio-frcrn" => Some(Self::Frcrn),
@@ -8124,14 +8124,12 @@ pub fn convert_file_licensed(
         }
         ModelKind::Frcrn => {
             // coverage-audit wave-a (2026-08-03): FRCRN speech enhancement
-            // (Apache-2.0 Permissive). File-based converter with the
-            // standing per-call license override — same posture as the
-            // wespeaker / emotion2vec / speaker_3d / ecapa_tdnn arms.
+            // (Apache-2.0 Permissive). The converter rejects license
+            // relabeling and any deviation from the exact official manifest.
             let report = models::frcrn::convert_frcrn_file(input, output, license)?;
             let notes = vec![format!(
-                "frcrn: {} float weights written verbatim ({} BF16 passthrough), {} \
-                 non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
+                "frcrn: {} exact official F32 tensors written; manifest/revision/license verified",
+                report.written,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Frcrn,
@@ -12960,12 +12958,12 @@ pub use models::nsnet2::{Nsnet2Report, convert_nsnet2_file};
 // can reach `convert_dnsmos_file` + `DnsmosReport` without pulling in
 // the private `models::dnsmos` module.
 pub use models::dnsmos::{DnsmosReport, convert_dnsmos_file};
-// coverage-audit wave-a (2026-08-03): FRCRN (alibabasglab/FRCRN,
+// coverage-audit wave-a (2026-08-03): FRCRN (alibabasglab/FRCRN_SE_16K,
 // apache-2.0 Permissive). Category `denoise` — second `denoise` model
 // in the converter tree after DeepFilterNet3, with a distinct arch tag
 // (`frcrn`) so silently aliasing DFN3's manifest is impossible. Both a
 // file-based entry point with an SPDX override argument AND the
-// `ModelKind::Frcrn` dispatch arm above land the same bytes.
+// `ModelKind::Frcrn` dispatch arm above enforce the same exact manifest.
 pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
 pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
@@ -15599,6 +15597,9 @@ mod modelkind_alias_and_roundtrip_tests {
                 ModelKind::Frcrn,
                 &[
                     "frcrn",
+                    "frcrn-se-16k",
+                    "frcrn_se_16k",
+                    "alibabasglab/frcrn_se_16k",
                     "alibabasglab/frcrn",
                     "clearervoice-studio/frcrn",
                     "modelscope/clearervoice-studio-frcrn",
