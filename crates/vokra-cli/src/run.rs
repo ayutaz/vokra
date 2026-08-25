@@ -35,6 +35,8 @@ USAGE:
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
     vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav> [--output <scores.f32>]
+    vokra-cli run --model <audiobox-aesthetics.gguf> --input <16k-mono.wav> \
+                  [--output <ce-cu-pc-pq.f32>]
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
@@ -741,6 +743,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::TtsMelo
         | ModelTask::Speaker
         | ModelTask::LangId
+        | ModelTask::AudioQualityAudiobox
         | ModelTask::MimiCodec
         | ModelTask::DacCodec
         | ModelTask::WavTokenizerCodec
@@ -1070,6 +1073,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::LangId => {
             run_lang_id(&session, &a)?;
         }
+        ModelTask::AudioQualityAudiobox => {
+            run_audiobox_aesthetics(&session, &a)?;
+        }
         ModelTask::Sbv2 => {
             run_sbv2(&session, &a)?;
         }
@@ -1229,6 +1235,44 @@ fn run_lang_id(session: &Session, args: &RunArgs) -> Result<(), String> {
             "lang-id: {} scores in official label order -> {output}",
             scores.len()
         );
+    }
+    Ok(())
+}
+
+/// Runs the strict WavLM Audiobox Aesthetics scorer. `--output` writes four
+/// little-endian f32 values in the upstream CE / CU / PC / PQ order.
+fn run_audiobox_aesthetics(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (Audiobox Aesthetics): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != vokra_models::audiobox_aesthetics::SAMPLE_RATE {
+        return Err(format!(
+            "run (Audiobox Aesthetics): {path} is {} Hz, expected {} Hz — resample explicitly before scoring (FR-EX-08)",
+            clip.sample_rate,
+            vokra_models::audiobox_aesthetics::SAMPLE_RATE
+        ));
+    }
+    let model = vokra_models::audiobox_aesthetics::AudioboxAesthetics::from_file(session.gguf())
+        .map_err(|error| format!("run (Audiobox Aesthetics): {error}"))?
+        .with_backend(args.backend);
+    let scores = model
+        .score_pcm(&clip.samples, clip.sample_rate)
+        .map_err(|error| format!("run (Audiobox Aesthetics): {error}"))?;
+    let values = scores.as_array();
+    println!(
+        "audiobox-aesthetics: CE={:.9} CU={:.9} PC={:.9} PQ={:.9}",
+        values[0], values[1], values[2], values[3]
+    );
+    if let Some(output) = args.output.as_deref() {
+        let bytes = values
+            .iter()
+            .flat_map(|score| score.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (Audiobox Aesthetics): --output {output}: {error}"))?;
+        println!("audiobox-aesthetics: CE/CU/PC/PQ f32 -> {output}");
     }
     Ok(())
 }
@@ -5692,6 +5736,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::DacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);

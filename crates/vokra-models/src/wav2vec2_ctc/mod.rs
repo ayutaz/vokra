@@ -1085,7 +1085,7 @@ pub(crate) fn reject_non_finite(label: &str, values: &[f32]) -> Result<()> {
     Ok(())
 }
 
-fn fold_weight_norm_dim2(
+pub(crate) fn fold_weight_norm_dim2(
     g: &[f32],
     v: &[f32],
     out: usize,

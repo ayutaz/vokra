@@ -2213,21 +2213,19 @@ pub enum ModelKind {
     KyutaiTts,
     /// Meta / Facebook **audiobox-aesthetics** safetensors checkpoint
     /// (TIER 2 land, 2026-07-30). Audio quality-rating classifier /
-    /// regressor: wav2vec2-style SSL backbone + 5-layer projection MLP
-    /// producing a 5-dim quality rating (BALANCED /
-    /// CONTENT_ENJOYMENT / CONTENT_USEFULNESS / PRODUCTION_COMPLEXITY /
-    /// PRODUCTION_QUALITY; arXiv:2502.05139 "Meta Audiobox Aesthetics:
+    /// regressor: WavLM SSL backbone + four independent 5-layer projection
+    /// MLP heads producing CONTENT_ENJOYMENT / CONTENT_USEFULNESS /
+    /// PRODUCTION_COMPLEXITY / PRODUCTION_QUALITY; arXiv:2502.05139
+    /// "Meta Audiobox Aesthetics:
     /// Unified Automatic Quality Assessment for Speech, Music, and
     /// Sound"). **First Vokra converter with category =
     /// `classification`** (sibling categories today: `asr` / `tts` /
     /// `codec` / `speaker` / `emotion` / `s2s` / `bert` / `vad`).
     /// CC-BY 4.0 weight (`AttributionRequired` — the converter stamps
-    /// the FR-MD-09 attribution text). Every F32 / F16 / BF16 tensor
-    /// passes through verbatim; upstream is F32 today (~104M
-    /// parameters, ~415 MB on disk) but the BF16 arm accepts a
-    /// future distilled fine-tune of the same architecture without a
-    /// silent widen. Real-weight parity is deferred to owner
-    /// (`docs/license-audit.md` §3.1 sign-off).
+    /// the FR-MD-09 attribution text). Conversion is variant-closed to the
+    /// immutable 324-tensor F32 checkpoint; every name, shape and dtype is
+    /// validated before output. Real-weight parity is tracked in the
+    /// Audiobox handoff rather than inferred from converter success.
     AudioboxAesthetics,
     /// Mistral **Voxtral-Mini-4B-Realtime-2602** — apache-2.0 weight,
     /// ~8 GB, TIER 2 defer marker (2026-07-30). Ministral-3-3B-Base
@@ -11578,9 +11576,9 @@ pub fn convert_file_licensed(
                 input, output, license,
             )?;
             let notes = vec![format!(
-                "audiobox-aesthetics: {} float weights written verbatim ({} BF16 passthrough — \
-                 upstream is F32 today, the arm keeps future distilled BF16 fine-tunes \
-                 verbatim), {} non-float skipped, {} tensors read",
+                "audiobox-aesthetics: {} pinned F32 weights written verbatim after exact \
+                 324-name/shape/dtype validation ({} BF16 passthrough, {} non-float skipped, \
+                 {} tensors read)",
                 report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
             )];
             return Ok(ConvertSummary {

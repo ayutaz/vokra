@@ -96,6 +96,10 @@ pub(crate) enum ModelTask {
     /// `run` arm so its ordered labels and task-specific result surface stay
     /// available without adding a generic session trait.
     LangId,
+    /// Four-axis CE / CU / PC / PQ audio-quality regression through Meta
+    /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
+    /// the selected CPU/Metal backend reaches its complete WavLM forward.
+    AudioQualityAudiobox,
     /// Text-to-speech through SBV2 (Style-Bert-VITS2 v2 = Task 38).
     ///
     /// Like [`ModelTask::TtsKokoro`] / [`ModelTask::AsrVoxtral`] /
@@ -364,6 +368,7 @@ const ARCH_CAMPPLUS: &str = "campplus";
 const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
+const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
 const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
@@ -892,6 +897,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // preserving ordered labels and the selected backend.
             Ok((session, ModelTask::LangId))
         }
+        ARCH_AUDIOBOX_AESTHETICS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_AUDIOBOX_AESTHETICS}`"
+                ));
+            }
+            // Bare session: run/bench bind the strict four-axis scorer once
+            // and thread the caller-selected backend through every hot op.
+            Ok((session, ModelTask::AudioQualityAudiobox))
+        }
         ARCH_SBV2 => {
             if hint.is_some() {
                 return Err(format!(
@@ -1394,7 +1409,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_AUDIOBOX_AESTHETICS}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
@@ -2747,6 +2762,19 @@ mod tests {
         let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", |path| load_session(path));
         let (_session, task) = result.expect("Lang-ID session builds (bare)");
         assert_eq!(task, ModelTask::LangId);
+    }
+
+    /// Audiobox has a concrete CPU/Metal run task and binds after WAV rate
+    /// validation so malformed input does not decode the 415 MB checkpoint.
+    #[test]
+    fn load_session_routes_audiobox_aesthetics_task() {
+        let result = with_arch_only_gguf(
+            ARCH_AUDIOBOX_AESTHETICS,
+            "audiobox-aesthetics-arch",
+            |path| load_session(path),
+        );
+        let (_session, task) = result.expect("Audiobox session builds (bare)");
+        assert_eq!(task, ModelTask::AudioQualityAudiobox);
     }
 
     /// DTLN-AEC (`vokra_models::aec::dtln_aec`) — loud-partial `process`

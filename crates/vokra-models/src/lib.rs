@@ -60,6 +60,8 @@ pub mod aec;
 pub mod align;
 /// Native Audio Spectrogram Transformer AudioSet classifier (CPU / Metal).
 pub mod ast;
+/// Native Meta Audiobox Aesthetics WavLM quality scorer (CPU / Metal).
+pub mod audiobox_aesthetics;
 pub mod canary;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
 // FastConformer encoder (reuse `canary::CanaryEncoderConfig` — Canary-1B-v2

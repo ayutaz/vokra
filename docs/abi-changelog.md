@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Audiobox Aesthetics CPU/Metal runtime)
+
+The historical public Audiobox GGUF remains loadable only when its complete
+324-tensor F32 manifest and canonical identity/provenance match. New
+conversions add a self-describing topology/target-transform group. The native
+Rust scorer and CLI route are additive; no C symbol, ownership rule or buffer
+ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::audiobox_aesthetics` | `AudioboxAesthetics`, `AudioboxAestheticsConfig`, `AudioboxScores`, `AUDIOBOX_AESTHETICS_HOT_OPS` | Added | strict `from_gguf` / `from_file`, `with_backend`, `score_pcm(&[f32], u32) -> Result<AudioboxScores>` | Owns decoded FP32 weights and returned scores; Conv1D, grouped Conv1D, GEMM, softmax, LayerNorm and GELU use one selected CPU/Metal backend with no fallback | no | (TBD) |
+| `vokra-cli run` / `bench` | `arch=audiobox-aesthetics` | Added (behavior only) | 16 kHz mono WAV to four CE/CU/PC/PQ values; optional raw little-endian f32 output in that order | Wrong sample rates and unsupported backends fail explicitly; no learned `BALANCED` value is synthesized | no | (TBD) |
+| `gguf:vokra.audiobox_aesthetics.*` | canonical topology and target-transform metadata group | Added | revisions (`string`); 15 topology values (`u32`); `normalize_embed`/`use_weighted_layer_sum` (`bool`); `layer_norm_eps` (`f32`); axes (`string[]`); target means/stds (`f32[]`) | New conversions are self-describing. The exact historical public file is accepted only through full identity/provenance/manifest validation; partial metadata fails closed. | no for audited public file; yes for malformed/partial files | (TBD) |
+
 ### 2026-08-25 — 1.0.0-rc.1-dev (AST and DeepFilterNet backend-selectable Rust seams)
 
 The existing scalar AST/ViT and DeepFilterNet3 graphs gain additive Rust

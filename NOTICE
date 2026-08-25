@@ -436,7 +436,28 @@ substitute the later text without re-auditing the checkpoint's governing
 terms.
 
 --------------------------------------------------------------------------
-17. Maintaining this file
+17. Meta Audiobox Aesthetics — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal scorer target the immutable
+`facebook/audiobox-aesthetics` release. The model weights are distributed
+under the Creative Commons Attribution 4.0 International license. Commercial
+use is permitted; attribution is required.
+
+  Meta Audiobox Aesthetics
+  Copyright (c) Meta Platforms, Inc. and affiliates
+  Licensed under CC-BY 4.0
+  Source: https://github.com/facebookresearch/audiobox-aesthetics
+          https://huggingface.co/facebook/audiobox-aesthetics
+
+The native Rust runtime reimplements the WavLM backbone and the four learned
+CE / CU / PC / PQ quality heads without linking PyTorch, ONNX Runtime or any
+upstream runtime dependency. The converter embeds the attribution text and
+canonical `attribution-required` weight class into the GGUF. No upstream
+weight is bundled in this source repository.
+
+--------------------------------------------------------------------------
+18. Maintaining this file
 --------------------------------------------------------------------------
 
 Any pull request that adds support for a new model or introduces a new

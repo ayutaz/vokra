@@ -14,8 +14,8 @@ uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
 At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
-Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2 and AST
-CPU/Metal waves plus the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
+Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
+Audiobox Aesthetics CPU/Metal waves plus the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
 | Inventory / code reachability | Public repos |
@@ -23,13 +23,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU code route | 92 |
+| Complete CPU code route | 93 |
 | Route/binder present, released-artifact CPU forward incomplete | 49 |
-| No complete runtime binder | 52 |
+| No complete runtime binder | 51 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 92 |
+| Complete Metal code route among the CPU-complete set | 93 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 101 |
+| Metal blocked by missing/partial CPU forward | 100 |
 
 These are deliberately **code reachability** counts. They are not a claim that
 the current Hub file loads, that its sidecars are complete, or that its
@@ -40,8 +40,9 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 92 repositories with a complete Metal code route are the four BigVGAN
-checkpoints, CAM++, CrisperWhisper, DeepFilterNet3, both Distil-Whisper
+The 93 repositories with a complete Metal code route are the Audiobox
+Aesthetics scorer, four BigVGAN checkpoints, CAM++, CrisperWhisper,
+DeepFilterNet3, both Distil-Whisper
 checkpoints, FCPE,
 the three DAC checkpoints (16, 24 and 44.1 kHz), the three FocalCodec
 checkpoints (50, 25 and 12.5 Hz), FireRedVAD, FSMN-VAD,
@@ -71,7 +72,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 101 Metal-blocked repositories first need a complete released-
+remaining 100 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -87,6 +88,34 @@ released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
 
 ## 2026-08-24 implementation wave
+
+### Audiobox Aesthetics four-axis scorer
+
+`vokra/audiobox-aesthetics` is now routed through a strict native WavLM Base
+runtime instead of being classified as an unbound converter-only artifact.
+The binder accepts exactly the immutable 324-tensor F32 checkpoint manifest,
+the canonical Meta/Facebook identity, CC-BY-4.0 attribution provenance and
+either the complete new `vokra.audiobox_aesthetics.*` topology group or the
+exact historical public artifact with no group at all. Partial metadata,
+missing/extra tensors, shape drift, dtype drift and foreign provenance fail
+before weights execute.
+
+The forward implements the seven-layer waveform stem, feature projection,
+weight-normalized positional convolution, 12 post-norm WavLM blocks, shared
+relative-position buckets with per-layer GRU gates, four learned 13-layer
+weighted sums, masked mean/L2 normalization, four 5-layer MLP heads, target
+inverse transforms and official non-overlapping 10-second aggregation.
+Conv1D, grouped Conv1D, GEMM, softmax, LayerNorm and exact GELU all use the
+selected `Compute` backend. A non-covered backend is an explicit error; no CPU
+fallback exists. CLI run/bench accept exact 16 kHz mono PCM and expose scores
+in the upstream CE/CU/PC/PQ order. No learned `BALANCED` axis exists.
+
+The independent oracle script imports Meta's official `AesMultiOutput` source
+at revision `2618e9d451b456e9328b39495b5e6234678aa550` and the immutable HF
+checkpoint revision `9b1dd8e5df9af7216e836a98974fe3b82c56ded6`; it has no local mirror fallback.
+Reference generation, `vokra-models` typecheck and real CPU/Metal execution are
+still pending VAST access. Therefore the live audit's 93/93 CPU/Metal figures
+mean code reachability only, not yet a real-weight Audiobox parity verdict.
 
 ### DeepFilterNet3 public CPU route
 
