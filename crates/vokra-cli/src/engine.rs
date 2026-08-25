@@ -292,6 +292,10 @@ pub(crate) enum ModelTask {
     /// maps to one completion probability; this is deliberately distinct
     /// from the streaming frame-level VAD tasks.
     SmartTurn,
+    /// MIT AST AudioSet 527-way audio classification. The generic session has
+    /// no classifier slot, so run/bench bind the concrete CPU/Metal model once
+    /// from the already mmap-opened GGUF.
+    AudioClassificationAst,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -407,6 +411,8 @@ const ARCH_TEN_VAD: &str = "ten_vad";
 const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 /// Pipecat smart-turn v2 utterance-level endpoint classifier.
 const ARCH_SMART_TURN: &str = "smart_turn";
+/// MIT Audio Spectrogram Transformer AudioSet classifier.
+const ARCH_AST: &str = "ast";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
@@ -1310,6 +1316,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // complete concrete text encoder after input validation.
             Ok((session, ModelTask::TextEncoder))
         }
+        ARCH_AST => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on AST audio classification"
+                ));
+            }
+            // Bind late in run/bench so the caller-selected CPU/Metal backend
+            // reaches the complete concrete classifier graph.
+            Ok((session, ModelTask::AudioClassificationAst))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1339,7 +1355,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / \
                  `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \

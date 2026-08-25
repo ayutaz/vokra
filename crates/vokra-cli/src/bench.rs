@@ -649,6 +649,34 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("smart-turn", audio_seconds, samples)
         }
+        ModelTask::AudioClassificationAst => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (AST): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::ast::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (AST): {path} is {} Hz, expected {} Hz — resample explicitly before inference (FR-EX-08)",
+                    clip.sample_rate,
+                    vokra_models::ast::SAMPLE_RATE
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::ast::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::ast::AstAudioSet::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let logits = model
+                    .classify_pcm(&pcm, vokra_models::ast::SAMPLE_RATE)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(logits);
+                Ok(())
+            })?;
+            ("ast-audioset", audio_seconds, samples)
+        }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = args
                 .input

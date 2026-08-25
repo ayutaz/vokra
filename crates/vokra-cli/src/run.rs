@@ -728,6 +728,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::F0Rmvpe
         | ModelTask::F0Fcpe
         | ModelTask::SmartTurn
+        | ModelTask::AudioClassificationAst
         | ModelTask::Segment
         | ModelTask::Separation
         | ModelTask::Tts
@@ -1097,6 +1098,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::SmartTurn => {
             run_smart_turn(&session, &a)?;
         }
+        ModelTask::AudioClassificationAst => {
+            run_ast_classification(&session, &a)?;
+        }
         ModelTask::AecNkf => {
             run_nkf_aec(&session, &a)?;
         }
@@ -1160,6 +1164,61 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the strict public AST AudioSet classifier and prints the ten highest
+/// raw logits by class index. The current public GGUF does not carry the 527
+/// human-readable AudioSet labels, so inventing names here would be unsafe;
+/// callers can request the complete little-endian f32 vector via `--output`.
+fn run_ast_classification(session: &vokra_core::Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (AST): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != vokra_models::ast::SAMPLE_RATE {
+        return Err(format!(
+            "run (AST): {path} is {} Hz, expected {} Hz — resample explicitly before inference (FR-EX-08)",
+            clip.sample_rate,
+            vokra_models::ast::SAMPLE_RATE
+        ));
+    }
+    let model = vokra_models::ast::AstAudioSet::from_gguf(session.gguf())
+        .map_err(|error| error.to_string())?
+        .with_backend(args.backend);
+    let logits = model
+        .classify_pcm(&clip.samples, clip.sample_rate)
+        .map_err(|error| error.to_string())?;
+
+    if let Some(output) = args.output.as_deref() {
+        let bytes = logits
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (AST): --output {output}: {error}"))?;
+    }
+
+    let mut ranked: Vec<usize> = (0..logits.len()).collect();
+    ranked.sort_unstable_by(|&left, &right| logits[right].total_cmp(&logits[left]));
+    let top = ranked
+        .into_iter()
+        .take(10)
+        .map(|index| format!("{index}:{:.6}", logits[index]))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!(
+        "ast: {} logits; top10(class_index:logit) {top}",
+        logits.len()
+    );
+    if let Some(output) = args.output.as_deref() {
+        println!("ast: raw logits -> {output}");
+    } else {
+        eprintln!(
+            "vokra: AST note: this GGUF has no AudioSet label-name table; class indices are printed and no names are fabricated"
+        );
+    }
+    Ok(())
 }
 
 /// Writes synthesized PCM to `--output`, or reports its duration when the flag

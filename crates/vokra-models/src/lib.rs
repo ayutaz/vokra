@@ -58,6 +58,8 @@
 //     vocabulary and every tensor shape. License = MIT (permissive).
 pub mod aec;
 pub mod align;
+/// Native Audio Spectrogram Transformer AudioSet classifier (CPU / Metal).
+pub mod ast;
 pub mod canary;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
 // FastConformer encoder (reuse `canary::CanaryEncoderConfig` — Canary-1B-v2

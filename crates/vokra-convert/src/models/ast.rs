@@ -28,7 +28,7 @@
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufMetadataValue, chunks};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -45,6 +45,23 @@ pub const DEFAULT_LICENSE_SPDX: &str = "bsd-3-clause";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PREFIX: &str = "vokra.ast.";
+
+const AST_U32_AXES: [(&str, u32); 13] = [
+    ("hidden_size", 768),
+    ("num_hidden_layers", 12),
+    ("num_attention_heads", 12),
+    ("intermediate_size", 3_072),
+    ("patch_size", 16),
+    ("frequency_stride", 10),
+    ("time_stride", 10),
+    ("num_mel_bins", 128),
+    ("max_length", 1_024),
+    ("num_labels", 527),
+    ("num_prefix_tokens", 2),
+    ("sample_rate", 16_000),
+    ("layer_norm_eps_scaled_1e12", 1),
+];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AstReport {
@@ -82,6 +99,24 @@ pub fn convert_ast_file(
         ),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    for (suffix, value) in AST_U32_AXES {
+        b.add_u32(&format!("{KEY_PREFIX}{suffix}"), value);
+    }
+    b.add_bool("vokra.ast.qkv_bias", true);
+    b.add_string("vokra.ast.hidden_act", "gelu");
+    b.add_string("vokra.ast.window_type", "hanning");
+    b.add_u32("vokra.ast.frame_length", 400);
+    b.add_u32("vokra.ast.frame_shift", 160);
+    b.add_u32("vokra.ast.low_freq_hz", 20);
+    b.add_bool("vokra.ast.subtract_mean", false);
+    b.add_metadata(
+        "vokra.ast.normalize_mean",
+        GgufMetadataValue::F64(-4.267_739_3),
+    );
+    b.add_metadata(
+        "vokra.ast.normalize_std",
+        GgufMetadataValue::F64(4.568_997_4),
+    );
 
     let mut report = AstReport::default();
     for t in st.tensors() {
@@ -202,6 +237,14 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str()),
             "bsd-3-clause resolves to Permissive"
+        );
+        assert_eq!(
+            file.get("vokra.ast.max_length").and_then(|v| v.as_u64()),
+            Some(1_024)
+        );
+        assert_eq!(
+            file.get("vokra.ast.window_type").and_then(|v| v.as_str()),
+            Some("hanning")
         );
     }
 }
