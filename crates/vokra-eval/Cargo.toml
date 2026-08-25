@@ -1,6 +1,6 @@
 [package]
 name = "vokra-eval"
-description = "Vokra evaluation metrics + the `vokra-eval` CLI (M1-09a; FR-TL-03, NFR-QL-04): algorithmic quality metrics — mel-loss (log-mel L1), WER and CER — behind a pluggable Metric interface reusable by the runtime and CI. Neural MOS predictors (UTMOS/DNSMOS, M1-09b) slot into the same traits once weights land. std-only, zero external deps (NFR-DS-02)."
+description = "Vokra evaluation metrics + the `vokra-eval` CLI (M1-09a; FR-TL-03, NFR-QL-04): mel-loss, WER/CER and independently parity-verified neural MOS scoring behind pluggable interfaces reusable by the runtime and CI. std-only, zero external deps (NFR-DS-02)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,7 @@ publish.workspace = true
 # Zero external dependencies (NFR-DS-02): the metrics are original std code — no
 # jiwer / torchmetrics / librosa — reusing the first-party STFT/mel op path from
 # vokra-ops (the FFT/mel are NOT reimplemented here) and the IR attribute + error
-# types from vokra-core. The UTMOS skeleton (M4-18) additionally reuses the
+# types from vokra-core. The UTMOS22-strong runtime additionally reuses the
 # first-party CPU kernel wrappers (GEMM / conv1d / layer_norm / softmax / GELU)
 # from vokra-backend-cpu — a downward, acyclic, first-party edge (ADR
 # M4-18-utmos-arch §(a)); the neural-net bodies are NOT reimplemented here and

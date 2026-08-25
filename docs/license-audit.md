@@ -112,6 +112,8 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 
 **「Vokra 公式配布」列の読み方（2026-08-18 更新）**: この列は **方針**（実装が揃えば配布する意思があるか）であって、**default-on runtime や real-weight parity の完了証明ではありません**。2026-07-22 の公開モデルハブ準備時には `★ 公式 zoo` の 8 行に実装がありませんでしたが、その後 converter / op / binder が段階的に land しました。現在の状態は各行の備考で converter、runtime、parity、publication を分離して示します。`scripts/publish/check-catalog-reality.sh` は「`★ 公式 zoo` なら少なくとも runtime module / operator / converter のいずれかが存在する」ことを双方向検査しますが、実際の配布には §3.1 sign-off、provenance、再配布可否、必要な real-weight gate が別途必要です（空欄 = fail-closed）。
 
+**UTMOS22-strong 状態訂正（2026-08-26、下表の旧「要 owner sign-off / weight 非配布」文言を supersede）**: §3.1 は 2026-07-23 に `yousan` が Commercial として sign-off 済みで、`vokra/utmos22-strong` revision `49974674621965c7b83cb4f4793dd362e48a43de` は `utmos22-strong.gguf` 412,639,296 bytes（SHA-256 `790e538c8cadd8b9d73ecbe0cf3d95c659cf2736022fcdf15e177a77f8a181ea`）を MIT で公開済み。これは Hugging Face 公式 API と固定 revision のモデルカードを 2026-08-25 に再確認した現行事実であり、今回の Mac route 作業は既存 artefact を監査・実行するだけで upload / 差替を行わない。
+
 | モデル | Code License | Weight License | 商用可 | Vokra 公式配布 | 備考 |
 |-------|------------|-------------|-----|-------------|-----|
 | **Silero VAD v5** | MIT | MIT | ○ | ★ 公式 zoo | v5 で 3x faster、size ~2MB (v4 は 1.7MB) |
@@ -237,6 +239,8 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 依頼者は各行の "Owner sign-off (YYYY-MM-DD)" 欄に日付、"Approval" 欄で該当箱にチェック（`☑`）、必要に応じて "Notes" 欄に判断根拠を記入する。空欄のままの行は「未サインオフ＝公式配布不可」の運用とする（fail-closed）。
 
 **記入の経緯（2026-07-23）**: 依頼者指示（「a,b,c の判断はそちらでできないですか？元のモデルから判断できるはずです」「名前の部分は yousan として」）により、Claude Code が**一次資料で確認済みのライセンス本文から導ける行のみ**を記入した。承認者名は依頼者（`yousan`）の指示による代筆であり、**判定根拠を各行の Notes 欄に明記**してある。
+
+**UTMOS22-strong 追補（2026-08-26、同モデル行末の旧 owner-pending 文言を supersede）**: この表のチェック済み `☑ Commercial / 2026-07-23 yousan` が有効な owner 判断であり、公開 zoo への格上げも完了済み。公開 revision / byte size / SHA-256 は §3 冒頭の状態訂正を正とする。
 
 **記入の経緯（2026-07-25）**: PR #20（`feat/sota-phase1-2026-07-23`、SoTA plan Phase 1-4 + JA + BF16 fleet 横展開）の CC-side land で追加された 15 の新規 converter family（PR #20 body Wave E "新規 converter scaffold (TDD skeleton + BF16 pass-through)"、handoff §Wave 1a-1e = S2S 3 + Codec 5 + VC 4 + Speaker 3 + Emotion 1）について、下表末尾に空欄行を追加した。**CC は本欄を pre-fill しない**（converter の default SPDX は sibling contract の hint に留まり、実 checkpoint の一次資料照合は行っていない）。空欄 = 未サインオフ = 公式配布不可（fail-closed）。**owner は各行の Approval 欄を一次資料（upstream HF card front-matter / GitHub LICENSE / model card 本文）で確認の上で記入すること** — `scripts/publish/upload.sh` の 5 段 gate は本欄の sign-off を必須 gate として参照する（詳細は `docs/handoff/sota-candidates-2026-07-25.md` §"Owner-required items > Real weight validation & §3.1 sign-off for all Wave-1 converters" と PR #20 body §"Residual owner tasks > License sign-off"）。**funcodec 特記**: upstream slug `alibaba-damo/audio_codec-encodec-zh_en-general-16k-nq32ds320-pytorch` は "encodec" 語を含むが、これは Meta の **EnCodec とは別の codec**（Alibaba DAMO の FunCodec）であり、CC-BY-NC の EnCodec weight（§3 EnCodec 行 / FR-OP-32 恒久除外 / `scripts/compliance/check-encodec-exclusion.sh`）とは無関係。混同禁止。
 

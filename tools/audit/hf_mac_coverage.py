@@ -128,6 +128,7 @@ METAL_CODE_ARCHES = {
     "speecht5_hifigan",
     "ten_vad",
     "titanet-large",
+    "utmos",
     "vocos",
     "voxtral",
     "wav2vec2_ctc",

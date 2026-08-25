@@ -220,10 +220,9 @@ impl UtmosBackendOps for ScalarUtmosBackendOps {
 /// `vokra.model.arch` value for UTMOS GGUFs.
 pub const ARCH: &str = "utmos";
 
-/// The only architecture variant this skeleton implements. The flip-time
-/// upstream pin bumps this (e.g. `wav2vec2_regression.v1`) if the real
-/// SaruLab UTMOS22 stack differs — an unknown variant is a loud
-/// [`VokraError::ModelLoad`], never a silent mis-score.
+/// The original M4-18 weight-independent scaffold variant. It remains
+/// loadable for compatibility and deterministic tests; released
+/// UTMOS22-strong GGUFs use [`ARCH_VARIANT_V1`].
 pub const ARCH_VARIANT_V0: &str = "wav2vec2_regression.v0";
 
 /// The **upstream-pinned** variant (M5-15 T14): SaruLab UTMOS22-strong as
@@ -989,7 +988,7 @@ impl UtmosWeights {
     /// Xavier/Glorot uniform; LayerNorm γ=1, β=0, biases 0 — the M3-09
     /// `LlmWeights::synthesized` recipe). **Not** a reproduction of any real
     /// checkpoint: it exists so shape / determinism / finiteness are
-    /// verifiable without the deferred weights.
+    /// verifiable without downloading real weights.
     pub fn synthesized(config: &UtmosConfig, seed: u64) -> Result<Self> {
         config.validate()?;
         let mut rng = SplitMix64::new(seed);
@@ -1411,9 +1410,9 @@ fn load_ln(file: &GgufFile, prefix: &str, d: usize) -> Result<LayerNormW> {
 
 /// The UTMOS scorer: one waveform in, one MOS scalar out.
 ///
-/// v0 skeleton semantics — see the module docs: config-driven forward,
-/// synthesized or GGUF weights, **no upstream numerical claim until the
-/// flip-time pin**.
+/// Variant-aware semantics: v0 remains a synthesized/schema oracle, while v1
+/// is the real upstream-pinned UTMOS22-strong topology with independent score
+/// and stage parity.
 #[derive(Debug)]
 pub struct Utmos {
     config: UtmosConfig,
