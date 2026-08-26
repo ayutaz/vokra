@@ -17,6 +17,7 @@
 //! | [`sigmoid_f32`] | scalar-backed; SIMD under `simd-transcendental` | VAD output / LSTM gate; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`tanh_f32`] | scalar-backed; SIMD under `simd-transcendental` | LSTM cell; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`gelu_f32`] | scalar-backed; SIMD under `simd-transcendental` | Whisper MLP (exact/erf form); exp-bound (`vexp`, M1-05-EXP) |
+//! | [`gelu_new_f32`] | scalar | GPT-2 / Transformers tanh-approximation GELU |
 //! | [`softmax_f32`] | yes (exp scalar; SIMD under `simd-transcendental`) | Whisper attention |
 //! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
 //! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
@@ -490,6 +491,17 @@ unary_wrapper!(
     gelu,
     "Element-wise exact (erf-based) GELU, matching Whisper's `nn.GELU()`."
 );
+
+/// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+///
+/// Kept separate from [`gelu_f32`] because substituting exact/erf GELU changes
+/// the released model numerics. The scalar kernel is the portable CPU
+/// reference; Metal has a matching dedicated kernel.
+pub fn gelu_new_f32(x: &[f32], out: &mut [f32]) -> Result<()> {
+    validate_unary(x, out)?;
+    scalar::gelu_new(x, out);
+    Ok(())
+}
 
 // ---- softmax (M0-08-T07) ----
 

@@ -92,6 +92,12 @@ pub enum HotOp {
     GroupNorm,
     /// Exact (erf) GELU (`gelu_f32`) — Whisper MLP / conv stem.
     Gelu,
+    /// GPT-2 / Transformers `gelu_new` tanh approximation. Distinct from
+    /// [`Self::Gelu`]: substituting the exact/erf form changes released MOSS-
+    /// TTS Nano numerics. CPU uses the portable scalar kernel and Metal uses a
+    /// dedicated MSL kernel; uncovered backends fail the whole-model coverage
+    /// gate rather than falling back.
+    GeluNew,
     /// Element-wise ReLU (`max(x, 0)`). T5-base uses this between its two
     /// feed-forward projections. CPU dispatches the existing SIMD kernel and
     /// Metal has a dedicated MSL kernel; other backends remain explicit
@@ -446,6 +452,7 @@ impl HotOp {
                 | HotOp::RmsNorm
                 | HotOp::GroupNorm
                 | HotOp::Gelu
+                | HotOp::GeluNew
                 | HotOp::Relu
                 | HotOp::Silu
                 | HotOp::Conv1d
@@ -1203,6 +1210,25 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gelu_f32(x, out),
+        }
+    }
+
+    /// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+    pub fn gelu_new_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::gelu_new_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.gelu_new_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "gelu_new_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "gelu_new_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -4203,6 +4229,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4279,6 +4306,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::GeluNew,
             HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,

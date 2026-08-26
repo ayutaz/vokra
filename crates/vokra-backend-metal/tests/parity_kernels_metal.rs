@@ -248,6 +248,28 @@ fn gelu_metal_matches_cpu() {
 }
 
 #[test]
+fn gelu_new_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("gelu_new");
+    let lens = [1usize, 7, 63, 1000, 4 * 3072];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let x: Vec<f32> = rand_vec(0x6E57 ^ (n as u64), n)
+            .into_iter()
+            .map(|v| v * 8.0)
+            .collect();
+        let mut gpu = vec![f32::NAN; n];
+        ctx.gelu_new_f32(&x, &mut gpu).expect("metal gelu_new");
+        let mut cpu_out = vec![0.0f32; n];
+        cpu::gelu_new_f32(&x, &mut cpu_out).expect("cpu gelu_new");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("gelu_new n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "gelu_new n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("gelu_new Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
+}
+
+#[test]
 fn relu_metal_matches_cpu_bit_exactly() {
     let ctx = ctx_or_skip!("relu");
     for &n in &[1usize, 7, 63, 1000, 4 * 3072] {

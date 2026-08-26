@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (GPT-2 `gelu_new` CPU/Metal op)
+
+The imperative backend seam now distinguishes Transformers/GPT-2
+`gelu_new` from exact/erf GELU. CPU implements the official tanh
+approximation as its portable reference; Metal dispatches a dedicated MSL
+kernel and passes the fixed `2e-6` backend-parity bound. CUDA/WebGPU and other
+unwired selections remain explicit unsupported operations. No C ABI or GGUF
+schema changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-backend-cpu::kernels` | `gelu_new_f32` | Added | `(&[f32], &mut [f32]) -> Result<()>` | Portable scalar reference for the official GPT-2 tanh equation; distinct from existing exact `gelu_f32` | no | (TBD) |
+| `vokra-backend-metal::MetalContext` | `gelu_new_f32` | Added | matching element-wise MSL dispatch | CPU/Metal max-absolute error must remain `<= 2e-6` on the committed wide-range test | no | (TBD) |
+| `vokra-models::compute` | `HotOp::GeluNew`, `Compute::gelu_new_f32` | Added | whole-model backend coverage plus typed imperative dispatch | Metal is covered; unwired backends fail without CPU fallback | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS-TTS Nano contract correction)
 
 The MOSS-TTS Nano converter now follows the pinned custom GPT-2 source rather
