@@ -18,21 +18,120 @@
 #                                            [--allow-strip-any]
 
 from __future__ import annotations
+
 import argparse
 import io
 import json
+import posixpath
 import sys
 import tarfile
 import zipfile
 from pathlib import Path
 
-INT_DTYPES = {"torch.int8", "torch.int16", "torch.int32", "torch.int64",
-              "torch.uint8", "torch.uint16", "torch.uint32", "torch.uint64",
-              "torch.bool"}
+INT_DTYPES = {
+    "torch.int8",
+    "torch.int16",
+    "torch.int32",
+    "torch.int64",
+    "torch.uint8",
+    "torch.uint16",
+    "torch.uint32",
+    "torch.uint64",
+    "torch.bool",
+}
 KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
 
+PREFERRED_NEMO_CHECKPOINTS = (
+    "model_weights.ckpt",
+    "weights.ckpt",
+    "model_weights.pt",
+    "weights.pt",
+)
 
-def extract_state_dict_from_nemo(path: Path):
+
+def normalize_archive_member(name: str) -> str:
+    """Normalize a tar/zip member name without resolving it on the host."""
+    normalized = posixpath.normpath(name)
+    if (
+        normalized == "."
+        or normalized.startswith("../")
+        or normalized == ".."
+        or normalized.startswith("/")
+    ):
+        raise ValueError(f"unsafe archive member name: {name!r}")
+    return normalized.removeprefix("./")
+
+
+def choose_nemo_checkpoint_member(
+    names: list[str], requested: str | None = None
+) -> str:
+    """Choose one inference checkpoint, never a first-match auxiliary model.
+
+    NeMo archives commonly spell root members as ``./model_weights.ckpt``.
+    Older code compared that string to ``model_weights.ckpt`` literally, then
+    fell back to the first ``*.ckpt`` member.  Canary-1B-v2 places its 2.50 GB
+    timestamp helper before the 3.85 GB AED main checkpoint, so that fallback
+    produced a valid-looking but decoder-free public artifact.  Normalized
+    main-name preference plus ambiguity refusal makes that class of error
+    impossible.
+    """
+    normalized = [(name, normalize_archive_member(name)) for name in names]
+    if requested is not None:
+        wanted = normalize_archive_member(requested)
+        matches = [original for original, name in normalized if name == wanted]
+        if len(matches) != 1:
+            raise ValueError(
+                f"requested NeMo checkpoint member {requested!r} matched "
+                f"{matches}; available checkpoint members="
+                f"{[name for name, norm in normalized if norm.endswith(('.ckpt', '.pt', '.pth'))]}"
+            )
+        return matches[0]
+
+    for preferred in PREFERRED_NEMO_CHECKPOINTS:
+        root_matches = [
+            original for original, name in normalized if name == preferred
+        ]
+        if len(root_matches) == 1:
+            return root_matches[0]
+        if len(root_matches) > 1:
+            raise ValueError(
+                f"multiple root NeMo checkpoint members normalize to {preferred!r}: "
+                f"{root_matches}"
+            )
+
+        basename_matches = [
+            original
+            for original, name in normalized
+            if posixpath.basename(name) == preferred
+        ]
+        if len(basename_matches) == 1:
+            return basename_matches[0]
+        if len(basename_matches) > 1:
+            raise ValueError(
+                f"multiple NeMo checkpoint members have preferred basename "
+                f"{preferred!r}: {basename_matches}; select one with "
+                "--nemo-checkpoint-member"
+            )
+
+    candidates = [
+        original
+        for original, name in normalized
+        if name.endswith((".ckpt", ".pt", ".pth"))
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise ValueError("archive has no .ckpt/.pt/.pth checkpoint member")
+    raise ValueError(
+        "archive has multiple non-standard checkpoint members and no unique "
+        f"preferred main checkpoint: {candidates}; select one with "
+        "--nemo-checkpoint-member"
+    )
+
+
+def extract_state_dict_from_nemo(
+    path: Path, checkpoint_member: str | None = None
+):
     """`.nemo` is either tar / tar.gz / zip containing model_weights.{ckpt,pt}."""
     import torch
 
@@ -45,40 +144,27 @@ def extract_state_dict_from_nemo(path: Path):
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path, "r") as zf:
                 names = zf.namelist()
-                ckpt_name = None
-                for cand in ("model_weights.ckpt", "weights.ckpt", "model_weights.pt", "weights.pt"):
-                    if cand in names:
-                        ckpt_name = cand
-                        break
-                if not ckpt_name:
-                    for m in names:
-                        if m.endswith((".ckpt", ".pt", ".pth")):
-                            ckpt_name = m
-                            break
-                if not ckpt_name:
-                    raise SystemExit(f"no .ckpt/.pt inside zip {path}. members={names[:20]}")
+                try:
+                    ckpt_name = choose_nemo_checkpoint_member(names, checkpoint_member)
+                except ValueError as error:
+                    raise SystemExit(f"{path}: {error}") from error
                 print(f"  extracting {ckpt_name} from {path.name} zip")
                 data = zf.read(ckpt_name)
                 print(f"  torch.load({len(data):,} bytes)")
-                return torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
+                return (
+                    torch.load(
+                        io.BytesIO(data), map_location="cpu", weights_only=False
+                    ),
+                    ckpt_name,
+                )
         raise SystemExit(f"{path} is neither tar/tar.gz nor zip")
 
     with tar:
         members = tar.getnames()
-        # Prefer model_weights.ckpt or weights.ckpt
-        ckpt_name = None
-        for cand in ("model_weights.ckpt", "weights.ckpt", "model_weights.pt", "weights.pt"):
-            if cand in members:
-                ckpt_name = cand
-                break
-        if not ckpt_name:
-            # Any .ckpt or .pt file
-            for m in members:
-                if m.endswith((".ckpt", ".pt", ".pth")):
-                    ckpt_name = m
-                    break
-        if not ckpt_name:
-            raise SystemExit(f"no .ckpt/.pt inside {path}. members={members[:20]}")
+        try:
+            ckpt_name = choose_nemo_checkpoint_member(members, checkpoint_member)
+        except ValueError as error:
+            raise SystemExit(f"{path}: {error}") from error
         print(f"  extracting {ckpt_name} from {path.name} tar")
         f = tar.extractfile(ckpt_name)
         if f is None:
@@ -86,7 +172,7 @@ def extract_state_dict_from_nemo(path: Path):
         data = f.read()
     print(f"  torch.load({len(data):,} bytes)")
     sd = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
-    return sd
+    return sd, ckpt_name
 
 
 def extract_state_dict_from_pt(path: Path):
@@ -95,6 +181,41 @@ def extract_state_dict_from_pt(path: Path):
     print(f"  torch.load({path.stat().st_size:,} bytes)")
     sd = torch.load(str(path), map_location="cpu", weights_only=False)
     return sd
+
+
+def self_test_checkpoint_selection() -> None:
+    canary_members = [
+        "./timestamps_asr_model_weights.ckpt",
+        "./model_config.yaml",
+        "./model_weights.ckpt",
+    ]
+    assert choose_nemo_checkpoint_member(canary_members) == "./model_weights.ckpt"
+    assert (
+        choose_nemo_checkpoint_member(
+            canary_members, "timestamps_asr_model_weights.ckpt"
+        )
+        == "./timestamps_asr_model_weights.ckpt"
+    )
+    assert choose_nemo_checkpoint_member(["nested/weights.pt"]) == "nested/weights.pt"
+    try:
+        choose_nemo_checkpoint_member(["a/custom.ckpt", "b/aux.ckpt"])
+    except ValueError as error:
+        assert "multiple non-standard" in str(error)
+    else:
+        raise AssertionError("ambiguous auxiliary checkpoints must fail")
+    try:
+        choose_nemo_checkpoint_member(["../model_weights.ckpt"])
+    except ValueError as error:
+        assert "unsafe" in str(error)
+    else:
+        raise AssertionError("unsafe archive path must fail")
+    try:
+        choose_nemo_checkpoint_member(["/model_weights.ckpt"])
+    except ValueError as error:
+        assert "unsafe" in str(error)
+    else:
+        raise AssertionError("absolute archive path must fail")
+    print("nemo_pt_to_safetensors: checkpoint-selection self-test PASS")
 
 
 def flatten_and_partition(sd, prefix_strip: str | None = None):
@@ -164,13 +285,33 @@ def flatten_and_partition(sd, prefix_strip: str | None = None):
 
 def main() -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("--input", required=True, type=Path)
-    p.add_argument("--output", required=True, type=Path)
-    p.add_argument("--tensor-prefix-strip", default=None,
-                   help="strip this prefix from tensor names (e.g. 'model.' or 'module.')")
-    p.add_argument("--allow-strip-any", action="store_true",
-                   help="also strip fp64/complex (default: refuse them loudly)")
+    p.add_argument("--input", type=Path)
+    p.add_argument("--output", type=Path)
+    p.add_argument(
+        "--tensor-prefix-strip",
+        default=None,
+        help="strip this prefix from tensor names (e.g. 'model.' or 'module.')",
+    )
+    p.add_argument(
+        "--nemo-checkpoint-member",
+        help=(
+            "explicit archive member to extract; default prefers a uniquely "
+            "normalized model_weights/weights member and refuses ambiguity"
+        ),
+    )
+    p.add_argument(
+        "--allow-strip-any",
+        action="store_true",
+        help="also strip fp64/complex (default: refuse them loudly)",
+    )
+    p.add_argument("--self-test", action="store_true")
     args = p.parse_args()
+
+    if args.self_test:
+        self_test_checkpoint_selection()
+        return 0
+    if args.input is None or args.output is None:
+        p.error("--input and --output are required unless --self-test is used")
 
     try:
         from safetensors.torch import save_file
@@ -186,9 +327,18 @@ def main() -> int:
 
     # Dispatch on extension
     suffix = inp.suffix.lower()
+    nemo_checkpoint_member: str | None = None
     if suffix == ".nemo":
-        sd = extract_state_dict_from_nemo(inp)
+        sd, nemo_checkpoint_member = extract_state_dict_from_nemo(
+            inp, args.nemo_checkpoint_member
+        )
     elif suffix in (".pt", ".pth", ".ckpt", ".bin"):
+        if args.nemo_checkpoint_member is not None:
+            print(
+                "--nemo-checkpoint-member is valid only for a .nemo archive",
+                file=sys.stderr,
+            )
+            return 2
         sd = extract_state_dict_from_pt(inp)
     else:
         print(f"unknown input extension {suffix}", file=sys.stderr)
@@ -197,9 +347,12 @@ def main() -> int:
     kept, dropped, unknown = flatten_and_partition(sd, args.tensor_prefix_strip)
 
     if unknown and not args.allow_strip_any:
-        print(f"refusing to drop {len(unknown)} tensors of unknown class "
-              f"(first 3: {unknown[:3]}); re-run with --allow-strip-any if verified inference-inert",
-              file=sys.stderr)
+        print(
+            f"refusing to drop {len(unknown)} tensors of unknown class "
+            f"(first 3: {unknown[:3]}); re-run with --allow-strip-any if "
+            "verified inference-inert",
+            file=sys.stderr,
+        )
         return 3
 
     # Tied-embedding dedup — memory [[reference-safetensors-shared-tensor-dedup]]:
@@ -233,16 +386,27 @@ def main() -> int:
         "kept_count": len(kept),
         "dropped_count": len(dropped),
         "prefix_strip": args.tensor_prefix_strip,
-        "dropped_tensors": [{"name": n, "dtype": d, "shape": s} for n, d, s in dropped],
-        "unknown_stripped": [{"name": n, "dtype": d, "shape": s} for n, d, s in unknown] if args.allow_strip_any else [],
+        "nemo_checkpoint_member": nemo_checkpoint_member,
+        "dropped_tensors": [
+            {"name": n, "dtype": d, "shape": s} for n, d, s in dropped
+        ],
+        "unknown_stripped": (
+            [{"name": n, "dtype": d, "shape": s} for n, d, s in unknown]
+            if args.allow_strip_any
+            else []
+        ),
         "shared_pairs": [{"canonical": a, "cloned": b} for a, b in shared_pairs],
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".stripped-manifest.json")
+    manifest_path = args.output.with_suffix(
+        args.output.suffix + ".stripped-manifest.json"
+    )
     manifest_path.write_text(json.dumps(manifest, indent=2))
 
-    print(f"nemo_pt_to_safetensors: kept {len(kept)}, dropped {len(dropped)} int, "
-          f"stripped {len(unknown) if args.allow_strip_any else 0} unknown; "
-          f"manifest -> {manifest_path.name}")
+    print(
+        f"nemo_pt_to_safetensors: kept {len(kept)}, dropped {len(dropped)} int, "
+        f"stripped {len(unknown) if args.allow_strip_any else 0} unknown; "
+        f"manifest -> {manifest_path.name}"
+    )
     return 0
 
 

@@ -53,6 +53,15 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/canary-1b-v2": (
+        "partial",
+        "the two live GGUF filenames are identical 688-tensor copies of the "
+        "24-layer timestamp auxiliary CTC checkpoint, while their metadata claims "
+        "the 32-layer/8-layer AED model; they contain no Transformer decoder or "
+        "tokenizer. The pinned 6.36 GB .nemo carries the correct 3.85 GB "
+        "./model_weights.ckpt separately, and the runtime must reject the live "
+        "artifact pending a corrected complete conversion",
+    ),
     "vokra/canary-1b-flash": (
         "partial",
         "the live 1,292-tensor GGUF contains only the FastConformer encoder; "

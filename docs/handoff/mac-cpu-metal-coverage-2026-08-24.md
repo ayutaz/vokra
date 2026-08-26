@@ -1,5 +1,16 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 Canary-1B-v2 artifact correction:** fixed-revision Range
+> auditing transferred only tar/GGUF headers and proved that the two live
+> `vokra/canary-1b-v2` GGUF names are the same 688-tensor 24-layer timestamp
+> auxiliary CTC checkpoint. They contain neither the eight-layer Transformer
+> decoder nor the 16,384-piece tokenizer, while stale metadata claims the full
+> 32-layer AED. The official 6,358,958,080-byte `.nemo` separately carries the
+> correct 3,853,798,427-byte `./model_weights.ckpt`. The generic NeMo extractor
+> now normalizes `./` member prefixes, chooses a unique main checkpoint and
+> refuses ambiguous fallback. The live repository remains partial and no
+> upload was performed; complete conversion and parity stay VAST work.
+
 > **2026-08-26 Canary-1B-Flash source wave:** the exact complete
 > `.nemo`-derived 1,374-F32-tensor release now has a strict native 32-layer
 > FastConformer + four-layer Transformer AED route, authenticated aggregate

@@ -102,6 +102,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("canary-1b-flash.gguf",),
             "canary-1b-flash",
         )
+        canary_v2 = audit.RepoRecord(
+            "vokra/canary-1b-v2",
+            "abc",
+            ("canary.gguf", "model.gguf"),
+            "canary",
+        )
         corrected_canary_flash = audit.RepoRecord(
             "vokra/canary-1b-flash-corrected",
             "abc",
@@ -276,6 +282,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(canary_flash, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(canary_flash, routed, bound).metal_code, "blocked-by-cpu"
+        )
+        self.assertEqual(audit.classify(canary_v2, routed, bound).cpu_code, "partial")
+        self.assertEqual(
+            audit.classify(canary_v2, routed, bound).metal_code, "blocked-by-cpu"
         )
         self.assertEqual(
             audit.classify(corrected_canary_flash, routed, bound).cpu_code, "full"
