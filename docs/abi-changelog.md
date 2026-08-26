@@ -250,6 +250,16 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (pyannote masked WeSpeaker pooling)
+
+The native WeSpeaker handle now accepts one PyanNet local-speaker activity
+mask and applies the pinned pyannote.audio 3.1.1 weighted `StatsPool` contract.
+The existing unmasked speaker API and C ABI remain unchanged.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::wespeaker` | `WeSpeaker::{embed_pcm_masked,embed_features_masked}` | Added | `(&self, pcm/features, rate/frames, mask: &[f32]) -> Result<Vec<f32>>` | Nearest-resizes a finite `[0,1]` local-speaker mask to the final ResNet time axis and applies upstream weighted unbiased statistics before the existing CPU/Metal projection; unmasked methods retain their prior behavior | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (pyannote centroid speaker clustering)
 
 The host-side speaker clustering primitive now implements the exact centroid

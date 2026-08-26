@@ -3,9 +3,11 @@
 //! The implementation follows the pinned upstream ResNet34 topology exactly:
 //! 80-bin Hamming-window Kaldi fbank with utterance CMN, a `[3, 4, 6, 3]`
 //! basic-block ResNet, temporal mean plus Bessel-corrected standard-deviation
-//! pooling, and the 256-dimensional `seg_1` projection. Every learned Conv2D
-//! and the final projection are lowered to [`Compute::gemm_f32`], so a Metal
-//! selection is observable and can never silently fall back to CPU.
+//! pooling, and the 256-dimensional `seg_1` projection. The pyannote
+//! diarization path additionally supports its frame mask through the pinned
+//! weighted `StatsPool` contract. Every learned Conv2D and the final
+//! projection are lowered to [`Compute::gemm_f32`], so a Metal selection is
+//! observable and can never silently fall back to CPU.
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{BackendKind, LicenseClass, Result, SpeakerEngine, VokraError};
@@ -36,6 +38,7 @@ const POOL_INPUT_DIM: usize = STAGE_CHANNELS[3] * FINAL_FREQ;
 const STATS_DIM: usize = POOL_INPUT_DIM * 2;
 const BN_EPS: f32 = 1.0e-5;
 const STATS_EPS: f32 = 1.0e-7;
+const WEIGHTED_STATS_EPS: f32 = 1.0e-8;
 const PREFIXED_TENSOR_COUNT: usize = 182;
 const BARE_COMBINED_TENSOR_COUNT: usize = 219;
 const WESPEAKER_HOT_OPS: &[HotOp] = &[HotOp::Gemm];
@@ -390,6 +393,26 @@ impl WeSpeakerWeights {
         frames: usize,
         compute: &Compute,
     ) -> Result<Vec<f32>> {
+        self.embed_features_impl(features, frames, None, compute)
+    }
+
+    fn embed_features_masked(
+        &self,
+        features: &[f32],
+        frames: usize,
+        mask: &[f32],
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        self.embed_features_impl(features, frames, Some(mask), compute)
+    }
+
+    fn embed_features_impl(
+        &self,
+        features: &[f32],
+        frames: usize,
+        mask: Option<&[f32]>,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         if features.len() != frames * INPUT_DIM {
             return Err(VokraError::InvalidArgument(format!(
                 "wespeaker: feature buffer has {} values, expected {frames} x {INPUT_DIM}",
@@ -423,7 +446,10 @@ impl WeSpeakerWeights {
                 "wespeaker: final frequency dimension is {height}, expected {FINAL_FREQ}"
             )));
         }
-        let statistics = temporal_statistics_pool(&hidden, POOL_INPUT_DIM, width)?;
+        let statistics = match mask {
+            Some(mask) => weighted_temporal_statistics_pool(&hidden, POOL_INPUT_DIM, width, mask)?,
+            None => temporal_statistics_pool(&hidden, POOL_INPUT_DIM, width)?,
+        };
         let mut embedding = vec![0.0; EMBED_DIM];
         compute.gemm_f32(
             EMBED_DIM,
@@ -525,10 +551,52 @@ impl WeSpeaker {
         self.embed_features(&features, frames)
     }
 
+    /// Runs the official PCM frontend and speaker network with one pyannote
+    /// activity mask.
+    ///
+    /// `mask` is the binarized PyanNet activity for one local speaker. Its
+    /// length may differ from both the fbank and final ResNet frame counts;
+    /// the pinned upstream `StatsPool` nearest-neighbor interpolates it
+    /// directly to the final time axis. Values must be finite and in
+    /// `[0, 1]`. An all-zero mask is valid and yields zero pooled statistics
+    /// before the learned projection bias, matching upstream behavior.
+    pub fn embed_pcm_masked(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        mask: &[f32],
+    ) -> Result<Vec<f32>> {
+        let options = frontend_options();
+        if sample_rate != options.sample_rate {
+            return Err(VokraError::InvalidArgument(format!(
+                "wespeaker: expected {} Hz mono PCM, got {sample_rate} Hz; resample offline first",
+                options.sample_rate
+            )));
+        }
+        let (features, frames) = kaldi_fbank_with_window(pcm, &options, KaldiFbankWindow::Hamming)?;
+        self.embed_features_masked(&features, frames, mask)
+    }
+
     /// Runs only the learned network on row-major `[frames, 80]` features.
     pub fn embed_features(&self, features: &[f32], frames: usize) -> Result<Vec<f32>> {
         let compute = Compute::for_backend(self.backend, WESPEAKER_HOT_OPS)?;
         self.weights.embed_features(features, frames, &compute)
+    }
+
+    /// Runs the learned network on row-major `[frames, 80]` features and
+    /// applies one pyannote local-speaker activity mask at `StatsPool`.
+    ///
+    /// The mask interpolation and weighted-statistics contract are identical
+    /// to [`Self::embed_pcm_masked`].
+    pub fn embed_features_masked(
+        &self,
+        features: &[f32],
+        frames: usize,
+        mask: &[f32],
+    ) -> Result<Vec<f32>> {
+        let compute = Compute::for_backend(self.backend, WESPEAKER_HOT_OPS)?;
+        self.weights
+            .embed_features_masked(features, frames, mask, &compute)
     }
 
     /// Computes the official Hamming Kaldi-fbank frontend for parity checks.
@@ -597,6 +665,79 @@ fn temporal_statistics_pool(input: &[f32], channels: usize, frames: usize) -> Re
             / (frames - 1) as f32;
         output[channel] = mean;
         output[channels + channel] = (variance + STATS_EPS).sqrt();
+    }
+    Ok(output)
+}
+
+/// pyannote.audio 3.1.1 weighted `StatsPool` for one local-speaker mask.
+///
+/// Primary source:
+/// `pyannote/audio/models/blocks/pooling.py` at revision
+/// `6a972c0c4e95de04637d7221208736c64c8b972a`. The source interpolates an
+/// arbitrary-length mask to the final ResNet time axis with PyTorch
+/// `mode="nearest"`, then computes:
+///
+/// - `v1 = sum(w) + 1e-8`
+/// - `mean = sum(x*w) / v1`
+/// - `v2 = sum(w²)`
+/// - `var = sum((x-mean)²*w) / (v1 - v2/v1 + 1e-8)`
+fn weighted_temporal_statistics_pool(
+    input: &[f32],
+    channels: usize,
+    frames: usize,
+    mask: &[f32],
+) -> Result<Vec<f32>> {
+    if input.len() != channels * frames || frames < 2 {
+        return Err(VokraError::InvalidArgument(format!(
+            "wespeaker: weighted TSTP requires [channels={channels}, frames>=2], got {} values and {frames} frames",
+            input.len()
+        )));
+    }
+    if mask.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "wespeaker: weighted TSTP mask must contain at least one frame".into(),
+        ));
+    }
+    if let Some((index, value)) = mask
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "wespeaker: weighted TSTP mask[{index}] is {value}; expected a finite value in [0, 1]"
+        )));
+    }
+
+    // PyTorch `F.interpolate(..., mode="nearest")` maps output index `i` to
+    // floor(i * input_len / output_len). Keep the interpolated weights once;
+    // every feature channel shares the same local-speaker mask.
+    let weights: Vec<f32> = (0..frames)
+        .map(|frame| mask[(frame * mask.len() / frames).min(mask.len() - 1)])
+        .collect();
+    let v1 = weights.iter().copied().sum::<f32>() + WEIGHTED_STATS_EPS;
+    let v2 = weights.iter().map(|weight| weight * weight).sum::<f32>();
+    let denominator = v1 - v2 / v1 + WEIGHTED_STATS_EPS;
+
+    let mut output = vec![0.0; channels * 2];
+    for (channel, row) in input.chunks_exact(frames).enumerate() {
+        let mean = row
+            .iter()
+            .zip(weights.iter())
+            .map(|(value, weight)| value * weight)
+            .sum::<f32>()
+            / v1;
+        let variance = row
+            .iter()
+            .zip(weights.iter())
+            .map(|(value, weight)| {
+                let centered = value - mean;
+                centered * centered * weight
+            })
+            .sum::<f32>()
+            / denominator;
+        output[channel] = mean;
+        output[channels + channel] = variance.sqrt();
     }
     Ok(output)
 }
@@ -839,6 +980,38 @@ mod tests {
         let pooled = temporal_statistics_pool(&[1.0, 3.0], 1, 2).unwrap();
         assert_eq!(pooled[0], 2.0);
         assert!((pooled[1] - (2.0 + STATS_EPS).sqrt()).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn weighted_pool_matches_official_unbiased_formula() {
+        let pooled = weighted_temporal_statistics_pool(&[1.0, 3.0], 1, 2, &[1.0, 1.0])
+            .expect("two active frames");
+        assert_eq!(pooled[0], 2.0);
+        assert!((pooled[1] - 2.0f32.sqrt()).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn weighted_pool_uses_pytorch_nearest_mask_indices() {
+        // Resizing three mask frames to two output frames selects source
+        // indices floor([0, 1] * 3 / 2) = [0, 1]. Only the first hidden
+        // frame therefore contributes.
+        let pooled = weighted_temporal_statistics_pool(&[1.0, 100.0], 1, 2, &[1.0, 0.0, 0.0])
+            .expect("nearest resize");
+        assert_eq!(pooled, vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn weighted_pool_all_zero_mask_is_explicit_zero_statistics() {
+        let pooled = weighted_temporal_statistics_pool(&[1.0, 3.0], 1, 2, &[0.0, 0.0])
+            .expect("upstream permits an inactive mask");
+        assert_eq!(pooled, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn weighted_pool_rejects_empty_or_non_probability_masks() {
+        assert!(weighted_temporal_statistics_pool(&[1.0, 3.0], 1, 2, &[]).is_err());
+        assert!(weighted_temporal_statistics_pool(&[1.0, 3.0], 1, 2, &[1.0, f32::NAN]).is_err());
+        assert!(weighted_temporal_statistics_pool(&[1.0, 3.0], 1, 2, &[1.1, 0.0]).is_err());
     }
 
     #[test]
