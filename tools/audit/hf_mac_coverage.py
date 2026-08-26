@@ -57,8 +57,9 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
     "vokra/speecht5-tts": (
         "no-runtime-binder",
         "the live 393-F32-tensor GGUF predates the strict pinned SpeechT5 "
-        "conversion contract and contains neither the exact 81-piece "
-        "spm_char.model vocabulary nor the fixed source/manifest/runtime "
+        "conversion contract and contains neither the exact 79-piece "
+        "spm_char.model plus two fixed added tokens nor the fixed "
+        "source/manifest/runtime "
         "metadata. It cannot execute text TTS and must remain a loud public "
         "artifact boundary pending the native runtime and an authorized "
         "gated replacement",

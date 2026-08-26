@@ -3,8 +3,10 @@
 //! The released checkpoint is a 393-float-tensor encoder/decoder after the
 //! prepare tool explicitly removes five named integer BatchNorm counters.
 //! Conversion is total and fail-closed: the exact
-//! names, shapes, F32 dtypes, fixed upstream revision and exact 81-piece
-//! `spm_char.model` are required. The runtime never parses torch pickle or
+//! names, shapes, F32 dtypes, fixed upstream revision and exact 79-piece
+//! `spm_char.model` are required. The two fixed Hugging Face added tokens
+//! (`<mask>` and `<ctc_blank>`) extend that base vocabulary to the model's
+//! 81 embedding rows. The runtime never parses torch pickle or a generic
 //! SentencePiece protobuf; both are offline-converter concerns.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,6 +32,9 @@ pub(crate) const SOURCE_WEIGHT_SHA256: &str =
 /// SHA-256 for the exact upstream `spm_char.model`.
 pub(crate) const TOKENIZER_MODEL_SHA256: &str =
     "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560";
+/// SHA-256 for `added_tokens.json` at the pinned upstream revision.
+pub(crate) const TOKENIZER_ADDED_TOKENS_SHA256: &str =
+    "74be21ecff0a1fb1f304fe7c72ab21e4f0c046f8359fdf2852eb1b80967069ad";
 /// Canonical hash over the 393 inference tensor names and shapes.
 pub(crate) const TENSOR_MANIFEST_SHA256: &str =
     "fd6a1323b4994781daf6b657e690cca1e741ee2f7810fab03d0d22bf62301e04";
@@ -56,10 +61,14 @@ pub(crate) const MAX_SPEECH_POSITIONS: u32 = 1_876;
 pub(crate) const ENCODER_MAX_RELATIVE_POSITION: u32 = 160;
 pub(crate) const PAD_TOKEN_ID: u32 = 1;
 pub(crate) const EOS_TOKEN_ID: u32 = 2;
+pub(crate) const UNK_TOKEN_ID: u32 = 3;
+pub(crate) const MASK_TOKEN_ID: u32 = 79;
+pub(crate) const CTC_BLANK_TOKEN_ID: u32 = 80;
 
 const TENSOR_COUNT: usize = 393;
 const SOURCE_TENSOR_COUNT: usize = 393;
-const TOKENIZER_PIECES: usize = 81;
+const TOKENIZER_BASE_PIECES: usize = 79;
+const TOKENIZER_PIECES: usize = VOCAB_SIZE as usize;
 const TOKENIZER_PREFIX: &str = "vokra.speecht5.tokenizer";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
@@ -68,6 +77,7 @@ const KEY_SOURCE_REVISION: &str = "vokra.speecht5.source_revision";
 const KEY_SOURCE_WEIGHT_SHA256: &str = "vokra.speecht5.source_weight_sha256";
 const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.speecht5.tensor_manifest_sha256";
 const KEY_TOKENIZER_MODEL_SHA256: &str = "vokra.speecht5.tokenizer.model_sha256";
+const KEY_TOKENIZER_ADDED_TOKENS_SHA256: &str = "vokra.speecht5.tokenizer.added_tokens_sha256";
 const KEY_EXCLUDED_BATCH_COUNTERS: &str = "vokra.speecht5.excluded_batch_norm_counters";
 const KEY_HIDDEN_SIZE: &str = "vokra.speecht5.hidden_size";
 const KEY_ENCODER_LAYERS: &str = "vokra.speecht5.encoder_layers";
@@ -252,6 +262,7 @@ fn stamp_model_metadata(builder: &mut GgufBuilder) {
 struct TokenizerMetadata {
     pieces: Vec<String>,
     scores: Vec<f32>,
+    model_bytes: Vec<u8>,
 }
 
 fn validate_tokenizer(bytes: &[u8]) -> Result<TokenizerMetadata, ConvertError> {
@@ -263,16 +274,17 @@ fn validate_tokenizer(bytes: &[u8]) -> Result<TokenizerMetadata, ConvertError> {
     }
     let model = parse_model(bytes)
         .map_err(|error| ConvertError::Parse(format!("SpeechT5 spm_char.model: {error}")))?;
-    if model.pieces.len() != TOKENIZER_PIECES {
+    if model.pieces.len() != TOKENIZER_BASE_PIECES {
         return Err(ConvertError::Parse(format!(
-            "SpeechT5 tokenizer has {} pieces, expected {TOKENIZER_PIECES}",
+            "SpeechT5 spm_char.model has {} pieces, expected {TOKENIZER_BASE_PIECES}",
             model.pieces.len()
         )));
     }
     for (id, expected, expected_type) in [
-        (0usize, "<unk>", PieceType::Unknown),
+        (0usize, "<s>", PieceType::Control),
         (1usize, "<pad>", PieceType::Control),
         (2usize, "</s>", PieceType::Control),
+        (3usize, "<unk>", PieceType::Unknown),
     ] {
         let piece = &model.pieces[id];
         if piece.piece != expected || piece.piece_type != expected_type {
@@ -282,19 +294,65 @@ fn validate_tokenizer(bytes: &[u8]) -> Result<TokenizerMetadata, ConvertError> {
             )));
         }
     }
+    let mut pieces = model
+        .pieces
+        .iter()
+        .map(|piece| piece.piece.clone())
+        .collect::<Vec<_>>();
+    let mut scores = model
+        .pieces
+        .iter()
+        .map(|piece| piece.score)
+        .collect::<Vec<_>>();
+    // `added_tokens.json` at the pinned revision is exactly
+    // `{ "<mask>": 79, "<ctc_blank>": 80 }`. These tokens are not part
+    // of the 79-piece SentencePiece ModelProto, but they account for the two
+    // final rows of the checkpoint's 81-row embedding table.
+    pieces.extend(["<mask>".to_owned(), "<ctc_blank>".to_owned()]);
+    scores.extend([0.0, 0.0]);
+    debug_assert_eq!(pieces.len(), TOKENIZER_PIECES);
     Ok(TokenizerMetadata {
-        pieces: model
-            .pieces
-            .iter()
-            .map(|piece| piece.piece.clone())
-            .collect(),
-        scores: model.pieces.iter().map(|piece| piece.score).collect(),
+        pieces,
+        scores,
+        model_bytes: bytes.to_vec(),
     })
 }
 
 fn stamp_tokenizer_metadata(builder: &mut GgufBuilder, tokenizer: &TokenizerMetadata) {
-    builder.add_string(&format!("{TOKENIZER_PREFIX}.scheme"), "unigram");
-    builder.add_string(&format!("{TOKENIZER_PREFIX}.kind"), "sentencepiece-unigram");
+    builder.add_string(&format!("{TOKENIZER_PREFIX}.scheme"), "char");
+    builder.add_string(&format!("{TOKENIZER_PREFIX}.kind"), "sentencepiece-char");
+    builder.add_string(
+        KEY_TOKENIZER_ADDED_TOKENS_SHA256,
+        TOKENIZER_ADDED_TOKENS_SHA256,
+    );
+    builder.add_u32(
+        &format!("{TOKENIZER_PREFIX}.base_vocab_size"),
+        TOKENIZER_BASE_PIECES as u32,
+    );
+    builder.add_string(&format!("{TOKENIZER_PREFIX}.normalizer"), "nmt_nfkc");
+    builder.add_bool(
+        &format!("{TOKENIZER_PREFIX}.normalizer.add_dummy_prefix"),
+        true,
+    );
+    builder.add_bool(
+        &format!("{TOKENIZER_PREFIX}.normalizer.remove_extra_whitespaces"),
+        true,
+    );
+    builder.add_bool(
+        &format!("{TOKENIZER_PREFIX}.normalizer.escape_whitespaces"),
+        true,
+    );
+    builder.add_metadata(
+        &format!("{TOKENIZER_PREFIX}.model"),
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: tokenizer
+                .model_bytes
+                .iter()
+                .map(|&byte| GgufMetadataValue::U8(byte))
+                .collect(),
+        }),
+    );
     builder.add_metadata(
         &format!("{TOKENIZER_PREFIX}.pieces"),
         GgufMetadataValue::Array(GgufArray {
@@ -317,11 +375,15 @@ fn stamp_tokenizer_metadata(builder: &mut GgufBuilder, tokenizer: &TokenizerMeta
                 .collect(),
         }),
     );
-    builder.add_u32(&format!("{TOKENIZER_PREFIX}.unk_id"), 0);
-    // SpeechT5 has no separate BOS piece; config.json uses id 0.
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.unk_id"), UNK_TOKEN_ID);
     builder.add_u32(&format!("{TOKENIZER_PREFIX}.bos_id"), 0);
     builder.add_u32(&format!("{TOKENIZER_PREFIX}.pad_id"), PAD_TOKEN_ID);
     builder.add_u32(&format!("{TOKENIZER_PREFIX}.eos_id"), EOS_TOKEN_ID);
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.mask_id"), MASK_TOKEN_ID);
+    builder.add_u32(
+        &format!("{TOKENIZER_PREFIX}.ctc_blank_id"),
+        CTC_BLANK_TOKEN_ID,
+    );
     builder.add_u32(&format!("{TOKENIZER_PREFIX}.vocab_size"), VOCAB_SIZE);
 }
 
@@ -571,6 +633,21 @@ mod tests {
     }
 
     #[test]
+    fn official_tokenizer_sidecar_if_configured() {
+        let Some(path) = std::env::var_os("VOKRA_SPEECHT5_TOKENIZER") else {
+            return;
+        };
+        let bytes = std::fs::read(path).expect("read configured SpeechT5 tokenizer");
+        let tokenizer = validate_tokenizer(&bytes).expect("bind official SpeechT5 tokenizer");
+        assert_eq!(tokenizer.pieces.len(), 81);
+        assert_eq!(tokenizer.pieces[0], "<s>");
+        assert_eq!(tokenizer.pieces[3], "<unk>");
+        assert_eq!(tokenizer.pieces[79], "<mask>");
+        assert_eq!(tokenizer.pieces[80], "<ctc_blank>");
+        assert_eq!(tokenizer.model_bytes, bytes);
+    }
+
+    #[test]
     fn complete_runtime_metadata_is_stamped() {
         let mut builder = GgufBuilder::new();
         stamp_model_metadata(&mut builder);
@@ -581,6 +658,7 @@ mod tests {
                     .map(|index| format!("piece-{index}"))
                     .collect(),
                 scores: vec![0.0; TOKENIZER_PIECES],
+                model_bytes: vec![0x08, 0x01],
             },
         );
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
@@ -608,6 +686,31 @@ mod tests {
             file.get(&format!("{TOKENIZER_PREFIX}.vocab_size"))
                 .and_then(|value| value.as_u64()),
             Some(81)
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.base_vocab_size"))
+                .and_then(|value| value.as_u64()),
+            Some(79)
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.kind"))
+                .and_then(|value| value.as_str()),
+            Some("sentencepiece-char")
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.unk_id"))
+                .and_then(|value| value.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.mask_id"))
+                .and_then(|value| value.as_u64()),
+            Some(79)
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.ctc_blank_id"))
+                .and_then(|value| value.as_u64()),
+            Some(80)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
