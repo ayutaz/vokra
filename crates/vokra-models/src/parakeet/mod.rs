@@ -839,11 +839,11 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct ParakeetBoundLstmLayer {
-    w_ih: Vec<f32>,
-    w_hh: Vec<f32>,
-    b_ih: Vec<f32>,
-    b_hh: Vec<f32>,
+pub(crate) struct ParakeetBoundLstmLayer {
+    pub(crate) w_ih: Vec<f32>,
+    pub(crate) w_hh: Vec<f32>,
+    pub(crate) b_ih: Vec<f32>,
+    pub(crate) b_hh: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -864,6 +864,24 @@ pub(crate) struct ParakeetBoundSubsampling {
 pub(crate) struct ParakeetBoundNorm {
     pub(crate) weight: Vec<f32>,
     pub(crate) bias: Vec<f32>,
+}
+
+/// Normalization contract inside the FastConformer convolution module.
+///
+/// Parakeet-TDT/CTC use inference BatchNorm after a symmetric depthwise
+/// convolution. Nemotron 3.5 ASR uses per-frame LayerNorm after a causal
+/// depthwise convolution. Keeping the variants in the bound weight type makes
+/// it impossible to accidentally run one checkpoint through the other's
+/// statistics contract.
+#[derive(Debug, Clone)]
+pub(crate) enum FastConformerConvNorm {
+    BatchNorm {
+        weight: Vec<f32>,
+        bias: Vec<f32>,
+        running_mean: Vec<f32>,
+        running_var: Vec<f32>,
+    },
+    LayerNorm(ParakeetBoundNorm),
 }
 
 #[derive(Debug, Clone)]
@@ -896,10 +914,7 @@ pub(crate) struct ParakeetBoundEncoderBlock {
     pub(crate) conv_pw1_b: Option<Vec<f32>>,
     pub(crate) conv_dw_w: Vec<f32>,
     pub(crate) conv_dw_b: Option<Vec<f32>>,
-    pub(crate) conv_bn_weight: Vec<f32>,
-    pub(crate) conv_bn_bias: Vec<f32>,
-    pub(crate) conv_bn_mean: Vec<f32>,
-    pub(crate) conv_bn_var: Vec<f32>,
+    pub(crate) conv_inner_norm: FastConformerConvNorm,
     pub(crate) conv_pw2_w_t: Vec<f32>,
     pub(crate) conv_pw2_b: Option<Vec<f32>>,
 }
@@ -1219,10 +1234,12 @@ fn load_bound_weights(file: &GgufFile, config: &ParakeetConfig) -> Result<Parake
             conv_pw1_b: None,
             conv_dw_w: tensor(&format!("{prefix}.conv.depthwise_conv.weight"))?,
             conv_dw_b: None,
-            conv_bn_weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
-            conv_bn_bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
-            conv_bn_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
-            conv_bn_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            conv_inner_norm: FastConformerConvNorm::BatchNorm {
+                weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
+                bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
+                running_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
+                running_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            },
             conv_pw2_w_t: transpose_out_in(
                 tensor(&format!("{prefix}.conv.pointwise_conv2.weight"))?,
                 enc.d_model,
@@ -1902,8 +1919,69 @@ pub(crate) fn parakeet_logmel(
     Ok((features, frames))
 }
 
-fn conv_output_size(input: usize, kernel: usize, stride: usize, padding: usize) -> usize {
-    (input + 2 * padding - kernel) / stride + 1
+/// Padding convention for the shared FastConformer Conv2D subsampler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FastConformerSubsamplingPadding {
+    /// Parakeet: ordinary symmetric `same` padding on time and frequency.
+    Symmetric,
+    /// Nemotron streaming encoder in offline mode: each causal Conv2D pads
+    /// `(kernel - 1, stride - 1)` on both axes before applying an unpadded
+    /// convolution. This produces the released 17-bin projection width from
+    /// 128 mel bins after three stride-2 stages.
+    CausalOffline,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Conv2dPadding {
+    top: usize,
+    bottom: usize,
+    left: usize,
+    right: usize,
+}
+
+impl FastConformerSubsamplingPadding {
+    fn resolve(self, kernel: usize, stride: usize) -> Conv2dPadding {
+        match self {
+            Self::Symmetric => {
+                let padding = (kernel - 1) / 2;
+                Conv2dPadding {
+                    top: padding,
+                    bottom: padding,
+                    left: padding,
+                    right: padding,
+                }
+            }
+            Self::CausalOffline => Conv2dPadding {
+                top: kernel - 1,
+                bottom: stride - 1,
+                left: kernel - 1,
+                right: stride - 1,
+            },
+        }
+    }
+}
+
+fn conv_output_size(
+    input: usize,
+    kernel: usize,
+    stride: usize,
+    before: usize,
+    after: usize,
+) -> Result<usize> {
+    let padded = input
+        .checked_add(before)
+        .and_then(|value| value.checked_add(after))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "FastConformer Conv2D padded input length overflow".to_owned(),
+            )
+        })?;
+    if stride == 0 || kernel == 0 || padded < kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "FastConformer Conv2D invalid geometry: input={input}, kernel={kernel}, stride={stride}, padding=({before},{after})"
+        )));
+    }
+    Ok((padded - kernel) / stride + 1)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1917,10 +1995,10 @@ fn conv2d_single_input_with_compute(
     out_channels: usize,
     kernel: usize,
     stride: usize,
-    padding: usize,
+    padding: Conv2dPadding,
 ) -> Result<(Vec<f32>, usize, usize)> {
-    let out_h = conv_output_size(height, kernel, stride, padding);
-    let out_w = conv_output_size(width, kernel, stride, padding);
+    let out_h = conv_output_size(height, kernel, stride, padding.top, padding.bottom)?;
+    let out_w = conv_output_size(width, kernel, stride, padding.left, padding.right)?;
     let positions = out_h * out_w;
     let kernel_elems = kernel * kernel;
     let mut patches = vec![0.0f32; positions * kernel_elems];
@@ -1929,16 +2007,16 @@ fn conv2d_single_input_with_compute(
             let row = (out_y * out_w + out_x) * kernel_elems;
             for kernel_y in 0..kernel {
                 let source_y = out_y * stride + kernel_y;
-                if source_y < padding || source_y - padding >= height {
+                if source_y < padding.top || source_y - padding.top >= height {
                     continue;
                 }
                 for kernel_x in 0..kernel {
                     let source_x = out_x * stride + kernel_x;
-                    if source_x < padding || source_x - padding >= width {
+                    if source_x < padding.left || source_x - padding.left >= width {
                         continue;
                     }
                     patches[row + kernel_y * kernel + kernel_x] =
-                        input[(source_y - padding) * width + source_x - padding];
+                        input[(source_y - padding.top) * width + source_x - padding.left];
                 }
             }
         }
@@ -1979,10 +2057,10 @@ fn depthwise_conv2d_with_compute(
     bias: &[f32],
     kernel: usize,
     stride: usize,
-    padding: usize,
+    padding: Conv2dPadding,
 ) -> Result<(Vec<f32>, usize, usize)> {
-    let out_h = conv_output_size(height, kernel, stride, padding);
-    let out_w = conv_output_size(width, kernel, stride, padding);
+    let out_h = conv_output_size(height, kernel, stride, padding.top, padding.bottom)?;
+    let out_w = conv_output_size(width, kernel, stride, padding.left, padding.right)?;
     let positions = out_h * out_w;
     let kernel_elems = kernel * kernel;
     let mut output = vec![0.0f32; channels * positions];
@@ -1995,16 +2073,17 @@ fn depthwise_conv2d_with_compute(
                 let row = (out_y * out_w + out_x) * kernel_elems;
                 for kernel_y in 0..kernel {
                     let source_y = out_y * stride + kernel_y;
-                    if source_y < padding || source_y - padding >= height {
+                    if source_y < padding.top || source_y - padding.top >= height {
                         continue;
                     }
                     for kernel_x in 0..kernel {
                         let source_x = out_x * stride + kernel_x;
-                        if source_x < padding || source_x - padding >= width {
+                        if source_x < padding.left || source_x - padding.left >= width {
                             continue;
                         }
-                        patches[row + kernel_y * kernel + kernel_x] = input
-                            [(channel * height + source_y - padding) * width + source_x - padding];
+                        patches[row + kernel_y * kernel + kernel_x] =
+                            input[(channel * height + source_y - padding.top) * width + source_x
+                                - padding.left];
                     }
                 }
             }
@@ -2030,10 +2109,35 @@ pub(crate) fn subsampling_forward(
     weights: &ParakeetBoundSubsampling,
     config: &ParakeetEncoderConfig,
 ) -> Result<(Vec<f32>, usize)> {
+    subsampling_forward_with_padding(
+        compute,
+        input,
+        frames,
+        frequency,
+        weights,
+        config,
+        FastConformerSubsamplingPadding::Symmetric,
+    )
+}
+
+pub(crate) fn subsampling_forward_with_padding(
+    compute: &Compute,
+    input: &[f32],
+    frames: usize,
+    frequency: usize,
+    weights: &ParakeetBoundSubsampling,
+    config: &ParakeetEncoderConfig,
+    padding_mode: FastConformerSubsamplingPadding,
+) -> Result<(Vec<f32>, usize)> {
     let channels = config.subsampling_conv_channels;
     let kernel = config.subsampling_conv_kernel_size;
     let stride = config.subsampling_conv_stride;
-    let padding = (kernel - 1) / 2;
+    if kernel == 0 || stride == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "FastConformer subsampling requires non-zero kernel/stride, found kernel={kernel}, stride={stride}"
+        )));
+    }
+    let padding = padding_mode.resolve(kernel, stride);
     let (mut value, mut time, mut freq) = conv2d_single_input_with_compute(
         compute,
         input,
@@ -2193,6 +2297,38 @@ fn feed_forward(
     Ok(output)
 }
 
+/// Attention visibility used by the shared relative-position FastConformer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FastConformerAttentionContext {
+    /// Full bidirectional attention (Parakeet offline inference).
+    Full,
+    /// Cache-aware Nemotron offline mask. Queries see their current
+    /// `right_context + 1` frame chunk and at most
+    /// `left_context / chunk_size` earlier chunks.
+    ChunkedLimited {
+        left_context: usize,
+        right_context: usize,
+    },
+}
+
+impl FastConformerAttentionContext {
+    fn allows(self, query: usize, key: usize) -> bool {
+        match self {
+            Self::Full => true,
+            Self::ChunkedLimited {
+                left_context,
+                right_context,
+            } => {
+                let chunk_size = right_context + 1;
+                let left_context_chunks = left_context / chunk_size;
+                let query_chunk = query / chunk_size;
+                let key_chunk = key / chunk_size;
+                key_chunk <= query_chunk && query_chunk - key_chunk <= left_context_chunks
+            }
+        }
+    }
+}
+
 fn attention_forward(
     compute: &Compute,
     input: &[f32],
@@ -2200,6 +2336,7 @@ fn attention_forward(
     frames: usize,
     block: &ParakeetBoundEncoderBlock,
     config: &ParakeetEncoderConfig,
+    attention_context: FastConformerAttentionContext,
 ) -> Result<Vec<f32>> {
     let width = config.d_model;
     let heads = config.n_head;
@@ -2268,10 +2405,14 @@ fn attention_forward(
         for query in 0..frames {
             for key in 0..frames {
                 let relative = frames - 1 - query + key;
-                scores[(head * frames + query) * frames + key] = (content_scores
-                    [query * frames + key]
-                    + position_scores[query * position_count + relative])
-                    * scale;
+                scores[(head * frames + query) * frames + key] =
+                    if attention_context.allows(query, key) {
+                        (content_scores[query * frames + key]
+                            + position_scores[query * position_count + relative])
+                            * scale
+                    } else {
+                        f32::NEG_INFINITY
+                    };
             }
         }
     }
@@ -2341,18 +2482,36 @@ fn convolution_forward(
         }
     }
     let kernel = config.conv_kernel_size;
-    let padding = (kernel - 1) / 2;
     let mut gated_channels = vec![0.0f32; gated.len()];
     for frame in 0..frames {
         for channel in 0..width {
             gated_channels[channel * frames + frame] = gated[frame * width + channel];
         }
     }
+    let (conv_input, conv_frames, padding) = match &block.conv_inner_norm {
+        FastConformerConvNorm::BatchNorm { .. } => (gated_channels, frames, (kernel - 1) / 2),
+        FastConformerConvNorm::LayerNorm(_) => {
+            let left_padding = kernel - 1;
+            let padded_frames = frames.checked_add(left_padding).ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "FastConformer causal Conv1D frame count overflow".to_owned(),
+                )
+            })?;
+            let mut padded = vec![0.0f32; width * padded_frames];
+            for channel in 0..width {
+                let source = &gated_channels[channel * frames..(channel + 1) * frames];
+                let target = &mut padded[channel * padded_frames + left_padding
+                    ..channel * padded_frames + left_padding + frames];
+                target.copy_from_slice(source);
+            }
+            (padded, padded_frames, 0)
+        }
+    };
     let mut convolved_channels = vec![0.0f32; gated.len()];
     compute.grouped_conv1d_f32(
-        &gated_channels,
+        &conv_input,
         width,
-        frames,
+        conv_frames,
         &block.conv_dw_w,
         width,
         kernel,
@@ -2365,12 +2524,32 @@ fn convolution_forward(
     let mut convolved = vec![0.0; gated.len()];
     for frame in 0..frames {
         for channel in 0..width {
-            let sum = convolved_channels[channel * frames + frame];
-            let normalized = (sum - block.conv_bn_mean[channel])
-                / (block.conv_bn_var[channel] + 1e-5).sqrt()
-                * block.conv_bn_weight[channel]
-                + block.conv_bn_bias[channel];
-            convolved[frame * width + channel] = normalized * sigmoid_f32(normalized);
+            convolved[frame * width + channel] = convolved_channels[channel * frames + frame];
+        }
+    }
+    match &block.conv_inner_norm {
+        FastConformerConvNorm::BatchNorm {
+            weight,
+            bias,
+            running_mean,
+            running_var,
+        } => {
+            for frame in 0..frames {
+                for channel in 0..width {
+                    let index = frame * width + channel;
+                    let normalized = (convolved[index] - running_mean[channel])
+                        / (running_var[channel] + 1e-5).sqrt()
+                        * weight[channel]
+                        + bias[channel];
+                    convolved[index] = normalized * sigmoid_f32(normalized);
+                }
+            }
+        }
+        FastConformerConvNorm::LayerNorm(norm) => {
+            convolved = layer_norm(compute, &convolved, frames, norm)?;
+            for value in &mut convolved {
+                *value *= sigmoid_f32(*value);
+            }
         }
     }
     let mut output = vec![0.0; convolved.len()];
@@ -2394,6 +2573,26 @@ pub(crate) fn conformer_block_forward(
     positions: &[f32],
     config: &ParakeetEncoderConfig,
 ) -> Result<()> {
+    conformer_block_forward_with_context(
+        compute,
+        hidden,
+        frames,
+        block,
+        positions,
+        config,
+        FastConformerAttentionContext::Full,
+    )
+}
+
+pub(crate) fn conformer_block_forward_with_context(
+    compute: &Compute,
+    hidden: &mut [f32],
+    frames: usize,
+    block: &ParakeetBoundEncoderBlock,
+    positions: &[f32],
+    config: &ParakeetEncoderConfig,
+    attention_context: FastConformerAttentionContext,
+) -> Result<()> {
     let width = config.d_model;
     let normalized = layer_norm(compute, hidden, frames, &block.norm_ff1)?;
     let ff1 = feed_forward(
@@ -2413,7 +2612,15 @@ pub(crate) fn conformer_block_forward(
         *value += 0.5 * branch;
     }
     let normalized = layer_norm(compute, hidden, frames, &block.norm_attn)?;
-    let attention = attention_forward(compute, &normalized, positions, frames, block, config)?;
+    let attention = attention_forward(
+        compute,
+        &normalized,
+        positions,
+        frames,
+        block,
+        config,
+        attention_context,
+    )?;
     for (value, branch) in hidden.iter_mut().zip(attention) {
         *value += branch;
     }
@@ -2520,6 +2727,33 @@ fn sigmoid_f32(value: f32) -> f32 {
 mod tests {
     use super::*;
     use vokra_core::gguf::{GgufBuilder, GgufFile};
+
+    #[test]
+    fn causal_subsampling_reproduces_nemotron_projection_frequency() {
+        let padding = FastConformerSubsamplingPadding::CausalOffline.resolve(3, 2);
+        let mut frequency = 128;
+        for _ in 0..3 {
+            frequency = conv_output_size(frequency, 3, 2, padding.left, padding.right)
+                .expect("canonical causal subsampling geometry");
+        }
+        assert_eq!(frequency, 17);
+        assert_eq!(frequency * 256, 4_352);
+    }
+
+    #[test]
+    fn chunked_limited_attention_matches_upstream_chunk_boundaries() {
+        let context = FastConformerAttentionContext::ChunkedLimited {
+            left_context: 56,
+            right_context: 3,
+        };
+        // Queries 0..=3 share chunk zero and may see the whole current chunk.
+        assert!(context.allows(0, 3));
+        // A key in a future chunk is hidden.
+        assert!(!context.allows(3, 4));
+        // 56 frames / 4 = fourteen prior chunks are retained.
+        assert!(context.allows(60, 4));
+        assert!(!context.allows(60, 3));
+    }
 
     fn canonical_metadata_file() -> GgufFile {
         let config = ParakeetConfig::parakeet_tdt_0_6b_v3();

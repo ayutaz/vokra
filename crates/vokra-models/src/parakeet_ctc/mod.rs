@@ -102,9 +102,9 @@ use vokra_ops::ctc_decode_greedy;
 
 use crate::compute::Compute;
 use crate::parakeet::{
-    PARAKEET_HOT_OPS, ParakeetBoundEncoderBlock, ParakeetBoundNorm, ParakeetBoundSubsampling,
-    ParakeetEncoderConfig, ParakeetTokenizer, conformer_block_forward, parakeet_logmel,
-    relative_positions, subsampling_forward, transpose_out_in,
+    FastConformerConvNorm, PARAKEET_HOT_OPS, ParakeetBoundEncoderBlock, ParakeetBoundNorm,
+    ParakeetBoundSubsampling, ParakeetEncoderConfig, ParakeetTokenizer, conformer_block_forward,
+    parakeet_logmel, relative_positions, subsampling_forward, transpose_out_in,
 };
 
 /// `vokra.model.arch` a Parakeet-CTC GGUF must carry. Written by
@@ -1038,10 +1038,12 @@ fn load_bound_weights(
             conv_pw1_b: Some(tensor(&format!("{prefix}.conv.pointwise_conv1.bias"))?),
             conv_dw_w: tensor(&format!("{prefix}.conv.depthwise_conv.weight"))?,
             conv_dw_b: Some(tensor(&format!("{prefix}.conv.depthwise_conv.bias"))?),
-            conv_bn_weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
-            conv_bn_bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
-            conv_bn_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
-            conv_bn_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            conv_inner_norm: FastConformerConvNorm::BatchNorm {
+                weight: tensor(&format!("{prefix}.conv.norm.weight"))?,
+                bias: tensor(&format!("{prefix}.conv.norm.bias"))?,
+                running_mean: tensor(&format!("{prefix}.conv.norm.running_mean"))?,
+                running_var: tensor(&format!("{prefix}.conv.norm.running_var"))?,
+            },
             conv_pw2_w_t: transpose_out_in(
                 tensor(&format!("{prefix}.conv.pointwise_conv2.weight"))?,
                 enc.d_model,
