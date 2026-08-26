@@ -7,6 +7,13 @@
 > CPU and Metal are explicit end-to-end selections with no fallback. VAST
 > typecheck/official-reference CPU parity and Apple-device Metal parity remain
 > pending, so this is code reachability rather than a numerical-pass claim.
+> The independent oracle, locked Python 3.12 project, ignored Rust comparison
+> and download/compile/CLI VAST worker are staged in
+> `tools/parity/pyannote_diarization_dump_reference.py`,
+> `tools/parity/pyannote_diarization/`,
+> `crates/vokra-models/tests/parity_pyannote_diarization.rs` and
+> `scripts/publish/vast-ai/run-pyannote-diarization-parity.sh`. Their local
+> standard-library/shell self-tests pass; no model was loaded locally.
 >
 > **2026-08-26 RMVPE correction:** the working tree now implements the exact
 > fixed E2E0 skip U-Net and removes `rmvpe` from the generic code-partial set.

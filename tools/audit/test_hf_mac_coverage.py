@@ -48,6 +48,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "dac",
             "nsnet2",
             "pyannote-segmentation",
+            "pyannote-speaker-diarization",
             "rmvpe",
             "sbv2",
             "vocos",
@@ -109,6 +110,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         pyannote = audit.RepoRecord(
             "vokra/pyannote", "abc", ("model.gguf",), "pyannote-segmentation"
+        )
+        pyannote_diarization = audit.RepoRecord(
+            "vokra/pyannote-speaker-diarization-3.1",
+            "abc",
+            ("pipeline.gguf",),
+            "pyannote-speaker-diarization",
         )
         rmvpe = audit.RepoRecord("vokra/rmvpe", "abc", ("model.gguf",), "rmvpe")
         vocos = audit.RepoRecord("vokra/vocos", "abc", ("model.gguf",), "vocos")
@@ -208,6 +215,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         self.assertEqual(audit.classify(pyannote, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(pyannote, routed, bound).metal_code, "full")
+        self.assertEqual(
+            audit.classify(pyannote_diarization, routed, bound).cpu_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(pyannote_diarization, routed, bound).metal_code, "full"
+        )
         self.assertEqual(audit.classify(rmvpe, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(rmvpe, routed, bound).metal_code, "blocked-by-cpu"
