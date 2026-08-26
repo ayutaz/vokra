@@ -379,6 +379,24 @@ kernel void vokra_relu_f32(
     out[i] = max(x[i], 0.0f);
 }
 
+// ---- tanh: SpeechT5 postnet activation ------------------------------------
+struct TanhDims {
+    uint n;
+};
+
+kernel void vokra_tanh_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant TanhDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    out[i] = tanh(x[i]);
+}
+
 // ---- conv1d: direct convolution (im2col + GEMM equivalent) -------------------
 // `kernel` is an MSL reserved word, so the tap count is `kernel_size`. The (c
 // outer, kk inner) accumulation order equals the im2col+GEMM reduction the CPU
@@ -1788,6 +1806,13 @@ struct ReluDims {
     n: u32,
 }
 
+/// Tanh dims (`setBytes:` index 2). Mirrors the MSL `struct TanhDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TanhDims {
+    n: u32,
+}
+
 /// M3-04 fused dequant + GEMV dims (`setBytes:` index 3). Mirrors the MSL
 /// `struct DequantGemvDims`; `n_blocks_per_row * 32` sizes the FP32 `x`
 /// vector and the format-specific block byte count (18 / 22 / 34) sizes each
@@ -2374,6 +2399,7 @@ pub struct MetalContext {
     gelu_pipeline: Id,
     gelu_new_pipeline: Id,
     relu_pipeline: Id,
+    tanh_pipeline: Id,
     conv1d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
@@ -2606,6 +2632,8 @@ impl MetalContext {
         // SAFETY: as above.
         let relu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_relu_f32") }?;
         // SAFETY: as above.
+        let tanh_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_tanh_f32") }?;
+        // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
         // The three Phase-5 attention column-mover kernels share the same library.
         // SAFETY: as above.
@@ -2726,6 +2754,7 @@ impl MetalContext {
             gelu_pipeline: gelu_pipeline.into_raw(),
             gelu_new_pipeline: gelu_new_pipeline.into_raw(),
             relu_pipeline: relu_pipeline.into_raw(),
+            tanh_pipeline: tanh_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
@@ -3502,6 +3531,45 @@ impl MetalContext {
             grid,
             tg,
             "relu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise hyperbolic tangent. This is the Metal half of
+    /// SpeechT5's activated postnet convolution blocks.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn tanh_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_tanh(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_tanh(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = TanhDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.tanh_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const TanhDims).cast::<c_void>(),
+            size_of::<TanhDims>(),
+            grid,
+            tg,
+            "tanh",
         )?;
         read_back(&out_buf, out)
     }
@@ -7587,6 +7655,7 @@ impl Drop for MetalContext {
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
             release(self.conv1d_pipeline);
+            release(self.tanh_pipeline);
             release(self.relu_pipeline);
             release(self.gelu_new_pipeline);
             release(self.gelu_pipeline);

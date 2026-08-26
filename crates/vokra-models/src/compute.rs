@@ -110,6 +110,12 @@ pub enum HotOp {
     /// Metal has a dedicated MSL kernel; other backends remain explicit
     /// unsupported operations.
     Relu,
+    /// Element-wise hyperbolic tangent. SpeechT5's four activated postnet
+    /// convolution blocks require this exact nonlinearity. CPU dispatches the
+    /// existing portable kernel and Metal has a dedicated MSL kernel; other
+    /// backends remain explicitly uncovered rather than executing on the
+    /// host.
+    Tanh,
     /// Element-wise SiLU / Swish (`x * sigmoid(x)`). WavTokenizer's
     /// positional ResNet applies this after every GroupNorm. The CPU arm is
     /// the scalar mathematical reference; Metal dispatches the existing
@@ -462,6 +468,7 @@ impl HotOp {
                 | HotOp::Gelu
                 | HotOp::GeluNew
                 | HotOp::Relu
+                | HotOp::Tanh
                 | HotOp::Silu
                 | HotOp::Conv1d
                 | HotOp::GroupedConv1d
@@ -1287,6 +1294,29 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "relu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise hyperbolic tangent (`out = tanh(x)`).
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Tanh`] cannot
+    /// silently execute this activation on the host.
+    pub fn tanh_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::tanh_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.tanh_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "tanh_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "tanh_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
                     .to_owned(),
             )),
         }
@@ -4298,6 +4328,7 @@ mod tests {
             HotOp::Gelu,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4376,6 +4407,7 @@ mod tests {
             HotOp::Gelu,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4572,8 +4604,10 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::ScaleNorm,
             HotOp::GroupNorm,
-            HotOp::Silu,
+            HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -4658,6 +4692,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4724,6 +4759,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4777,6 +4813,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4847,6 +4884,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -5028,6 +5066,9 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::ScaleNorm,
             HotOp::GroupNorm,
+            HotOp::GeluNew,
+            HotOp::Relu,
+            HotOp::Tanh,
             HotOp::Silu,
             HotOp::MimiRvq,
             HotOp::DacRvq,

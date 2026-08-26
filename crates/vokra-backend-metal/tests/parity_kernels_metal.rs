@@ -1,8 +1,8 @@
 //! Metal numerical parity for the Phase-4 kernels (M2-01 T09-T13): the FP32 GPU
-//! `gemv` / `softmax` / `layer_norm` / `gelu` / `relu` / `conv1d` vs the `vokra-backend-cpu`
-//! kernels (M0-08) that are the same differential oracle the scalar⇔SIMD harness
-//! uses. Ceiling is the NFR-QL-01 FP32 bound `atol = 0.01` (the observed error is
-//! far smaller and logged per shape).
+//! `gemv` / `softmax` / `layer_norm` / `gelu` / `relu` / `tanh` / `conv1d` vs
+//! the `vokra-backend-cpu` kernels (M0-08) that are the same differential oracle
+//! the scalar⇔SIMD harness uses. Ceiling is the NFR-QL-01 FP32 bound
+//! `atol = 0.01` (the observed error is far smaller and logged per shape).
 //!
 //! Like the GEMM parity suite, this runs only where a Metal device is available:
 //! [`MetalContext::new`] gates each test, so a non-Apple / Metal-less host skips
@@ -290,6 +290,31 @@ fn relu_metal_matches_cpu_bit_exactly() {
 }
 
 #[test]
+fn tanh_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("tanh");
+    let lens = [1usize, 7, 63, 1000, 5 * 512];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let mut x: Vec<f32> = rand_vec(0x7A4A ^ n as u64, n)
+            .into_iter()
+            .map(|value| value * 8.0)
+            .collect();
+        if n >= 5 {
+            x[..5].copy_from_slice(&[-20.0, -0.0, 0.0, 1.0, 20.0]);
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.tanh_f32(&x, &mut gpu).expect("metal tanh");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::tanh_f32(&x, &mut cpu_out).expect("cpu tanh");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("tanh n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "tanh n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("tanh Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
+}
+
+#[test]
 fn conv1d_metal_matches_cpu() {
     let ctx = ctx_or_skip!("conv1d");
     // (in_ch, in_len, out_ch, kernel, stride, padding, bias). The last two are
@@ -427,6 +452,8 @@ fn kernels_reject_bad_shapes_explicitly() {
     assert!(ctx.gelu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // relu: out length must equal x length.
     assert!(ctx.relu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // tanh: out length must equal x length.
+    assert!(ctx.tanh_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // conv1d: zero stride is rejected before any GPU work.
     assert!(
         ctx.conv1d_f32(&[1.0, 2.0], 1, 2, &[1.0], 1, 1, None, 0, 0, &mut [0.0; 1])

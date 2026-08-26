@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 postnet Tanh CPU/Metal seam)
+
+SpeechT5's first four postnet convolution blocks use an element-wise
+hyperbolic tangent. The imperative model execution surface now exposes that
+operation on CPU and Metal. CUDA and WebGPU remain explicitly unsupported for
+this hot op; selecting either through a model registry fails coverage before
+inference rather than executing on the host. No C symbol, ownership rule or
+allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::compute` | `HotOp::Tanh`, `Compute::tanh_f32` | Added | `(&[f32], &mut [f32]) -> Result<()>` | CPU dispatches the existing portable tanh kernel; Metal dispatches `vokra_tanh_f32`; uncovered backends fail the whole-model coverage gate | no | (TBD) |
+| `vokra-backend-metal::MetalContext` | `tanh_f32` | Added | `(&[f32], &mut [f32]) -> Result<()>` | Dedicated MSL element-wise kernel; length mismatch is rejected before dispatch | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 strict executable conversion contract)
 
 The historical SpeechT5 pass-through conversion accepted arbitrary float

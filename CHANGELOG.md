@@ -14,6 +14,11 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The imperative model compute seam now exposes element-wise `Tanh` on CPU
+  and Metal for SpeechT5's activated postnet blocks. Metal uses a dedicated
+  MSL kernel; unsupported GPU backends fail whole-model coverage explicitly
+  instead of falling back to the host.
+
 - The original NVIDIA Parakeet-TDT-1.1B release now strict-binds its exact
   1,667-F32-tensor public GGUF and runs the complete 80-bin frontend,
   42-layer FastConformer, two-layer LSTM prediction network and duration-aware
