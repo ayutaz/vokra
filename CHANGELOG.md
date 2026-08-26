@@ -14,6 +14,12 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The pyannote segmentation-3.0 converter now accepts only the exact public
+  54-F32-tensor PyanNet manifest and stamps immutable upstream/source/public
+  artifact identities. The released checkpoint's four-layer bidirectional
+  LSTM override replaces the historical two-layer class-default assumption;
+  partial, extra, wrong-shape, wrong-dtype, and conflicting-license inputs now
+  fail closed instead of producing a plausible GGUF.
 - The exact public deepfake-audio-detection-v2 GGUF now binds as its actual
   `Wav2Vec2ForSequenceClassification` architecture instead of the historical
   WavLM placeholder and runs the complete normalized waveform frontend,

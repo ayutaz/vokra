@@ -13,6 +13,14 @@
 > `crates/vokra-models/tests/parity_pyannote_segmentation.rs` for current
 > behavior.
 
+> **2026-08-26 artifact correction:** The immutable public
+> `vokra/pyannote-segmentation-3.0@50bf4e510e0c689668384aec0f866f02e0fcaea8`
+> header contains 54 F32 tensors and recurrent tensors l0 through l3 in both
+> directions. The preserved release config also sets `lstm.num_layers: 4`.
+> Therefore the older two-layer/BF16-pass-through blueprint below was a
+> pre-artifact class-default assumption and is superseded by the strict
+> four-layer release contract.
+
 ## 背景 — なぜ本 handoff か
 
 **License half unblock (2026-07-30)**: `docs/license-audit.md` §3.1 row 263 で pyannote weight license を primary source (authenticated HF API `pyannote/segmentation-3.0` + `pyannote/speaker-diarization-3.1` cardData tag `license: mit`、`gated: auto` は access control のみで追加条項なし) 確認済、CC 判断で ☑ Commercial sign-off (2026-07-30 yousan)。
@@ -159,7 +167,7 @@ PY
     - `vokra.pyannote.sample_rate` = 16000
     - `vokra.pyannote.sincnet.stride` = 10
     - `vokra.pyannote.lstm.hidden_size` = 128
-    - `vokra.pyannote.lstm.num_layers` = 2
+    - `vokra.pyannote.lstm.num_layers` = 4 (2026-08-26 exact-release correction)
     - `vokra.pyannote.lstm.bidirectional` = true
     - `vokra.pyannote.linear.hidden_size` = 128
     - `vokra.pyannote.linear.num_layers` = 2
@@ -167,7 +175,7 @@ PY
     - `vokra.provenance.license` = "mit"
     - `vokra.provenance.upstream_hf` = "pyannote/segmentation-3.0"
     - `vokra.provenance.upstream_revision` = <HF revision SHA>
-- BF16 pass-through pattern (mirror `wespeaker.rs` / `ecapa_tdnn.rs`)
+- Strict 54-tensor F32 manifest; foreign dtypes/topologies fail closed
 - `ModelKind::PyannoteSegmentation` + CLI dispatch in `crates/vokra-convert/src/main.rs`
 - `crates/vokra-cli/src/convert.rs` help text update
 
