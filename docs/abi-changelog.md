@@ -256,15 +256,17 @@ The public Qwen3-ASR 0.6B and 1.7B GGUF headers now bind through exact
 release-specific contracts without eagerly decoding their multi-gigabyte BF16
 payloads. New conversions accept the official single file or Hugging Face shard
 index directly, validate the exact BF16 manifest and pinned Apache-2.0 contract,
-then stream one tensor at a time. This is deliberately a partial runtime
+stamp the exact 13-field Whisper frontend, then stream one tensor at a time.
+The runtime adds true-mmap constructors, structures all 612/708 descriptors
+without payload decode and implements the variable-length log-mel stage. This is deliberately a partial runtime
 milestone: transcription still returns an explicit unsupported-operation error
-naming every missing native stage, so neither Mac CPU nor Metal execution is
+naming every remaining learned stage, so neither Mac CPU nor Metal execution is
 claimed. No C symbol, ownership rule or allocation ABI changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
-| `vokra-convert::qwen3_asr` | `convert_qwen3_asr_file_with_variant`; `vokra.qwen3_asr.source_revision`; `vokra.qwen3_asr.tensor_manifest_sha256` | Changed / Added | single `.safetensors` or local `.index.json` + shards → exact 612/708-BF16-tensor GGUF | Rejects extra/missing/renamed/reshaped/non-BF16 tensors, unsafe/non-local shard paths, index ownership drift and conflicting license; bounded by the largest tensor rather than the checkpoint total | no | (TBD) |
-| `vokra-models::qwen3_asr` | `Qwen3AsrCheckpoint`, `Qwen3AsrVariant`, `Qwen3AsrConfig`, `Qwen3AsrAudioConfig`, `Qwen3AsrTextConfig` | Added | strict `from_gguf`; release/config/license/count accessors; 16 kHz `transcribe` loud-partial | Authenticates the complete 612/708-tensor name/shape manifest, exact upstream repository and all 26 persisted topology keys before retaining only descriptors. `transcribe` rejects incomplete native execution explicitly | no | (TBD) |
+| `vokra-convert::qwen3_asr` | `convert_qwen3_asr_file_with_variant`; `vokra.qwen3_asr.source_revision`; `vokra.qwen3_asr.tensor_manifest_sha256`; `vokra.frontend.*` | Changed / Added | single `.safetensors` or local `.index.json` + shards → exact 612/708-BF16-tensor GGUF with 13 frontend fields | Rejects extra/missing/renamed/reshaped/non-BF16 tensors, unsafe/non-local shard paths, index ownership drift and conflicting license; bounded by the largest tensor rather than the checkpoint total | no | (TBD) |
+| `vokra-models::qwen3_asr` | `Qwen3AsrCheckpoint::{open_mapped,from_gguf_mapped,is_mapped}` plus existing strict types | Changed / Added | header-only strict bind; optional retained `Arc<GgufFile>`; variable-length 128-band log-mel | Authenticates the complete 612/708-tensor name/shape manifest and all 26 topology keys; executable mmap loading additionally requires the exact 13-field frontend and validates every dense descriptor without widening payloads. `transcribe` still rejects the incomplete learned graph explicitly | no | (TBD) |
 | `vokra-cli run` diagnostics | `qwen3_asr` `BOUND_ARCHES` row and binder probe | Added | `Qwen3AsrCheckpoint::from_gguf -> Qwen3AsrCheckpoint::transcribe` | Valid released headers report the concrete bound API plus the remaining execution boundary; malformed headers report the binder error. The architecture is still classified partial, not CPU/Metal-complete | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 CPU/Metal TTS runtime)

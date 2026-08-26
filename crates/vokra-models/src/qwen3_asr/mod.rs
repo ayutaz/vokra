@@ -7,16 +7,26 @@
 //! were audited with bounded HTTP Range reads of the public GGUF headers on
 //! 2026-08-27; tensor payloads were not downloaded for that audit.
 //!
-//! Full ASR remains deliberately loud-partial.  Binding a checkpoint is not a
-//! claim that the three-convolution audio frontend, 18/24-layer audio
-//! Transformer, Qwen3 decoder loop and Qwen2 BPE tokenizer are already wired.
+//! Full ASR remains deliberately loud-partial. Binding a checkpoint is not a
+//! claim that the three-convolution audio stem, 18/24-layer audio Transformer,
+//! Qwen3 decoder loop and Qwen2 BPE tokenizer are already wired. The exact
+//! variable-length log-mel stage is present, but is not presented as an
+//! executable model until every learned stage uses the selected backend.
 //! [`Qwen3AsrCheckpoint::transcribe`] names those missing pieces instead of
 //! returning fabricated text or silently selecting the CPU backend.
+
+use std::path::Path;
+use std::sync::Arc;
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
+
+mod frontend;
+mod weights;
+
+use weights::Qwen3AsrMappedDescriptors;
 
 /// `vokra.model.arch` shared by the two Qwen3-ASR release sizes.
 pub const EXPECTED_ARCH: &str = "qwen3_asr";
@@ -342,17 +352,50 @@ impl Qwen3AsrConfig {
 
 /// Cheap proof that a GGUF is exactly one released Qwen3-ASR checkpoint.
 ///
-/// Only metadata and tensor descriptors are retained.  Callers should keep
-/// the original mmap-backed [`GgufFile`] alive for later on-demand weight
-/// decode; the multi-gigabyte checkpoint is never widened during binding.
-#[derive(Debug, Clone)]
+/// [`Self::open_mapped`] and [`Self::from_gguf_mapped`] additionally retain
+/// the original mmap and a structured descriptor for every tensor. The
+/// multi-gigabyte checkpoint is never widened during binding.
+#[derive(Clone)]
 pub struct Qwen3AsrCheckpoint {
     checkpoint: StrictCheckpoint,
     variant: Qwen3AsrVariant,
     config: Qwen3AsrConfig,
+    mapped: Option<Arc<Qwen3AsrMappedDescriptors>>,
+}
+
+impl std::fmt::Debug for Qwen3AsrCheckpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Qwen3AsrCheckpoint")
+            .field("variant", &self.variant)
+            .field("tensor_count", &self.tensor_count())
+            .field("weight_license", &self.weight_license())
+            .field("mapped", &self.mapped.is_some())
+            .finish()
+    }
 }
 
 impl Qwen3AsrCheckpoint {
+    /// Opens the GGUF through the true mmap loader and strictly binds all
+    /// descriptors without decoding tensor payloads.
+    pub fn open_mapped(path: impl AsRef<Path>) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_mapped(Arc::new(file))
+    }
+
+    /// Strictly binds an already mmap-backed GGUF and retains its mapping for
+    /// layer-at-a-time execution.
+    ///
+    /// Passing a buffered [`GgufFile::open`] inside the `Arc` is valid but
+    /// defeats the bounded-memory contract; normal callers should use
+    /// [`Self::open_mapped`] or `vokra_mmap::open_gguf`.
+    pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
+        let mut checkpoint = Self::from_gguf(&file)?;
+        frontend::check_frontend_spec(&file)?;
+        let mapped = Qwen3AsrMappedDescriptors::bind(file, checkpoint.config)?;
+        checkpoint.mapped = Some(Arc::new(mapped));
+        Ok(checkpoint)
+    }
+
     /// Validates identity, provenance, all topology chunks and the complete
     /// release-specific tensor name/shape manifest.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
@@ -385,6 +428,7 @@ impl Qwen3AsrCheckpoint {
             checkpoint,
             variant,
             config,
+            mapped: None,
         })
     }
 
@@ -418,6 +462,21 @@ impl Qwen3AsrCheckpoint {
         self.checkpoint.tensor_count()
     }
 
+    /// Whether this checkpoint retains a true mapped payload for execution.
+    #[must_use]
+    pub const fn is_mapped(&self) -> bool {
+        self.mapped.is_some()
+    }
+
+    pub(super) fn mapped(&self) -> Result<&Qwen3AsrMappedDescriptors> {
+        self.mapped.as_deref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_asr: executable inference requires Qwen3AsrCheckpoint::open_mapped or from_gguf_mapped; from_gguf performs descriptor-only validation"
+                    .to_owned(),
+            )
+        })
+    }
+
     /// End-to-end ASR entry point; still explicit until the native graph lands.
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         if pcm.is_empty() {
@@ -431,7 +490,7 @@ impl Qwen3AsrCheckpoint {
             )));
         }
         Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint is bound, but native execution still requires the three-convolution log-mel frontend, {}-layer audio Transformer plus projector, 28-layer Qwen3 autoregressive decoder, and embedded Qwen2 BPE vocab/merges. CPU or Metal is never substituted while those pieces remain incomplete.",
+            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint and variable-length 128-band log-mel frontend are bound, but native execution still requires the three-convolution audio stem, {}-layer audio Transformer plus projector, 28-layer Qwen3 autoregressive decoder, and embedded Qwen2 BPE vocab/merges. CPU or Metal is never substituted while those pieces remain incomplete.",
             self.variant.model_name(),
             self.tensor_count(),
             self.config.audio.n_layer
@@ -491,120 +550,9 @@ mod tests {
     use crate::strict_checkpoint::sha256_bytes;
 
     fn expected_manifest(variant: Qwen3AsrVariant) -> BTreeMap<String, Vec<u64>> {
-        let cfg = variant.config();
-        let audio = cfg.audio;
-        let text = cfg.text;
-        let mut tensors = BTreeMap::new();
-        let mut add = |name: String, shape: &[u64]| {
-            assert!(tensors.insert(name, shape.to_vec()).is_none());
-        };
-
-        let conv = u64::from(audio.downsample_hidden_size);
-        add("thinker.audio_tower.conv2d1.bias".into(), &[conv]);
-        add(
-            "thinker.audio_tower.conv2d1.weight".into(),
-            &[conv, 1, 3, 3],
-        );
-        for index in 2..=3 {
-            add(format!("thinker.audio_tower.conv2d{index}.bias"), &[conv]);
-            add(
-                format!("thinker.audio_tower.conv2d{index}.weight"),
-                &[conv, conv, 3, 3],
-            );
-        }
-        let audio_dim = u64::from(audio.d_model);
-        let audio_ffn = u64::from(audio.ffn_dim);
-        add(
-            "thinker.audio_tower.conv_out.weight".into(),
-            &[audio_dim, 7_680],
-        );
-        for layer in 0..audio.n_layer {
-            let prefix = format!("thinker.audio_tower.layers.{layer}");
-            add(format!("{prefix}.fc1.bias"), &[audio_ffn]);
-            add(format!("{prefix}.fc1.weight"), &[audio_ffn, audio_dim]);
-            add(format!("{prefix}.fc2.bias"), &[audio_dim]);
-            add(format!("{prefix}.fc2.weight"), &[audio_dim, audio_ffn]);
-            for norm in ["final_layer_norm", "self_attn_layer_norm"] {
-                add(format!("{prefix}.{norm}.bias"), &[audio_dim]);
-                add(format!("{prefix}.{norm}.weight"), &[audio_dim]);
-            }
-            for projection in ["k_proj", "out_proj", "q_proj", "v_proj"] {
-                add(
-                    format!("{prefix}.self_attn.{projection}.bias"),
-                    &[audio_dim],
-                );
-                add(
-                    format!("{prefix}.self_attn.{projection}.weight"),
-                    &[audio_dim, audio_dim],
-                );
-            }
-        }
-        add("thinker.audio_tower.ln_post.bias".into(), &[audio_dim]);
-        add("thinker.audio_tower.ln_post.weight".into(), &[audio_dim]);
-        add("thinker.audio_tower.proj1.bias".into(), &[audio_dim]);
-        add(
-            "thinker.audio_tower.proj1.weight".into(),
-            &[audio_dim, audio_dim],
-        );
-        add(
-            "thinker.audio_tower.proj2.bias".into(),
-            &[u64::from(audio.output_dim)],
-        );
-        add(
-            "thinker.audio_tower.proj2.weight".into(),
-            &[u64::from(audio.output_dim), audio_dim],
-        );
-
-        let hidden = u64::from(text.hidden_size);
-        let q_width = u64::from(text.n_head * text.head_dim);
-        let kv_width = u64::from(text.n_kv_head * text.head_dim);
-        let text_ffn = u64::from(text.ffn_dim);
-        let vocab = u64::from(text.vocab_size);
-        add("thinker.lm_head.weight".into(), &[vocab, hidden]);
-        add("thinker.model.embed_tokens.weight".into(), &[vocab, hidden]);
-        for layer in 0..text.n_layer {
-            let prefix = format!("thinker.model.layers.{layer}");
-            add(format!("{prefix}.input_layernorm.weight"), &[hidden]);
-            add(
-                format!("{prefix}.mlp.down_proj.weight"),
-                &[hidden, text_ffn],
-            );
-            add(
-                format!("{prefix}.mlp.gate_proj.weight"),
-                &[text_ffn, hidden],
-            );
-            add(format!("{prefix}.mlp.up_proj.weight"), &[text_ffn, hidden]);
-            add(
-                format!("{prefix}.post_attention_layernorm.weight"),
-                &[hidden],
-            );
-            add(
-                format!("{prefix}.self_attn.k_norm.weight"),
-                &[u64::from(text.head_dim)],
-            );
-            add(
-                format!("{prefix}.self_attn.k_proj.weight"),
-                &[kv_width, hidden],
-            );
-            add(
-                format!("{prefix}.self_attn.o_proj.weight"),
-                &[hidden, q_width],
-            );
-            add(
-                format!("{prefix}.self_attn.q_norm.weight"),
-                &[u64::from(text.head_dim)],
-            );
-            add(
-                format!("{prefix}.self_attn.q_proj.weight"),
-                &[q_width, hidden],
-            );
-            add(
-                format!("{prefix}.self_attn.v_proj.weight"),
-                &[kv_width, hidden],
-            );
-        }
-        add("thinker.model.norm.weight".into(), &[hidden]);
-        tensors
+        weights::tensor_contract(variant.config())
+            .into_iter()
+            .collect()
     }
 
     fn manifest_sha256(manifest: &BTreeMap<String, Vec<u64>>) -> [u8; 32] {

@@ -23,10 +23,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   either the official single safetensors file or Hugging Face shard index
   directly, rejects manifest/dtype/license drift before writing, copies one
   BF16 tensor at a time, and stamps the immutable source revision plus audited
-  manifest digest. The CLI now reports
+  manifest digest. New artifacts also stamp the exact 13-field 16 kHz,
+  400-point Hann, 160-hop, 128-band Slaney frontend contract. The runtime can
+  retain all 612/708 tensor descriptors over a true mmap without widening the
+  checkpoint, rejects missing/drifted frontend metadata on that executable
+  path, and implements the official variable-length log-mel and chunked
+  three-stride length transform. The CLI now reports
   the model-specific bound route instead of claiming that no runtime exists,
   while end-to-end transcription remains an explicit unsupported operation
-  naming the missing log-mel/audio-Transformer/Qwen3/BPE pieces. Neither CPU
+  naming the missing convolution/audio-Transformer/Qwen3/BPE pieces. Neither CPU
   nor Metal completion or real-weight parity is claimed by this binder wave.
 - The strict canonical SpeechT5 TTS artifact now has a complete native
   text-to-mel runtime: 12-layer relative-position text encoder, cached

@@ -104,9 +104,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, GgufStreamWriter, GgufTensorDecl, chunks};
 use vokra_core::json::{self, JsonValue};
+use vokra_core::{FrontendSpec, LicenseClass};
 
 use crate::ConvertError;
 use crate::safetensors::{SafeTensorInfo, SafetensorsFileReader};
@@ -404,8 +404,31 @@ fn metadata_builder(axes: &VariantAxes) -> GgufBuilder {
             axes.upstream_hf, axes.source_revision, axes.tensor_count
         )),
     );
+    frontend_spec().write_into(&mut builder);
     write_hparams(&mut builder, axes);
     builder
+}
+
+/// Exact `WhisperFeatureExtractor` parameters pinned by both Qwen3-ASR
+/// releases. The processor overrides `padding=true, truncation=false`, which
+/// changes only the waveform length presented to this frontend, not these
+/// signal-processing axes.
+pub(crate) fn frontend_spec() -> FrontendSpec {
+    FrontendSpec {
+        n_fft: 400,
+        hop: 160,
+        win_length: 400,
+        window_type: "hann".to_owned(),
+        mel_norm: "slaney".to_owned(),
+        htk_mode: false,
+        fmin: 0.0,
+        fmax: 8_000.0,
+        n_mels: 128,
+        pad_mode: "reflect".to_owned(),
+        dc_offset_removal: false,
+        pre_emphasis: 0.0,
+        sample_rate: 16_000,
+    }
 }
 
 #[derive(Debug)]
@@ -919,9 +942,9 @@ mod tests {
         for variant in [Variant::B06, Variant::B17] {
             let axes = variant.axes();
             let builder = metadata_builder(&axes);
-            // 37 explicit Qwen/provenance entries plus the writer's two
-            // unspoofable schema stamp entries (version and producer).
-            assert_eq!(builder.metadata_count(), 39);
+            // 50 explicit Qwen/provenance/frontend entries plus the writer's
+            // two unspoofable schema stamp entries (version and producer).
+            assert_eq!(builder.metadata_count(), 52);
             let bytes = builder.to_bytes().expect("serialize metadata");
             let file = GgufFile::parse(bytes).expect("parse metadata-only GGUF");
             assert_eq!(
@@ -957,6 +980,10 @@ mod tests {
             assert_eq!(
                 file.get(KEY_AUDIO_N_LAYER).and_then(|value| value.as_u64()),
                 Some(u64::from(axes.audio_n_layer))
+            );
+            assert_eq!(
+                FrontendSpec::from_gguf(&file).expect("frontend metadata"),
+                frontend_spec()
             );
         }
     }

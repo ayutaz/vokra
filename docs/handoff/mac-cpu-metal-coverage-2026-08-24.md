@@ -14,10 +14,15 @@
 > safetensors file and 1.7B HF shard index directly, rejects any manifest,
 > BF16 dtype, shard ownership or Apache-2.0 license drift before output, and
 > copies one tensor at a time while stamping the fixed source revision and
-> manifest digest. This source route is staged but has not converted either
+> manifest digest plus the exact 13-field 16 kHz / 400-point Hann / 160-hop /
+> 128-band Slaney frontend. The runtime now has a true-mmap constructor that
+> retains and type-checks all 612/708 descriptors without widening payloads;
+> that executable path rejects missing or drifted frontend metadata. The exact
+> variable-length log-mel stage and official 100-frame chunked three-stride
+> output-length transform are implemented. This source route is staged but has not converted either
 > multi-gigabyte release on the maintainer Mac. End-to-end ASR remains an
 > explicit `UnsupportedOp` naming
-> the missing log-mel/convolutional frontend, 18/24-layer audio Transformer,
+> the missing convolutional stem, 18/24-layer audio Transformer,
 > projector, 28-layer Qwen3 decode loop and Qwen2 BPE assets. The two public
 > repositories therefore move only from `no-runtime-binder` to `partial`;
 > neither CPU nor Metal completion or real-weight parity is claimed. No model

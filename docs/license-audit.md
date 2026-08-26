@@ -612,7 +612,10 @@ The 0.6B converter is bound to upstream revision
 `7278e1e70fe206f11671096ffdd38061171dd6e5a`. Both accept only the exact
 audited BF16 name/shape manifest, reject conflicting license overrides, and
 stream the official single file or local HF shard index without merging the
-whole checkpoint in memory. This strengthens the existing Apache-2.0 rows; it
+whole checkpoint in memory. New conversions also stamp the exact 13-field
+Whisper frontend contract; executable mmap loading requires that contract and
+checks every dense tensor descriptor before payload decode. This strengthens
+the existing Apache-2.0 rows; it
 does not authorize upload. Raw source-file SHA verification, real conversion
 and CPU parity remain VAST-only gates.
 
