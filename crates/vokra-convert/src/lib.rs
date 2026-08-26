@@ -13000,6 +13000,9 @@ pub use models::higgs_audio_v3_tts_4b::{
     HiggsAudioV3Tts4bReport, convert_higgs_audio_v3_tts_4b_file,
 };
 pub use models::magpietts_v2602::{MagpiettsV2602Report, convert_magpietts_v2602_file};
+pub use models::nemotron_asr::{
+    NemotronAsrReport, convert_nemotron_asr_file, convert_nemotron_asr_file_with_tokenizer,
+};
 pub use models::nemotron_speech_streaming_v2603::{
     NemotronSpeechStreamingV2603Report, convert_nemotron_speech_streaming_v2603_file,
 };

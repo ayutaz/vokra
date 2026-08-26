@@ -19,10 +19,11 @@ use vokra_convert::{
     convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
-    convert_openwakeword_op_file_with_config, convert_parakeet_ctc_file_with_assets,
-    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -50,6 +51,8 @@ USAGE:
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model nemotron-asr-streaming --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -390,7 +393,7 @@ OPTIONS:
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
     --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3 | parakeet-tdt |
-                              parakeet-ctc.
+                              parakeet-ctc | nemotron-asr-streaming.
                               (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
@@ -680,11 +683,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::MoonshineBase
             | ModelKind::Parakeet
             | ModelKind::ParakeetCtc
+            | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -1563,6 +1567,46 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 p.config.as_deref(),
                 p.license.as_deref(),
             )
+        }
+        ModelKind::NemotronAsrStreaming => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model nemotron-asr-streaming; preserve the canonical BF16 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model nemotron-asr-streaming; the audited release topology is stamped directly and text decoding uses --tokenizer <tokenizer.json>"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model nemotron-asr-streaming requires --tokenizer <tokenizer.json> for executable text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_nemotron_asr_file_with_tokenizer(
+                &p.input,
+                Some(tokenizer),
+                &p.output,
+                p.license.as_deref(),
+            )?;
+            let output_bytes = std::fs::metadata(&p.output)?.len();
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                // 37 audited runtime hparams + arch/name/category/upstream
+                // + four provenance keys + optional tokenizer.
+                metadata_count: 45 + usize::from(report.tokenizer_embedded),
+                output_bytes,
+                notes: vec![format!(
+                    "nemotron-asr-streaming: {} tensors read, {} float tensors written ({} BF16 passthrough), tokenizer embedded={}, complete audited runtime metadata stamped",
+                    report.read, report.written, report.bf16_passthrough, report.tokenizer_embedded,
+                )],
+            })
         }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
