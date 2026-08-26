@@ -46,9 +46,9 @@
 //!         AudioCraft-layout MusicGen variants.)
 //!   -> EnCodec RVQ codebook-to-latent fold            ← **primitive
 //!        (`vokra_ops::encodec_rvq_decode`)               exists**
-//!   -> neural SEANet decoder to 32 kHz PCM             ← **companion
+//!   -> neural SEANet decoder to 16 kHz PCM             ← **companion
 //!        (not contained in the public LM-only GGUF)       required**
-//!   -> PCM (mono f32, 32 kHz)
+//!   -> PCM (mono f32, 16 kHz)
 //! ```
 //!
 //! # Loud-partial classification (design § — CLAUDE.md 教訓 (a))
@@ -58,16 +58,10 @@
 //!     "audiogen-medium"` discrimination. It accepts the current
 //!     `audiogen` arch or the narrowly authenticated legacy public
 //!     `musicgen` arch described above.
-//!   - [`AudioGenConfig::from_gguf`] with primary-source constant
-//!     fallback per key (the AudioGen converter does NOT currently stamp
-//!     the `vokra.audiogen.*` chunk group — only arch / name / category /
-//!     upstream_hf / provenance — so a *strict* reader would refuse the
-//!     already-published `huggingface.co/facebook/audiogen-medium` GGUF.
-//!     Primary source is well-established (HF `config.json` + AudioCraft
-//!     code + paper), so fallback does not fabricate axes; a future
-//!     converter sub-wave that adds the stamps upgrades this reader to
-//!     real-stamped reads per-key with no runtime code change — mirror
-//!     of the Sortformer / PyanNet / MusicGen fallback pattern).
+//!   - [`AudioGenConfig::from_gguf`] reads the converter-stamped
+//!     `vokra.audiogen.*` topology group. The already-published legacy GGUF
+//!     predates those stamps, so each missing key has the same primary-source
+//!     fallback; this preserves compatibility without fabricating axes.
 //!   - [`AudioGenWeights::from_gguf`] with the public 588-tensor complete
 //!     sorted `(name, dimensions)` manifest pinned. Empty, truncated and
 //!     wrong-family files fail before execution (FR-EX-08).
@@ -104,15 +98,13 @@
 //! implementing the shared delay-pattern AR transformer decode, and
 //! composing the latent fold with a native SEANet decoder.
 //!
-//! # `vokra.audiogen.*` chunk group (read here — fallback-friendly)
+//! # `vokra.audiogen.*` chunk group
 //!
 //! The AudioGen converter (`crates/vokra-convert/src/models/
-//! audiogen_medium.rs`) currently stamps only the arch / name / category
-//! / upstream_hf / provenance chunks. The topology chunk group is READ
-//! by this binder but any absent key falls back to the **primary-source
-//! constant** so an already-published GGUF loads correctly. A future
-//! converter sub-wave that adds `vokra.audiogen.*` stamps will override
-//! the fallback automatically per-key with no runtime code change.
+//! audiogen_medium.rs`) stamps the complete topology group. The public
+//! pre-stamp artifact remains loadable because any absent key falls back to
+//! the same **primary-source constant**. New artifacts therefore carry their
+//! axes explicitly while the authenticated legacy artifact stays compatible.
 //!
 //! - `vokra.model.arch` (`String`): normally [`ARCH`] (`"audiogen"`).
 //!   [`LEGACY_PUBLIC_ARCH`] (`"musicgen"`) is accepted only for the exact
@@ -130,12 +122,14 @@
 //! - `vokra.audiogen.{d_model, num_layers, n_heads, ffn_dim, vocab_size,
 //!   num_codebooks, codec_frame_rate_hz, sample_rate_hz}` (`u32` each):
 //!   the composite topology axes. Fallback constants transcribed from
-//!   HF `config.json` (see the `DEFAULT_*` constants for the primary-
-//!   source anchors). The AudioGen-Medium release ships with the same
+//!   AudioCraft's `model_scale/medium.yaml`, `audiogen_lm.yaml` and
+//!   `audiogen_base_16khz.yaml` (see the `DEFAULT_*` constants for the
+//!   primary-source anchors). The AudioGen-Medium release ships with the same
 //!   1.5B-family axes as MusicGen-Medium — this is a genuine coincidence
-//!   of the shared AudioCraft `LMModel` spine + its 32 kHz EnCodec
-//!   configuration, NOT a fabrication (the HF config.json is the
-//!   primary source, not a MusicGen sibling extrapolation).
+//!   of the shared AudioCraft `LMModel` spine. AudioGen uses the distinct
+//!   16 kHz EnCodec configuration (stride 320 at 50 frames/s).
+//!   The axes are primary-source values, not a MusicGen sibling
+//!   extrapolation.
 //! - `vokra.provenance.*`: license class + raw license string, so the
 //!   runtime compliance gate (FR-CP-03 / M2-13) can classify the
 //!   artifact without re-inspecting the safetensors provenance. The
@@ -254,58 +248,61 @@ pub const GGUF_KEY_N_HEADS: &str = "vokra.audiogen.n_heads";
 /// Primary-source default: 6144 (AudioCraft "4× hidden" convention).
 pub const GGUF_KEY_FFN_DIM: &str = "vokra.audiogen.ffn_dim";
 /// `vokra.audiogen.vocab_size` — per-codebook token vocabulary size.
-/// Shared with MusicGen: 2048 (the paired EnCodec 32 kHz RVQ codebook
-/// size, one entry per codebook — the LM emits `num_codebooks` streams
-/// each of this vocab size).
+/// Shared with MusicGen: 2048 entries per EnCodec RVQ codebook. The LM emits
+/// `num_codebooks` streams of this vocabulary size; the codec sample rate is
+/// a separate, AudioGen-specific axis.
 pub const GGUF_KEY_VOCAB_SIZE: &str = "vokra.audiogen.vocab_size";
 /// `vokra.audiogen.num_codebooks` — number of RVQ codebook streams the
-/// LM emits per frame. Shared with MusicGen: 4 (the paired EnCodec 32
-/// kHz codec configuration).
+/// LM emits per frame. Shared with MusicGen: 4 (under AudioGen's distinct
+/// 16 kHz codec configuration).
 pub const GGUF_KEY_NUM_CODEBOOKS: &str = "vokra.audiogen.num_codebooks";
-/// `vokra.audiogen.codec_frame_rate_hz` — the EnCodec 32 kHz output
-/// frame rate. Shared with MusicGen: 50 Hz.
+/// `vokra.audiogen.codec_frame_rate_hz` — the EnCodec 16 kHz output frame
+/// rate. Shared with MusicGen: 50 Hz.
 pub const GGUF_KEY_CODEC_FRAME_RATE_HZ: &str = "vokra.audiogen.codec_frame_rate_hz";
 /// `vokra.audiogen.sample_rate_hz` — the paired EnCodec sample rate.
-/// Shared with MusicGen: 32000 Hz (32 kHz).
+/// AudioGen-specific: 16000 Hz (16 kHz). MusicGen uses a different 32 kHz
+/// EnCodec companion despite sharing the 50 Hz/4-codebook LM schedule.
 pub const GGUF_KEY_SAMPLE_RATE_HZ: &str = "vokra.audiogen.sample_rate_hz";
 
-// Primary-source constants transcribed from the HF model card's
-// `config.json` + the AudioCraft `EncodecModel` configuration (fetched 2026-08-14
-// — CLAUDE.md 「ハルシネーション厳禁」). AudioGen-Medium shares the
-// 1.5B-family axes with MusicGen-Medium via the shared AudioCraft
-// `LMModel` spine + the shared 32 kHz EnCodec configuration — this is a
-// genuine coincidence of the primary source, NOT a MusicGen sibling
-// extrapolation.
+// Primary-source constants transcribed from AudioCraft's
+// `config/model/lm/model_scale/medium.yaml`,
+// `config/model/lm/audiogen_lm.yaml`, `config/model/lm/default.yaml` and
+// `config/solver/audiogen/audiogen_base_16khz.yaml` (verified 2026-08-26).
+// AudioGen-Medium shares the 1.5B-family axes with MusicGen-Medium via the
+// shared AudioCraft `LMModel` spine. Its codec is deliberately not inherited
+// from MusicGen: AudioGen's official solver binds the 16 kHz EnCodec checkpoint
+// with stride 320, while MusicGen binds the 32 kHz checkpoint with stride 640.
 
-/// Transformer LM hidden dim (`d_model`). Primary source:
-/// `huggingface.co/facebook/audiogen-medium/config.json`
-/// (`decoder.hidden_size`). Matches AudioCraft 1.5B `LMModel` spine.
+/// Transformer LM hidden dim (`d_model`). Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.dim`).
 pub const DEFAULT_D_MODEL: u32 = 1536;
-/// Transformer LM depth (`num_hidden_layers`). Primary source:
-/// `audiogen-medium/config.json` (`decoder.num_hidden_layers`).
+/// Transformer LM depth. Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.num_layers`).
 pub const DEFAULT_NUM_LAYERS: u32 = 48;
-/// Multi-head attention head count (`num_attention_heads`). Primary
-/// source: `audiogen-medium/config.json` (`decoder.num_attention_heads`).
+/// Multi-head attention head count. Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.num_heads`).
 /// `head_dim = 1536 / 24 = 64`.
 pub const DEFAULT_N_HEADS: u32 = 24;
-/// Feedforward inner dimension (`ffn_dim`). Primary source:
-/// `audiogen-medium/config.json` (`decoder.ffn_dim`). AudioCraft "4×
-/// hidden" convention: `6144 = 4 × 1536`.
+/// Feedforward inner dimension. Primary source: AudioCraft
+/// `config/model/lm/default.yaml` (`transformer_lm.hidden_scale = 4`) composed
+/// with the medium dimension: `6144 = 4 × 1536`.
 pub const DEFAULT_FFN_DIM: u32 = 6144;
-/// Per-codebook vocabulary size. Primary source: HF `config.json`
-/// (`decoder.vocab_size`) + AudioCraft `EncodecModel.quantizer.bins`.
-/// Shared with MusicGen: the paired EnCodec 32 kHz codec is a 4-codebook
-/// RVQ with 2048 entries per codebook.
+/// Per-codebook vocabulary size. Primary source: AudioCraft
+/// `config/model/lm/audiogen_lm.yaml` (`transformer_lm.card = 2048`).
+/// Shared with MusicGen: the paired EnCodec RVQ has 4 codebooks with 2048
+/// entries each; AudioGen's waveform companion itself is the 16 kHz model.
 pub const DEFAULT_VOCAB_SIZE: u32 = 2048;
 /// Number of RVQ codebook streams the LM emits per frame. Primary
 /// source: AudioCraft `AudioGen(...).lm.n_q = 4` (shared with MusicGen).
 pub const NUM_CODEBOOKS: u32 = 4;
-/// EnCodec output frame rate for the paired 32 kHz codec (matches
-/// AudioCraft `EncodecModel.frame_rate = 50`). Shared with MusicGen.
+/// EnCodec output frame rate for the paired 16 kHz codec (stride 320, so
+/// `16000 / 320 = 50`). Shared with MusicGen at the token schedule level.
 pub const CODEC_FRAME_RATE_HZ: u32 = 50;
-/// EnCodec sample rate for the paired 32 kHz codec (matches AudioCraft
-/// `EncodecModel.sample_rate = 32000`). Shared with MusicGen.
-pub const SAMPLE_RATE_HZ: u32 = 32_000;
+/// EnCodec sample rate for AudioGen's paired codec. Primary source:
+/// AudioCraft `config/solver/audiogen/audiogen_base_16khz.yaml`
+/// (`sample_rate: 16000`, total stride 320). This intentionally differs from
+/// MusicGen's 32 kHz codec.
+pub const SAMPLE_RATE_HZ: u32 = 16_000;
 
 /// Primary-source anchor for the HF model card. Cited in the loud-partial
 /// error so a reader diagnosing the gap knows the definitive artifact
@@ -326,11 +323,8 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2209.15352";
 
 // ---------------------------------------------------------------------------
 // AudioGenConfig — the composite topology axes read from the
-// `vokra.audiogen.*` chunk group, with primary-source constant fallback
-// (the AudioGen converter does not currently stamp this chunk group —
-// the fallback is honest because the primary source is well-established;
-// a future converter sub-wave that adds the stamps upgrades this reader
-// to real-stamped reads seamlessly). Mirror of
+// `vokra.audiogen.*` chunk group, with primary-source constant fallback for
+// the already-published pre-stamp artifact. Mirror of
 // [`crate::musicgen::MusicGenConfig::from_gguf`] +
 // [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`] +
 // [`crate::pyannote::PyanNetConfig::from_gguf`].
@@ -340,8 +334,8 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2209.15352";
 /// group.
 ///
 /// [`from_gguf`](Self::from_gguf) reads the chunk with primary-source
-/// constant fallback per key — a GGUF that never carried the chunk still
-/// loads with the upstream defaults transcribed from HF `config.json`.
+/// constant fallback per key — the authenticated public GGUF that predates
+/// the topology stamps still loads with the upstream defaults.
 /// Every numeric axis is `u32` in the GGUF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioGenConfig {
@@ -361,14 +355,14 @@ pub struct AudioGenConfig {
     pub num_codebooks: u32,
     /// EnCodec output frame rate (50 Hz).
     pub codec_frame_rate_hz: u32,
-    /// EnCodec sample rate (32000 Hz = 32 kHz).
+    /// EnCodec sample rate (16000 Hz = 16 kHz).
     pub sample_rate_hz: u32,
 }
 
 impl AudioGenConfig {
     /// Primary-source-transcribed axes as a `const` — the fallback
-    /// baseline used by [`from_gguf`](Self::from_gguf) when the chunk
-    /// group is absent (the current converter's default posture).
+    /// baseline used by [`from_gguf`](Self::from_gguf) for a legacy artifact
+    /// whose topology chunk group is absent.
     #[must_use]
     pub const fn primary_source_default() -> Self {
         Self {
@@ -386,19 +380,15 @@ impl AudioGenConfig {
     /// Reads every `vokra.audiogen.*` chunk from `gguf`, falling back to
     /// the primary-source defaults per absent key.
     ///
-    /// The AudioGen converter does not currently stamp this chunk group
-    /// (only arch / name / category / upstream_hf / provenance), so on
-    /// an already-published GGUF every axis falls through to its
-    /// primary-source default. A future converter sub-wave that adds the
-    /// stamps upgrades this reader to real-stamped reads per-key with no
-    /// runtime code change.
+    /// New conversions stamp this chunk group. The already-published legacy
+    /// GGUF does not, so its axes fall through to the same primary-source
+    /// defaults on a per-key basis.
     ///
     /// Mirror of
     /// [`crate::musicgen::MusicGenConfig::from_gguf`] +
     /// [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`]
-    /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same
-    ///   fallback pattern used for converters whose topology-stamp
-    ///   sub-wave is still queued.
+    /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same fallback
+    ///   pattern used for legacy pre-stamp artifacts.
     #[must_use]
     pub fn from_gguf(gguf: &GgufFile) -> Self {
         let default = Self::primary_source_default();
@@ -767,7 +757,7 @@ impl AudioGen {
         AudioGenArtifactLayout::AudioCraftLm
     }
 
-    /// Generates a `duration_secs`-length 32 kHz PCM stream conditioned
+    /// Generates a `duration_secs`-length 16 kHz PCM stream conditioned
     /// on the text `prompt` (an environmental-sound / SFX description
     /// such as "dog barking on a wooden porch").
     ///
@@ -887,7 +877,7 @@ mod tests {
     //! # What "round-trip" means here
     //!
     //! The task spec asks for 5+ unit tests. On real inference this
-    //! would be `generate(...)` returning real 32 kHz PCM, but the
+    //! would be `generate(...)` returning real 16 kHz PCM, but the
     //! prompt-conditioning + delay-pattern AR-LM + complete EnCodec/SEANet
     //! composition is deferred (see the module doc +
     //! [`AudioGen::generate`] rustdoc). Fabricating a real-inference
@@ -896,10 +886,8 @@ mod tests {
     //!
     //! The round-trip semantics we *can* honestly test:
     //!
-    //! 1. **Config round-trip**: `from_gguf` reads every axis stamped by
-    //!    the converter (via the fallback path today; the strict path
-    //!    when a future converter sub-wave stamps the topology chunk
-    //!    group).
+    //! 1. **Config round-trip**: `from_gguf` reads every converter-stamped
+    //!    axis and keeps the legacy pre-stamp fallback pinned separately.
     //! 2. **Loud-error negative-space round-trip**: every stated blocker
     //!    (missing arch / wrong arch / missing name / unsupported
     //!    variant / empty tensor list / unsupported forward surface)
@@ -961,24 +949,25 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 1. Default config matches primary-source HF config.json axes
+    // 1. Default config matches primary-source AudioCraft config axes
     // -----------------------------------------------------------------------
 
     #[test]
-    fn default_config_matches_primary_source_hf_config_json_axes() {
-        // Pin every DEFAULT_* constant with rustdoc reference to HF
-        // config.json + AudioCraft EncodecModel bundle. A rename or
-        // axis-value drift would land here in the same commit or fail
-        // this test.
+    fn default_config_matches_primary_source_audiocraft_axes() {
+        // Pin every DEFAULT_* constant to the official AudioCraft model-scale,
+        // LM and codec solver configs. A rename or axis-value drift would land
+        // here in the same commit or fail this test.
         let cfg = AudioGenConfig::primary_source_default();
-        assert_eq!(cfg.d_model, 1536, "d_model = 1536 per HF config.json");
-        assert_eq!(cfg.num_layers, 48, "num_layers = 48 per HF config.json");
-        assert_eq!(cfg.n_heads, 24, "n_heads = 24 per HF config.json");
-        assert_eq!(cfg.ffn_dim, 6144, "ffn_dim = 6144 per HF config.json");
+        assert_eq!(
+            cfg.d_model, 1536,
+            "d_model = 1536 per AudioCraft medium model-scale config"
+        );
+        assert_eq!(cfg.num_layers, 48, "num_layers = 48 per medium config");
+        assert_eq!(cfg.n_heads, 24, "n_heads = 24 per medium config");
+        assert_eq!(cfg.ffn_dim, 6144, "ffn_dim = 4 * d_model per LM config");
         assert_eq!(
             cfg.vocab_size, 2048,
-            "vocab_size = 2048 per HF config.json + AudioCraft \
-             EncodecModel.quantizer.bins"
+            "vocab_size = 2048 per AudioCraft audiogen_lm card"
         );
         assert_eq!(
             cfg.num_codebooks, 4,
@@ -989,8 +978,8 @@ mod tests {
             "codec_frame_rate_hz = 50 per AudioCraft EncodecModel.frame_rate"
         );
         assert_eq!(
-            cfg.sample_rate_hz, 32_000,
-            "sample_rate_hz = 32000 per AudioCraft EncodecModel.sample_rate"
+            cfg.sample_rate_hz, 16_000,
+            "sample_rate_hz = 16000 per AudioCraft audiogen_base_16khz solver config"
         );
 
         // AudioCraft family design invariant: `head_dim = 64` (a
@@ -1040,19 +1029,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 3. from_gguf falls back to primary-source defaults when chunk group
-    //    absent (converter's current stamp posture)
+    // 3. from_gguf falls back to primary-source defaults for a legacy
+    //    pre-stamp artifact
     // -----------------------------------------------------------------------
 
     #[test]
     fn from_gguf_falls_back_to_primary_source_defaults_when_chunk_group_absent() {
-        // The AudioGen converter does NOT currently stamp the
-        // `vokra.audiogen.*` chunk group (only arch / name / category /
-        // upstream_hf / provenance). An already-published GGUF must
-        // still load — the fallback path reads the primary-source
-        // constants transcribed from HF config.json.
-        // Mirror of MusicGenConfig::from_gguf + SortformerConfig::from_gguf
-        // fallback patterns.
+        // The already-published AudioGen GGUF predates the converter's
+        // `vokra.audiogen.*` topology stamps. It must still load through the
+        // same primary-source values now written by new conversions.
         let cfg = AudioGenConfig::primary_source_default();
         let file = audiogen_gguf(
             NAME,
@@ -1286,7 +1271,7 @@ mod tests {
                     "codec_frame_rate_hz axis missing: {m}"
                 );
                 assert!(
-                    m.contains("sample_rate_hz=32000"),
+                    m.contains("sample_rate_hz=16000"),
                     "sample_rate_hz axis missing: {m}"
                 );
                 // The prompt length + duration must be echoed so a

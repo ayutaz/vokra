@@ -250,6 +250,17 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (AudioGen 16 kHz topology correction)
+
+New AudioGen conversions stamp the complete native transformer and codec
+topology. The runtime's historical fallback is corrected from MusicGen's
+32 kHz companion to the official AudioGen 16 kHz / stride-320 contract. No C
+symbol, ownership rule or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.audiogen.*` | `d_model`, `num_layers`, `n_heads`, `ffn_dim`, `vocab_size`, `num_codebooks`, `codec_frame_rate_hz`, `sample_rate_hz` | Added / corrected | eight `u32` values: `1536 / 48 / 24 / 6144 / 2048 / 4 / 50 / 16000` | New converters stamp the complete group. The exact historical 588-F16-tensor public AudioGen GGUF may omit it only because its identity, provenance and complete manifest are pinned; missing keys use the same primary-source defaults. | yes only for callers that relied on the incorrect 32 kHz fallback; no for exact artifact binding | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (exact pyannote diarization execution)
 
 The public speaker-diarization 3.1 contract now executes the exact pinned

@@ -30,13 +30,12 @@
 //! required at publish time. X-Codec 2 (2026-07-28) + MusicGen-Medium
 //! (2026-08-01) T4 precedent 継承.
 //!
-//! # Scale — local convert OK (~3.7 GB)
+//! # Scale — VAST required (~3.7 GB)
 //!
-//! AudioGen-Medium ships as ~3.7 GB on HF — well below the M1 iMac 16 GB
-//! local-convert threshold (memory [[feedback-large-models-on-vast-ai]]:
-//! ≥8 GB safe threshold), so conversion + publish can happen locally.
-//! Contrast MusicGen-Medium 11.4 GB / MusicGen-Large 19.5 GB which require
-//! vast.ai handoff.
+//! AudioGen-Medium ships as ~3.7 GB on HF, above the repository's 2 GB
+//! maintainer-Mac threshold. Conversion, real-checkpoint validation and
+//! publication therefore run through the VAST lifecycle; no model payload is
+//! materialized on the M1 iMac.
 //!
 //! # No ONNX (permanent)
 //!
@@ -78,6 +77,24 @@ const UPSTREAM_SOURCE: &str =
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_D_MODEL: &str = "vokra.audiogen.d_model";
+const KEY_NUM_LAYERS: &str = "vokra.audiogen.num_layers";
+const KEY_N_HEADS: &str = "vokra.audiogen.n_heads";
+const KEY_FFN_DIM: &str = "vokra.audiogen.ffn_dim";
+const KEY_VOCAB_SIZE: &str = "vokra.audiogen.vocab_size";
+const KEY_NUM_CODEBOOKS: &str = "vokra.audiogen.num_codebooks";
+const KEY_CODEC_FRAME_RATE_HZ: &str = "vokra.audiogen.codec_frame_rate_hz";
+const KEY_SAMPLE_RATE_HZ: &str = "vokra.audiogen.sample_rate_hz";
+
+const D_MODEL: u32 = 1536;
+const NUM_LAYERS: u32 = 48;
+const N_HEADS: u32 = 24;
+const FFN_DIM: u32 = 6144;
+const VOCAB_SIZE: u32 = 2048;
+const NUM_CODEBOOKS: u32 = 4;
+const CODEC_FRAME_RATE_HZ: u32 = 50;
+/// AudioCraft `audiogen_base_16khz`: sample rate 16 kHz, total stride 320.
+const SAMPLE_RATE_HZ: u32 = 16_000;
 
 /// Outcome of an AudioGen-Medium conversion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -107,6 +124,14 @@ pub fn convert_audiogen_medium_file(
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    b.add_u32(KEY_D_MODEL, D_MODEL);
+    b.add_u32(KEY_NUM_LAYERS, NUM_LAYERS);
+    b.add_u32(KEY_N_HEADS, N_HEADS);
+    b.add_u32(KEY_FFN_DIM, FFN_DIM);
+    b.add_u32(KEY_VOCAB_SIZE, VOCAB_SIZE);
+    b.add_u32(KEY_NUM_CODEBOOKS, NUM_CODEBOOKS);
+    b.add_u32(KEY_CODEC_FRAME_RATE_HZ, CODEC_FRAME_RATE_HZ);
+    b.add_u32(KEY_SAMPLE_RATE_HZ, SAMPLE_RATE_HZ);
 
     let (spdx, class) = match license {
         Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
@@ -209,6 +234,19 @@ mod tests {
         assert_eq!(read_str(chunks::KEY_MODEL_NAME), NAME);
         assert_eq!(read_str(KEY_MODEL_CATEGORY), CATEGORY);
         assert_eq!(read_str(KEY_PROVENANCE_UPSTREAM_HF), UPSTREAM_HF);
+        let read_u32 = |key: &str| -> u32 {
+            g.get(key)
+                .and_then(|value| value.as_u64())
+                .unwrap_or_else(|| panic!("{key}: missing/non-u32")) as u32
+        };
+        assert_eq!(read_u32(KEY_D_MODEL), D_MODEL);
+        assert_eq!(read_u32(KEY_NUM_LAYERS), NUM_LAYERS);
+        assert_eq!(read_u32(KEY_N_HEADS), N_HEADS);
+        assert_eq!(read_u32(KEY_FFN_DIM), FFN_DIM);
+        assert_eq!(read_u32(KEY_VOCAB_SIZE), VOCAB_SIZE);
+        assert_eq!(read_u32(KEY_NUM_CODEBOOKS), NUM_CODEBOOKS);
+        assert_eq!(read_u32(KEY_CODEC_FRAME_RATE_HZ), CODEC_FRAME_RATE_HZ);
+        assert_eq!(read_u32(KEY_SAMPLE_RATE_HZ), SAMPLE_RATE_HZ);
         let _ = std::fs::remove_file(&inp);
         let _ = std::fs::remove_file(&outp);
     }
