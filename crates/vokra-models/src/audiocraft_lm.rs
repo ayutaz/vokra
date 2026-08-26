@@ -41,6 +41,8 @@ const AUDIOCRAFT_MAPPED: MappedModel = MappedModel {
 const POSITION_MAX_PERIOD: f32 = 10_000.0;
 /// Rows widened at once for one mapped codebook head GEMV.
 const HEAD_CHUNK_ROWS: usize = 128;
+/// Checkpointed sinusoidal position-table rows in public Transformers MusicGen.
+const TRANSFORMERS_MAX_POSITIONS: usize = 2_048;
 
 /// AudioCraft's released generation default.
 pub const AUDIOCRAFT_DEFAULT_CFG_COEF: f32 = 3.0;
@@ -287,10 +289,21 @@ impl AudioCraftCondition {
     }
 }
 
+enum MappedAttentionLocs {
+    Fused {
+        in_proj: GgufTensorInfo,
+    },
+    Split {
+        q: GgufTensorInfo,
+        k: GgufTensorInfo,
+        v: GgufTensorInfo,
+    },
+}
+
 struct MappedLayerLocs {
-    self_in: GgufTensorInfo,
+    self_attn: MappedAttentionLocs,
     self_out: GgufTensorInfo,
-    cross_in: GgufTensorInfo,
+    cross_attn: MappedAttentionLocs,
     cross_out: GgufTensorInfo,
     norm1_w: GgufTensorInfo,
     norm1_b: GgufTensorInfo,
@@ -308,11 +321,27 @@ struct MappedHeads {
     chunk: Mutex<Vec<f32>>,
 }
 
+enum MappedPosition {
+    AudioCraftSinusoidal,
+    TransformersTable(GgufTensorInfo),
+}
+
+#[derive(Clone, Copy)]
+enum ConditionMaskMode {
+    /// AudioCraft's conditioner keeps the sequence length and zeros masked rows.
+    ZeroRows,
+    /// Transformers supplies an attention mask. For the batch-one native API,
+    /// removing masked rows before K/V projection is exactly equivalent.
+    CompactRows,
+}
+
 struct MappedWeights {
     file: Arc<GgufFile>,
     layers: Vec<MappedLayerLocs>,
     layer_scratch: Mutex<DecoderLayer>,
     heads: MappedHeads,
+    position: MappedPosition,
+    condition_mask_mode: ConditionMaskMode,
     condition_proj: Linear,
     out_norm: LayerNorm,
     condition_dim: usize,
@@ -428,13 +457,21 @@ impl AudioCraftLmDecoder {
         for layer in 0..config.num_layers {
             let p = format!("transformer.layers.{layer}");
             layers.push(MappedLayerLocs {
-                self_in: exact_info(&file, &format!("{p}.self_attn.in_proj_weight"), &[3 * d, d])?,
+                self_attn: MappedAttentionLocs::Fused {
+                    in_proj: exact_info(
+                        &file,
+                        &format!("{p}.self_attn.in_proj_weight"),
+                        &[3 * d, d],
+                    )?,
+                },
                 self_out: exact_info(&file, &format!("{p}.self_attn.out_proj.weight"), &[d, d])?,
-                cross_in: exact_info(
-                    &file,
-                    &format!("{p}.cross_attention.in_proj_weight"),
-                    &[3 * d, d],
-                )?,
+                cross_attn: MappedAttentionLocs::Fused {
+                    in_proj: exact_info(
+                        &file,
+                        &format!("{p}.cross_attention.in_proj_weight"),
+                        &[3 * d, d],
+                    )?,
+                },
                 cross_out: exact_info(
                     &file,
                     &format!("{p}.cross_attention.out_proj.weight"),
@@ -461,6 +498,161 @@ impl AudioCraftLmDecoder {
                     linears,
                     chunk: Mutex::new(Vec::new()),
                 },
+                position: MappedPosition::AudioCraftSinusoidal,
+                condition_mask_mode: ConditionMaskMode::ZeroRows,
+                condition_proj: Linear::dense(condition_w_t, condition_dim, d, Some(condition_b)),
+                out_norm: LayerNorm {
+                    gamma: out_gamma,
+                    beta: out_beta,
+                },
+                condition_dim,
+                config,
+            },
+            backend,
+            identity: Arc::new(()),
+        })
+    }
+
+    /// Binds the Transformers-composite decoder layout used by the public
+    /// MusicGen Small/Melody artifacts.
+    ///
+    /// Its math is the same pre-norm self-attention, cross-attention and GELU
+    /// MLP stack as the AudioCraft layout, but Q/K/V tensors are split,
+    /// positions come from the checkpoint's fixed table and T5 projection
+    /// names live at the composite root. Keeping this as an authenticated
+    /// layout entry avoids copying the 24/48-layer checkpoint into memory.
+    pub(crate) fn bind_transformers_musicgen(
+        file: Arc<GgufFile>,
+        config: AudioCraftLmConfig,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        config.validate()?;
+        Compute::for_backend(backend, AUDIOCRAFT_LM_HOT_OPS)?;
+        let d = config.d_model;
+        let ffn = config.ffn_dim;
+        let rows = config.vocab_size + 1;
+
+        let condition_weight_name = "enc_to_dec_proj.weight";
+        let raw_condition = file.tensor_info(condition_weight_name).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "audiocraft-lm: tensor `{condition_weight_name}`: missing"
+            ))
+        })?;
+        let condition_dims = dims(raw_condition);
+        if condition_dims.len() != 2 || condition_dims[0] != d || condition_dims[1] == 0 {
+            return Err(VokraError::ModelLoad(format!(
+                "audiocraft-lm: tensor `{condition_weight_name}` has dimensions \
+                 {condition_dims:?}, expected [{d}, condition_dim]"
+            )));
+        }
+        let condition_dim = condition_dims[1];
+        let condition_info = exact_info(&file, condition_weight_name, &[d, condition_dim])?;
+        let condition_bias = exact_info(&file, "enc_to_dec_proj.bias", &[d])?;
+        let mut condition_w_t = Vec::new();
+        transpose_widen(
+            file.tensor_bytes(&condition_info),
+            condition_info.dtype,
+            d,
+            condition_dim,
+            &mut condition_w_t,
+            AUDIOCRAFT_MAPPED,
+        )?;
+        let mut condition_b = Vec::new();
+        widen_into(
+            file.tensor_bytes(&condition_bias),
+            condition_bias.dtype,
+            &mut condition_b,
+            AUDIOCRAFT_MAPPED,
+        )?;
+
+        let decoder = "decoder.model.decoder";
+        let out_norm_w = exact_info(&file, &format!("{decoder}.layer_norm.weight"), &[d])?;
+        let out_norm_b = exact_info(&file, &format!("{decoder}.layer_norm.bias"), &[d])?;
+        let mut out_gamma = Vec::new();
+        let mut out_beta = Vec::new();
+        widen_into(
+            file.tensor_bytes(&out_norm_w),
+            out_norm_w.dtype,
+            &mut out_gamma,
+            AUDIOCRAFT_MAPPED,
+        )?;
+        widen_into(
+            file.tensor_bytes(&out_norm_b),
+            out_norm_b.dtype,
+            &mut out_beta,
+            AUDIOCRAFT_MAPPED,
+        )?;
+
+        let mut embeddings = Vec::with_capacity(config.num_codebooks);
+        let mut linears = Vec::with_capacity(config.num_codebooks);
+        for codebook in 0..config.num_codebooks {
+            embeddings.push(exact_info(
+                &file,
+                &format!("{decoder}.embed_tokens.{codebook}.weight"),
+                &[rows, d],
+            )?);
+            linears.push(exact_info(
+                &file,
+                &format!("decoder.lm_heads.{codebook}.weight"),
+                &[config.vocab_size, d],
+            )?);
+        }
+        let position = exact_info(
+            &file,
+            &format!("{decoder}.embed_positions.weights"),
+            &[TRANSFORMERS_MAX_POSITIONS, d],
+        )?;
+
+        let mut layers = Vec::with_capacity(config.num_layers);
+        for layer in 0..config.num_layers {
+            let p = format!("{decoder}.layers.{layer}");
+            let split = |name: &str| -> Result<MappedAttentionLocs> {
+                Ok(MappedAttentionLocs::Split {
+                    q: exact_info(&file, &format!("{name}.q_proj.weight"), &[d, d])?,
+                    k: exact_info(&file, &format!("{name}.k_proj.weight"), &[d, d])?,
+                    v: exact_info(&file, &format!("{name}.v_proj.weight"), &[d, d])?,
+                })
+            };
+            layers.push(MappedLayerLocs {
+                self_attn: split(&format!("{p}.self_attn"))?,
+                self_out: exact_info(&file, &format!("{p}.self_attn.out_proj.weight"), &[d, d])?,
+                cross_attn: split(&format!("{p}.encoder_attn"))?,
+                cross_out: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn.out_proj.weight"),
+                    &[d, d],
+                )?,
+                norm1_w: exact_info(&file, &format!("{p}.self_attn_layer_norm.weight"), &[d])?,
+                norm1_b: exact_info(&file, &format!("{p}.self_attn_layer_norm.bias"), &[d])?,
+                norm_cross_w: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn_layer_norm.weight"),
+                    &[d],
+                )?,
+                norm_cross_b: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn_layer_norm.bias"),
+                    &[d],
+                )?,
+                norm2_w: exact_info(&file, &format!("{p}.final_layer_norm.weight"), &[d])?,
+                norm2_b: exact_info(&file, &format!("{p}.final_layer_norm.bias"), &[d])?,
+                fc1: exact_info(&file, &format!("{p}.fc1.weight"), &[ffn, d])?,
+                fc2: exact_info(&file, &format!("{p}.fc2.weight"), &[d, ffn])?,
+            });
+        }
+
+        Ok(Self {
+            weights: MappedWeights {
+                file,
+                layers,
+                layer_scratch: Mutex::new(empty_layer(d, ffn)),
+                heads: MappedHeads {
+                    embeddings,
+                    linears,
+                    chunk: Mutex::new(Vec::new()),
+                },
+                position: MappedPosition::TransformersTable(position),
+                condition_mask_mode: ConditionMaskMode::CompactRows,
                 condition_proj: Linear::dense(condition_w_t, condition_dim, d, Some(condition_b)),
                 out_norm: LayerNorm {
                     gamma: out_gamma,
@@ -493,8 +685,10 @@ impl AudioCraftLmDecoder {
     ///
     /// `hidden` is `[frames, condition_dim]`. `mask`, when provided, contains
     /// exactly `frames` values in `{0,1}`. AudioCraft applies the linear first
-    /// and then zeros masked rows; preserving that order matters because the
-    /// projection has a bias.
+    /// and then zeros masked rows. Transformers passes an attention mask; this
+    /// batch-one route preserves that math by compacting projected visible rows
+    /// before cross-attention K/V projection. Projection precedes either mask
+    /// operation because it has a bias.
     pub fn prepare_condition(
         &self,
         hidden: &[f32],
@@ -533,13 +727,36 @@ impl AudioCraftLmDecoder {
             frames,
             &self.weights.condition_proj,
         )?;
-        if let Some(mask) = mask {
-            for (frame, &visible) in mask.iter().enumerate() {
-                if visible == 0 {
-                    projected[frame * d..(frame + 1) * d].fill(0.0);
+        let frames = match (self.weights.condition_mask_mode, mask) {
+            (ConditionMaskMode::ZeroRows, Some(mask)) => {
+                for (frame, &visible) in mask.iter().enumerate() {
+                    if visible == 0 {
+                        projected[frame * d..(frame + 1) * d].fill(0.0);
+                    }
                 }
+                frames
             }
-        }
+            (ConditionMaskMode::CompactRows, Some(mask)) => {
+                let visible_frames = mask.iter().filter(|&&visible| visible == 1).count();
+                if visible_frames == 0 {
+                    return Err(VokraError::InvalidArgument(
+                        "audiocraft condition: Transformers attention mask hides every frame"
+                            .to_owned(),
+                    ));
+                }
+                if visible_frames != frames {
+                    let mut compact = Vec::with_capacity(visible_frames * d);
+                    for (frame, &visible) in mask.iter().enumerate() {
+                        if visible == 1 {
+                            compact.extend_from_slice(&projected[frame * d..(frame + 1) * d]);
+                        }
+                    }
+                    projected = compact;
+                }
+                visible_frames
+            }
+            (_, None) => frames,
+        };
         Ok(AudioCraftCondition {
             projected,
             frames,
@@ -560,6 +777,15 @@ impl AudioCraftLmDecoder {
             return Err(VokraError::InvalidArgument(
                 "audiocraft LM state: max_steps must be non-zero".to_owned(),
             ));
+        }
+        if let MappedPosition::TransformersTable(info) = &self.weights.position {
+            let position_rows = dims(info)[0];
+            if max_steps > position_rows {
+                return Err(VokraError::InvalidArgument(format!(
+                    "audiocraft LM state: max_steps {max_steps} exceeds Transformers \
+                     position table rows {position_rows} (no silent wrap)"
+                )));
+            }
         }
         if condition.frames == 0
             || condition.d_model != cfg.d_model
@@ -658,7 +884,14 @@ impl AudioCraftLmDecoder {
 
         state.h.fill(0.0);
         self.embed_tokens_into(tokens, &mut state.h)?;
-        add_sinusoidal_position(&mut state.h, start)?;
+        match &self.weights.position {
+            MappedPosition::AudioCraftSinusoidal => {
+                add_sinusoidal_position(&mut state.h, start)?;
+            }
+            MappedPosition::TransformersTable(info) => {
+                add_mapped_row(&self.weights.file, info, start, cfg.d_model, &mut state.h)?;
+            }
+        }
 
         let compute = self.compute()?;
         let mut guard = self.lock_layer_scratch()?;
@@ -928,7 +1161,13 @@ impl AudioCraftLmDecoder {
         let f = &self.weights.file;
 
         materialize_norm(f, &locs.norm1_w, &locs.norm1_b, &mut scratch.self_ln)?;
-        materialize_attention(f, &locs.self_in, &locs.self_out, d, &mut scratch.self_attn)?;
+        materialize_attention(
+            f,
+            &locs.self_attn,
+            &locs.self_out,
+            d,
+            &mut scratch.self_attn,
+        )?;
         materialize_norm(
             f,
             &locs.norm_cross_w,
@@ -937,7 +1176,7 @@ impl AudioCraftLmDecoder {
         )?;
         materialize_attention(
             f,
-            &locs.cross_in,
+            &locs.cross_attn,
             &locs.cross_out,
             d,
             &mut scratch.cross_attn,
@@ -1165,25 +1404,42 @@ fn materialize_norm(
 
 fn materialize_attention(
     file: &GgufFile,
-    in_proj: &GgufTensorInfo,
+    input: &MappedAttentionLocs,
     out_proj: &GgufTensorInfo,
     d: usize,
     out: &mut Attention,
 ) -> Result<()> {
-    let bytes = file.tensor_bytes(in_proj);
-    let esz = in_proj.dtype.type_size();
-    let matrix_bytes = d * d * esz;
-    for (index, linear) in [&mut out.q, &mut out.k, &mut out.v].into_iter().enumerate() {
-        let start = index * matrix_bytes;
-        transpose_widen(
-            &bytes[start..start + matrix_bytes],
-            in_proj.dtype,
-            d,
-            d,
-            dense_weight_mut(linear)?,
-            AUDIOCRAFT_MAPPED,
-        )?;
-        linear.bias = None;
+    match input {
+        MappedAttentionLocs::Fused { in_proj } => {
+            let bytes = file.tensor_bytes(in_proj);
+            let esz = in_proj.dtype.type_size();
+            let matrix_bytes = d * d * esz;
+            for (index, linear) in [&mut out.q, &mut out.k, &mut out.v].into_iter().enumerate() {
+                let start = index * matrix_bytes;
+                transpose_widen(
+                    &bytes[start..start + matrix_bytes],
+                    in_proj.dtype,
+                    d,
+                    d,
+                    dense_weight_mut(linear)?,
+                    AUDIOCRAFT_MAPPED,
+                )?;
+                linear.bias = None;
+            }
+        }
+        MappedAttentionLocs::Split { q, k, v } => {
+            for (info, linear) in [(q, &mut out.q), (k, &mut out.k), (v, &mut out.v)] {
+                transpose_widen(
+                    file.tensor_bytes(info),
+                    info.dtype,
+                    d,
+                    d,
+                    dense_weight_mut(linear)?,
+                    AUDIOCRAFT_MAPPED,
+                )?;
+                linear.bias = None;
+            }
+        }
     }
     transpose_widen(
         file.tensor_bytes(out_proj),
@@ -1392,6 +1648,119 @@ mod tests {
         (Arc::new(file), config)
     }
 
+    fn transformers_fixture() -> (Arc<GgufFile>, AudioCraftLmConfig) {
+        let config = AudioCraftLmConfig {
+            d_model: 4,
+            num_layers: 1,
+            n_heads: 2,
+            ffn_dim: 8,
+            vocab_size: 3,
+            num_codebooks: 2,
+        };
+        let (d, ffn, condition_dim) = (config.d_model, config.ffn_dim, 3usize);
+        let decoder = "decoder.model.decoder";
+        let mut builder = GgufBuilder::new();
+        add_f32(
+            &mut builder,
+            "enc_to_dec_proj.weight",
+            &[d as u64, condition_dim as u64],
+            vec![0.0; d * condition_dim],
+        );
+        add_f32(
+            &mut builder,
+            "enc_to_dec_proj.bias",
+            &[d as u64],
+            vec![1.0; d],
+        );
+        add_f32(
+            &mut builder,
+            &format!("{decoder}.layer_norm.weight"),
+            &[d as u64],
+            vec![1.0; d],
+        );
+        add_f32(
+            &mut builder,
+            &format!("{decoder}.layer_norm.bias"),
+            &[d as u64],
+            vec![0.0; d],
+        );
+        for codebook in 0..config.num_codebooks {
+            let rows = config.vocab_size + 1;
+            add_f32(
+                &mut builder,
+                &format!("{decoder}.embed_tokens.{codebook}.weight"),
+                &[rows as u64, d as u64],
+                vec![0.125; rows * d],
+            );
+            add_f32(
+                &mut builder,
+                &format!("decoder.lm_heads.{codebook}.weight"),
+                &[config.vocab_size as u64, d as u64],
+                vec![0.25; config.vocab_size * d],
+            );
+        }
+        let mut positions = vec![0.0; TRANSFORMERS_MAX_POSITIONS * d];
+        add_sinusoidal_position(&mut positions[..d], 0).unwrap();
+        add_sinusoidal_position(&mut positions[d..2 * d], 1).unwrap();
+        add_f32(
+            &mut builder,
+            &format!("{decoder}.embed_positions.weights"),
+            &[TRANSFORMERS_MAX_POSITIONS as u64, d as u64],
+            positions,
+        );
+
+        let p = format!("{decoder}.layers.0");
+        for suffix in [
+            "self_attn_layer_norm.weight",
+            "encoder_attn_layer_norm.weight",
+            "final_layer_norm.weight",
+        ] {
+            add_f32(
+                &mut builder,
+                &format!("{p}.{suffix}"),
+                &[d as u64],
+                vec![1.0; d],
+            );
+        }
+        for suffix in [
+            "self_attn_layer_norm.bias",
+            "encoder_attn_layer_norm.bias",
+            "final_layer_norm.bias",
+        ] {
+            add_f32(
+                &mut builder,
+                &format!("{p}.{suffix}"),
+                &[d as u64],
+                vec![0.0; d],
+            );
+        }
+        for attention in ["self_attn", "encoder_attn"] {
+            for projection in ["q_proj", "k_proj", "v_proj", "out_proj"] {
+                add_f32(
+                    &mut builder,
+                    &format!("{p}.{attention}.{projection}.weight"),
+                    &[d as u64, d as u64],
+                    vec![0.0; d * d],
+                );
+            }
+        }
+        add_f32(
+            &mut builder,
+            &format!("{p}.fc1.weight"),
+            &[ffn as u64, d as u64],
+            vec![0.0; ffn * d],
+        );
+        add_f32(
+            &mut builder,
+            &format!("{p}.fc2.weight"),
+            &[d as u64, ffn as u64],
+            vec![0.0; d * ffn],
+        );
+
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        (Arc::new(file), config)
+    }
+
     #[test]
     fn config_rejects_non_head_aligned_and_odd_widths() {
         let mut config = AudioCraftLmConfig {
@@ -1432,6 +1801,40 @@ mod tests {
             .unwrap();
         assert_eq!(condition.as_slice()[..4], [1.0; 4]);
         assert_eq!(condition.as_slice()[4..], [0.0; 4]);
+    }
+
+    #[test]
+    fn transformers_layout_compacts_masked_condition_rows_and_executes_split_attention() {
+        let (file, config) = transformers_fixture();
+        let decoder =
+            AudioCraftLmDecoder::bind_transformers_musicgen(file, config, BackendKind::Cpu)
+                .unwrap();
+        let condition = decoder
+            .prepare_condition(&[0.5; 6], 2, Some(&[1, 0]))
+            .unwrap();
+        assert_eq!(condition.frames(), 1);
+        assert_eq!(condition.as_slice(), [1.0; 4]);
+        assert!(
+            decoder
+                .prepare_condition(&[0.5; 6], 2, Some(&[0, 0]))
+                .unwrap_err()
+                .to_string()
+                .contains("hides every frame")
+        );
+        assert!(
+            decoder
+                .new_state(&condition, TRANSFORMERS_MAX_POSITIONS + 1)
+                .unwrap_err()
+                .to_string()
+                .contains("position table rows")
+        );
+
+        let mut state = decoder.new_state(&condition, 1).unwrap();
+        let mut logits = vec![0.0; config.num_codebooks * config.vocab_size];
+        decoder
+            .step_into(&mut state, &[config.special_token_id(); 2], &mut logits)
+            .unwrap();
+        assert!(logits.iter().all(|value| value.is_finite()));
     }
 
     #[test]

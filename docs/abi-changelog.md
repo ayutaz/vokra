@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen public composite LM execution)
+
+The already-published Transformers-composite MusicGen Small/Melody artifacts
+gain the same mapping-owned raw-code generation surface as the AudioCraft
+Medium/Large files. Split Q/K/V tensors, the checkpointed sinusoidal position
+table, Transformers mask semantics and four codebook heads are authenticated
+without copying the full decoder into memory. No C ABI or GGUF schema changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::audiocraft_lm` | `AudioCraftLmDecoder` mapped layout support | Changed | Transformers split-Q/K/V LM step and CFG/delay sampling | Mapping-owned only; CPU/Metal selected once; unsupported backends fail explicitly | no | (TBD) |
+| `vokra-models::musicgen::MusicGen` | `from_path*`, `prepare_lm_condition`, `new_lm_state`, `lm_step_into`, `generate_codes` | Changed | raw T5-hidden-to-four-codebook route for public Small/Melody composites | Text tokenization/composition remains a loud companion boundary | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen embedded EnCodec waveform decode)
 
 The already-published Transformers-composite MusicGen Small/Melody artifacts
@@ -287,7 +300,7 @@ and it does not alter the C ABI or GGUF metadata schema.
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-models::audiocraft_lm` | `AudioCraftLmConfig`, `AudioCraftCondition`, `AudioCraftLmDecoder`, `AudioCraftLmState`, `AUDIOCRAFT_LM_HOT_OPS` | Added | mapped F32/F16/BF16 condition projection, state creation and one-position codebook-major logits step | Decoder owns the GGUF mapping; conditions and states are checkpoint-bound; learned reductions use one selected CPU/Metal backend with no fallback | no | (TBD) |
-| `vokra-models::musicgen::MusicGen` | `from_path*`, `backend`, `prepare_lm_condition`, `new_lm_state`, `lm_step_into` | Added | raw T5-hidden-to-four-codebook-logits path for authenticated AudioCraft Medium/Large layouts | Strict policy refuses NC weights without research opt-in; borrowed handles and public Small/Melody composite layouts return explicit unsupported errors | no | (TBD) |
+| `vokra-models::musicgen::MusicGen` | `from_path*`, `backend`, `prepare_lm_condition`, `new_lm_state`, `lm_step_into` | Added | raw T5-hidden-to-four-codebook-logits path for authenticated AudioCraft Medium/Large layouts | Strict policy refuses NC weights without research opt-in; borrowed handles return explicit unsupported errors | no | (TBD) |
 | `vokra-models::audiogen::AudioGen` | `from_path*`, `backend`, `prepare_lm_condition`, `new_lm_state`, `lm_step_into` | Added | raw T5-large-hidden-to-four-codebook-logits path for the authenticated AudioCraft layout | Strict policy refuses NC weights without research opt-in; borrowed handles and unsupported backends fail explicitly | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (AudioGen 16 kHz topology correction)

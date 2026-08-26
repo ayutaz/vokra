@@ -33,11 +33,10 @@
 //!         files and require explicit companion conditioner assets.
 //!         Tokenizer assets are not embedded in any of the GGUFs.)
 //!   -> autoregressive transformer LM                 ← **real raw step for
-//!      with layout-specific prompt conditioning          AudioCraft Medium/Large**
-//!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`;
-//!         Small/Melody use a separate composite tensor layout)
-//!   -> 4-codebook delay pattern + CFG + sampling     ← **real for
-//!                                                         AudioCraft Medium/Large**
+//!      with layout-specific prompt conditioning          all public layouts**
+//!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`)
+//!   -> 4-codebook delay pattern + CFG + sampling     ← **real for all
+//!                                                         public layouts**
 //!        (Copet et al. Algorithm 1 — the MusicGen-specific
 //!         "delay pattern" interleave over the 4 codebook streams;
 //!         the exact conditioner path differs between the published
@@ -77,11 +76,13 @@
 //!     compliance gate M2-13).
 //!   - Mapping-owned [`MusicGen::from_path_with_policy_and_backend`] plus the
 //!     shared [`crate::audiocraft_lm::AudioCraftLmDecoder`] execute the exact
-//!     AudioCraft Medium/Large learned condition projection, pre-norm
-//!     self/cross-attention stack, GELU MLP and four logits heads on one
-//!     selected CPU/Metal backend. Unsupported backend operations fail before
-//!     state mutation; borrowed handles and composite Small/Melody layouts
-//!     fail explicitly instead of falling back.
+//!     layout-specific learned condition projection, pre-norm self/cross-
+//!     attention stack, GELU MLP and four logits heads on one selected
+//!     CPU/Metal backend. AudioCraft Medium/Large use fused Q/K/V tensors;
+//!     Transformers-composite Small/Melody use authenticated split Q/K/V
+//!     tensors and their checkpointed sinusoidal table. Unsupported backend
+//!     operations fail before state mutation; borrowed handles fail explicitly
+//!     instead of falling back.
 //!   - [`MusicGen::generate_codes`] runs AudioCraft's two-state CFG 3.0,
 //!     complete four-codebook delay mask and seeded top-k 250 sampling and
 //!     returns frame-major EnCodec indices without delay-padding tokens.
@@ -97,10 +98,7 @@
 //!      composite files can use the landed
 //!      [`crate::t5_encoder::T5Encoder`] over `text_encoder.*`, whereas
 //!      LM-only files require an authenticated conditioner companion;
-//!   2. the separate split-q/k/v Transformers-composite decoder composition
-//!      used by public Small/Melody. AudioCraft Medium/Large already expose
-//!      raw code generation through [`MusicGen::generate_codes`];
-//!   3. an authenticated EnCodec companion for LM-only Medium/Large. The
+//!   2. an authenticated EnCodec companion for LM-only Medium/Large. The
 //!      complete embedded Small/Melody decoder is already available through
 //!      [`MusicGen::decode_codes`].
 //!
@@ -115,10 +113,10 @@
 //! beat_this / mt3 / sortformer loud-partial precedent, CLAUDE.md 教訓
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
-//! enum + FR-EX-08 loud-fails landed first. The AudioCraft raw LM step is now
-//! native through raw code generation, and composite EnCodec waveform decode
-//! is native. Remaining work is prompt composition, the Small/Melody LM
-//! layout, and explicit companion binding for LM-only files.
+//! enum + FR-EX-08 loud-fails landed first. Raw LM code generation is now
+//! native for both authenticated layouts, and composite EnCodec waveform
+//! decode is native. Remaining work is prompt composition and explicit
+//! companion binding for LM-only files.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -797,8 +795,9 @@ impl MusicGenWeights {
 ///
 /// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
 /// currently fails explicitly until prompt conditioning and each layout's
-/// missing companion is connected. Raw LM generation (Medium/Large) and
-/// embedded EnCodec waveform decode (Small/Melody) are exposed separately.
+/// missing companion is connected. Raw LM generation is exposed for every
+/// mapping-owned public layout; embedded EnCodec waveform decode is exposed
+/// for Small/Melody.
 #[derive(Debug)]
 pub struct MusicGen {
     config: MusicGenConfig,
@@ -811,9 +810,9 @@ pub struct MusicGen {
     #[allow(dead_code)]
     weights: MusicGenWeights,
     weight_license: LicenseClass,
-    /// Present for the authenticated AudioCraft LM-only Medium/Large layouts
-    /// opened through [`Self::from_path_with_policy_and_backend`]. Composite
-    /// Small/Melody LM execution remains a distinct tensor-layout binder.
+    /// Present for every authenticated layout opened through
+    /// [`Self::from_path_with_policy_and_backend`]. AudioCraft LM-only files
+    /// use fused attention tensors; composite files use split Q/K/V tensors.
     decoder: Option<AudioCraftLmDecoder>,
     /// Present for authenticated Transformers-composite Small/Melody files,
     /// which embed the complete 32 kHz EnCodec component.
@@ -988,6 +987,11 @@ impl MusicGen {
                 )?);
             }
             MusicGenArtifactLayout::TransformersComposite => {
+                model.decoder = Some(AudioCraftLmDecoder::bind_transformers_musicgen(
+                    Arc::clone(&file),
+                    model.audiocraft_lm_config(),
+                    backend,
+                )?);
                 model.codec_decoder = Some(AudioCraftEncodecDecoder::bind_transformers_composite(
                     &file, backend,
                 )?);
@@ -1050,9 +1054,9 @@ impl MusicGen {
 
     /// Applies the learned AudioCraft T5 output projection.
     ///
-    /// This route is available for the public Medium/Large LM-only layouts.
-    /// Small/Melody carry a different Transformers composite tensor layout and
-    /// fail explicitly until that binder is selected.
+    /// This route is available for every mapping-owned public MusicGen
+    /// artifact. Medium/Large use AudioCraft's description projection;
+    /// Small/Melody use the composite root's T5-to-decoder projection.
     pub fn prepare_lm_condition(
         &self,
         hidden: &[f32],
@@ -1134,10 +1138,9 @@ impl MusicGen {
                     "the handle was created from a borrowed GgufFile; use \
                      MusicGen::from_path_with_policy_and_backend so the mapping stays alive"
                 }
-                MusicGenArtifactLayout::TransformersComposite => {
-                    "this public Small/Melody artifact uses the Transformers composite tensor \
-                     layout; its split q/k/v decoder binder is not the AudioCraft LM-only route"
-                }
+                MusicGenArtifactLayout::TransformersComposite => "the handle was created from a \
+                     borrowed GgufFile; use MusicGen::from_path_with_policy_and_backend so the \
+                     mapped split-q/k/v decoder stays alive",
             };
             VokraError::UnsupportedOp(format!(
                 "musicgen native LM execution unavailable: {reason} (FR-EX-08: explicit, no CPU fallback)"
@@ -1177,11 +1180,7 @@ impl MusicGen {
     ///    `text_encoder.*` for the shared native
     ///    [`crate::t5_encoder::T5Encoder`]; LM-only GGUFs require a
     ///    separately authenticated companion conditioner.
-    /// 2. **Transformers-composite execution for Small/Melody**: those public
-    ///    files use split q/k/v names and bundled encoder components. The
-    ///    AudioCraft Medium/Large route already exposes CFG + delay-pattern
-    ///    sampling through [`Self::generate_codes`].
-    /// 3. **LM-only codec companion**: Medium/Large contain no EnCodec
+    /// 2. **LM-only codec companion**: Medium/Large contain no EnCodec
     ///    tensors. Composite Small/Melody already expose their complete
     ///    embedded decoder through [`Self::decode_codes`].
     ///
@@ -1235,8 +1234,8 @@ fn generate_forward_loud_partial(
         MusicGenArtifactLayout::TransformersComposite => {
             "this already-published GGUF is the Transformers composite layout: it carries \
              `text_encoder.*` and `audio_encoder.*`; the complete embedded EnCodec decoder is \
-             available through decode_codes, while tokenizer assets and strict composition of \
-             its split-q/k/v LM decoder into the generation API remain pending"
+             available through decode_codes, while tokenizer assets and strict text-encoder \
+             composition into the generation API remain pending"
         }
     };
     let codec_status = match layout {
@@ -1252,10 +1251,10 @@ fn generate_forward_loud_partial(
          Artifact layout={layout:?}: {companion_gap}. What is missing is (a) the prompt \
          path — `crate::t5_encoder::T5Encoder` supplies native CPU/Metal T5-base math \
          for composite checkpoints, while LM-only checkpoints require an explicit \
-         conditioner companion; independent real-weight parity remains pending — (b) the \
-         Transformers-composite split-q/k/v decoder route for Small/Melody (the AudioCraft \
-         Medium/Large raw LM plus MusicGen-specific 4-codebook delay pattern, CFG and \
-         sampling are landed through generate_codes). Codec status: {codec_status}. \
+         conditioner companion; independent real-weight parity remains pending. Raw LM \
+         execution, the MusicGen-specific 4-codebook delay pattern, CFG and sampling are \
+         landed through generate_codes for both authenticated layouts. Codec status: \
+         {codec_status}. \
          Config: variant={variant_short}, d_model={d_model}, \
          num_layers={num_layers}, n_heads={n_heads}, num_codebooks={num_codebooks}, \
          sample_rate_hz={sample_rate_hz}. Requested prompt_len={prompt_len} chars, \
