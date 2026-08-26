@@ -7,6 +7,8 @@
 //! gather, RoPE, causal masking, layout changes, residual addition and
 //! element-wise product remain deterministic host glue.
 
+mod generation;
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +24,8 @@ use super::delay::{
     MAX_POSITION_EMBEDDINGS, MossTtsDelayCheckpoint, NUM_AUDIO_CODEBOOKS, NUM_KV_HEADS, NUM_LAYERS,
     NUM_Q_HEADS, Q_DIM, RMS_NORM_EPS, ROPE_BASE, TEXT_VOCAB_SIZE,
 };
+
+pub use self::generation::{MossTtsDelayGeneration, MossTtsDelayGenerationOptions};
 
 const LABEL: &str = "moss_tts/delay";
 const INPUT_COLUMNS: usize = 1 + NUM_AUDIO_CODEBOOKS;

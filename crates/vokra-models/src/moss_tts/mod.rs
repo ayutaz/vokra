@@ -25,7 +25,10 @@ use crate::moss_audio_tokenizer::{
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 pub use self::delay::{MossTtsDelayCheckpoint, MossTtsDelayRelease};
-pub use self::delay_transformer::{MOSS_TTS_DELAY_HOT_OPS, MossTtsDelay, MossTtsDelayLogits};
+pub use self::delay_transformer::{
+    MOSS_TTS_DELAY_HOT_OPS, MossTtsDelay, MossTtsDelayGeneration, MossTtsDelayGenerationOptions,
+    MossTtsDelayLogits,
+};
 pub use self::generation::MossTtsGeneratedCodes;
 use self::weights::NanoWeights;
 

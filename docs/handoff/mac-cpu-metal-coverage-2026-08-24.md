@@ -2606,8 +2606,16 @@ SiLU and all LM-head GEMVs execute through one preflighted CPU/Metal backend.
 RoPE, causal masking, layout changes, residual sums and the SwiGLU pointwise
 product remain deterministic host glue rather than a second learned backend.
 The official delayed-codebook sampling state machine and Full audio-tokenizer
-PCM decode are still pending, so Base/v1.5 are not yet counted as end-to-end
-TTS-complete and the reachability counts remain unchanged.
+is now connected to that logits boundary for one explicit prompt sequence. It
+preserves the upstream `audio_length > codebook_index` pre-mask, the
+`codebook_index >= delayed_length` drain mask, time-step token exclusions,
+32-step delay drain and forced `audio_end`. Default text/audio
+temperature/top-k/top-p values match the official signature; Vokra's
+first-party seeded sampler replaces PyTorch's process-global RNG for explicit
+reproducibility. The API returns the raw appended `[rows,33]` delay matrix so
+continuation context is not guessed or discarded. Full audio-tokenizer PCM
+decode and CLI composition remain pending, so Base/v1.5 are not yet counted as
+end-to-end TTS-complete and the reachability counts remain unchanged.
 
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config
