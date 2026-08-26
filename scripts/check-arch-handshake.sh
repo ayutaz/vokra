@@ -372,7 +372,6 @@ declare -a NO_READER=(
   'qwen2-omni|vast.ai-gated (22.37 GB, five-shard Thinker+Talker) AND publish-blocked by the GGUF writer 5D-tensor limit that the multimodal adapter trips. No binder until that reshape-vs-extend decision lands.'
   'qwen2_audio|vast.ai-gated (~16 GB, five-shard). Owner runbook is required before a first conversion even runs, so no binder work has started.'
   'sgmse|publish-only BF16 pass-through. Header states that real-weight parity and a native Sgmse::from_gguf forward are a follow-up.'
-  'ultravox|awaiting a binder: local convert is safe at ~1.83 GB, and the converter header records the runtime binder as a follow-up. Nothing blocks it but wave ordering.'
   'vibevoice_asr|vast.ai-gated (~16.5 GB, eight-shard). The sibling TTS vibevoice is published; the ASR head has neither been converted nor bound.'
   'xtts|T4 Research-only: the Coqui Public Model License maps to LicenseClass::NonCommercial, so publish requires --allow-noncommercial. It is also zero-shot voice cloning, which keeps it out of a main-repo binder under design decision 8.'
 )

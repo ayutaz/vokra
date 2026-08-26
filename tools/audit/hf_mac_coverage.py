@@ -48,6 +48,10 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
     "sbv2",
+    # The public GGUF contains only the MIT Whisper tower + projector.  Those
+    # learned stages are native CPU/Metal, but the separately licensed Llama
+    # companion/tokenizer/chat route is not yet a complete CLI engine.
+    "ultravox",
     "yue_xcodec_mini",
 }
 

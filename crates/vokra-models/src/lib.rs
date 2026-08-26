@@ -551,6 +551,8 @@ pub mod irodori;
 // Architecture is Apache-2.0 (ESPnet) + MIT (jaywalnut310/vits) and is
 // always independently implementable (whisper.cpp 型 self re-imp,
 // CLAUDE.md 設計判断 4).
+/// Native Ultravox v0.5 Whisper audio tower and multimodal projector (CPU / Metal).
+pub mod ultravox;
 pub mod vits_ja;
 pub mod voxtral;
 pub mod whisper;

@@ -3,11 +3,13 @@
 //! **MIT**): safetensors → GGUF conversion (Wave residual, 2026-08-02).
 //!
 //! Ultravox family entry — fixie-ai's audio-text-to-text multimodal model
-//! combining a **Llama-3.2-1B** language backbone with a **Whisper encoder +
-//! projection adapter** front-end. The v0.5 release ships the smallest
-//! Ultravox flavor (~1.83 GB total). Real audio is fed through the Whisper
-//! encoder, projected into the Llama token embedding space by a lightweight
-//! adapter, then decoded by the Llama backbone.
+//! combining a separately acquired **Llama-3.2-1B** language backbone with a
+//! **Whisper encoder + projection adapter** front-end.  The fixie-ai
+//! safetensors — and therefore the 1,366,275,264-byte public Vokra GGUF —
+//! contain only the 491 BF16 audio-tower/projector tensors.  Llama weights are
+//! not bundled. Real audio is fed through the Whisper encoder, projected into
+//! the separately licensed Llama token embedding space, then decoded by that
+//! companion backbone.
 //!
 //! **Distinct from siblings [`crate::ModelKind::Voxtral`]** (Mistral text
 //! decoder + Whisper encoder) **and [`crate::ModelKind::Qwen2Audio`]**
@@ -21,16 +23,13 @@
 //! the same, only the decoder scale differs, mirroring the MusicGen family
 //! shared-arch-tag pattern).
 //!
-//! Category `audio-llm` shared with sibling Qwen2-Audio-7B / Voxtral / Kimi-
-//! Audio / Step-Audio2-Mini / Baichuan-Audio siblings. The runtime binder
-//! (Whisper encoder + linear/MLP projection adapter + Llama-3.2-1B decoder
-//! + audio-token-in-text-stream prompt template) is deferred to owner sign-
-//! off (`docs/license-audit.md` §3.1) — this converter emits the BF16 pass-
-//! through skeleton only. Both underlying arches (Llama and Whisper) are
-//! already supported by sibling converters + runtime primitives; the new
-//! wiring is confined to the adapter projection + the multimodal prompt
-//! template, which is a runtime-side concern that does not affect the
-//! converter's uniform pass-through shape.
+//! Category `audio-llm` is shared with sibling Qwen2-Audio-7B / Voxtral /
+//! Kimi-Audio / Step-Audio2-Mini / Baichuan-Audio siblings.  The strict native
+//! binder now executes all 32 Whisper layers plus the exact stack-8 SwiGLU
+//! projector on CPU or Metal.  A complete text-generation route remains
+//! deliberately partial until the separately licensed Llama-3.2-1B companion,
+//! tokenizer and chat/audio-placeholder contract are bound.  The public GGUF
+//! is never treated as a standalone LM.
 //!
 //! # License posture — MIT (**Permissive**)
 //!
@@ -44,13 +43,13 @@
 //! pattern). §3.1 sign-off remains owner (fail-closed default per memory
 //! `[[feedback-license-signoff-primary-source]]`).
 //!
-//! # Scale — local convert safe (~1.83 GB)
+//! # Scale — 1.37 GB public artifact
 //!
-//! Ultravox v0.5 (Llama-3.2-1B) ships ~1.83 GB per HF cardData / repo
-//! manifest. Well below the M1 iMac 16 GB safe local threshold per memory
-//! `[[feedback-large-models-on-vast-ai]]` (≥8 GB is the strict cutoff for
-//! vast.ai handoff, 4 GB the "重いモデル" soft cutoff per owner 2026-08-01
-//! directive). Local convert on M1 iMac is safe — no vast.ai handoff needed.
+//! The audited public GGUF is exactly 1,366,275,264 bytes. This converter reads
+//! both the source and generated GGUF into owned buffers, so model conversion
+//! and real-weight validation belong on the configured remote workflow when
+//! the maintainer requests that the Mac stay idle; the mmap runtime binder is
+//! the bounded-memory path.
 //!
 //! # BF16 pass-through skeleton
 //!
@@ -58,9 +57,8 @@
 //! `hubert_large_ls960.rs` / `openwakeword.rs` / `demucs_htdemucs.rs`
 //! skeleton. Every F32 / F16 / BF16 tensor passes through verbatim; non-
 //! float tensors are skipped (no quantisation applied at the converter
-//! boundary — quantisation is a separate pass). Runtime binder (Whisper
-//! encoder + adapter projection + Llama-3.2-1B decoder + multimodal prompt
-//! template) deferred to owner sign-off (`docs/license-audit.md` §3.1).
+//! boundary — quantisation is a separate pass).  The output is the MIT audio
+//! component, not the separately distributed Llama companion.
 
 use std::path::Path;
 
@@ -76,7 +74,7 @@ pub const CATEGORY: &str = "audio-llm";
 pub const UPSTREAM_HF: &str = "fixie-ai/ultravox-v0_5-llama-3_2-1b";
 pub const DEFAULT_LICENSE_SPDX: &str = "mit";
 
-const UPSTREAM_SOURCE: &str = "fixie-ai/ultravox-v0_5-llama-3_2-1b (Ultravox v0.5, Llama-3.2-1B + Whisper encoder + projection adapter, audio-text-to-text, mit)";
+const UPSTREAM_SOURCE: &str = "fixie-ai/ultravox-v0_5-llama-3_2-1b (Ultravox v0.5 Whisper encoder + projection adapter only; Llama-3.2-1B companion not bundled, mit)";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
@@ -182,10 +180,14 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        // Ultravox-specific: adapter projection weight — the tensor name is
-        // representative of the Whisper→Llama projection adapter that joins
-        // the audio encoder to the Llama-3.2-1B decoder.
-        let st = safetensors_one("audio_tower.adapter.proj.weight", "F32", &[1, 2], &payload);
+        // Exact public projector namespace (the real release shape is
+        // [2048, 2048]; this tiny payload only pins identity pass-through).
+        let st = safetensors_one(
+            "multi_modal_projector.linear_2.weight",
+            "F32",
+            &[1, 2],
+            &payload,
+        );
         std::fs::write(&inp, &st).unwrap();
         let r = convert_ultravox_v0_5_llama_3_2_1b_file(&inp, &outp, None).unwrap();
         assert_eq!(r.read, 1);
@@ -221,10 +223,10 @@ mod tests {
             .iter()
             .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
             .collect();
-        // Llama-3.2-1B decoder self-attention QKV — representative of the
-        // Llama backbone tensor family (BF16 is the Llama-3.2 release dtype).
+        // Exact public Whisper encoder namespace.  No `language_model.*`
+        // tensor exists in this artifact; the Llama companion is separate.
         let st = safetensors_one(
-            "language_model.model.layers.0.self_attn.q_proj.weight",
+            "audio_tower.layers.0.self_attn.q_proj.weight",
             "BF16",
             &[1, 2],
             &payload,

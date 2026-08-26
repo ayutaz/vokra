@@ -2240,6 +2240,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "Voila::from_gguf → Voila::converse",
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
+    // The published file is intentionally the MIT audio component only.  Its
+    // Whisper tower + projector execute through `encode_log_mel`; a complete
+    // CLI conversation still needs the separately licensed Llama companion,
+    // tokenizer and chat/audio-placeholder route.  Keep it in this registry
+    // until that composition is executable rather than claiming a standalone
+    // audio-LLM route for an artifact with no language-model weights.
+    BoundArch {
+        arch: "ultravox",
+        module: "vokra_models::ultravox",
+        entry: "UltravoxAudioTower::open_mapped → encode_log_mel / require_text_companion",
+        probe: None,
+    },
     // --- Music / audio generation ----------------------------------------
     BoundArch {
         arch: "audiogen",
