@@ -35,6 +35,10 @@ pub(crate) const TOKENIZER_MODEL_SHA256: &str =
 /// SHA-256 for `added_tokens.json` at the pinned upstream revision.
 pub(crate) const TOKENIZER_ADDED_TOKENS_SHA256: &str =
     "74be21ecff0a1fb1f304fe7c72ab21e4f0c046f8359fdf2852eb1b80967069ad";
+/// SHA-256 over each final tokenizer entry encoded as
+/// `u32-le byte_len || UTF-8 piece || f32-le score`.
+pub(crate) const TOKENIZER_VOCAB_MANIFEST_SHA256: &str =
+    "2b04363543fae9615b30cc91e1b0ed76fba73f91dd23aefb60eed984dc85ee96";
 /// Canonical hash over the 393 inference tensor names and shapes.
 pub(crate) const TENSOR_MANIFEST_SHA256: &str =
     "fd6a1323b4994781daf6b657e690cca1e741ee2f7810fab03d0d22bf62301e04";
@@ -78,6 +82,7 @@ const KEY_SOURCE_WEIGHT_SHA256: &str = "vokra.speecht5.source_weight_sha256";
 const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.speecht5.tensor_manifest_sha256";
 const KEY_TOKENIZER_MODEL_SHA256: &str = "vokra.speecht5.tokenizer.model_sha256";
 const KEY_TOKENIZER_ADDED_TOKENS_SHA256: &str = "vokra.speecht5.tokenizer.added_tokens_sha256";
+const KEY_TOKENIZER_VOCAB_MANIFEST_SHA256: &str = "vokra.speecht5.tokenizer.vocab_manifest_sha256";
 const KEY_EXCLUDED_BATCH_COUNTERS: &str = "vokra.speecht5.excluded_batch_norm_counters";
 const KEY_HIDDEN_SIZE: &str = "vokra.speecht5.hidden_size";
 const KEY_ENCODER_LAYERS: &str = "vokra.speecht5.encoder_layers";
@@ -324,6 +329,10 @@ fn stamp_tokenizer_metadata(builder: &mut GgufBuilder, tokenizer: &TokenizerMeta
     builder.add_string(
         KEY_TOKENIZER_ADDED_TOKENS_SHA256,
         TOKENIZER_ADDED_TOKENS_SHA256,
+    );
+    builder.add_string(
+        KEY_TOKENIZER_VOCAB_MANIFEST_SHA256,
+        TOKENIZER_VOCAB_MANIFEST_SHA256,
     );
     builder.add_u32(
         &format!("{TOKENIZER_PREFIX}.base_vocab_size"),
