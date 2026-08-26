@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MOSS Audio Tokenizer strict runtime)
+
+The two public OpenMOSS codec artifacts now have a fail-closed native runtime
+identity. Full and Nano are selected from complete tensor manifests rather
+than their shared upstream Python class. Nano additionally exposes native
+variable-quantizer token-to-48-kHz-stereo decode on one selected CPU/Metal
+backend. The historically mis-stamped public Nano artifact is recognized only
+behind its exact manifest and remains visibly marked for replacement. Full
+decode and both encode paths stay explicit unsupported operations. No C ABI or
+GGUF schema change is made, and no model upload is authorized by this entry.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::moss_audio_tokenizer` | `MossAudioTokenizer`, `MossAudioTokenizerVariant`, `MossDecodedAudio`, identity/topology constants, `MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS` | Added | strict `open` / `from_gguf*`, backend/license/variant accessors, frame-major `[frames, num_quantizers]` decode to interleaved stereo PCM | Owns decoded Nano weights and output PCM; Full has no substitute route; unsupported backends never fall back to CPU | no | `a22d0868`, `fea90206` |
+| `vokra-cli run` | `moss_audio_tokenizer` task, `--num-quantizers`, multichannel float WAV writer | Added | raw u32le frame-major LFQ matrix to 48 kHz stereo WAV | Public Nano's legacy metadata warning is preserved; Full/encode are explicit errors | no | `0c44bf61` |
+| `tools/parity` | `moss_audio_tokenizer_dump_reference.py` | Added | pinned real-upstream custom-code decode with quantizer/stage/final taps | VAST-only oracle source; no fixture or parity result is claimed before an actual run | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen public composite LM execution)
 
 The already-published Transformers-composite MusicGen Small/Melody artifacts

@@ -115,6 +115,7 @@ CONST vokra-ops::itn::token::EN_TN_ORDERS|pub const EN_TN_ORDERS: &[(&str, &[&st
 CONST vokra-ops::itn::token::ITN_ORDERS|pub const ITN_ORDERS: &[(&str, &[&str])] = &[
 CONST vokra-ops::itn::token::JA_TN_ORDERS|pub const JA_TN_ORDERS: &[(&str, &[&str])] = &[
 CONST vokra-ops::itn::token::ZH_TN_ORDERS|pub const ZH_TN_ORDERS: &[(&str, &[&str])] = &[
+CONST vokra-ops::musicgen_delay_pattern::MUSICGEN_PREDICT_TOKEN|pub const MUSICGEN_PREDICT_TOKEN: i64 = -1;
 CONST vokra-ops::resample::DEFAULT_QUALITY|pub const DEFAULT_QUALITY: u8 = 5;
 CONST vokra-ops::rnnoise::BARK_BAND_EDGES|pub const BARK_BAND_EDGES: [u16; 23] = [
 CONST vokra-ops::rnnoise::FRAME_HOP|pub const FRAME_HOP: usize = 240;
@@ -128,6 +129,7 @@ CONST vokra-ops::rnnoise::N_STFT_BINS|pub const N_STFT_BINS: usize = 241;
 CONST vokra-ops::rnnoise::PITCH_BUF_SIZE|pub const PITCH_BUF_SIZE: usize = 720;
 CONST vokra-ops::rnnoise::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 48_000;
 CONST vokra-ops::snac_decode::MAX_SNAC_STAGES|pub const MAX_SNAC_STAGES: usize = 4;
+CONST vokra-ops::t5_relative_position::T5_BASE|pub const T5_BASE: Self = Self {
 CONST vokra-ops::ten_vad::CONTEXT_FRAMES|pub const CONTEXT_FRAMES: usize = 3;
 CONST vokra-ops::ten_vad::CONV_CHANNELS|pub const CONV_CHANNELS: usize = 16;
 CONST vokra-ops::ten_vad::FFT_SIZE|pub const FFT_SIZE: usize = 1024;
@@ -1023,6 +1025,8 @@ FN vokra-ops::moe_dispatch::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::moe_expert_gemm::moe_expert_gemm|pub fn moe_expert_gemm(
 FN vokra-ops::moe_expert_gemm::num_experts|pub fn num_experts(&self) -> usize {
 FN vokra-ops::moe_expert_gemm::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::musicgen_delay_pattern::apply_musicgen_delay_pattern|pub fn apply_musicgen_delay_pattern(
+FN vokra-ops::musicgen_delay_pattern::build_musicgen_delay_pattern|pub fn build_musicgen_delay_pattern(
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SineGenConfig {
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SourceModuleHnNSFConfig {
 FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput> {
@@ -1092,6 +1096,10 @@ FN vokra-ops::stft::magnitude|pub fn magnitude(&self) -> Vec<f32> {
 FN vokra-ops::stft::power|pub fn power(&self) -> Vec<f32> {
 FN vokra-ops::stft::stft|pub fn stft(signal: &[f32], attrs: &StftAttrs) -> Result<Spectrogram> {
 FN vokra-ops::stft::to_interleaved|pub fn to_interleaved(&self) -> Vec<f32> {
+FN vokra-ops::t5_relative_position::t5_relative_attention_bias|pub fn t5_relative_attention_bias(
+FN vokra-ops::t5_relative_position::t5_relative_position_buckets|pub fn t5_relative_position_buckets(
+FN vokra-ops::t5_relative_position::t5_relative_position_bucket|pub fn t5_relative_position_bucket(
+FN vokra-ops::t5_relative_position::validate|pub fn validate(self) -> Result<()> {
 FN vokra-ops::ten_vad::network_forward_with_ops|pub fn network_forward_with_ops<O: TenVadBackendOps>(
 FN vokra-ops::ten_vad::network_forward|pub fn network_forward(
 FN vokra-ops::ten_vad::new|pub fn new() -> Self {
@@ -1273,6 +1281,7 @@ MOD vokra-ops::mfcc|pub mod mfcc;
 MOD vokra-ops::mimi_rvq|pub mod mimi_rvq;
 MOD vokra-ops::moe_dispatch|pub mod moe_dispatch;
 MOD vokra-ops::moe_expert_gemm|pub mod moe_expert_gemm;
+MOD vokra-ops::musicgen_delay_pattern|pub mod musicgen_delay_pattern;
 MOD vokra-ops::nsf|pub mod nsf;
 MOD vokra-ops::openwakeword|pub mod openwakeword;
 MOD vokra-ops::preprocess|pub mod preprocess;
@@ -1285,6 +1294,7 @@ MOD vokra-ops::snac_decode|pub mod snac_decode;
 MOD vokra-ops::snake|pub mod snake;
 MOD vokra-ops::speechbrain_fbank|pub mod speechbrain_fbank;
 MOD vokra-ops::stft|pub mod stft;
+MOD vokra-ops::t5_relative_position|pub mod t5_relative_position;
 MOD vokra-ops::ten_vad|pub mod ten_vad;
 MOD vokra-ops::vae_continuous|pub mod vae_continuous;
 MOD vokra-ops::vit|pub mod vit;
@@ -1522,6 +1532,8 @@ STRUCT vokra-ops::moe_dispatch::MoeAssignment|pub struct MoeAssignment {
 STRUCT vokra-ops::moe_dispatch::MoeDispatchAttrs|pub struct MoeDispatchAttrs {
 STRUCT vokra-ops::moe_dispatch::MoeDispatchPlan|pub struct MoeDispatchPlan {
 STRUCT vokra-ops::moe_expert_gemm::MoeExpertWeights|pub struct MoeExpertWeights {
+STRUCT vokra-ops::musicgen_delay_pattern::MusicGenDelayPatternAttrs|pub struct MusicGenDelayPatternAttrs {
+STRUCT vokra-ops::musicgen_delay_pattern::MusicGenDelayPattern|pub struct MusicGenDelayPattern {
 STRUCT vokra-ops::nsf::SineGenConfig|pub struct SineGenConfig {
 STRUCT vokra-ops::nsf::SineGenOutput|pub struct SineGenOutput {
 STRUCT vokra-ops::nsf::SineGen|pub struct SineGen {
@@ -1547,6 +1559,7 @@ STRUCT vokra-ops::snac_decode::SnacDecoder|pub struct SnacDecoder {
 STRUCT vokra-ops::snac_decode::SnacWeights|pub struct SnacWeights {
 STRUCT vokra-ops::speechbrain_fbank::SpeechbrainFbankAttrs|pub struct SpeechbrainFbankAttrs {
 STRUCT vokra-ops::stft::Spectrogram|pub struct Spectrogram {
+STRUCT vokra-ops::t5_relative_position::T5RelativePositionAttrs|pub struct T5RelativePositionAttrs {
 STRUCT vokra-ops::ten_vad::LstmWeights|pub struct LstmWeights {
 STRUCT vokra-ops::ten_vad::SeparableConvWeights|pub struct SeparableConvWeights {
 STRUCT vokra-ops::ten_vad::TenVadFrontend|pub struct TenVadFrontend {

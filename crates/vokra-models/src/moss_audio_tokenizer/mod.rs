@@ -78,6 +78,7 @@ const NANO_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
 };
 
 /// Audited public codec topology.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MossAudioTokenizerVariant {
     /// 24 kHz mono, 32 residual LFQ codebooks, 1,920 samples/token.
@@ -121,6 +122,7 @@ impl MossAudioTokenizerVariant {
 }
 
 /// Interleaved decoded PCM plus its explicit channel/timebase contract.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MossDecodedAudio {
     /// Standard frame-interleaved PCM (`L, R, L, R, ...` for Nano).
