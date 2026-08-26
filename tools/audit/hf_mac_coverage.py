@@ -69,6 +69,14 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "decoder, 5,248-piece aggregate tokenizer and authenticated 1,374-tensor "
         "manifest prepared from the pinned .nemo checkpoint",
     ),
+    "vokra/reazonspeech-nemo-v2": (
+        "partial",
+        "the live 965-tensor GGUF has the authenticated complete F32 encoder/RNN-T "
+        "manifest, but predates the embedded 3,000-piece tokenizer vocabulary and "
+        "the pinned runtime-axis metadata. Native CPU/Metal token inference is bound; "
+        "CLI/C ASR text output rejects the legacy artifact before weight decode until "
+        "an authorized gated replacement is converted from the fixed NeMo revision",
+    ),
     "vokra/moss-audio-tokenizer-nano": (
         "partial",
         "the exact 374-tensor Nano checkpoint has a native CPU/Metal decode route, but "
@@ -225,6 +233,7 @@ METAL_CODE_ARCHES = {
     "piper-plus-mb-istft-vits2",
     "pyannote-segmentation",
     "pyannote-speaker-diarization",
+    "reazonspeech_nemo_v2",
     "rnnoise",
     "rmvpe",
     "silero-vad",

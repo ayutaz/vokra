@@ -1,520 +1,484 @@
-//! **ReazonSpeech-NeMo-v2** (Reazon Human Interaction Lab, Apache-2.0):
-//! safetensors → GGUF conversion (coverage-audit-2026-08-03 Wave B).
+//! ReazonSpeech NeMo v2 complete `.nemo` checkpoint -> executable GGUF.
 //!
-//! Input: the upstream `reazon-research/reazonspeech-nemo-v2` release on HF
-//! — a Japanese long-form ASR model (Longformer local attention encoder +
-//! RNN-T / CTC head, pretrained on the ReazonSpeech 19,000-hour Japanese
-//! corpus). The upstream release ships as an NVIDIA NeMo `.nemo` tarball
-//! (tar / tar.gz / zip containing `model_weights.ckpt`); callers pre-flatten
-//! it to safetensors offline via the existing
-//! `tools/parity/nemo_pt_to_safetensors.py` bridge (the same bridge Canary /
-//! Parakeet-CTC / Parakeet-TDT reuse — pickles never enter the runtime,
-//! FR-LD-05).
-//!
-//! Output: a GGUF carrying every float tensor plus the `vokra.model.*` and
-//! `vokra.provenance.*` metadata chunks the runtime ASR path binds against.
-//!
-//! # License
-//!
-//! - SPDX: **Apache-2.0** ([`vokra_core::LicenseClass::Permissive`]) —
-//!   verified against `huggingface.co/reazon-research/reazonspeech-nemo-v2`
-//!   model-card cardData (Reazon Human Interaction Lab's consistent
-//!   apache-2.0 posture across the ReazonSpeech family).
-//! - Category: **asr** (Japanese long-form ASR — the ticket's category
-//!   label "asr / japanese-longform" collapses to the shorter `asr` variant
-//!   for runtime dispatch, mirroring the kotoba-whisper / canary /
-//!   parakeet-tdt / parakeet-ctc / omniasr-ctc precedent that keeps the
-//!   subject-language axis in the model name rather than multiplying the
-//!   category label).
-//! - Notes: the audit ticket (`docs/tickets/coverage-audit-2026-08-03/
-//!   wave-b/reazonspeech-nemo-v2.md`) cites the ReazonSpeech 19,000-hour
-//!   Japanese corpus (TV / radio disclosure track record is business-
-//!   standard); the runtime-side attribution obligation is `None`
-//!   (Permissive).
-//!
-//! # BF16 pass-through (mirror of speaker_3d / ecapa_tdnn / qwen3_tts /
-//! # voxcpm2 / vibevoice / moshi / neucodec)
-//!
-//! F32 / F16 / BF16 all ride the verbatim pass-through arm on the same
-//! match arm — no convert-time widening. BF16 is emitted as GGUF type 30
-//! (`GgmlType::BF16`); the runtime widens BF16 → f32 losslessly at load
-//! via the single choke point
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 is the
-//! top 16 bits of an f32 — `bits << 16` is exact). The observability
-//! counter [`ReazonspeechNemoV2Report::bf16_passthrough`] guards against a
-//! silent widen / downcast regression.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream NeMo state-dict keys verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / speaker_3d / ecapa_tdnn /
-//! canary / parakeet contract; the `nemo_pt_to_safetensors.py` sidecar
-//! preserves the dotted state-dict keys). Real-weight parity binding to a
-//! future `vokra-models::reazonspeech_nemo_v2` module (Longformer local
-//! attention encoder + RNN-T / CTC head native forward) is deferred to
-//! owner sign-off per `docs/license-audit.md §3.1`.
-//!
-//! # Arch tag distinctness
-//!
-//! `vokra.model.arch = "reazonspeech_nemo_v2"` is intentionally distinct
-//! from every sibling ASR arch tag:
-//!
-//! - `kotoba-whisper` — Japanese-distilled Whisper (large-v3 encoder +
-//!   2-layer decoder); Whisper topology, not Longformer.
-//! - `canary` / `parakeet-tdt` / `parakeet-ctc` — NVIDIA FastConformer
-//!   family (multi-head attention, no sliding-window locality).
-//! - `omniasr-ctc` — Meta wav2vec 2.0 waveform-in encoder.
-//! - `whisper` / `distil-whisper` — OpenAI Whisper family.
-//!
-//! Silently sharing an arch tag with any of these would mis-route the
-//! runtime dispatch (each sibling's `from_gguf` walks a distinct tensor
-//! topology).
-//!
-//! # No ONNX (permanent)
-//!
-//! The upstream ReazonSpeech-NeMo-v2 release ships as an NVIDIA NeMo
-//! `.nemo` tarball (containing a torch pickle `.ckpt`); this converter
-//! **never** touches ONNX (FR-LD-05). The pickle-to-safetensors bridge
-//! is `tools/parity/nemo_pt_to_safetensors.py`, run offline.
-//!
-//! # Wiring status
-//!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through plus provenance
-//! and category stamps). The runtime native Longformer local-attention
-//! encoder with an RNN-T / CTC decoder forward is a follow-up wave,
-//! deferred to owner sign-off (see `docs/license-audit.md` §3.1).
+//! The canonical input is the F32 safetensors file extracted from the pinned
+//! upstream NeMo 1.21 archive on VAST. Conversion is fail-closed: all 965
+//! inference tensors, their exact names and shapes, and the exact 3,000-piece
+//! SentencePiece plaintext vocabulary must be present. The multi-gigabyte
+//! checkpoint is never converted on the maintainer Mac.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` value for ReazonSpeech-NeMo-v2 GGUFs. Intentionally
-/// distinct from every sibling ASR arch tag (`kotoba-whisper` / `canary` /
-/// `parakeet-tdt` / `parakeet-ctc` / `omniasr-ctc` / `whisper` /
-/// `distil-whisper`) — Longformer local attention is a distinct topology
-/// from Whisper / FastConformer / wav2vec 2.0, so silently sharing would
-/// mis-route the runtime dispatch.
 pub const ARCH: &str = "reazonspeech_nemo_v2";
-
-/// `vokra.model.name` value written for the canonical
-/// `reazon-research/reazonspeech-nemo-v2` release.
 pub const NAME: &str = "reazonspeech-nemo-v2";
-
-/// `vokra.model.category` value written for every ReazonSpeech-NeMo-v2
-/// GGUF.
-///
-/// The audit's category label is "asr / japanese-longform"; the shorter
-/// `asr` variant is used here so runtime dispatch and model-card grouping
-/// stay uniform with the existing `asr` family (kotoba-whisper / canary /
-/// parakeet-tdt / parakeet-ctc / omniasr-ctc) and do not multiply category
-/// labels by subject-language distinctions the model name already carries.
 pub const CATEGORY: &str = "asr";
-
-/// Upstream HF repository slug (`org/name`), recorded under
-/// `vokra.provenance.upstream_hf` so a downstream can trace the artifact
-/// back to its serving location without parsing the free-text
-/// `vokra.provenance.source`. Verified against
-/// `huggingface.co/reazon-research/reazonspeech-nemo-v2`.
 pub const UPSTREAM_HF: &str = "reazon-research/reazonspeech-nemo-v2";
-
-/// Default upstream weight licence (SPDX). Verified against
-/// `huggingface.co/reazon-research/reazonspeech-nemo-v2` model-card
-/// cardData (Reazon Human Interaction Lab's consistent apache-2.0
-/// posture across the ReazonSpeech family).
+pub const UPSTREAM_REVISION: &str = "33693408be76b7cba9fd4a7546a0a8772430211b";
+/// Xet object SHA-256 for `reazonspeech-nemo-v2.nemo` at the pinned revision.
+pub const SOURCE_NEMO_SHA256: &str =
+    "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae";
+/// SHA-256 of the bounded tar member manifest (six members).
+pub const SOURCE_TAR_MANIFEST_SHA256: &str =
+    "7f5268f676ab1496ef6202bd3a031a0fce5a434c6f2bd568efa2e7f14d7c4cb1";
+pub const MODEL_CONFIG_SHA256: &str =
+    "88925d58533c40da62007ad39b8abd702646c7e81627dea5b15961c4ad4f9833";
+pub const TOKENIZER_VOCAB_SHA256: &str =
+    "989e4950cf53c0fee66f632cdd966bdd840b851a9e0e812322fd667e4b1c07bb";
+pub const TENSOR_MANIFEST_SHA256: &str =
+    "0663932975fb2157d11fa8ce9d7183c69c00a3d3f3f0e916aff1cab0550401ab";
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
-// Raw string keys not covered by `crate::gguf::chunks` — kept as
-// converter-side constants (the cross-crate constant duplication
-// convention the sibling BF16-passthrough converters use applies).
+const TENSOR_COUNT: usize = 965;
+const TOKENIZER_PIECES: usize = 3_000;
 
-/// `vokra.model.category` metadata key. Local per the established
-/// funcodec / wespeaker / speaker_3d / ecapa_tdnn / neucodec precedent
-/// (not yet centralized in `vokra-core::gguf::chunks`).
-pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_SOURCE_REVISION: &str = "vokra.reazonspeech_nemo_v2.source_revision";
+const KEY_SOURCE_NEMO_SHA256: &str = "vokra.reazonspeech_nemo_v2.source_nemo_sha256";
+const KEY_SOURCE_TAR_MANIFEST_SHA256: &str =
+    "vokra.reazonspeech_nemo_v2.source_tar_manifest_sha256";
+const KEY_MODEL_CONFIG_SHA256: &str = "vokra.reazonspeech_nemo_v2.model_config_sha256";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.reazonspeech_nemo_v2.tensor_manifest_sha256";
+const KEY_TOKENIZER_VOCAB: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab";
+const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.reazonspeech_nemo_v2.tokenizer.vocab_sha256";
 
-/// `vokra.provenance.upstream_hf` metadata key — the primary
-/// redistribution source HF slug for models mirrored on the Hugging Face
-/// hub. Parallel to `vokra.provenance.upstream_url` (the raw-URL sibling
-/// key for GitHub-only releases). Local per the same convention as
-/// [`KEY_MODEL_CATEGORY`].
-pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_SAMPLE_RATE: &str = "vokra.reazonspeech_nemo_v2.sample_rate";
+const KEY_ENC_N_LAYER: &str = "vokra.reazonspeech_nemo_v2.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.reazonspeech_nemo_v2.encoder.n_head";
+const KEY_ENC_FFN_DIM: &str = "vokra.reazonspeech_nemo_v2.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.reazonspeech_nemo_v2.encoder.conv_kernel_size";
+const KEY_ENC_N_MELS: &str = "vokra.reazonspeech_nemo_v2.encoder.n_mels";
+const KEY_ENC_SUB_FACTOR: &str = "vokra.reazonspeech_nemo_v2.encoder.subsampling_factor";
+const KEY_ENC_SUB_CHANNELS: &str = "vokra.reazonspeech_nemo_v2.encoder.subsampling_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.reazonspeech_nemo_v2.encoder.max_position_embeddings";
+const KEY_ENC_LEFT_CONTEXT: &str = "vokra.reazonspeech_nemo_v2.encoder.left_context";
+const KEY_ENC_RIGHT_CONTEXT: &str = "vokra.reazonspeech_nemo_v2.encoder.right_context";
+const KEY_ENC_GLOBAL_TOKENS: &str = "vokra.reazonspeech_nemo_v2.encoder.global_tokens";
+const KEY_ENC_GLOBAL_SPACING: &str = "vokra.reazonspeech_nemo_v2.encoder.global_tokens_spacing";
+const KEY_DEC_N_LAYER: &str = "vokra.reazonspeech_nemo_v2.decoder.n_layer";
+const KEY_DEC_D_MODEL: &str = "vokra.reazonspeech_nemo_v2.decoder.d_model";
+const KEY_JOINT_VOCAB_SIZE: &str = "vokra.reazonspeech_nemo_v2.joint.vocab_size";
+const KEY_JOINT_BLANK_ID: &str = "vokra.reazonspeech_nemo_v2.joint.blank_token_id";
+const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.reazonspeech_nemo_v2.joint.max_symbols_per_step";
 
-/// Outcome of a ReazonSpeech-NeMo-v2 conversion.
-///
-/// Mirrors the sibling BF16-passthrough converters' counter shape
-/// (`super::neucodec::NeucodecReport`,
-/// `super::ecapa_tdnn::EcapaTdnnReport`,
-/// `super::speaker_3d::Speaker3dReport`) — the invariant
-/// `read == written + skipped_non_float` is auditable at the report
-/// level.
+const KEY_FRONTEND_N_FFT: &str = "vokra.frontend.n_fft";
+const KEY_FRONTEND_HOP: &str = "vokra.frontend.hop_length";
+const KEY_FRONTEND_WIN: &str = "vokra.frontend.win_length";
+const KEY_FRONTEND_WINDOW: &str = "vokra.frontend.window_type";
+const KEY_FRONTEND_N_MELS: &str = "vokra.frontend.n_mels";
+const KEY_FRONTEND_NORMALIZE: &str = "vokra.frontend.normalize";
+const KEY_FRONTEND_DITHER: &str = "vokra.frontend.dither";
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Counters from one strict complete-checkpoint conversion.
 pub struct ReazonspeechNemoV2Report {
-    /// Total tensor entries observed on the safetensors input side.
+    /// Input tensor descriptors read after exact manifest validation.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Exact released F32 tensors written to GGUF.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter — the safetensors
-    /// reader accepts only `F32` / `F16` / `BF16` at parse time
-    /// (`crates/vokra-core/src/safetensors.rs map_dtype`), so any
-    /// tensor reaching this counter would signal a reader change
-    /// upstream; kept for parity with the sibling converters).
+    /// Always zero for the strict official manifest.
     pub skipped_non_float: usize,
-    /// Of the tensors in [`Self::written`], how many were BF16 (subset
-    /// counter). Emits GGUF type 30 verbatim; the runtime widens BF16
-    /// → f32 losslessly via the single choke point
-    /// `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. A silent
-    /// widen / downcast regression would surface as this counter
-    /// drifting away from the input BF16 count.
+    /// Always zero because the official NeMo state dict is F32.
     pub bf16_passthrough: usize,
 }
 
-/// Converts a ReazonSpeech-NeMo-v2 safetensors checkpoint at `input`
-/// (as emitted by `tools/parity/nemo_pt_to_safetensors.py` unwrapping the
-/// upstream `.nemo` tarball) into a Vokra-native GGUF at `output`,
-/// returning a [`ReazonspeechNemoV2Report`].
-///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream NeMo
-/// state-dict key; the `vokra.model.*` (arch / name / category) and
-/// `vokra.provenance.*` (weight_license / license / model_id / source /
-/// upstream_hf) chunks are stamped for the runtime compliance gate
-/// (FR-CP-03).
-///
-/// `license` optionally overrides the stamped weight license (raw SPDX
-/// string; the [`LicenseClass`] is re-derived via
-/// [`LicenseClass::from_license_str`]). The default is
-/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — the upstream
-/// HF release ships apache-2.0.
-///
-/// # Errors
-///
-/// - [`ConvertError::Io`] on read/write failure.
-/// - [`ConvertError::Parse`] on malformed safetensors input.
-/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+/// The compatibility entry point fails before reading the checkpoint because
+/// a runnable text-ASR artifact requires the exact tokenizer vocabulary.
 pub fn convert_reazonspeech_nemo_v2_file(
+    _input: &Path,
+    _output: &Path,
+    _license: Option<&str>,
+) -> Result<ReazonspeechNemoV2Report, ConvertError> {
+    Err(ConvertError::Usage(
+        "reazonspeech-nemo-v2 requires the exact official tokenizer.vocab; use convert_reazonspeech_nemo_v2_file_with_tokenizer (CLI: --tokenizer tokenizer.vocab)"
+            .to_owned(),
+    ))
+}
+
+/// Converts the complete prepared release and embeds its exact decode-only
+/// SentencePiece vocabulary. The source safetensors is approximately 2.48 GB;
+/// this whole-file path is VAST-only under `AGENTS.md`.
+pub fn convert_reazonspeech_nemo_v2_file_with_tokenizer(
     input: &Path,
     output: &Path,
     license: Option<&str>,
+    tokenizer_vocab: &Path,
 ) -> Result<ReazonspeechNemoV2Report, ConvertError> {
-    // Load the whole checkpoint into memory — the ReazonSpeech-NeMo-v2
-    // release is ~1.2 GB (well below the streaming-mandated Moshi 14 GiB
-    // tier), so the simple `std::fs::read` posture the sibling
-    // non-streaming converters (canary / parakeet / omniasr-ctc /
-    // neucodec / ecapa_tdnn) use applies. Callers on memory-constrained
-    // hosts can use `restamp_provenance` post-conversion to update
-    // metadata without re-reading the whole file.
-    let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
-
-    // Default provenance stamp — Permissive apache-2.0 (upstream
-    // `huggingface.co/reazon-research/reazonspeech-nemo-v2` model-card
-    // cardData, verified against Reazon Human Interaction Lab's
-    // ReazonSpeech-family posture). The optional `license` argument
-    // overrides below via the same restated-source convention as the
-    // sibling converters.
-    let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
-    let effective_class = LicenseClass::from_license_str(effective_spdx);
-    vokra_core::stamp_provenance(
-        &mut b,
-        effective_class,
-        effective_spdx,
-        Some(NAME),
-        Some(
-            "reazon-research/reazonspeech-nemo-v2 (Longformer local attention Japanese \
-             long-form ASR, ReazonSpeech 19,000h Japanese corpus, apache-2.0)",
-        ),
-    );
-
-    // Float tensors pass through **verbatim** — no convert-time widening.
-    // BF16 stays GGUF `BF16` (type 30) per the accepted BF16-passthrough
-    // ADR the sibling non-streaming converters (speaker_3d / ecapa_tdnn /
-    // qwen3_tts / vibevoice / voxcpm2 / moshi / neucodec) share; the
-    // runtime widens BF16 → f32 exactly at load via the single choke point
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`.
-    let mut report = ReazonspeechNemoV2Report::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+    if let Some(value) = license.filter(|value| !value.is_empty()) {
+        if !value.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) {
+            return Err(ConvertError::Usage(format!(
+                "reazonspeech-nemo-v2 is pinned to the official {DEFAULT_LICENSE_SPDX} checkpoint; refusing license override {value:?}"
+            )));
         }
     }
 
-    // Serialize and land the emitted GGUF at `output`. `to_bytes()`
-    // stamps `vokra.schema.version` + `vokra.schema.producer` on its own
-    // via the writer's built-in schema stamper — no per-converter
-    // duplication needed.
-    let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
-    Ok(report)
+    let tokenizer = std::fs::read(tokenizer_vocab).map_err(ConvertError::Io)?;
+    validate_tokenizer_vocab(&tokenizer)?;
+
+    let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
+    let checkpoint = SafetensorsFile::parse(bytes)?;
+    validate_checkpoint(&checkpoint)?;
+
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_UPSTREAM_HF, UPSTREAM_HF);
+    write_runtime_metadata(&mut builder, &tokenizer);
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::Permissive,
+        DEFAULT_LICENSE_SPDX,
+        Some(NAME),
+        Some("https://huggingface.co/reazon-research/reazonspeech-nemo-v2"),
+    );
+
+    for tensor in checkpoint.tensors() {
+        builder
+            .add_tensor(
+                &tensor.name,
+                tensor.dtype,
+                tensor.shape.clone(),
+                checkpoint.tensor_bytes(tensor).to_vec(),
+            )
+            .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    }
+    let output_bytes = builder
+        .to_bytes()
+        .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    std::fs::write(output, output_bytes).map_err(ConvertError::Io)?;
+
+    Ok(ReazonspeechNemoV2Report {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+    })
+}
+
+fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer: &[u8]) {
+    for (key, value) in [
+        (KEY_SOURCE_REVISION, UPSTREAM_REVISION),
+        (KEY_SOURCE_NEMO_SHA256, SOURCE_NEMO_SHA256),
+        (KEY_SOURCE_TAR_MANIFEST_SHA256, SOURCE_TAR_MANIFEST_SHA256),
+        (KEY_MODEL_CONFIG_SHA256, MODEL_CONFIG_SHA256),
+        (KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256),
+        (KEY_FRONTEND_WINDOW, "hann"),
+        (KEY_FRONTEND_NORMALIZE, "per_feature"),
+    ] {
+        builder.add_string(key, value);
+    }
+    for (key, value) in [
+        (KEY_SAMPLE_RATE, 16_000),
+        (KEY_ENC_N_LAYER, 24),
+        (KEY_ENC_D_MODEL, 1_024),
+        (KEY_ENC_N_HEAD, 8),
+        (KEY_ENC_FFN_DIM, 4_096),
+        (KEY_ENC_CONV_KERNEL, 9),
+        (KEY_ENC_N_MELS, 80),
+        (KEY_ENC_SUB_FACTOR, 8),
+        (KEY_ENC_SUB_CHANNELS, 256),
+        (KEY_ENC_MAX_POS, 5_000),
+        (KEY_ENC_LEFT_CONTEXT, 128),
+        (KEY_ENC_RIGHT_CONTEXT, 128),
+        (KEY_ENC_GLOBAL_TOKENS, 1),
+        (KEY_ENC_GLOBAL_SPACING, 1),
+        (KEY_DEC_N_LAYER, 2),
+        (KEY_DEC_D_MODEL, 640),
+        (KEY_JOINT_VOCAB_SIZE, 3_001),
+        (KEY_JOINT_BLANK_ID, 3_000),
+        (KEY_JOINT_MAX_SYMBOLS, 10),
+        (KEY_FRONTEND_N_FFT, 512),
+        (KEY_FRONTEND_HOP, 160),
+        (KEY_FRONTEND_WIN, 400),
+        (KEY_FRONTEND_N_MELS, 80),
+    ] {
+        builder.add_u32(key, value);
+    }
+    builder.add_f32(KEY_FRONTEND_DITHER, 1.0e-5);
+    builder.add_metadata(
+        KEY_TOKENIZER_VOCAB,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: tokenizer
+                .iter()
+                .map(|&byte| GgufMetadataValue::U8(byte))
+                .collect(),
+        }),
+    );
+    builder.add_string(KEY_TOKENIZER_VOCAB_SHA256, TOKENIZER_VOCAB_SHA256);
+}
+
+fn validate_checkpoint(checkpoint: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    let internal_hash =
+        super::canary_1b_flash::hex(&super::canary_1b_flash::manifest_sha256(&expected));
+    if expected.len() != TENSOR_COUNT || internal_hash != TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 internal manifest drift: count={}, sha256={internal_hash}",
+            expected.len()
+        )));
+    }
+
+    let actual_names = checkpoint
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected_names = expected.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if actual_names != expected_names {
+        let missing = expected_names
+            .difference(&actual_names)
+            .take(8)
+            .copied()
+            .collect::<Vec<_>>();
+        let extra = actual_names
+            .difference(&expected_names)
+            .take(8)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 prepared checkpoint manifest mismatch: found {}, expected {TENSOR_COUNT}; missing={missing:?}, extra={extra:?}",
+            checkpoint.tensors().len()
+        )));
+    }
+    for tensor in checkpoint.tensors() {
+        let expected_shape = &expected[&tensor.name];
+        if &tensor.shape != expected_shape {
+            return Err(ConvertError::Parse(format!(
+                "ReazonSpeech-NeMo-v2 tensor {:?} shape {:?}, expected {:?}",
+                tensor.name, tensor.shape, expected_shape
+            )));
+        }
+        if tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "ReazonSpeech-NeMo-v2 tensor {:?} dtype {:?}, expected the pinned F32 `.nemo` payload",
+                tensor.name, tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut tensors = BTreeMap::new();
+    let mut add = |name: String, shape: &[u64]| {
+        assert!(tensors.insert(name, shape.to_vec()).is_none());
+    };
+
+    add("preprocessor.featurizer.fb".into(), &[1, 80, 257]);
+    add("preprocessor.featurizer.window".into(), &[400]);
+    add("encoder.pre_encode.conv.0.weight".into(), &[256, 1, 3, 3]);
+    add("encoder.pre_encode.conv.0.bias".into(), &[256]);
+    for index in [2, 5] {
+        add(
+            format!("encoder.pre_encode.conv.{index}.weight"),
+            &[256, 1, 3, 3],
+        );
+        add(format!("encoder.pre_encode.conv.{index}.bias"), &[256]);
+    }
+    for index in [3, 6] {
+        add(
+            format!("encoder.pre_encode.conv.{index}.weight"),
+            &[256, 256, 1, 1],
+        );
+        add(format!("encoder.pre_encode.conv.{index}.bias"), &[256]);
+    }
+    add("encoder.pre_encode.out.weight".into(), &[1_024, 2_560]);
+    add("encoder.pre_encode.out.bias".into(), &[1_024]);
+
+    for layer in 0..24 {
+        let prefix = format!("encoder.layers.{layer}");
+        for branch in ["feed_forward1", "feed_forward2"] {
+            add(format!("{prefix}.{branch}.linear1.weight"), &[4_096, 1_024]);
+            add(format!("{prefix}.{branch}.linear1.bias"), &[4_096]);
+            add(format!("{prefix}.{branch}.linear2.weight"), &[1_024, 4_096]);
+            add(format!("{prefix}.{branch}.linear2.bias"), &[1_024]);
+        }
+        for norm in [
+            "norm_feed_forward1",
+            "norm_self_att",
+            "norm_conv",
+            "norm_feed_forward2",
+            "norm_out",
+        ] {
+            add(format!("{prefix}.{norm}.weight"), &[1_024]);
+            add(format!("{prefix}.{norm}.bias"), &[1_024]);
+        }
+        for projection in ["linear_q", "linear_k", "linear_v", "linear_out"] {
+            add(
+                format!("{prefix}.self_attn.{projection}.weight"),
+                &[1_024, 1_024],
+            );
+            add(format!("{prefix}.self_attn.{projection}.bias"), &[1_024]);
+        }
+        add(
+            format!("{prefix}.self_attn.linear_pos.weight"),
+            &[1_024, 1_024],
+        );
+        add(format!("{prefix}.self_attn.pos_bias_u"), &[8, 128]);
+        add(format!("{prefix}.self_attn.pos_bias_v"), &[8, 128]);
+        add(
+            format!("{prefix}.conv.pointwise_conv1.weight"),
+            &[2_048, 1_024, 1],
+        );
+        add(format!("{prefix}.conv.pointwise_conv1.bias"), &[2_048]);
+        add(
+            format!("{prefix}.conv.depthwise_conv.weight"),
+            &[1_024, 1, 9],
+        );
+        add(format!("{prefix}.conv.depthwise_conv.bias"), &[1_024]);
+        for name in ["weight", "bias", "running_mean", "running_var"] {
+            add(format!("{prefix}.conv.batch_norm.{name}"), &[1_024]);
+        }
+        add(
+            format!("{prefix}.conv.pointwise_conv2.weight"),
+            &[1_024, 1_024, 1],
+        );
+        add(format!("{prefix}.conv.pointwise_conv2.bias"), &[1_024]);
+    }
+
+    add("decoder.prediction.embed.weight".into(), &[3_001, 640]);
+    for layer in 0..2 {
+        let prefix = "decoder.prediction.dec_rnn.lstm";
+        add(format!("{prefix}.weight_ih_l{layer}"), &[2_560, 640]);
+        add(format!("{prefix}.weight_hh_l{layer}"), &[2_560, 640]);
+        add(format!("{prefix}.bias_ih_l{layer}"), &[2_560]);
+        add(format!("{prefix}.bias_hh_l{layer}"), &[2_560]);
+    }
+    add("joint.enc.weight".into(), &[640, 1_024]);
+    add("joint.enc.bias".into(), &[640]);
+    add("joint.pred.weight".into(), &[640, 640]);
+    add("joint.pred.bias".into(), &[640]);
+    add("joint.joint_net.2.weight".into(), &[3_001, 640]);
+    add("joint.joint_net.2.bias".into(), &[3_001]);
+
+    tensors
+}
+
+fn validate_tokenizer_vocab(bytes: &[u8]) -> Result<(), ConvertError> {
+    let actual = super::canary_1b_flash::hex(&super::canary_1b_flash::sha256(bytes));
+    if actual != TOKENIZER_VOCAB_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 tokenizer SHA-256 {actual}, expected {TOKENIZER_VOCAB_SHA256}"
+        )));
+    }
+    let document = std::str::from_utf8(bytes).map_err(|error| {
+        ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 tokenizer is not UTF-8: {error}"
+        ))
+    })?;
+    let mut pieces = 0usize;
+    for (index, line) in document.lines().enumerate() {
+        let (piece, score) = line.rsplit_once('\t').ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "ReazonSpeech-NeMo-v2 tokenizer line {} is not `piece<TAB>score`",
+                index + 1
+            ))
+        })?;
+        let score = score.parse::<f32>().map_err(|error| {
+            ConvertError::Parse(format!(
+                "ReazonSpeech-NeMo-v2 tokenizer line {} score: {error}",
+                index + 1
+            ))
+        })?;
+        if piece.is_empty() || !score.is_finite() {
+            return Err(ConvertError::Parse(format!(
+                "ReazonSpeech-NeMo-v2 tokenizer line {} is malformed",
+                index + 1
+            )));
+        }
+        if index == 0 && piece != "<unk>" {
+            return Err(ConvertError::Parse(
+                "ReazonSpeech-NeMo-v2 tokenizer does not begin with `<unk>`".to_owned(),
+            ));
+        }
+        pieces += 1;
+    }
+    if pieces != TOKENIZER_PIECES {
+        return Err(ConvertError::Parse(format!(
+            "ReazonSpeech-NeMo-v2 tokenizer has {pieces} pieces, expected {TOKENIZER_PIECES}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use vokra_core::gguf::GgufFile;
 
-    /// Per-test unique scratch path (PID + nanos + a caller-supplied tag
-    /// so parallel `cargo test` runs do not collide on the same file
-    /// name).
-    fn scratch_path(tag: &str, ext: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-reazonspeech-nemo-v2-{tag}-{}-{}.{ext}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        p
-    }
-
-    /// RAII cleanup so failing tests do not leak temp files on disk
-    /// (best-effort — a panic mid-cleanup is fine).
-    struct TempFileGuard(PathBuf);
-    impl Drop for TempFileGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
-    /// Encodes `values` as BF16 (top 16 bits of each `f32`) little-endian.
-    fn bf16_bytes(values: &[f32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect()
-    }
-
-    /// Pins the BF16 pass-through end-to-end: the tensor survives the
-    /// converter's `convert_reazonspeech_nemo_v2_file` file → file
-    /// round-trip with its dtype preserved (`GgmlType::BF16`, GGUF type
-    /// 30) and its payload byte-identical. Mirrors
-    /// `neucodec::tests::bf16_tensor_passes_through_verbatim` /
-    /// `ecapa_tdnn::tests::bf16_tensor_passes_through_verbatim`. A silent
-    /// widen at convert time would still round-trip _values_ (BF16 → f32
-    /// widen is exact), so this test asserts on the dtype AND the raw
-    /// bytes — two concentric fences.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        // Non-zero bit patterns so a silent widen / downcast cannot
-        // round-trip trivially.
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let payload = bf16_bytes(&values);
-        assert_eq!(payload.len(), 12, "6 elements × 2 bytes BF16");
-        // Longformer-flavour tensor name (encoder.layers.0.self_attn.*):
-        // the NeMo state-dict key convention preserved verbatim through
-        // `tools/parity/nemo_pt_to_safetensors.py`.
-        let header = r#"{"encoder.layers.0.self_attn.qkv.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&payload);
-
-        let input_path = scratch_path("bf16-in", "safetensors");
-        let output_path = scratch_path("bf16-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_reazonspeech_nemo_v2_file(&input_path, &output_path, None)
-            .expect("convert BF16");
-        assert_eq!(report.read, 1, "one BF16 tensor observed");
+    fn official_manifest_count_and_hash_are_pinned() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of neucodec / ecapa_tdnn / speaker_3d)"
+            super::super::canary_1b_flash::hex(&super::super::canary_1b_flash::manifest_sha256(
+                &manifest
+            )),
+            TENSOR_MANIFEST_SHA256
+        );
+        assert_eq!(manifest["preprocessor.featurizer.fb"], vec![1, 80, 257]);
+        assert_eq!(
+            manifest["encoder.layers.23.self_attn.linear_pos.weight"],
+            vec![1_024, 1_024]
         );
         assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
+            manifest["decoder.prediction.dec_rnn.lstm.weight_hh_l1"],
+            vec![2_560, 640]
         );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 tensor must increment the observability counter"
-        );
-
-        // Round-trip through the emitted GGUF: dtype preserved, payload
-        // byte-identical (no convert-time widening).
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("encoder.layers.0.self_attn.qkv.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            payload.as_slice(),
-            "BF16 payload must be byte-identical to input (no silent widen)"
-        );
+        assert_eq!(manifest["joint.joint_net.2.weight"], vec![3_001, 640]);
     }
 
-    /// Pins that F32 and F16 tensors both ride the pass-through arm in
-    /// the same conversion (mixed-dtype loops don't collapse to one arm),
-    /// and that the BF16 counter stays at its `Default 0` when no BF16
-    /// tensor is present (additive-field regression guard). Also asserts
-    /// the arch / name / category / provenance stamps land through the
-    /// default (apache-2.0 / Permissive) code path.
     #[test]
-    fn f32_and_f16_tensors_pass_through() {
-        // Two tensors in one safetensors file:
-        //   encoder.pos_embedding.weight — F32, [1, 2] →  8 bytes @ [0..8)
-        //   decoder.lm_head.bias         — F16, [2]    →  4 bytes @ [8..12)
-        // Both dtypes must reach the pass-through arm and neither must
-        // increment `bf16_passthrough`.
-        let f32_vals: [f32; 2] = [7.0, -8.25];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let f16_patterns: [u16; 2] = [0x3C00, 0x4000]; // 1.0, 2.0 in IEEE half.
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 8);
-        assert_eq!(f16_bytes.len(), 4);
-
-        let header = format!(
-            r#"{{"encoder.pos_embedding.weight":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"decoder.lm_head.bias":{{"dtype":"F16","shape":[2],"data_offsets":[{},{}]}}}}"#,
-            f32_bytes.len(),
-            f32_bytes.len(),
-            f32_bytes.len() + f16_bytes.len(),
-        );
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-        input_bytes.extend_from_slice(&f16_bytes);
-
-        let input_path = scratch_path("mixed-in", "safetensors");
-        let output_path = scratch_path("mixed-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_reazonspeech_nemo_v2_file(&input_path, &output_path, None)
-            .expect("convert F32 + F16 mixed");
-        assert_eq!(report.read, 2);
-        assert_eq!(report.written, 2, "F32 and F16 must both pass through");
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32 / F16 must NOT increment the BF16 counter"
-        );
-
-        // Both tensors survive the round trip with dtype + bytes intact.
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let f32_info = file
-            .tensor_info("encoder.pos_embedding.weight")
-            .expect("F32 tensor");
-        assert_eq!(f32_info.dtype, GgmlType::F32);
-        assert_eq!(f32_info.dimensions, vec![1, 2]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_bytes.as_slice());
-        let f16_info = file
-            .tensor_info("decoder.lm_head.bias")
-            .expect("F16 tensor");
-        assert_eq!(f16_info.dtype, GgmlType::F16);
-        assert_eq!(f16_info.dimensions, vec![2]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
-
-        // Provenance stamped through the default (apache-2.0 / Permissive).
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
+    fn tokenizer_less_entry_is_explicit_error() {
+        let error = convert_reazonspeech_nemo_v2_file(
+            Path::new("unused.safetensors"),
+            Path::new("unused.gguf"),
+            None,
+        )
+        .expect_err("tokenizer-less conversion must fail");
+        assert!(error.to_string().contains("--tokenizer"));
     }
 
-    /// Pins the license override boundary: passing `Some(spdx)` replaces
-    /// both the raw SPDX string and the re-derived `LicenseClass`,
-    /// keeping the GGUF the single source of truth the model card is
-    /// generated from (no card / artifact drift). Mirrors the outer
-    /// `convert_file_licensed` override contract at the top-level lib.rs
-    /// boundary.
     #[test]
-    fn license_override_replaces_default() {
-        // Minimal single-F32-tensor safetensors buffer — the license
-        // override contract is independent of tensor shape / count.
-        let f32_bytes: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let header = r#"{"encoder.weight":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
+    fn wrong_tokenizer_hash_is_rejected_before_structure() {
+        let error = validate_tokenizer_vocab(b"<unk>\t0\n").expect_err("wrong hash");
+        assert!(error.to_string().contains("SHA-256"));
+    }
 
-        let input_path = scratch_path("lic-in", "safetensors");
-        let output_path = scratch_path("lic-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        // Override the apache-2.0 default with mit — both remain
-        // Permissive, so the LicenseClass rederivation is a no-op; the
-        // SPDX string is what changes. Asserting the class explicitly
-        // guards against a rederivation regression that dropped the
-        // license → class step.
-        let report = convert_reazonspeech_nemo_v2_file(&input_path, &output_path, Some("mit"))
-            .expect("convert with override");
-        assert_eq!(report.written, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
+    #[test]
+    fn runtime_metadata_axes_are_complete() {
+        let mut builder = GgufBuilder::new();
+        write_runtime_metadata(&mut builder, b"fixture");
+        let bytes = builder.to_bytes().expect("metadata-only GGUF");
+        let file = vokra_core::gguf::GgufFile::parse(bytes).expect("parse GGUF");
         assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override replaces the raw SPDX string"
+            file.get(KEY_SOURCE_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(UPSTREAM_REVISION)
         );
         assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
+            file.get(KEY_MODEL_CONFIG_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(MODEL_CONFIG_SHA256)
+        );
+        assert!(file.get(KEY_TOKENIZER_VOCAB).is_some());
+        assert_eq!(
+            file.get(KEY_JOINT_BLANK_ID),
+            Some(&GgufMetadataValue::U32(3_000))
+        );
+        assert_eq!(
+            file.get(KEY_FRONTEND_DITHER),
+            Some(&GgufMetadataValue::F32(1.0e-5))
         );
     }
 }

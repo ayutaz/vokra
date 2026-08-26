@@ -1179,7 +1179,7 @@ pub enum ModelKind {
     /// Sber **GigaAM multilingual** (MIT, ~600 MB–1.2 GB) — 70+ language
     /// ASR, char-wise CTC. Convert with `convert_sber_gigaam_multilingual_file`.
     SberGigaamMultilingual,
-    /// Reazon **reazonspeech-nemo-v2** (Apache-2.0, ~1.2 GB) — Japanese
+    /// Reazon **reazonspeech-nemo-v2** (Apache-2.0, 2.48 GB archive) — Japanese
     /// long-form ASR, NeMo Conformer + Longformer local attention.
     /// Convert with `convert_reazonspeech_nemo_v2_file`.
     ReazonspeechNemoV2,
@@ -13015,6 +13015,7 @@ pub use models::parakeet_tdt_1_1b::{
 pub use models::parakeet_unified::{ParakeetUnifiedReport, convert_parakeet_unified_file};
 pub use models::reazonspeech_nemo_v2::{
     ReazonspeechNemoV2Report, convert_reazonspeech_nemo_v2_file,
+    convert_reazonspeech_nemo_v2_file_with_tokenizer,
 };
 pub use models::sber_gigaam_multilingual::{
     SberGigaamMultilingualReport, convert_sber_gigaam_multilingual_file,

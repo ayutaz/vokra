@@ -24,7 +24,8 @@ use vokra_convert::{
     convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
     convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
     convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
-    convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
+    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -42,6 +43,7 @@ USAGE:
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model canary-1b-flash --input <prepared.safetensors> --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
+    vokra-convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> --tokenizer <tokenizer.vocab> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -200,10 +202,11 @@ fn main() -> ExitCode {
             | ModelKind::ParakeetCtc
             | ModelKind::ParakeetTdt11b
             | ModelKind::Canary1bFlash
+            | ModelKind::ReazonspeechNemoV2
     ) && tokenizer.is_some()
     {
         eprintln!(
-            "error: --tokenizer is only supported for Parakeet and Canary-1B-Flash models in the standalone converter\n\n{USAGE}"
+            "error: --tokenizer is only supported for Parakeet, Canary-1B-Flash, and ReazonSpeech-NeMo-v2 models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -415,6 +418,45 @@ fn main() -> ExitCode {
                         "complete Parakeet-TDT-1.1B runtime metadata and tokenizer.vocab embedded"
                             .to_owned(),
                     ],
+                })
+            })
+        }
+        ModelKind::ReazonspeechNemoV2 => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for reazonspeech-nemo-v2; preserve F32 for initial CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: reazonspeech-nemo-v2 uses the pinned `.nemo` config and --tokenizer <tokenizer.vocab>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model reazonspeech-nemo-v2 requires --tokenizer <tokenizer.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete ReazonSpeech-NeMo-v2 {}-tensor manifest and tokenizer.vocab embedded",
+                        report.written
+                    )],
                 })
             })
         }

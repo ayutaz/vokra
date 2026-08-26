@@ -23,8 +23,9 @@ use vokra_convert::{
     convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
     convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
+    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -55,6 +56,8 @@ USAGE:
     vokra-cli convert --model canary-1b-flash --input <prepared.safetensors> \
                       --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
     vokra-cli convert --model canary --input <prepared-main.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> \
                       --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
@@ -100,6 +103,7 @@ OPTIONS:
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
                               parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
+                              reazonspeech-nemo-v2 |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
@@ -694,12 +698,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::ParakeetTdt11b
             | ModelKind::Canary
             | ModelKind::Canary1bFlash
+            | ModelKind::ReazonspeechNemoV2
             | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / reazonspeech-nemo-v2 / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -975,6 +980,43 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     report.written,
                     report.written.saturating_sub(report.bf16_passthrough),
                     report.bf16_passthrough,
+                )],
+            })
+        }
+        ModelKind::ReazonspeechNemoV2 => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model reazonspeech-nemo-v2; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model reazonspeech-nemo-v2; the immutable NeMo config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model reazonspeech-nemo-v2 requires --tokenizer <tokenizer.vocab> for executable Japanese text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)?.len(),
+                notes: vec![format!(
+                    "reazonspeech-nemo-v2: complete {}-tensor F32 manifest and exact 3,000-piece tokenizer.vocab embedded",
+                    report.written
                 )],
             })
         }
