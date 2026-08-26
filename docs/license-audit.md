@@ -646,7 +646,12 @@ prompt と companion を必須にし、生テキストからの推測や silent 
 fallback を行わない。旧行の「将来 runtime binder」、「piper-plus native G2P
 をこの変更で接続」、「ローカルで model 処理」という運用記述は本節で置き換える。
 real-weight CPU parity は VAST 専用、real Metal parity は external Apple
-Silicon 専用の未実行 gate であり、再 upload / publish は含まない。
+Silicon 専用の未実行 gate である。独立 oracle は Neuphonic source commit
+`3e9415df12633f8a74ac6f92418c7cd5c8c4bf0e` の 9,035-byte source
+SHA-256 `e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1`
+と gated model revision `3b58b776406b62fdc137e31ea53d728f5c22a4ed` を固定し、公式
+Transformers Qwen2 forward を直接呼ぶ。VAST / Apple worker のいずれにも upload
+経路はなく、再 upload / publish は含まない。
 
 #### Qwen3-ASR strict-converter follow-up（2026-08-27）
 

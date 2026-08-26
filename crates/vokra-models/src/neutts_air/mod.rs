@@ -376,6 +376,16 @@ impl NeuTtsAir {
         )
     }
 
+    /// Returns the full official-vocabulary logits for the first generated
+    /// position. This is the deterministic numerical-parity tap; it executes
+    /// the same mapped prefill and selected backend as [`Self::generate_codes`]
+    /// without sampling or silently changing the prompt.
+    pub fn next_token_logits(&self, prompt_token_ids: &[u32]) -> Result<Vec<f32>> {
+        let options = NeuTtsAirGenerationOptions::greedy(1);
+        validate_prompt(prompt_token_ids, &options)?;
+        decoder::next_token_logits(&self.mapped, self.backend, &self.runtime, prompt_token_ids)
+    }
+
     /// Generates codes and decodes them with an explicit official companion.
     pub fn synthesize_with_companion(
         &self,

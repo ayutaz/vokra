@@ -3080,6 +3080,22 @@ NeuCodec GGUF. It rejects raw text/reference audio instead of inventing a
 frontend. This is an executable learned route, but it is not a claim that
 Vokra implements the complete upstream Python preprocessing application.
 
+The independent oracle fixes Neuphonic source commit
+`3e9415df12633f8a74ac6f92418c7cd5c8c4bf0e` and authenticates the released
+`neuttsair/neutts.py` as 9,035 bytes / SHA-256
+`e68b87dae6718903337a08eff56afbd58ba261d829624ea5a00a343c8cefb7c1`.
+It executes the official `_apply_chat_template` over already-phonemized test
+strings and loads the exact gated model revision
+`3b58b776406b62fdc137e31ea53d728f5c22a4ed` through the official
+Transformers `Qwen2ForCausalLM`; it does not define a mirror model. The
+reference records the complete prompt, first-position 217,652-way FP32 logits
+and deterministic greedy IDs. `crates/vokra-models/tests/neutts_air_real.rs`
+pre-registers `atol = 0.01` for logits and exact token equality before any
+measurement. `run-neutts-air-validation.sh` is VAST-only and has no publish
+path; `apple-silicon-neutts-air.sh` refuses the 16 GB maintainer class and runs
+the same official comparison plus Distill NeuCodec composition on a disposable
+Apple CPU/Metal host.
+
 The read-only live-Hub audit after this source landing reports 194 public
 repositories, 193 GGUF repositories and 198 GGUF files: CPU
 `full=128`, `partial=44`, `no-runtime-binder=21`, `not-artifact=1`; Metal

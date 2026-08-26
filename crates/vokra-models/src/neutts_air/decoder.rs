@@ -146,6 +146,33 @@ pub(super) fn generate(
     })
 }
 
+pub(super) fn next_token_logits(
+    mapped: &NeuTtsAirMappedDescriptors,
+    backend: BackendKind,
+    runtime: &NeuTtsAirDecoderRuntime,
+    prompt: &[u32],
+) -> Result<Vec<f32>> {
+    let config = mapped.config();
+    let compute = Compute::for_backend(backend, NEUTTS_AIR_LM_HOT_OPS)?;
+    let reserve = prompt.len().min(512).max(1);
+    let mut kv_cache = KvCache::with_reserve(config.n_layer as usize, kv_dim(config), reserve);
+    let mut scratch = StepScratch::default();
+    for row_start in (0..prompt.len()).step_by(PREFILL_CHUNK_ROWS) {
+        let rows = PREFILL_CHUNK_ROWS.min(prompt.len() - row_start);
+        forward_chunk(
+            &compute,
+            mapped,
+            runtime,
+            &mut scratch,
+            &mut kv_cache,
+            &prompt[row_start..row_start + rows],
+        )?;
+    }
+    let mut logits = Vec::new();
+    fill_logits(&compute, mapped, runtime, &scratch, &mut logits)?;
+    Ok(logits)
+}
+
 fn forward_chunk(
     compute: &Compute,
     mapped: &NeuTtsAirMappedDescriptors,
