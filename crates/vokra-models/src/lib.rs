@@ -366,6 +366,13 @@ pub mod rnnoise;
 // / CosyVoice3 / Chatterbox because Qwen3-TTS is codec-LM not
 // vocoder-LM — the terminal step is qwen3_tts_codec, NOT HiFTChain;
 // silently sharing either sibling's arch tag would mis-route.
+/// Alibaba Qwen3-ASR 0.6B/1.7B strict checkpoint binder.
+///
+/// The complete release-specific tensor manifests and all persisted topology
+/// axes bind without eagerly widening BF16 weights. End-to-end ASR remains an
+/// explicit unsupported operation until the audio tower, Qwen3 decode loop and
+/// Qwen2 BPE tokenizer are wired.
+pub mod qwen3_asr;
 pub mod qwen3_tts;
 // SBV2 v2 plan (2026-07-26): Style-Bert-VITS2 v2 native TTS. Clean-room
 // Apache-2.0 implementation per `docs/superpowers/specs/2026-07-26-sbv2-v2-design.md`

@@ -1883,6 +1883,14 @@ struct BoundArch {
 const BOUND_ARCHES: &[BoundArch] = &[
     // --- ASR / speech-to-text -------------------------------------------
     BoundArch {
+        arch: "qwen3_asr",
+        module: "vokra_models::qwen3_asr",
+        entry: "Qwen3AsrCheckpoint::from_gguf → Qwen3AsrCheckpoint::transcribe",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::qwen3_asr::Qwen3AsrCheckpoint::from_gguf(g).map(|_| ())
+        }),
+    },
+    BoundArch {
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",

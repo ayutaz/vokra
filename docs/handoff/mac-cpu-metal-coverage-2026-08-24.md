@@ -1,5 +1,22 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 Qwen3-ASR strict-binding wave:** bounded fixed-revision HTTP
+> Range reads of only the two public GGUF headers authenticated the complete
+> 612-tensor 0.6B manifest
+> (`8ff041c01225c0c743af7386978ca516afc633e000b181f4d49d775b8e99f91b`,
+> public revision `dafd780826d041323b79a0444dca343fc0034aa2`) and 708-tensor
+> 1.7B manifest
+> (`9136bf1de42a3248fb1ea55877dced6113a8b1e5a98fcae08b01b67f10a523ee`,
+> public revision `7d160c2a319bfd2bf4b35274ba52af12b302ed62`). The new runtime
+> binder validates those manifests, all 26 converter-stamped topology axes,
+> exact upstream repositories and permissive provenance without decoding
+> tensor payloads. End-to-end ASR remains an explicit `UnsupportedOp` naming
+> the missing log-mel/convolutional frontend, 18/24-layer audio Transformer,
+> projector, 28-layer Qwen3 decode loop and Qwen2 BPE assets. The two public
+> repositories therefore move only from `no-runtime-binder` to `partial`;
+> neither CPU nor Metal completion or real-weight parity is claimed. No model
+> conversion or inference ran on the maintainer Mac.
+
 > **2026-08-26 SpeechT5 runtime wave:** the strict converter and runtime now
 > agree on the official 79-piece SentencePiece CHAR model plus Hugging Face
 > added-token ids 79/80, rather than the earlier incorrect assumption that the
@@ -186,7 +203,8 @@ The read-only audit command is:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
 ```
 
-At 2026-08-26, after the SNAC, FocalCodec, MeloTTS, DAC-sibling, speaker,
+At 2026-08-27, after the Qwen3-ASR strict-binding wave and the SNAC,
+FocalCodec, MeloTTS, DAC-sibling, speaker,
 Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
 MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
@@ -207,8 +225,8 @@ it reported:
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
 | Complete CPU route for the live public artifact | 119 |
-| Route/binder present, released-artifact CPU forward incomplete | 42 |
-| No complete runtime binder | 32 |
+| Route/binder present, released-artifact CPU forward incomplete | 44 |
+| No complete runtime binder | 30 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
 | Complete Metal code route among the CPU-complete set | 119 |
 | CPU-complete but Metal-unsupported | 0 |

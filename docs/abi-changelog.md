@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-ASR strict checkpoint binding)
+
+The public Qwen3-ASR 0.6B and 1.7B GGUF headers now bind through exact
+release-specific contracts without eagerly decoding their multi-gigabyte BF16
+payloads. This is deliberately a partial runtime milestone: transcription
+still returns an explicit unsupported-operation error naming every missing
+native stage, so neither Mac CPU nor Metal execution is claimed. No C symbol,
+ownership rule or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::qwen3_asr` | `Qwen3AsrCheckpoint`, `Qwen3AsrVariant`, `Qwen3AsrConfig`, `Qwen3AsrAudioConfig`, `Qwen3AsrTextConfig` | Added | strict `from_gguf`; release/config/license/count accessors; 16 kHz `transcribe` loud-partial | Authenticates the complete 612/708-tensor name/shape manifest, exact upstream repository and all 26 persisted topology keys before retaining only descriptors. `transcribe` rejects incomplete native execution explicitly | no | (TBD) |
+| `vokra-cli run` diagnostics | `qwen3_asr` `BOUND_ARCHES` row and binder probe | Added | `Qwen3AsrCheckpoint::from_gguf -> Qwen3AsrCheckpoint::transcribe` | Valid released headers report the concrete bound API plus the remaining execution boundary; malformed headers report the binder error. The architecture is still classified partial, not CPU/Metal-complete | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 CPU/Metal TTS runtime)
 
 The canonical strict SpeechT5 artifact now executes its complete

@@ -14,6 +14,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The two public Qwen3-ASR checkpoints now have a strict, bounded-memory
+  runtime binder. Fixed-revision GGUF header audits authenticate the complete
+  612-tensor 0.6B and 708-tensor 1.7B name/shape manifests, every persisted
+  audio/text topology axis, exact upstream repository and permissive weight
+  provenance without decoding multi-gigabyte payloads. The CLI now reports
+  the model-specific bound route instead of claiming that no runtime exists,
+  while end-to-end transcription remains an explicit unsupported operation
+  naming the missing log-mel/audio-Transformer/Qwen3/BPE pieces. Neither CPU
+  nor Metal completion or real-weight parity is claimed by this binder wave.
 - The strict canonical SpeechT5 TTS artifact now has a complete native
   text-to-mel runtime: 12-layer relative-position text encoder, cached
   six-layer autoregressive speech decoder with always-on seeded prenet
