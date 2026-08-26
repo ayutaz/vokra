@@ -28,7 +28,7 @@ use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::decoder::NanoDecoder;
-use self::full_decoder::FullDecoder;
+use self::full_decoder::MappedDecoder;
 
 /// GGUF architecture emitted by the offline converter.
 pub const ARCH: &str = "moss_audio_tokenizer";
@@ -148,7 +148,7 @@ pub struct MossAudioTokenizer {
     weight_license: LicenseClass,
     backend: BackendKind,
     requires_metadata_repair: bool,
-    full_decoder: Option<FullDecoder>,
+    full_decoder: Option<MappedDecoder>,
     nano_decoder: Option<NanoDecoder>,
 }
 
@@ -242,7 +242,7 @@ impl MossAudioTokenizer {
     pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
         let mut model = Self::from_gguf(&file)?;
         if model.variant == MossAudioTokenizerVariant::Full {
-            model.full_decoder = Some(FullDecoder::bind(file)?);
+            model.full_decoder = Some(MappedDecoder::bind_full(file)?);
         }
         Ok(model)
     }

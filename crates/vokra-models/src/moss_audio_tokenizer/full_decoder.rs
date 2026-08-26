@@ -17,7 +17,7 @@ use crate::mapped_weights::{MappedModel, mapped_info, transpose_widen, widen_int
 
 use super::MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS;
 
-const LABEL: &str = "moss_audio_tokenizer/full";
+const LABEL: &str = "moss_audio_tokenizer/mapped-decoder";
 const CODEBOOK_SIZE: usize = 1_024;
 const CODEBOOK_DIM: usize = 8;
 const RVQ_DIM: usize = 512;
@@ -48,7 +48,7 @@ struct StageSpec {
     patch_after: usize,
 }
 
-const STAGE_SPECS: [StageSpec; 4] = [
+const FULL_STAGE_SPECS: [StageSpec; 4] = [
     StageSpec {
         module_index: 0,
         input_dim: 768,
@@ -95,25 +95,105 @@ const STAGE_SPECS: [StageSpec; 4] = [
     },
 ];
 
+// MOSS-Audio-Tokenizer-v2 starts from a 25 Hz interleaved codec stream.
+// The five x2 patch-up stages followed by x240 reconstruct 7,680 interleaved
+// samples per codec frame, i.e. 3,840 samples for each stereo channel.
+const V2_STAGE_SPECS: [StageSpec; 6] = [
+    StageSpec {
+        module_index: 0,
+        input_dim: 768,
+        model_dim: 1_280,
+        output_dim: 1_280,
+        ffn_dim: 5_120,
+        layers: 32,
+        heads: 20,
+        context: 250,
+        patch_after: 2,
+    },
+    StageSpec {
+        module_index: 2,
+        input_dim: 640,
+        model_dim: 768,
+        output_dim: 768,
+        ffn_dim: 3_072,
+        layers: 12,
+        heads: 12,
+        context: 500,
+        patch_after: 2,
+    },
+    StageSpec {
+        module_index: 4,
+        input_dim: 384,
+        model_dim: 768,
+        output_dim: 768,
+        ffn_dim: 3_072,
+        layers: 12,
+        heads: 12,
+        context: 800,
+        patch_after: 2,
+    },
+    StageSpec {
+        module_index: 6,
+        input_dim: 384,
+        model_dim: 768,
+        output_dim: 768,
+        ffn_dim: 3_072,
+        layers: 12,
+        heads: 12,
+        context: 800,
+        patch_after: 2,
+    },
+    StageSpec {
+        module_index: 8,
+        input_dim: 384,
+        model_dim: 768,
+        output_dim: 768,
+        ffn_dim: 3_072,
+        layers: 12,
+        heads: 12,
+        context: 800,
+        patch_after: 2,
+    },
+    StageSpec {
+        module_index: 10,
+        input_dim: 384,
+        model_dim: 768,
+        output_dim: 240,
+        ffn_dim: 3_072,
+        layers: 12,
+        heads: 12,
+        context: 800,
+        patch_after: 240,
+    },
+];
+
 /// Mapping-owning Full decoder.  Tensor payloads remain lazy until decode.
 #[derive(Clone)]
-pub(super) struct FullDecoder {
+pub(super) struct MappedDecoder {
     mapped: Arc<FullMappedDescriptors>,
 }
 
-impl std::fmt::Debug for FullDecoder {
+impl std::fmt::Debug for MappedDecoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FullDecoder")
+        f.debug_struct("MappedDecoder")
             .field("stages", &self.mapped.stages.len())
             .field("quantizers", &self.mapped.quantizer.codebooks.len())
             .finish()
     }
 }
 
-impl FullDecoder {
-    pub(super) fn bind(file: Arc<GgufFile>) -> Result<Self> {
+impl MappedDecoder {
+    pub(super) fn bind_full(file: Arc<GgufFile>) -> Result<Self> {
+        Self::bind(file, &FULL_STAGE_SPECS)
+    }
+
+    pub(super) fn bind_v2(file: Arc<GgufFile>) -> Result<Self> {
+        Self::bind(file, &V2_STAGE_SPECS)
+    }
+
+    fn bind(file: Arc<GgufFile>, stage_specs: &'static [StageSpec]) -> Result<Self> {
         Ok(Self {
-            mapped: Arc::new(FullMappedDescriptors::bind(file)?),
+            mapped: Arc::new(FullMappedDescriptors::bind(file, stage_specs)?),
         })
     }
 
@@ -185,9 +265,9 @@ struct FullMappedDescriptors {
 }
 
 impl FullMappedDescriptors {
-    fn bind(file: Arc<GgufFile>) -> Result<Self> {
+    fn bind(file: Arc<GgufFile>, stage_specs: &'static [StageSpec]) -> Result<Self> {
         let quantizer = QuantizerDescriptors::bind(&file)?;
-        let stages = STAGE_SPECS
+        let stages = stage_specs
             .iter()
             .copied()
             .map(|spec| StageDescriptors::bind(&file, spec))
@@ -924,15 +1004,50 @@ mod tests {
     #[test]
     fn full_stage_contract_reconstructs_1920_samples_per_frame() {
         assert_eq!(
-            STAGE_SPECS
+            FULL_STAGE_SPECS
                 .iter()
                 .map(|stage| stage.patch_after)
                 .product::<usize>(),
             1_920
         );
         assert_eq!(
-            STAGE_SPECS.iter().map(|stage| stage.layers).sum::<usize>(),
+            FULL_STAGE_SPECS
+                .iter()
+                .map(|stage| stage.layers)
+                .sum::<usize>(),
             68
+        );
+    }
+
+    #[test]
+    fn v2_stage_contract_reconstructs_stereo_3840_samples_per_frame() {
+        assert_eq!(
+            V2_STAGE_SPECS
+                .iter()
+                .map(|stage| stage.patch_after)
+                .product::<usize>(),
+            7_680
+        );
+        assert_eq!(
+            V2_STAGE_SPECS
+                .iter()
+                .map(|stage| stage.layers)
+                .sum::<usize>(),
+            92
+        );
+        assert_eq!(
+            V2_STAGE_SPECS
+                .iter()
+                .map(|stage| stage.module_index)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 4, 6, 8, 10]
+        );
+        assert_eq!(
+            V2_STAGE_SPECS
+                .iter()
+                .map(|stage| stage.context)
+                .collect::<Vec<_>>(),
+            vec![250, 500, 800, 800, 800, 800]
         );
     }
 
