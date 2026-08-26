@@ -227,11 +227,11 @@ pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
         vec![768, 48, 128],
     );
 
-    for layer in 0..7usize {
+    for (layer, &kernel) in CONV_KERNEL.iter().enumerate() {
         let input = if layer == 0 { 1 } else { 512 };
         tensors.insert(
             format!("wav2vec2.feature_extractor.conv_layers.{layer}.conv.weight"),
-            vec![512, input, u64::from(CONV_KERNEL[layer])],
+            vec![512, input, u64::from(kernel)],
         );
     }
     tensors.insert(

@@ -392,7 +392,7 @@ impl PreparedContract {
             }
         }
         if self.block_kernels.as_slice() != block_kernels
-            || self.block_dilations.as_slice() != &[2, 3, 4]
+            || self.block_dilations.as_slice() != [2, 3, 4]
         {
             return Err(ConvertError::Parse(format!(
                 "lang_id_ecapa: {} block contract is kernels={:?} dilations={:?}, expected kernels={block_kernels:?} dilations=[2, 3, 4]",

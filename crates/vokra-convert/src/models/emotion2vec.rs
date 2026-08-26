@@ -207,11 +207,11 @@ pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
     tensors.insert(format!("{audio}.context_encoder.norm.bias"), vec![1_024]);
     tensors.insert(format!("{audio}.context_encoder.norm.weight"), vec![1_024]);
     tensors.insert(format!("{audio}.extra_tokens"), vec![1, 10, 1_024]);
-    for layer in 0..7usize {
+    for (layer, &kernel) in CONV_KERNEL.iter().enumerate() {
         let input = if layer == 0 { 1 } else { 512 };
         tensors.insert(
             format!("{audio}.local_encoder.conv_layers.{layer}.0.weight"),
-            vec![512, input, u64::from(CONV_KERNEL[layer])],
+            vec![512, input, u64::from(kernel)],
         );
         tensors.insert(
             format!("{audio}.local_encoder.conv_layers.{layer}.2.1.bias"),
