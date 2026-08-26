@@ -577,11 +577,12 @@ pub mod snac;
 // compressor/decompressor time-scale factors are selected from a pinned
 // release manifest rather than inferred from filenames.
 pub mod focalcodec;
-/// Strict Full/Nano MOSS Audio Tokenizer binder plus native Nano
-/// token-to-stereo-PCM decode on CPU/Metal. The public Nano artifact's
-/// historical Full metadata stamp is accepted only behind its exact complete
-/// tensor manifest and remains visible as a repair requirement; Full decode
-/// remains an explicit unsupported operation.
+/// Strict Full/Nano MOSS Audio Tokenizer binder plus native CPU/Metal decode.
+/// Full keeps its 7 GB artifact mapped and materialises one layer at a time to
+/// 24 kHz mono; Nano owns its compact weights and emits 48 kHz stereo. The
+/// public Nano artifact's historical Full metadata stamp is accepted only
+/// behind its exact complete tensor manifest and remains visible as a repair
+/// requirement.
 pub mod moss_audio_tokenizer;
 /// Native MOSS-TTS family. Nano is runnable end to end with its explicit
 /// codec companion; Base/v1.5 additionally have a strict 463-tensor

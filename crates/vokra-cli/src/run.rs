@@ -3470,9 +3470,9 @@ fn run_xcodec2_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
 /// OpenMOSS Audio Tokenizer raw code-matrix to PCM path.
 ///
 /// Nano accepts a caller-declared residual-LFQ width and emits standard
-/// 48 kHz stereo-interleaved float WAV. Full reaches its model-level explicit
-/// unsupported-operation error; the shared Python class is never treated as
-/// evidence that the two release topologies are interchangeable.
+/// 48 kHz stereo-interleaved float WAV. Full retains the session's mmap and
+/// decodes its separate 24 kHz mono / 32-codebook topology one layer at a
+/// time; the two release contracts are never interchanged.
 fn run_moss_audio_tokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     if a.text.is_some() || a.tokens.is_some() {
         return Err(
@@ -3503,11 +3503,12 @@ fn run_moss_audio_tokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), 
 
     vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
         .map_err(|error| error.to_string())?;
-    let model = vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_with_backend(
-        session.gguf(),
-        a.backend,
-    )
-    .map_err(|error| error.to_string())?;
+    let model =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            session.gguf_arc(),
+            a.backend,
+        )
+        .map_err(|error| error.to_string())?;
     if model.requires_metadata_repair() {
         eprintln!(
             "vokra: WARNING: this exact public Nano tensor manifest carries the historical Full metadata stamp; routing is authenticated by the complete manifest, but replace the artifact with a correctly stamped publication when authorized"
@@ -3585,18 +3586,20 @@ fn run_moss_tts_nano(session: &Session, a: &RunArgs) -> Result<(), String> {
 
     let policy = vokra_core::CompliancePolicy::from_env();
     vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
-    let codec_file = vokra_core::gguf::GgufFile::open(codec_path)
-        .map_err(|error| format!("run (moss_tts Nano): codec {codec_path}: {error}"))?;
+    let codec_file = std::sync::Arc::new(
+        vokra_mmap::open_gguf(codec_path)
+            .map_err(|error| format!("run (moss_tts Nano): codec {codec_path}: {error}"))?,
+    );
     vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
 
     let model =
         vokra_models::moss_tts::MossTtsNano::from_gguf_with_backend(session.gguf(), a.backend)
             .map_err(|error| error.to_string())?;
-    let codec = vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_with_backend(
-        &codec_file,
-        a.backend,
-    )
-    .map_err(|error| error.to_string())?;
+    let codec =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            codec_file, a.backend,
+        )
+        .map_err(|error| error.to_string())?;
     if model.requires_metadata_repair() {
         eprintln!(
             "vokra: WARNING: this exact MOSS-TTS Nano manifest has the historical rope_base=0 header; runtime routing uses the authenticated 194-tensor contract, but the artifact still needs an authorized metadata replacement"

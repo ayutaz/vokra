@@ -38,7 +38,7 @@ use crate::kv_quant::KvQuant;
 #[derive(Debug)]
 pub(crate) struct ModelHandle {
     pub(crate) path: PathBuf,
-    pub(crate) gguf: GgufFile,
+    pub(crate) gguf: Arc<GgufFile>,
 }
 
 /// Shared, immutable core of a [`Session`] (also referenced by
@@ -196,6 +196,15 @@ impl Session {
     /// [`GgufFile::get`].
     pub fn gguf(&self) -> &GgufFile {
         &self.inner.model.gguf
+    }
+
+    /// Clones the shared handle to the parsed GGUF container.
+    ///
+    /// Mapping-backed native models use this entry when their tensor
+    /// descriptors must outlive a temporary borrow of the session. Cloning is
+    /// an `Arc` reference-count bump; it never copies tensor payloads.
+    pub fn gguf_arc(&self) -> Arc<GgufFile> {
+        Arc::clone(&self.inner.model.gguf)
     }
 
     /// Attaches an ASR engine (Whisper base = M0-06); consumes and returns the
@@ -483,7 +492,10 @@ impl SessionBuilder {
 
         Ok(Session {
             inner: Arc::new(SessionInner {
-                model: ModelHandle { path, gguf },
+                model: ModelHandle {
+                    path,
+                    gguf: Arc::new(gguf),
+                },
                 backend,
                 kv_quant: self.kv_quant,
                 next_stream_id: AtomicU64::new(0),

@@ -306,17 +306,22 @@ this entry does not authorize an upload.
 
 The two public OpenMOSS codec artifacts now have a fail-closed native runtime
 identity. Full and Nano are selected from complete tensor manifests rather
-than their shared upstream Python class. Nano additionally exposes native
-variable-quantizer token-to-48-kHz-stereo decode on one selected CPU/Metal
-backend. The historically mis-stamped public Nano artifact is recognized only
-behind its exact manifest and remains visibly marked for replacement. Full
-decode and both encode paths stay explicit unsupported operations. No C ABI or
-GGUF schema change is made, and no model upload is authorized by this entry.
+than their shared upstream Python class. Nano exposes variable-quantizer
+token-to-48-kHz-stereo decode. Full exposes a distinct 24-kHz-mono decoder that
+retains the 7 GB GGUF mapping, materialises one Transformer layer at a time and
+tiles its local causal attention window. Both execute every learned reduction
+on one selected CPU/Metal backend. The historically mis-stamped public Nano
+artifact is recognized only behind its exact manifest and remains visibly
+marked for replacement. Both encode paths stay explicit unsupported
+operations. The Full source still requires VAST real-weight parity before a
+release claim; no model upload is authorized by this entry.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-models::moss_audio_tokenizer` | `MossAudioTokenizer`, `MossAudioTokenizerVariant`, `MossDecodedAudio`, identity/topology constants, `MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS` | Added | strict `open` / `from_gguf*`, backend/license/variant accessors, frame-major `[frames, num_quantizers]` decode to interleaved stereo PCM | Owns decoded Nano weights and output PCM; Full has no substitute route; unsupported backends never fall back to CPU | no | `a22d0868`, `fea90206` |
-| `vokra-cli run` | `moss_audio_tokenizer` task, `--num-quantizers`, multichannel float WAV writer | Added | raw u32le frame-major LFQ matrix to 48 kHz stereo WAV | Public Nano's legacy metadata warning is preserved; Full/encode are explicit errors | no | `0c44bf61` |
+| `vokra-models::moss_audio_tokenizer` | `MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS`, `open_mapped_with_backend`, `from_gguf_mapped`, `from_gguf_mapped_with_backend` | Added | mapping-owning Full bind; `[frames,1..=32]` LFQ codes to 1,920 mono samples/frame at 24 kHz | Full LFQ + 68 Transformer layers use bounded one-layer materialisation and tiled local attention; borrowed Full binds remain an explicit non-decode surface rather than copying 7 GB | no | (TBD) |
+| `vokra-core::Session` | `gguf_arc` | Added | `&Session -> Arc<GgufFile>` | Cheap shared-handle clone for mapping-owned concrete models; tensor payloads are not copied | no | (TBD) |
+| `vokra-cli run` | `moss_audio_tokenizer` task, `--num-quantizers`, multichannel float WAV writer | Added | raw u32le frame-major LFQ matrix to Full 24 kHz mono or Nano 48 kHz stereo WAV | Public Nano's legacy metadata warning is preserved; encode stays explicit unsupported | no | `0c44bf61`, (TBD) |
 | `tools/parity` | `moss_audio_tokenizer_dump_reference.py` | Added | pinned real-upstream custom-code decode with quantizer/stage/final taps | VAST-only oracle source; no fixture or parity result is claimed before an actual run | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen public composite LM execution)

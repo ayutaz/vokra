@@ -8,15 +8,17 @@
 //! [`MossAudioTokenizer::requires_metadata_repair`]. A same-metadata artifact
 //! with any other manifest fails closed.
 //!
-//! Nano token-to-PCM is implemented natively with one selected [`Compute`]
-//! backend for every learned reduction. Full remains an explicit loud partial
-//! until its separately verified 1.77B topology lands; it never substitutes
-//! Nano, another codec, or CPU inference.
+//! Nano and Full token-to-PCM are implemented natively with one selected
+//! [`Compute`] backend for every learned reduction. Full is mapping-backed and
+//! materialises one Transformer layer at a time; it never creates a second
+//! resident copy of the 7 GB artifact or substitutes Nano/CPU inference.
 
 mod decoder;
+mod full_decoder;
 mod weights;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
@@ -26,6 +28,7 @@ use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::decoder::NanoDecoder;
+use self::full_decoder::FullDecoder;
 
 /// GGUF architecture emitted by the offline converter.
 pub const ARCH: &str = "moss_audio_tokenizer";
@@ -46,6 +49,9 @@ pub const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Learned reductions required by the native Nano decode graph.
 pub const MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS: &[HotOp] =
+    &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu];
+/// Learned reductions required by the native Full decode graph.
+pub const MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS: &[HotOp] =
     &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm, HotOp::Gelu];
 
 const FULL_TENSOR_COUNT: usize = 1_600;
@@ -142,13 +148,21 @@ pub struct MossAudioTokenizer {
     weight_license: LicenseClass,
     backend: BackendKind,
     requires_metadata_repair: bool,
+    full_decoder: Option<FullDecoder>,
     nano_decoder: Option<NanoDecoder>,
 }
 
 impl MossAudioTokenizer {
-    /// Opens and binds a public Full or Nano GGUF.
+    /// Opens and binds a public Full or Nano GGUF through the true mmap path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::from_gguf(&GgufFile::open(path)?)
+        Self::open_mapped_with_backend(path, BackendKind::Cpu)
+    }
+
+    /// Opens a public Full or Nano GGUF through `vokra-mmap` and selects
+    /// `backend` for the complete learned decode graph.
+    pub fn open_mapped_with_backend(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_mapped_with_backend(Arc::new(file), backend)
     }
 
     /// Authenticates the complete tensor manifest and provenance contract.
@@ -215,18 +229,44 @@ impl MossAudioTokenizer {
             weight_license: checkpoint.weight_license(),
             backend: BackendKind::Cpu,
             requires_metadata_repair,
+            full_decoder: None,
             nano_decoder,
         })
     }
 
-    /// Binds the artifact and preflights the Nano learned-op backend seam.
-    /// Full remains loadable for discovery but its decode graph is a loud
-    /// partial until the separately verified Full topology lands.
+    /// Strictly binds an already mmap-backed artifact.
+    ///
+    /// Full retains the mapping so its 1,600-tensor checkpoint can be decoded
+    /// one layer at a time. Nano copies only its compact decoder weights and
+    /// does not rely on mapping lifetime after construction.
+    pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
+        let mut model = Self::from_gguf(&file)?;
+        if model.variant == MossAudioTokenizerVariant::Full {
+            model.full_decoder = Some(FullDecoder::bind(file)?);
+        }
+        Ok(model)
+    }
+
+    /// Binds a borrowed artifact and preflights its learned-op backend seam.
+    ///
+    /// A borrowed Full artifact remains discovery-only because this value
+    /// cannot keep its mapping alive. Use [`Self::from_gguf_mapped_with_backend`]
+    /// for Full decoding. This distinction is explicit; no resident copy is
+    /// made behind the caller's back.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         let model = Self::from_gguf(file)?;
-        if model.variant == MossAudioTokenizerVariant::Nano {
-            let _ = Compute::for_backend(backend, MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS)?;
-        }
+        let _ = Compute::for_backend(backend, model.required_hot_ops())?;
+        Ok(model.with_backend(backend))
+    }
+
+    /// Binds a mapping-owning artifact and preflights the complete selected
+    /// backend before any tensor payload is materialised.
+    pub fn from_gguf_mapped_with_backend(
+        file: Arc<GgufFile>,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let model = Self::from_gguf_mapped(file)?;
+        let _ = Compute::for_backend(backend, model.required_hot_ops())?;
         Ok(model.with_backend(backend))
     }
 
@@ -280,48 +320,69 @@ impl MossAudioTokenizer {
         self.variant.max_quantizers()
     }
 
-    /// Decodes frame-major `[frames, num_quantizers]` codes. Nano emits
-    /// standard stereo-interleaved 48 kHz PCM; Full is an explicit
-    /// [`VokraError::UnsupportedOp`] until its separate decoder lands.
+    const fn required_hot_ops(&self) -> &'static [HotOp] {
+        match self.variant {
+            MossAudioTokenizerVariant::Full => MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS,
+            MossAudioTokenizerVariant::Nano => MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS,
+        }
+    }
+
+    /// Decodes frame-major `[frames, num_quantizers]` codes. Full emits 24 kHz
+    /// mono; Nano emits standard stereo-interleaved 48 kHz PCM.
     pub fn decode_frame_major(
         &self,
         codes: &[u32],
         frames: usize,
         num_quantizers: usize,
     ) -> Result<MossDecodedAudio> {
-        let Some(decoder) = &self.nano_decoder else {
-            return Err(VokraError::UnsupportedOp(
-                "moss_audio_tokenizer/Full: the exact 1,600-tensor checkpoint is bound, but its 24 kHz 32-quantizer token-to-PCM graph has not passed independent real-weight parity; Nano substitution and CPU fallback are forbidden"
-                    .to_owned(),
-            ));
+        let pcm = match self.variant {
+            MossAudioTokenizerVariant::Full => {
+                let decoder = self.full_decoder.as_ref().ok_or_else(|| {
+                    VokraError::UnsupportedOp(
+                        "moss_audio_tokenizer/Full: decoding requires the mapping-owning `open_mapped_with_backend` or `from_gguf_mapped_with_backend` constructor; a borrowed bind cannot retain the 7 GB artifact and Vokra will not create a resident copy or fall back to CPU"
+                            .to_owned(),
+                    )
+                })?;
+                decoder.decode_frame_major(self.backend, codes, frames, num_quantizers)?
+            }
+            MossAudioTokenizerVariant::Nano => {
+                let decoder = self.nano_decoder.as_ref().ok_or_else(|| {
+                    VokraError::ModelLoad(
+                        "moss_audio_tokenizer/Nano: authenticated decoder weights are missing"
+                            .to_owned(),
+                    )
+                })?;
+                decoder.decode_frame_major(self.backend, codes, frames, num_quantizers)?
+            }
         };
-        let pcm = decoder.decode_frame_major(self.backend, codes, frames, num_quantizers)?;
         let samples_per_channel = frames
-            .checked_mul(MossAudioTokenizerVariant::Nano.samples_per_channel_per_frame())
+            .checked_mul(self.variant.samples_per_channel_per_frame())
             .ok_or_else(|| {
                 VokraError::InvalidArgument(format!(
-                    "moss_audio_tokenizer/nano: frames * samples_per_channel_per_frame overflows: {frames} * {}",
-                    MossAudioTokenizerVariant::Nano.samples_per_channel_per_frame()
+                    "moss_audio_tokenizer/{:?}: frames * samples_per_channel_per_frame overflows: {frames} * {}",
+                    self.variant,
+                    self.variant.samples_per_channel_per_frame()
                 ))
             })?;
         let expected = samples_per_channel
-            .checked_mul(MossAudioTokenizerVariant::Nano.channels())
+            .checked_mul(self.variant.channels())
             .ok_or_else(|| {
-                VokraError::InvalidArgument(
-                    "moss_audio_tokenizer/nano: interleaved output length overflows usize"
-                        .to_owned(),
-                )
+                VokraError::InvalidArgument(format!(
+                    "moss_audio_tokenizer/{:?}: interleaved output length overflows usize",
+                    self.variant
+                ))
             })?;
         if pcm.len() != expected {
             return Err(VokraError::InvalidArgument(format!(
-                "moss_audio_tokenizer/nano: decoder emitted {} interleaved values, expected {expected}",
-                pcm.len()
+                "moss_audio_tokenizer/{:?}: decoder emitted {} interleaved values, expected {expected}",
+                self.variant,
+                pcm.len(),
             )));
         }
         Ok(MossDecodedAudio {
             pcm,
-            sample_rate: MossAudioTokenizerVariant::Nano.sample_rate(),
-            channels: MossAudioTokenizerVariant::Nano.channels(),
+            sample_rate: self.variant.sample_rate(),
+            channels: self.variant.channels(),
             samples_per_channel,
         })
     }
@@ -411,6 +472,18 @@ mod tests {
             Ok(compute) => assert_eq!(compute.backend_name(), "metal"),
             Err(VokraError::BackendUnavailable(_)) => {}
             Err(error) => panic!("MOSS Audio Tokenizer Nano has a Metal coverage gap: {error}"),
+        }
+    }
+
+    #[test]
+    fn full_learned_ops_are_cpu_and_metal_complete() {
+        Compute::for_backend(BackendKind::Cpu, MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS)
+            .expect("CPU covers the MOSS Audio Tokenizer Full learned graph");
+        #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+        match Compute::for_backend(BackendKind::Metal, MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS) {
+            Ok(compute) => assert_eq!(compute.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {}
+            Err(error) => panic!("MOSS Audio Tokenizer Full has a Metal coverage gap: {error}"),
         }
     }
 }
