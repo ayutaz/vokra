@@ -214,12 +214,20 @@ OPTIONS:
                                 `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
                                 caller token strings paired with the exact ids
                                 passed to the model; no tokenizer is inferred.
-    --token-ids <ids>          standalone bert_base/deberta_v2/deberta_v3 only:
-                                comma-separated u32 ids (whitespace around ids
-                                is allowed). Runs the final-hidden-state encoder;
-                                no tokenizer or unknown-token substitution is
-                                inferred. --output writes row-major `[T,D]`
+    --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3, or
+                                MusicGen Small/Melody conditional prompt:
+                                comma-separated u32 ids (whitespace allowed).
+                                No tokenizer or unknown-token substitution is
+                                inferred. BERT --output writes row-major `[T,D]`
                                 little-endian f32.
+    --music-unconditional-token-ids <ids>
+                                MusicGen Small/Melody only, REQUIRED: exact T5
+                                token ids for the classifier-free null prompt.
+                                The CLI never guesses how an empty prompt was
+                                tokenized.
+    --music-frames <N>          MusicGen Small/Melody only, REQUIRED: positive
+                                number of 50 Hz EnCodec frames to generate.
+    --music-seed <u64>          MusicGen Small/Melody sampling seed [default 0].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -350,8 +358,14 @@ struct RunArgs {
     output: Option<String>,
     /// CT-Punc-only versioned TSV pairing token ids and escaped UTF-8 tokens.
     tokens: Option<String>,
-    /// Standalone BERT-family comma-separated input ids.
+    /// Standalone BERT-family or MusicGen conditional comma-separated ids.
     token_ids: Option<String>,
+    /// MusicGen-only classifier-free null-prompt T5 ids.
+    music_unconditional_token_ids: Option<String>,
+    /// MusicGen-only number of 50 Hz codec frames to generate.
+    music_frames: Option<usize>,
+    /// MusicGen-only deterministic sampler seed. `None` means zero.
+    music_seed: Option<u64>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -500,6 +514,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut output: Option<String> = None;
     let mut tokens: Option<String> = None;
     let mut token_ids: Option<String> = None;
+    let mut music_unconditional_token_ids: Option<String> = None;
+    let mut music_frames: Option<usize> = None;
+    let mut music_seed: Option<u64> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut bandwidth_id: Option<usize> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
@@ -576,6 +593,36 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     args.get(i + 1)
                         .ok_or("--token-ids requires a comma-separated u32 list")?
                         .clone(),
+                );
+                i += 2;
+            }
+            "--music-unconditional-token-ids" => {
+                music_unconditional_token_ids = Some(
+                    args.get(i + 1)
+                        .ok_or(
+                            "--music-unconditional-token-ids requires a comma-separated u32 list",
+                        )?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--music-frames" => {
+                let value = args.get(i + 1).ok_or("--music-frames requires a value")?;
+                let frames = value
+                    .parse::<usize>()
+                    .map_err(|error| format!("--music-frames must be an integer: {error}"))?;
+                if frames == 0 {
+                    return Err("--music-frames must be positive".to_owned());
+                }
+                music_frames = Some(frames);
+                i += 2;
+            }
+            "--music-seed" => {
+                let value = args.get(i + 1).ok_or("--music-seed requires a value")?;
+                music_seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| format!("--music-seed must be u64: {error}"))?,
                 );
                 i += 2;
             }
@@ -796,6 +843,9 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         output,
         tokens,
         token_ids,
+        music_unconditional_token_ids,
+        music_frames,
+        music_seed,
         codec_mode,
         bandwidth_id,
         backend,
@@ -912,7 +962,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
-        | ModelTask::AecNkf => None,
+        | ModelTask::AecNkf
+        | ModelTask::MusicGeneration => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -976,9 +1027,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if a.token_ids.is_some() && task != ModelTask::TextEncoder {
+    if a.token_ids.is_some() && task != ModelTask::TextEncoder && task != ModelTask::MusicGeneration
+    {
         return Err(
-            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3 arches"
+            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3 or musicgen arches"
+                .to_owned(),
+        );
+    }
+    if (a.music_unconditional_token_ids.is_some()
+        || a.music_frames.is_some()
+        || a.music_seed.is_some())
+        && task != ModelTask::MusicGeneration
+    {
+        return Err(
+            "run: --music-unconditional-token-ids / --music-frames / --music-seed are only supported for the musicgen arch"
                 .to_owned(),
         );
     }
@@ -1248,6 +1310,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 audio.sample_rate,
                 a.output.as_deref(),
             )?;
+        }
+        ModelTask::MusicGeneration => {
+            run_musicgen(&a)?;
         }
         ModelTask::TtsKokoro => {
             run_kokoro(&a)?;
@@ -2726,26 +2791,26 @@ fn run_ct_punc(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_bert_token_ids(raw: &str) -> Result<Vec<u32>, String> {
+fn parse_comma_u32_ids(raw: &str, surface: &str, flag: &str) -> Result<Vec<u32>, String> {
     if raw.trim().is_empty() {
-        return Err("run (BERT encoder): --token-ids must not be empty".to_owned());
+        return Err(format!("run ({surface}): {flag} must not be empty"));
     }
     raw.split(',')
         .enumerate()
         .map(|(index, field)| {
             let field = field.trim();
             if field.is_empty() {
-                return Err(format!(
-                    "run (BERT encoder): --token-ids field {index} is empty"
-                ));
+                return Err(format!("run ({surface}): {flag} field {index} is empty"));
             }
             field.parse::<u32>().map_err(|error| {
-                format!(
-                    "run (BERT encoder): --token-ids field {index} `{field}` is not u32: {error}"
-                )
+                format!("run ({surface}): {flag} field {index} `{field}` is not u32: {error}")
             })
         })
         .collect()
+}
+
+fn parse_bert_token_ids(raw: &str) -> Result<Vec<u32>, String> {
+    parse_comma_u32_ids(raw, "BERT encoder", "--token-ids")
 }
 
 /// Standalone BERT-family final-hidden-state execution.
@@ -2797,6 +2862,57 @@ fn run_bert_encoder(session: &Session, a: &RunArgs) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Public MusicGen Small/Melody explicit token-id generation.
+///
+/// The public composite GGUFs contain T5-base, the autoregressive LM and the
+/// 32 kHz EnCodec decoder, but no tokenizer. Both the conditional and CFG-null
+/// token sequences are therefore required inputs rather than guessed from raw
+/// text. Medium/Large share the arch tag and fail from the model binder with
+/// their explicit missing-companion diagnostic.
+fn run_musicgen(a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.text.is_some() || a.tokens.is_some() {
+        return Err("run (MusicGen): use explicit --token-ids and \
+             --music-unconditional-token-ids; --input/--text/--tokens are not accepted because \
+             the public GGUF has no tokenizer"
+            .to_owned());
+    }
+    let conditional = parse_comma_u32_ids(
+        a.token_ids
+            .as_deref()
+            .ok_or("run (MusicGen): --token-ids <u32,u32,...> is required")?,
+        "MusicGen",
+        "--token-ids",
+    )?;
+    let unconditional = parse_comma_u32_ids(
+        a.music_unconditional_token_ids
+            .as_deref()
+            .ok_or("run (MusicGen): --music-unconditional-token-ids <u32,u32,...> is required")?,
+        "MusicGen",
+        "--music-unconditional-token-ids",
+    )?;
+    let frames = a
+        .music_frames
+        .ok_or("run (MusicGen): --music-frames <positive-50Hz-frame-count> is required")?;
+    let generation = vokra_models::audiocraft_lm::AudioCraftGenerationConfig::sampled(
+        frames,
+        a.music_seed.unwrap_or(0),
+    );
+    let policy = vokra_core::CompliancePolicy::from_env();
+    let model = vokra_models::musicgen::MusicGen::from_path_with_policy_and_backend(
+        &a.model, &policy, a.backend,
+    )
+    .map_err(|error| format!("run (MusicGen bind): {error}"))?;
+    let pcm = model
+        .generate_from_token_ids(&conditional, None, &unconditional, None, &generation)
+        .map_err(|error| format!("run (MusicGen generate): {error}"))?;
+    emit_audio(
+        "musicgen",
+        &pcm,
+        model.config().sample_rate_hz,
+        a.output.as_deref(),
+    )
 }
 
 /// Standalone Mimi encode/decode using the portable `VKRMCODE` v1 contract.
@@ -4777,6 +4893,38 @@ mod tests {
             Ok(_) => panic!("bare --mimi must be rejected"),
         };
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_explicit_musicgen_token_and_generation_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "musicgen-small.gguf",
+            "--token-ids",
+            "71,1234,1",
+            "--music-unconditional-token-ids",
+            "1",
+            "--music-frames",
+            "250",
+            "--music-seed",
+            "42",
+            "--output",
+            "music.wav",
+        ]))
+        .expect("MusicGen explicit input flags parse");
+        assert_eq!(parsed.token_ids.as_deref(), Some("71,1234,1"));
+        assert_eq!(parsed.music_unconditional_token_ids.as_deref(), Some("1"));
+        assert_eq!(parsed.music_frames, Some(250));
+        assert_eq!(parsed.music_seed, Some(42));
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "musicgen-small.gguf",
+                "--music-frames",
+                "0",
+            ]))
+            .is_err()
+        );
     }
 
     #[test]

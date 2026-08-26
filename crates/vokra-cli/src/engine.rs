@@ -59,6 +59,14 @@ pub(crate) enum ModelTask {
     AsrVoxtral,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
+    ///
+    /// The dispatch returns a bare session because the concrete mapping-owned
+    /// model reopens the GGUF in the run arm to keep its LM tensor descriptors
+    /// alive while T5, delayed-code generation and EnCodec execute. Public
+    /// Medium/Large files share this arch but fail explicitly when their
+    /// absent T5/codec companions are requested.
+    MusicGeneration,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -439,6 +447,9 @@ const ARCH_MAGNET_MEDIUM: &str = "magnet_medium_30secs";
 /// reverse-ODE editing inversion driver + the DiT block stack need to
 /// land before this reject can flip to a bare session dispatch.
 const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
+/// Meta MusicGen family. Small/Melody carry embedded T5 + EnCodec; the
+/// Medium/Large public artifacts are LM-only and stay companion-gated.
+const ARCH_MUSICGEN: &str = "musicgen";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1380,6 +1391,48 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::VocoderVocos))
         }
+        ARCH_MUSICGEN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MUSICGEN}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MUSICGEN}` is missing `vokra.model.name`; cannot \
+                         distinguish MusicGen from the narrowly authenticated legacy AudioGen file"
+                    )
+                })?;
+            if name == vokra_models::audiogen::NAME {
+                let model = vokra_models::audiogen::AudioGen::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?;
+                return Err(format!(
+                    "legacy public AudioGen `{name}` loaded as {:?}, but its LM-only GGUF \
+                     has no text-conditioner or 16 kHz EnCodec companion; use the raw library \
+                     APIs until authenticated companions are supplied (FR-EX-08: it is never \
+                     misrouted through MusicGen)",
+                    model.artifact_layout()
+                ));
+            }
+            if ![
+                vokra_models::musicgen::NAME_SMALL,
+                vokra_models::musicgen::NAME_MEDIUM,
+                vokra_models::musicgen::NAME_LARGE,
+                vokra_models::musicgen::NAME_MELODY,
+            ]
+            .contains(&name)
+            {
+                return Err(format!(
+                    "arch `{ARCH_MUSICGEN}` carries unknown model name `{name}`; refusing \
+                     MusicGen/AudioGen family misrouting (FR-EX-08)"
+                ));
+            }
+            Ok((session, ModelTask::MusicGeneration))
+        }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
             // runtime shell exists in `vokra-models::magnet` (config
@@ -1845,12 +1898,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     // --- Music / audio generation ----------------------------------------
     BoundArch {
-        arch: "musicgen",
-        module: "vokra_models::musicgen",
-        entry: "MusicGen::from_gguf → MusicGen::generate",
-        probe: Some(|g: &GgufFile| vokra_models::musicgen::MusicGen::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "audiogen",
         module: "vokra_models::audiogen",
         entry: "AudioGen::from_gguf → AudioGen::generate",
@@ -2129,6 +2176,41 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("campplus session builds (bare)");
         assert_eq!(task, ModelTask::Speaker);
+    }
+
+    #[test]
+    fn load_session_routes_named_musicgen_to_generation_without_aliasing_audiogen() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_MUSICGEN);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::musicgen::NAME_SMALL,
+        );
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-musicgen-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named MusicGen session builds (bare)");
+        assert_eq!(task, ModelTask::MusicGeneration);
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_MUSICGEN);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "foreign-audio");
+        let bytes = unknown.to_bytes().expect("serialize unknown gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-musicgen-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("unknown family name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("refusing MusicGen/AudioGen family misrouting"));
     }
 
     #[test]
@@ -3375,6 +3457,7 @@ mod tests {
             ARCH_TITANET,
             ARCH_VOXTRAL,
             ARCH_KOKORO,
+            ARCH_MUSICGEN,
             ARCH_SBV2,
             ARCH_FSMN_VAD,
             ARCH_FIRERED_VAD,

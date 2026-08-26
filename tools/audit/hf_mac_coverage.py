@@ -53,6 +53,24 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/audiogen-medium": (
+        "partial",
+        "the authenticated legacy LM-only artifact has a native CPU/Metal raw-code route, "
+        "but contains neither its T5-large conditioner nor the official 16 kHz EnCodec "
+        "decoder; both remain explicit companion boundaries",
+    ),
+    "vokra/musicgen-medium": (
+        "partial",
+        "the public AudioCraft-layout artifact has native CPU/Metal LM generation but "
+        "contains neither T5-base nor EnCodec; explicit authenticated companions are "
+        "required before token-id-to-waveform execution",
+    ),
+    "vokra/musicgen-large": (
+        "partial",
+        "the public AudioCraft-layout artifact has native CPU/Metal LM generation but "
+        "contains neither T5-base nor EnCodec; explicit authenticated companions are "
+        "required before token-id-to-waveform execution",
+    ),
     "vokra/nsnet2": (
         "partial",
         "the exact public tensor header is runtime-compatible, but the live GGUF "
@@ -144,6 +162,7 @@ METAL_CODE_ARCHES = {
     "metricgan_plus",
     "mimi",
     "miocodec",
+    "musicgen",
     "mp_senet",
     "moshi",
     "moonshine",

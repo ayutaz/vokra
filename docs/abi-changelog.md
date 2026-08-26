@@ -274,6 +274,7 @@ guessed. No C ABI or GGUF schema changes.
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-models::musicgen::MusicGen` | `prepare_text_condition`, `generate_codes_from_token_ids`, `generate_from_token_ids` | Added | explicit T5 token ids + optional masks to prepared condition, frame-major codes or mono 32 kHz PCM | Mapping-owned Small/Melody composites only; Medium/Large return explicit missing-companion errors | no | (TBD) |
+| `vokra-cli run` | `musicgen` task; `--music-unconditional-token-ids`, `--music-frames`, `--music-seed` | Added | conditional/null T5 ids plus 50 Hz frame count to WAV | Small/Melody execute; legacy AudioGen and LM-only Medium/Large retain explicit companion errors | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen embedded EnCodec waveform decode)
 

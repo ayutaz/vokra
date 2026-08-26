@@ -830,6 +830,15 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::MusicGeneration => {
+            return Err(
+                "bench: arch `musicgen` needs explicit conditional/null T5 token ids and a \
+                 generated-frame denominator; use `vokra-cli run --model <musicgen-small.gguf> \
+                 --token-ids <ids> --music-unconditional-token-ids <ids> --music-frames <N>` \
+                 (FR-EX-08: refusing to fabricate prompt or duration inputs)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input

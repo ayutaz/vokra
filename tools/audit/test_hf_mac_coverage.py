@@ -71,6 +71,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "metricgan_plus",
             "frcrn",
             "miocodec",
+            "musicgen",
             "tiger_separator",
             "deepfake_detection",
         }
@@ -94,6 +95,15 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("miocodec-25hz-44khz-v2.gguf",),
             "miocodec",
+        )
+        musicgen_small = audit.RepoRecord(
+            "vokra/musicgen-small", "abc", ("model.gguf",), "musicgen"
+        )
+        musicgen_medium = audit.RepoRecord(
+            "vokra/musicgen-medium", "abc", ("model.gguf",), "musicgen"
+        )
+        audiogen_medium = audit.RepoRecord(
+            "vokra/audiogen-medium", "abc", ("model.gguf",), "musicgen"
         )
         silero = audit.RepoRecord(
             "vokra/silero", "abc", ("model.gguf",), "silero-vad"
@@ -202,6 +212,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(audioseal, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(musicgen_small, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(musicgen_small, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(musicgen_medium, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(audiogen_medium, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(snac, routed, bound).cpu_code, "full")
