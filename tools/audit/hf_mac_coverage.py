@@ -228,6 +228,7 @@ METAL_CODE_ARCHES = {
     "audiobox-aesthetics",
     "audioseal_real_weight",
     "ast",
+    "bark",
     "bert_base",
     "bigvgan",
     "campplus",

@@ -89,6 +89,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "audiobox-aesthetics",
             "audioseal_real_weight",
             "ast",
+            "bark",
             "canary",
             "canary-1b-flash",
             "whisper",
@@ -146,6 +147,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("audioseal-real-weight.gguf",),
             "audioseal_real_weight",
+        )
+        bark = audit.RepoRecord(
+            "vokra/bark-small",
+            "abc",
+            ("bark-small.gguf",),
+            "bark",
         )
         canary_flash = audit.RepoRecord(
             "vokra/canary-1b-flash",
@@ -354,6 +361,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(audiobox, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(audioseal, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(audioseal, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(bark, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(bark, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(canary_flash, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(canary_flash, routed, bound).metal_code, "blocked-by-cpu"

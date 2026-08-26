@@ -1,5 +1,20 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 Bark Small/Full source wave:** the two public Bark GGUFs now
+> have exact 518/758-F32-tensor manifest gates, mapping-owned three-stage
+> semantic/coarse/fine autoregressive generation and the embedded causal
+> 24 kHz EnCodec decoder. All learned operations preflight one complete CPU
+> or Metal backend; an unsupported operation is an explicit error and never a
+> per-op CPU fallback. The exact Full manifest narrowly authenticates the
+> historical incorrect 768/12 width/head stamp and surfaces it as requiring a
+> metadata repair instead of accepting a count-only substitute. The CLI takes
+> explicit pinned Bark token ids because neither public GGUF embeds a text
+> tokenizer. A locked official Transformers 4.31.0 oracle, exact generated-code
+> comparison, PCM `atol = 0.01` gate and no-upload VAST worker cover both
+> releases. VAST real-weight CPU parity and remote Apple Silicon Metal parity
+> remain pending; no checkpoint payload, model conversion or inference ran on
+> the maintainer Mac.
+
 > **2026-08-27 Qwen3-ASR strict-binding wave:** bounded fixed-revision HTTP
 > Range reads of only the two public GGUF headers authenticated the complete
 > 612-tensor 0.6B manifest
@@ -245,7 +260,7 @@ and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
 MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B,
-NaturalSpeech 3 FACodec V2 and
+NaturalSpeech 3 FACodec V2, Bark Small/Full and
 Parakeet-TDT-1.1B,
 it reported:
 
@@ -254,13 +269,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 120 |
+| Complete CPU route for the live public artifact | 122 |
 | Route/binder present, released-artifact CPU forward incomplete | 45 |
-| No complete runtime binder | 28 |
+| No complete runtime binder | 26 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 120 |
+| Complete Metal code route among the CPU-complete set | 122 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 73 |
+| Metal blocked by missing/partial CPU forward | 71 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -278,7 +293,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 120 repositories with a complete Metal code route are the Audiobox
+The 122 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -327,13 +342,14 @@ They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
 Nano's stale public metadata and both MOSS-Audio Instruct checkpoints remain
 fail-closed as described below. RMVPE is deliberately omitted from
 the live-artifact-complete list (see below). The complete set now also includes
-`vokra/naturalspeech3-facodec-v2`. RMVPE now has a complete code route,
+`vokra/naturalspeech3-facodec-v2`, `vokra/bark-small` and `vokra/bark`.
+RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 73 Metal-blocked repositories first need a complete released-
+remaining 71 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
