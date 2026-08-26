@@ -577,9 +577,11 @@ pub mod snac;
 // compressor/decompressor time-scale factors are selected from a pinned
 // release manifest rather than inferred from filenames.
 pub mod focalcodec;
-/// Strict Full/Nano MOSS Audio Tokenizer binder. The public Nano artifact's
+/// Strict Full/Nano MOSS Audio Tokenizer binder plus native Nano
+/// token-to-stereo-PCM decode on CPU/Metal. The public Nano artifact's
 /// historical Full metadata stamp is accepted only behind its exact complete
-/// tensor manifest and remains visible as a repair requirement.
+/// tensor manifest and remains visible as a repair requirement; Full decode
+/// remains an explicit unsupported operation.
 pub mod moss_audio_tokenizer;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
 // vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT

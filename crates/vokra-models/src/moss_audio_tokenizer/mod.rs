@@ -8,10 +8,13 @@
 //! [`MossAudioTokenizer::requires_metadata_repair`]. A same-metadata artifact
 //! with any other manifest fails closed.
 //!
-//! The binder is intentionally a loud partial in this commit: token-to-PCM is
-//! added with the native Nano decoder in the next logical change. Calling
-//! [`MossAudioTokenizer::decode_frame_major`] cannot fall back to another
-//! codec or to CPU and returns [`VokraError::UnsupportedOp`] explicitly.
+//! Nano token-to-PCM is implemented natively with one selected [`Compute`]
+//! backend for every learned reduction. Full remains an explicit loud partial
+//! until its separately verified 1.77B topology lands; it never substitutes
+//! Nano, another codec, or CPU inference.
+
+mod decoder;
+mod weights;
 
 use std::path::Path;
 
@@ -21,6 +24,8 @@ use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
+
+use self::decoder::NanoDecoder;
 
 /// GGUF architecture emitted by the offline converter.
 pub const ARCH: &str = "moss_audio_tokenizer";
@@ -135,6 +140,7 @@ pub struct MossAudioTokenizer {
     weight_license: LicenseClass,
     backend: BackendKind,
     requires_metadata_repair: bool,
+    nano_decoder: Option<NanoDecoder>,
 }
 
 impl MossAudioTokenizer {
@@ -198,11 +204,16 @@ impl MossAudioTokenizer {
             )));
         }
         debug_assert_eq!(checkpoint.tensor_count(), tensor_count);
+        let nano_decoder = match variant {
+            MossAudioTokenizerVariant::Full => None,
+            MossAudioTokenizerVariant::Nano => Some(NanoDecoder::bind(file)?),
+        };
         Ok(Self {
             variant,
             weight_license: checkpoint.weight_license(),
             backend: BackendKind::Cpu,
             requires_metadata_repair,
+            nano_decoder,
         })
     }
 
@@ -267,19 +278,50 @@ impl MossAudioTokenizer {
         self.variant.max_quantizers()
     }
 
-    /// Token-to-PCM entry point. The strict binder has landed; the native
-    /// decoder follows in the next logical change. This is intentionally an
-    /// explicit error rather than a placeholder waveform or CPU fallback.
+    /// Decodes frame-major `[frames, num_quantizers]` codes. Nano emits
+    /// standard stereo-interleaved 48 kHz PCM; Full is an explicit
+    /// [`VokraError::UnsupportedOp`] until its separate decoder lands.
     pub fn decode_frame_major(
         &self,
-        _codes: &[u32],
-        _frames: usize,
-        _num_quantizers: usize,
+        codes: &[u32],
+        frames: usize,
+        num_quantizers: usize,
     ) -> Result<MossDecodedAudio> {
-        Err(VokraError::UnsupportedOp(format!(
-            "moss_audio_tokenizer/{:?}: strict Full/Nano binding is available, but the native token-to-PCM decoder has not landed in this commit; no codec substitution or CPU fallback is permitted",
-            self.variant
-        )))
+        let Some(decoder) = &self.nano_decoder else {
+            return Err(VokraError::UnsupportedOp(
+                "moss_audio_tokenizer/Full: the exact 1,600-tensor checkpoint is bound, but its 24 kHz 32-quantizer token-to-PCM graph has not passed independent real-weight parity; Nano substitution and CPU fallback are forbidden"
+                    .to_owned(),
+            ));
+        };
+        let pcm = decoder.decode_frame_major(self.backend, codes, frames, num_quantizers)?;
+        let samples_per_channel = frames
+            .checked_mul(MossAudioTokenizerVariant::Nano.samples_per_channel_per_frame())
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "moss_audio_tokenizer/nano: frames * samples_per_channel_per_frame overflows: {frames} * {}",
+                    MossAudioTokenizerVariant::Nano.samples_per_channel_per_frame()
+                ))
+            })?;
+        let expected = samples_per_channel
+            .checked_mul(MossAudioTokenizerVariant::Nano.channels())
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "moss_audio_tokenizer/nano: interleaved output length overflows usize"
+                        .to_owned(),
+                )
+            })?;
+        if pcm.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "moss_audio_tokenizer/nano: decoder emitted {} interleaved values, expected {expected}",
+                pcm.len()
+            )));
+        }
+        Ok(MossDecodedAudio {
+            pcm,
+            sample_rate: MossAudioTokenizerVariant::Nano.sample_rate(),
+            channels: MossAudioTokenizerVariant::Nano.channels(),
+            samples_per_channel,
+        })
     }
 
     /// PCM-to-token is not yet implemented for either public release.
