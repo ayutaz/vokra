@@ -40,7 +40,7 @@
 //!   -> autoregressive transformer LM with            ← **real raw step**
 //!      text-conditioned AudioCraft conditioning
 //!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`)
-//!   -> 4-codebook delay pattern + CFG + sampling     ← **loud-partial**
+//!   -> 4-codebook delay pattern + CFG + sampling     ← **real raw codes**
 //!        (Kreuk et al. Algorithm 1 — reused in Copet et al. MusicGen;
 //!         the delay-pattern interleave across the 4 RVQ streams +
 //!         conditioning path are shared implementation work with the
@@ -75,14 +75,15 @@
 //!     T5-large projection, pre-norm self/cross-attention stack, GELU MLP and
 //!     four logits heads on one selected CPU/Metal backend. Unsupported
 //!     operations fail before partial execution; no CPU fallback is present.
+//!   - [`AudioGen::generate_codes`] runs AudioCraft's two-state CFG 3.0,
+//!     complete four-codebook delay mask and seeded top-k 250 sampling and
+//!     returns frame-major EnCodec indices without delay-padding tokens.
 //!
 //! - **Loud-partial (this WP)**: [`AudioGen::generate`] returns
-//!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
+//!   [`VokraError::UnsupportedOp`] naming **two** deferred companion pieces:
 //!   1. an authenticated text-conditioner/tokenizer companion. The public
 //!      GGUF contains the LM conditioning projection, not the conditioner;
-//!   2. generation orchestration around the landed raw LM step: the
-//!      **4-codebook delay pattern**, classifier-free guidance and sampling;
-//!   3. complete EnCodec waveform decoding. The landed
+//!   2. complete EnCodec waveform decoding. The landed
 //!      `vokra_ops::encodec_rvq_decode` is only the codebook-to-latent
 //!      fold; the SEANet decoder must come from a separately authenticated
 //!      codec companion.
@@ -98,9 +99,9 @@
 //! beat_this / mt3 / sortformer / musicgen loud-partial precedent,
 //! CLAUDE.md 教訓 (a) — "loud-partial は fake-complete より honest"):
 //! the surrounding scaffold + `from_gguf` chunk-group validation + FR-EX-08
-//! loud-fails landed first. The raw shared LM step is now native; remaining
-//! work is the explicit conditioner companion, delay/CFG/sampling scheduler
-//! and native SEANet decoder composition.
+//! loud-fails landed first. Raw shared LM + delay/CFG/sampling is now native;
+//! remaining work is the explicit conditioner companion and native SEANet
+//! decoder composition.
 //!
 //! # `vokra.audiogen.*` chunk group
 //!
@@ -171,7 +172,8 @@ use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::audiocraft_lm::{
-    AudioCraftCondition, AudioCraftLmConfig, AudioCraftLmDecoder, AudioCraftLmState,
+    AudioCraftCondition, AudioCraftGeneratedCodes, AudioCraftGenerationConfig, AudioCraftLmConfig,
+    AudioCraftLmDecoder, AudioCraftLmState,
 };
 use crate::strict_checkpoint::verify_tensor_manifest;
 
@@ -843,6 +845,19 @@ impl AudioGen {
         self.lm_decoder()?.step_into(state, tokens, logits)
     }
 
+    /// Runs AudioCraft's two-state CFG, delay pattern and seeded sampling,
+    /// returning frame-major EnCodec indices. Conditioner tokenization and
+    /// waveform decoding stay at their explicit companion boundaries.
+    pub fn generate_codes(
+        &self,
+        conditional: &AudioCraftCondition,
+        unconditional: &AudioCraftCondition,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        self.lm_decoder()?
+            .generate_codes(conditional, unconditional, generation)
+    }
+
     fn audiocraft_lm_config(&self) -> AudioCraftLmConfig {
         AudioCraftLmConfig {
             d_model: self.config.d_model as usize,
@@ -870,19 +885,13 @@ impl AudioGen {
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — AudioGen's inference path
-    /// requires **three** deferred pieces:
+    /// Returns [`VokraError::UnsupportedOp`] — AudioGen's PCM inference path
+    /// requires **two** deferred companion pieces:
     ///
     /// 1. **Prompt composition**: the public file contains the LM
     ///    conditioning projection but no conditioner/tokenizer weights;
     ///    an explicit authenticated companion is required.
-    /// 2. **Autoregressive transformer LM decode with 4-codebook delay
-    ///    pattern + AudioCraft conditioning**: Kreuk et al.
-    ///    Algorithm 1 (later refined in Copet et al. MusicGen)
-    ///    describes the delay-pattern interleave across the 4 RVQ
-    ///    codebook streams and is shared decoder work with the AudioCraft
-    ///    layout of the MusicGen family.
-    /// 3. **Complete EnCodec waveform decode**:
+    /// 2. **Complete EnCodec waveform decode**:
     ///    `vokra_ops::encodec_rvq_decode` supplies only the codebook-to-
     ///    latent fold. A companion neural SEANet decoder is required for
     ///    latent-to-PCM execution.
@@ -895,7 +904,7 @@ impl AudioGen {
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
-    ///   deferred T5-encoder + AR-LM + EnCodec-decode composition.
+    ///   deferred conditioner/tokenizer + EnCodec waveform composition.
     pub fn generate(&self, prompt: &str, duration_secs: f32) -> Result<Vec<f32>> {
         // Bind unused args so a `#[warn(unused_variables)]` change does
         // not silently mask the loud-partial fire path; the future real
@@ -911,7 +920,7 @@ impl AudioGen {
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`AudioGen::generate`] until the T5-encoder + AR-LM + EnCodec-decode
+/// [`AudioGen::generate`] until conditioner/tokenizer + EnCodec waveform
 /// composition lands.
 ///
 /// Names **all three** primary source URLs (HF card + AudioCraft repo +
@@ -932,22 +941,20 @@ fn generate_forward_loud_partial(
     duration_secs: f32,
 ) -> VokraError {
     VokraError::UnsupportedOp(format!(
-        "audiogen generate: prompt conditioning + autoregressive transformer LM decode \
-         (with 4-codebook delay pattern) + complete EnCodec waveform decoding pending. \
+        "audiogen generate: prompt conditioning companion + complete EnCodec waveform \
+         decoding pending. \
          Artifact layout={layout:?}: the already-published AudioCraft LM-only GGUF \
          contains neither text-conditioner/tokenizer nor EnCodec weights; explicit \
          authenticated companion components are required. What is missing is (a) the \
          T5-family prompt path and real-weight parity — the public LM's conditioning \
-         projection is present, but the conditioner itself is not in this GGUF — (b) \
-         the autoregressive transformer LM decode with the \
-         AudioCraft 4-codebook delay pattern (Kreuk et al. Algorithm 1 — the interleave \
-         across the 4 RVQ codebook streams that MusicGen later refined) and its \
-         conditioning path, and (c) complete EnCodec decoding: \
+         projection is present, but the conditioner itself is not in this GGUF. The \
+         native raw LM plus AudioCraft 4-codebook delay pattern, CFG and sampling are \
+         available through generate_codes. What also remains is (b) complete EnCodec decoding: \
          `vokra_ops::encodec_rvq_decode` is only the landed codebook-to-latent fold; the \
          neural SEANet decoder from latent frames to PCM is not contained in the public \
-         LM-only artifact and must be supplied and executed separately. The decoder, \
-         delay-pattern and SEANet implementation are SHARED with the MusicGen family, \
-         while conditioner dimensions remain artifact-specific. Config: \
+         LM-only artifact and must be supplied and executed separately. The SEANet \
+         implementation is shared with MusicGen, while conditioner dimensions remain \
+         artifact-specific. Config: \
          d_model={d_model}, num_layers={num_layers}, \
          n_heads={n_heads}, ffn_dim={ffn_dim}, vocab_size={vocab_size}, \
          num_codebooks={num_codebooks}, codec_frame_rate_hz={codec_frame_rate_hz}, \
@@ -1327,15 +1334,19 @@ mod tests {
                     m.contains("audiogen generate"),
                     "message must call out the audiogen generate surface, got `{m}`"
                 );
-                // The three deferred pieces MUST all be named so the
-                // follow-up wave has an unambiguous work anchor.
+                // The remaining companions and landed raw-code route MUST
+                // all be named so the follow-up wave is unambiguous.
                 assert!(
                     m.contains("T5"),
-                    "message must name the T5-base text encoder deferred piece, got `{m}`"
+                    "message must name the T5-large text encoder companion, got `{m}`"
                 );
                 assert!(
                     m.contains("delay pattern"),
-                    "message must name the AudioCraft delay pattern, got `{m}`"
+                    "message must name the landed AudioCraft delay pattern, got `{m}`"
+                );
+                assert!(
+                    m.contains("generate_codes"),
+                    "message must point to the landed raw-code API, got `{m}`"
                 );
                 assert!(
                     m.contains("encodec_rvq_decode"),

@@ -5,8 +5,9 @@
 //! module binds that exact LM-only layout, leaves embeddings, output heads and
 //! transformer blocks in the GGUF mapping, and widens one layer at a time into
 //! a reused scratch block. It deliberately does not tokenize text or decode
-//! EnCodec waveform samples: callers supply T5 hidden states and receive four
-//! codebook-logit rows. Those two companion boundaries remain explicit.
+//! EnCodec waveform samples: callers supply T5 hidden states and can receive
+//! either four codebook-logit rows or frame-major codes after the official
+//! delay/CFG/sampling loop. Those two companion boundaries remain explicit.
 //!
 //! All learned reductions use [`Compute`]. CPU is the reference backend;
 //! Metal uses the existing fused attention and MLP paths. Embedding lookup,
@@ -18,7 +19,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
-use vokra_core::{KvCache, Result, VokraError};
+use vokra_core::{KvCache, Result, Sampler, SamplerConfig, VokraError, apply_cfg_inplace};
+use vokra_ops::musicgen_delay_pattern::{
+    MUSICGEN_PREDICT_TOKEN, MusicGenDelayPatternAttrs, build_musicgen_delay_pattern,
+};
 
 use crate::compute::{Compute, HotOp};
 use crate::mapped_weights::{MappedModel, lock_scratch, mapped_info, transpose_widen, widen_into};
@@ -38,6 +42,13 @@ const POSITION_MAX_PERIOD: f32 = 10_000.0;
 /// Rows widened at once for one mapped codebook head GEMV.
 const HEAD_CHUNK_ROWS: usize = 128;
 
+/// AudioCraft's released generation default.
+pub const AUDIOCRAFT_DEFAULT_CFG_COEF: f32 = 3.0;
+/// AudioCraft's released sampling temperature.
+pub const AUDIOCRAFT_DEFAULT_TEMPERATURE: f32 = 1.0;
+/// AudioCraft's released top-k cutoff.
+pub const AUDIOCRAFT_DEFAULT_TOP_K: usize = 250;
+
 /// Every learned operation required by the AudioCraft autoregressive LM.
 ///
 /// [`Compute::for_backend`] checks this set before condition preparation or a
@@ -50,6 +61,160 @@ pub const AUDIOCRAFT_LM_HOT_OPS: &[HotOp] = &[
     HotOp::LayerNorm,
     HotOp::Gelu,
 ];
+
+/// Host-side generation controls for an AudioCraft delayed-code sequence.
+///
+/// `max_frames` counts codec frames before delay interleaving. A positive
+/// `temperature` selects seeded sampling. `temperature == 0` is exact greedy
+/// argmax. When both `top_p` and `top_k` are present, `top_p` takes precedence,
+/// matching AudioCraft's generation branch rather than applying both filters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioCraftGenerationConfig {
+    /// Number of codec frames to return.
+    pub max_frames: usize,
+    /// Classifier-free guidance coefficient in
+    /// `uncond + cfg_coef * (cond - uncond)`.
+    pub cfg_coef: f32,
+    /// Softmax temperature; zero selects greedy generation.
+    pub temperature: f32,
+    /// Top-k cutoff used when `top_p` is absent.
+    pub top_k: Option<usize>,
+    /// Optional nucleus threshold in `(0, 1]`; takes precedence over top-k.
+    pub top_p: Option<f32>,
+    /// Seed for Vokra's deterministic host sampler.
+    pub seed: u64,
+}
+
+impl AudioCraftGenerationConfig {
+    /// AudioCraft release defaults: CFG 3.0, temperature 1.0 and top-k 250.
+    #[must_use]
+    pub const fn sampled(max_frames: usize, seed: u64) -> Self {
+        Self {
+            max_frames,
+            cfg_coef: AUDIOCRAFT_DEFAULT_CFG_COEF,
+            temperature: AUDIOCRAFT_DEFAULT_TEMPERATURE,
+            top_k: Some(AUDIOCRAFT_DEFAULT_TOP_K),
+            top_p: None,
+            seed,
+        }
+    }
+
+    /// Deterministic greedy generation with AudioCraft's CFG 3.0 default.
+    #[must_use]
+    pub const fn greedy(max_frames: usize) -> Self {
+        Self {
+            max_frames,
+            cfg_coef: AUDIOCRAFT_DEFAULT_CFG_COEF,
+            temperature: 0.0,
+            top_k: None,
+            top_p: None,
+            seed: 0,
+        }
+    }
+
+    fn validate(&self, model: AudioCraftLmConfig) -> Result<()> {
+        let min_frames = model.num_codebooks.saturating_sub(1).max(1);
+        if self.max_frames < min_frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft generation: max_frames {} must be >= {min_frames} for the \
+                 authenticated complete delay pattern with {} codebooks",
+                self.max_frames, model.num_codebooks
+            )));
+        }
+        if !self.cfg_coef.is_finite() || self.cfg_coef < 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft generation: cfg_coef must be finite and >= 0, got {}",
+                self.cfg_coef
+            )));
+        }
+        if !self.temperature.is_finite() || self.temperature < 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft generation: temperature must be finite and >= 0, got {}",
+                self.temperature
+            )));
+        }
+        if self.top_p.is_none() {
+            if let Some(top_k) = self.top_k {
+                if top_k == 0 || top_k > model.vocab_size {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "audiocraft generation: top_k {top_k} must be in 1..={}",
+                        model.vocab_size
+                    )));
+                }
+            }
+        }
+        if let Some(top_p) = self.top_p {
+            if !top_p.is_finite() || !(0.0 < top_p && top_p <= 1.0) {
+                return Err(VokraError::InvalidArgument(format!(
+                    "audiocraft generation: top_p must be finite and in (0, 1], got {top_p}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn sampler_config(&self) -> SamplerConfig {
+        SamplerConfig {
+            temperature: self.temperature,
+            top_k: if self.top_p.is_some() {
+                None
+            } else {
+                self.top_k
+            },
+            top_p: self.top_p,
+            repetition_penalty: None,
+            seed: self.seed,
+        }
+    }
+}
+
+/// Generated EnCodec indices in `[frame, codebook]` row-major order.
+///
+/// This is the layout consumed directly by
+/// [`vokra_ops::encodec_rvq::encodec_rvq_decode`]. Every stored id is strictly
+/// below the LM vocabulary; delay-padding/special tokens are removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioCraftGeneratedCodes {
+    codes: Vec<u32>,
+    frames: usize,
+    num_codebooks: usize,
+}
+
+impl AudioCraftGeneratedCodes {
+    #[must_use]
+    pub const fn frames(&self) -> usize {
+        self.frames
+    }
+
+    #[must_use]
+    pub const fn num_codebooks(&self) -> usize {
+        self.num_codebooks
+    }
+
+    /// Frame-major `[frames, num_codebooks]` indices.
+    #[must_use]
+    pub fn as_frame_major(&self) -> &[u32] {
+        &self.codes
+    }
+
+    /// Consumes the result and returns frame-major indices.
+    #[must_use]
+    pub fn into_frame_major(self) -> Vec<u32> {
+        self.codes
+    }
+
+    /// One frame's contiguous codebook row.
+    pub fn frame(&self, frame: usize) -> Result<&[u32]> {
+        if frame >= self.frames {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft generated codes: frame {frame} >= {}",
+                self.frames
+            )));
+        }
+        let start = frame * self.num_codebooks;
+        Ok(&self.codes[start..start + self.num_codebooks])
+    }
+}
 
 /// Shape contract for one AudioCraft LM-only checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -581,6 +746,161 @@ impl AudioCraftLmDecoder {
         state.self_kv.advance(1);
         state.poisoned = false;
         Ok(())
+    }
+
+    /// Generates raw RVQ indices from prepared conditional and null conditions.
+    ///
+    /// This is AudioCraft's memory-lean two-step CFG route: conditional and
+    /// unconditional KV states advance over the same delayed token sequence,
+    /// their logits are combined with [`apply_cfg_inplace`], and a single
+    /// seeded sampler draws every codebook row before the delay mask is
+    /// applied. The returned codes are frame-major and contain no special
+    /// token. Text tokenization and EnCodec waveform decoding remain separate
+    /// authenticated companion boundaries.
+    pub fn generate_codes(
+        &self,
+        conditional: &AudioCraftCondition,
+        unconditional: &AudioCraftCondition,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        let cfg = self.weights.config;
+        generation.validate(cfg)?;
+
+        let max_length = generation
+            .max_frames
+            .checked_add(cfg.num_codebooks)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "audiocraft generation: max_frames + num_codebooks overflows usize".to_owned(),
+                )
+            })?;
+        let delayed_steps = max_length - 1;
+        let special = cfg.special_token_id();
+        let prefix = vec![special; cfg.num_codebooks];
+        let delay = build_musicgen_delay_pattern(
+            &prefix,
+            MusicGenDelayPatternAttrs {
+                batch_size: 1,
+                num_codebooks: cfg.num_codebooks,
+                prompt_len: 1,
+                max_length,
+                audio_channels: 1,
+                pad_token_id: special,
+            },
+        )?;
+        if delay.rows != cfg.num_codebooks
+            || delay.prefix_len != 1
+            || delay.prefix.len() != cfg.num_codebooks
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft generation: delay prefix shape [{}, {}] does not match [{}, 1]",
+                delay.rows, delay.prefix_len, cfg.num_codebooks
+            )));
+        }
+
+        let mut conditional_state = self.new_state(conditional, delayed_steps)?;
+        let mut unconditional_state = self.new_state(unconditional, delayed_steps)?;
+        let logits_len = cfg
+            .num_codebooks
+            .checked_mul(cfg.vocab_size)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "audiocraft generation: logits shape overflows usize".to_owned(),
+                )
+            })?;
+        let sequence_len = cfg.num_codebooks.checked_mul(max_length).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "audiocraft generation: delayed sequence shape overflows usize".to_owned(),
+            )
+        })?;
+        let mut conditional_logits = vec![0.0; logits_len];
+        let mut unconditional_logits = vec![0.0; logits_len];
+        let mut sequence = vec![special; sequence_len];
+        let mut current_tokens = delay.prefix.clone();
+        for codebook in 0..cfg.num_codebooks {
+            sequence[codebook * max_length] = delay.prefix[codebook];
+        }
+        let mut sampler = Sampler::new(generation.sampler_config());
+
+        for target_offset in 1..max_length {
+            self.step_into(
+                &mut conditional_state,
+                &current_tokens,
+                &mut conditional_logits,
+            )?;
+            self.step_into(
+                &mut unconditional_state,
+                &current_tokens,
+                &mut unconditional_logits,
+            )?;
+            apply_cfg_inplace(
+                &mut conditional_logits,
+                &unconditional_logits,
+                generation.cfg_coef,
+            )?;
+            if conditional_logits.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::InvalidArgument(format!(
+                    "audiocraft generation: non-finite guided logit at delayed position {target_offset}"
+                )));
+            }
+
+            for (codebook, current) in current_tokens.iter_mut().enumerate() {
+                let logits = &mut conditional_logits
+                    [codebook * cfg.vocab_size..(codebook + 1) * cfg.vocab_size];
+                // AudioCraft samples all rows first, then forces the rows that
+                // are invalid at this delayed position back to the special id.
+                let sampled = sampler.sample(logits);
+                let mask_token = delay.pattern[codebook * max_length + target_offset];
+                let token = if mask_token == MUSICGEN_PREDICT_TOKEN {
+                    sampled
+                } else {
+                    u32::try_from(mask_token).map_err(|_| {
+                        VokraError::InvalidArgument(format!(
+                            "audiocraft generation: delay token {mask_token} at codebook \
+                             {codebook}, position {target_offset} does not fit u32"
+                        ))
+                    })?
+                };
+                sequence[codebook * max_length + target_offset] = token;
+                *current = token;
+            }
+        }
+
+        let output_len = generation
+            .max_frames
+            .checked_mul(cfg.num_codebooks)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "audiocraft generation: output code shape overflows usize".to_owned(),
+                )
+            })?;
+        let mut codes = vec![0; output_len];
+        for frame in 0..generation.max_frames {
+            for codebook in 0..cfg.num_codebooks {
+                let delayed_position = 1 + codebook + frame;
+                let pattern_index = codebook * max_length + delayed_position;
+                if delay.pattern[pattern_index] != MUSICGEN_PREDICT_TOKEN {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "audiocraft generation: expected a predictive delay slot at frame \
+                         {frame}, codebook {codebook}, position {delayed_position}"
+                    )));
+                }
+                let token = sequence[pattern_index];
+                if token as usize >= cfg.vocab_size {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "audiocraft generation: extracted special/out-of-range token {token} at \
+                         frame {frame}, codebook {codebook}"
+                    )));
+                }
+                codes[frame * cfg.num_codebooks + codebook] = token;
+            }
+        }
+
+        Ok(AudioCraftGeneratedCodes {
+            codes,
+            frames: generation.max_frames,
+            num_codebooks: cfg.num_codebooks,
+        })
     }
 
     fn compute(&self) -> Result<Compute> {
@@ -1140,6 +1460,67 @@ mod tests {
                 .to_string()
                 .contains("different decoder/checkpoint")
         );
+    }
+
+    #[test]
+    fn generation_config_pins_defaults_and_rejects_incomplete_delay_geometry() {
+        let model = AudioCraftLmConfig {
+            d_model: 8,
+            num_layers: 1,
+            n_heads: 2,
+            ffn_dim: 16,
+            vocab_size: 2_048,
+            num_codebooks: 4,
+        };
+        let defaults = AudioCraftGenerationConfig::sampled(50, 17);
+        assert_eq!(defaults.cfg_coef, 3.0);
+        assert_eq!(defaults.temperature, 1.0);
+        assert_eq!(defaults.top_k, Some(250));
+        assert!(defaults.validate(model).is_ok());
+
+        let too_short = AudioCraftGenerationConfig::greedy(2);
+        assert!(
+            too_short
+                .validate(model)
+                .unwrap_err()
+                .to_string()
+                .contains("max_frames")
+        );
+
+        let mut nucleus = defaults;
+        nucleus.top_p = Some(0.95);
+        nucleus.top_k = Some(0); // ignored because AudioCraft gives top-p precedence
+        assert!(nucleus.validate(model).is_ok());
+        assert_eq!(nucleus.sampler_config().top_k, None);
+        assert_eq!(nucleus.sampler_config().top_p, Some(0.95));
+    }
+
+    #[test]
+    fn generated_codes_are_seeded_frame_major_and_strip_delay_tokens() {
+        let (file, config) = fixture();
+        let decoder = AudioCraftLmDecoder::bind(file, config, BackendKind::Cpu).unwrap();
+        let condition = decoder.prepare_condition(&[0.25; 6], 2, None).unwrap();
+        let mut generation = AudioCraftGenerationConfig::sampled(3, 0x1234);
+        generation.top_k = Some(config.vocab_size);
+
+        let first = decoder
+            .generate_codes(&condition, &condition, &generation)
+            .unwrap();
+        let second = decoder
+            .generate_codes(&condition, &condition, &generation)
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.frames(), 3);
+        assert_eq!(first.num_codebooks(), 2);
+        assert_eq!(first.as_frame_major().len(), 6);
+        assert!(
+            first
+                .as_frame_major()
+                .iter()
+                .all(|&token| token < config.vocab_size as u32)
+        );
+        assert_eq!(first.frame(0).unwrap().len(), 2);
+        assert!(first.frame(3).is_err());
     }
 
     #[test]

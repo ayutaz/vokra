@@ -634,11 +634,11 @@ pub mod demucs;
 // EnCodec RVQ tokens (4 codebooks, 50 Hz frame rate, 32 kHz output)
 // conditioned on frozen T5-base text encoder with delay pattern across
 // codebooks. Real config / variant / mapping-owned load / weight-license
-// surfacing; the AudioCraft Medium/Large raw LM step executes on CPU/Metal,
-// while Small/Melody retain a distinct composite-layout binder gap. Full
-// generate remains loud-partial pending prompt tokenization/conditioner,
-// delay-pattern + CFG + sampling, and SEANet waveform decode (the EnCodec
-// RVQ latent-fold primitive exists via
+// surfacing; the AudioCraft Medium/Large raw LM step and its
+// delay/CFG/sampling route execute on CPU/Metal, while Small/Melody
+// retain a distinct composite-layout binder gap. Full generate remains
+// loud-partial pending prompt tokenization/conditioner and SEANet waveform
+// decode (the EnCodec RVQ latent-fold primitive exists via
 // vokra_ops::encodec_rvq_decode). Primary sources:
 // huggingface.co/facebook/musicgen-{small,medium} +
 // github.com/facebookresearch/audiocraft (MIT code) + arXiv:2306.05284
@@ -739,9 +739,9 @@ pub mod audioldm2;
 // output head, per-class embedding table) does not silent-mis-bind
 // against MusicGen's music-only runtime path). Real config / mapping-owned
 // load / weight-license surfacing; the raw AudioCraft LM step now executes
-// on CPU/Metal. Full generate remains loud-partial pending T5-large companion
-// tokenization/encoding, delay-pattern + CFG + sampling, and SEANet waveform
-// decode (the EnCodec RVQ latent-fold primitive exists via
+// on CPU/Metal with native delay/CFG/sampling. Full generate remains
+// loud-partial pending T5-large companion tokenization/encoding and SEANet
+// waveform decode (the EnCodec RVQ latent-fold primitive exists via
 // vokra_ops::encodec_rvq_decode). §3.1 row 402 = ☑ Research-only 2026-08-01 yousan
 // (X-Codec-2 T4 precedent inheritance). Loud-partial pattern per Wave 5
 // musicgen precedent.

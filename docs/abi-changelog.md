@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (AudioCraft delayed-code generation)
+
+The mapping-owned AudioCraft LM route now composes its raw logits with the
+authenticated four-codebook delay pattern, two-state classifier-free guidance
+and deterministic host sampling. The output stops at frame-major EnCodec
+indices; prompt tokenization and waveform decode remain explicit companion
+boundaries. No C ABI or GGUF metadata changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::audiocraft_lm` | `AudioCraftGenerationConfig`, `AudioCraftGeneratedCodes`, `AUDIOCRAFT_DEFAULT_CFG_COEF`, `AUDIOCRAFT_DEFAULT_TEMPERATURE`, `AUDIOCRAFT_DEFAULT_TOP_K`, `AudioCraftLmDecoder::generate_codes` | Added | prepared conditional/null conditions + generation controls to `[frames, num_codebooks]` frame-major `u32` codes | Runs CFG 3.0 and top-k 250 defaults; strips delay/special tokens; extreme sequences shorter than the authenticated complete-delay geometry fail explicitly | no | (TBD) |
+| `vokra-models::{musicgen,audiogen}` | `generate_codes` | Added | family wrappers over the shared mapped decoder | Available only on mapping-owned AudioCraft layouts and one selected CPU/Metal backend; prompt and codec companions are not implied | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (AudioCraft mapped autoregressive LM step)
 
 The public AudioCraft-layout MusicGen Medium/Large and AudioGen Medium GGUFs
