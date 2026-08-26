@@ -264,17 +264,18 @@ generation sidecar, callers provide exact prompt, audio-start and stop-token
 IDs; malformed spans and missing stop IDs are explicit errors. The CLI accepts
 one 16 kHz mono WAV and follows the official variable-length Whisper processor
 contract (minimum two hops, hop-rounded valid frames); over-30-second audio is
-rejected until multi-chunk prompt composition is represented explicitly. This
-records source reachability only—real-checkpoint VAST CPU and Apple-device
-Metal parity remain pending. No C symbol, allocation ABI or publication
-permission changes.
+rejected until multi-chunk prompt composition is represented explicitly. A
+fixed official-reference dumper plus gated VAST CPU and remote Apple
+CPU/Metal consumers are staged without fabricated fixture values; actual
+real-checkpoint verdicts remain pending. No C symbol, allocation ABI or
+publication permission changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
-| `vokra-models::ultravox` | `UltravoxGenerationOptions`, `UltravoxGeneration`; `UltravoxLlamaCompanion::{generate_with_audio_embeddings,next_token_logits_with_audio_embeddings}` | Added | exact token IDs + one consecutive `[audio_frames,2048]` replacement span → bounded greedy token IDs or full first-step logits | Requires explicit in-vocabulary stop IDs and validates prompt/span/finite audio/context bounds. One BF16 layer and at most 512 tied-head rows are widened at a time; no tokenizer download, guessed sidecar or CPU fallback | no | (TBD) |
-| `vokra-models::ultravox::UltravoxAudioTower` | `generate_from_log_mel_with_companion`, `ULTRAVOX_HOT_OPS` | Added | exact `[128,n_frames]` log-mel + separately licensed strict companion + explicit prompt/start/stop IDs → generated IDs | Rejects mixed CPU/Metal artifacts and preflights the complete audio+Llama learned-op union before execution. Public MIT audio weights and gated conditional-commercial Llama weights remain separate mappings and licenses | no | (TBD) |
-| `vokra-models::whisper::mel` | `log_mel_variable` | Added | mono PCM up to 30 s + mel count → channel-major variable frame tensor and valid frame count | Reproduces Ultravox's minimum-two-hop / hop-rounded single-clip contract; long-audio chunking is explicit unsupported rather than a silent truncate | no | (TBD) |
-| `vokra-cli run` | `ultravox` task; `--ultravox-companion`, `--ultravox-audio-start`, `--ultravox-stop-token-ids`, `--ultravox-max-new-tokens` | Added | 16 kHz mono WAV + exact expanded prompt contract → generated token IDs on stdout or UTF-8 output file | Both strict GGUFs bind on one selected CPU/Metal backend; no tokenizer/template/download/fallback. `bench` rejects because prompt and generated duration are content-dependent | no | (TBD) |
+| `vokra-models::ultravox` | `UltravoxGenerationOptions`, `UltravoxGeneration`; `UltravoxLlamaCompanion::{generate_with_audio_embeddings,next_token_logits_with_audio_embeddings}` | Added | exact token IDs + one consecutive `[audio_frames,2048]` replacement span → bounded greedy token IDs or full first-step logits | Requires explicit in-vocabulary stop IDs and validates prompt/span/finite audio/context bounds. One BF16 layer and at most 512 tied-head rows are widened at a time; no tokenizer download, guessed sidecar or CPU fallback | no | `3095255e` |
+| `vokra-models::ultravox::UltravoxAudioTower` | `generate_from_log_mel_with_companion`, `ULTRAVOX_HOT_OPS` | Added | exact `[128,n_frames]` log-mel + separately licensed strict companion + explicit prompt/start/stop IDs → generated IDs | Rejects mixed CPU/Metal artifacts and preflights the complete audio+Llama learned-op union before execution. Public MIT audio weights and gated conditional-commercial Llama weights remain separate mappings and licenses | no | `10bbcb5b` |
+| `vokra-models::whisper::mel` | `log_mel_variable` | Added | mono PCM up to 30 s + mel count → channel-major variable frame tensor and valid frame count | Reproduces Ultravox's minimum-two-hop / hop-rounded single-clip contract; long-audio chunking is explicit unsupported rather than a silent truncate | no | `10bbcb5b` |
+| `vokra-cli run` | `ultravox` task; `--ultravox-companion`, `--ultravox-audio-start`, `--ultravox-stop-token-ids`, `--ultravox-max-new-tokens` | Added | 16 kHz mono WAV + exact expanded prompt contract → generated token IDs on stdout or UTF-8 output file | Both strict GGUFs bind on one selected CPU/Metal backend; no tokenizer/template/download/fallback. `bench` rejects because prompt and generated duration are content-dependent | no | `10bbcb5b` |
 
 ### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox gated Llama companion boundary)
 
@@ -292,8 +293,8 @@ rule or allocation ABI changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
-| `gguf:vokra.ultravox.companion.*` | 22 source/config/manifest/topology/activation/RoPE/tied-embedding/bias keys | Added | exact fixed-revision 146-tensor BF16 Llama-3.2-1B-Instruct companion | Converter rejects every other revision, config, tensor name/shape/dtype and license; the companion remains a user-acquired gated artifact separate from the public MIT audio GGUF | no | (TBD) |
-| `vokra-models::ultravox` | `UltravoxLlamaCompanion`, `UltravoxLlamaConfig`, companion identity constants, `ULTRAVOX_LLAMA_HOT_OPS` | Added | strict mmap descriptor bind for the exact tied-embedding checkpoint on an explicit CPU or Metal backend | Validates provenance, conditional-commercial policy, complete manifest, all topology fields and dense descriptors before backend preflight. Generation is intentionally not exposed by this binding-only slice | no | (TBD) |
+| `gguf:vokra.ultravox.companion.*` | 22 source/config/manifest/topology/activation/RoPE/tied-embedding/bias keys | Added | exact fixed-revision 146-tensor BF16 Llama-3.2-1B-Instruct companion | Converter rejects every other revision, config, tensor name/shape/dtype and license; the companion remains a user-acquired gated artifact separate from the public MIT audio GGUF | no | `f83ea25b` |
+| `vokra-models::ultravox` | `UltravoxLlamaCompanion`, `UltravoxLlamaConfig`, companion identity constants, `ULTRAVOX_LLAMA_HOT_OPS` | Added | strict mmap descriptor bind for the exact tied-embedding checkpoint on an explicit CPU or Metal backend | Validates provenance, conditional-commercial policy, complete manifest, all topology fields and dense descriptors before backend preflight. Generation is intentionally not exposed by this binding-only slice | no | `f83ea25b` |
 
 ### 2026-08-27 — 1.0.0-rc.1-dev (Bark and Bark Small native CPU/Metal runtime)
 

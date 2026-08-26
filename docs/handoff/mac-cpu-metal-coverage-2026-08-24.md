@@ -25,9 +25,16 @@
 > generated token IDs without guessing a tokenizer/chat template. The complete
 > audio+Llama learned-op union is preflighted before execution; audio longer
 > than the one supported 30-second chunk is an explicit error rather than a
-> silent truncate. Real-checkpoint VAST CPU and Apple-device Metal parity remain
-> pending. No model payload, conversion, inference or heavy Cargo command ran
-> on the maintainer Mac.
+> silent truncate. A locked independent oracle now authenticates Fixie's three
+> custom-code files at upstream revision `b95bec8a…9026`, executes the official
+> processor/model with the exact gated Meta snapshot, and records frontend,
+> projected embeddings, first logits and greedy IDs. The no-upload VAST worker
+> streams the companion conversion and runs CPU `atol = 0.01` / exact-ID gates;
+> a separate 24-GB-minimum Apple worker reuses the same reference for CPU and
+> Metal. These scripts and the gated Rust consumer are staged, but actual
+> real-checkpoint VAST CPU and Apple-device Metal results remain pending. No
+> numerical fixture was invented, and no model payload, conversion, inference
+> or heavy Cargo command ran on the maintainer Mac.
 
 > **2026-08-27 YuE xcodec-mini source wave:** bounded reads of only the
 > public GGUF header authenticated revision

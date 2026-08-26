@@ -1,0 +1,49 @@
+# Ultravox v0.5 independent real-checkpoint parity
+
+This directory stages the VAST-only numerical oracle for the exact public
+`vokra/ultravox-v0-5-llama-3-2-1b` audio GGUF and a user-converted, separately
+licensed `meta-llama/Llama-3.2-1B-Instruct` companion.
+
+The oracle loads Fixie's official Hugging Face custom code from immutable
+revision `b95bec8ab291eeb04b5cd600dd473377f6b79026`. It authenticates and imports
+`ultravox_model.py`, `ultravox_processing.py`, and `ultravox_config.py`, then
+calls the released `UltravoxModel`, `ModifiedWhisperEncoder`,
+`UltravoxProjector`, tokenizer chat template, and `UltravoxProcessor` directly.
+It does not reimplement the neural graph and never imports Vokra.
+
+The exact gated Meta snapshot
+`9213176726f574b556790deb65791e0c5aa438b6` is loaded locally by the official
+model. The generated reference contains the deterministic PCM input, official
+Whisper features, projected audio embeddings, complete expanded prompt IDs,
+first-position logits, and a short greedy token sequence. The Rust real-GGUF
+test compares every FP32 tensor at `atol=0.01` and greedy IDs exactly. Missing
+inputs skip visibly; a partial configuration fails.
+
+Run only on a provisioned VAST host:
+
+```sh
+scripts/publish/vast-ai/run-ultravox-validation.sh
+```
+
+The worker has no upload or publish option. It downloads fixed snapshots,
+converts the gated companion locally, runs CPU/reference and repository gates,
+and leaves a small evidence/reference directory to pull. Do not copy model
+payloads to the maintainer Mac. Destroy the VAST instance after evidence is
+retrieved.
+
+After the VAST CPU gate passes, transfer the two GGUFs and reference directly
+from VAST to a disposable Apple Silicon host with at least 24 GB RAM:
+
+```sh
+VOKRA_REMOTE_APPLE_SILICON=1 \
+scripts/verify/apple-silicon-ultravox.sh \
+  --gguf /remote/stage/ultravox.gguf \
+  --companion /remote/stage/ultravox-llama-companion.gguf \
+  --companion-sha256 <value-from-VAST-input-hashes.txt> \
+  --reference /remote/stage/reference \
+  --evidence-dir /remote/evidence/ultravox-metal
+```
+
+That script performs no download, upload, conversion, publication, or model
+deletion. It runs the same real-weight gate on Apple CPU and Metal, recording
+unsupported operations as failures rather than using a CPU fallback.
