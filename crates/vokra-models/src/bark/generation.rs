@@ -127,6 +127,39 @@ pub struct BarkGeneratedCodes {
 }
 
 impl BarkGeneratedCodes {
+    /// Validates a caller-supplied frame-major eight-codebook packet.
+    ///
+    /// This is the explicit boundary for decoding previously generated Bark
+    /// codes or independent parity fixtures; no codebook-major transpose,
+    /// clamping, or missing-channel fill is inferred.
+    pub fn from_frame_major(codes: Vec<u32>, frames: usize) -> Result<Self> {
+        if frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "bark: generated code frames must be > 0".to_owned(),
+            ));
+        }
+        let expected = frames.checked_mul(CODEBOOKS_USED).ok_or_else(|| {
+            VokraError::InvalidArgument("bark: generated code shape overflows usize".to_owned())
+        })?;
+        if codes.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "bark: frame-major codes have {} values, expected {frames}x{CODEBOOKS_USED}={expected}",
+                codes.len()
+            )));
+        }
+        if let Some((index, code)) = codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, code)| *code >= CODEBOOK_SIZE as u32)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "bark: frame-major code[{index}]={code} is outside 0..{CODEBOOK_SIZE}"
+            )));
+        }
+        Ok(Self { codes, frames })
+    }
+
     /// Number of 75 Hz codec frames.
     pub const fn frames(&self) -> usize {
         self.frames
@@ -223,7 +256,6 @@ fn generate_semantic(
 ) -> Result<Vec<u32>> {
     let hidden = config.hidden_size;
     let mut embeddings = Vec::with_capacity((MAX_TEXT_TOKENS + 1) * hidden);
-    let mut visible = Vec::with_capacity(MAX_TEXT_TOKENS + 1);
     for position in 0..MAX_TEXT_TOKENS {
         let active =
             position < text_ids.len() && attention_mask.map_or(true, |mask| mask[position]);
@@ -236,7 +268,6 @@ fn generate_semantic(
         let history = causal_embedding(weights, config, CausalStage::Semantic, SEMANTIC_PAD_TOKEN)?;
         add_assign(&mut row, &history)?;
         embeddings.extend_from_slice(&row);
-        visible.push(active);
     }
     embeddings.extend_from_slice(&causal_embedding(
         weights,
@@ -244,16 +275,9 @@ fn generate_semantic(
         CausalStage::Semantic,
         SEMANTIC_INFER_TOKEN,
     )?);
-    visible.push(true);
 
-    let (mut cache, mut logits) = causal_prefill(
-        weights,
-        compute,
-        config,
-        CausalStage::Semantic,
-        &embeddings,
-        Some(&visible),
-    )?;
+    let (mut cache, mut logits) =
+        causal_prefill(weights, compute, config, CausalStage::Semantic, &embeddings)?;
     debug_assert_eq!(logits.len(), SEMANTIC_OUTPUT_VOCAB);
     let mut sampler = Sampler::new(SamplerConfig {
         temperature: generation.semantic_temperature,
@@ -341,14 +365,8 @@ fn generate_coarse(
                 token,
             )?);
         }
-        let (mut cache, mut logits) = causal_prefill(
-            weights,
-            compute,
-            config,
-            CausalStage::Coarse,
-            &embeddings,
-            None,
-        )?;
+        let (mut cache, mut logits) =
+            causal_prefill(weights, compute, config, CausalStage::Coarse, &embeddings)?;
         let window = COARSE_WINDOW.min(max_generated - coarse.len());
         for local in 0..window {
             let codebook = local % COARSE_CODEBOOKS;
@@ -432,10 +450,7 @@ fn generate_fine(
         }
     }
     fine.truncate(frames * CODEBOOKS_USED);
-    Ok(BarkGeneratedCodes {
-        codes: fine,
-        frames,
-    })
+    BarkGeneratedCodes::from_frame_major(fine, frames)
 }
 
 fn add_assign(left: &mut [f32], right: &[f32]) -> Result<()> {
@@ -477,11 +492,14 @@ mod tests {
 
     #[test]
     fn generated_codes_expose_frame_major_rows() {
-        let packet = BarkGeneratedCodes {
-            codes: (0..16).collect(),
-            frames: 2,
-        };
+        let packet = BarkGeneratedCodes::from_frame_major((0..16).collect(), 2).unwrap();
         assert_eq!(packet.frame(1).unwrap(), &[8, 9, 10, 11, 12, 13, 14, 15]);
         assert!(packet.frame(2).is_err());
+        assert!(BarkGeneratedCodes::from_frame_major(vec![0; 7], 1).is_err());
+        assert!(BarkGeneratedCodes::from_frame_major(vec![0; 8], 0).is_err());
+        assert!(
+            BarkGeneratedCodes::from_frame_major(vec![CODEBOOK_SIZE as u32; CODEBOOKS_USED], 1)
+                .is_err()
+        );
     }
 }

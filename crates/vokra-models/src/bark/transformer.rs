@@ -63,8 +63,6 @@ struct LayerKv {
 pub(super) struct CausalCache {
     stage: CausalStage,
     layers: Vec<LayerKv>,
-    /// Key visibility shared by every layer (semantic text padding mask).
-    visible: Vec<bool>,
     next_position: usize,
 }
 
@@ -73,7 +71,6 @@ impl CausalCache {
         Self {
             stage,
             layers: vec![LayerKv::default(); num_layers],
-            visible: Vec::new(),
             next_position: 0,
         }
     }
@@ -114,7 +111,6 @@ pub(super) fn causal_prefill(
     config: &BarkConfig,
     stage: CausalStage,
     embeddings: &[f32],
-    key_mask: Option<&[bool]>,
 ) -> Result<(CausalCache, Vec<f32>)> {
     let hidden = config.hidden_size;
     if embeddings.is_empty() || embeddings.len() % hidden != 0 {
@@ -125,19 +121,17 @@ pub(super) fn causal_prefill(
         )));
     }
     let rows = embeddings.len() / hidden;
-    if rows > config.block_size || key_mask.is_some_and(|mask| mask.len() != rows) {
+    if rows > config.block_size {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}/{}: prefill rows {rows}, mask {:?}, block size {}",
+            "{LABEL}/{}: prefill rows {rows} exceed block size {}",
             stage.prefix(),
-            key_mask.map(<[bool]>::len),
             config.block_size
         )));
     }
     let mut cache = CausalCache::new(stage, config.num_layers_per_stage);
     let mut logits = Vec::new();
-    for (position, row) in embeddings.chunks_exact(hidden).enumerate() {
-        let visible = key_mask.map_or(true, |mask| mask[position]);
-        logits = causal_step_embedding(weights, compute, config, &mut cache, row, visible)?;
+    for row in embeddings.chunks_exact(hidden) {
+        logits = causal_step_embedding(weights, compute, config, &mut cache, row)?;
     }
     Ok((cache, logits))
 }
@@ -151,7 +145,7 @@ pub(super) fn causal_token_step(
     token: u32,
 ) -> Result<Vec<f32>> {
     let embedding = causal_embedding(weights, config, cache.stage, token)?;
-    causal_step_embedding(weights, compute, config, cache, &embedding, true)
+    causal_step_embedding(weights, compute, config, cache, &embedding)
 }
 
 fn causal_step_embedding(
@@ -160,7 +154,6 @@ fn causal_step_embedding(
     config: &BarkConfig,
     cache: &mut CausalCache,
     embedding: &[f32],
-    visible: bool,
 ) -> Result<Vec<f32>> {
     let hidden = config.hidden_size;
     let position = cache.next_position;
@@ -192,9 +185,7 @@ fn causal_step_embedding(
             &base,
             &normalized,
             &mut cache.layers[layer],
-            &cache.visible,
             position,
-            visible,
         )?;
         add_assign(&mut state, &attended)?;
 
@@ -217,7 +208,6 @@ fn causal_step_embedding(
         hidden,
         &normalized,
     )?;
-    cache.visible.push(visible);
     cache.next_position += 1;
     Ok(logits)
 }
@@ -230,22 +220,16 @@ fn causal_attention(
     base: &str,
     input: &[f32],
     cache: &mut LayerKv,
-    visible_history: &[bool],
     position: usize,
-    current_visible: bool,
 ) -> Result<Vec<f32>> {
     let hidden = config.hidden_size;
     let heads = config.num_heads;
     let head_dim = hidden / heads;
-    if cache.key.len() != position * hidden
-        || cache.value.len() != position * hidden
-        || visible_history.len() != position
-    {
+    if cache.key.len() != position * hidden || cache.value.len() != position * hidden {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: K/V cache drift at {base}: key={} value={} mask={}, expected {}",
+            "{LABEL}: K/V cache drift at {base}: key={} value={}, expected {}",
             cache.key.len(),
             cache.value.len(),
-            visible_history.len(),
             position * hidden
         )));
     }
@@ -282,17 +266,8 @@ fn causal_attention(
             None,
             &mut scores,
         )?;
-        for (timestep, score) in scores.iter_mut().enumerate() {
-            let visible = if timestep == position {
-                current_visible
-            } else {
-                visible_history[timestep]
-            };
-            if visible {
-                *score *= scale;
-            } else {
-                *score = f32::MIN;
-            }
+        for score in &mut scores {
+            *score *= scale;
         }
         let mut probabilities = vec![0.0f32; sequence];
         compute.softmax_f32(&scores, &mut probabilities, 1, sequence)?;
