@@ -250,6 +250,20 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen embedded EnCodec waveform decode)
+
+The already-published Transformers-composite MusicGen Small/Melody artifacts
+gain a native 32 kHz token-to-waveform component. This is runtime consumption
+of tensors already covered by the artifact's non-commercial compliance gate;
+it adds no standalone EnCodec converter, zoo artifact, metadata key, C symbol,
+or publication permission.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::audiocraft_encodec` | `AudioCraftEncodecDecoder`, `AUDIOCRAFT_ENCODEC_HOT_OPS`, `SAMPLE_RATE`, `FRAME_HOP`, `NUM_CODEBOOKS`, `CODEBOOK_SIZE`, `DIMENSION` | Added | authenticated frame-major `[frames, 4]` EnCodec codes to mono `frames*640` FP32 PCM | Public construction remains through a compliance-checked mapping-owned MusicGen composite; no standalone weight path | no | (TBD) |
+| `vokra-models::musicgen` | `decode_codes`, `decode_frame_major` | Added | composite Small/Melody codec component API | LM-only Medium/Large return an explicit companion-required error; no fallback | no | (TBD) |
+| `vokra-models::compute` | `HotOp::EncodecRvq` Metal coverage | Changed | same shape-generic gather/fold kernel as Mimi RVQ, with EnCodec-specific host validation | CPU unchanged; Metal is now real; CUDA/WebGPU remain explicit unsupported | no | `cb3f2f67` |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (AudioCraft delayed-code generation)
 
 The mapping-owned AudioCraft LM route now composes its raw logits with the

@@ -42,9 +42,10 @@
 //!         "delay pattern" interleave over the 4 codebook streams;
 //!         the exact conditioner path differs between the published
 //!         AudioCraft and Transformers layouts.)
-//!   -> EnCodec RVQ codebook-to-latent fold            ← **primitive
-//!        (`vokra_ops::encodec_rvq_decode`)               exists**
-//!   -> neural SEANet decoder to 32 kHz PCM             ← **loud-partial**
+//!   -> EnCodec RVQ + neural SEANet to 32 kHz PCM       ← **real for
+//!                                                         composite Small/Melody**
+//!        (`decode_codes` / `decode_frame_major`; LM-only Medium/Large
+//!         require an explicit authenticated codec companion)
 //!   -> PCM (mono f32, 32 kHz)
 //! ```
 //!
@@ -84,9 +85,14 @@
 //!   - [`MusicGen::generate_codes`] runs AudioCraft's two-state CFG 3.0,
 //!     complete four-codebook delay mask and seeded top-k 250 sampling and
 //!     returns frame-major EnCodec indices without delay-padding tokens.
+//!   - Mapping-owned composite Small/Melody handles bind the embedded four
+//!     EnCodec codebooks plus complete non-causal SEANet decoder. RVQ,
+//!     convolution, transposed-convolution projection and LSTM projections
+//!     execute on the selected CPU/Metal backend; [`MusicGen::decode_codes`]
+//!     emits real 32 kHz mono PCM.
 //!
 //! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
-//!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
+//!   [`VokraError::UnsupportedOp`] naming the remaining layout-specific pieces:
 //!   1. prompt tokenization plus layout-specific conditioner binding:
 //!      composite files can use the landed
 //!      [`crate::t5_encoder::T5Encoder`] over `text_encoder.*`, whereas
@@ -94,10 +100,9 @@
 //!   2. the separate split-q/k/v Transformers-composite decoder composition
 //!      used by public Small/Melody. AudioCraft Medium/Large already expose
 //!      raw code generation through [`MusicGen::generate_codes`];
-//!   3. complete EnCodec waveform decoding. The landed
-//!      `vokra_ops::encodec_rvq_decode` performs only the codebook-to-
-//!      latent fold; the neural SEANet latent-to-PCM decoder is still
-//!      required.
+//!   3. an authenticated EnCodec companion for LM-only Medium/Large. The
+//!      complete embedded Small/Melody decoder is already available through
+//!      [`MusicGen::decode_codes`].
 //!
 //! The error names the **three primary source URLs** (HF card for the
 //! bound variant + AudioCraft repo + paper), the config axes echoed
@@ -111,8 +116,9 @@
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
 //! enum + FR-EX-08 loud-fails landed first. The AudioCraft raw LM step is now
-//! native through raw code generation; remaining work is the layout-specific
-//! conditioner/composite path and native SEANet waveform decoder.
+//! native through raw code generation, and composite EnCodec waveform decode
+//! is native. Remaining work is prompt composition, the Small/Melody LM
+//! layout, and explicit companion binding for LM-only files.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -182,6 +188,7 @@ use vokra_core::compliance::{CompliancePolicy, check_weight_license};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use crate::audiocraft_encodec::{AudioCraftEncodecDecoder, NUM_CODEBOOKS as ENCODEC_NUM_CODEBOOKS};
 use crate::audiocraft_lm::{
     AudioCraftCondition, AudioCraftGeneratedCodes, AudioCraftGenerationConfig, AudioCraftLmConfig,
     AudioCraftLmDecoder, AudioCraftLmState,
@@ -789,15 +796,15 @@ impl MusicGenWeights {
 /// CC-BY-NC-4.0 T4 tier).
 ///
 /// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
-/// currently fails explicitly until prompt conditioning, the AR decoder and
-/// complete EnCodec/SEANet waveform decoding are connected. See the module
-/// doc for the implementation-status matrix.
+/// currently fails explicitly until prompt conditioning and each layout's
+/// missing companion is connected. Raw LM generation (Medium/Large) and
+/// embedded EnCodec waveform decode (Small/Melody) are exposed separately.
 #[derive(Debug)]
 pub struct MusicGen {
     config: MusicGenConfig,
     variant: MusicGenVariant,
-    // The bound weights are held and manifest-verified, but prompt + AR-LM +
-    // EnCodec/SEANet execution is a follow-up wave; the field
+    // The bound weights are held and manifest-verified, but prompt + complete
+    // layout composition is a follow-up wave; the field
     // is deliberately `#[allow(dead_code)]` until the composition lands
     // so a reader is not misled by an unused field. Same posture as
     // RMVPE / pyannote / mt3 / beat_this / sortformer.
@@ -806,8 +813,11 @@ pub struct MusicGen {
     weight_license: LicenseClass,
     /// Present for the authenticated AudioCraft LM-only Medium/Large layouts
     /// opened through [`Self::from_path_with_policy_and_backend`]. Composite
-    /// Small/Melody execution remains a distinct tensor-layout binder.
+    /// Small/Melody LM execution remains a distinct tensor-layout binder.
     decoder: Option<AudioCraftLmDecoder>,
+    /// Present for authenticated Transformers-composite Small/Melody files,
+    /// which embed the complete 32 kHz EnCodec component.
+    codec_decoder: Option<AudioCraftEncodecDecoder>,
     backend: BackendKind,
 }
 
@@ -937,6 +947,7 @@ impl MusicGen {
             weights,
             weight_license,
             decoder: None,
+            codec_decoder: None,
             backend: BackendKind::Cpu,
         })
     }
@@ -968,19 +979,20 @@ impl MusicGen {
         let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
         let mut model = Self::from_gguf(&file)?;
         check_weight_license(&file, policy)?;
-        if model.artifact_layout() != MusicGenArtifactLayout::AudioCraftLm {
-            return Err(VokraError::UnsupportedOp(format!(
-                "musicgen {:?} uses the public Transformers composite tensor layout; \
-                 from_path_with_policy_and_backend currently executes only authenticated \
-                 AudioCraft LM-only Medium/Large checkpoints (FR-EX-08: explicit, no CPU fallback)",
-                model.variant
-            )));
+        match model.artifact_layout() {
+            MusicGenArtifactLayout::AudioCraftLm => {
+                model.decoder = Some(AudioCraftLmDecoder::bind(
+                    Arc::clone(&file),
+                    model.audiocraft_lm_config(),
+                    backend,
+                )?);
+            }
+            MusicGenArtifactLayout::TransformersComposite => {
+                model.codec_decoder = Some(AudioCraftEncodecDecoder::bind_transformers_composite(
+                    &file, backend,
+                )?);
+            }
         }
-        model.decoder = Some(AudioCraftLmDecoder::bind(
-            Arc::clone(&file),
-            model.audiocraft_lm_config(),
-            backend,
-        )?);
         model.backend = backend;
         Ok(model)
     }
@@ -1083,6 +1095,27 @@ impl MusicGen {
             .generate_codes(conditional, unconditional, generation)
     }
 
+    /// Decodes generated frame-major EnCodec indices to mono 32 kHz PCM.
+    ///
+    /// This is available on the public Small/Melody composite artifacts,
+    /// which embed the authenticated EnCodec tensors. Medium/Large are
+    /// LM-only artifacts and return an explicit companion-required error.
+    pub fn decode_codes(&self, codes: &AudioCraftGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != ENCODEC_NUM_CODEBOOKS {
+            return Err(VokraError::InvalidArgument(format!(
+                "musicgen EnCodec decode: generated codebook count {} != expected \
+                 {ENCODEC_NUM_CODEBOOKS}",
+                codes.num_codebooks()
+            )));
+        }
+        self.decode_frame_major(codes.as_frame_major(), codes.frames())
+    }
+
+    /// Decodes raw frame-major [frames, 4] EnCodec indices to mono 32 kHz PCM.
+    pub fn decode_frame_major(&self, codes: &[u32], frames: usize) -> Result<Vec<f32>> {
+        self.codec_decoder()?.decode_frame_major(codes, frames)
+    }
+
     fn audiocraft_lm_config(&self) -> AudioCraftLmConfig {
         AudioCraftLmConfig {
             d_model: self.config.d_model as usize,
@@ -1112,6 +1145,25 @@ impl MusicGen {
         })
     }
 
+    fn codec_decoder(&self) -> Result<&AudioCraftEncodecDecoder> {
+        self.codec_decoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::TransformersComposite => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so the codec weights can be bound"
+                }
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "this public Medium/Large artifact is LM-only and contains no EnCodec \
+                     tensors; supply an authenticated non-commercial codec companion explicitly"
+                }
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native EnCodec waveform decode unavailable: {reason} \
+                 (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
+    }
+
     /// Generates a `duration_secs`-length 32 kHz PCM stream conditioned
     /// on the text `prompt`.
     ///
@@ -1129,9 +1181,9 @@ impl MusicGen {
     ///    files use split q/k/v names and bundled encoder components. The
     ///    AudioCraft Medium/Large route already exposes CFG + delay-pattern
     ///    sampling through [`Self::generate_codes`].
-    /// 3. **Complete EnCodec waveform decode**:
-    ///    `vokra_ops::encodec_rvq_decode` supplies the codebook-to-latent
-    ///    fold, but the neural SEANet latent-to-PCM decoder is pending.
+    /// 3. **LM-only codec companion**: Medium/Large contain no EnCodec
+    ///    tensors. Composite Small/Melody already expose their complete
+    ///    embedded decoder through [`Self::decode_codes`].
     ///
     /// The error names **three** primary source URLs (HF card for the
     /// bound variant + AudioCraft repo + paper) so a reader diagnosing
@@ -1141,7 +1193,7 @@ impl MusicGen {
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for prompt /
-    ///   layout-specific companion composition and EnCodec waveform decode.
+    ///   layout-specific companion composition.
     pub fn generate(&self, prompt: &str, duration_secs: f32) -> Result<Vec<f32>> {
         // Bind unused args so a `#[warn(unused_variables)]` change does
         // not silently mask the loud-partial fire path; the future real
@@ -1158,8 +1210,8 @@ impl MusicGen {
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`MusicGen::generate`] until prompt/composite and EnCodec waveform
-/// companion composition lands.
+/// [`MusicGen::generate`] until prompt and layout-specific companion
+/// composition lands.
 ///
 /// Names **all three** primary source URLs (HF card for the bound
 /// variant + AudioCraft repo + paper) so a reader diagnosing the gap
@@ -1182,22 +1234,28 @@ fn generate_forward_loud_partial(
         }
         MusicGenArtifactLayout::TransformersComposite => {
             "this already-published GGUF is the Transformers composite layout: it carries \
-             `text_encoder.*` and `audio_encoder.*`, but tokenizer assets and strict \
-             composition of its split-q/k/v decoder into the generation API remain pending"
+             `text_encoder.*` and `audio_encoder.*`; the complete embedded EnCodec decoder is \
+             available through decode_codes, while tokenizer assets and strict composition of \
+             its split-q/k/v LM decoder into the generation API remain pending"
+        }
+    };
+    let codec_status = match layout {
+        MusicGenArtifactLayout::AudioCraftLm => {
+            "the LM-only artifact still requires an explicit authenticated EnCodec companion"
+        }
+        MusicGenArtifactLayout::TransformersComposite => {
+            "the embedded EnCodec RVQ + SEANet decoder is landed through decode_codes"
         }
     };
     VokraError::UnsupportedOp(format!(
-        "musicgen generate: prompt/layout companion composition + complete EnCodec waveform \
-         decoding pending. \
+        "musicgen generate: prompt/layout companion composition pending. \
          Artifact layout={layout:?}: {companion_gap}. What is missing is (a) the prompt \
          path — `crate::t5_encoder::T5Encoder` supplies native CPU/Metal T5-base math \
          for composite checkpoints, while LM-only checkpoints require an explicit \
          conditioner companion; independent real-weight parity remains pending — (b) the \
          Transformers-composite split-q/k/v decoder route for Small/Melody (the AudioCraft \
          Medium/Large raw LM plus MusicGen-specific 4-codebook delay pattern, CFG and \
-         sampling are landed through generate_codes), and (c) complete EnCodec decoding: \
-         `vokra_ops::encodec_rvq_decode` is only the landed codebook-to-latent fold; the \
-         neural SEANet decoder from latent frames to PCM must still be bound and run. \
+         sampling are landed through generate_codes). Codec status: {codec_status}. \
          Config: variant={variant_short}, d_model={d_model}, \
          num_layers={num_layers}, n_heads={n_heads}, num_codebooks={num_codebooks}, \
          sample_rate_hz={sample_rate_hz}. Requested prompt_len={prompt_len} chars, \
@@ -1237,8 +1295,9 @@ mod tests {
     //!
     //! The task spec asks for 5+ unit tests. On real inference this
     //! would be `generate(...)` returning real 32 kHz PCM, but the
-    //! prompt-conditioning + delay-pattern AR-LM + complete EnCodec/SEANet
-    //! composition is deferred (see the module doc +
+    //! prompt-conditioning plus the two LM layouts' complete composition is
+    //! deferred, while Medium/Large raw-code generation and Small/Melody
+    //! EnCodec/SEANet decode are real separate APIs (see the module doc +
     //! [`MusicGen::generate`] rustdoc). Fabricating a real-inference
     //! output would violate CLAUDE.md 教訓 (a) ("loud-partial は
     //! fake-complete より honest").
@@ -1615,9 +1674,8 @@ mod tests {
                     "message must point to the landed raw-code API, got `{m}`"
                 );
                 assert!(
-                    m.contains("encodec_rvq_decode"),
-                    "message must name the ONE landed anchor (`vokra_ops::encodec_rvq_decode`), \
-                     got `{m}`"
+                    m.contains("decode_codes"),
+                    "message must name the landed complete embedded EnCodec API, got `{m}`"
                 );
                 // All three primary source URLs must be cited — task
                 // hint requires this.

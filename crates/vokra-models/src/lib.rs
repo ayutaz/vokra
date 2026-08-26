@@ -628,6 +628,13 @@ pub mod sortformer_diar_4spk_v1;
 // music-source-separation Permissive land after BS-Roformer
 // Rejected).
 pub mod demucs;
+// Native AudioCraft EnCodec token-to-waveform component used by the
+// authenticated public MusicGen Small/Melody composite artifacts. This is a
+// runtime binder only: FR-OP-32 still forbids a standalone EnCodec converter,
+// model-zoo entry, or official weight publication. RVQ, Conv1D,
+// ConvTranspose projection and LSTM projection execute through one selected
+// CPU/Metal backend; unsupported coverage fails explicitly.
+pub mod audiocraft_encodec;
 // Wave 5 2026-08-14 audit follow-up (music generation — first runtime
 // binder): musicgen = Meta MusicGen family runtime binder (small 300M
 // + medium 1.5B, CC-BY-NC-4.0 T4). Autoregressive transformer LM over
@@ -636,10 +643,11 @@ pub mod demucs;
 // codebooks. Real config / variant / mapping-owned load / weight-license
 // surfacing; the AudioCraft Medium/Large raw LM step and its
 // delay/CFG/sampling route execute on CPU/Metal, while Small/Melody
-// retain a distinct composite-layout binder gap. Full generate remains
-// loud-partial pending prompt tokenization/conditioner and SEANet waveform
-// decode (the EnCodec RVQ latent-fold primitive exists via
-// vokra_ops::encodec_rvq_decode). Primary sources:
+// expose their embedded EnCodec RVQ + complete SEANet waveform decoder on
+// CPU/Metal but retain a distinct composite LM-layout gap. Full generate
+// remains loud-partial pending prompt tokenization/conditioner, Small/Melody
+// LM composition, and explicit codec companions for LM-only files. Primary
+// sources:
 // huggingface.co/facebook/musicgen-{small,medium} +
 // github.com/facebookresearch/audiocraft (MIT code) + arXiv:2306.05284
 // (Copet et al. 2023). §3.1 row 399 = ☑ Research-only 2026-08-01

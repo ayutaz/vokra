@@ -155,6 +155,14 @@ vokra-server -> vokra-piper-g2p -> piper-plus-g2p (ayutaz/piper-plus, rev b86df3
 | **HiFi-GAN reference** | MIT | MIT (公式) | ○ | ○ | Kaggle 系派生は要確認 |
 | **Vocos** | MIT | MIT | ○ | ★ 公式 zoo | Charactr AI **2026-08-21 runtime closure**: converter、両variant strict loader、8-block ConvNeXt 1D + iSTFT native forward、Encodec bandwidth-conditioned AdaLayerNorm、raw-feature CLI、公式 `vocos==0.1.0` real-weight parityを実装済み。Mel `max_abs=2.873130143e-7`、Encodec `max_abs=3.680586815e-6`（fixed bound `1e-5`）。distinct arch tag `vocos` from HiFi-GAN 系列。**§3.1 sign-off**: `Vocos mel 24kHz` / `Vocos encodec 24kHz` 参照（2026-08-01 yousan、MIT primary source実照合）。検証のみでweight upload/publishは未実施。 |
 
+**2026-08-26 runtime clarification**: `audiocraft_encodec` は、既存の
+MusicGen Small/Melody composite GGUFに既に含まれ、MusicGen全体の
+`NonCommercial` policy gateで保護される `audio_encoder.*` tensorを実行する
+component binderである。standalone EnCodec model kind / converter / zoo repo /
+publish routeは追加しないため、FR-OP-32の恒久除外と
+`check-encodec-exclusion.sh` は変更しない。runtime対応は再配布許可を意味せず、
+research-license opt-inは引き続き必須。
+
 **Voice cloning モデル分離** (レビュアー D 指摘 D4):
 - 上記表の RVC v2、GPT-SoVITS、その他話者クローン用途モデルは **`vokra-voiceclone-experimental` リポジトリに完全分離**
 - Vokra core は VAD/ASR/TTS のみを公式パッケージに含める
