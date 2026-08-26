@@ -1,150 +1,74 @@
-//! **SpeechT5 (TTS variant)** (`microsoft/speecht5_tts`, MIT):
-//! safetensors → GGUF conversion (implementer C wave, 2026-07-30).
+//! Strict Microsoft SpeechT5 TTS conversion.
 //!
-//! Input: the upstream `microsoft/speecht5_tts` release — the upstream
-//! ships `pytorch_model.bin` (torch pickle); callers must offline-flatten
-//! to safetensors first (mirror of the CSM / DAC / DFN3 prepare-script
-//! pattern — `crates/vokra-convert/src/models/{csm,dac,denoise}.rs`).
-//! Output: a GGUF carrying every float tensor plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks a future
-//! native SpeechT5 loader will read.
-//!
-//! # Architecture (primary source, 2026-07-30 CC fetch)
-//!
-//! SpeechT5 is Microsoft's **unified encoder-decoder pre-training**
-//! architecture (Ao et al., 2022; ACL 2022 highlight); the `_tts` head
-//! is the text-to-speech specialisation. TTS pipeline: text (SentencePiece
-//! character) → 12-layer Transformer encoder → cross-attention → 6-layer
-//! Transformer decoder → speech-decoder pre-net (256-unit MLP) → mel
-//! spectrogram (80 mel bins, reduction factor 2) → speech-decoder
-//! post-net (5-layer conv). Speaker conditioning is a **512-d x-vector**
-//! supplied by the caller (mirror of CAM++ / ECAPA-TDNN — SpeechT5 does
-//! NOT include a speaker encoder inside the checkpoint).
-//!
-//! Every hparam below is transcribed verbatim from `huggingface.co/
-//! microsoft/speecht5_tts/raw/main/config.json` (fetched 2026-07-30 —
-//! CLAUDE.md「ハルシネーション厳禁」):
-//!
-//! - `architectures = ["SpeechT5ForTextToSpeech"]`
-//! - `model_type = "speecht5"`
-//! - `hidden_size = 768`
-//! - `encoder_layers = 12` (shared unified encoder)
-//! - `decoder_layers = 6`
-//! - `encoder_attention_heads = 12`, `decoder_attention_heads = 12`
-//! - `encoder_ffn_dim = 3072`, `decoder_ffn_dim = 3072`
-//! - `vocab_size = 81` (SentencePiece character tokenizer)
-//! - `num_mel_bins = 80`
-//! - `reduction_factor = 2` (mel frames per decoder step)
-//! - `speech_decoder_prenet_units = 256`
-//! - `speech_decoder_postnet_layers = 5`
-//! - `speaker_embedding_dim = 512` (x-vector, caller-supplied)
-//!
-//! The `vokra.speecht5.*` hparam chunk pins every one of these fields
-//! so a future `SpeechT5Weights::from_gguf` reader can walk them without
-//! re-parsing the upstream `config.json`.
-//!
-//! # BF16 pass-through (mirror of `qwen3_tts` / `wespeaker` / `neucodec`)
-//!
-//! F32 / F16 / BF16 tensors pass through **verbatim** under their
-//! upstream safetensors names. BF16 stays GGUF type 30
-//! (`GgmlType::BF16`) — no convert-time widening; runtime widens BF16 →
-//! f32 losslessly at load via the single choke point
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16 is the
-//! top 16 bits of an f32 — `bits << 16` is exact).
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Neucodec contract). Real-weight binding is a follow-up
-//! wave gated on the upstream tensor-name manifest fetch; this converter
-//! passes every F32 / F16 / BF16 tensor through unchanged so a future
-//! `SpeechT5Weights::from_gguf` can walk the same names.
-//!
-//! # Scope — **only the TTS variant** (implementer C constraint)
-//!
-//! The sibling `microsoft/speecht5_vc` (voice-conversion) is deliberately
-//! **out of scope** per implementer C task spec: voice-conversion is a
-//! `vokra-voiceclone-experimental` (tier-5 別リポ) concern by CLAUDE.md
-//! 設計判断 8 (ELVIS Act 分離). This converter must never accept a
-//! `_vc` checkpoint — but shape-wise a `_vc` checkpoint is close enough
-//! that we cannot loudly reject it here (no shape difference identifies
-//! it); the discipline is enforced through the CLI slug (`speecht5-tts`
-//! is the only spelling that dispatches here) and the docstring above.
-//!
-//! # Real-weight parity
-//!
-//! Real-weight parity vs the upstream Microsoft SpeechT5 Python
-//! pipeline is deferred to owner (`docs/license-audit.md` §3.1
-//! sign-off) — this converter provides the byte-parallel GGUF surface
-//! only.
-//!
-//! # No ONNX (permanent)
-//!
-//! SpeechT5 is distributed as a torch pickle (`pytorch_model.bin`) via
-//! the HuggingFace `transformers` release; the converter **never**
-//! touches ONNX (FR-LD-05); the pipeline is re-implemented natively
-//! in a future `crates/vokra-models/src/speecht5/` module (whisper.cpp
-//! 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! The released checkpoint is a 393-float-tensor encoder/decoder after the
+//! prepare tool explicitly removes five named integer BatchNorm counters.
+//! Conversion is total and fail-closed: the exact
+//! names, shapes, F32 dtypes, fixed upstream revision and exact 81-piece
+//! `spm_char.model` are required. The runtime never parses torch pickle or
+//! SentencePiece protobuf; both are offline-converter concerns.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
+use crate::spm_proto::{PieceType, parse_model};
 
-/// `vokra.model.arch` for SpeechT5 TTS GGUFs. Distinct from every
-/// sibling TTS arch tag — silently sharing would misroute the runtime
-/// dispatch (SpeechT5 has a unique architecture: unified encoder +
-/// speech-decoder-prenet + speech-decoder-postnet + external speaker
-/// x-vector conditioning).
 pub(crate) const ARCH: &str = "speecht5";
-/// `vokra.model.name` value — pins the TTS variant explicitly so a
-/// consumer inspecting the artifact can tell it apart from the (future,
-/// out-of-scope) `_vc` release.
 pub(crate) const NAME: &str = "speecht5-tts";
-/// Model category tag — `tts`.
 pub(crate) const CATEGORY: &str = "tts";
-/// Upstream HuggingFace repo slug.
 pub(crate) const UPSTREAM_HF: &str = "microsoft/speecht5_tts";
-/// SPDX default license (upstream ships MIT end-to-end).
+pub(crate) const UPSTREAM_REVISION: &str = "30fcde30f19b87502b8435427b5f5068e401d5f6";
+/// Git-LFS/Xet content SHA-256 for `pytorch_model.bin` at the pinned revision.
+pub(crate) const SOURCE_WEIGHT_SHA256: &str =
+    "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190";
+/// SHA-256 for the exact upstream `spm_char.model`.
+pub(crate) const TOKENIZER_MODEL_SHA256: &str =
+    "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560";
+/// Canonical hash over the 393 inference tensor names and shapes.
+pub(crate) const TENSOR_MANIFEST_SHA256: &str =
+    "fd6a1323b4994781daf6b657e690cca1e741ee2f7810fab03d0d22bf62301e04";
 pub(crate) const DEFAULT_LICENSE: &str = "mit";
 
-// ---- Hparams (transcribed verbatim from upstream config.json) -----------
-
-/// `hidden_size = 768`.
 pub(crate) const HIDDEN_SIZE: u32 = 768;
-/// `encoder_layers = 12`.
 pub(crate) const ENCODER_LAYERS: u32 = 12;
-/// `decoder_layers = 6`.
 pub(crate) const DECODER_LAYERS: u32 = 6;
-/// `encoder_attention_heads = 12`.
 pub(crate) const ENCODER_ATTENTION_HEADS: u32 = 12;
-/// `decoder_attention_heads = 12`.
 pub(crate) const DECODER_ATTENTION_HEADS: u32 = 12;
-/// `encoder_ffn_dim = 3072`.
 pub(crate) const ENCODER_FFN_DIM: u32 = 3_072;
-/// `decoder_ffn_dim = 3072`.
 pub(crate) const DECODER_FFN_DIM: u32 = 3_072;
-/// `vocab_size = 81` (SentencePiece character tokenizer, `spm_char.model`).
 pub(crate) const VOCAB_SIZE: u32 = 81;
-/// `num_mel_bins = 80`.
 pub(crate) const NUM_MEL_BINS: u32 = 80;
-/// `reduction_factor = 2` — mel frames emitted per decoder step.
 pub(crate) const REDUCTION_FACTOR: u32 = 2;
-/// `speech_decoder_prenet_units = 256`.
 pub(crate) const SPEECH_DECODER_PRENET_UNITS: u32 = 256;
-/// `speech_decoder_postnet_layers = 5`.
+pub(crate) const SPEECH_DECODER_PRENET_LAYERS: u32 = 2;
+pub(crate) const SPEECH_DECODER_POSTNET_UNITS: u32 = 256;
 pub(crate) const SPEECH_DECODER_POSTNET_LAYERS: u32 = 5;
-/// `speaker_embedding_dim = 512` — caller-supplied x-vector.
+pub(crate) const SPEECH_DECODER_POSTNET_KERNEL: u32 = 5;
 pub(crate) const SPEAKER_EMBEDDING_DIM: u32 = 512;
+pub(crate) const MAX_TEXT_POSITIONS: u32 = 600;
+pub(crate) const MAX_SPEECH_POSITIONS: u32 = 1_876;
+pub(crate) const ENCODER_MAX_RELATIVE_POSITION: u32 = 160;
+pub(crate) const PAD_TOKEN_ID: u32 = 1;
+pub(crate) const EOS_TOKEN_ID: u32 = 2;
 
-// ---- Additive metadata keys ---------------------------------------------
+const TENSOR_COUNT: usize = 393;
+const SOURCE_TENSOR_COUNT: usize = 393;
+const TOKENIZER_PIECES: usize = 81;
+const TOKENIZER_PREFIX: &str = "vokra.speecht5.tokenizer";
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_SOURCE_REVISION: &str = "vokra.speecht5.source_revision";
+const KEY_SOURCE_WEIGHT_SHA256: &str = "vokra.speecht5.source_weight_sha256";
+const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.speecht5.tensor_manifest_sha256";
+const KEY_TOKENIZER_MODEL_SHA256: &str = "vokra.speecht5.tokenizer.model_sha256";
+const KEY_EXCLUDED_BATCH_COUNTERS: &str = "vokra.speecht5.excluded_batch_norm_counters";
 const KEY_HIDDEN_SIZE: &str = "vokra.speecht5.hidden_size";
 const KEY_ENCODER_LAYERS: &str = "vokra.speecht5.encoder_layers";
 const KEY_DECODER_LAYERS: &str = "vokra.speecht5.decoder_layers";
@@ -156,107 +80,434 @@ const KEY_VOCAB_SIZE: &str = "vokra.speecht5.vocab_size";
 const KEY_NUM_MEL_BINS: &str = "vokra.speecht5.num_mel_bins";
 const KEY_REDUCTION_FACTOR: &str = "vokra.speecht5.reduction_factor";
 const KEY_SPEECH_DECODER_PRENET_UNITS: &str = "vokra.speecht5.speech_decoder_prenet_units";
+const KEY_SPEECH_DECODER_PRENET_LAYERS: &str = "vokra.speecht5.speech_decoder_prenet_layers";
+const KEY_SPEECH_DECODER_PRENET_DROPOUT: &str = "vokra.speecht5.speech_decoder_prenet_dropout";
+const KEY_SPEECH_DECODER_POSTNET_UNITS: &str = "vokra.speecht5.speech_decoder_postnet_units";
 const KEY_SPEECH_DECODER_POSTNET_LAYERS: &str = "vokra.speecht5.speech_decoder_postnet_layers";
+const KEY_SPEECH_DECODER_POSTNET_KERNEL: &str = "vokra.speecht5.speech_decoder_postnet_kernel";
+const KEY_SPEECH_DECODER_POSTNET_DROPOUT: &str = "vokra.speecht5.speech_decoder_postnet_dropout";
 const KEY_SPEAKER_EMBEDDING_DIM: &str = "vokra.speecht5.speaker_embedding_dim";
+const KEY_MAX_TEXT_POSITIONS: &str = "vokra.speecht5.max_text_positions";
+const KEY_MAX_SPEECH_POSITIONS: &str = "vokra.speecht5.max_speech_positions";
+const KEY_ENCODER_MAX_RELATIVE_POSITION: &str = "vokra.speecht5.encoder_max_relative_position";
+const KEY_LAYER_NORM_EPS: &str = "vokra.speecht5.layer_norm_eps";
+const KEY_PAD_TOKEN_ID: &str = "vokra.speecht5.pad_token_id";
+const KEY_EOS_TOKEN_ID: &str = "vokra.speecht5.eos_token_id";
+const KEY_GENERATION_MAXLEN_RATIO: &str = "vokra.speecht5.generation.maxlen_ratio";
+const KEY_GENERATION_STOP_THRESHOLD: &str = "vokra.speecht5.generation.stop_threshold";
 
-/// Outcome of a SpeechT5 TTS conversion. Mirrors the sibling BF16
-/// pass-through report shape.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Counters from one successful strict SpeechT5 TTS conversion.
 pub struct SpeechT5Report {
-    /// Total tensors observed in the input safetensors header.
+    /// All prepared float tensors.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Exact inference tensors written to GGUF.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter).
+    /// Always zero; the pinned prepare tool removes the five named integer
+    /// `num_batches_tracked` scalars before this float-only reader runs.
     pub skipped_non_float: usize,
-    /// BF16 tensors on the pass-through arm.
+    /// Always zero for the pinned F32 release.
     pub bf16_passthrough: usize,
+    /// True only on the strict side-car entry point.
+    pub tokenizer_embedded: bool,
 }
 
-/// File-based SpeechT5 TTS converter (`vokra-cli convert --model
-/// speecht5-tts`).
-///
-/// Reads `input` (upstream `microsoft/speecht5_tts` flattened to
-/// safetensors — the upstream ships `pytorch_model.bin`, callers
-/// pre-flatten offline mirror of the CSM / DAC / DFN3 pattern), writes
-/// a Vokra GGUF to `output`. `license` overrides the default `mit`
-/// provenance stamp (see `convert_file_licensed` in `lib.rs`); pass
-/// `None` to keep the built-in `mit` stamp.
-///
-/// # Errors
-///
-/// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input;
-/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+/// The compatibility entry point is intentionally unusable: a runnable text
+/// TTS artifact requires the exact tokenizer side-car.
 pub fn convert_speecht5_file(
+    _input: &Path,
+    _output: &Path,
+    _license: Option<&str>,
+) -> Result<SpeechT5Report, ConvertError> {
+    Err(ConvertError::Usage(
+        "speecht5-tts requires the exact upstream spm_char.model; use \
+         convert_speecht5_file_with_tokenizer (CLI: --tokenizer spm_char.model)"
+            .to_owned(),
+    ))
+}
+
+/// Convert the pinned complete release and embed its exact SentencePiece
+/// vocabulary as dependency-free GGUF metadata.
+pub fn convert_speecht5_file_with_tokenizer(
     input: &Path,
     output: &Path,
     license: Option<&str>,
+    tokenizer_model: &Path,
 ) -> Result<SpeechT5Report, ConvertError> {
+    validate_license_override(license)?;
+    let tokenizer_bytes = std::fs::read(tokenizer_model)?;
+    let tokenizer = validate_tokenizer(&tokenizer_bytes)?;
     let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
+    let checkpoint = SafetensorsFile::parse(bytes)?;
+    validate_checkpoint(&checkpoint)?;
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_UPSTREAM_HF, UPSTREAM_HF);
+    let mut builder = GgufBuilder::new();
+    stamp_model_metadata(&mut builder);
+    stamp_tokenizer_metadata(&mut builder, &tokenizer);
 
-    // Hparam chunk — transcribed verbatim from upstream config.json.
-    b.add_u32(KEY_HIDDEN_SIZE, HIDDEN_SIZE);
-    b.add_u32(KEY_ENCODER_LAYERS, ENCODER_LAYERS);
-    b.add_u32(KEY_DECODER_LAYERS, DECODER_LAYERS);
-    b.add_u32(KEY_ENCODER_ATTENTION_HEADS, ENCODER_ATTENTION_HEADS);
-    b.add_u32(KEY_DECODER_ATTENTION_HEADS, DECODER_ATTENTION_HEADS);
-    b.add_u32(KEY_ENCODER_FFN_DIM, ENCODER_FFN_DIM);
-    b.add_u32(KEY_DECODER_FFN_DIM, DECODER_FFN_DIM);
-    b.add_u32(KEY_VOCAB_SIZE, VOCAB_SIZE);
-    b.add_u32(KEY_NUM_MEL_BINS, NUM_MEL_BINS);
-    b.add_u32(KEY_REDUCTION_FACTOR, REDUCTION_FACTOR);
-    b.add_u32(KEY_SPEECH_DECODER_PRENET_UNITS, SPEECH_DECODER_PRENET_UNITS);
-    b.add_u32(
-        KEY_SPEECH_DECODER_POSTNET_LAYERS,
-        SPEECH_DECODER_POSTNET_LAYERS,
-    );
-    b.add_u32(KEY_SPEAKER_EMBEDDING_DIM, SPEAKER_EMBEDDING_DIM);
-
-    // Self-describing redistribution: the artifact carries its own
-    // licence. Default = mit (upstream `microsoft/speecht5_tts` model
-    // card, fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE.to_owned(), LicenseClass::Permissive),
+    let mut report = SpeechT5Report {
+        read: checkpoint.tensors().len(),
+        tokenizer_embedded: true,
+        ..SpeechT5Report::default()
     };
-    vokra_core::stamp_provenance(&mut b, class, &spdx, Some(NAME), Some(UPSTREAM_HF));
+    for tensor in checkpoint.tensors() {
+        builder
+            .add_tensor(
+                &tensor.name,
+                tensor.dtype,
+                tensor.shape.clone(),
+                checkpoint.tensor_bytes(tensor).to_vec(),
+            )
+            .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+        report.written += 1;
+    }
+    debug_assert_eq!(report.written, TENSOR_COUNT);
+    debug_assert_eq!(report.skipped_non_float, 0);
 
-    let mut report = SpeechT5Report::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+    let output_bytes = builder
+        .to_bytes()
+        .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    std::fs::write(output, output_bytes)?;
+    Ok(report)
+}
+
+fn validate_license_override(license: Option<&str>) -> Result<(), ConvertError> {
+    if let Some(value) = license.filter(|value| !value.is_empty()) {
+        if !value.eq_ignore_ascii_case(DEFAULT_LICENSE) {
+            return Err(ConvertError::Usage(format!(
+                "speecht5-tts is pinned to the official {DEFAULT_LICENSE} checkpoint; refusing license override {value:?}"
+            )));
         }
     }
+    Ok(())
+}
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
-    Ok(report)
+fn stamp_model_metadata(builder: &mut GgufBuilder) {
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_UPSTREAM_HF, UPSTREAM_HF);
+    builder.add_string(KEY_SOURCE_REVISION, UPSTREAM_REVISION);
+    builder.add_string(KEY_SOURCE_WEIGHT_SHA256, SOURCE_WEIGHT_SHA256);
+    builder.add_string(KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256);
+    builder.add_string(KEY_TOKENIZER_MODEL_SHA256, TOKENIZER_MODEL_SHA256);
+    builder.add_u32(KEY_EXCLUDED_BATCH_COUNTERS, 5);
+
+    for (key, value) in [
+        (KEY_HIDDEN_SIZE, HIDDEN_SIZE),
+        (KEY_ENCODER_LAYERS, ENCODER_LAYERS),
+        (KEY_DECODER_LAYERS, DECODER_LAYERS),
+        (KEY_ENCODER_ATTENTION_HEADS, ENCODER_ATTENTION_HEADS),
+        (KEY_DECODER_ATTENTION_HEADS, DECODER_ATTENTION_HEADS),
+        (KEY_ENCODER_FFN_DIM, ENCODER_FFN_DIM),
+        (KEY_DECODER_FFN_DIM, DECODER_FFN_DIM),
+        (KEY_VOCAB_SIZE, VOCAB_SIZE),
+        (KEY_NUM_MEL_BINS, NUM_MEL_BINS),
+        (KEY_REDUCTION_FACTOR, REDUCTION_FACTOR),
+        (KEY_SPEECH_DECODER_PRENET_UNITS, SPEECH_DECODER_PRENET_UNITS),
+        (
+            KEY_SPEECH_DECODER_PRENET_LAYERS,
+            SPEECH_DECODER_PRENET_LAYERS,
+        ),
+        (
+            KEY_SPEECH_DECODER_POSTNET_UNITS,
+            SPEECH_DECODER_POSTNET_UNITS,
+        ),
+        (
+            KEY_SPEECH_DECODER_POSTNET_LAYERS,
+            SPEECH_DECODER_POSTNET_LAYERS,
+        ),
+        (
+            KEY_SPEECH_DECODER_POSTNET_KERNEL,
+            SPEECH_DECODER_POSTNET_KERNEL,
+        ),
+        (KEY_SPEAKER_EMBEDDING_DIM, SPEAKER_EMBEDDING_DIM),
+        (KEY_MAX_TEXT_POSITIONS, MAX_TEXT_POSITIONS),
+        (KEY_MAX_SPEECH_POSITIONS, MAX_SPEECH_POSITIONS),
+        (
+            KEY_ENCODER_MAX_RELATIVE_POSITION,
+            ENCODER_MAX_RELATIVE_POSITION,
+        ),
+        (KEY_PAD_TOKEN_ID, PAD_TOKEN_ID),
+        (KEY_EOS_TOKEN_ID, EOS_TOKEN_ID),
+    ] {
+        builder.add_u32(key, value);
+    }
+    builder.add_f32(KEY_LAYER_NORM_EPS, 1.0e-5);
+    builder.add_f32(KEY_SPEECH_DECODER_PRENET_DROPOUT, 0.5);
+    builder.add_f32(KEY_SPEECH_DECODER_POSTNET_DROPOUT, 0.5);
+    builder.add_f32(KEY_GENERATION_MAXLEN_RATIO, 20.0);
+    builder.add_f32(KEY_GENERATION_STOP_THRESHOLD, 0.5);
+
+    vokra_core::stamp_provenance(
+        builder,
+        LicenseClass::Permissive,
+        DEFAULT_LICENSE,
+        Some(NAME),
+        Some(UPSTREAM_HF),
+    );
+}
+
+#[derive(Debug)]
+struct TokenizerMetadata {
+    pieces: Vec<String>,
+    scores: Vec<f32>,
+}
+
+fn validate_tokenizer(bytes: &[u8]) -> Result<TokenizerMetadata, ConvertError> {
+    let actual = super::canary_1b_flash::hex(&super::canary_1b_flash::sha256(bytes));
+    if actual != TOKENIZER_MODEL_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "SpeechT5 spm_char.model SHA-256 {actual}, expected {TOKENIZER_MODEL_SHA256}"
+        )));
+    }
+    let model = parse_model(bytes)
+        .map_err(|error| ConvertError::Parse(format!("SpeechT5 spm_char.model: {error}")))?;
+    if model.pieces.len() != TOKENIZER_PIECES {
+        return Err(ConvertError::Parse(format!(
+            "SpeechT5 tokenizer has {} pieces, expected {TOKENIZER_PIECES}",
+            model.pieces.len()
+        )));
+    }
+    for (id, expected, expected_type) in [
+        (0usize, "<unk>", PieceType::Unknown),
+        (1usize, "<pad>", PieceType::Control),
+        (2usize, "</s>", PieceType::Control),
+    ] {
+        let piece = &model.pieces[id];
+        if piece.piece != expected || piece.piece_type != expected_type {
+            return Err(ConvertError::Parse(format!(
+                "SpeechT5 tokenizer id {id} is {:?}/{:?}, expected {expected:?}/{expected_type:?}",
+                piece.piece, piece.piece_type
+            )));
+        }
+    }
+    Ok(TokenizerMetadata {
+        pieces: model
+            .pieces
+            .iter()
+            .map(|piece| piece.piece.clone())
+            .collect(),
+        scores: model.pieces.iter().map(|piece| piece.score).collect(),
+    })
+}
+
+fn stamp_tokenizer_metadata(builder: &mut GgufBuilder, tokenizer: &TokenizerMetadata) {
+    builder.add_string(&format!("{TOKENIZER_PREFIX}.scheme"), "unigram");
+    builder.add_string(&format!("{TOKENIZER_PREFIX}.kind"), "sentencepiece-unigram");
+    builder.add_metadata(
+        &format!("{TOKENIZER_PREFIX}.pieces"),
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: tokenizer
+                .pieces
+                .iter()
+                .map(|piece| GgufMetadataValue::String(piece.clone()))
+                .collect(),
+        }),
+    );
+    builder.add_metadata(
+        &format!("{TOKENIZER_PREFIX}.scores"),
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::F32,
+            values: tokenizer
+                .scores
+                .iter()
+                .map(|score| GgufMetadataValue::F32(*score))
+                .collect(),
+        }),
+    );
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.unk_id"), 0);
+    // SpeechT5 has no separate BOS piece; config.json uses id 0.
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.bos_id"), 0);
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.pad_id"), PAD_TOKEN_ID);
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.eos_id"), EOS_TOKEN_ID);
+    builder.add_u32(&format!("{TOKENIZER_PREFIX}.vocab_size"), VOCAB_SIZE);
+}
+
+fn validate_checkpoint(checkpoint: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    let internal_hash =
+        super::canary_1b_flash::hex(&super::canary_1b_flash::manifest_sha256(&expected));
+    if expected.len() != TENSOR_COUNT || internal_hash != TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "SpeechT5 internal manifest drift: count={}, sha256={internal_hash}",
+            expected.len()
+        )));
+    }
+
+    let expected_names = expected.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let actual_names = checkpoint
+        .tensors()
+        .iter()
+        .map(|tensor| tensor.name.as_str())
+        .collect::<BTreeSet<_>>();
+    if actual_names != expected_names || checkpoint.tensors().len() != SOURCE_TENSOR_COUNT {
+        let missing = expected_names
+            .difference(&actual_names)
+            .take(8)
+            .copied()
+            .collect::<Vec<_>>();
+        let extra = actual_names
+            .difference(&expected_names)
+            .take(8)
+            .copied()
+            .collect::<Vec<_>>();
+        return Err(ConvertError::Parse(format!(
+            "SpeechT5 prepared checkpoint manifest mismatch: found {}, expected \
+             {SOURCE_TENSOR_COUNT}; missing={missing:?}, extra={extra:?}",
+            checkpoint.tensors().len()
+        )));
+    }
+
+    for tensor in checkpoint.tensors() {
+        let expected_shape = &expected[&tensor.name];
+        if &tensor.shape != expected_shape || tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "SpeechT5 tensor {:?} is {:?} {:?}, expected F32 {:?}",
+                tensor.name, tensor.dtype, tensor.shape, expected_shape
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut tensors = BTreeMap::new();
+    let mut add = |name: String, shape: &[u64]| {
+        assert!(tensors.insert(name, shape.to_vec()).is_none());
+    };
+
+    add("speech_decoder_postnet.feat_out.bias".into(), &[160]);
+    add("speech_decoder_postnet.feat_out.weight".into(), &[160, 768]);
+    for layer in 0..5 {
+        let channels = if layer == 4 { 80 } else { 256 };
+        let input_channels = if layer == 0 { 80 } else { 256 };
+        let prefix = format!("speech_decoder_postnet.layers.{layer}");
+        for name in ["bias", "running_mean", "running_var", "weight"] {
+            add(format!("{prefix}.batch_norm.{name}"), &[channels]);
+        }
+        add(
+            format!("{prefix}.conv.weight"),
+            &[channels, input_channels, 5],
+        );
+    }
+    add("speech_decoder_postnet.prob_out.bias".into(), &[2]);
+    add("speech_decoder_postnet.prob_out.weight".into(), &[2, 768]);
+
+    add("speecht5.decoder.prenet.encode_positions.alpha".into(), &[]);
+    add(
+        "speecht5.decoder.prenet.encode_positions.pe".into(),
+        &[1, 1_876, 768],
+    );
+    add("speecht5.decoder.prenet.final_layer.bias".into(), &[768]);
+    add(
+        "speecht5.decoder.prenet.final_layer.weight".into(),
+        &[768, 256],
+    );
+    for layer in 0..2 {
+        let input = if layer == 0 { 80 } else { 256 };
+        add(
+            format!("speecht5.decoder.prenet.layers.{layer}.bias"),
+            &[256],
+        );
+        add(
+            format!("speecht5.decoder.prenet.layers.{layer}.weight"),
+            &[256, input],
+        );
+    }
+    add(
+        "speecht5.decoder.prenet.speaker_embeds_layer.bias".into(),
+        &[768],
+    );
+    add(
+        "speecht5.decoder.prenet.speaker_embeds_layer.weight".into(),
+        &[768, 1_280],
+    );
+    for layer in 0..6 {
+        let prefix = format!("speecht5.decoder.wrapped_decoder.layers.{layer}");
+        for attention in ["encoder_attn", "self_attn"] {
+            for projection in ["k_proj", "out_proj", "q_proj", "v_proj"] {
+                add(format!("{prefix}.{attention}.{projection}.bias"), &[768]);
+                add(
+                    format!("{prefix}.{attention}.{projection}.weight"),
+                    &[768, 768],
+                );
+            }
+        }
+        for norm in [
+            "encoder_attn_layer_norm",
+            "final_layer_norm",
+            "self_attn_layer_norm",
+        ] {
+            add(format!("{prefix}.{norm}.bias"), &[768]);
+            add(format!("{prefix}.{norm}.weight"), &[768]);
+        }
+        add(
+            format!("{prefix}.feed_forward.intermediate_dense.bias"),
+            &[3_072],
+        );
+        add(
+            format!("{prefix}.feed_forward.intermediate_dense.weight"),
+            &[3_072, 768],
+        );
+        add(format!("{prefix}.feed_forward.output_dense.bias"), &[768]);
+        add(
+            format!("{prefix}.feed_forward.output_dense.weight"),
+            &[768, 3_072],
+        );
+    }
+
+    add(
+        "speecht5.encoder.prenet.embed_tokens.weight".into(),
+        &[81, 768],
+    );
+    add("speecht5.encoder.prenet.encode_positions.alpha".into(), &[]);
+    add(
+        "speecht5.encoder.prenet.encode_positions.pe".into(),
+        &[1, 600, 768],
+    );
+    add(
+        "speecht5.encoder.wrapped_encoder.embed_positions.pe_k.weight".into(),
+        &[320, 64],
+    );
+    add(
+        "speecht5.encoder.wrapped_encoder.layer_norm.bias".into(),
+        &[768],
+    );
+    add(
+        "speecht5.encoder.wrapped_encoder.layer_norm.weight".into(),
+        &[768],
+    );
+    for layer in 0..12 {
+        let prefix = format!("speecht5.encoder.wrapped_encoder.layers.{layer}");
+        for projection in ["k_proj", "out_proj", "q_proj", "v_proj"] {
+            add(format!("{prefix}.attention.{projection}.bias"), &[768]);
+            add(
+                format!("{prefix}.attention.{projection}.weight"),
+                &[768, 768],
+            );
+        }
+        for norm in ["final_layer_norm", "layer_norm"] {
+            add(format!("{prefix}.{norm}.bias"), &[768]);
+            add(format!("{prefix}.{norm}.weight"), &[768]);
+        }
+        add(
+            format!("{prefix}.feed_forward.intermediate_dense.bias"),
+            &[3_072],
+        );
+        add(
+            format!("{prefix}.feed_forward.intermediate_dense.weight"),
+            &[3_072, 768],
+        );
+        add(format!("{prefix}.feed_forward.output_dense.bias"), &[768]);
+        add(
+            format!("{prefix}.feed_forward.output_dense.weight"),
+            &[768, 3_072],
+        );
+    }
+
+    tensors
 }
 
 #[cfg(test)]
@@ -265,159 +516,113 @@ mod tests {
     use vokra_core::gguf::GgufFile;
 
     fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-speecht5-{}-{}-{}.bin",
-            tag,
+        std::env::temp_dir().join(format!(
+            "vokra-speecht5-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default(),
-        ));
-        p
-    }
-
-    fn safetensors_one_bf16(name: &str, shape: &[u64], bf16_bytes: &[u8]) -> Vec<u8> {
-        let elems: u64 = shape.iter().product();
-        assert_eq!(bf16_bytes.len(), elems as usize * 2);
-        let shape_str = shape
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let header = format!(
-            r#"{{"{name}":{{"dtype":"BF16","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
-            bf16_bytes.len()
-        );
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(bf16_bytes);
-        out
-    }
-
-    fn synth_bf16_input() -> (Vec<u8>, Vec<u8>) {
-        // Non-zero BF16 bits so a byte-identity assert catches a silent
-        // widen / downcast. Use an upstream-realistic tensor name.
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        let bytes = safetensors_one_bf16(
-            "speecht5.encoder.wrapped_encoder.layer.0.attention.k_proj.weight",
-            &[2, 3],
-            &bf16,
-        );
-        (bytes, bf16)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ))
     }
 
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synth_bf16_input();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).unwrap();
-
-        let report = convert_speecht5_file(&input, &output, None).expect("convert must succeed");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 1);
-
-        let file = GgufFile::parse(std::fs::read(&output).unwrap()).unwrap();
-        let info = file
-            .tensor_info("speecht5.encoder.wrapped_encoder.layer.0.attention.k_proj.weight")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(info), bf16_payload.as_slice());
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+    fn official_manifest_count_and_hash_are_pinned() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        assert_eq!(
+            super::super::canary_1b_flash::hex(&super::super::canary_1b_flash::manifest_sha256(
+                &manifest
+            )),
+            TENSOR_MANIFEST_SHA256
+        );
+        assert_eq!(
+            manifest["speecht5.encoder.wrapped_encoder.embed_positions.pe_k.weight"],
+            vec![320, 64]
+        );
+        assert_eq!(
+            manifest["speech_decoder_postnet.layers.4.conv.weight"],
+            vec![80, 256, 5]
+        );
     }
 
     #[test]
-    fn hparam_chunk_is_stamped() {
-        let (input_bytes, _) = synth_bf16_input();
-        let input = scratch_path("hp-in");
-        let output = scratch_path("hp-out");
-        std::fs::write(&input, &input_bytes).unwrap();
+    fn compatibility_entrypoint_requires_tokenizer() {
+        let error = convert_speecht5_file(Path::new("missing"), Path::new("out"), None)
+            .expect_err("weight-only conversion must fail");
+        assert!(error.to_string().contains("spm_char.model"));
+    }
 
-        convert_speecht5_file(&input, &output, None).expect("convert must succeed");
-        let file = GgufFile::parse(std::fs::read(&output).unwrap()).unwrap();
+    #[test]
+    fn wrong_tokenizer_fails_before_checkpoint_read() {
+        let tokenizer = scratch_path("bad-tokenizer");
+        let output = scratch_path("bad-tokenizer-output");
+        std::fs::write(&tokenizer, b"not the pinned tokenizer").unwrap();
+        let error = convert_speecht5_file_with_tokenizer(
+            Path::new("definitely-missing-checkpoint"),
+            &output,
+            None,
+            &tokenizer,
+        )
+        .expect_err("wrong tokenizer must fail first");
+        assert!(error.to_string().contains("SHA-256"));
+        assert!(!output.exists());
+        std::fs::remove_file(tokenizer).ok();
+    }
 
-        // Identity + provenance chunks.
+    #[test]
+    fn complete_runtime_metadata_is_stamped() {
+        let mut builder = GgufBuilder::new();
+        stamp_model_metadata(&mut builder);
+        stamp_tokenizer_metadata(
+            &mut builder,
+            &TokenizerMetadata {
+                pieces: (0..TOKENIZER_PIECES)
+                    .map(|index| format!("piece-{index}"))
+                    .collect(),
+                scores: vec![0.0; TOKENIZER_PIECES],
+            },
+        );
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
+            file.get(KEY_SOURCE_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(UPSTREAM_REVISION)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            file.get(KEY_TENSOR_MANIFEST_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(TENSOR_MANIFEST_SHA256)
         );
         assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
+            file.get(KEY_MAX_TEXT_POSITIONS)
+                .and_then(|value| value.as_u64()),
+            Some(600)
         );
         assert_eq!(
-            file.get(KEY_UPSTREAM_HF).and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF)
+            file.get(KEY_SPEECH_DECODER_PRENET_LAYERS)
+                .and_then(|value| value.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            file.get(&format!("{TOKENIZER_PREFIX}.vocab_size"))
+                .and_then(|value| value.as_u64()),
+            Some(81)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
+                .and_then(|value| value.as_str()),
             Some(DEFAULT_LICENSE)
         );
-
-        // Every one of the 13 hparam pins matches the transcribed
-        // upstream config.json values.
-        for (k, expect) in [
-            (KEY_HIDDEN_SIZE, 768u64),
-            (KEY_ENCODER_LAYERS, 12),
-            (KEY_DECODER_LAYERS, 6),
-            (KEY_ENCODER_ATTENTION_HEADS, 12),
-            (KEY_DECODER_ATTENTION_HEADS, 12),
-            (KEY_ENCODER_FFN_DIM, 3_072),
-            (KEY_DECODER_FFN_DIM, 3_072),
-            (KEY_VOCAB_SIZE, 81),
-            (KEY_NUM_MEL_BINS, 80),
-            (KEY_REDUCTION_FACTOR, 2),
-            (KEY_SPEECH_DECODER_PRENET_UNITS, 256),
-            (KEY_SPEECH_DECODER_POSTNET_LAYERS, 5),
-            (KEY_SPEAKER_EMBEDDING_DIM, 512),
-        ] {
-            assert_eq!(
-                file.get(k).and_then(|v| v.as_u64()),
-                Some(expect),
-                "{k} must be stamped as {expect}"
-            );
-        }
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
     }
 
     #[test]
-    fn license_override_reclassifies_provenance() {
-        let (input_bytes, _) = synth_bf16_input();
-        let input = scratch_path("lic-in");
-        let output = scratch_path("lic-out");
-        std::fs::write(&input, &input_bytes).unwrap();
-
-        convert_speecht5_file(&input, &output, Some("apache-2.0"))
-            .expect("convert must accept license override");
-        let file = GgufFile::parse(std::fs::read(&output).unwrap()).unwrap();
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+    fn license_override_is_canonical_and_fail_closed() {
+        validate_license_override(None).unwrap();
+        validate_license_override(Some("")).unwrap();
+        validate_license_override(Some("MIT")).unwrap();
+        let error = validate_license_override(Some("apache-2.0"))
+            .expect_err("a conflicting license must be refused");
+        assert!(error.to_string().contains("refusing license override"));
     }
 }

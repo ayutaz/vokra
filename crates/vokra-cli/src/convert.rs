@@ -24,8 +24,8 @@ use vokra_convert::{
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
     convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
     convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
-    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_speecht5_file_with_tokenizer, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -59,6 +59,8 @@ USAGE:
                       --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-cli convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> \
                       --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model speecht5-tts --input <model.safetensors> \
+                      --tokenizer <spm_char.model> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
@@ -699,12 +701,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::Canary
             | ModelKind::Canary1bFlash
             | ModelKind::ReazonspeechNemoV2
+            | ModelKind::SpeechT5Tts
             | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / reazonspeech-nemo-v2 / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / reazonspeech-nemo-v2 / speecht5-tts / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -1308,6 +1311,43 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
             convert_vits_ja_file(&p.input, &p.output)
+        }
+        ModelKind::SpeechT5Tts => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model speecht5-tts; preserve the pinned F32 checkpoint for CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model speecht5-tts; the fixed upstream config is stamped directly"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model speecht5-tts requires --tokenizer <spm_char.model> for executable text TTS"
+                    .to_owned()
+            })?;
+            let report = convert_speecht5_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)?.len(),
+                notes: vec![format!(
+                    "speecht5-tts: complete {}-tensor F32 inference manifest and exact 81-piece spm_char.model embedded; the pinned prepare step excludes five named integer BatchNorm counters",
+                    report.written
+                )],
+            })
         }
         ModelKind::StyleTts2 => {
             // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.

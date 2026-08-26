@@ -40,6 +40,16 @@ const BOUND_ARCHES: &[BoundArch] = &[
         cases = (
             (
                 audit.RepoRecord(
+                    "vokra/speecht5-tts",
+                    "abc",
+                    ("speecht5.gguf",),
+                    "speecht5",
+                ),
+                "no-runtime-binder",
+                "spm_char.model",
+            ),
+            (
+                audit.RepoRecord(
                     "vokra/sbv2-v2-jp-extra-base",
                     "abc",
                     ("model.gguf",),

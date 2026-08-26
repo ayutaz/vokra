@@ -25,7 +25,7 @@ use vokra_convert::{
     convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
     convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
     convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
-    convert_utmos_file,
+    convert_speecht5_file_with_tokenizer, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -44,6 +44,7 @@ USAGE:
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model canary-1b-flash --input <prepared.safetensors> --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
     vokra-convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-convert --model speecht5-tts --input <model.safetensors> --tokenizer <spm_char.model> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -203,10 +204,11 @@ fn main() -> ExitCode {
             | ModelKind::ParakeetTdt11b
             | ModelKind::Canary1bFlash
             | ModelKind::ReazonspeechNemoV2
+            | ModelKind::SpeechT5Tts
     ) && tokenizer.is_some()
     {
         eprintln!(
-            "error: --tokenizer is only supported for Parakeet, Canary-1B-Flash, and ReazonSpeech-NeMo-v2 models in the standalone converter\n\n{USAGE}"
+            "error: --tokenizer is only supported for Parakeet, Canary-1B-Flash, ReazonSpeech-NeMo-v2, and SpeechT5-TTS models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -455,6 +457,45 @@ fn main() -> ExitCode {
                     output_bytes,
                     notes: vec![format!(
                         "complete ReazonSpeech-NeMo-v2 {}-tensor manifest and tokenizer.vocab embedded",
+                        report.written
+                    )],
+                })
+            })
+        }
+        ModelKind::SpeechT5Tts => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for speecht5-tts; preserve F32 for CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: speecht5-tts uses its fixed upstream config and --tokenizer <spm_char.model>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model speecht5-tts requires --tokenizer <spm_char.model>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_speecht5_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete SpeechT5-TTS {}-tensor manifest and exact spm_char.model embedded",
                         report.written
                     )],
                 })

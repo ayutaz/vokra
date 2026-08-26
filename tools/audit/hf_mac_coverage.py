@@ -54,6 +54,15 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/speecht5-tts": (
+        "no-runtime-binder",
+        "the live 393-F32-tensor GGUF predates the strict pinned SpeechT5 "
+        "conversion contract and contains neither the exact 81-piece "
+        "spm_char.model vocabulary nor the fixed source/manifest/runtime "
+        "metadata. It cannot execute text TTS and must remain a loud public "
+        "artifact boundary pending the native runtime and an authorized "
+        "gated replacement",
+    ),
     "vokra/sbv2-v2-jp-extra-base": (
         "partial",
         "the live 1,264-tensor GGUF predates the strict SBV2 converter and keeps "

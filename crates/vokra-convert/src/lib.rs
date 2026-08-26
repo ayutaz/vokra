@@ -9530,19 +9530,11 @@ pub fn convert_file_licensed(
         }
         // === SpeechT5Tts (from wf_022575ce-077-3) ===
         ModelKind::SpeechT5Tts => {
-            let report = models::speecht5::convert_speecht5_file(input, output, license)?;
-            let notes = vec![format!(
-                "speecht5-tts: {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped",
-                report.written, report.bf16_passthrough, report.skipped_non_float,
-            )];
-            return Ok(ConvertSummary {
-                model: ModelKind::SpeechT5Tts,
-                tensor_count: report.written,
-                metadata_count: 0,
-                output_bytes: std::fs::metadata(output)?.len(),
-                notes,
-            });
+            return Err(ConvertError::Usage(
+                "speecht5-tts requires the exact upstream spm_char.model; use \
+                 convert_speecht5_file_with_tokenizer or the CLI --tokenizer path"
+                    .to_owned(),
+            ));
         }
         // === ParlerTtsMiniMultilingual (from wf_022575ce-077-3) ===
         ModelKind::ParlerTtsMiniMultilingual => {
@@ -13024,6 +13016,9 @@ pub use models::sber_gigaam_v3::{SberGigaamV3Report, convert_sber_gigaam_v3_file
 pub use models::sensevoicesmall::{SenseVoiceSmallReport, convert_sensevoicesmall_file};
 pub use models::sortformer_diar_4spk_v1::{
     SortformerDiar4spkV1Report, convert_sortformer_diar_4spk_v1_file,
+};
+pub use models::speecht5::{
+    SpeechT5Report, convert_speecht5_file, convert_speecht5_file_with_tokenizer,
 };
 pub use models::whisper_medusa_v1::{WhisperMedusaV1Report, convert_whisper_medusa_v1_file};
 // coverage-audit-2026-08-03 Wave D T4 (non-commercial batch, 2026-08-04).

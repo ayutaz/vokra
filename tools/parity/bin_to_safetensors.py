@@ -71,6 +71,7 @@ HF_ALLOW_PATTERNS = [
     "tokenizer.json",
     "vocab.txt",
     "spm.model",
+    "spm_char.model",
 ]
 
 # Basenames that DO NOT need conversion (auxiliary or non-primary weights).
@@ -110,14 +111,20 @@ def download_checkpoint(hf_repo: str, output_dir: Path, revision: "str | None") 
     return Path(local_dir)
 
 
-def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int]:
+def convert_bin_to_safetensors(
+    bin_path: Path,
+    out_path: Path,
+    skip_tensor_names: "frozenset[str] | None" = None,
+) -> tuple[int, int]:
     """Loads ``bin_path`` with ``torch.load(weights_only=True)``, verifies
     every value is a real tensor, then writes ``out_path`` via
     ``safetensors.torch.save_file``.
 
     Returns ``(tensor_count, total_param_count)``. Fails loud (raises) on
     the corruption modes documented in the module docstring — never writes
-    a partial file.
+    a partial file. ``skip_tensor_names`` is deliberately narrow: every name
+    must exist and identify a scalar int32/int64 training counter. It cannot
+    be used as a broad dtype or pattern-based filter.
     """
     try:
         import torch
@@ -190,6 +197,27 @@ def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int
             "Refusing to convert — safetensors is a tensor-only format."
         )
 
+    if skip_tensor_names:
+        missing_skips = skip_tensor_names.difference(state_dict)
+        if missing_skips:
+            sys.exit(
+                f"{bin_path} is missing {len(missing_skips)} explicitly requested "
+                f"skip tensor(s): {sorted(missing_skips)!r}. Refusing topology drift."
+            )
+        for name in sorted(skip_tensor_names):
+            value = state_dict[name]
+            if value.ndim != 0 or value.dtype not in (torch.int32, torch.int64):
+                sys.exit(
+                    f"{bin_path} requested skip tensor {name!r} is "
+                    f"shape={tuple(value.shape)!r} dtype={value.dtype}, expected a "
+                    "scalar integer training counter. Refusing a broad skip."
+                )
+            del state_dict[name]
+            print(
+                f"{LOG_PREFIX}   excluding training-only scalar {name!r}",
+                file=sys.stderr,
+            )
+
     # Force contiguous layout — safetensors requires it, and .bin sometimes
     # ships views onto shared underlying storage.
     state_dict = {k: v.contiguous() for k, v in state_dict.items()}
@@ -221,10 +249,17 @@ def convert_bin_to_safetensors(bin_path: Path, out_path: Path) -> tuple[int, int
     return len(state_dict), total_params
 
 
-def convert_local(input_path: Path, output_path: Path) -> int:
+def convert_local(
+    input_path: Path,
+    output_path: Path,
+    skip_tensor_names: "frozenset[str] | None" = None,
+) -> int:
     """Mode b: convert a single local torch pickle (.bin / .pt) to a specific
     .safetensors path. Same fail-loud posture as Mode a — see the module
     docstring. Refuses to overwrite an existing output.
+
+    ``skip_tensor_names`` is intended only for a model-specific wrapper that
+    pins exact training-only scalar counter names.
 
     Encountered on `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` (llm.pt / flow.pt /
     hift.pt shipped side-by-side; the whole-repo Mode a walk would fail its
@@ -242,7 +277,9 @@ def convert_local(input_path: Path, output_path: Path) -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"{LOG_PREFIX} converting {input_path} -> {output_path}")
-    tensor_count, total_params = convert_bin_to_safetensors(input_path, output_path)
+    tensor_count, total_params = convert_bin_to_safetensors(
+        input_path, output_path, skip_tensor_names
+    )
     print(
         f"{LOG_PREFIX} wrote {output_path} "
         f"({tensor_count} tensors, {total_params:,} total params)"
