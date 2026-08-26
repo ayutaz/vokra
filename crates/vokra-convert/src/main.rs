@@ -2398,6 +2398,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::MossTtsV15
         | ModelKind::MossTtsNano
         | ModelKind::MossTtsLocal
+        | ModelKind::MossVoiceGenerator
         // 2026-08-02 wave: MOSS-Audio-4B-Instruct
         // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Reuses
         // the sibling MossTts converter per the parent workflow's

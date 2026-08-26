@@ -1689,6 +1689,14 @@ pub enum ModelKind {
     /// on M1 iMac 16 GB — too tight for the whole-file
     /// `std::fs::read` path).
     MossTtsLocal,
+    /// OpenMOSS Team **MOSS-VoiceGenerator** checkpoint
+    /// (`OpenMOSS-Team/MOSS-VoiceGenerator`, apache-2.0). Although upstream
+    /// uses the same `moss_tts_delay` model type as MOSS-TTS, the released
+    /// checkpoint is a distinct Qwen3-1.7B topology: hidden=2048,
+    /// ffn=6144, 28 layers, 16Q/8KV heads, head_dim=128 and 16 audio
+    /// codebooks. It must not pass through the 8B/32-codebook
+    /// [`Self::MossTts`] converter arm.
+    MossVoiceGenerator,
     /// OpenMOSS Team **MOSS-Audio-4B-Instruct** checkpoint
     /// (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0, added
     /// 2026-08-02). Category `s2s` (audio-LLM — matches the sibling
@@ -4877,40 +4885,17 @@ impl ModelKind {
             | "moss_audio_8b"
             | "openmoss-team/moss-audio-8b-instruct"
             | "openmoss-team/moss-audio-8b" => Some(Self::MossAudio8bInstruct),
-            // 2026-08-01 Wave 4 slug-only add: OpenMOSS Team
-            // **MOSS-VoiceGenerator** (`OpenMOSS-Team/MOSS-VoiceGenerator`,
-            // apache-2.0). A distinct HF release under the same
-            // `moss_tts_delay` internal `model_type` tag as
-            // `OpenMOSS-Team/MOSS-TTS`, so the Delay-variant axes
-            // (Qwen3-8B backbone, n_vq=32, 24 kHz) already cover it and
-            // no new [`MossTtsVariant`] arm is required — the slug is
-            // routed to the existing [`Self::MossTts`] dispatch. The
-            // §3.1 sign-off row headed
-            // `MOSS-VoiceGenerator (\`OpenMOSS-Team/MOSS-VoiceGenerator\`)`
-            // is the publish gate that keeps this decision auditable
-            // (`scripts/publish/signoff_match.py::REPO_TO_SIGNOFF_ROWS`
-            // maps the `moss-voice-generator` slug to that row).
-            //
-            // NOTE — provenance stamp caveat: the underlying converter
-            // arm writes `vokra.provenance.upstream_hf =
-            // OpenMOSS-Team/MOSS-TTS` and `vokra.model.name = moss-tts`
-            // from [`MossTtsVariant::Delay`]. A future publish of the
-            // MOSS-VoiceGenerator checkpoint therefore requires either
-            // (a) a distinct `MossTtsVariant::VoiceGenerator` arm added
-            // to the converter so the provenance faithfully names the
-            // upstream repo, or (b) a `restamp` pass to rewrite the
-            // provenance chunk. Slug-only registration is the parent
-            // decision recorded in this file's landing wave; the
-            // §3.1 row + `check-catalog-reality.sh` slug alias +
-            // `LicenseClass::Permissive` registration are landed together
-            // so that the future publish path only needs the converter
-            // arm to close the loop.
+            // OpenMOSS Team **MOSS-VoiceGenerator**. Upstream reuses the
+            // `moss_tts_delay` class, but its official config and public
+            // 343-tensor GGUF are Qwen3-1.7B / 16-codebook rather than the
+            // MOSS-TTS 8B / 32-codebook topology. Keep a dedicated converter
+            // arm so neither shape metadata nor provenance can drift again.
             "moss-voice-generator"
             | "moss_voice_generator"
             | "moss-voicegenerator"
             | "moss_voicegenerator"
             | "openmoss-team/moss-voice-generator"
-            | "openmoss-team/moss-voicegenerator" => Some(Self::MossTts),
+            | "openmoss-team/moss-voicegenerator" => Some(Self::MossVoiceGenerator),
             "melotts-english"
             | "melotts_english"
             | "melo-tts-english"
@@ -6019,6 +6004,7 @@ impl ModelKind {
             Self::MossTtsLocal => "moss-tts-local",
             Self::MossTtsNano => "moss-tts-nano",
             Self::MossTtsV15 => "moss-tts-v1.5",
+            Self::MossVoiceGenerator => "moss-voice-generator",
             Self::MossAudio4bInstruct => "moss-audio-4b-instruct",
             Self::MossAudio8bInstruct => "moss-audio-8b-instruct",
             Self::MpSenet => "mp-senet",
@@ -9339,6 +9325,28 @@ pub fn convert_file_licensed(
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::MossTtsLocal,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        // === MOSS-VoiceGenerator (Qwen3-1.7B, Delay generation) ===
+        ModelKind::MossVoiceGenerator => {
+            let report = models::moss_tts::convert_moss_tts_file(
+                input,
+                output,
+                models::moss_tts::MossTtsVariant::VoiceGenerator,
+                license,
+            )?;
+            let notes = vec![format!(
+                "moss-voice-generator: {} float weights written verbatim ({} BF16 \
+                 passthrough), {} non-float skipped (variant=voice_generator, \
+                 backbone=qwen3-1.7b, n_vq=16, sr=24kHz)",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::MossVoiceGenerator,
                 tensor_count: report.written,
                 metadata_count: 0,
                 output_bytes: std::fs::metadata(output)?.len(),
@@ -16292,6 +16300,39 @@ mod modelkind_alias_and_roundtrip_tests {
                  above this test."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod moss_voice_generator_arm_tests {
+    use super::ModelKind;
+
+    #[test]
+    fn every_alias_uses_the_dedicated_voice_generator_variant() {
+        for slug in [
+            "moss-voice-generator",
+            "moss_voice_generator",
+            "moss-voicegenerator",
+            "moss_voicegenerator",
+            "openmoss-team/moss-voice-generator",
+            "openmoss-team/moss-voicegenerator",
+        ] {
+            assert_eq!(
+                ModelKind::from_arg(slug),
+                Some(ModelKind::MossVoiceGenerator),
+                "{slug:?} must not regress to the 8B MossTts converter"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_slug_round_trips() {
+        let slug = ModelKind::MossVoiceGenerator.as_arg();
+        assert_eq!(slug, "moss-voice-generator");
+        assert_eq!(
+            ModelKind::from_arg(slug),
+            Some(ModelKind::MossVoiceGenerator)
+        );
     }
 }
 

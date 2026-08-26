@@ -265,6 +265,19 @@ schema changes.
 | `vokra-backend-metal::MetalContext` | `gelu_new_f32` | Added | matching element-wise MSL dispatch | CPU/Metal max-absolute error must remain `<= 2e-6` on the committed wide-range test | no | (TBD) |
 | `vokra-models::compute` | `HotOp::GeluNew`, `Compute::gelu_new_f32` | Added | whole-model backend coverage plus typed imperative dispatch | Metal is covered; unwired backends fail without CPU fallback | no | (TBD) |
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MOSS-VoiceGenerator topology correction)
+
+The converter no longer infers 8B/32-codebook Delay axes from the shared
+upstream `moss_tts_delay` class. MOSS-VoiceGenerator is a separately named
+Qwen3-1.7B/16-codebook release. This source correction does not replace or
+upload the already-public GGUF with its stale legacy header.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-convert::ModelKind` | `MossVoiceGenerator` | Added | dedicated CLI/converter selector | Existing VoiceGenerator aliases now preserve the official release instead of routing through `MossTts` | behavior correction | (TBD) |
+| `vokra-convert::models::moss_tts` | `MossTtsVariant::VoiceGenerator` | Added | Qwen3 2048/6144/28/16Q/8KV, 16 codebooks, 24 kHz | Pinned to official revision `97521ec2…`; distinct from Delay despite shared upstream class | no | (TBD) |
+| `gguf:vokra.model.*`, `gguf:vokra.provenance.*`, `gguf:vokra.moss_tts.*` | VoiceGenerator identity and axes | Corrected | name `moss-voice-generator`, upstream `OpenMOSS-Team/MOSS-VoiceGenerator`, variant `voice_generator` | Future conversions are faithful; the published legacy artifact remains explicitly stale | yes for code relying on the incorrect 8B header | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS-TTS Nano contract correction)
 
 The MOSS-TTS Nano converter now follows the pinned custom GPT-2 source rather

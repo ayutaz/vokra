@@ -2559,6 +2559,39 @@ moves to CPU `full=111`, `partial=42`, `no-runtime-binder=40`,
 `not-artifact=1` and Metal `full=111`, `blocked-by-cpu=82`,
 `not-artifact=1`.
 
+### MOSS shared-architecture variant audit
+
+Header-only inspection of the public GGUFs and fixed-revision official source
+establishes three remaining TTS runtime contracts rather than one generic
+`moss_tts` route:
+
+- `vokra/moss-tts` and `vokra/moss-tts-v1.5` have the same 463-tensor
+  manifest `5a3578fb9e5704bf80a12715e8c944b2347457b57c9a4d6c055dc5b3b22e3d51`
+  and the official Qwen3-8B Delay generation topology. They can share one
+  native implementation while retaining strict, separate identities.
+- `vokra/moss-tts-local-transformer-v1.5` has 438 tensors and manifest
+  `9b4aa2eccae9174647aab381eb2e30741f31227bc604461ba99ccb30df71c35d`.
+  It is Qwen3 hidden 2560 with a 4096-wide Q projection plus a one-layer
+  local GPT-2 decoder and 12 codebooks; it is not Delay-compatible.
+- `vokra/moss-voice-generator` has 343 tensors and manifest
+  `9a874f010e6eb9f43fb7489cc2fcd24cc7655b2a995f610128aa8dac4841ddd5`.
+  Official revision `97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4` proves a
+  Qwen3-1.7B, 28-layer, 16-codebook Delay model. Its public GGUF header was
+  produced through the former 8B converter arm and is stale. Dedicated
+  converter identity/axes now prevent recurrence; no artifact upload was
+  performed.
+
+The next CPU/Metal implementation unit is the shared Base/v1.5 Delay graph,
+using mapped-lazy layer/head access so the 17 GB BF16 artifact never widens
+fully in memory. VoiceGenerator can then reuse the Delay execution algorithm
+under its own exact dimensions and manifest. Local remains a separate local-
+decoder implementation. These audit and converter changes do not alter the
+current runtime reachability counts.
+
+No weight payload, model inference or `vokra-models` Cargo command was run on
+the maintainer Mac for this audit. Only public GGUF prefixes, official config
+and source text, and the package-scoped serial converter test were used.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a

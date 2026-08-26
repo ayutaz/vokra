@@ -151,6 +151,9 @@ pub(crate) const UPSTREAM_HF_MOSS_TTS: &str = "OpenMOSS-Team/MOSS-TTS";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_V15: &str = "OpenMOSS-Team/MOSS-TTS-v1.5";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_NANO: &str = "OpenMOSS-Team/MOSS-TTS-Nano-100M";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_LOCAL: &str = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5";
+/// VoiceGenerator is a smaller `moss_tts_delay` release.  It shares the
+/// generation algorithm with Delay, but not the 8B tensor axes.
+pub(crate) const UPSTREAM_HF_MOSS_VOICE_GENERATOR: &str = "OpenMOSS-Team/MOSS-VoiceGenerator";
 /// MOSS-Audio-4B-Instruct HF release slug
 /// (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Distinct
 /// upstream sibling that shares the moss_tts family arch tag (this
@@ -175,6 +178,8 @@ pub(crate) const NAME_MOSS_TTS: &str = "moss-tts";
 pub(crate) const NAME_MOSS_TTS_V15: &str = "moss-tts-v1.5";
 pub(crate) const NAME_MOSS_TTS_NANO: &str = "moss-tts-nano-100m";
 pub(crate) const NAME_MOSS_TTS_LOCAL: &str = "moss-tts-local-transformer-v1.5";
+/// `vokra.model.name` for the distinct Qwen3-1.7B VoiceGenerator release.
+pub(crate) const NAME_MOSS_VOICE_GENERATOR: &str = "moss-voice-generator";
 /// `vokra.model.name` stamp for MOSS-Audio-4B-Instruct — the
 /// lower-cased HF slug tail, matching the sibling naming convention.
 pub(crate) const NAME_MOSS_AUDIO_4B_INSTRUCT: &str = "moss-audio-4b-instruct";
@@ -302,6 +307,24 @@ const DELAY_LLM_VOCAB: u32 = 155_648;
 const DELAY_LLM_ROPE_BASE: f32 = 1_000_000.0;
 const DELAY_LLM_RMS_NORM_EPS: f32 = 1e-6;
 
+/// MOSS-VoiceGenerator axes from the official `config.json` at revision
+/// `97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4` (fetched 2026-08-26).
+/// The upstream class is still `MossTTSDelayModel`, but the checkpoint is a
+/// Qwen3-1.7B / 16-codebook topology and must never inherit the 8B Delay
+/// constants merely because `model_type = "moss_tts_delay"` is shared.
+const VOICE_N_VQ: u32 = 16;
+const VOICE_AUDIO_VOCAB_SIZE: u32 = 1_024;
+const VOICE_SAMPLE_RATE: u32 = 24_000;
+const VOICE_LLM_HIDDEN: u32 = 2_048;
+const VOICE_LLM_FFN: u32 = 6_144;
+const VOICE_LLM_N_LAYER: u32 = 28;
+const VOICE_LLM_N_HEAD: u32 = 16;
+const VOICE_LLM_N_HEAD_KV: u32 = 8;
+const VOICE_LLM_HEAD_DIM: u32 = 128;
+const VOICE_LLM_VOCAB: u32 = 155_648;
+const VOICE_LLM_ROPE_BASE: f32 = 1_000_000.0;
+const VOICE_LLM_RMS_NORM_EPS: f32 = 1e-6;
+
 /// Nano axes. GPT-2 backbone — no RoPE, no RMSNorm; sentinels written
 /// for those keys so the runtime binder can tell "not applicable"
 /// apart from silent default (FR-EX-08).
@@ -389,6 +412,11 @@ pub(crate) enum MossTtsVariant {
     /// `moss_tts_local` release (Qwen3-flavour 2.5B + GPT-2 local
     /// head).
     Local,
+    /// `OpenMOSS-Team/MOSS-VoiceGenerator` — the Qwen3-1.7B
+    /// `moss_tts_delay` release with 28 layers and 16 audio codebooks.
+    /// It reuses Delay generation semantics, but has a distinct exact tensor
+    /// contract and provenance identity.
+    VoiceGenerator,
     /// `OpenMOSS-Team/MOSS-Audio-4B-Instruct` — a distinct 4B
     /// **audio-LLM** sibling (custom `configuration_moss_audio.py`
     /// module, `trust_remote_code=True`), reusing this converter per
@@ -443,6 +471,7 @@ impl MossTtsVariant {
             Self::Delay | Self::DelayV15 => "delay",
             Self::Nano => "nano",
             Self::Local => "local",
+            Self::VoiceGenerator => "voice_generator",
             // Distinct tag so a runtime dispatcher can distinguish the
             // audio-LLM sibling from the four `moss_tts_*` tts releases
             // and refuse to bind placeholder axes.
@@ -458,6 +487,7 @@ impl MossTtsVariant {
             Self::DelayV15 => NAME_MOSS_TTS_V15,
             Self::Nano => NAME_MOSS_TTS_NANO,
             Self::Local => NAME_MOSS_TTS_LOCAL,
+            Self::VoiceGenerator => NAME_MOSS_VOICE_GENERATOR,
             Self::AudioInstruct4b => NAME_MOSS_AUDIO_4B_INSTRUCT,
             Self::AudioInstruct8b => NAME_MOSS_AUDIO_8B_INSTRUCT,
         }
@@ -470,6 +500,7 @@ impl MossTtsVariant {
             Self::DelayV15 => UPSTREAM_HF_MOSS_TTS_V15,
             Self::Nano => UPSTREAM_HF_MOSS_TTS_NANO,
             Self::Local => UPSTREAM_HF_MOSS_TTS_LOCAL,
+            Self::VoiceGenerator => UPSTREAM_HF_MOSS_VOICE_GENERATOR,
             Self::AudioInstruct4b => UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT,
             Self::AudioInstruct8b => UPSTREAM_HF_MOSS_AUDIO_8B_INSTRUCT,
         }
@@ -482,7 +513,9 @@ impl MossTtsVariant {
     /// `step_audio2_mini` already stamp).
     pub(crate) const fn category(self) -> &'static str {
         match self {
-            Self::Delay | Self::DelayV15 | Self::Nano | Self::Local => MODEL_CATEGORY,
+            Self::Delay | Self::DelayV15 | Self::Nano | Self::Local | Self::VoiceGenerator => {
+                MODEL_CATEGORY
+            }
             Self::AudioInstruct4b | Self::AudioInstruct8b => MODEL_CATEGORY_S2S,
         }
     }
@@ -493,6 +526,7 @@ impl MossTtsVariant {
             Self::Delay
             | Self::DelayV15
             | Self::Local
+            | Self::VoiceGenerator
             | Self::AudioInstruct4b
             | Self::AudioInstruct8b => "qwen3",
             Self::Nano => "gpt2",
@@ -508,6 +542,7 @@ impl MossTtsVariant {
     pub(crate) const fn n_vq(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_N_VQ,
+            Self::VoiceGenerator => VOICE_N_VQ,
             Self::Nano => NANO_N_VQ,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_N_VQ,
         }
@@ -515,6 +550,7 @@ impl MossTtsVariant {
     pub(crate) const fn audio_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_AUDIO_VOCAB_SIZE,
+            Self::VoiceGenerator => VOICE_AUDIO_VOCAB_SIZE,
             Self::Nano => NANO_AUDIO_VOCAB_SIZE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_AUDIO_VOCAB_SIZE,
         }
@@ -522,6 +558,7 @@ impl MossTtsVariant {
     pub(crate) const fn sample_rate(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_SAMPLE_RATE,
+            Self::VoiceGenerator => VOICE_SAMPLE_RATE,
             Self::Nano => NANO_SAMPLE_RATE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_SAMPLE_RATE,
         }
@@ -529,6 +566,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_hidden_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HIDDEN,
+            Self::VoiceGenerator => VOICE_LLM_HIDDEN,
             Self::Nano => NANO_LLM_HIDDEN,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HIDDEN,
         }
@@ -536,6 +574,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_ffn_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_FFN,
+            Self::VoiceGenerator => VOICE_LLM_FFN,
             Self::Nano => NANO_LLM_FFN,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_FFN,
         }
@@ -543,6 +582,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_layer(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_LAYER,
+            Self::VoiceGenerator => VOICE_LLM_N_LAYER,
             Self::Nano => NANO_LLM_N_LAYER,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_LAYER,
         }
@@ -550,6 +590,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_head(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD,
+            Self::VoiceGenerator => VOICE_LLM_N_HEAD,
             Self::Nano => NANO_LLM_N_HEAD,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD,
         }
@@ -557,6 +598,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_head_kv(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD_KV,
+            Self::VoiceGenerator => VOICE_LLM_N_HEAD_KV,
             Self::Nano => NANO_LLM_N_HEAD_KV,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD_KV,
         }
@@ -564,6 +606,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_head_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HEAD_DIM,
+            Self::VoiceGenerator => VOICE_LLM_HEAD_DIM,
             Self::Nano => NANO_LLM_HEAD_DIM,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HEAD_DIM,
         }
@@ -571,6 +614,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_VOCAB,
+            Self::VoiceGenerator => VOICE_LLM_VOCAB,
             Self::Nano => NANO_LLM_VOCAB,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_VOCAB,
         }
@@ -578,6 +622,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_rope_base(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_ROPE_BASE,
+            Self::VoiceGenerator => VOICE_LLM_ROPE_BASE,
             Self::Nano => NANO_LLM_ROPE_BASE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_ROPE_BASE,
         }
@@ -585,6 +630,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_rms_norm_eps(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_RMS_NORM_EPS,
+            Self::VoiceGenerator => VOICE_LLM_RMS_NORM_EPS,
             Self::Nano => NANO_LLM_RMS_NORM_EPS,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_RMS_NORM_EPS,
         }
@@ -652,6 +698,9 @@ pub(crate) fn convert_variant(
         }
         MossTtsVariant::Local => {
             "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (moss_tts_local, Qwen3-2.5B backbone, apache-2.0)"
+        }
+        MossTtsVariant::VoiceGenerator => {
+            "OpenMOSS-Team/MOSS-VoiceGenerator (moss_tts_delay, Qwen3-1.7B backbone, apache-2.0)"
         }
         MossTtsVariant::AudioInstruct4b => {
             "OpenMOSS-Team/MOSS-Audio-4B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
@@ -729,6 +778,7 @@ pub fn convert_moss_tts_file(
                 MossTtsVariant::DelayV15 => "OpenMOSS-Team/MOSS-TTS-v1.5",
                 MossTtsVariant::Nano => "OpenMOSS-Team/MOSS-TTS-Nano-100M",
                 MossTtsVariant::Local => "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+                MossTtsVariant::VoiceGenerator => "OpenMOSS-Team/MOSS-VoiceGenerator",
                 MossTtsVariant::AudioInstruct4b => "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
                 MossTtsVariant::AudioInstruct8b => "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
             }),
@@ -931,6 +981,24 @@ mod tests {
         assert!((LOCAL_LLM_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
     }
 
+    #[test]
+    fn voice_generator_constants_match_primary_source() {
+        // OpenMOSS-Team/MOSS-VoiceGenerator config.json at
+        // 97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4, fetched 2026-08-26.
+        assert_eq!(VOICE_N_VQ, 16);
+        assert_eq!(VOICE_AUDIO_VOCAB_SIZE, 1_024);
+        assert_eq!(VOICE_SAMPLE_RATE, 24_000);
+        assert_eq!(VOICE_LLM_HIDDEN, 2_048);
+        assert_eq!(VOICE_LLM_FFN, 6_144);
+        assert_eq!(VOICE_LLM_N_LAYER, 28);
+        assert_eq!(VOICE_LLM_N_HEAD, 16);
+        assert_eq!(VOICE_LLM_N_HEAD_KV, 8);
+        assert_eq!(VOICE_LLM_HEAD_DIM, 128);
+        assert_eq!(VOICE_LLM_VOCAB, 155_648);
+        assert_eq!(VOICE_LLM_ROPE_BASE, 1_000_000.0);
+        assert!((VOICE_LLM_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
+    }
+
     // ─── Variant selectors ───────────────────────────────────────────
 
     #[test]
@@ -941,6 +1009,7 @@ mod tests {
         assert_eq!(MossTtsVariant::DelayV15.sub_arch(), "delay");
         assert_eq!(MossTtsVariant::Nano.sub_arch(), "nano");
         assert_eq!(MossTtsVariant::Local.sub_arch(), "local");
+        assert_eq!(MossTtsVariant::VoiceGenerator.sub_arch(), "voice_generator");
     }
 
     #[test]
@@ -957,21 +1026,24 @@ mod tests {
             MossTtsVariant::DelayV15.name(),
             MossTtsVariant::Nano.name(),
             MossTtsVariant::Local.name(),
+            MossTtsVariant::VoiceGenerator.name(),
             MossTtsVariant::AudioInstruct4b.name(),
             MossTtsVariant::AudioInstruct8b.name(),
         ];
         for n in names.iter() {
             assert_eq!(n.to_ascii_lowercase(), *n, "NAME must be lower-case: {n}");
             assert!(
-                n.starts_with("moss-tts") || n.starts_with("moss-audio-"),
-                "NAME must start with moss-tts or moss-audio-: {n}"
+                n.starts_with("moss-tts")
+                    || n.starts_with("moss-audio-")
+                    || n.starts_with("moss-voice-"),
+                "NAME must start with moss-tts, moss-audio-, or moss-voice-: {n}"
             );
         }
-        // Distinctness: 6 variants, 6 unique names.
+        // Distinctness: 7 variants, 7 unique names.
         let mut seen: Vec<&str> = names.to_vec();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), 6, "every variant must have a unique NAME");
+        assert_eq!(seen.len(), 7, "every variant must have a unique NAME");
     }
 
     #[test]
@@ -994,6 +1066,10 @@ mod tests {
             MossTtsVariant::Local.upstream_hf(),
             "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
         );
+        assert_eq!(
+            MossTtsVariant::VoiceGenerator.upstream_hf(),
+            "OpenMOSS-Team/MOSS-VoiceGenerator"
+        );
     }
 
     #[test]
@@ -1002,6 +1078,7 @@ mod tests {
         assert_eq!(MossTtsVariant::DelayV15.llm_family(), "qwen3");
         assert_eq!(MossTtsVariant::Nano.llm_family(), "gpt2");
         assert_eq!(MossTtsVariant::Local.llm_family(), "qwen3");
+        assert_eq!(MossTtsVariant::VoiceGenerator.llm_family(), "qwen3");
     }
 
     #[test]
@@ -1150,6 +1227,33 @@ mod tests {
     }
 
     #[test]
+    fn voice_generator_round_trip_emits_1_7b_axes_and_identity() {
+        let file = round_trip(MossTtsVariant::VoiceGenerator);
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME_MOSS_VOICE_GENERATOR)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF_MOSS_VOICE_GENERATOR)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_VARIANT).and_then(|v| v.as_str()),
+            Some("voice_generator")
+        );
+        assert_eq!(get_u32(&file, KEY_MOSS_N_VQ), VOICE_N_VQ);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), VOICE_LLM_HIDDEN);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_FFN_DIM), VOICE_LLM_FFN);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_N_LAYER), VOICE_LLM_N_LAYER);
+        assert_ne!(
+            get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM),
+            DELAY_LLM_HIDDEN,
+            "VoiceGenerator must never inherit the 8B Delay axes"
+        );
+    }
+
+    #[test]
     fn audio_instruct_4b_round_trip_stamps_audio_llm_provenance() {
         // MOSS-Audio-4B-Instruct reuses this converter per the parent
         // workflow's REUSE HINT (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`,
@@ -1209,6 +1313,7 @@ mod tests {
             MossTtsVariant::DelayV15,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::VoiceGenerator,
         ] {
             let sibling = round_trip(tts_variant);
             assert_eq!(
@@ -1267,6 +1372,7 @@ mod tests {
             MossTtsVariant::DelayV15,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::VoiceGenerator,
             MossTtsVariant::AudioInstruct4b,
             MossTtsVariant::AudioInstruct8b,
         ] {
@@ -1323,6 +1429,7 @@ mod tests {
             MossTtsVariant::Delay,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::VoiceGenerator,
             MossTtsVariant::AudioInstruct4b,
             MossTtsVariant::AudioInstruct8b,
         ] {
