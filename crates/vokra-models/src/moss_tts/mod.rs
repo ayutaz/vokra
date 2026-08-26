@@ -16,6 +16,9 @@ use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
+use crate::moss_audio_tokenizer::{
+    MossAudioTokenizer, MossAudioTokenizerVariant, MossDecodedAudio,
+};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 pub use self::generation::MossTtsGeneratedCodes;
@@ -55,6 +58,16 @@ pub const MOSS_TTS_NANO_HOT_OPS: &[HotOp] = &[
     HotOp::LayerNorm,
     HotOp::GeluNew,
 ];
+
+/// Generated Nano codes and their authenticated codec decode.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MossTtsSynthesis {
+    /// Greedy frame-major language-model output.
+    pub generated: MossTtsGeneratedCodes,
+    /// Native MOSS Audio Tokenizer Nano 48 kHz stereo decode.
+    pub audio: MossDecodedAudio,
+}
 
 const LABEL: &str = "moss_tts/nano";
 const TENSOR_COUNT: usize = 194;
@@ -149,6 +162,38 @@ impl MossTtsNano {
     ) -> Result<MossTtsGeneratedCodes> {
         let compute = Compute::for_backend(self.backend, MOSS_TTS_NANO_HOT_OPS)?;
         generation::generate_codes(&compute, &self.weights, prompt_rows, max_new_frames)
+    }
+
+    /// Runs the complete explicit-companion path from a `[rows,17]` prompt
+    /// matrix to 48 kHz stereo PCM. The codec must be the authenticated Nano
+    /// release and must use the same backend; Full substitution and a hidden
+    /// CPU codec fallback are both rejected.
+    pub fn synthesize_prompt_rows(
+        &self,
+        codec: &MossAudioTokenizer,
+        prompt_rows: &[u32],
+        max_new_frames: usize,
+    ) -> Result<MossTtsSynthesis> {
+        if codec.variant() != MossAudioTokenizerVariant::Nano {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{LABEL}: synthesis requires the exact MOSS Audio Tokenizer Nano companion; got {:?}",
+                codec.variant()
+            )));
+        }
+        if codec.backend() != self.backend {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: LLM backend {:?} does not match codec backend {:?}; the composed graph must select one backend and never hide a CPU fallback",
+                self.backend,
+                codec.backend()
+            )));
+        }
+        let generated = self.generate_codes(prompt_rows, max_new_frames)?;
+        let audio = codec.decode_frame_major(
+            &generated.codes,
+            generated.frames,
+            generated.num_codebooks,
+        )?;
+        Ok(MossTtsSynthesis { generated, audio })
     }
 }
 
