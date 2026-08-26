@@ -65,6 +65,10 @@ pub(crate) enum ModelTask {
     /// That concrete surface also exposes the released language-prompt map;
     /// neither facility exists on the generic `AsrEngine` trait.
     AsrNemotron,
+    /// NVIDIA Parakeet-TDT-1.1B with an optional authenticated plaintext
+    /// SentencePiece vocabulary sidecar. The concrete engine binds once in
+    /// run/bench so the 4.28 GB F32 payload is never duplicated.
+    AsrParakeetTdt11b,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
     /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
@@ -616,6 +620,8 @@ const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
 const ARCH_MOONSHINE: &str = "moonshine";
 /// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
 const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
+/// Original NVIDIA Parakeet-TDT-1.1B NeMo release.
+const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 /// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 /// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
@@ -856,6 +862,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 .map_err(|error| error.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_TDT_1_1B => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` (got `{ARCH_PARAKEET_TDT_1_1B}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrParakeetTdt11b))
         }
         ARCH_NEMOTRON_ASR => {
             if hint.is_some() {
@@ -1693,6 +1707,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
                  `{ARCH_MOONSHINE}` / `{ARCH_PARAKEET_TDT}` / \
+                 `{ARCH_PARAKEET_TDT_1_1B}` / \
                  `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
@@ -1820,14 +1835,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
         probe: Some(|g: &GgufFile| {
             vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "parakeet-tdt-1_1b",
-        module: "vokra_models::parakeet_tdt_1_1b",
-        entry: "ParakeetTdt11b::from_gguf → ParakeetTdt11b::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
@@ -2513,6 +2520,28 @@ mod tests {
         let (_session, task) = result.expect("Nemotron session builds bare");
         assert_eq!(task, ModelTask::AsrNemotron);
         assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_NEMOTRON_ASR));
+    }
+
+    #[test]
+    fn load_session_detects_parakeet_tdt_1_1b_as_native_asr_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_PARAKEET_TDT_1_1B);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-parakeet-tdt-1-1b-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("Parakeet-TDT-1.1B session builds bare");
+        assert_eq!(task, ModelTask::AsrParakeetTdt11b);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_PARAKEET_TDT_1_1B)
+        );
     }
 
     /// Task hints are rejected on the voxtral arch (FR-EX-08 — no silent
@@ -3290,6 +3319,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_NEMOTRON_ASR,
             ARCH_WHISPER_MEDUSA_V1,
@@ -3697,6 +3727,7 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,

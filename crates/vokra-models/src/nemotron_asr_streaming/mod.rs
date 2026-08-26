@@ -346,7 +346,7 @@ impl NemotronAsr {
             &ids,
             self.config.blank_token_id,
             self.config.pad_token_id,
-            self.config.blank_token_id,
+            None,
         )?;
         Ok(Transcription::new(text))
     }

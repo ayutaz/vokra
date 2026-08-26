@@ -130,10 +130,10 @@ OPTIONS:
                                 Nano requires Audio Tokenizer Nano; Base/v1.5
                                 require Audio Tokenizer Full. Both stages must
                                 support the same selected backend.
-    --tokenizer <path>          Nemotron 3.5 ASR only: authenticated official
-                                tokenizer.json sidecar. Required for the
-                                published legacy GGUF; newly converted files
-                                embed the same bytes and do not need this flag.
+    --tokenizer <path>          Authenticated ASR tokenizer sidecar: Nemotron
+                                uses tokenizer.json; Parakeet-TDT-1.1B uses
+                                tokenizer.vocab. Published legacy GGUFs need
+                                the sidecar; newly converted files embed it.
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
@@ -654,7 +654,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
             "--tokenizer" => {
                 tokenizer = Some(
                     args.get(i + 1)
-                        .ok_or("--tokenizer requires a tokenizer.json path")?
+                        .ok_or("--tokenizer requires a tokenizer path")?
                         .clone(),
                 );
                 i += 2;
@@ -1044,6 +1044,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::Asr
         | ModelTask::AsrVoxtral
         | ModelTask::AsrNemotron
+        | ModelTask::AsrParakeetTdt11b
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
         | ModelTask::VadFirered
@@ -1106,9 +1107,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
 
-    if a.tokenizer.is_some() && task != ModelTask::AsrNemotron {
+    if a.tokenizer.is_some()
+        && task != ModelTask::AsrNemotron
+        && task != ModelTask::AsrParakeetTdt11b
+    {
         return Err(
-            "run: --tokenizer is only supported for the nemotron_asr_streaming arch; other model tokenizers must be embedded by their audited converter"
+            "run: --tokenizer is only supported for nemotron_asr_streaming and parakeet-tdt-1_1b; other model tokenizers must be embedded by their audited converter"
                 .to_owned(),
         );
     }
@@ -1422,6 +1426,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrNemotron => {
             run_nemotron_asr(&session, &a)?;
+        }
+        ModelTask::AsrParakeetTdt11b => {
+            run_parakeet_tdt_1_1b(&session, &a)?;
         }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = a
@@ -5207,6 +5214,56 @@ fn run_nemotron_asr(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the complete original Parakeet-TDT-1.1B NeMo graph. The public GGUF
+/// predates tokenizer embedding, so the immutable 11 KB `tokenizer.vocab`
+/// may be supplied as an authenticated sidecar without rewriting 4.28 GB of
+/// tensor data.
+fn run_parakeet_tdt_1_1b(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::AsrEngine;
+    use vokra_models::parakeet_tdt_1_1b::{PARAKEET_TDT_1_1B_SAMPLE_RATE, ParakeetTdt11b};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (Parakeet-TDT-1.1B): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != PARAKEET_TDT_1_1B_SAMPLE_RATE {
+        return Err(format!(
+            "run (Parakeet-TDT-1.1B): {path} is {} Hz, expected {PARAKEET_TDT_1_1B_SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (Parakeet-TDT-1.1B): the released greedy TDT contract does not accept --beam-size / --no-repeat-ngram / --length-penalty"
+                .to_owned(),
+        );
+    }
+    let tokenizer_bytes = a
+        .tokenizer
+        .as_deref()
+        .map(|tokenizer_path| {
+            std::fs::read(tokenizer_path)
+                .map_err(|error| format!("--tokenizer {tokenizer_path}: {error}"))
+        })
+        .transpose()?;
+    let model =
+        ParakeetTdt11b::from_gguf_with_tokenizer_vocab(session.gguf(), tokenizer_bytes.as_deref())
+            .map_err(|error| error.to_string())?
+            .with_backend(a.backend);
+    if !model.has_tokenizer() {
+        return Err(
+            "run (Parakeet-TDT-1.1B): this legacy GGUF has no embedded official tokenizer.vocab; pass --tokenizer <authenticated tokenizer.vocab>, or reconvert on VAST with --model parakeet-tdt-1.1b --tokenizer tokenizer.vocab"
+                .to_owned(),
+        );
+    }
+    let transcription = <ParakeetTdt11b as AsrEngine>::transcribe(&model, &clip.samples)
+        .map_err(|error| error.to_string())?;
+    println!("asr: {}", transcription.text);
+    Ok(())
+}
+
 /// The Voxtral ASR path (P2 cc-10). Binds the concrete
 /// [`vokra_models::voxtral::VoxtralAsr`] from the session's (mmap-backed)
 /// GGUF exactly once — see [`ModelTask::AsrVoxtral`] for why the engine is
@@ -5674,7 +5731,7 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("bare --tokenizer must be rejected"),
         };
-        assert_eq!(error, "--tokenizer requires a tokenizer.json path");
+        assert_eq!(error, "--tokenizer requires a tokenizer path");
     }
 
     #[test]
@@ -7405,6 +7462,7 @@ mod tests {
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);

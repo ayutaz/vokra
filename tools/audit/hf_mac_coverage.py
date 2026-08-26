@@ -203,6 +203,7 @@ METAL_CODE_ARCHES = {
     "nsnet2",
     "parakeet-ctc",
     "parakeet-tdt",
+    "parakeet-tdt-1_1b",
     "piper-plus-mb-istft-vits2",
     "pyannote-segmentation",
     "pyannote-speaker-diarization",

@@ -1459,28 +1459,12 @@ pub mod smart_turn;
 // separately by a test.
 pub mod firered_vad;
 
-// Wave C1 (2026-08-15) — runtime binder for the `parakeet-tdt-1_1b` converter
-// arch (NVIDIA Parakeet-TDT-1.1B, CC-BY 4.0). Closes a read-side gap: the
-// converter (`crates/vokra-convert/src/models/parakeet_tdt_1_1b.rs`) has
-// stamped `vokra.model.arch = "parakeet-tdt-1_1b"` since the 2026-08-03 Wave B
-// coverage audit, but NO code in the workspace read that arch string — weights
-// could be converted and then never loaded.
-//
-// SCOPE: the TDT DECODE leg is REAL and wired to `vokra_ops::rnnt_decode`'s
-// `RnntDecoderKind::Tdt` mode (the primitive already implements TDT: per-frame
-// vocab argmax over V+1 plus duration argmax over D, duration-driven frame
-// skip, zero-duration multi-emit cap), reachable via
-// `ParakeetTdt11b::decode_tdt` on a caller-materialized joint buffer. The full
-// PCM -> text `transcribe` is a LOUD-PARTIAL (`VokraError::UnsupportedOp`)
-// because the converter is a BF16 pass-through skeleton that stamps NO
-// `vokra.parakeet_tdt_1_1b.*` hparam chunk group — its docstring defers the
-// 1.1B axis transcription to the owner. Copying the `parakeet` (0.6B-v3) axes
-// would be fabrication: the releases are known to differ (0.6B-v3 = 24 layers /
-// 128 mel bins / attention_bias=false; the 1.1B CTC sibling = 42 layers / 80
-// mel bins / attention_bias=true), so the 1.1B TDT axes are genuinely unknown.
-// That is why this module carries no config constant, unlike `parakeet` /
-// `parakeet_ctc` whose `config.json` files were fetched and transcribed
-// verbatim (2026-07-24).
+// Native runtime for the original `parakeet-tdt-1_1b` NeMo release (NVIDIA,
+// CC-BY 4.0). The exact 1,667-F32-tensor public manifest drives the shared
+// 80-bin frontend, 42-layer FastConformer, two-layer LSTM and duration-aware
+// TDT joint on CPU or Metal. The official config has no EOS token; the pinned
+// 1,024-piece plaintext SentencePiece vocabulary may be embedded or supplied
+// as an authenticated sidecar. No ONNX/protobuf runtime or CPU fallback.
 //
 // Note the arch/name spelling split: the arch tag uses an UNDERSCORE
 // (`parakeet-tdt-1_1b`) while the model name / publish slug / CLI argument use
@@ -1489,11 +1473,8 @@ pub mod firered_vad;
 //
 // LICENSING: the converter stamps `cc-by-4.0` -> `AttributionRequired`, so the
 // FR-MD-09 attribution surface activates (the NVIDIA attribution must be
-// displayed). This binder only SURFACES whatever class the GGUF carries and
-// fail-closes to `Unknown` when nothing is stamped; the `--license` override is
-// a supported convert-time path, so nothing is asserted.
-// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
-// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
+// displayed). Missing provenance still surfaces as `Unknown`; publication
+// remains a separate owner-authorized gate.
 pub mod parakeet_tdt_1_1b;
 
 // Runtime-gap Wave 4 ASR (2026-08-22) — exact aiola Whisper-Medusa-v1

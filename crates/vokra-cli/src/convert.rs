@@ -21,9 +21,9 @@ use vokra_convert::{
     convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
     convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_piper_plus_file, convert_qwen3_tts_file, convert_sbv2_file, convert_silero_file,
-    convert_styletts2_file, convert_vibevoice_file, convert_vits_ja_file,
-    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
+    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -49,6 +49,8 @@ USAGE:
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model parakeet-tdt --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-tdt-1.1b --input <prepared.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
@@ -92,7 +94,7 @@ OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
+                              parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
                               qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
@@ -683,12 +685,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::MoonshineBase
             | ModelKind::Parakeet
             | ModelKind::ParakeetCtc
+            | ModelKind::ParakeetTdt11b
             | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -925,6 +928,47 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 tokenizer,
                 &p.output,
             )
+        }
+        ModelKind::ParakeetTdt11b => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model parakeet-tdt-1.1b; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model parakeet-tdt-1.1b; the immutable NeMo config is stamped directly"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-tdt-1.1b requires --tokenizer <tokenizer.vocab> for executable text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_parakeet_tdt_1_1b_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                Some(tokenizer),
+            )?;
+            let output_bytes = std::fs::metadata(&p.output)?.len();
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 47,
+                output_bytes,
+                notes: vec![format!(
+                    "parakeet-tdt-1.1b: {} tensors read, {} float tensors written ({} F32/F16 plus {} BF16 passthrough), official tokenizer.vocab embedded, complete audited runtime metadata stamped",
+                    report.read,
+                    report.written,
+                    report.written.saturating_sub(report.bf16_passthrough),
+                    report.bf16_passthrough,
+                )],
+            })
         }
         ModelKind::CosyVoice2 => {
             // Quantization surface is whisper-only; reject rather than

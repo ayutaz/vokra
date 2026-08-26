@@ -1203,9 +1203,11 @@ pub enum ModelKind {
     /// alternative, Conformer + CTC/attention decode, 320k hr training.
     /// Convert with `convert_owsm_v4_medium_1b_file`.
     OwsmV4Medium1b,
-    /// NVIDIA **Parakeet-TDT-1.1B** (CC-BY-4.0, ~2.2 GB) — English ASR,
-    /// hparam-extension of sibling parakeet-tdt-0.6b-v3. Convert with
-    /// `convert_parakeet_tdt_1_1b_file`.
+    /// NVIDIA **Parakeet-TDT-1.1B** (CC-BY-4.0, 4.28 GB F32) — original
+    /// 42-layer FastConformer + TDT English ASR release. Conversion and
+    /// verification are VAST-only; optionally embed the official plaintext
+    /// SentencePiece vocabulary with
+    /// `convert_parakeet_tdt_1_1b_file_with_tokenizer`.
     ParakeetTdt11b,
     /// FireRedTeam **FireRedASR-AED-L** (Apache-2.0, ~2.2 GB) — Chinese
     /// SoTA ASR, AED (Whisper-like encoder-decoder). Convert with
@@ -13007,7 +13009,10 @@ pub use models::nemotron_speech_streaming_v2603::{
     NemotronSpeechStreamingV2603Report, convert_nemotron_speech_streaming_v2603_file,
 };
 pub use models::owsm_v4_medium_1b::{OwsmV4Medium1bReport, convert_owsm_v4_medium_1b_file};
-pub use models::parakeet_tdt_1_1b::{ParakeetTdt11bReport, convert_parakeet_tdt_1_1b_file};
+pub use models::parakeet_tdt_1_1b::{
+    ParakeetTdt11bReport, convert_parakeet_tdt_1_1b_file,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer,
+};
 pub use models::parakeet_unified::{ParakeetUnifiedReport, convert_parakeet_unified_file};
 pub use models::reazonspeech_nemo_v2::{
     ReazonspeechNemoV2Report, convert_reazonspeech_nemo_v2_file,

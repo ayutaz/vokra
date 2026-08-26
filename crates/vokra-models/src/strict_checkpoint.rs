@@ -241,6 +241,13 @@ fn manifest_sha256(file: &GgufFile) -> [u8; 32] {
     sha256(&canonical)
 }
 
+/// Zero-dependency SHA-256 for authenticating small runtime sidecars whose
+/// bytes are not part of the GGUF tensor manifest (for example a decode-only
+/// tokenizer vocabulary).
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    sha256(bytes)
+}
+
 fn hex(bytes: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(64);

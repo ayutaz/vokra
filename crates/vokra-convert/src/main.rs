@@ -23,7 +23,8 @@ use vokra_convert::{
     convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_sbv2_file,
+    convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -192,9 +193,13 @@ fn main() -> ExitCode {
         license,
     } = parsed;
 
-    if !matches!(model, ModelKind::Parakeet | ModelKind::ParakeetCtc) && tokenizer.is_some() {
+    if !matches!(
+        model,
+        ModelKind::Parakeet | ModelKind::ParakeetCtc | ModelKind::ParakeetTdt11b
+    ) && tokenizer.is_some()
+    {
         eprintln!(
-            "error: --tokenizer is only supported for --model parakeet-tdt in the standalone converter\n\n{USAGE}"
+            "error: --tokenizer is only supported for Parakeet models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -371,6 +376,43 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             };
             convert_parakeet_ctc_file_with_assets(&input, config, preprocessor, tokenizer, &output)
+        }
+        ModelKind::ParakeetTdt11b => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-tdt-1.1b\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if config.is_some() {
+                eprintln!(
+                    "error: parakeet-tdt-1.1b uses the pinned NeMo config and --tokenizer <tokenizer.vocab>, not --config\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-tdt-1.1b requires --tokenizer <tokenizer.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_tdt_1_1b_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                Some(tokenizer),
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 47,
+                    output_bytes,
+                    notes: vec![
+                        "complete Parakeet-TDT-1.1B runtime metadata and tokenizer.vocab embedded"
+                            .to_owned(),
+                    ],
+                })
+            })
         }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {

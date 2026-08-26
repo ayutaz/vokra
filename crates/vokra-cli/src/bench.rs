@@ -1361,6 +1361,32 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr-nemotron", audio_seconds, samples)
         }
+        ModelTask::AsrParakeetTdt11b => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Parakeet-TDT-1.1B): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::parakeet_tdt_1_1b::PARAKEET_TDT_1_1B_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Parakeet-TDT-1.1B): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::parakeet_tdt_1_1b::PARAKEET_TDT_1_1B_SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            // Benchmark the full learned PCM -> token route; rendering the
+            // tiny plaintext vocabulary is intentionally outside the timer.
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.transcribe(&pcm).map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-parakeet-tdt-1.1b", audio_seconds, samples)
+        }
         ModelTask::Tts => {
             let text = args.text.as_deref().unwrap_or(DEFAULT_BENCH_TEXT);
             // One synth up front to learn the output length (RTF denominator).

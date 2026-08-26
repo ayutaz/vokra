@@ -250,6 +250,25 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Parakeet-TDT-1.1B CPU/Metal runtime)
+
+The immutable 1,667-F32-tensor `nvidia/parakeet-tdt-1.1b` release now has a
+strict native PCM-to-text route. Its 42-layer FastConformer, two-layer LSTM
+prediction network and 1,030-wide token-plus-duration joint reuse the shared
+Parakeet CPU/Metal execution path. The official NeMo config declares no EOS;
+the Rust config therefore represents EOS as optional rather than inventing a
+token id. The exact public legacy GGUF is authenticated by its complete
+name/shape manifest and accepts the pinned 11 KB plaintext SentencePiece
+vocabulary as a sidecar. Real-weight VAST and Apple-device parity remain
+pending and are not implied by source reachability. No C ABI symbol is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::parakeet` | `ParakeetJointConfig::eos_token_id` | Changed | `u32` → `Option<u32>` | Preserves `Some(3)` for 0.6B-v3 and models the original 1.1B release as `None`; decode skips/stops only when an EOS is actually declared | yes (Rust source) | (TBD) |
+| `vokra-models::parakeet_tdt_1_1b` | `ParakeetTdt11b`, `ParakeetTdt11bWeights`, verified config/duration constants | Changed | strict `from_gguf*`, CPU/Metal backend, encoder/head/token/text transcription | Replaces the decoder-only loud partial with a complete native route over the exact 1,667-tensor manifest; no backend fallback | no | (TBD) |
+| `gguf:vokra.parakeet_tdt_1_1b.*` | source, frontend, encoder, decoder, joint and tokenizer metadata group | Added | 25 `u32`, one `f32`, three identity/activation strings, five duration entries, optional `u8[]` tokenizer vocabulary plus SHA-256 | New artifacts are self-describing. The exact historical public manifest may omit the group; a partial or conflicting group fails closed | no | (TBD) |
+| `vokra-cli run`, `vokra-cli bench` | `parakeet-tdt-1_1b` ASR dispatch | Added | 16 kHz mono; optional authenticated `--tokenizer tokenizer.vocab`; greedy TDT only | The 4.28 GB payload binds once. Unsupported search modes/backends and missing text tokenizer return explicit errors | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (Nemotron 3.5 ASR offline CPU/Metal runtime)
 
 The exact 655-tensor Nemotron-3.5-ASR-Streaming-0.6B release now has a strict
@@ -3281,7 +3300,7 @@ rows now name what is genuinely reserved. `titanet_speaker_encode` and
 | ---------------------------- | -------- | ------------------------------------------------------------ |
 | `bigvgan_generator` (op)     | FR-OP-11 | graph-side `OpKind` variant + C ABI export. Runtime vocoder, strict real-weight binder, alias-free forward parity, and explicit mel-file CLI route landed; min-dtype anchor registered (M2-08) |
 | `ctc_decode`                 | FR-OP-41 | graph-side `OpKind` variant + C ABI export. Runtime primitives landed (`ctc_decode_greedy` / `ctc_decode_beam`, LM shallow fusion + hotwords); NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`) but no live call site yet |
-| `rnnt_decode`                | FR-OP-42 | graph-side `OpKind` variant + C ABI export. Runtime primitive landed, live consumer `ParakeetTdt11b::decode_tdt` (`parakeet_tdt_1_1b/mod.rs:621`); e2e `transcribe` still loud-partial |
+| `rnnt_decode`                | FR-OP-42 | graph-side `OpKind` variant + C ABI export. Runtime primitive and live `ParakeetTdt11b::decode_tdt` consumer landed; the same strict model now also has a complete native PCM-to-token/text TDT forward |
 | `ecapa_tdnn_speaker_encode`  | FR-OP-80 | graph-side `OpKind` variant + dedicated op-level C ABI export. Native strict binder, CPU/Metal model forward, CLI and model-generic `vokra_speaker_embed` route landed |
 | `wespeaker_speaker_encode`   | FR-OP-80 | native strict model forward and generic speaker C ABI landed; graph `OpKind` + dedicated op export remain reserved |
 | `titanet_speaker_encode`     | FR-OP-80 | native strict TitaNet-L model forward and generic speaker C ABI landed; graph `OpKind` + dedicated op export remain reserved |

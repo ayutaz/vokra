@@ -14,6 +14,17 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The original NVIDIA Parakeet-TDT-1.1B release now strict-binds its exact
+  1,667-F32-tensor public GGUF and runs the complete 80-bin frontend,
+  42-layer FastConformer, two-layer LSTM prediction network and duration-aware
+  TDT joint through explicit Mac CPU/Metal backends. Its official no-EOS
+  contract is represented without a fabricated sentinel, and the published
+  legacy GGUF accepts the SHA-pinned plaintext SentencePiece vocabulary as a
+  sidecar. New VAST-only conversions stamp all verified axes and embed that
+  vocabulary; the header-only manifest audit independently derives all 1,667
+  names and shapes. Malformed manifests, sidecars, metadata and unsupported
+  backends fail closed. Real-weight VAST and Apple-device parity remain pending
+  and are not claimed by this source route.
 - The exact public pyannote segmentation-3.0 checkpoint now strict-binds and
   executes by default on CPU or Metal: SincNet, the released four-layer
   bidirectional LSTM, both projection layers, classifier and softmax all use

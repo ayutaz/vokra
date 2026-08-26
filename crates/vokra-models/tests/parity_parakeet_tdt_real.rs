@@ -207,7 +207,7 @@ fn real_parakeet_tdt_pcm_encoder_and_tokens_match_official() {
     let tokenizer = ParakeetTokenizer::from_gguf(&file, 8193).expect("embedded tokenizer");
     assert_eq!(
         tokenizer
-            .decode(&actual_tokens, 8192, 2, 3)
+            .decode(&actual_tokens, 8192, 2, Some(3))
             .expect("native tokenizer decode"),
         "Oh"
     );

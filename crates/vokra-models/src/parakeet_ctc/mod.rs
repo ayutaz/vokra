@@ -1586,7 +1586,7 @@ impl ParakeetCtcAsr {
             &tokens,
             self.cfg.head.blank_id(),
             self.cfg.head.pad_token_id,
-            u32::MAX,
+            None,
         )
     }
 
