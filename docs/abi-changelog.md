@@ -263,9 +263,9 @@ real-weight Metal parity remain pending. No C ABI symbol is added.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
-| `vokra-models::canary_1b_flash` | `Canary1bFlashAsr`, `Canary1bFlashOptions`, `CanaryLanguage`, `CanaryEmotion`, `CanaryTokenizer`, `CANARY_1B_FLASH_HOT_OPS` | Changed | strict complete bind; CPU/Metal ASR/AST token and text forward | Replaces the earlier loud partial; exact legacy encoder-only artifact now fails its complete-manifest gate | no | (TBD) |
+| `vokra-models::canary_1b_flash` | `Canary1bFlashAsr`, `Canary1bFlashOptions`, `CanaryLanguage`, `CanaryEmotion`, `CanaryTokenizer`, `CANARY_1B_FLASH_HOT_OPS` | Changed | strict complete bind; CPU/Metal ASR/AST token and text forward | Replaces the earlier loud partial; exact legacy encoder-only artifact now fails its complete-manifest gate | no | `f2f45297` |
 | `gguf:vokra.canary_1b_flash.*` | complete topology and aggregate tokenizer vocabulary/hash metadata | Added | released encoder/decoder/head axes plus authenticated `u8[]` decode table | Canonical complete conversion is self-describing; missing/conflicting metadata or tokenizer fails closed | no | `48dda91a` |
-| `vokra-cli run`, `vokra-cli bench` | `canary-1b-flash` ASR/AST dispatch; `--target-language` | Added | 16 kHz mono, `en/de/es/fr`; equal language pair = ASR, different pair = AST | Unsupported language/search/backend combinations return explicit errors; no alternate model or CPU fallback | no | (TBD) |
+| `vokra-cli run`, `vokra-cli bench` | `canary-1b-flash` ASR/AST dispatch; `--target-language` | Added | 16 kHz mono, `en/de/es/fr`; equal language pair = ASR, different pair = AST | Unsupported language/search/backend combinations return explicit errors; no alternate model or CPU fallback | no | `f2f45297` |
 | VAST parity worker | `run-canary-1b-flash-validation.sh` and official NeMo dumper | Added | exact English ASR and English→German AST greedy token equality | Large artefacts stay remote; worker performs no upload/push and evidence is pulled before instance destruction | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (Parakeet-TDT-1.1B CPU/Metal runtime)

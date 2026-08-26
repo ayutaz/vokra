@@ -78,3 +78,40 @@ The embedded config orders aggregate tokenizers as
 
 These IDs come from the released 1,152-entry tokenizer itself, not from a
 hand-written mirror.
+
+## Independent numerical gate
+
+No forward value is fabricated or committed by the structural audit above.
+The real-checkpoint gate runs only on a provisioned Linux/VAST host and imports
+the official `nemo.collections.asr.models.EncDecMultiTaskModel` from the pinned
+`nemo-toolkit[asr]==3.0.0` parity environment.
+Decoder, Canary2 prompt and hypothesis-stripping semantics were separately
+audited against official `NVIDIA-NeMo/Speech` commit
+`837a31fa7a810a3de9e4826837e97dea837a5c42`; that source-audit revision is
+recorded distinctly from the executed package version.
+
+The host must also have the `rustfmt`/`clippy` Rust components and the
+`cargo-deny`/`cargo-audit` executables installed. The worker checks these before
+unpacking the 3.54 GB archive, so a missing verifier cannot waste a conversion
+run.
+
+Run it with:
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 \
+  scripts/publish/vast-ai/run-canary-1b-flash-validation.sh \
+  --nemo /workspace/canary-1b-flash.nemo
+```
+
+The worker authenticates and prepares the archive, builds the complete GGUF,
+records CPU/ISA/Torch/CUDA environment data before generation, then requires
+exact greedy token equality for both English ASR and English-to-German AST.
+It also runs the workspace tests, workspace clippy, `cargo deny`, and
+`cargo audit`. It never uploads, publishes or pushes. Pull only the small
+`evidence/` directory and log before destroying the instance; do not copy the
+multi-GB checkpoint, safetensors or GGUF back to the maintainer Mac.
+
+As of 2026-08-26 this worker is staged but has not run, so this directory
+proves the immutable structure and comparison procedure—not numerical parity.
+VAST is Linux and cannot establish real-weight Metal parity; that final gate
+requires an Apple-silicon runner and remains separate.

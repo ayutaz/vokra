@@ -526,6 +526,29 @@ Hugging Face publication require the explicit research/non-commercial opt-in
 documented by Vokra's compliance gate.
 
 --------------------------------------------------------------------------
+17d. NVIDIA Canary-1B-Flash — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal ASR/AST runtime target the
+immutable `nvidia/canary-1b-flash` release at Hugging Face revision
+2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e. NVIDIA distributes the model
+weights under the Creative Commons Attribution 4.0 International license.
+Commercial use is permitted; attribution is required.
+
+  NVIDIA Canary-1B-Flash
+  Copyright (c) NVIDIA CORPORATION
+  Licensed under CC-BY 4.0
+  Source: https://huggingface.co/nvidia/canary-1b-flash
+
+The native Rust runtime independently implements the released FastConformer
+encoder, Transformer AED decoder, Canary2 prompt and aggregate tokenizer. It
+does not link PyTorch, NVIDIA NeMo, ONNX Runtime or another upstream runtime
+dependency. The converter stamps this attribution and the
+`attribution-required` weight class into each complete GGUF. No upstream
+checkpoint is bundled in this source repository, and this source change does
+not upload or replace a model artifact.
+
+--------------------------------------------------------------------------
 18. Maintaining this file
 --------------------------------------------------------------------------
 

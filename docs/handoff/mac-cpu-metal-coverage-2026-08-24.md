@@ -1,5 +1,15 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 Canary-1B-Flash source wave:** the exact complete
+> `.nemo`-derived 1,374-F32-tensor release now has a strict native 32-layer
+> FastConformer + four-layer Transformer AED route, authenticated aggregate
+> tokenizer, four-language ASR/AST prompt surface, CLI and bench wiring for CPU
+> and Metal. The live `vokra/canary-1b-flash` GGUF remains artifact-partial
+> because it contains only 1,292 encoder tensors; the runtime rejects it and
+> the live-artifact counts below therefore do not change. Independent NeMo
+> English-ASR and English→German-AST token gates are staged for VAST, while
+> real-weight Apple Metal parity requires a separate Apple-silicon runner.
+
 > **2026-08-26 SpeechTokenizer source wave:** `vokra/speechtokenizer` now has
 > an exact 166-tensor binder and a native 16 kHz / eight-codebook residual-VQ +
 > weight-normalized non-causal SEANet token-to-waveform route for CPU and
