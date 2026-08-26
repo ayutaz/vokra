@@ -284,6 +284,7 @@ this entry does not authorize an upload.
 | `vokra-models::moss_tts` | `MossTtsNano`, release/topology constants, `MOSS_TTS_NANO_HOT_OPS` | Added | strict `open` / `from_gguf*`, backend/license/repair accessors and owned 194-tensor weight binding | Accepts the old header only behind manifest SHA-256 `125c074b…`; partial corrected metadata fails closed and no other MOSS topology is inferred | no | (TBD) |
 | `vokra-models::moss_tts` | `MossTtsGeneratedCodes`, `MossTtsNano::generate_codes` | Added | explicit frame-major `[rows,17]` prompt IDs plus a frame cap to greedy `[frames,16]` codes | Runs the official no-KV-cache global/local GPT-2 order on one CPU/Metal backend; tokenizer/template and codec remain explicit companions | no | (TBD) |
 | `vokra-models::moss_tts` | `MossTtsSynthesis`, `MossTtsNano::synthesize_prompt_rows` | Added | explicit prompt matrix + exact `MossAudioTokenizer` companion to codes and 48 kHz stereo PCM | Requires Nano and identical selected backends; Full substitution and mixed Metal/CPU composition are explicit errors | no | (TBD) |
+| `vokra-cli run` | `moss_tts` Nano task, `--audio-tokenizer`, `--max-new-frames` | Added | raw `[rows,17]` u32le prompt IDs plus exact codec sidecar to stereo WAV | Refuses raw text because `tokenizer.model` is not embedded; non-Nano family names and mixed backends fail explicitly | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS Audio Tokenizer strict runtime)
 

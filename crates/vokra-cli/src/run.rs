@@ -90,6 +90,9 @@ USAGE:
     vokra-cli run --model <focalcodec.gguf> --codec-mode decode --input <codes.vfc> --output <out.wav>
     vokra-cli run --model <moss-audio-tokenizer-nano.gguf> --codec-mode decode \
                   --num-quantizers <1..16> --input <codes.u32le> --output <stereo.wav>
+    vokra-cli run --model <moss-tts-nano.gguf> \
+                  --audio-tokenizer <moss-audio-tokenizer-nano.gguf> \
+                  --max-new-frames <N> --input <prompt-rows.u32le> --output <stereo.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -111,6 +114,9 @@ OPTIONS:
                                 exact pyannote WeSpeaker ResNet34-LM GGUF.
                                 It keeps its independent CC-BY attribution and
                                 strict manifest gate.
+    --audio-tokenizer <path>    MOSS-TTS Nano only, REQUIRED: exact MOSS Audio
+                                Tokenizer Nano GGUF. It must support the same
+                                selected backend as the language model.
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
@@ -129,6 +135,11 @@ OPTIONS:
                                 For MOSS Audio Tokenizer decode it is raw
                                 frame-major `[frames,num_quantizers]` u32le;
                                 `--num-quantizers` declares the row width.
+                                For MOSS-TTS Nano it is a raw frame-major
+                                `[rows,17]` u32le prompt matrix: text id first,
+                                then 16 audio ids/pad sentinels. The model GGUF
+                                does not bundle its SentencePiece asset, so raw
+                                text is never guessed here.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
                                 For FocalCodec encode it is a 16 kHz mono WAV;
@@ -232,6 +243,8 @@ OPTIONS:
                                 tokenized.
     --music-frames <N>          MusicGen Small/Melody only, REQUIRED: positive
                                 number of 50 Hz EnCodec frames to generate.
+    --max-new-frames <N>        MOSS-TTS Nano only, REQUIRED: positive maximum
+                                number of 12.5 Hz audio-token frames to emit.
     --music-seed <u64>          MusicGen Small/Melody sampling seed [default 0].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
@@ -365,6 +378,8 @@ struct RunArgs {
     segmentation_model: Option<String>,
     /// pyannote-diarization-only WeSpeaker dependency GGUF.
     embedding_model: Option<String>,
+    /// MOSS-TTS-Nano-only codec sidecar.
+    audio_tokenizer: Option<String>,
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
@@ -376,6 +391,8 @@ struct RunArgs {
     music_unconditional_token_ids: Option<String>,
     /// MusicGen-only number of 50 Hz codec frames to generate.
     music_frames: Option<usize>,
+    /// MOSS-TTS-Nano-only generation cap.
+    max_new_frames: Option<usize>,
     /// MusicGen-only deterministic sampler seed. `None` means zero.
     music_seed: Option<u64>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
@@ -523,6 +540,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut model: Option<String> = None;
     let mut segmentation_model: Option<String> = None;
     let mut embedding_model: Option<String> = None;
+    let mut audio_tokenizer: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
@@ -530,6 +548,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut token_ids: Option<String> = None;
     let mut music_unconditional_token_ids: Option<String> = None;
     let mut music_frames: Option<usize> = None;
+    let mut max_new_frames: Option<usize> = None;
     let mut music_seed: Option<u64> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
@@ -587,6 +606,14 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 );
                 i += 2;
             }
+            "--audio-tokenizer" => {
+                audio_tokenizer = Some(
+                    args.get(i + 1)
+                        .ok_or("--audio-tokenizer requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
             "--input" => {
                 input = Some(args.get(i + 1).ok_or("--input requires a value")?.clone());
                 i += 2;
@@ -630,6 +657,17 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     return Err("--music-frames must be positive".to_owned());
                 }
                 music_frames = Some(frames);
+                i += 2;
+            }
+            "--max-new-frames" => {
+                let value = args.get(i + 1).ok_or("--max-new-frames requires a value")?;
+                let frames = value
+                    .parse::<usize>()
+                    .map_err(|error| format!("--max-new-frames must be an integer: {error}"))?;
+                if frames == 0 {
+                    return Err("--max-new-frames must be positive".to_owned());
+                }
+                max_new_frames = Some(frames);
                 i += 2;
             }
             "--music-seed" => {
@@ -866,6 +904,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         model: model.ok_or("--model is required")?,
         segmentation_model,
         embedding_model,
+        audio_tokenizer,
         input,
         text,
         output,
@@ -873,6 +912,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         token_ids,
         music_unconditional_token_ids,
         music_frames,
+        max_new_frames,
         music_seed,
         codec_mode,
         num_quantizers,
@@ -989,6 +1029,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
         | ModelTask::MossAudioTokenizerCodec
+        | ModelTask::TtsMossNano
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -1032,6 +1073,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     .to_owned(),
             );
         }
+    }
+    if a.audio_tokenizer.is_some() && task != ModelTask::TtsMossNano {
+        return Err(
+            "run: --audio-tokenizer is only supported for the exact MOSS-TTS Nano arch".to_owned(),
+        );
+    }
+    if a.max_new_frames.is_some() && task != ModelTask::TtsMossNano {
+        return Err(
+            "run: --max-new-frames is only supported for the exact MOSS-TTS Nano arch".to_owned(),
+        );
     }
 
     // `--compare` belongs to the speaker task only. Reject it on
@@ -1349,6 +1400,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::MusicGeneration => {
             run_musicgen(&a)?;
+        }
+        ModelTask::TtsMossNano => {
+            run_moss_tts_nano(&session, &a)?;
         }
         ModelTask::TtsKokoro => {
             run_kokoro(&a)?;
@@ -3502,6 +3556,93 @@ fn run_moss_audio_tokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), 
     Ok(())
 }
 
+/// MOSS-TTS Nano explicit prompt-matrix to native codec decode.
+///
+/// The text SentencePiece model is not present in the public GGUF, so the CLI
+/// accepts only the fully assembled upstream-compatible 17-column rows. Both
+/// independently authenticated GGUFs select the same backend before inference.
+fn run_moss_tts_nano(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() {
+        return Err(
+            "run (moss_tts Nano): --text is unavailable because the public GGUF does not bundle the pinned tokenizer.model; pass explicit [rows,17] u32le prompt ids with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (moss_tts Nano): --input <prompt-rows.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (moss_tts Nano): --output <stereo.wav> is required")?;
+    let codec_path = a.audio_tokenizer.as_deref().ok_or(
+        "run (moss_tts Nano): --audio-tokenizer <moss-audio-tokenizer-nano.gguf> is required",
+    )?;
+    let max_new_frames = a
+        .max_new_frames
+        .ok_or("run (moss_tts Nano): --max-new-frames <N> is required")?;
+
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
+    let codec_file = vokra_core::gguf::GgufFile::open(codec_path)
+        .map_err(|error| format!("run (moss_tts Nano): codec {codec_path}: {error}"))?;
+    vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
+
+    let model =
+        vokra_models::moss_tts::MossTtsNano::from_gguf_with_backend(session.gguf(), a.backend)
+            .map_err(|error| error.to_string())?;
+    let codec = vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_with_backend(
+        &codec_file,
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    if model.requires_metadata_repair() {
+        eprintln!(
+            "vokra: WARNING: this exact MOSS-TTS Nano manifest has the historical rope_base=0 header; runtime routing uses the authenticated 194-tensor contract, but the artifact still needs an authorized metadata replacement"
+        );
+    }
+    if codec.requires_metadata_repair() {
+        eprintln!(
+            "vokra: WARNING: this exact MOSS Audio Tokenizer Nano manifest has the historical Full metadata stamp; runtime routing is manifest-authenticated, but the artifact still needs an authorized metadata replacement"
+        );
+    }
+
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (moss_tts Nano): {input_path}: {error}"))?;
+    const ROW_BYTES: usize = 17 * 4;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(ROW_BYTES) {
+        return Err(format!(
+            "run (moss_tts Nano): {input_path} has {} bytes; expected a positive multiple of {ROW_BYTES} for frame-major [rows,17] u32le prompt ids",
+            bytes.len()
+        ));
+    }
+    let prompt_rows: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let synthesis = model
+        .synthesize_prompt_rows(&codec, &prompt_rows, max_new_frames)
+        .map_err(|error| error.to_string())?;
+    wav::write_wav_channels(
+        output_path,
+        &synthesis.audio.pcm,
+        synthesis.audio.sample_rate,
+        synthesis.audio.channels,
+    )
+    .map_err(|error| format!("run (moss_tts Nano): --output {output_path}: {error}"))?;
+    println!(
+        "moss_tts Nano: {} prompt rows -> {} generated frames x {} codebooks -> {} samples/channel x {} channels @ {} Hz -> {output_path}",
+        prompt_rows.len() / 17,
+        synthesis.generated.frames,
+        synthesis.generated.num_codebooks,
+        synthesis.audio.samples_per_channel,
+        synthesis.audio.channels,
+        synthesis.audio.sample_rate
+    );
+    Ok(())
+}
+
 /// MioCodec 25 Hz FSQ + global-embedding to 44.1 kHz waveform path.
 ///
 /// VKRMIO01 is versioned because raw codes alone are insufficient: the
@@ -5049,6 +5190,37 @@ mod tests {
                 "--model",
                 "musicgen-small.gguf",
                 "--music-frames",
+                "0",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parse_accepts_explicit_moss_tts_companion_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "moss-tts-nano.gguf",
+            "--audio-tokenizer",
+            "moss-audio-tokenizer-nano.gguf",
+            "--max-new-frames",
+            "300",
+            "--input",
+            "prompt.u32le",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("MOSS-TTS explicit companion flags parse");
+        assert_eq!(
+            parsed.audio_tokenizer.as_deref(),
+            Some("moss-audio-tokenizer-nano.gguf")
+        );
+        assert_eq!(parsed.max_new_frames, Some(300));
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "moss-tts-nano.gguf",
+                "--max-new-frames",
                 "0",
             ]))
             .is_err()

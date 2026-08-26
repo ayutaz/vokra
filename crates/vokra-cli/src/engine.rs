@@ -318,6 +318,10 @@ pub(crate) enum ModelTask {
     /// strictly but remains an explicit unsupported decode until its distinct
     /// 1.77B topology passes real-weight parity.
     MossAudioTokenizerCodec,
+    /// OpenMOSS MOSS-TTS Nano explicit prompt-token generation. The concrete
+    /// LLM and required MOSS Audio Tokenizer Nano sidecar bind in `run` so
+    /// both large weight sets are loaded exactly once and select one backend.
+    TtsMossNano,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -548,6 +552,8 @@ const ARCH_SNAC: &str = "snac";
 const ARCH_FOCALCODEC: &str = "focalcodec";
 /// OpenMOSS Full/Nano codec family.
 const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
+/// OpenMOSS TTS family; only the exact Nano release is routed today.
+const ARCH_MOSS_TTS: &str = "moss_tts";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
@@ -1382,6 +1388,29 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::MossAudioTokenizerCodec))
         }
+        ARCH_MOSS_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_TTS}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MOSS_TTS}` is missing `vokra.model.name`; refusing family-shared topology inference"
+                    )
+                })?;
+            if name != vokra_models::moss_tts::NAME {
+                return Err(format!(
+                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not the authenticated Nano release `{}`; Delay, Local and MOSS-Audio siblings have distinct unimplemented topologies and are never routed through Nano",
+                    vokra_models::moss_tts::NAME
+                ));
+            }
+            Ok((session, ModelTask::TtsMossNano))
+        }
         ARCH_BIGVGAN => {
             if hint.is_some() {
                 return Err(format!(
@@ -1603,7 +1632,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -3458,6 +3487,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_only_moss_tts_nano_to_its_generation_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_MOSS_TTS, vokra_models::moss_tts::NAME, |path| {
+                load_session(path).expect("MOSS-TTS Nano session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::TtsMossNano);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_MOSS_TTS),
+            "the routed MOSS-TTS Nano arch must not retain an unreachable registry row"
+        );
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
@@ -3516,6 +3560,7 @@ mod tests {
             ARCH_SNAC,
             ARCH_FOCALCODEC,
             ARCH_MOSS_AUDIO_TOKENIZER,
+            ARCH_MOSS_TTS,
             ARCH_BIGVGAN,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
