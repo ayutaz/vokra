@@ -40,8 +40,8 @@
 //!   (google-t5/t5-base — HF   (audiocraft/     (audiocraft/
 //!    transformers              models/jasco.py   models/jasco.py
 //!    T5EncoderModel;           `SymbolicConditioner` chord head +
-//!    no reusable primitive     drum head — greenfield, no analog
-//!    in `vokra_ops` today)     in-tree; distinct from musicgen's
+//!    native body landed;       drum head — greenfield, no analog
+//!    composition pending)      in-tree; distinct from musicgen's
 //!                              single-modality text-only cross-attention)
 //!   |__________________________|_______________|
 //!                              |
@@ -974,9 +974,9 @@ impl Jasco {
     /// 1. **Joint symbolic conditioning encoders**: the frozen T5-base
     ///    text encoder (upstream `transformers.T5EncoderModel`) PLUS
     ///    the JASCO-specific **chord encoder + drum encoder** (audiocraft
-    ///    `SymbolicConditioner` heads). The T5-base body has no reusable
-    ///    primitive in `vokra_ops` today (shared with the musicgen
-    ///    follow-up); the JASCO chord + drum heads are greenfield with
+    ///    `SymbolicConditioner` heads). The shared native T5-base body
+    ///    now lives in [`crate::t5_encoder`], but JASCO has not bound it
+    ///    or its tokenizer metadata; the chord + drum heads are greenfield with
     ///    no analog in-tree (sibling musicgen has text-only cross-
     ///    attention).
     /// 2. **AudioCraft flow-matching transformer stack with joint
@@ -1094,9 +1094,9 @@ fn generate_forward_loud_partial(
          drum encoder + AudioCraft flow-matching transformer stack (with joint text + \
          chord + drum prefix cross-attention) + EnCodec RVQ decode composition \
          pending. What is missing is (a) the joint symbolic conditioning encoder stack \
-         — the frozen T5-base text encoder (upstream `transformers.T5EncoderModel` — \
-         no reusable primitive in `vokra_ops` today; shared with the musicgen follow-\
-         up) PLUS the JASCO-specific chord encoder + drum encoder (audiocraft \
+         — the frozen T5-base text encoder (`crate::t5_encoder` supplies the landed \
+         native CPU/Metal body, but tokenizer and JASCO binding remain pending) PLUS \
+         the JASCO-specific chord encoder + drum encoder (audiocraft \
          `SymbolicConditioner` heads — greenfield, no analog in-tree; sibling musicgen \
          has text-only cross-attention), (b) the AudioCraft flow-matching transformer \
          stack with joint conditioning — audiocraft transformer body plus the JASCO \

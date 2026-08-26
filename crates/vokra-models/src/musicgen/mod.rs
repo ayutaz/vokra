@@ -29,10 +29,9 @@
 //! text prompt (UTF-8 string)
 //!   -> frozen T5-base text encoder                   ← **loud-partial**
 //!        (google-t5/t5-base — HF transformers `T5EncoderModel`,
-//!         encoder-only, no reusable primitive in `vokra_ops` today;
-//!         the follow-up wave lands a T5-base implementation or a
-//!         first-class `t5_text_encode` op — see the loud-partial
-//!         message for the concrete plan.)
+//!         encoder-only; shared native CPU/Metal math now lives in
+//!         `crate::t5_encoder`, while MusicGen still needs tokenizer
+//!         metadata and composition into its AR decoder.)
 //!   -> autoregressive transformer LM with            ← **loud-partial**
 //!      4-codebook delay pattern and text-conditioned
 //!      cross-attention to T5 tokens
@@ -83,10 +82,10 @@
 //!
 //! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
 //!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
-//!   1. the frozen T5-base text encoder forward (upstream
-//!      `transformers.T5EncoderModel`; no reusable primitive in
-//!      `vokra_ops` today; the follow-up wave lands the T5-base body or
-//!      a first-class `t5_text_encode` op);
+//!   1. prompt tokenization plus binding/composition of the landed
+//!      [`crate::t5_encoder::T5Encoder`] over `text_encoder.*` tensors
+//!      (the shared native CPU/Metal encoder body exists; independent
+//!      real-weight parity is staged but not yet recorded green);
 //!   2. the autoregressive transformer LM decode with the **4-codebook
 //!      delay pattern** (the MusicGen-specific interleave over 4 RVQ
 //!      streams) + text-conditioned **cross-attention** to the T5-encoded
@@ -110,9 +109,9 @@
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
 //! enum + FR-EX-08 loud-fails land today so a follow-up wave can flip
-//! the switch by (i) landing the T5-base text encoder body against a
-//! real T5-base state_dict (the converter already emits the T5 weights
-//! under `text_encoder.*` — see the converter's tensor-name contract),
+//! the switch by (i) binding the landed T5-base encoder body and adding
+//! tokenizer metadata for the `text_encoder.*` tensors already emitted
+//! by the converter,
 //! (ii) implementing the delay-pattern + cross-attention AR transformer
 //! LM decode, and (iii) wiring the composed loop to the existing
 //! `vokra_ops::encodec_rvq_decode` primitive. The primitive for (iii)
@@ -845,13 +844,12 @@ impl MusicGen {
     /// Returns [`VokraError::UnsupportedOp`] — MusicGen's inference path
     /// requires **three** deferred pieces:
     ///
-    /// 1. **Frozen T5-base text encoder forward**: the upstream release
-    ///    freezes a `google-t5/t5-base` encoder for text conditioning
-    ///    (HF transformers `T5EncoderModel`); no reusable primitive
-    ///    exists in `vokra_ops` today. The follow-up wave lands either
-    ///    a T5-base implementation dedicated to MusicGen or a first-
-    ///    class `t5_text_encode` op that other future consumers can
-    ///    share.
+    /// 1. **T5 prompt composition**: the shared native
+    ///    [`crate::t5_encoder::T5Encoder`] CPU/Metal body has landed,
+    ///    but MusicGen still needs tokenizer metadata plus strict
+    ///    binding of the emitted `text_encoder.*` tensors into this
+    ///    handle. Independent real-weight parity remains staged rather
+    ///    than claimed green.
     /// 2. **Autoregressive transformer LM decode with 4-codebook delay
     ///    pattern + text-conditioned cross-attention**: Copet et al.
     ///    Algorithm 1 describes the MusicGen-specific "delay pattern"
@@ -907,10 +905,10 @@ fn generate_forward_loud_partial(
         "musicgen generate: T5-base text encoder forward + autoregressive transformer \
          LM decode (with 4-codebook delay pattern + text-conditioned cross-attention) \
          + EnCodec RVQ decode composition pending. What is missing is (a) the frozen \
-         T5-base text encoder forward (upstream `transformers.T5EncoderModel` — no \
-         reusable primitive in `vokra_ops` today; the follow-up wave lands either a \
-         T5-base implementation dedicated to MusicGen or a first-class \
-         `t5_text_encode` op), (b) the autoregressive transformer LM decode with the \
+         T5 prompt path — `crate::t5_encoder::T5Encoder` now supplies the shared \
+         native CPU/Metal encoder math, but MusicGen has not yet bound tokenizer \
+         metadata plus its emitted `text_encoder.*` tensors into `generate` and the \
+         independent real-weight parity run is still pending — (b) the autoregressive transformer LM decode with the \
          MusicGen-specific 4-codebook delay pattern (Copet et al. Algorithm 1 — the \
          interleave across the 4 RVQ codebook streams) plus text-conditioned \
          cross-attention over the T5-encoded prompt tokens (the single-codebook AR \

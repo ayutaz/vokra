@@ -65,6 +65,8 @@ pub mod audiobox_aesthetics;
 /// Native AudioSeal watermark generator/detector (CPU / Metal).
 pub mod audioseal;
 pub mod canary;
+/// Shared native T5 text encoder for MusicGen-family and related audio models.
+pub mod t5_encoder;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —
 // FastConformer encoder (reuse `canary::CanaryEncoderConfig` — Canary-1B-v2
 // 32-layer × 1024 dim × 8 head × 128 mel bins, `vokra_ops::conformer` via
@@ -589,8 +591,8 @@ pub mod bigvgan;
 // (Magenta, Apache-2.0 code; weight LicenseClass::Unknown fail-closed
 // pending owner spec-review of gs://mt3/checkpoints/). T5-small
 // encoder-decoder scaffold + MidiEvent enum, transcribe loud-partial
-// pending T5 relative_attention_bias primitive + MIDI event codec
-// Rust port.
+// pending the MT3-specific T5X binder/decoder composition + MIDI event
+// codec Rust port; the shared relative-position and encoder pieces exist.
 pub mod mt3;
 pub mod vocos;
 /// Native WavTokenizer large-speech 75 token/s codec decoder.

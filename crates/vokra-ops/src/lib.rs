@@ -160,6 +160,12 @@ pub mod flow_sampler;
 pub mod firered_vad;
 // -----------------------------------------------------------------------
 pub mod frontend;
+// ---- Shared T5 relative-position indexing -------------------------------
+// Deterministic host-side bucket/gather glue shared by MusicGen, AudioGen,
+// JASCO, AudioLDM2 and MT3. Learned attention reductions remain backend
+// dispatched by the consuming model; this runtime function only constructs
+// the exact additive bias indices from Raffel et al. / Transformers.
+pub mod t5_relative_position;
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
 // FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
 // for voice activity detection. First-class audio-dialect op (distinct
