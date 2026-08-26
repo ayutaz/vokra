@@ -701,6 +701,8 @@ pub mod conv_tasnet;
 // the speech-enhancement `conv_tasnet` (runtime complete; redistribution
 // unresolved) landed just above — SepFormer's §3.1 rows remain commercial
 // (2026-07-30 / 2026-08-01 yousan) per HF cardData apache-2.0.
+/// Native ClearerVoice-Studio MossFormer2 16 kHz two-speaker separator.
+pub mod mossformer2_ss_16k;
 pub mod sepformer;
 /// Native TIGER-DnR and TIGER-speech CPU / Metal source separators.
 pub mod tiger;

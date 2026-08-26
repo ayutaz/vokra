@@ -1068,9 +1068,19 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                             .with_backend(args.backend),
                     ),
                 ),
+                "mossformer2_ss_16k" => (
+                    "mossformer2-ss-16k",
+                    Box::new(
+                        vokra_models::mossformer2_ss_16k::Mossformer2Ss16k::from_gguf(
+                            session.gguf(),
+                        )
+                        .map_err(|error| error.to_string())?
+                        .with_backend(args.backend),
+                    ),
+                ),
                 other => {
                     return Err(format!(
-                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, or tiger_separator"
+                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, tiger_separator, or mossformer2_ss_16k"
                     ));
                 }
             };

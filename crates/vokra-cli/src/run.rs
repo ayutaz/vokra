@@ -2548,9 +2548,17 @@ fn run_separation(session: &Session, a: &RunArgs) -> Result<(), String> {
                     .with_backend(a.backend),
             ),
         ),
+        "mossformer2_ss_16k" => (
+            "mossformer2-ss-16k",
+            Box::new(
+                vokra_models::mossformer2_ss_16k::Mossformer2Ss16k::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(a.backend),
+            ),
+        ),
         other => {
             return Err(format!(
-                "run (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, or tiger_separator"
+                "run (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, tiger_separator, or mossformer2_ss_16k"
             ));
         }
     };

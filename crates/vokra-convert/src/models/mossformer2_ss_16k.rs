@@ -11,11 +11,12 @@
 //! **speech** (not music) separation topology that composes FSMN
 //! (Feed-forward Sequential Memory Network) blocks with gated
 //! attention. The upstream release is distributed on HF; callers
-//! pre-flatten the torch checkpoint (Lightning `.ckpt` or bare
-//! `state_dict.pt`) to safetensors offline via a future
-//! `tools/parity/mossformer2_ss_prepare_checkpoint.py` (not yet
-//! written — the DFN3 / DAC / CSM pickle-bridge pattern, so no pickle
-//! enters the runtime, FR-LD-05).
+//! authenticate and flatten the pinned `last_best_checkpoint.pt` to
+//! safetensors offline via
+//! `tools/parity/mossformer2_ss_16k_prepare_checkpoint.py`. That bridge
+//! requires the exact upstream file identity and the complete 1,076-tensor
+//! manifest before `torch.load(weights_only=True)` output can enter the
+//! converter; pickle never enters the runtime (FR-LD-05).
 //!
 //! Output: a GGUF carrying every float tensor plus the `vokra.model.*`
 //! and `vokra.provenance.*` metadata chunks the runtime source-
@@ -48,14 +49,14 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the **upstream ClearerVoice-Studio state-dict
-//! keys verbatim** (`separator.*` / `encoder.*` / `decoder.*` per the
-//! MossFormer2 class layout). Real-weight parity binding to a future
-//! `vokra-models::mossformer2_ss` runtime module (native FSMN block +
-//! gated attention forward) is deferred to owner sign-off per
-//! `docs/license-audit.md §3.1`. The FSMN block kernel may be shareable
-//! with the existing `FsmnVad` (2026-07-30 land) runtime binder —
-//! op consolidation vs new dedicated `fsmn_block` op is a follow-up
-//! ADR question.
+//! keys verbatim** (`enc.conv1d.*`, `mask_net.*`, and `dec.weight` per
+//! the released MossFormer2 class layout). The strict
+//! `vokra-models::mossformer2_ss_16k` binder pins the exact public
+//! 1,076-name/shape manifest before loading tensors, and its native forward
+//! transcribes the official encoder, FLASH attention, gated dilated FSMN,
+//! mask heads and decoder through the CPU/Metal `Compute` seam. Numerical
+//! bounds remain deliberately unset until the VAST worker records the first
+//! independent official comparison.
 //!
 //! # Arch tag distinctness
 //!
@@ -71,16 +72,17 @@
 //!
 //! # No ONNX (permanent)
 //!
-//! The upstream MossFormer2 release ships PyTorch pickle files
-//! (Lightning `.ckpt` / `state_dict.pt`); this converter **never**
+//! The upstream MossFormer2 release ships a PyTorch checkpoint; the pinned
+//! offline preparer produces the safetensors input. This converter **never**
 //! touches ONNX (FR-LD-05).
 //!
 //! # Wiring status
 //!
-//! This is the TDD skeleton (BF16 / F16 / F32 pass-through plus
-//! provenance / category stamps). The runtime native FSMN block +
-//! gated attention forward is a follow-up wave, deferred to owner
-//! sign-off (see `docs/license-audit.md` §3.1).
+//! The converter, strict public-artifact binder, native CPU/Metal forward,
+//! CLI separation route, independent official oracle and VAST measurement
+//! worker are present. Runtime/parity sign-off still requires the recorded
+//! VAST CPU comparison followed by the Apple-silicon Metal measurement; an
+//! unmeasured implementation is not reported as numerically ratified.
 
 use std::path::Path;
 
@@ -142,10 +144,8 @@ pub struct Mossformer2Ss16kReport {
 }
 
 /// Converts a MossFormer2-SS-16K safetensors checkpoint at `input`
-/// (pre-flattened from the upstream ClearerVoice-Studio Lightning
-/// `.ckpt` / `state_dict.pt` — a future
-/// `tools/parity/mossformer2_ss_prepare_checkpoint.py` is not yet
-/// written, so that flattening is an owner-side step today) into a
+/// (authenticated and pre-flattened from the pinned upstream checkpoint by
+/// `tools/parity/mossformer2_ss_16k_prepare_checkpoint.py`) into a
 /// Vokra-native GGUF at `output`, returning a
 /// [`Mossformer2Ss16kReport`].
 ///
@@ -258,11 +258,10 @@ mod tests {
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
         let payload = bf16_bytes(&values);
         assert_eq!(payload.len(), 12);
-        // MossFormer2 separator gated-attention linear weight — the
-        // upstream ClearerVoice-Studio state-dict key convention
-        // preserved verbatim through the
-        // `mossformer2_ss_prepare_checkpoint.py` bridge.
-        let header = r#"{"separator.layers.0.gating.linear.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        // Compact stand-in for a real MossFormer2 gated-attention key. The
+        // topology preparer validates its production shape; this unit test
+        // isolates byte-preserving BF16 conversion with a tiny payload.
+        let header = r#"{"mask_net.mdl.intra_mdl.mossformerM.layers.0.to_qk.mdl.1.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
         let mut input_bytes = Vec::new();
         input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
         input_bytes.extend_from_slice(header.as_bytes());
@@ -284,7 +283,7 @@ mod tests {
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse GGUF");
         let info = file
-            .tensor_info("separator.layers.0.gating.linear.weight")
+            .tensor_info("mask_net.mdl.intra_mdl.mossformerM.layers.0.to_qk.mdl.1.weight")
             .expect("BF16 tensor present in output");
         assert_eq!(info.dtype, GgmlType::BF16);
         assert_eq!(info.dimensions, vec![2, 3]);

@@ -525,6 +525,7 @@ const ARCH_FRCRN: &str = "frcrn";
 const ARCH_SEPFORMER: &str = "sepformer";
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
 const ARCH_TIGER: &str = "tiger_separator";
+const ARCH_MOSSFORMER2_SS_16K: &str = "mossformer2_ss_16k";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
@@ -1234,7 +1235,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // (FR-EX-08).
             Ok((session, ModelTask::Denoise))
         }
-        ARCH_SEPFORMER | ARCH_CONV_TASNET | ARCH_TIGER => {
+        ARCH_SEPFORMER | ARCH_CONV_TASNET | ARCH_TIGER | ARCH_MOSSFORMER2_SS_16K => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on separation arch `{arch}`"
@@ -2018,12 +2019,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::beat_this::BeatThis::from_gguf(g).map(|_| ())),
     },
     // --- Source separation / enhancement / super-resolution ---------------
-    BoundArch {
-        arch: "conv_tasnet",
-        module: "vokra_models::conv_tasnet",
-        entry: "ConvTasnet::from_gguf → ConvTasnet::separate",
-        probe: Some(|g: &GgufFile| vokra_models::conv_tasnet::ConvTasnet::from_gguf(g).map(|_| ())),
-    },
     BoundArch {
         arch: "demucs",
         module: "vokra_models::demucs",
@@ -2989,7 +2984,12 @@ mod tests {
     /// Complete native separator forwards route to the audio-separation task.
     #[test]
     fn load_session_routes_native_separators_to_separation() {
-        for arch in ["sepformer", "tiger_separator"] {
+        for arch in [
+            "sepformer",
+            "conv_tasnet",
+            "tiger_separator",
+            "mossformer2_ss_16k",
+        ] {
             with_arch_only_gguf(arch, "separator-arch", |p| {
                 let (_, task) = load_session(p).expect("native separator route");
                 assert_eq!(task, ModelTask::Separation);
@@ -3683,6 +3683,10 @@ mod tests {
             ARCH_METRICGAN_PLUS,
             ARCH_MP_SENET,
             ARCH_FACEBOOK_DENOISER,
+            ARCH_SEPFORMER,
+            ARCH_CONV_TASNET,
+            ARCH_TIGER,
+            ARCH_MOSSFORMER2_SS_16K,
             ARCH_PYANNOTE_SEGMENTATION,
             ARCH_PYANNOTE_DIARIZATION,
             ARCH_RMVPE,
