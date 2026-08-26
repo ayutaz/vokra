@@ -330,6 +330,7 @@ pub mod miocodec;
 pub mod moshi;
 pub mod nanocodec;
 pub mod neucodec;
+pub mod neutts_air;
 pub mod xcodec2;
 // Microsoft DNS-Challenge NSNet2-baseline (arXiv:2005.07551; code MIT,
 // released model content CC-BY-4.0 — 2026-08-05 runtime binder). A

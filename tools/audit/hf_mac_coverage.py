@@ -262,6 +262,7 @@ METAL_CODE_ARCHES = {
     "moonshine",
     "nkf_aec",
     "neucodec",
+    "neutts-air",
     "nemotron_asr_streaming",
     "nisqa_v2_weight",
     "nsnet2",

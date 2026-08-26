@@ -127,6 +127,14 @@ pub(crate) enum ModelTask {
     /// variant-specific DAC execute on one selected backend. Neither public
     /// GGUF embeds its two tokenizer assets, so both token streams are explicit.
     TtsParler,
+    /// Neuphonic NeuTTS Air explicit Qwen-token-id generation with an
+    /// separately supplied NeuCodec decoder.
+    ///
+    /// The public LM GGUF contains neither its Qwen tokenizer/phonemizer nor
+    /// reference-audio encoder, so the run arm requires the exact official
+    /// prompt ids and an explicit Base/Distill NeuCodec companion. Both
+    /// learned stages use the same selected CPU or Metal backend.
+    TtsNeuTtsAir,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -551,6 +559,8 @@ const ARCH_MUSICGEN: &str = "musicgen";
 const ARCH_BARK: &str = "bark";
 /// Parler-TTS Mini English/Multilingual composite family.
 const ARCH_PARLER_TTS: &str = "parler_tts";
+/// Neuphonic NeuTTS Air Qwen2 LM emitting NeuCodec speech tokens.
+const ARCH_NEUTTS_AIR: &str = "neutts-air";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1660,6 +1670,28 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::TtsParler))
         }
+        ARCH_NEUTTS_AIR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NEUTTS_AIR}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_NEUTTS_AIR}` is missing `vokra.model.name`; refusing topology inference"
+                    )
+                })?;
+            if name != "neutts-air" {
+                return Err(format!(
+                    "arch `{ARCH_NEUTTS_AIR}` carries unknown model name `{name}`; expected `neutts-air`"
+                ));
+            }
+            Ok((session, ModelTask::TtsNeuTtsAir))
+        }
         ARCH_MOSS_TTS => {
             if hint.is_some() {
                 return Err(format!(
@@ -2597,6 +2629,40 @@ mod tests {
         ));
         std::fs::write(&path, &bytes).unwrap();
         let error = load_session(path.to_str().unwrap()).expect_err("foreign Parler name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_neutts_air_release_to_tts() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_NEUTTS_AIR);
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "neutts-air");
+        let bytes = builder.to_bytes().expect("serialize NeuTTS Air route GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-neutts-air-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named NeuTTS Air session builds (bare)");
+        assert_eq!(task, ModelTask::TtsNeuTtsAir);
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_NEUTTS_AIR);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "neutts-foreign");
+        let bytes = unknown
+            .to_bytes()
+            .expect("serialize foreign NeuTTS Air GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-neutts-air-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign NeuTTS name rejects");
         let _ = std::fs::remove_file(&path);
         assert!(error.contains("unknown model name"));
     }

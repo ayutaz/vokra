@@ -880,6 +880,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsNeuTtsAir => {
+            return Err(
+                "bench: arch `neutts-air` needs an exact pre-tokenized phoneme/reference-code prompt plus an explicit NeuCodec companion; use `vokra-cli run --model <neutts-air.gguf> --neutts-companion <neucodec.gguf> --token-ids <official-prompt-ids> [--neutts-greedy] --output <out.wav>` (FR-EX-08: refusing to fabricate tokenizer, phonemizer, reference audio, or duration inputs)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input

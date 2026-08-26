@@ -82,6 +82,10 @@ USAGE:
                   --parler-description-token-ids <u32,u32,...> \
                   --parler-prompt-token-ids <u32,u32,...> \
                   [--parler-max-frames <N>] [--parler-seed <u64>] [--output <out.wav>]
+    vokra-cli run --model <neutts-air.gguf> --neutts-companion <neucodec.gguf> \
+                  --token-ids <official-prompt-u32,...> [--neutts-max-new-tokens <N>] \
+                  [--neutts-min-new-tokens <N>] [--neutts-seed <u64>] [--neutts-greedy] \
+                  [--output <out.wav>]
     vokra-cli run --model <musicgen-medium-or-large.gguf> \
                   --musicgen-companion <musicgen-small.gguf> \
                   --token-ids <u32,u32,...> --music-unconditional-token-ids <u32,u32,...> \
@@ -287,7 +291,8 @@ OPTIONS:
                                 passed to the model; no tokenizer is inferred.
     --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3,
                                 MusicGen conditional prompt, or
-                                Bark/Bark Small text-token sequence:
+                                Bark/Bark Small text-token sequence, or
+                                complete NeuTTS Air official prompt:
                                 comma-separated u32 ids (whitespace allowed).
                                 No tokenizer or unknown-token substitution is
                                 inferred. BERT --output writes row-major `[T,D]`
@@ -322,6 +327,16 @@ OPTIONS:
     --parler-max-frames <N>     Parler-TTS only: positive 44.1 kHz DAC-frame
                                 cap. Defaults to the release generation config.
     --parler-seed <u64>         Parler-TTS sampling seed [default 0].
+    --neutts-companion <path>   NeuTTS Air only, REQUIRED: exact public
+                                NeuCodec Base or Distill GGUF. Target and
+                                companion use the same --backend.
+    --neutts-max-new-tokens <N> NeuTTS Air only: positive generation cap
+                                [default 2048].
+    --neutts-min-new-tokens <N> NeuTTS Air only: suppress speech-end before N
+                                generated tokens [default 50].
+    --neutts-seed <u64>         NeuTTS Air sampling seed [default 0].
+    --neutts-greedy             NeuTTS Air only: deterministic argmax route;
+                                intended for parity/backend validation.
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -522,6 +537,16 @@ struct RunArgs {
     parler_max_frames: Option<usize>,
     /// Parler-only deterministic sampler seed. `None` means zero.
     parler_seed: Option<u64>,
+    /// NeuTTS Air-only exact NeuCodec companion GGUF.
+    neutts_companion: Option<String>,
+    /// NeuTTS Air-only generated vocabulary-token cap.
+    neutts_max_new_tokens: Option<usize>,
+    /// NeuTTS Air-only minimum generated-token count before speech end.
+    neutts_min_new_tokens: Option<usize>,
+    /// NeuTTS Air-only deterministic sampler seed.
+    neutts_seed: Option<u64>,
+    /// NeuTTS Air-only deterministic argmax mode.
+    neutts_greedy: bool,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -687,6 +712,11 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut parler_prompt_token_ids: Option<String> = None;
     let mut parler_max_frames: Option<usize> = None;
     let mut parler_seed: Option<u64> = None;
+    let mut neutts_companion: Option<String> = None;
+    let mut neutts_max_new_tokens: Option<usize> = None;
+    let mut neutts_min_new_tokens: Option<usize> = None;
+    let mut neutts_seed: Option<u64> = None;
+    let mut neutts_greedy = false;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
@@ -904,6 +934,49 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                         .map_err(|error| format!("--parler-seed must be u64: {error}"))?,
                 );
                 i += 2;
+            }
+            "--neutts-companion" => {
+                neutts_companion = Some(
+                    args.get(i + 1)
+                        .ok_or("--neutts-companion requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--neutts-max-new-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--neutts-max-new-tokens requires a positive integer")?;
+                let tokens = value.parse::<usize>().map_err(|error| {
+                    format!("--neutts-max-new-tokens must be an integer: {error}")
+                })?;
+                if tokens == 0 {
+                    return Err("--neutts-max-new-tokens must be positive".to_owned());
+                }
+                neutts_max_new_tokens = Some(tokens);
+                i += 2;
+            }
+            "--neutts-min-new-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--neutts-min-new-tokens requires an integer")?;
+                neutts_min_new_tokens = Some(value.parse::<usize>().map_err(|error| {
+                    format!("--neutts-min-new-tokens must be an integer: {error}")
+                })?);
+                i += 2;
+            }
+            "--neutts-seed" => {
+                let value = args.get(i + 1).ok_or("--neutts-seed requires a value")?;
+                neutts_seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| format!("--neutts-seed must be u64: {error}"))?,
+                );
+                i += 2;
+            }
+            "--neutts-greedy" => {
+                neutts_greedy = true;
+                i += 1;
             }
             "--codec-mode" => {
                 let value = args
@@ -1159,6 +1232,11 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         parler_prompt_token_ids,
         parler_max_frames,
         parler_seed,
+        neutts_companion,
+        neutts_max_new_tokens,
+        neutts_min_new_tokens,
+        neutts_seed,
+        neutts_greedy,
         codec_mode,
         num_quantizers,
         bandwidth_id,
@@ -1294,7 +1372,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AecNkf
         | ModelTask::MusicGeneration
         | ModelTask::TtsBark
-        | ModelTask::TtsParler => None,
+        | ModelTask::TtsParler
+        | ModelTask::TtsNeuTtsAir => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -1400,9 +1479,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::TextEncoder
         && task != ModelTask::MusicGeneration
         && task != ModelTask::TtsBark
+        && task != ModelTask::TtsNeuTtsAir
     {
         return Err(
-            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3, musicgen, or bark arches"
+            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3, musicgen, bark, or neutts-air arches"
                 .to_owned(),
         );
     }
@@ -1435,6 +1515,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
              --parler-max-frames / --parler-seed are only supported for the parler_tts arch"
                 .to_owned(),
         );
+    }
+    if (a.neutts_companion.is_some()
+        || a.neutts_max_new_tokens.is_some()
+        || a.neutts_min_new_tokens.is_some()
+        || a.neutts_seed.is_some()
+        || a.neutts_greedy)
+        && task != ModelTask::TtsNeuTtsAir
+    {
+        return Err("run: --neutts-companion / --neutts-max-new-tokens / \
+             --neutts-min-new-tokens / --neutts-seed / --neutts-greedy are only \
+             supported for the neutts-air arch"
+            .to_owned());
     }
     if a.codec_mode.is_some()
         && task != ModelTask::MimiCodec
@@ -1767,6 +1859,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsParler => {
             run_parler(&a)?;
+        }
+        ModelTask::TtsNeuTtsAir => {
+            run_neutts_air(&a)?;
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
@@ -3529,6 +3624,72 @@ fn run_parler(a: &RunArgs) -> Result<(), String> {
     emit_audio(
         "parler-tts",
         &synthesis.samples,
+        synthesis.sample_rate,
+        a.output.as_deref(),
+    )
+}
+
+/// Public NeuTTS Air explicit-token prompt plus explicit NeuCodec companion.
+///
+/// The prompt must already contain the official text-control tokens, encoded
+/// phonemes, speech-generation-start and at least one encoded reference code.
+/// The public GGUF has no tokenizer, phonemizer or reference-audio encoder, so
+/// none of those boundaries is inferred from raw inputs.
+fn run_neutts_air(a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (NeuTTS Air): use explicit --token-ids; --input/--text/--tokens are not accepted because the public LM GGUF has no tokenizer, phonemizer, or reference-audio encoder"
+                .to_owned(),
+        );
+    }
+    let prompt = parse_comma_u32_ids(
+        a.token_ids
+            .as_deref()
+            .ok_or("run (NeuTTS Air): --token-ids <official-prompt-u32,...> is required")?,
+        "NeuTTS Air",
+        "--token-ids",
+    )?;
+    let companion_path = a.neutts_companion.as_deref().ok_or(
+        "run (NeuTTS Air): --neutts-companion <neucodec.gguf> is required because the public target contains only the Qwen2 LM",
+    )?;
+
+    let max_new_tokens = a.neutts_max_new_tokens.unwrap_or(2_048);
+    let mut generation = if a.neutts_greedy {
+        vokra_models::neutts_air::NeuTtsAirGenerationOptions::greedy(max_new_tokens)
+    } else {
+        let mut options = vokra_models::neutts_air::NeuTtsAirGenerationOptions::default();
+        options.max_new_tokens = max_new_tokens;
+        options
+    };
+    if let Some(min_new_tokens) = a.neutts_min_new_tokens {
+        generation.min_new_tokens = min_new_tokens;
+    }
+    generation.seed = a.neutts_seed.unwrap_or(0);
+
+    let policy = vokra_core::CompliancePolicy::from_env();
+    let model = vokra_models::neutts_air::NeuTtsAir::open_mapped_with_policy_and_backend(
+        &a.model, &policy, a.backend,
+    )
+    .map_err(|error| format!("run (NeuTTS Air bind): {error}"))?;
+    let companion =
+        vokra_models::neutts_air::NeuTtsAirCompanion::from_path_with_policy_and_backend(
+            companion_path,
+            &policy,
+            a.backend,
+        )
+        .map_err(|error| format!("run (NeuTTS Air companion bind): {error}"))?;
+    let synthesis = model
+        .synthesize_with_companion(&companion, &prompt, &generation)
+        .map_err(|error| format!("run (NeuTTS Air generate): {error}"))?;
+    if !synthesis.generation.ignored_token_ids.is_empty() {
+        eprintln!(
+            "vokra: NeuTTS Air ignored {} non-speech generated token(s), matching the official speech-token extraction contract",
+            synthesis.generation.ignored_token_ids.len()
+        );
+    }
+    emit_audio(
+        "neutts-air",
+        &synthesis.pcm,
         synthesis.sample_rate,
         a.output.as_deref(),
     )
@@ -6706,6 +6867,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_explicit_neutts_prompt_and_companion_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "neutts-air.gguf",
+            "--neutts-companion",
+            "neucodec.gguf",
+            "--token-ids",
+            "151666,217207,151667,151669,151671",
+            "--neutts-max-new-tokens",
+            "128",
+            "--neutts-min-new-tokens",
+            "12",
+            "--neutts-seed",
+            "42",
+            "--neutts-greedy",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("NeuTTS Air explicit input flags parse");
+        assert_eq!(parsed.neutts_companion.as_deref(), Some("neucodec.gguf"));
+        assert_eq!(
+            parsed.token_ids.as_deref(),
+            Some("151666,217207,151667,151669,151671")
+        );
+        assert_eq!(parsed.neutts_max_new_tokens, Some(128));
+        assert_eq!(parsed.neutts_min_new_tokens, Some(12));
+        assert_eq!(parsed.neutts_seed, Some(42));
+        assert!(parsed.neutts_greedy);
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "neutts-air.gguf",
+                "--neutts-max-new-tokens",
+                "0",
+            ]))
+            .is_err()
+        );
+        let error = match parse_args(&args(&["--model", "neutts-air.gguf", "--neutts-companion"])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --neutts-companion must be rejected"),
+        };
+        assert_eq!(error, "--neutts-companion requires a GGUF path");
+    }
+
+    #[test]
     fn parse_accepts_explicit_moss_tts_companion_contract() {
         let parsed = parse_args(&args(&[
             "--model",
@@ -8469,6 +8675,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsParler), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::TtsNeuTtsAir), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);

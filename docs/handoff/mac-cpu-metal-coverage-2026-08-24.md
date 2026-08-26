@@ -3049,6 +3049,46 @@ artifacts moves the cumulative inventory to CPU `full=124`, `partial=45`,
 `blocked-by-cpu=69`, `not-artifact=1`. These are source reachability counts;
 the VAST CPU and remote Apple Silicon real-weight parity gates remain pending.
 
+### NeuTTS Air explicit-token voice-cloning route
+
+The public
+`vokra/neutts-air@df2b47ec81862f0e3a19eb2638a6a2bcd2f13b8c`
+artifact is `neutts-air.gguf`, 1,495,883,328 bytes with SHA-256
+`f6caf559e919b16d77ac28177e59ee5427a5de92bdeedd719ecab00b4afbb754`.
+Its complete sorted 291-tensor name/shape manifest hashes to
+`1dc9ebd77a883c74bbb72ad8a97f088ef6662ee872b98e3c1236d7a5eac93842`.
+The strict binder also checks the exact `neutts-air` arch/name/category,
+`neuphonic/neutts-air` provenance and permissive weight class before tensor
+materialization.
+
+The native bounded-memory decoder executes the released 24-layer,
+896-hidden, 14-query/2-KV-head Qwen2-family topology with half-split RoPE,
+GQA, SwiGLU and the untied 217,652-row language-model head. It materializes
+one dense layer at a time from the mapping and emits the contiguous 65,536-way
+NeuCodec code interval. GEMM, GEMV, softmax, RMSNorm and SiLU preflight one
+selected CPU or Metal backend. The separately licensed Base or Distill
+NeuCodec companion must use that same backend; a mismatch or unsupported op is
+an explicit error, never a silent CPU fallback.
+
+The exact tokenizer boundaries were independently recovered from the official
+ungated `neuphonic/neutts-air-onnx` tokenizer: control IDs
+`151665..=151670`, speech-code IDs `151671..=217206`, and first IPA ID
+`217207`. The public GGUF does not embed its tokenizer, phonemizer or
+reference-audio encoder. Consequently the CLI requires an exact official
+pre-tokenized prompt containing reference NeuCodec tokens plus an explicit
+NeuCodec GGUF. It rejects raw text/reference audio instead of inventing a
+frontend. This is an executable learned route, but it is not a claim that
+Vokra implements the complete upstream Python preprocessing application.
+
+The read-only live-Hub audit after this source landing reports 194 public
+repositories, 193 GGUF repositories and 198 GGUF files: CPU
+`full=128`, `partial=44`, `no-runtime-binder=21`, `not-artifact=1`; Metal
+`full=128`, `blocked-by-cpu=65`, `not-artifact=1`. No model payload or
+inference ran on the maintainer Mac. Real-weight CPU/reference comparison is
+still a VAST-only gate, and real CPU/Metal comparison is still an external
+Apple-Silicon gate. No Hugging Face upload or artifact replacement occurred
+or was authorized.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a
