@@ -48,6 +48,8 @@ pub(super) struct DelayTopology {
     pub(super) text_vocab_size: usize,
     pub(super) num_audio_codebooks: usize,
     pub(super) audio_vocab_with_pad: usize,
+    pub(super) audio_pad_token_id: usize,
+    pub(super) zero_audio_pad_embedding: bool,
     pub(super) max_position_embeddings: usize,
     pub(super) rms_norm_eps: f32,
     pub(super) rope_base: f32,
@@ -69,6 +71,19 @@ impl DelayTopology {
     pub(super) const fn input_columns(self) -> usize {
         1 + self.num_audio_codebooks
     }
+
+    pub(super) const fn accepts_audio_token(self, token: usize) -> bool {
+        token < self.audio_vocab_with_pad
+            || (self.zero_audio_pad_embedding && token == self.audio_pad_token_id)
+    }
+
+    pub(super) const fn audio_embedding_row(self, token: usize) -> Option<usize> {
+        if self.zero_audio_pad_embedding && token == self.audio_pad_token_id {
+            None
+        } else {
+            Some(token)
+        }
+    }
 }
 
 pub(super) const DELAY_TOPOLOGY: DelayTopology = DelayTopology {
@@ -81,6 +96,8 @@ pub(super) const DELAY_TOPOLOGY: DelayTopology = DelayTopology {
     text_vocab_size: TEXT_VOCAB_SIZE,
     num_audio_codebooks: NUM_AUDIO_CODEBOOKS,
     audio_vocab_with_pad: AUDIO_VOCAB_WITH_PAD,
+    audio_pad_token_id: 1_024,
+    zero_audio_pad_embedding: false,
     max_position_embeddings: MAX_POSITION_EMBEDDINGS,
     rms_norm_eps: RMS_NORM_EPS,
     rope_base: ROPE_BASE,
@@ -280,7 +297,16 @@ impl DelayMappedDescriptors {
         topology: DelayTopology,
         mapped: MappedModel,
     ) -> Result<Self> {
-        let contract = tensor_contract(topology);
+        Self::bind_with_layout(file, topology, mapped, QwenTensorLayout::Delay)
+    }
+
+    pub(super) fn bind_with_layout(
+        file: Arc<GgufFile>,
+        topology: DelayTopology,
+        mapped: MappedModel,
+        layout: QwenTensorLayout,
+    ) -> Result<Self> {
+        let contract = tensor_contract_with_layout(topology, layout);
         debug_assert_eq!(contract.len(), topology.tensor_count());
         let mut infos = Vec::with_capacity(contract.len());
         for (name, elements) in contract {
@@ -362,6 +388,12 @@ pub(super) struct DelayLayerDescriptors<'a> {
     pub(super) down: &'a GgufTensorInfo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QwenTensorLayout {
+    Delay,
+    Local,
+}
+
 fn delay_mapped_info(
     file: &GgufFile,
     name: &str,
@@ -380,21 +412,36 @@ fn delay_mapped_info(
 }
 
 pub(super) fn tensor_contract(topology: DelayTopology) -> Vec<(String, usize)> {
+    tensor_contract_with_layout(topology, QwenTensorLayout::Delay)
+}
+
+pub(super) fn tensor_contract_with_layout(
+    topology: DelayTopology,
+    layout: QwenTensorLayout,
+) -> Vec<(String, usize)> {
     let q_dim = topology.q_dim();
     let kv_dim = topology.kv_dim();
     let mut tensors = Vec::with_capacity(topology.tensor_count());
+    let text_embedding = match layout {
+        QwenTensorLayout::Delay => "language_model.embed_tokens.weight",
+        QwenTensorLayout::Local => "transformer.embed_tokens.weight",
+    };
     tensors.push((
-        "language_model.embed_tokens.weight".to_owned(),
+        text_embedding.to_owned(),
         topology.text_vocab_size * topology.hidden_dim,
     ));
     for codebook in 0..topology.num_audio_codebooks {
-        tensors.push((
-            format!("emb_ext.{codebook}.weight"),
-            topology.audio_vocab_with_pad * topology.hidden_dim,
-        ));
+        let name = match layout {
+            QwenTensorLayout::Delay => format!("emb_ext.{codebook}.weight"),
+            QwenTensorLayout::Local => format!("audio_embeddings.{codebook}.weight"),
+        };
+        tensors.push((name, topology.audio_vocab_with_pad * topology.hidden_dim));
     }
     for layer in 0..topology.num_layers {
-        let prefix = format!("language_model.layers.{layer}");
+        let prefix = match layout {
+            QwenTensorLayout::Delay => format!("language_model.layers.{layer}"),
+            QwenTensorLayout::Local => format!("transformer.layers.{layer}"),
+        };
         tensors.extend([
             (
                 format!("{prefix}.input_layernorm.weight"),
@@ -442,16 +489,22 @@ pub(super) fn tensor_contract(topology: DelayTopology) -> Vec<(String, usize)> {
             ),
         ]);
     }
-    tensors.push(("language_model.norm.weight".to_owned(), topology.hidden_dim));
-    tensors.push((
-        "lm_heads.0.weight".to_owned(),
-        topology.text_vocab_size * topology.hidden_dim,
-    ));
-    for head in 1..=topology.num_audio_codebooks {
-        tensors.push((
-            format!("lm_heads.{head}.weight"),
-            topology.audio_vocab_with_pad * topology.hidden_dim,
-        ));
+    let final_norm = match layout {
+        QwenTensorLayout::Delay => "language_model.norm.weight",
+        QwenTensorLayout::Local => "transformer.norm.weight",
+    };
+    tensors.push((final_norm.to_owned(), topology.hidden_dim));
+    let text_head = match layout {
+        QwenTensorLayout::Delay => "lm_heads.0.weight".to_owned(),
+        QwenTensorLayout::Local => "text_lm_head.weight".to_owned(),
+    };
+    tensors.push((text_head, topology.text_vocab_size * topology.hidden_dim));
+    for codebook in 0..topology.num_audio_codebooks {
+        let name = match layout {
+            QwenTensorLayout::Delay => format!("lm_heads.{}.weight", codebook + 1),
+            QwenTensorLayout::Local => format!("audio_lm_heads.{codebook}.weight"),
+        };
+        tensors.push((name, topology.audio_vocab_with_pad * topology.hidden_dim));
     }
     tensors
 }

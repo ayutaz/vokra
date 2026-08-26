@@ -714,20 +714,22 @@ fn embed_prompt(
         hidden.copy_from_slice(&scratch.embed_row);
         for codebook in 0..topology.num_audio_codebooks {
             let token = row_tokens[1 + codebook] as usize;
-            if token >= topology.audio_vocab_with_pad {
+            if !topology.accepts_audio_token(token) {
                 return Err(VokraError::InvalidArgument(format!(
-                    "{label}: audio token at row {row}, codebook {codebook} is {token}, outside 0..{}",
-                    topology.audio_vocab_with_pad
+                    "{label}: audio token at row {row}, codebook {codebook} is {token}, outside learned rows 0..{} and authenticated pad id {}",
+                    topology.audio_vocab_with_pad, topology.audio_pad_token_id
                 )));
             }
-            widen_row(
-                mapped,
-                mapped.audio_embedding(codebook),
-                token,
-                &mut scratch.embed_row,
-            )?;
-            for (value, &embedding) in hidden.iter_mut().zip(&scratch.embed_row) {
-                *value += embedding;
+            if let Some(embedding_row) = topology.audio_embedding_row(token) {
+                widen_row(
+                    mapped,
+                    mapped.audio_embedding(codebook),
+                    embedding_row,
+                    &mut scratch.embed_row,
+                )?;
+                for (value, &embedding) in hidden.iter_mut().zip(&scratch.embed_row) {
+                    *value += embedding;
+                }
             }
         }
     }
