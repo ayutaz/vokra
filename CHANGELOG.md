@@ -22,9 +22,12 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   whole-model hot-op registry; uncovered backends and missing speaker/vocoder
   inputs fail explicitly. `vokra-cli run` now routes the `speecht5` arch and
   requires explicit `--vocoder` plus `--speaker-embedding` sidecars, passing
-  the selected CPU/Metal backend through both stages. The historical
-  tokenizer-less public GGUF remains rejected, and VAST CPU plus Apple-device
-  real-weight parity are still pending rather than claimed.
+  the selected CPU/Metal backend through both stages. A dedicated locked
+  Transformers 4.45.2 oracle, real-weight Rust gate, and no-upload VAST worker
+  stage tokenizer/pre-postnet/stop-step comparison at the unchanged 0.01 FP32
+  bound. The historical tokenizer-less public GGUF remains rejected, and the
+  VAST CPU plus Apple-device real-weight runs are still pending rather than
+  claimed.
 - The imperative model compute seam now exposes element-wise `Tanh` on CPU
   and Metal for SpeechT5's activated postnet blocks. Metal uses a dedicated
   MSL kernel; unsupported GPU backends fail whole-model coverage explicitly

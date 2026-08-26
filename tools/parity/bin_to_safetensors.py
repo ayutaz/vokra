@@ -66,6 +66,7 @@ HF_ALLOW_PATTERNS = [
     "*.safetensors",  # if upstream *does* ship one, skip conversion (see main)
     "config.json",
     "generator_config.json",
+    "added_tokens.json",
     "special_tokens_map.json",
     "tokenizer_config.json",
     "tokenizer.json",

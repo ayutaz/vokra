@@ -9,9 +9,13 @@
 > tokenization. The canonical artifact now has a complete native
 > relative-position encoder, cached autoregressive decoder, seeded always-on
 > prenet dropout, stop rule, postnet and optional strict SpeechT5 HiFi-GAN
-> bridge through explicit CPU/Metal hot-op coverage. VAST real CPU and Apple
-> Metal parity remain pending, and the live tokenizer-less GGUF still fails the
-> strict contract, so the public repository stays in the explicit
+> bridge through explicit CPU/Metal hot-op coverage. The CLI now requires the
+> exact vocoder and 512-value x-vector sidecars and forwards one backend to
+> both stages. A locked official Transformers 4.45.2 oracle, Rust real-weight
+> test and no-upload VAST worker are staged without running model work on the
+> maintainer Mac. VAST real CPU and Apple Metal parity remain pending, and the
+> live tokenizer-less GGUF still fails the strict contract, so the public
+> repository stays in the explicit
 > `no-runtime-binder` artifact class until a corrected artifact is published.
 
 > **2026-08-26 Canary-1B-v2 artifact correction:** fixed-revision Range
