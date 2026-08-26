@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dump an independent MOSS Audio Tokenizer Full or Nano decode reference.
+"""Dump an independent MOSS Audio Tokenizer Full, Nano, or v2 reference.
 
 The oracle is the exact upstream custom-code module loaded by Hugging Face
 ``AutoModel.from_pretrained(..., trust_remote_code=True)`` at a pinned commit.
@@ -16,8 +16,8 @@ Python 3.12 policy after provisioning the selected snapshot, for example::
       --with 'transformers==5.15.0' \
       --with 'accelerate>=1,<2' \
       python tools/parity/moss_audio_tokenizer_dump_reference.py \
-      --variant full --device cuda \
-      --output /workspace/moss-audio-tokenizer-full-reference.csv
+      --variant v2 --num-quantizers 12 --device cuda \
+      --output /workspace/moss-audio-tokenizer-v2-reference.csv
 
 The output is intentionally not created or committed by this source-only
 landing. A fixture becomes authoritative only after this script has run
@@ -62,6 +62,23 @@ VARIANTS = {
         "restore_channels": True,
         "model_source_sha256": None,
         "config_source_sha256": None,
+    },
+    "v2": {
+        "model_id": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+        "revision": "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+        "sample_rate": 48_000,
+        "channels": 2,
+        "samples_per_channel_per_frame": 3_840,
+        "max_quantizers": 32,
+        # MOSS-TTS-Local-Transformer emits the first 12 codebooks.
+        "default_num_quantizers": 12,
+        "restore_channels": True,
+        "model_source_sha256": (
+            "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9"
+        ),
+        "config_source_sha256": (
+            "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529"
+        ),
     },
 }
 
@@ -150,8 +167,13 @@ def main() -> None:
     model_id = str(variant["model_id"])
     revision = str(variant["revision"])
     max_quantizers = int(variant["max_quantizers"])
+    default_num_quantizers = int(
+        variant.get("default_num_quantizers", max_quantizers)
+    )
     num_quantizers = (
-        max_quantizers if args.num_quantizers is None else args.num_quantizers
+        default_num_quantizers
+        if args.num_quantizers is None
+        else args.num_quantizers
     )
     if args.frames < 1:
         raise ValueError("--frames must be >= 1")
