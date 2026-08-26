@@ -308,6 +308,19 @@ impl LicenseClass {
         if norm.contains("openrail") || norm.contains("rail-m") {
             return Self::InheritedRestriction;
         }
+        // Meta Llama 3.2 Community License: commercial use is generally
+        // permitted, but an organisation above 700 million monthly active
+        // users must request a separate licence from Meta.  This is the exact
+        // threshold-shaped obligation `ConditionalCommercial` represents;
+        // treating it as Unknown would incorrectly label every permitted load
+        // as research-only, while Permissive would erase the threshold.
+        if norm.contains("llama-3-2-community-license")
+            || norm.contains("llama-3.2-community-license")
+            || norm == "llama3-2-community-license"
+            || norm == "llama3-2"
+        {
+            return Self::ConditionalCommercial;
+        }
         // Share-alike and strong copyleft, BEFORE the plain `cc-by` arm.
         //
         // Order matters and the previous ordering was wrong: `cc-by-sa-4.0`
@@ -1276,6 +1289,12 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "ultravox-v0_5-llama-3_2-1b"
         | "fixie-ai/ultravox-v0_5-llama-3_2-1b"
         | "vokra/ultravox-v0-5-llama-3-2-1b" => LicenseClass::Permissive,
+        // The companion is never bundled into Vokra's public MIT artifact.
+        // A user who accepted Meta's gated terms may convert it locally; the
+        // 700M-MAU threshold remains visible through this distinct class.
+        "ultravox_llama_companion"
+        | "meta-llama-3.2-1b-instruct-ultravox-companion"
+        | "meta-llama/llama-3.2-1b-instruct" => LicenseClass::ConditionalCommercial,
         // --- unresolved upstream terms (fail closed) -------------------------
         //
         // JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k has three conflicting
@@ -1805,6 +1824,40 @@ mod tests {
             );
             assert_eq!(c.redistributable(), publishable, "{c:?}: publishable");
         }
+    }
+
+    #[test]
+    fn llama_3_2_companion_preserves_conditional_commercial_threshold() {
+        for license in [
+            "llama3.2",
+            "llama-3.2-community-license",
+            "Llama 3.2 Community License",
+            "llama_3_2_community_license",
+        ] {
+            let class = LicenseClass::from_license_str(license);
+            assert_eq!(class, LicenseClass::ConditionalCommercial, "{license}");
+            assert!(!class.requires_research_flag(), "{license}: not NC");
+            assert!(
+                !class.commercial_ok(),
+                "{license}: threshold must be evaluated"
+            );
+        }
+        for id in [
+            "ultravox_llama_companion",
+            "meta-llama-3.2-1b-instruct-ultravox-companion",
+            "meta-llama/Llama-3.2-1B-Instruct",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::ConditionalCommercial),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            registry_lookup("ultravox"),
+            Some(LicenseClass::Permissive),
+            "the public MIT audio artifact remains independently permissive"
+        );
     }
 
     /// `RedistributionForbidden` must never be reachable by parsing a licence

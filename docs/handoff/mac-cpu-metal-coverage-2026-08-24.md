@@ -1,5 +1,20 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 Ultravox companion-conversion wave:** the separately gated
+> `meta-llama/Llama-3.2-1B-Instruct` base now has a bounded-memory conversion
+> contract distinct from the public MIT audio GGUF. The converter requires an
+> explicit immutable 40-hex source revision, exact official Llama-3.2-1B
+> config, canonical BF16 dtype and the tied-embedding 146-tensor manifest
+> (`7832a30c…3712`), then streams one tensor at a time into arch
+> `ultravox_llama_companion`. Its exact HF raw license ID `llama3.2` is classified
+> `ConditionalCommercial`, preserving the 700-million-MAU separate-license
+> threshold rather than treating it as permissive or research-only. Both CLI
+> entry points expose the separate mode; no download, merge into the MIT
+> artifact or publish path exists. The runtime companion binder, tokenizer,
+> multimodal interleave and generation loop remain pending, so public-artifact
+> reachability totals do not change. No model payload, conversion, inference or
+> heavy Cargo command ran on the maintainer Mac.
+
 > **2026-08-27 YuE xcodec-mini source wave:** bounded reads of only the
 > public GGUF header authenticated revision
 > `83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa`, 1,810,001,760 bytes,

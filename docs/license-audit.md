@@ -704,6 +704,20 @@ Rust gate は staged だが、実行結果は未取得であり real-weight nume
 
 公開済み `vokra/emotion2vec@fcdce49fd5ce07ffd37c2f18aaa3ec6fd6c3b78e` の `model.gguf` は 648,576,992 bytes、SHA-256 `052efcdaa000208933bfe1633ae81115fa9aa05b043920bb1cfa92f2827f02bc`、185 個の F32 tensor、tensor-manifest SHA-256 `f5f8f684302cf55fb399277a7446976a77f570816e7e3345a008e4d0b6774401` として identity を固定する。旧行にある汎用 `nemo_pt_to_safetensors.py --squeeze-to-4d` 経路は履歴として残すが、今後の再現変換は `tools/parity/emotion2vec_prepare_checkpoint.py` に限定し、ALiBi scale の既知 shape `[1,1,16,1,1]` から `[16]` への変形以外を拒否する。今回の作業に再 upload / publish は含まない。
 
+### Ultravox Llama companion boundary（2026-08-27）
+
+公開 `vokra/ultravox-v0-5-llama-3-2-1b` は引き続き MIT の491-tensor
+audio tower/projectorだけであり、Meta weightを含めない。ユーザーがgated
+`meta-llama/Llama-3.2-1B-Instruct`を別途取得した場合に限り、
+`vokra-cli convert --model ultravox-llama-companion --config config.json
+--revision <40-hex>` が exact 146-BF16-tensor / tied-embedding manifestを
+一個ずつstreaming変換する。出力archは `ultravox_llama_companion`、HF cardの
+exact raw license IDは `llama3.2`、classは `ConditionalCommercial` とし、Metaの
+7億MAU超別許諾条件を `Permissive` や `Unknown/research-only` に誤分類しない。
+このcompanionにはpublish経路を設けず、公開MIT artifactへの合成・自動取得・
+代替decoder fallbackも行わない。2 GB超の実変換とvalidationはVAST限定で、
+runtime binder/tokenizer/chat routeおよび実weight parityは後続gateである。
+
 ### 3.2 Corpus / dataset owner sign-off（依頼者記入）
 
 **位置付け**: §3.1 の Owner sign-off は **配布モデル weight** を対象とする。本節は **CI / 評価 / benchmark で消費する corpus / dataset** の再配布可否を対象とする。判定原則・fail-closed default（空欄 = 未判定 = 配布不可）は §3.1 と同じ。

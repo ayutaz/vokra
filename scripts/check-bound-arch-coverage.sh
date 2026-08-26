@@ -22,8 +22,9 @@
 #
 # THE INVARIANT
 #   Every `pub const ARCH: &str = "…"`, its `pub const ARCH_<SUFFIX>: &str`
-#   siblings (gigaam's ARCH_V3 / ARCH_MULTILINGUAL) and every
-#   `pub const EXPECTED_ARCH: &str` declared anywhere under
+#   siblings (gigaam's ARCH_V3 / ARCH_MULTILINGUAL), every
+#   `pub const EXPECTED_ARCH: &str`, and role-prefixed `COMPANION_ARCH`
+#   declared anywhere under
 #   crates/vokra-models/src/ must be accounted for in engine.rs by EITHER
 #     (a) a routed `const ARCH_*: &str = "…"` constant — the dispatch runs it, or
 #     (b) an `arch: "…"` row inside `const BOUND_ARCHES` — bound, not runnable.
@@ -62,7 +63,8 @@ Usage:
   bash scripts/check-bound-arch-coverage.sh --self-test
 
 Checks that every model arch constant declared under crates/vokra-models/src/
-(`pub const ARCH`, `pub const ARCH_<SUFFIX>`, `pub const EXPECTED_ARCH`, all
+(`pub const ARCH`, `pub const ARCH_<SUFFIX>`, `pub const EXPECTED_ARCH`,
+`pub const COMPANION_ARCH`, and `pub const LEGACY_PUBLIC_ARCH`, all
 typed &str) is accounted for in crates/vokra-cli/src/engine.rs — either as a
 routed `const ARCH_*` the dispatch runs, or as a row in `const BOUND_ARCHES`. A
 binder in neither place makes `vokra-cli run` report "unsupported model arch"
@@ -84,8 +86,9 @@ models_dir, engine_path = sys.argv[1], sys.argv[2]
 
 # ---- 1. binders: every arch constant under vokra-models/src ----------------
 # Matches `pub const ARCH: &str = "x";`, `pub const ARCH_V3: &str = "x";` and
-# `pub const EXPECTED_ARCH: &str = "x";`, and the authenticated compatibility
-# spelling `pub const LEGACY_PUBLIC_ARCH`. `&'static str` is accepted too.
+# `pub const EXPECTED_ARCH: &str = "x";`, the role-prefixed
+# `pub const COMPANION_ARCH`, and the authenticated compatibility spelling
+# `pub const LEGACY_PUBLIC_ARCH`. `&'static str` is accepted too.
 #
 # The EXPECTED_ARCH alternative was added 2026-08-15. Its absence was not a
 # cosmetic omission: 29 of the 89 arch constants under vokra-models/src use
@@ -97,7 +100,7 @@ models_dir, engine_path = sys.argv[1], sys.argv[2]
 # rounds behind two green gates. LOOSE_ARCH_CONST below exists so the next
 # new spelling fails loudly instead of shrinking the population in silence.
 ARCH_CONST = re.compile(
-    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|COMPANION_ARCH|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
 )
 # Deliberately sloppy twin of ARCH_CONST: ANY `pub const <name>: &str = "…";`
 # whose name contains `ARCH`. Never used for discovery — only to prove
@@ -260,7 +263,8 @@ self_test() {
     trap 'rm -rf "$tmp"' RETURN
 
     mkdir -p "$tmp/models/alpha" "$tmp/models/beta" "$tmp/models/nested/gamma" \
-        "$tmp/models/nested/delta" "$tmp/models/nested/epsilon"
+        "$tmp/models/nested/delta" "$tmp/models/nested/epsilon" \
+        "$tmp/models/nested/zeta"
     printf 'pub const ARCH: &str = "alpha";\n' >"$tmp/models/alpha/mod.rs"
     printf 'pub const ARCH: &str = "beta";\n' >"$tmp/models/beta/mod.rs"
     # Nested + suffixed constant: proves the walk recurses and that the
@@ -275,6 +279,10 @@ self_test() {
     # by the loose parser guard.
     printf 'pub const LEGACY_PUBLIC_ARCH: &str = "epsilon";\n' \
         >"$tmp/models/nested/epsilon/mod.rs"
+    # Ultravox's separately licensed Llama companion uses a role-prefixed
+    # spelling so it cannot be mistaken for the public audio-tower arch.
+    printf 'pub const COMPANION_ARCH: &str = "zeta";\n' \
+        >"$tmp/models/nested/zeta/mod.rs"
 
     # write_engine <registry-arch...> — one engine.rs with `alpha` routed and
     # the named arches as BOUND_ARCHES rows.
@@ -292,8 +300,8 @@ self_test() {
     passes() { run_check "$tmp/models" "$tmp/engine.rs" >/dev/null 2>&1; }
 
     # Fixture 1: every binder accounted for (alpha routed, beta + gamma +
-    # delta + epsilon rows).
-    write_engine beta gamma delta epsilon
+    # delta + epsilon + zeta rows).
+    write_engine beta gamma delta epsilon zeta
     if passes; then
         echo "self-test PASS: a complete registry passes (routed + rows, nested walk)"
     else
@@ -301,7 +309,7 @@ self_test() {
     fi
 
     # Fixture 2: gamma's row dropped -> the defect this gate exists to catch.
-    write_engine beta delta epsilon
+    write_engine beta delta epsilon zeta
     if passes; then
         echo "self-test FAIL: a missing BOUND_ARCHES row should fail" >&2; status=1
     else
@@ -311,7 +319,7 @@ self_test() {
     # Fixture 2b: delta's row dropped. Same defect, but on the EXPECTED_ARCH
     # spelling — if discovery ever narrows back to `ARCH` only, this case
     # passes vacuously, so it is the regression test for the 2026-08-15 bug.
-    write_engine beta gamma epsilon
+    write_engine beta gamma epsilon zeta
     if out="$(run_check "$tmp/models" "$tmp/engine.rs" 2>&1)"; then
         echo "self-test FAIL: an unaccounted EXPECTED_ARCH binder should fail" >&2; status=1
     elif grep -q 'binder arch `delta`' <<<"$out"; then
@@ -322,13 +330,24 @@ self_test() {
     fi
 
     # Fixture 2c: the legacy-public spelling is discovered independently.
-    write_engine beta gamma delta
+    write_engine beta gamma delta zeta
     if out="$(run_check "$tmp/models" "$tmp/engine.rs" 2>&1)"; then
         echo "self-test FAIL: an unaccounted LEGACY_PUBLIC_ARCH binder should fail" >&2; status=1
     elif grep -q 'binder arch `epsilon`' <<<"$out"; then
         echo "self-test PASS: a \`pub const LEGACY_PUBLIC_ARCH\` binder is discovered and checked"
     else
         echo "self-test FAIL: the failure did not name \`epsilon\`" >&2
+        printf '%s\n' "$out" >&2; status=1
+    fi
+
+    # Fixture 2d: the role-prefixed companion spelling is discovered too.
+    write_engine beta gamma delta epsilon
+    if out="$(run_check "$tmp/models" "$tmp/engine.rs" 2>&1)"; then
+        echo "self-test FAIL: an unaccounted COMPANION_ARCH binder should fail" >&2; status=1
+    elif grep -q 'binder arch `zeta`' <<<"$out"; then
+        echo "self-test PASS: a \`pub const COMPANION_ARCH\` binder is discovered and checked"
+    else
+        echo "self-test FAIL: the failure did not name \`zeta\`" >&2
         printf '%s\n' "$out" >&2; status=1
     fi
 
@@ -340,6 +359,7 @@ self_test() {
         printf 'const ARCH_GAMMA: &str = "gamma";\n'
         printf 'const ARCH_DELTA: &str = "delta";\n\n'
         printf 'const ARCH_EPSILON: &str = "epsilon";\n\n'
+        printf 'const ARCH_ZETA: &str = "zeta";\n\n'
         printf 'const BOUND_ARCHES: &[BoundArch] = &[\n    BoundArch {\n        arch: "unrelated",\n    },\n];\n'
     } >"$tmp/engine.rs"
     if passes; then
@@ -363,7 +383,7 @@ self_test() {
     fi
 
     # Fixture 5: a models tree the walk finds nothing in -> parser guard.
-    write_engine beta gamma delta epsilon
+    write_engine beta gamma delta epsilon zeta
     mkdir -p "$tmp/empty"
     if run_check "$tmp/empty" "$tmp/engine.rs" >/dev/null 2>&1; then
         echo "self-test FAIL: scanning zero binders should fail the guard" >&2; status=1
@@ -407,7 +427,7 @@ self_test() {
     rm -f "$tmp/models/nested/aggregates.rs"
 
     if [ "$status" -eq 0 ]; then
-        echo "check-bound-arch-coverage --self-test: OK (8 cases)"
+        echo "check-bound-arch-coverage --self-test: OK (9 cases)"
     fi
     return "$status"
 }

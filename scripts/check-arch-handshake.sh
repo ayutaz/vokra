@@ -37,7 +37,8 @@
 #
 # WHICH CONSTANTS COUNT AS A DECLARATION            [widened 2026-08-15]
 #   `pub const ARCH`, `pub const ARCH_<SUFFIX>` (gigaam's ARCH_V3, whisper's
-#   size siblings) AND `pub const EXPECTED_ARCH`. That last spelling is used by
+#   size siblings), `pub const EXPECTED_ARCH`, AND explicit role-prefixed
+#   declarations such as `pub const COMPANION_ARCH`. `EXPECTED_ARCH` is used by
 #   29 of the 89 arch constants under vokra-models/src, and the regex did not
 #   match it — so this gate and `check-bound-arch-coverage.sh` both printed a
 #   confident "60 binder arches, all clean" over a population that was missing
@@ -372,6 +373,7 @@ declare -a NO_READER=(
   'qwen2-omni|vast.ai-gated (22.37 GB, five-shard Thinker+Talker) AND publish-blocked by the GGUF writer 5D-tensor limit that the multimodal adapter trips. No binder until that reshape-vs-extend decision lands.'
   'qwen2_audio|vast.ai-gated (~16 GB, five-shard). Owner runbook is required before a first conversion even runs, so no binder work has started.'
   'sgmse|publish-only BF16 pass-through. Header states that real-weight parity and a native Sgmse::from_gguf forward are a follow-up.'
+  'ultravox_llama_companion|source-only runtime gap recorded 2026-08-27: the strict, separately licensed Llama 3.2 companion converter is staged before its native binder/generation route. The public MIT Ultravox audio-tower artifact remains independently bound; this entry must be removed when the companion reader lands.'
   'vibevoice_asr|vast.ai-gated (~16.5 GB, eight-shard). The sibling TTS vibevoice is published; the ASR head has neither been converted nor bound.'
   'xtts|T4 Research-only: the Coqui Public Model License maps to LicenseClass::NonCommercial, so publish requires --allow-noncommercial. It is also zero-shot voice cloning, which keeps it out of a main-repo binder under design decision 8.'
 )
@@ -475,8 +477,9 @@ Usage:
   bash scripts/check-arch-handshake.sh --help
   bash scripts/check-arch-handshake.sh --self-test
 
-An arch constant is `pub const ARCH`, `pub const ARCH_<SUFFIX>` or
-`pub const EXPECTED_ARCH` typed `&str`. A parser guard fails the run if any
+An arch constant is `pub const ARCH`, `pub const ARCH_<SUFFIX>`,
+`pub const EXPECTED_ARCH`, `pub const COMPANION_ARCH`, or
+`pub const LEGACY_PUBLIC_ARCH` typed `&str`. A parser guard fails the run if any
 arch-shaped `&str` constant on disk falls outside that set, so a discovery
 regex that stops matching cannot report a smaller clean population.
 
@@ -540,7 +543,7 @@ import os, re, sys
 (conv_models, conv_src, models_dir, engine_path, ledger_a, ledger_b,
  convert_lib, ledger_c, ledger_sup, ledger_d) = sys.argv[1:11]
 
-# All three binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
+# All supported binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
 # variant nobody uses: it is what 29 of the 89 arch constants under
 # vokra-models/src are called (charsiu, csm, moshi, silero-vad, voxtral,
 # zonos, the whole chatterbox family, …). Until 2026-08-15 this regex matched
@@ -551,7 +554,7 @@ import os, re, sys
 # no gate: it certifies the thing it failed to check. LOOSE_ARCH_CONST below
 # is what keeps the NEXT spelling from going invisible the same way.
 ARCH_CONST = re.compile(
-    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|COMPANION_ARCH|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
 )
 # Deliberately sloppy twin of ARCH_CONST: ANY `pub const <name>: &str = "…";`
 # whose name contains `ARCH`. Never used for discovery — only to prove that
@@ -1950,6 +1953,9 @@ self_test() {
         # below, so the base tree is clean for it. Case 15 removes this line
         # to prove that spelling is genuinely discovered and checked.
         printf 'const EMITS_EXPECTED: &str = "mexpected";\n'
+        # Emits the role-prefixed companion tag below. Case 15b removes this
+        # line to prove COMPANION_ARCH is discovered rather than tolerated.
+        printf 'const EMITS_COMPANION: &str = "mcompanion";\n'
         # Emits the authenticated compatibility tag declared through
         # `LEGACY_PUBLIC_ARCH` below.
         printf 'const EMITS_LEGACY_PUBLIC: &str = "mlegacypublic";\n'
@@ -1970,6 +1976,9 @@ self_test() {
     # it needs no ledger entry and perturbs none of the existing cases.
     mkdir -p "$tmp/models/expected"
     printf 'pub const EXPECTED_ARCH: &str = "mexpected";\n' >"$tmp/models/expected/mod.rs"
+    mkdir -p "$tmp/models/companion"
+    printf 'pub const COMPANION_ARCH: &str = "mcompanion";\n' \
+        >"$tmp/models/companion/mod.rs"
     mkdir -p "$tmp/models/legacy_public"
     printf 'pub const LEGACY_PUBLIC_ARCH: &str = "mlegacypublic";\n' \
         >"$tmp/models/legacy_public/mod.rs"
@@ -2303,7 +2312,22 @@ self_test() {
     fi
     cp "$tmp/convs_saved.rs" "$tmp/conv/models/convs.rs"
 
-    # 15b. AudioGen's `LEGACY_PUBLIC_ARCH` spelling is likewise genuinely
+    # 15b. The role-prefixed `COMPANION_ARCH` spelling is likewise genuinely
+    #      discovered. Removing its emitter must expose a leg-(b) failure.
+    grep -v 'EMITS_COMPANION' "$tmp/convs_saved.rs" >"$tmp/conv/models/convs.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a COMPANION_ARCH binder with no emitter should fail" >&2
+        status=1
+    elif grep -q 'leg b.*`mcompanion`' <<<"$out"; then
+        echo "self-test PASS: a \`pub const COMPANION_ARCH\` binder is discovered and checked"
+    else
+        echo "self-test FAIL: leg (b) failure did not name \`mcompanion\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    cp "$tmp/convs_saved.rs" "$tmp/conv/models/convs.rs"
+
+    # 15c. AudioGen's `LEGACY_PUBLIC_ARCH` spelling is likewise genuinely
     #      discovered. Removing its emitter must expose a leg-(b) failure.
     grep -v 'EMITS_LEGACY_PUBLIC' "$tmp/convs_saved.rs" >"$tmp/conv/models/convs.rs"
     if out="$(run "$ok" -- "$okb" 2>&1)"; then

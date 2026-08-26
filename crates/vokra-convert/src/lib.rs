@@ -2982,7 +2982,12 @@ pub enum ModelKind {
     /// vast.ai ≥8 GB cutoff). BF16 pass-through skeleton mirror of sibling
     /// `demucs_htdemucs.rs` / `moonshine_base.rs` / `musicgen_small.rs` /
     /// `hubert_large_ls960.rs` / `openwakeword.rs`. Runtime binder deferred
-    /// to owner sign-off (`docs/license-audit.md` §3.1).
+    /// to owner sign-off (`docs/license-audit.md` §3.1). The separately
+    /// acquired >2 GB Meta Llama base uses the bounded-memory
+    /// [`convert_ultravox_llama_companion_file`] path, distinct
+    /// `ultravox_llama_companion` arch and Llama 3.2 Community License
+    /// `ConditionalCommercial` stamp; it is never merged into or published
+    /// with the MIT audio artifact.
     UltravoxV05Llama321b,
     /// **XTTS-v2** (`coqui/XTTS-v2`, **coqui-public-model-license**)
     /// safetensors → GGUF (Wave residual, 2026-08-02). Coqui's XTTS v2 =
@@ -5533,6 +5538,8 @@ impl ModelKind {
             | "ultravox-v0-5-llama-3-2-1b"
             | "ultravox_v0_5_llama_3_2_1b"
             | "ultravox-v0_5-llama-3_2-1b"
+            | "ultravox-llama-companion"
+            | "ultravox_llama_companion"
             | "fixie-ai-ultravox-v0_5-llama-3_2-1b"
             | "fixie-ai/ultravox-v0_5-llama-3_2-1b" => Some(Self::UltravoxV05Llama321b),
             // 2026-08-02 Wave residual: XTTS-v2 (`coqui/XTTS-v2`,
@@ -13151,6 +13158,12 @@ pub use models::emotion2vec::{Emotion2vecReport, convert_emotion2vec_file};
 // exist. Standalone file-based entry point mirrors the llama_omni2 /
 // facebook_denoiser / clap re-export pattern; also reachable through
 // `convert_file_licensed(ModelKind::Voila, ..)`.
+/// Bounded-memory conversion of a user-acquired Meta Llama-3.2-1B-Instruct
+/// checkpoint into the separately licensed Ultravox text companion.  This is
+/// intentionally distinct from the public MIT audio-artifact converter.
+pub use models::ultravox_v0_5_llama_3_2_1b::{
+    UltravoxLlamaCompanionReport, convert_ultravox_llama_companion_file,
+};
 pub use models::voila::{VoilaReport, convert_voila_file};
 // SoTA plan Phase 5 VAD-2 (2026-07-30): FunASR FSMN-VAD — first-class
 // audio-dialect op posture (distinct from Silero VAD v5's FR-LD-06

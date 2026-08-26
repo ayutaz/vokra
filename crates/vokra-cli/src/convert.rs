@@ -24,8 +24,9 @@ use vokra_convert::{
     convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
     convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
     convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
-    convert_speecht5_file_with_tokenizer, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_speecht5_file_with_tokenizer, convert_styletts2_file,
+    convert_ultravox_llama_companion_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -99,6 +100,9 @@ USAGE:
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model ultravox-llama-companion --input <model.safetensors> \
+                      --config <config.json> --revision <40-hex-commit> \
+                      --output <companion.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
@@ -458,6 +462,11 @@ OPTIONS:
                               committed parity fixture; the loader classifies
                               the absent key as v5 for backward compatibility).
                               Unknown tags are a fail-closed error (FR-EX-08).
+    --revision <commit>       ultravox-llama-companion only: immutable 40-hex
+                              Meta Llama-3.2-1B-Instruct snapshot revision.
+                              The gated base remains a separate
+                              ConditionalCommercial artifact and is never
+                              bundled into the public MIT Ultravox GGUF.
     -h, --help                print this help
 ";
 
@@ -486,6 +495,8 @@ struct Parsed {
     /// trained transcription prompt (both surface explicit errors) — so a
     /// CLI-only conversion was previously unusable through `vokra-cli run`.
     tokenizer: Option<PathBuf>,
+    /// Ultravox Llama companion only: immutable gated upstream commit.
+    revision: Option<String>,
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
@@ -525,6 +536,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
+    let mut revision: Option<String> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
@@ -587,6 +599,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 ));
                 i += 2;
             }
+            "--revision" => {
+                revision = Some(
+                    args.get(i + 1)
+                        .ok_or("--revision requires a 40-hex commit")?
+                        .clone(),
+                );
+                i += 2;
+            }
             "--output" => {
                 output = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--output requires a value")?,
@@ -641,6 +661,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         preprocessor,
         adapter_config,
         tokenizer,
+        revision,
         output: output.ok_or("--output is required")?,
         quant,
         policy,
@@ -656,6 +677,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 fn conversion_display_model(model: ModelKind, raw_model_slug: &str) -> &str {
     match model {
         ModelKind::Vocos => raw_model_slug,
+        ModelKind::UltravoxV05Llama321b
+            if matches!(
+                raw_model_slug,
+                "ultravox-llama-companion" | "ultravox_llama_companion"
+            ) =>
+        {
+            raw_model_slug
+        }
         _ => model.as_arg(),
     }
 }
@@ -668,6 +697,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     let p = parse_args(args)?;
     let model = p.model; // ModelKind is Copy; reused after the move into convert_*.
+    let is_ultravox_companion = matches!(model, ModelKind::UltravoxV05Llama321b)
+        && matches!(
+            p.raw_model_slug.as_str(),
+            "ultravox-llama-companion" | "ultravox_llama_companion"
+        );
+    if p.revision.is_some() && !is_ultravox_companion {
+        return Err("--revision is only supported for --model ultravox-llama-companion".to_owned());
+    }
 
     // `--adapter-config` is Voxtral-only. Passing it on another model would
     // previously be dropped without a word; reject instead (FR-EX-08 —
@@ -1817,6 +1854,60 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 )],
             })
         }
+        ModelKind::UltravoxV05Llama321b => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper and voxtral".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if is_ultravox_companion {
+                if p.license.is_some() {
+                    return Err(
+                        "--model ultravox-llama-companion has the fixed Llama 3.2 Community License; --license cannot override it"
+                            .to_owned(),
+                    );
+                }
+                let config = p.config.as_deref().ok_or_else(|| {
+                    "--model ultravox-llama-companion requires --config <official config.json>"
+                        .to_owned()
+                })?;
+                let revision = p.revision.as_deref().ok_or_else(|| {
+                    "--model ultravox-llama-companion requires --revision <immutable 40-hex commit>"
+                        .to_owned()
+                })?;
+                let report =
+                    convert_ultravox_llama_companion_file(&p.input, config, revision, &p.output)
+                        .map_err(|error| error.to_string())?;
+                let output_bytes = std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: report.metadata_count,
+                    output_bytes,
+                    notes: vec![
+                        "strict 146-BF16-tensor Meta Llama-3.2-1B-Instruct companion; streamed one tensor at a time; ConditionalCommercial 700M-MAU threshold preserved; never bundled or published with the MIT audio artifact"
+                            .to_owned(),
+                    ],
+                })
+            } else {
+                if p.config.is_some() {
+                    return Err(
+                        "--model ultravox does not take --config; use --model ultravox-llama-companion for the separately licensed Meta base"
+                            .to_owned(),
+                    );
+                }
+                convert_file_with_slug(
+                    model,
+                    &p.raw_model_slug,
+                    &p.input,
+                    &p.output,
+                    p.license.as_deref(),
+                )
+            }
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -2212,6 +2303,32 @@ mod tests {
         .expect("valid");
         assert_eq!(p.model, ModelKind::CosyVoice2);
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    #[test]
+    fn parses_ultravox_companion_as_separate_revisioned_mode() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let parsed = parse_args(&args(&[
+            "--model",
+            "ultravox-llama-companion",
+            "--input",
+            "model.safetensors",
+            "--config",
+            "config.json",
+            "--revision",
+            revision,
+            "--output",
+            "companion.gguf",
+        ]))
+        .expect("companion args");
+        assert_eq!(parsed.model, ModelKind::UltravoxV05Llama321b);
+        assert_eq!(parsed.raw_model_slug, "ultravox-llama-companion");
+        assert_eq!(parsed.config, Some(PathBuf::from("config.json")));
+        assert_eq!(parsed.revision.as_deref(), Some(revision));
+        assert_eq!(
+            conversion_display_model(parsed.model, &parsed.raw_model_slug),
+            "ultravox-llama-companion"
+        );
     }
 
     /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind
