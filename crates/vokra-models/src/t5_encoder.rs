@@ -8,12 +8,13 @@
 //!
 //! The implementation follows the Apache-2.0 Transformers `T5EncoderModel`:
 //! gamma-only pre-norm, unscaled dot-product attention, one learned
-//! bidirectional relative-position table shared across layers, ReLU
-//! feed-forward blocks, residual connections and a final gamma-only norm.
-//! QKV/FFN projections, attention reductions, softmax, RMSNorm and ReLU all
-//! run through [`Compute`]. Embedding lookup, head layout and relative-bias
-//! gathering are deterministic host glue. Selecting Metal requires coverage
-//! for the full learned-op set up front; there is no per-op CPU fallback.
+//! bidirectional relative-position table shared across layers, ReLU or
+//! gated-GELU feed-forward blocks, residual connections and a final gamma-only
+//! norm. QKV/FFN projections, attention reductions, softmax, RMSNorm and the
+//! selected activation all run through [`Compute`]. Embedding lookup, head
+//! layout, gated-activation multiplication and relative-bias gathering are
+//! deterministic host glue. Selecting Metal requires coverage for the full
+//! learned-op set up front; there is no per-op CPU fallback.
 
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::GgufFile;
@@ -22,9 +23,26 @@ use vokra_ops::t5_relative_position::{T5RelativePositionAttrs, t5_relative_atten
 
 use crate::compute::{Compute, HotOp};
 
-/// Learned operations required by the complete T5 encoder forward.
+/// Learned operations required by a complete T5-base ReLU encoder forward.
+///
+/// Kept as the original public constant for AudioCraft callers. Configured
+/// encoders select the exact ReLU or gated-GELU set at forward entry.
 pub const T5_ENCODER_HOT_OPS: &[HotOp] =
     &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm, HotOp::Relu];
+
+/// Learned operations required by a FLAN-T5 gated-GELU encoder forward.
+pub const T5_GATED_GELU_ENCODER_HOT_OPS: &[HotOp] =
+    &[HotOp::Gemm, HotOp::Softmax, HotOp::RmsNorm, HotOp::GeluNew];
+
+/// T5 feed-forward projection family. The choice controls both the required
+/// GGUF tensor names and the activation dispatched by [`Compute`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum T5FeedForwardKind {
+    /// `wi(x)` followed by ReLU, used by canonical T5-base.
+    Relu,
+    /// `gelu_new(wi_0(x)) * wi_1(x)`, used by FLAN-T5-large in Parler-TTS.
+    GatedGelu,
+}
 
 /// Canonical T5-base topology used by AudioCraft text conditioners.
 pub const T5_BASE_CONFIG: T5EncoderConfig = T5EncoderConfig {
@@ -37,6 +55,21 @@ pub const T5_BASE_CONFIG: T5EncoderConfig = T5EncoderConfig {
     relative_attention_num_buckets: 32,
     relative_attention_max_distance: 128,
     layer_norm_epsilon: 1.0e-6,
+    feed_forward_kind: T5FeedForwardKind::Relu,
+};
+
+/// FLAN-T5-large topology embedded in both public Parler-TTS Mini GGUFs.
+pub const FLAN_T5_LARGE_CONFIG: T5EncoderConfig = T5EncoderConfig {
+    vocab_size: 32_128,
+    d_model: 1_024,
+    d_kv: 64,
+    d_ff: 2_816,
+    num_layers: 24,
+    num_heads: 16,
+    relative_attention_num_buckets: 32,
+    relative_attention_max_distance: 128,
+    layer_norm_epsilon: 1.0e-6,
+    feed_forward_kind: T5FeedForwardKind::GatedGelu,
 };
 
 /// Explicit T5 encoder geometry. No topology axis is inferred from a partial
@@ -52,6 +85,7 @@ pub struct T5EncoderConfig {
     pub relative_attention_num_buckets: usize,
     pub relative_attention_max_distance: usize,
     pub layer_norm_epsilon: f32,
+    pub feed_forward_kind: T5FeedForwardKind,
 }
 
 impl T5EncoderConfig {
@@ -119,9 +153,16 @@ struct T5AttentionWeights {
 }
 
 #[derive(Debug)]
-struct T5FfnWeights {
-    wi: Vec<f32>,
-    wo: Vec<f32>,
+enum T5FfnWeights {
+    Relu {
+        wi: Vec<f32>,
+        wo: Vec<f32>,
+    },
+    GatedGelu {
+        wi_0: Vec<f32>,
+        wi_1: Vec<f32>,
+        wo: Vec<f32>,
+    },
 }
 
 #[derive(Debug)]
@@ -179,9 +220,26 @@ impl T5EncoderWeights {
                     o: tensor_transposed(file, &format!("{attention}.o.weight"), d, inner)?,
                 },
                 ffn_layer_norm: tensor(file, &format!("{base}.1.layer_norm.weight"), &[d])?,
-                ffn: T5FfnWeights {
-                    wi: tensor_transposed(file, &format!("{ffn}.wi.weight"), config.d_ff, d)?,
-                    wo: tensor_transposed(file, &format!("{ffn}.wo.weight"), d, config.d_ff)?,
+                ffn: match config.feed_forward_kind {
+                    T5FeedForwardKind::Relu => T5FfnWeights::Relu {
+                        wi: tensor_transposed(file, &format!("{ffn}.wi.weight"), config.d_ff, d)?,
+                        wo: tensor_transposed(file, &format!("{ffn}.wo.weight"), d, config.d_ff)?,
+                    },
+                    T5FeedForwardKind::GatedGelu => T5FfnWeights::GatedGelu {
+                        wi_0: tensor_transposed(
+                            file,
+                            &format!("{ffn}.wi_0.weight"),
+                            config.d_ff,
+                            d,
+                        )?,
+                        wi_1: tensor_transposed(
+                            file,
+                            &format!("{ffn}.wi_1.weight"),
+                            config.d_ff,
+                            d,
+                        )?,
+                        wo: tensor_transposed(file, &format!("{ffn}.wo.weight"), d, config.d_ff)?,
+                    },
                 },
             });
         }
@@ -290,7 +348,11 @@ impl T5Encoder {
             }
         }
 
-        let compute = Compute::for_backend(self.backend, T5_ENCODER_HOT_OPS)?;
+        let hot_ops = match self.config.feed_forward_kind {
+            T5FeedForwardKind::Relu => T5_ENCODER_HOT_OPS,
+            T5FeedForwardKind::GatedGelu => T5_GATED_GELU_ENCODER_HOT_OPS,
+        };
+        let compute = Compute::for_backend(self.backend, hot_ops)?;
         let sequence = token_ids.len();
         let d = self.config.d_model;
         let hidden_len = checked_product(sequence, d, "sequence*d_model")?;
@@ -469,25 +531,58 @@ impl T5Encoder {
             self.config.layer_norm_epsilon,
         )?;
         let ffn_len = checked_product(sequence, self.config.d_ff, "sequence*d_ff")?;
-        let mut ffn_hidden = vec![0.0; ffn_len];
-        compute.gemm_f32(
-            sequence,
-            self.config.d_ff,
-            d,
-            &normalized,
-            &block.ffn.wi,
-            None,
-            &mut ffn_hidden,
-        )?;
-        let mut activated = vec![0.0; ffn_hidden.len()];
-        compute.relu_f32(&ffn_hidden, &mut activated)?;
+        let (activated, wo) = match &block.ffn {
+            T5FfnWeights::Relu { wi, wo } => {
+                let mut ffn_hidden = vec![0.0; ffn_len];
+                compute.gemm_f32(
+                    sequence,
+                    self.config.d_ff,
+                    d,
+                    &normalized,
+                    wi,
+                    None,
+                    &mut ffn_hidden,
+                )?;
+                let mut activated = vec![0.0; ffn_hidden.len()];
+                compute.relu_f32(&ffn_hidden, &mut activated)?;
+                (activated, wo)
+            }
+            T5FfnWeights::GatedGelu { wi_0, wi_1, wo } => {
+                let mut preactivation = vec![0.0; ffn_len];
+                compute.gemm_f32(
+                    sequence,
+                    self.config.d_ff,
+                    d,
+                    &normalized,
+                    wi_0,
+                    None,
+                    &mut preactivation,
+                )?;
+                let mut activated = vec![0.0; ffn_len];
+                compute.gelu_new_f32(&preactivation, &mut activated)?;
+                let mut gate = vec![0.0; ffn_len];
+                compute.gemm_f32(
+                    sequence,
+                    self.config.d_ff,
+                    d,
+                    &normalized,
+                    wi_1,
+                    None,
+                    &mut gate,
+                )?;
+                for (activated, gate) in activated.iter_mut().zip(gate) {
+                    *activated *= gate;
+                }
+                (activated, wo)
+            }
+        };
         let mut ffn_output = vec![0.0; hidden.len()];
         compute.gemm_f32(
             sequence,
             d,
             self.config.d_ff,
             &activated,
-            &block.ffn.wo,
+            wo,
             None,
             &mut ffn_output,
         )?;
@@ -583,6 +678,12 @@ mod tests {
         relative_attention_num_buckets: 8,
         relative_attention_max_distance: 16,
         layer_norm_epsilon: 1.0e-6,
+        feed_forward_kind: T5FeedForwardKind::Relu,
+    };
+
+    const GATED_TINY: T5EncoderConfig = T5EncoderConfig {
+        feed_forward_kind: T5FeedForwardKind::GatedGelu,
+        ..TINY
     };
 
     fn values(seed: usize, len: usize) -> Vec<f32> {
@@ -607,7 +708,7 @@ mod tests {
             .expect("tensor");
     }
 
-    fn tiny_gguf() -> GgufFile {
+    fn tiny_gguf_for(config: T5EncoderConfig, gate_seed: usize) -> GgufFile {
         let mut builder = GgufBuilder::new();
         add_tensor(&mut builder, "text.shared.weight", &[8, 4], 1);
         add_tensor(
@@ -644,12 +745,28 @@ mod tests {
                 &[4],
                 30 + layer,
             );
-            add_tensor(
-                &mut builder,
-                &format!("{base}.1.DenseReluDense.wi.weight"),
-                &[6, 4],
-                40 + layer,
-            );
+            match config.feed_forward_kind {
+                T5FeedForwardKind::Relu => add_tensor(
+                    &mut builder,
+                    &format!("{base}.1.DenseReluDense.wi.weight"),
+                    &[6, 4],
+                    40 + layer,
+                ),
+                T5FeedForwardKind::GatedGelu => {
+                    add_tensor(
+                        &mut builder,
+                        &format!("{base}.1.DenseReluDense.wi_0.weight"),
+                        &[6, 4],
+                        40 + layer,
+                    );
+                    add_tensor(
+                        &mut builder,
+                        &format!("{base}.1.DenseReluDense.wi_1.weight"),
+                        &[6, 4],
+                        gate_seed + layer,
+                    );
+                }
+            }
             add_tensor(
                 &mut builder,
                 &format!("{base}.1.DenseReluDense.wo.weight"),
@@ -664,6 +781,10 @@ mod tests {
             60,
         );
         GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse")
+    }
+
+    fn tiny_gguf() -> GgufFile {
+        tiny_gguf_for(TINY, 70)
     }
 
     #[test]
@@ -683,6 +804,33 @@ mod tests {
         assert_eq!(a.len(), 3 * TINY.d_model);
         assert!(a.iter().all(|value| value.is_finite()));
         assert_ne!(a, masked);
+    }
+
+    #[test]
+    fn gated_gelu_binds_distinct_projections_and_uses_the_gate() {
+        let encoder = T5Encoder::from_gguf(&tiny_gguf_for(GATED_TINY, 70), "text", GATED_TINY)
+            .expect("bind gated encoder");
+        let changed_gate = T5Encoder::from_gguf(&tiny_gguf_for(GATED_TINY, 71), "text", GATED_TINY)
+            .expect("bind changed gate");
+        let output = encoder
+            .encode_tokens(&[2, 3, 4], Some(&[true, true, true]))
+            .expect("gated forward");
+        let changed = changed_gate
+            .encode_tokens(&[2, 3, 4], Some(&[true, true, true]))
+            .expect("changed gated forward");
+        assert_eq!(output.len(), 3 * GATED_TINY.d_model);
+        assert!(output.iter().all(|value| value.is_finite()));
+        assert_ne!(output, changed);
+    }
+
+    #[test]
+    fn feed_forward_tensor_family_is_fail_closed() {
+        let relu_error = T5Encoder::from_gguf(&tiny_gguf(), "text", GATED_TINY).unwrap_err();
+        assert!(relu_error.to_string().contains("wi_0.weight"));
+
+        let gated_error =
+            T5Encoder::from_gguf(&tiny_gguf_for(GATED_TINY, 70), "text", TINY).unwrap_err();
+        assert!(gated_error.to_string().contains("wi.weight"));
     }
 
     #[test]
