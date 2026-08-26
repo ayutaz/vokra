@@ -2442,6 +2442,12 @@ pub mod metricgan_plus;
 // binder and native magnitude/phase enhancement graph. The released
 // batch_first=false attention-axis quirk is preserved for checkpoint parity.
 pub mod mp_senet;
+// Mac CPU/Metal coverage wave (2026-08-26): strict native offline runtime for
+// Nemotron-3.5-ASR-Streaming-0.6B. The released causal FastConformer geometry,
+// prompt conditioning and RNN-T greedy decoder are preserved; stateful cache
+// streaming remains an explicit unsupported operation until cache state is
+// represented by the public API.
+pub mod nemotron_asr_streaming;
 
 pub use compute::{Compute, DecoderStepDims, DecoderStepSession, HotOp, make_backend};
 
