@@ -36,3 +36,23 @@ The worker uses the committed two-second mono 16 kHz JFK-derived clip at
 `tests/parity/utmos/ref-clip.wav`, performs no upload, and leaves only the small
 reference/evidence directory to pull before the VAST instance is destroyed.
 Do not pull the source snapshot or GGUF back to the maintainer Mac.
+
+After both CPU runs pass, transfer the two GGUFs and their reference
+directories directly from VAST to a disposable Apple Silicon host with at
+least 32 GB RAM. The Apple worker refuses the maintainer machine class unless
+all remote-host gates are satisfied:
+
+```sh
+VOKRA_REMOTE_APPLE_SILICON=1 \
+scripts/verify/apple-silicon-qwen3-asr.sh \
+  --gguf-0.6b /remote/stage/qwen3-asr-0.6b.gguf \
+  --reference-0.6b /remote/stage/reference-0.6b \
+  --gguf-1.7b /remote/stage/qwen3-asr-1.7b.gguf \
+  --reference-1.7b /remote/stage/reference-1.7b \
+  --evidence-dir /remote/evidence/qwen3-asr-metal
+```
+
+It requires both per-variant PASS markers, records exact input hashes and the
+Apple hardware/toolchain identity, and performs no network or publication
+action. Pull only the evidence, then remove the staged model data or destroy
+the remote host.

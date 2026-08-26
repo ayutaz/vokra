@@ -34,7 +34,12 @@
 > bound-only diagnostic. Binding additionally authenticates both exact
 > upstream revision fields. A locked official `qwen-asr==0.0.6` CPU-FP32
 > reference dumper, exact projected-audio/prompt/greedy-token/text Rust gate
-> for both releases and a no-upload VAST worker are staged. The live public GGUFs
+> for both releases and a no-upload VAST worker are staged. A separate
+> `scripts/verify/apple-silicon-qwen3-asr.sh` worker requires a clean remote
+> Darwin/arm64 host with at least 32 GB RAM, refuses the 16-GB maintainer class,
+> requires both real GGUF/reference pairs before Cargo starts, and accepts a
+> run only when both Metal exact-token PASS markers are present. It performs no
+> download, upload or conversion. The live public GGUFs
 > predate the embedded assets and therefore remain artifact-partial until a
 > separately authorized replacement; source-level end-to-end execution is
 > complete. VAST real-weight CPU parity and Apple-device Metal parity remain
