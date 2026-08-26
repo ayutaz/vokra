@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use vokra_core::gguf::GgufFile;
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use crate::canary::CanaryConfig;
 use crate::compute::Compute;
 use crate::parakeet::{
     FastConformerConvNorm, ParakeetBoundEncoderBlock, ParakeetBoundNorm, ParakeetBoundSubsampling,
@@ -14,24 +15,50 @@ use crate::parakeet::{
 };
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, load_tensor};
 
-use super::Canary1bFlashConfig;
-use super::tokenizer::{Canary1bFlashOptions, EOS_ID, VOCAB_SIZE};
+/// Immutable release axes that differ between Canary Transformer-AED models.
+///
+/// The released Flash and v2 checkpoints share every executable tensor-name
+/// pattern and forward operation. Decoder depth, vocabulary width and strict
+/// checkpoint identity are data, not separate implementations.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CanaryAedReleaseSpec {
+    strict: StrictCheckpointSpec,
+    sample_rate: u32,
+    vocab_size: usize,
+    eos_token_id: u32,
+}
 
-const LABEL: &str = "Canary-1B-Flash";
-const TENSOR_COUNT: usize = 1_374;
-const MANIFEST_SHA256: [u8; 32] = [
-    0xf7, 0x6f, 0x4c, 0x3d, 0x28, 0x14, 0x7b, 0x41, 0x87, 0x05, 0xc8, 0x27, 0x2a, 0x81, 0xda, 0xb5,
-    0x34, 0x25, 0xe3, 0xbd, 0x26, 0x4b, 0x8a, 0x20, 0x40, 0xff, 0xb0, 0xde, 0x03, 0x38, 0x5c, 0xb6,
-];
+impl CanaryAedReleaseSpec {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) const fn new(
+        label: &'static str,
+        arch: &'static str,
+        model_name: &'static str,
+        tensor_count: usize,
+        manifest_sha256: [u8; 32],
+        sample_rate: u32,
+        vocab_size: usize,
+        eos_token_id: u32,
+    ) -> Self {
+        Self {
+            strict: StrictCheckpointSpec {
+                label,
+                arch,
+                model_name,
+                model_name_alias: None,
+                tensor_count,
+                manifest_sha256,
+            },
+            sample_rate,
+            vocab_size,
+            eos_token_id,
+        }
+    }
 
-const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
-    label: LABEL,
-    arch: super::ARCH,
-    model_name: super::NAME,
-    model_name_alias: None,
-    tensor_count: TENSOR_COUNT,
-    manifest_sha256: MANIFEST_SHA256,
-};
+    const fn label(self) -> &'static str {
+        self.strict.label
+    }
+}
 
 #[derive(Debug, Clone)]
 struct SelfAttentionWeights {
@@ -72,7 +99,8 @@ struct DecoderBlockWeights {
 
 /// Fully authenticated released float checkpoint.
 #[derive(Debug, Clone)]
-pub(super) struct CanaryBoundWeights {
+pub(crate) struct CanaryBoundWeights {
+    release: CanaryAedReleaseSpec,
     checkpoint: StrictCheckpoint,
     encoder_config: ParakeetEncoderConfig,
     subsampling: ParakeetBoundSubsampling,
@@ -87,14 +115,18 @@ pub(super) struct CanaryBoundWeights {
 }
 
 impl CanaryBoundWeights {
-    pub(super) fn verify_manifest(file: &GgufFile) -> Result<()> {
-        StrictCheckpoint::bind(file, SPEC).map(|_| ())
+    pub(crate) fn verify_manifest(file: &GgufFile, release: CanaryAedReleaseSpec) -> Result<()> {
+        StrictCheckpoint::bind(file, release.strict).map(|_| ())
     }
 
-    pub(super) fn from_gguf(file: &GgufFile, config: &Canary1bFlashConfig) -> Result<Self> {
+    pub(crate) fn from_gguf(
+        file: &GgufFile,
+        config: &CanaryConfig,
+        release: CanaryAedReleaseSpec,
+    ) -> Result<Self> {
         config.validate_for_forward()?;
-        config.validate_release_contract()?;
-        let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
+        let checkpoint = StrictCheckpoint::bind(file, release.strict)?;
+        let label = release.label();
         let enc = encoder_config(config);
         let d = enc.d_model;
         let ffn = enc.ffn_dim;
@@ -102,7 +134,7 @@ impl CanaryBoundWeights {
         let kernel = enc.subsampling_conv_kernel_size;
         let consumed = RefCell::new(BTreeSet::new());
         let tensor = |name: &str, shape: &[usize]| -> Result<Vec<f32>> {
-            let value = load_tensor(file, LABEL, name, shape)?;
+            let value = load_tensor(file, label, name, shape)?;
             consumed.borrow_mut().insert(name.to_owned());
             Ok(value)
         };
@@ -335,13 +367,14 @@ impl CanaryBoundWeights {
         }
 
         let bound = Self {
+            release,
             checkpoint,
             encoder_config: enc,
             subsampling,
             encoder,
             token_embedding: tensor(
                 "transf_decoder._embedding.token_embedding.weight",
-                &[VOCAB_SIZE, decoder_d],
+                &[release.vocab_size, decoder_d],
             )?,
             position_embedding: tensor(
                 "transf_decoder._embedding.position_embedding.pos_enc",
@@ -362,31 +395,31 @@ impl CanaryBoundWeights {
                     &[decoder_d],
                 )?,
             },
-            head_w: tensor("log_softmax.mlp.layer0.weight", &[VOCAB_SIZE, decoder_d])?,
-            head_b: tensor("log_softmax.mlp.layer0.bias", &[VOCAB_SIZE])?,
+            head_w: tensor(
+                "log_softmax.mlp.layer0.weight",
+                &[release.vocab_size, decoder_d],
+            )?,
+            head_b: tensor("log_softmax.mlp.layer0.bias", &[release.vocab_size])?,
         };
-        verify_consumed_tensor_set(file, &consumed.into_inner())?;
+        verify_consumed_tensor_set(file, &consumed.into_inner(), label)?;
         Ok(bound)
     }
 
-    pub(super) const fn tensor_count(&self) -> usize {
+    pub(crate) const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
     }
 
-    pub(super) const fn weight_license(&self) -> LicenseClass {
+    pub(crate) const fn weight_license(&self) -> LicenseClass {
         self.checkpoint.weight_license()
     }
 
-    pub(super) fn model_name(&self) -> &str {
+    pub(crate) fn model_name(&self) -> &str {
         self.checkpoint.model_name()
     }
 
-    pub(super) fn encode_pcm(&self, compute: &Compute, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
-        let (features, frames) = parakeet_logmel(
-            pcm,
-            super::CANARY_1B_FLASH_SAMPLE_RATE,
-            self.encoder_config.in_dim,
-        )?;
+    pub(crate) fn encode_pcm(&self, compute: &Compute, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let (features, frames) =
+            parakeet_logmel(pcm, self.release.sample_rate, self.encoder_config.in_dim)?;
         let (mut hidden, encoded_frames) = subsampling_forward(
             compute,
             &features,
@@ -397,7 +430,8 @@ impl CanaryBoundWeights {
         )?;
         if encoded_frames > self.encoder_config.max_position_embeddings {
             return Err(VokraError::InvalidArgument(format!(
-                "Canary-1B-Flash encoder produced {encoded_frames} frames, exceeding max_position_embeddings={}",
+                "{} encoder produced {encoded_frames} frames, exceeding max_position_embeddings={}",
+                self.release.label(),
                 self.encoder_config.max_position_embeddings
             )));
         }
@@ -415,28 +449,31 @@ impl CanaryBoundWeights {
         Ok((hidden, encoded_frames))
     }
 
-    pub(super) fn decode_tokens(
+    pub(crate) fn decode_tokens(
         &self,
         compute: &Compute,
         encoder: &[f32],
         encoder_frames: usize,
-        config: &Canary1bFlashConfig,
-        options: Canary1bFlashOptions,
+        config: &CanaryConfig,
+        prompt: &[u32],
+        requested_max_new_tokens: Option<usize>,
     ) -> Result<Vec<u32>> {
-        let prompt = options.prompt_tokens();
         let capacity = config
             .decoder
             .max_sequence_length
             .checked_sub(prompt.len())
             .ok_or_else(|| {
-                VokraError::InvalidArgument(
-                    "Canary-1B-Flash decoder context is shorter than its prompt".to_owned(),
-                )
+                VokraError::InvalidArgument(format!(
+                    "{} decoder context is shorter than its prompt",
+                    self.release.label()
+                ))
             })?;
-        let max_new_tokens = match options.max_new_tokens {
+        let max_new_tokens = match requested_max_new_tokens {
             Some(value) if value > capacity => {
                 return Err(VokraError::InvalidArgument(format!(
-                    "Canary-1B-Flash max_new_tokens={value} exceeds decoder capacity {capacity} after the nine-token prompt"
+                    "{} max_new_tokens={value} exceeds decoder capacity {capacity} after the {}-token prompt",
+                    self.release.label(),
+                    prompt.len(),
                 )));
             }
             Some(value) => value,
@@ -448,13 +485,13 @@ impl CanaryBoundWeights {
         };
         let mut state = DecoderState::new(compute, encoder, encoder_frames, self, config)?;
         let mut logits = Vec::new();
-        for token in prompt {
+        for &token in prompt {
             logits = state.step(compute, token, self, config)?;
         }
         let mut output = Vec::new();
         for _ in 0..max_new_tokens {
             let token = argmax_finite(&logits)? as u32;
-            if token == EOS_ID {
+            if token == self.release.eos_token_id {
                 break;
             }
             output.push(token);
@@ -478,7 +515,11 @@ fn default_max_new_tokens(
         .saturating_sub(prompt_tokens)
 }
 
-fn verify_consumed_tensor_set(file: &GgufFile, consumed: &BTreeSet<String>) -> Result<()> {
+fn verify_consumed_tensor_set(
+    file: &GgufFile,
+    consumed: &BTreeSet<String>,
+    label: &str,
+) -> Result<()> {
     const AUTHENTICATED_FRONTEND_BUFFERS: [&str; 2] = [
         "preprocessor.featurizer.fb",
         "preprocessor.featurizer.window",
@@ -502,7 +543,7 @@ fn verify_consumed_tensor_set(file: &GgufFile, consumed: &BTreeSet<String>) -> R
             .copied()
             .collect::<Vec<_>>();
         return Err(VokraError::ModelLoad(format!(
-            "{LABEL}: executable tensor coverage mismatch: consumed={}, expected={} (missing={missing:?}, unexpected={unexpected:?}). Only the authenticated mel-filter and Hann-window buffers may be reproduced by the shared frontend",
+            "{label}: executable tensor coverage mismatch: consumed={}, expected={} (missing={missing:?}, unexpected={unexpected:?}). Only the authenticated mel-filter and Hann-window buffers may be reproduced by the shared frontend",
             consumed_refs.len(),
             executable.len(),
         )));
@@ -510,7 +551,7 @@ fn verify_consumed_tensor_set(file: &GgufFile, consumed: &BTreeSet<String>) -> R
     Ok(())
 }
 
-fn encoder_config(config: &Canary1bFlashConfig) -> ParakeetEncoderConfig {
+fn encoder_config(config: &CanaryConfig) -> ParakeetEncoderConfig {
     let enc = &config.encoder;
     ParakeetEncoderConfig {
         n_layer: enc.n_layer,
@@ -546,13 +587,14 @@ impl DecoderState {
         encoder: &[f32],
         encoder_frames: usize,
         weights: &CanaryBoundWeights,
-        config: &Canary1bFlashConfig,
+        config: &CanaryConfig,
     ) -> Result<Self> {
         let enc_width = config.encoder.d_model;
         let dec_width = config.decoder.d_model;
         if encoder.len() != encoder_frames * enc_width || encoder_frames == 0 {
             return Err(VokraError::InvalidArgument(format!(
-                "Canary-1B-Flash decoder encoder shape mismatch: values={}, frames={encoder_frames}, width={enc_width}",
+                "{} decoder encoder shape mismatch: values={}, frames={encoder_frames}, width={enc_width}",
+                weights.release.label(),
                 encoder.len()
             )));
         }
@@ -597,18 +639,22 @@ impl DecoderState {
         compute: &Compute,
         token: u32,
         weights: &CanaryBoundWeights,
-        config: &Canary1bFlashConfig,
+        config: &CanaryConfig,
     ) -> Result<Vec<f32>> {
         let width = config.decoder.d_model;
-        if token as usize >= VOCAB_SIZE {
+        if token as usize >= weights.release.vocab_size {
             return Err(VokraError::InvalidArgument(format!(
-                "Canary-1B-Flash decoder token {token} outside 0..{VOCAB_SIZE}"
+                "{} decoder token {token} outside 0..{}",
+                weights.release.label(),
+                weights.release.vocab_size,
             )));
         }
         if self.position >= config.decoder.max_sequence_length {
             return Err(VokraError::InvalidArgument(format!(
-                "Canary-1B-Flash decoder position {} exceeds max_sequence_length={}",
-                self.position, config.decoder.max_sequence_length
+                "{} decoder position {} exceeds max_sequence_length={}",
+                weights.release.label(),
+                self.position,
+                config.decoder.max_sequence_length
             )));
         }
         let token_offset = token as usize * width;
@@ -698,7 +744,7 @@ fn linear(compute: &Compute, input: &[f32], weight: &[f32], bias: &[f32]) -> Res
     let output = bias.len();
     if input.is_empty() || weight.len() != output * input.len() {
         return Err(VokraError::InvalidArgument(format!(
-            "Canary-1B-Flash linear shape mismatch: input={}, weight={}, bias={}",
+            "Canary Transformer-AED linear shape mismatch: input={}, weight={}, bias={}",
             input.len(),
             weight.len(),
             bias.len()
@@ -713,7 +759,7 @@ fn layer_norm(compute: &Compute, input: &[f32], norm: &ParakeetBoundNorm) -> Res
     let width = norm.weight.len();
     if input.len() != width || norm.bias.len() != width {
         return Err(VokraError::InvalidArgument(
-            "Canary-1B-Flash decoder LayerNorm shape mismatch".to_owned(),
+            "Canary Transformer-AED decoder LayerNorm shape mismatch".to_owned(),
         ));
     }
     let mut output = vec![0.0; width];
@@ -737,7 +783,7 @@ fn attention_one_query(
         || values.len() != positions * width
     {
         return Err(VokraError::InvalidArgument(format!(
-            "Canary-1B-Flash attention shape mismatch: q={}, keys={}, values={}, positions={positions}, heads={heads}",
+            "Canary Transformer-AED attention shape mismatch: q={}, keys={}, values={}, positions={positions}, heads={heads}",
             width,
             keys.len(),
             values.len()
@@ -804,7 +850,7 @@ fn argmax_finite(values: &[f32]) -> Result<usize> {
     for (index, &value) in values.iter().enumerate() {
         if !value.is_finite() {
             return Err(VokraError::InvalidArgument(format!(
-                "Canary-1B-Flash decoder produced non-finite logit at {index}: {value}"
+                "Canary Transformer-AED decoder produced non-finite logit at {index}: {value}"
             )));
         }
         if best.is_none_or(|(_, current)| value > current) {
@@ -812,7 +858,7 @@ fn argmax_finite(values: &[f32]) -> Result<usize> {
         }
     }
     best.map(|(index, _)| index).ok_or_else(|| {
-        VokraError::InvalidArgument("Canary-1B-Flash decoder produced no logits".to_owned())
+        VokraError::InvalidArgument("Canary Transformer-AED decoder produced no logits".to_owned())
     })
 }
 

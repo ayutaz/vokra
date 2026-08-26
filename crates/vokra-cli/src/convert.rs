@@ -13,11 +13,11 @@ use std::process::ExitCode;
 use vokra_convert::{
     ConvertSummary, LlamaOmni2Variant, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant,
     VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file,
-    convert_canary_1b_flash_file_with_tokenizer, convert_chatterbox_file,
-    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
-    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
-    convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_canary_file_with_tokenizer,
+    convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
+    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
+    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
     convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
@@ -54,6 +54,8 @@ USAGE:
                       --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-cli convert --model canary-1b-flash --input <prepared.safetensors> \
                       --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
+    vokra-cli convert --model canary --input <prepared-main.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
@@ -398,7 +400,8 @@ OPTIONS:
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
     --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3 | parakeet-tdt |
-                              parakeet-ctc | nemotron-asr-streaming.
+                              parakeet-ctc | canary | canary-1b-flash |
+                              nemotron-asr-streaming.
                               (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
@@ -689,13 +692,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::Parakeet
             | ModelKind::ParakeetCtc
             | ModelKind::ParakeetTdt11b
+            | ModelKind::Canary
             | ModelKind::Canary1bFlash
             | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary-1b-flash / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -971,6 +975,43 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     report.written,
                     report.written.saturating_sub(report.bf16_passthrough),
                     report.bf16_passthrough,
+                )],
+            })
+        }
+        ModelKind::Canary => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model canary; preserve the canonical F32 main checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model canary; the immutable Canary-1B-v2 `.nemo` config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model canary requires --tokenizer <tokenizer.vocab> for executable ASR/AST"
+                    .to_owned()
+            })?;
+            let report = convert_canary_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)?.len(),
+                notes: vec![format!(
+                    "canary-1b-v2: complete {}-tensor F32 main manifest and exact 16,384-piece aggregate tokenizer embedded",
+                    report.written
                 )],
             })
         }
@@ -2414,6 +2455,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_canary_v2_tokenizer_side_car() {
+        let p = parse_args(&args(&[
+            "--model",
+            "canary-1b-v2",
+            "--input",
+            "prepared-main.safetensors",
+            "--tokenizer",
+            "tokenizer.vocab",
+            "--output",
+            "canary.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Canary);
+        assert_eq!(p.tokenizer, Some(PathBuf::from("tokenizer.vocab")));
+    }
+
+    #[test]
     fn parakeet_requires_tokenizer_before_reading_input() {
         let error = main(&args(&[
             "--model",
@@ -2425,6 +2483,21 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(error.contains("requires --tokenizer"));
+    }
+
+    #[test]
+    fn canary_v2_requires_tokenizer_before_reading_input() {
+        let error = main(&args(&[
+            "--model",
+            "canary",
+            "--input",
+            "missing.safetensors",
+            "--output",
+            "unused.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --tokenizer"), "got: {error}");
+        assert!(error.contains("tokenizer.vocab"), "got: {error}");
     }
 
     #[test]

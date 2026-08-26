@@ -16,7 +16,6 @@
 //! surfaced from GGUF metadata, while publication remains a separate gated
 //! operation. No ONNX or third-party runtime dependency is used.
 
-mod bound;
 mod tokenizer;
 
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use vokra_core::{
 
 use crate::compute::{Compute, HotOp};
 
-use bound::CanaryBoundWeights;
+use crate::canary_aed_bound::{CanaryAedReleaseSpec, CanaryBoundWeights};
 
 pub use tokenizer::{
     BOS_ID, Canary1bFlashOptions, CanaryEmotion, CanaryLanguage, CanaryTokenizer, EOS_ID,
@@ -86,6 +85,22 @@ pub const CANARY_1B_FLASH_HOT_OPS: &[HotOp] = &[
     HotOp::Relu,
     HotOp::GroupedConv1d,
 ];
+
+const RELEASE_TENSOR_COUNT: usize = 1_374;
+const RELEASE_MANIFEST_SHA256: [u8; 32] = [
+    0xf7, 0x6f, 0x4c, 0x3d, 0x28, 0x14, 0x7b, 0x41, 0x87, 0x05, 0xc8, 0x27, 0x2a, 0x81, 0xda, 0xb5,
+    0x34, 0x25, 0xe3, 0xbd, 0x26, 0x4b, 0x8a, 0x20, 0x40, 0xff, 0xb0, 0xde, 0x03, 0x38, 0x5c, 0xb6,
+];
+const RELEASE_SPEC: CanaryAedReleaseSpec = CanaryAedReleaseSpec::new(
+    "Canary-1B-Flash",
+    ARCH,
+    NAME,
+    RELEASE_TENSOR_COUNT,
+    RELEASE_MANIFEST_SHA256,
+    CANARY_1B_FLASH_SAMPLE_RATE,
+    VOCAB_SIZE,
+    EOS_ID,
+);
 
 /// FastConformer encoder depth — **32 layers** (model card, transcribed by
 /// the converter 2026-08-03). Identical to Canary-1B-v2: the Flash
@@ -459,12 +474,7 @@ impl Canary1bFlashConfig {
     ///
     /// [`VokraError::InvalidArgument`] naming the offending field.
     pub fn validate_for_forward(&self) -> Result<()> {
-        let family = crate::canary::CanaryConfig {
-            encoder: self.encoder.clone(),
-            decoder: self.decoder.clone(),
-            head: self.head.clone(),
-            sample_rate: self.sample_rate,
-        };
+        let family = self.to_family_config();
         family.validate_for_forward().map_err(|e| match e {
             VokraError::InvalidArgument(m) => {
                 // Cosmetic: strip the delegate's own prefix so the composed
@@ -479,6 +489,15 @@ impl Canary1bFlashConfig {
             }
             other => other,
         })
+    }
+
+    fn to_family_config(&self) -> crate::canary::CanaryConfig {
+        crate::canary::CanaryConfig {
+            encoder: self.encoder.clone(),
+            decoder: self.decoder.clone(),
+            head: self.head.clone(),
+            sample_rate: self.sample_rate,
+        }
     }
 
     /// Ensures metadata cannot change a non-shape inference axis while still
@@ -870,6 +889,7 @@ impl Canary1bFlashWeights {
 #[derive(Debug, Clone)]
 pub struct Canary1bFlashAsr {
     cfg: Canary1bFlashConfig,
+    runtime_cfg: crate::canary::CanaryConfig,
     weights: Canary1bFlashWeights,
     bound: Arc<CanaryBoundWeights>,
     tokenizer: CanaryTokenizer,
@@ -893,6 +913,7 @@ impl Canary1bFlashAsr {
         let cfg = Canary1bFlashConfig::from_gguf(file)?;
         cfg.validate_for_forward()?;
         cfg.validate_release_contract()?;
+        let runtime_cfg = cfg.to_family_config();
 
         // Fail an unavailable/uncovered backend before materializing the
         // 3.54 GB release into typed vectors. This is both FR-EX-08 and an
@@ -905,11 +926,15 @@ impl Canary1bFlashAsr {
         // Authenticate the manifest before decoding any large tensor. This
         // makes the historical encoder-only public artifact fail cheaply and
         // explicitly at 1,292 != 1,374 tensors.
-        CanaryBoundWeights::verify_manifest(file)?;
+        CanaryBoundWeights::verify_manifest(file, RELEASE_SPEC)?;
         validate_runtime_metadata(file)?;
         let tokenizer = CanaryTokenizer::from_gguf(file)?;
         let weights = Canary1bFlashWeights::from_gguf(file)?;
-        let bound = Arc::new(CanaryBoundWeights::from_gguf(file, &cfg)?);
+        let bound = Arc::new(CanaryBoundWeights::from_gguf(
+            file,
+            &runtime_cfg,
+            RELEASE_SPEC,
+        )?);
         let attribution = file
             .get(chunks::KEY_PROVENANCE_ATTRIBUTION)
             .and_then(|v| v.as_str())
@@ -917,6 +942,7 @@ impl Canary1bFlashAsr {
 
         Ok(Self {
             cfg,
+            runtime_cfg,
             weights,
             bound,
             tokenizer,
@@ -1058,8 +1084,15 @@ impl Canary1bFlashAsr {
         }
         let compute = Compute::for_backend(self.backend, CANARY_1B_FLASH_HOT_OPS)?;
         let (encoder, frames) = self.bound.encode_pcm(&compute, pcm)?;
-        self.bound
-            .decode_tokens(&compute, &encoder, frames, &self.cfg, options)
+        let prompt = options.prompt_tokens();
+        self.bound.decode_tokens(
+            &compute,
+            &encoder,
+            frames,
+            &self.runtime_cfg,
+            &prompt,
+            options.max_new_tokens,
+        )
     }
 
     /// Compatibility wrapper for the earlier task-only API. ASR uses the

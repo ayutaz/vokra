@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Canary-1B-v2 CPU/Metal ASR and AST)
+
+The immutable `nvidia/canary-1b-v2` main checkpoint now has a strict native
+PCM-to-token/text route over its authenticated 1,478 F32 inference tensors,
+16,384-piece aggregate tokenizer and exact Canary2 prompt. CPU and Metal share
+one whole-model hot-op registry; an unavailable or uncovered backend returns
+an explicit error. The auxiliary timestamp checkpoint is rejected rather than
+silently selected. Independent VAST CPU and Apple-device real-weight Metal
+parity remain pending. No C ABI symbol is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::canary` | `CanaryAsr`, `Canary1bV2Options`, `CanaryLanguage`, `CanaryEmotion`, `CanaryTokenizer`, `CANARY_HOT_OPS` | Changed | strict complete bind; CPU/Metal ASR/AST greedy token and text forward | Replaces the earlier metadata-only scaffold; incomplete or mismatched artifacts fail their complete-manifest gate | no | (TBD) |
+| `gguf:vokra.canary.*` | complete topology, immutable provenance, and aggregate tokenizer vocabulary/hash metadata | Added | released encoder/decoder/head axes plus authenticated `u8[]` decode table | Strict converter selects only the official main checkpoint and requires the exact aggregate tokenizer | no | (TBD) |
+| `vokra-cli convert`, `run`, `bench` | `canary` tokenizer sidecar, 25-language ASR/AST dispatch, and `--target-language` | Added | 16 kHz mono; equal language pair = ASR, different pair = AST | Unsupported search/backend/language combinations return explicit errors; no alternate model or CPU fallback | no | (TBD) |
+| VAST parity worker | `run-canary-1b-v2-validation.sh` and official NeMo dumper | Added | exact English ASR and English-to-German AST greedy token equality | Large artifacts stay remote; worker performs no upload/push and evidence is pulled before instance destruction | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (Canary-1B-Flash CPU/Metal ASR and AST)
 
 The complete immutable `nvidia/canary-1b-flash` release now has a strict
@@ -3317,7 +3334,7 @@ rows now name what is genuinely reserved. `titanet_speaker_encode` and
 | Reserved op-kind id          | FR-OP    | M5 blocker (what is still reserved)                           |
 | ---------------------------- | -------- | ------------------------------------------------------------ |
 | `bigvgan_generator` (op)     | FR-OP-11 | graph-side `OpKind` variant + C ABI export. Runtime vocoder, strict real-weight binder, alias-free forward parity, and explicit mel-file CLI route landed; min-dtype anchor registered (M2-08) |
-| `ctc_decode`                 | FR-OP-41 | graph-side `OpKind` variant + C ABI export. Runtime primitives landed (`ctc_decode_greedy` / `ctc_decode_beam`, LM shallow fusion + hotwords); NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`) but no live call site yet |
+| `ctc_decode`                 | FR-OP-41 | graph-side `OpKind` variant + C ABI export. Runtime primitives landed (`ctc_decode_greedy` / `ctc_decode_beam`, LM shallow fusion + hotwords), with live greedy consumers in `parakeet_ctc`, `wav2vec2_ctc`, and `data2vec_audio`; Canary is Transformer-AED and does not consume CTC |
 | `rnnt_decode`                | FR-OP-42 | graph-side `OpKind` variant + C ABI export. Runtime primitive and live `ParakeetTdt11b::decode_tdt` consumer landed; the same strict model now also has a complete native PCM-to-token/text TDT forward |
 | `ecapa_tdnn_speaker_encode`  | FR-OP-80 | graph-side `OpKind` variant + dedicated op-level C ABI export. Native strict binder, CPU/Metal model forward, CLI and model-generic `vokra_speaker_embed` route landed |
 | `wespeaker_speaker_encode`   | FR-OP-80 | native strict model forward and generic speaker C ABI landed; graph `OpKind` + dedicated op export remain reserved |

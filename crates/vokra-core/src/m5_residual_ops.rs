@@ -72,7 +72,7 @@
 //! | op-kind id                       | FR-OP    | blocker                                            |
 //! | -------------------------------- | -------- | -------------------------------------------------- |
 //! | [`BIGVGAN_GENERATOR_OP`]         | FR-OP-11 | runtime primitive, strict real-weight binder, alias-free forward, CLI mel contract, and independent waveform parity landed; the min-dtype anchor is registered (M2-08). Reserved: the graph-side `OpKind` variant + C ABI export |
-//! | [`CTC_DECODE_OP`]                | FR-OP-41 | runtime primitives landed (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam`, incl. n-gram LM shallow fusion + hotword boost) and the NeMo family landed (`parakeet_ctc`, `canary`, `canary_qwen`, `canary_1b_flash`, `omniasr_ctc`); those binders are loud-partial and name this primitive as the piece that already exists, so no live call site exists yet. Reserved: the graph-side `OpKind` variant + C ABI export |
+//! | [`CTC_DECODE_OP`]                | FR-OP-41 | runtime primitives landed (`vokra_ops::ctc_decode_greedy` / `ctc_decode_beam`, incl. n-gram LM shallow fusion + hotword boost), with live greedy consumers in `parakeet_ctc`, `wav2vec2_ctc`, and `data2vec_audio`. Canary is Transformer-AED and does not consume this CTC primitive. Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`RNNT_DECODE_OP`]               | FR-OP-42 | runtime primitive landed (`vokra_ops::rnnt_decode`) with a **live consumer** in `ParakeetTdt11b::decode_tdt`; the same strict model now has a complete native PCM-to-token/text TDT forward. Reserved: the graph-side `OpKind` variant + C ABI export |
 //! | [`ECAPA_TDNN_SPEAKER_ENCODE_OP`] | FR-OP-80 | native 200-tensor SpeechBrain ECAPA binder, CPU/Metal forward, CLI/C ABI speaker route and independent parity landed. Reserved: the graph-side `OpKind` variant + dedicated C ABI op export |
 //! | [`WESPEAKER_SPEAKER_ENCODE_OP`]  | FR-OP-80 | native strict WeSpeaker binder, CPU/Metal forward, CLI/C ABI speaker route and independent parity landed. Reserved: the graph-side `OpKind` variant + dedicated C ABI op export |
@@ -165,9 +165,9 @@ pub fn m5_residual_op_anchors() -> &'static [M5ResidualAnchor] {
             fr_op: "FR-OP-41",
             blocker: "graph-side OpKind variant + C ABI export reserved; the runtime primitives \
                       landed (vokra_ops::ctc_decode_greedy / ctc_decode_beam with LM shallow \
-                      fusion + hotwords) and the NeMo family landed (parakeet_ctc, canary, \
-                      canary_qwen, canary_1b_flash, omniasr_ctc), whose loud-partial binders \
-                      name this primitive as already-existing — no live call site yet",
+                      fusion + hotwords), with live greedy consumers in parakeet_ctc, \
+                      wav2vec2_ctc, and data2vec_audio; Canary is Transformer-AED and does not \
+                      consume this CTC primitive",
         },
         M5ResidualAnchor {
             op_id: RNNT_DECODE_OP,

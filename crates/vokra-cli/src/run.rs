@@ -356,10 +356,14 @@ OPTIONS:
                                 applies (FR-EX-08).
                                 canary-1b-flash: source language (`en`, `de`,
                                 `es`, or `fr`; default `en`).
-    --target-language <code>    canary-1b-flash only: target language (`en`,
-                                `de`, `es`, or `fr`). Defaults to the source
-                                language for ASR; a different value selects
-                                the released AST prompt.
+                                canary: source language from the released
+                                25-language inventory (default `en`).
+    --target-language <code>    canary / canary-1b-flash: target language.
+                                Defaults to the source language for ASR; a
+                                different value selects the released AST
+                                prompt. Canary-v2 accepts bg, hr, cs, da, nl,
+                                en, et, fi, fr, de, el, hu, it, lv, lt, mt,
+                                pl, pt, ro, ru, sk, sl, es, sv, uk.
     --bare-prompt               voxtral only: decode from the bare
                                 soft-prefix + BOS layout instead of the
                                 trained transcription prompt. Honest LM
@@ -1066,6 +1070,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AsrVoxtral
         | ModelTask::AsrNemotron
         | ModelTask::AsrCanary1bFlash
+        | ModelTask::AsrCanary1bV2
         | ModelTask::AsrParakeetTdt11b
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
@@ -1295,18 +1300,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::AsrVoxtral
         && task != ModelTask::AsrNemotron
         && task != ModelTask::AsrCanary1bFlash
+        && task != ModelTask::AsrCanary1bV2
         && task != ModelTask::Sbv2
     {
         return Err(
             "run: --language is only supported for voxtral, nemotron_asr_streaming, \
-             canary-1b-flash, or sbv2; each architecture validates its own released \
+             canary, canary-1b-flash, or sbv2; each architecture validates its own released \
              prompt/front-end language inventory"
                 .to_owned(),
         );
     }
-    if a.target_language.is_some() && task != ModelTask::AsrCanary1bFlash {
+    if a.target_language.is_some()
+        && task != ModelTask::AsrCanary1bFlash
+        && task != ModelTask::AsrCanary1bV2
+    {
         return Err(
-            "run: --target-language is only supported for canary-1b-flash AST; other ASR architectures have no compatible target-language prompt slot"
+            "run: --target-language is only supported for canary / canary-1b-flash AST; other ASR architectures have no compatible target-language prompt slot"
                 .to_owned(),
         );
     }
@@ -1467,6 +1476,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrCanary1bFlash => {
             run_canary_1b_flash(&session, &a)?;
+        }
+        ModelTask::AsrCanary1bV2 => {
+            run_canary_1b_v2(&session, &a)?;
         }
         ModelTask::AsrParakeetTdt11b => {
             run_parakeet_tdt_1_1b(&session, &a)?;
@@ -5266,6 +5278,54 @@ fn run_canary_1b_flash(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the complete released Canary-1B-v2 graph. Equal source/target
+/// languages select ASR; a different target selects AST through the exact
+/// nine-token Canary2 prompt embedded in the native runtime.
+fn run_canary_1b_v2(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::canary::{CANARY_SAMPLE_RATE, Canary1bV2Options, CanaryAsr, CanaryLanguage};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (Canary-1B-v2): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != CANARY_SAMPLE_RATE {
+        return Err(format!(
+            "run (Canary-1B-v2): {path} is {} Hz, expected {CANARY_SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (Canary-1B-v2): the released beam_size=1 greedy contract does not accept --beam-size / --no-repeat-ngram / --length-penalty"
+                .to_owned(),
+        );
+    }
+
+    let source_code = a.language.as_deref().unwrap_or("en");
+    let target_code = a.target_language.as_deref().unwrap_or(source_code);
+    let source_language = CanaryLanguage::parse(source_code).map_err(|error| error.to_string())?;
+    let target_language = CanaryLanguage::parse(target_code).map_err(|error| error.to_string())?;
+    let options = Canary1bV2Options {
+        source_language,
+        target_language,
+        ..Canary1bV2Options::default()
+    };
+    let model = CanaryAsr::from_gguf_with_backend(session.gguf(), a.backend)
+        .map_err(|error| error.to_string())?;
+    let text = model
+        .transcribe_text_with_options(&clip.samples, options)
+        .map_err(|error| error.to_string())?;
+    let task = if source_language == target_language {
+        "asr"
+    } else {
+        "ast"
+    };
+    println!("{task}: {text}");
+    Ok(())
+}
+
 /// Runs the released Nemotron 3.5 offline causal path with an explicit
 /// language prompt. The public July GGUF predates tokenizer embedding, so an
 /// authenticated sidecar is accepted without requiring an irreversible model
@@ -6427,6 +6487,7 @@ mod tests {
         let err = main(&argv).unwrap_err();
         assert!(
             err.contains("--language is only supported for voxtral")
+                && err.contains("canary,")
                 && err.contains("canary-1b-flash")
                 && err.contains("sbv2"),
             "got: {err}"
@@ -6436,7 +6497,7 @@ mod tests {
         argv.extend(vec!["--target-language".to_owned(), "en".to_owned()]);
         let err = main(&argv).unwrap_err();
         assert!(
-            err.contains("--target-language is only supported for canary-1b-flash AST"),
+            err.contains("--target-language is only supported for canary / canary-1b-flash AST"),
             "got: {err}"
         );
 
@@ -7594,6 +7655,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bFlash), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bV2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);

@@ -73,6 +73,12 @@ pub(crate) enum ModelTask {
     /// request surface; attaching only that trait would silently collapse the
     /// released four-language contract to English ASR.
     AsrCanary1bFlash,
+    /// NVIDIA Canary-1B-v2 multilingual ASR / AST.
+    ///
+    /// Like the Flash release, this stays concrete through `run` so its
+    /// source/target language and task prompt can be supplied without loading
+    /// the multi-gigabyte checkpoint twice.
+    AsrCanary1bV2,
     /// NVIDIA Parakeet-TDT-1.1B with an optional authenticated plaintext
     /// SentencePiece vocabulary sidecar. The concrete engine binds once in
     /// run/bench so the 4.28 GB F32 payload is never duplicated.
@@ -636,6 +642,8 @@ const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
 /// NVIDIA Canary-1B-Flash multilingual FastConformer + Transformer AED ASR/AST.
 const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
+/// NVIDIA Canary-1B-v2 multilingual FastConformer + Transformer AED ASR/AST.
+const ARCH_CANARY_1B_V2: &str = "canary";
 /// Meta Wav2Vec2 raw-waveform encoder with an optional CTC head.
 const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
 /// Corrected Data2Vec Audio arch tag.
@@ -898,6 +906,15 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::AsrCanary1bFlash))
+        }
+        ARCH_CANARY_1B_V2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_CANARY_1B_V2}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrCanary1bV2))
         }
         ARCH_WAV2VEC2_CTC => {
             if hint.is_some() {
@@ -1820,12 +1837,6 @@ struct BoundArch {
 const BOUND_ARCHES: &[BoundArch] = &[
     // --- ASR / speech-to-text -------------------------------------------
     BoundArch {
-        arch: "canary",
-        module: "vokra_models::canary",
-        entry: "CanaryAsr::from_gguf → CanaryAsr::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::canary::CanaryAsr::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
@@ -2567,6 +2578,19 @@ mod tests {
                 .iter()
                 .all(|row| row.arch != ARCH_CANARY_1B_FLASH),
             "a routed Canary forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_canary_1b_v2_to_the_concrete_native_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_CANARY_1B_V2, "canary-1b-v2-routed", |path| {
+                load_session(path).expect("Canary-v2 binds once in its concrete run/bench arm")
+            });
+        assert_eq!(task, ModelTask::AsrCanary1bV2);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_CANARY_1B_V2),
+            "a routed Canary-v2 forward must not retain an unreachable bound-only row"
         );
     }
 

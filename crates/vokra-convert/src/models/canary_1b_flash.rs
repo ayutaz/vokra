@@ -295,6 +295,17 @@ fn validate_checkpoint(st: &SafetensorsFile) -> Result<(), ConvertError> {
 }
 
 fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    expected_canary_aed_manifest(4, 5_248)
+}
+
+/// Shared exact FastConformer + Transformer-AED tensor-name contract.
+/// Canary-1B-Flash and Canary-1B-v2 differ only by decoder depth and
+/// vocabulary width; their official state-dict manifests prove every other
+/// name and shape is identical.
+pub(crate) fn expected_canary_aed_manifest(
+    decoder_layers: usize,
+    vocab_size: u64,
+) -> BTreeMap<String, Vec<u64>> {
     let mut tensors = BTreeMap::new();
     let mut add = |name: String, shape: &[u64]| {
         assert!(tensors.insert(name, shape.to_vec()).is_none());
@@ -374,7 +385,7 @@ fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
 
     add(
         "transf_decoder._embedding.token_embedding.weight".into(),
-        &[5_248, 1_024],
+        &[vocab_size, 1_024],
     );
     add(
         "transf_decoder._embedding.position_embedding.pos_enc".into(),
@@ -385,7 +396,7 @@ fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
         &[1_024],
     );
     add("transf_decoder._embedding.layer_norm.bias".into(), &[1_024]);
-    for layer in 0..4 {
+    for layer in 0..decoder_layers {
         let prefix = format!("transf_decoder._decoder.layers.{layer}");
         for norm in ["layer_norm_1", "layer_norm_2", "layer_norm_3"] {
             add(format!("{prefix}.{norm}.weight"), &[1_024]);
@@ -419,8 +430,8 @@ fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
         "transf_decoder._decoder.final_layer_norm.bias".into(),
         &[1_024],
     );
-    add("log_softmax.mlp.layer0.weight".into(), &[5_248, 1_024]);
-    add("log_softmax.mlp.layer0.bias".into(), &[5_248]);
+    add("log_softmax.mlp.layer0.weight".into(), &[vocab_size, 1_024]);
+    add("log_softmax.mlp.layer0.bias".into(), &[vocab_size]);
     tensors
 }
 
@@ -480,7 +491,7 @@ fn validate_tokenizer_vocab(bytes: &[u8]) -> Result<(), ConvertError> {
     Ok(())
 }
 
-fn manifest_sha256(manifest: &BTreeMap<String, Vec<u64>>) -> [u8; 32] {
+pub(crate) fn manifest_sha256(manifest: &BTreeMap<String, Vec<u64>>) -> [u8; 32] {
     let mut canonical = Vec::new();
     for (name, dimensions) in manifest {
         canonical.extend_from_slice(name.as_bytes());
@@ -493,7 +504,7 @@ fn manifest_sha256(manifest: &BTreeMap<String, Vec<u64>>) -> [u8; 32] {
     sha256(&canonical)
 }
 
-fn hex(bytes: &[u8; 32]) -> String {
+pub(crate) fn hex(bytes: &[u8; 32]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(64);
     for byte in bytes {
@@ -514,7 +525,7 @@ const SHA256_K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-fn sha256(data: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     let mut state = [
         0x6a09e667u32,
         0xbb67ae85,

@@ -258,18 +258,13 @@ pub enum ModelKind {
     /// tokens `<source_lang>`, `<target_lang>`, `<taskname>`, `<pnc>`,
     /// `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>`. CC-BY 4.0
     /// weight (`AttributionRequired` — the converter stamps the
-    /// FR-MD-09 attribution text). Every hparam stated on the model
-    /// card is transcribed verbatim; every remaining hparam is
-    /// transcribed from the shared FastConformer-Transformer AED
-    /// reference config
-    /// (`github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`).
-    /// Targets the shared `vokra_ops::conformer` (FastConformer encoder
-    /// body via `Stacking { factor: 8 }`) and
-    /// `vokra_core::decode::beam_search` (attention-decoder search —
-    /// OP-3) primitives — no per-model op duplication. The beam search
-    /// lives in `vokra-core`, not in `vokra-ops`. The runtime binder's
-    /// `CanaryAsr::transcribe` is still `NotImplemented`, so this is the
-    /// target wiring, not landed wiring.
+    /// FR-MD-09 attribution text). Every hparam and tensor shape is
+    /// authenticated against the immutable main checkpoint's
+    /// `model_config.yaml` and committed structural manifest. The strict
+    /// path requires the exact 16,384-line aggregate `tokenizer.vocab`,
+    /// rejects the timestamp auxiliary checkpoint, and targets the native
+    /// CPU/Metal FastConformer + Transformer-AED greedy runtime. Unsupported
+    /// search modes and backend ops fail explicitly.
     Canary,
     /// NVIDIA **Canary-Qwen-2.5B** safetensors checkpoint (SoTA plan
     /// reuse bundle, 2026-07-30). Multimodal ASR + LLM head-swap on top
@@ -6907,6 +6902,13 @@ pub fn convert_file_licensed(
                 .into(),
         ));
     }
+    if matches!(model, ModelKind::Canary) {
+        return Err(ConvertError::Usage(
+            "canary-1b-v2 requires the exact official aggregate tokenizer.vocab; use \
+             convert_canary_file_with_tokenizer (CLI: --tokenizer tokenizer.vocab)"
+                .into(),
+        ));
+    }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -7317,19 +7319,7 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::Canary => {
-            // SoTA plan Phase 2: pass every F32/F16 tensor through
-            // verbatim and stamp the `vokra.canary.*` chunk group
-            // (FastConformer encoder + Transformer AED decoder + head)
-            // from the primary-source constants transcribed in
-            // `models::canary`. Provenance = CC-BY 4.0
-            // (AttributionRequired) + FR-MD-09 attribution text.
-            let (builder, report) = models::canary::convert(bytes)?;
-            let mut notes = vec![format!(
-                "canary: {} float weights written verbatim, {} non-float skipped",
-                report.written, report.skipped_non_float,
-            )];
-            notes.extend(report.notes.iter().map(|n| format!("canary warning: {n}")));
-            (builder, notes)
+            unreachable!("Canary-1B-v2 is routed before the whole-file dispatcher")
         }
         ModelKind::CanaryQwen => {
             // SoTA plan reuse bundle (2026-07-30): pass every F32/F16/BF16
@@ -12990,6 +12980,7 @@ pub use models::dnsmos::{DnsmosReport, convert_dnsmos_file};
 // `ModelKind::Frcrn` dispatch arm above enforce the same exact manifest.
 pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
+pub use models::canary::{CanaryReport, convert_canary_file_with_tokenizer};
 pub use models::canary_1b_flash::{
     Canary1bFlashReport, convert_canary_1b_flash_file, convert_canary_1b_flash_file_with_tokenizer,
 };
@@ -14397,46 +14388,11 @@ pub fn convert_parakeet_ctc_file_with_assets(
     })
 }
 
-/// Convert an NVIDIA **Canary-1B-v2** safetensors checkpoint into a Vokra
-/// GGUF (SoTA plan Phase 2, 2026-07-24).
+/// Legacy tokenizer-less NVIDIA **Canary-1B-v2** conversion entry point.
 ///
-/// This is the named entry point that mirrors `convert_parakeet_ctc_file` /
-/// `convert_parakeet_file` / `convert_kyutai_stt_file`. It is functionally
-/// identical to `convert_file(ModelKind::Canary, input, output)` — Canary
-/// has no side-car config or tokenizer to embed at this scaffold stage
-/// (every hparam is transcribed as constants in `models::canary`; the
-/// unified SentencePiece tokenizer follows in a follow-up wave via the
-/// `--config` side-car pattern) — but the named entry keeps the
-/// `convert_*_file` naming symmetry with the other ASR / TTS models.
-///
-/// # Architecture summary
-///
-/// - Encoder: FastConformer, **32 layers** (model card), `d_model=1024`,
-///   `n_heads=8`, `ff_expansion_factor=4` → `ffn_dim=4096`,
-///   `conv_kernel_size=9`, `num_mel_bins=128`, `subsampling_factor=8`,
-///   `attention_bias=true`, `scale_input=false`,
-///   `max_position_embeddings=5000` (family reference defaults from
-///   `fast-conformer_aed.yaml`).
-/// - Decoder: Transformer, **8 layers** (model card), `d_model=1024`,
-///   `n_heads=8`, `inner_size=4096`, `max_sequence_length=1024`,
-///   `pre_ln=true`, `hidden_act="relu"` (family reference / flash
-///   convention).
-/// - Vocab: unified SentencePiece, **16 384 tokens** (model card),
-///   inline task tokens (`<source_lang>`, `<target_lang>`, `<taskname>`,
-///   `<pnc>`, `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>`).
-/// - Sample rate: **16 kHz** (model card, mono .wav / .flac).
-///
-/// # BF16 posture
-///
-/// The upstream Canary-1B-v2 `.nemo` tarball's PyTorch checkpoint is
-/// typically **BF16**; today's pass-through arm handles only F32 / F16,
-/// so BF16 tensors reach the `skipped_non_float` counter and the
-/// converter surfaces the "no float tensors" loud note. Pre-widen offline
-/// during the `.nemo` prepare step (F32) or wait for the streaming BF16
-/// pass-through path (T29-equivalent — the Moshi pattern) to convert the
-/// release build directly. Provenance is stamped **CC-BY 4.0**
-/// (`AttributionRequired`) and the FR-MD-09 attribution surface activates
-/// so a downstream must show the NVIDIA attribution.
+/// Canary-1B-v2 cannot execute without its immutable 16,384-piece aggregate
+/// vocabulary, so this function always returns a loud usage error before the
+/// checkpoint is read. Call [`convert_canary_file_with_tokenizer`] instead.
 pub fn convert_canary_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Canary, input, output)
 }

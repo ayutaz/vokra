@@ -35,13 +35,12 @@
 // encoder + FFN, AED style) + unified SentencePiece vocab (16,384 tokens
 // with task tokens `<source_lang>`, `<target_lang>`, `<taskname>`, `<pnc>`,
 // `<itn>`, `<timestamp>`, `<diarize>`, `<emotion>` inline). Every hparam
-// stated on the model card is transcribed verbatim; every hparam not on
-// the card is transcribed from the shared FastConformer-Transformer AED
-// reference config (fast-conformer_aed.yaml — the Canary family reference).
+// stated on the model card is transcribed verbatim; every remaining hparam is
+// authenticated against the immutable main checkpoint's model_config.yaml.
 // Weights: CC-BY 4.0 (AttributionRequired — FR-MD-09 attribution surface).
-// Reuses two existing ops (vokra_ops::conformer for the encoder body,
-// vokra_core::decode::beam_search for the attention-decoder search) rather than
-// duplicating.
+// Reuses vokra_ops::conformer for the encoder body. The shared Canary AED
+// binder implements the official deterministic greedy route for v2 and Flash;
+// unsupported beam-search flags fail explicitly.
 // SoTA plan Phase X (2026-07-25): forced-alignment ops
 // (CLAUDE.md 音声特化オペレータ §"Alignment / Duration / Prosody" —
 // `force_align`). Two members:
@@ -67,6 +66,8 @@ pub mod audiocraft_lm;
 /// Native AudioSeal watermark generator/detector (CPU / Metal).
 pub mod audioseal;
 pub mod canary;
+#[path = "canary_1b_flash/bound.rs"]
+mod canary_aed_bound;
 /// Shared native T5 text encoder for MusicGen-family and related audio models.
 pub mod t5_encoder;
 // SoTA plan reuse bundle (2026-07-30): NVIDIA Canary-Qwen-2.5B —

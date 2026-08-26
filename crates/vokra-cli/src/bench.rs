@@ -1357,6 +1357,32 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr-canary-1b-flash", audio_seconds, samples)
         }
+        ModelTask::AsrCanary1bV2 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Canary-1B-v2): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::canary::CANARY_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Canary-1B-v2): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::canary::CANARY_SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::canary::CanaryAsr::from_gguf_with_backend(
+                session.gguf(),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.transcribe(&pcm).map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-canary-1b-v2", audio_seconds, samples)
+        }
         ModelTask::AsrNemotron => {
             let path = args
                 .input
