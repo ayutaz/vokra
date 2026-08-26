@@ -14,6 +14,7 @@
 //! | [`gemv_f32`] (bias = per-row) | yes | tied logits head `token_emb[v,d] @ h[d]` (the `gemm` `n=1` scalar-tail case, M1) |
 //! | [`add_f32`] / [`mul_f32`] | yes | residual add, gating |
 //! | [`relu_f32`] | yes | Silero VAD conv stack |
+//! | [`elu_f32`] | scalar | Bark's embedded EnCodec decoder (`alpha = 1`) |
 //! | [`sigmoid_f32`] | scalar-backed; SIMD under `simd-transcendental` | VAD output / LSTM gate; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`tanh_f32`] | scalar-backed; SIMD under `simd-transcendental` | LSTM cell; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`gelu_f32`] | scalar-backed; SIMD under `simd-transcendental` | Whisper MLP (exact/erf form); exp-bound (`vexp`, M1-05-EXP) |
@@ -43,7 +44,7 @@
 //! # Function boundary for M0-06
 //!
 //! M0-06's encoder / decoder call these safe wrappers directly:
-//! [`gemm_f32`], [`add_f32`], [`mul_f32`], [`relu_f32`], [`sigmoid_f32`],
+//! [`gemm_f32`], [`add_f32`], [`mul_f32`], [`relu_f32`], [`elu_f32`], [`sigmoid_f32`],
 //! [`tanh_f32`], [`gelu_f32`], [`softmax_f32`], [`layer_norm_f32`],
 //! [`conv1d_f32`], plus [`crate::active_isa`] for the demo's ISA log. Each
 //! validates its shapes at the boundary and returns
@@ -474,6 +475,18 @@ unary_wrapper!(
     relu,
     "Element-wise ReLU `out = max(0, x)`."
 );
+
+/// Element-wise ELU with the EnCodec/Bark default `alpha = 1`.
+///
+/// `out = x` for positive inputs and `out = exp(x) - 1` otherwise. This
+/// scalar implementation is the portable CPU reference for the dedicated
+/// Metal kernel; the public boundary rejects shape mismatches explicitly.
+pub fn elu_f32(x: &[f32], out: &mut [f32]) -> Result<()> {
+    validate_unary(x, out)?;
+    scalar::elu(x, out);
+    Ok(())
+}
+
 unary_wrapper!(
     sigmoid_f32,
     sigmoid_f32_on,
@@ -1029,6 +1042,23 @@ mod tests {
         assert!(add_f32(&[1.0, 2.0], &[1.0], &mut out2).is_err());
         let mut out1 = [0.0; 1];
         assert!(relu_f32(&[1.0, 2.0], &mut out1).is_err());
+        assert!(elu_f32(&[1.0, 2.0], &mut out1).is_err());
+    }
+
+    #[test]
+    fn elu_matches_transformers_alpha_one_points() {
+        let x = [f32::NEG_INFINITY, -4.0, -1.0, -0.0, 0.0, 0.5, 8.0];
+        let mut out = [f32::NAN; 7];
+        elu_f32(&x, &mut out).expect("valid ELU shape");
+
+        for (index, (&input, &actual)) in x.iter().zip(&out).enumerate() {
+            let expected = if input > 0.0 {
+                input
+            } else {
+                input.exp() - 1.0
+            };
+            assert_eq!(actual.to_bits(), expected.to_bits(), "index {index}");
+        }
     }
 
     #[test]

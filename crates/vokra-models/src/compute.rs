@@ -110,6 +110,12 @@ pub enum HotOp {
     /// Metal has a dedicated MSL kernel; other backends remain explicit
     /// unsupported operations.
     Relu,
+    /// Element-wise ELU with `alpha = 1`, used by Bark's embedded causal
+    /// EnCodec decoder. CPU uses the portable scalar reference and Metal a
+    /// dedicated MSL kernel. CUDA, Vulkan, WebGPU, CoreML, and QNN remain
+    /// explicitly uncovered; a model listing this op is rejected before
+    /// execution on those backends rather than silently running it on CPU.
+    Elu,
     /// Element-wise hyperbolic tangent. SpeechT5's four activated postnet
     /// convolution blocks require this exact nonlinearity. CPU dispatches the
     /// existing portable kernel and Metal has a dedicated MSL kernel; other
@@ -468,6 +474,7 @@ impl HotOp {
                 | HotOp::Gelu
                 | HotOp::GeluNew
                 | HotOp::Relu
+                | HotOp::Elu
                 | HotOp::Tanh
                 | HotOp::Silu
                 | HotOp::Conv1d
@@ -1294,6 +1301,29 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "relu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise ELU with the EnCodec/Bark default `alpha = 1`.
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Elu`] cannot
+    /// silently execute this activation on the host.
+    pub fn elu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::elu_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.elu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "elu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "elu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
                     .to_owned(),
             )),
         }
@@ -4315,6 +4345,19 @@ mod tests {
     }
 
     #[test]
+    fn cpu_elu_dispatches_to_the_alpha_one_kernel() {
+        let input = [f32::NEG_INFINITY, -4.0, -1.0, -0.0, 0.0, 0.5, 8.0];
+        let mut via_compute = [f32::NAN; 7];
+        Compute::cpu()
+            .elu_f32(&input, &mut via_compute)
+            .expect("CPU Compute ELU");
+
+        let mut direct = [f32::NAN; 7];
+        kernels::elu_f32(&input, &mut direct).expect("direct CPU ELU");
+        assert_eq!(via_compute.map(f32::to_bits), direct.map(f32::to_bits));
+    }
+
+    #[test]
     fn cpu_for_backend_covers_every_op() {
         // The CPU backend covers the full hot-op set unconditionally —
         // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
@@ -4329,6 +4372,7 @@ mod tests {
             HotOp::Gelu,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4408,6 +4452,7 @@ mod tests {
             HotOp::Gelu,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4607,6 +4652,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::DacRvq,
@@ -4693,6 +4739,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4760,6 +4807,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4814,6 +4862,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -4885,6 +4934,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
@@ -5069,6 +5119,7 @@ mod tests {
             HotOp::GroupNorm,
             HotOp::GeluNew,
             HotOp::Relu,
+            HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::MimiRvq,

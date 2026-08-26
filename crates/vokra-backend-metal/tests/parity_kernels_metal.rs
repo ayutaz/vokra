@@ -290,6 +290,31 @@ fn relu_metal_matches_cpu_bit_exactly() {
 }
 
 #[test]
+fn elu_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("elu");
+    let lens = [1usize, 7, 63, 1000, 5 * 512];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let mut x: Vec<f32> = rand_vec(0xE1A0 ^ n as u64, n)
+            .into_iter()
+            .map(|value| value * 8.0)
+            .collect();
+        if n >= 7 {
+            x[..7].copy_from_slice(&[f32::NEG_INFINITY, -20.0, -1.0, -0.0, 0.0, 1.0, 20.0]);
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.elu_f32(&x, &mut gpu).expect("metal elu");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::elu_f32(&x, &mut cpu_out).expect("cpu elu");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("elu n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "elu n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("elu Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
+}
+
+#[test]
 fn tanh_metal_matches_cpu() {
     let ctx = ctx_or_skip!("tanh");
     let lens = [1usize, 7, 63, 1000, 5 * 512];
@@ -452,6 +477,8 @@ fn kernels_reject_bad_shapes_explicitly() {
     assert!(ctx.gelu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // relu: out length must equal x length.
     assert!(ctx.relu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // elu: out length must equal x length.
+    assert!(ctx.elu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // tanh: out length must equal x length.
     assert!(ctx.tanh_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // conv1d: zero stride is rejected before any GPU work.

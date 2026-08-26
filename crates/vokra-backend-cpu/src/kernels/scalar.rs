@@ -110,6 +110,14 @@ pub(crate) fn relu(x: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Element-wise ELU with the EnCodec/Bark default `alpha = 1`:
+/// `out[i] = x[i]` for positive inputs and `exp(x[i]) - 1` otherwise.
+pub(crate) fn elu(x: &[f32], out: &mut [f32]) {
+    for (o, &v) in out.iter_mut().zip(x) {
+        *o = if v > 0.0 { v } else { v.exp() - 1.0 };
+    }
+}
+
 /// Element-wise logistic sigmoid `out[i] = 1 / (1 + exp(-x[i]))`.
 pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
     for (o, &v) in out.iter_mut().zip(x) {
@@ -308,6 +316,11 @@ mod tests {
         let mut out = [0.0; 3];
         relu(&[-1.0, 0.0, 2.0], &mut out);
         assert_eq!(out, [0.0, 0.0, 2.0]);
+
+        elu(&[-1.0, 0.0, 2.0], &mut out);
+        assert!((out[0] - (-1.0f32).exp_m1()).abs() < 1e-7);
+        assert_eq!(out[1], 0.0);
+        assert_eq!(out[2], 2.0);
 
         sigmoid(&[0.0, 100.0, -100.0], &mut out);
         assert!((out[0] - 0.5).abs() < 1e-6);
