@@ -16,13 +16,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{FrontendPolicy, FrontendSpec, LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, verify_tensor_manifest};
 
+mod audio_encoder;
+mod frontend;
 mod weights;
 
+use audio_encoder::MossAudioEncoderRuntime;
+pub use audio_encoder::{MOSS_AUDIO_ENCODER_HOT_OPS, MossAudioEmbeddings};
 use weights::MossAudioMappedDescriptors;
 
 /// Dedicated architecture emitted by corrected conversions.
@@ -433,6 +438,88 @@ impl MossAudioCheckpoint {
     }
 }
 
+/// Executable MOSS-Audio frontend, audio tower and four GatedMLP adapters.
+///
+/// Text generation remains an explicit unsupported operation until the
+/// following Qwen3/DeepStack slice. [`Self::encode_audio`] is complete and
+/// keeps the multi-gigabyte checkpoint mapped, widening one layer at a time.
+#[derive(Clone)]
+pub struct MossAudio {
+    checkpoint: MossAudioCheckpoint,
+    backend: BackendKind,
+    encoder: Arc<MossAudioEncoderRuntime>,
+}
+
+impl std::fmt::Debug for MossAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MossAudio")
+            .field("variant", &self.checkpoint.variant())
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MossAudio {
+    /// Opens an exact dense GGUF through mmap and preflights every learned
+    /// audio/adapter op on the selected CPU or Metal backend.
+    pub fn open_mapped(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
+        Self::from_checkpoint(MossAudioCheckpoint::open_mapped(path)?, backend)
+    }
+
+    /// Builds the executable audio side from a mapped strict checkpoint.
+    pub fn from_checkpoint(checkpoint: MossAudioCheckpoint, backend: BackendKind) -> Result<Self> {
+        checkpoint.mapped()?;
+        let _ = crate::compute::Compute::for_backend(backend, MOSS_AUDIO_ENCODER_HOT_OPS)?;
+        Ok(Self {
+            checkpoint,
+            backend,
+            encoder: Arc::new(MossAudioEncoderRuntime::default()),
+        })
+    }
+
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    #[must_use]
+    pub const fn checkpoint(&self) -> &MossAudioCheckpoint {
+        &self.checkpoint
+    }
+
+    /// Runs the exact frontend, 3-stage convolutional stem, 32 Whisper-style
+    /// layers, final LayerNorm and four GatedMLP projections. The result
+    /// contains primary text-width audio embeddings plus all three DeepStack
+    /// tensors needed by the Qwen3 decoder.
+    pub fn encode_audio(&self, pcm: &[f32], sample_rate: u32) -> Result<MossAudioEmbeddings> {
+        validate_audio_input(pcm, sample_rate)?;
+        audio_encoder::encode(&self.checkpoint, self.backend, &self.encoder, pcm)
+    }
+
+    /// Explicit text-generation boundary until the Qwen3 decoder slice lands.
+    pub fn respond(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
+        validate_audio_input(pcm, sample_rate)?;
+        Err(VokraError::UnsupportedOp(format!(
+            "moss_audio respond: {} has a complete CPU/Metal audio tower and four DeepStack adapters, but the 36-layer Qwen3 decoder/tokenizer route is not connected yet; no text or silent CPU fallback is produced",
+            self.checkpoint.variant().model_name()
+        )))
+    }
+}
+
+fn validate_audio_input(pcm: &[f32], sample_rate: u32) -> Result<()> {
+    if pcm.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "moss_audio: PCM input is empty".to_owned(),
+        ));
+    }
+    if sample_rate != SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "moss_audio: sample_rate={sample_rate}, expected {SAMPLE_RATE} Hz"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_canonical_metadata(file: &GgufFile, variant: MossAudioVariant) -> Result<()> {
     require_string_value(file, KEY_UPSTREAM_REVISION, variant.upstream_revision())?;
     require_string_value(file, KEY_VARIANT, variant.tag())?;
@@ -539,25 +626,8 @@ fn validate_canonical_metadata(file: &GgufFile, variant: MossAudioVariant) -> Re
         config.text.attention_bias,
     )?;
 
-    FrontendSpec::from_gguf(file)?.check_against(&runtime_frontend_spec(), FrontendPolicy::Fail)
-}
-
-fn runtime_frontend_spec() -> FrontendSpec {
-    FrontendSpec {
-        n_fft: 400,
-        hop: 160,
-        win_length: 400,
-        window_type: "hann".to_owned(),
-        mel_norm: "slaney".to_owned(),
-        htk_mode: false,
-        fmin: 0.0,
-        fmax: 8_000.0,
-        n_mels: 128,
-        pad_mode: "reflect".to_owned(),
-        dc_offset_removal: false,
-        pre_emphasis: 0.0,
-        sample_rate: SAMPLE_RATE,
-    }
+    FrontendSpec::from_gguf(file)?
+        .check_against(&frontend::runtime_frontend_spec(), FrontendPolicy::Fail)
 }
 
 fn weight_license(file: &GgufFile) -> LicenseClass {

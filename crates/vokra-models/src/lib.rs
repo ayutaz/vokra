@@ -599,11 +599,12 @@ pub mod focalcodec;
 /// decode on CPU and Metal; waveform encode remains an explicit unsupported
 /// operation at the CLI boundary.
 pub mod funcodec;
-/// Native OpenMOSS MOSS-Audio 4B/8B Instruct strict mmap binder.
+/// Native OpenMOSS MOSS-Audio 4B/8B Instruct strict mmap runtime.
 /// The historical public GGUFs are admitted only behind their exact complete
 /// 901-tensor manifests; corrected conversions use the dedicated `moss_audio`
-/// architecture and fixed-revision topology metadata. CPU/Metal execution is
-/// connected in the following implementation slices.
+/// architecture and fixed-revision topology metadata. The frontend, 32-layer
+/// audio tower and four DeepStack adapters execute on CPU/Metal; Qwen3 text
+/// generation remains an explicit unsupported boundary until its next slice.
 pub mod moss_audio;
 /// Strict Full/Nano MOSS Audio Tokenizer binder plus native CPU/Metal decode.
 /// Full keeps its 7 GB artifact mapped and materialises one layer at a time to

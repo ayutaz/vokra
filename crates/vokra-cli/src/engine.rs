@@ -2277,7 +2277,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "moss_audio",
         module: "vokra_models::moss_audio",
-        entry: "MossAudioCheckpoint::from_gguf → MossAudioCheckpoint::respond",
+        entry: "MossAudio::open_mapped → MossAudio::respond (audio tower/DeepStack adapters complete; Qwen3 decode loud-partial)",
         probe: Some(|g: &GgufFile| {
             vokra_models::moss_audio::MossAudioCheckpoint::from_gguf(g).map(|_| ())
         }),

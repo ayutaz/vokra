@@ -5,6 +5,8 @@ use std::sync::Arc;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
 use vokra_core::{Result, VokraError};
 
+use crate::mapped_weights::MappedModel;
+
 use super::MossAudioConfig;
 
 const LABEL: &str = "moss_audio";
@@ -15,6 +17,12 @@ const ADAPTER_COUNT: usize = 4;
 const ADAPTER_WIDTH: usize = 3;
 const TEXT_FIXED_WIDTH: usize = 1;
 const TEXT_LAYER_WIDTH: usize = 11;
+const MAPPED: MappedModel = MappedModel {
+    name: LABEL,
+    // Binding rejects every non-dense tensor before execution. This string is
+    // therefore only an invariant-failure diagnostic inside shared widening.
+    resident_entry: "MossAudioCheckpoint::open_mapped with the official dense F32/F16/BF16 checkpoint",
+};
 
 pub(super) struct MossAudioMappedDescriptors {
     file: Arc<GgufFile>,
@@ -51,6 +59,10 @@ impl MossAudioMappedDescriptors {
 
     pub(super) const fn config(&self) -> MossAudioConfig {
         self.config
+    }
+
+    pub(super) const fn mapped_model(&self) -> MappedModel {
+        MAPPED
     }
 
     fn info(&self, index: usize) -> &GgufTensorInfo {
