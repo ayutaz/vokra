@@ -141,6 +141,9 @@ pub(crate) const KEY_AUDIO_DOWNSAMPLE_HIDDEN_SIZE: &str =
 pub(crate) const KEY_AUDIO_CONV_CHUNKSIZE: &str = "vokra.qwen3_asr.audio.conv_chunksize";
 pub(crate) const KEY_AUDIO_N_WINDOW: &str = "vokra.qwen3_asr.audio.n_window";
 pub(crate) const KEY_AUDIO_N_WINDOW_INFER: &str = "vokra.qwen3_asr.audio.n_window_infer";
+pub(crate) const KEY_AUDIO_LAYER_NORM_EPS: &str = "vokra.qwen3_asr.audio.layer_norm_eps";
+pub(crate) const KEY_AUDIO_ACTIVATION_FUNCTION: &str = "vokra.qwen3_asr.audio.activation_function";
+pub(crate) const KEY_AUDIO_SCALE_EMBEDDING: &str = "vokra.qwen3_asr.audio.scale_embedding";
 
 // -- `vokra.qwen3_asr.*` text-decoder (Qwen3 LM) hparam keys ------------
 pub(crate) const KEY_TEXT_HIDDEN_SIZE: &str = "vokra.qwen3_asr.text.hidden_size";
@@ -835,6 +838,11 @@ fn write_hparams(b: &mut GgufBuilder, axes: &VariantAxes) {
     b.add_u32(KEY_AUDIO_CONV_CHUNKSIZE, axes.audio_conv_chunksize);
     b.add_u32(KEY_AUDIO_N_WINDOW, axes.audio_n_window);
     b.add_u32(KEY_AUDIO_N_WINDOW_INFER, axes.audio_n_window_infer);
+    // `nn.LayerNorm` is constructed without an override in the pinned model
+    // source, so PyTorch's exact default epsilon is part of the graph contract.
+    b.add_f32(KEY_AUDIO_LAYER_NORM_EPS, 1.0e-5);
+    b.add_string(KEY_AUDIO_ACTIVATION_FUNCTION, "gelu");
+    b.add_bool(KEY_AUDIO_SCALE_EMBEDDING, false);
     // Text decoder (Qwen3 LM).
     b.add_u32(KEY_TEXT_HIDDEN_SIZE, axes.text_hidden_size);
     b.add_u32(KEY_TEXT_N_LAYER, axes.text_n_layer);
@@ -942,9 +950,9 @@ mod tests {
         for variant in [Variant::B06, Variant::B17] {
             let axes = variant.axes();
             let builder = metadata_builder(&axes);
-            // 50 explicit Qwen/provenance/frontend entries plus the writer's
+            // 53 explicit Qwen/provenance/frontend entries plus the writer's
             // two unspoofable schema stamp entries (version and producer).
-            assert_eq!(builder.metadata_count(), 52);
+            assert_eq!(builder.metadata_count(), 55);
             let bytes = builder.to_bytes().expect("serialize metadata");
             let file = GgufFile::parse(bytes).expect("parse metadata-only GGUF");
             assert_eq!(
@@ -984,6 +992,21 @@ mod tests {
             assert_eq!(
                 FrontendSpec::from_gguf(&file).expect("frontend metadata"),
                 frontend_spec()
+            );
+            assert_eq!(
+                file.get(KEY_AUDIO_LAYER_NORM_EPS)
+                    .and_then(|value| value.as_f64()),
+                Some(f64::from(1.0e-5_f32))
+            );
+            assert_eq!(
+                file.get(KEY_AUDIO_ACTIVATION_FUNCTION)
+                    .and_then(|value| value.as_str()),
+                Some("gelu")
+            );
+            assert_eq!(
+                file.get(KEY_AUDIO_SCALE_EMBEDDING)
+                    .and_then(|value| value.as_bool()),
+                Some(false)
             );
         }
     }

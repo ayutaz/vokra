@@ -18,14 +18,18 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+mod audio_encoder;
 mod frontend;
 mod weights;
 
+use audio_encoder::Qwen3AsrAudioRuntime;
+pub use audio_encoder::{QWEN3_ASR_AUDIO_HOT_OPS, Qwen3AsrAudioEmbeddings};
 use weights::Qwen3AsrMappedDescriptors;
 
 /// `vokra.model.arch` shared by the two Qwen3-ASR release sizes.
@@ -49,6 +53,9 @@ const KEY_AUDIO_DOWNSAMPLE_HIDDEN_SIZE: &str = "vokra.qwen3_asr.audio.downsample
 const KEY_AUDIO_CONV_CHUNKSIZE: &str = "vokra.qwen3_asr.audio.conv_chunksize";
 const KEY_AUDIO_N_WINDOW: &str = "vokra.qwen3_asr.audio.n_window";
 const KEY_AUDIO_N_WINDOW_INFER: &str = "vokra.qwen3_asr.audio.n_window_infer";
+const KEY_AUDIO_LAYER_NORM_EPS: &str = "vokra.qwen3_asr.audio.layer_norm_eps";
+const KEY_AUDIO_ACTIVATION_FUNCTION: &str = "vokra.qwen3_asr.audio.activation_function";
+const KEY_AUDIO_SCALE_EMBEDDING: &str = "vokra.qwen3_asr.audio.scale_embedding";
 
 const KEY_TEXT_HIDDEN_SIZE: &str = "vokra.qwen3_asr.text.hidden_size";
 const KEY_TEXT_N_LAYER: &str = "vokra.qwen3_asr.text.n_layer";
@@ -163,6 +170,8 @@ impl Qwen3AsrVariant {
                     conv_chunksize: 500,
                     n_window: 50,
                     n_window_infer: 800,
+                    layer_norm_eps: 1.0e-5,
+                    scale_embedding: false,
                 },
                 text: Qwen3AsrTextConfig {
                     hidden_size: 1_024,
@@ -195,6 +204,8 @@ impl Qwen3AsrVariant {
                     conv_chunksize: 500,
                     n_window: 50,
                     n_window_infer: 800,
+                    layer_norm_eps: 1.0e-5,
+                    scale_embedding: false,
                 },
                 text: Qwen3AsrTextConfig {
                     hidden_size: 2_048,
@@ -219,7 +230,7 @@ impl Qwen3AsrVariant {
 }
 
 /// Official audio-tower axes persisted in the GGUF contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Qwen3AsrAudioConfig {
     /// Hidden width of the audio Transformer.
     pub d_model: u32,
@@ -243,6 +254,10 @@ pub struct Qwen3AsrAudioConfig {
     pub n_window: u32,
     /// Inference-time local attention window.
     pub n_window_infer: u32,
+    /// Epsilon of every affine audio LayerNorm.
+    pub layer_norm_eps: f32,
+    /// Whether convolutional embeddings are scaled by `sqrt(d_model)`.
+    pub scale_embedding: bool,
 }
 
 /// Official Qwen3 text-decoder axes persisted in the GGUF contract.
@@ -291,6 +306,7 @@ pub struct Qwen3AsrConfig {
 
 impl Qwen3AsrConfig {
     fn from_gguf(file: &GgufFile) -> Result<Self> {
+        optional_string_value(file, KEY_AUDIO_ACTIVATION_FUNCTION, "gelu")?;
         Ok(Self {
             audio: Qwen3AsrAudioConfig {
                 d_model: required_u32(file, KEY_AUDIO_D_MODEL)?,
@@ -304,6 +320,8 @@ impl Qwen3AsrConfig {
                 conv_chunksize: required_u32(file, KEY_AUDIO_CONV_CHUNKSIZE)?,
                 n_window: required_u32(file, KEY_AUDIO_N_WINDOW)?,
                 n_window_infer: required_u32(file, KEY_AUDIO_N_WINDOW_INFER)?,
+                layer_norm_eps: optional_f32(file, KEY_AUDIO_LAYER_NORM_EPS)?.unwrap_or(1.0e-5),
+                scale_embedding: optional_bool(file, KEY_AUDIO_SCALE_EMBEDDING)?.unwrap_or(false),
             },
             text: Qwen3AsrTextConfig {
                 hidden_size: required_u32(file, KEY_TEXT_HIDDEN_SIZE)?,
@@ -391,6 +409,9 @@ impl Qwen3AsrCheckpoint {
     pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
         let mut checkpoint = Self::from_gguf(&file)?;
         frontend::check_frontend_spec(&file)?;
+        require_string_value(&file, KEY_AUDIO_ACTIVATION_FUNCTION, "gelu")?;
+        require_f32_value(&file, KEY_AUDIO_LAYER_NORM_EPS, 1.0e-5)?;
+        require_bool_value(&file, KEY_AUDIO_SCALE_EMBEDDING, false)?;
         let mapped = Qwen3AsrMappedDescriptors::bind(file, checkpoint.config)?;
         checkpoint.mapped = Some(Arc::new(mapped));
         Ok(checkpoint)
@@ -477,7 +498,8 @@ impl Qwen3AsrCheckpoint {
         })
     }
 
-    /// End-to-end ASR entry point; still explicit until the native graph lands.
+    /// Descriptor-only diagnostic entry point. Use [`Qwen3Asr::encode_audio`]
+    /// for the executable CPU/Metal audio tower.
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -490,12 +512,93 @@ impl Qwen3AsrCheckpoint {
             )));
         }
         Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint and variable-length 128-band log-mel frontend are bound, but native execution still requires the three-convolution audio stem, {}-layer audio Transformer plus projector, 28-layer Qwen3 autoregressive decoder, and embedded Qwen2 BPE vocab/merges. CPU or Metal is never substituted while those pieces remain incomplete.",
+            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint is descriptor-bound; construct Qwen3Asr::open_mapped to run its complete {}-layer CPU/Metal audio tower. End-to-end transcription still requires the 28-layer Qwen3 autoregressive decoder and embedded Qwen2 BPE/chat assets; no backend is silently substituted.",
             self.variant.model_name(),
             self.tensor_count(),
             self.config.audio.n_layer
         )))
     }
+}
+
+/// Executable Qwen3-ASR model with one explicit CPU or Metal backend.
+#[derive(Clone)]
+pub struct Qwen3Asr {
+    checkpoint: Qwen3AsrCheckpoint,
+    backend: BackendKind,
+    audio: Arc<Qwen3AsrAudioRuntime>,
+}
+
+impl std::fmt::Debug for Qwen3Asr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Qwen3Asr")
+            .field("variant", &self.checkpoint.variant())
+            .field("backend", &self.backend)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Qwen3Asr {
+    /// Opens an exact dense GGUF through mmap and preflights the complete audio
+    /// tower on `backend`.
+    pub fn open_mapped(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
+        Self::from_checkpoint(Qwen3AsrCheckpoint::open_mapped(path)?, backend)
+    }
+
+    /// Builds an executable model from a mapped strict checkpoint.
+    pub fn from_checkpoint(checkpoint: Qwen3AsrCheckpoint, backend: BackendKind) -> Result<Self> {
+        checkpoint.mapped()?;
+        let _ = crate::compute::Compute::for_backend(backend, QWEN3_ASR_AUDIO_HOT_OPS)?;
+        Ok(Self {
+            checkpoint,
+            backend,
+            audio: Arc::new(Qwen3AsrAudioRuntime::default()),
+        })
+    }
+
+    /// Selected backend for every learned audio-tower operation.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Authenticated mapped checkpoint.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &Qwen3AsrCheckpoint {
+        &self.checkpoint
+    }
+
+    /// Runs the exact variable-length frontend, convolutional stem,
+    /// 18/24-layer audio Transformer and text-width projector.
+    pub fn encode_audio(&self, pcm: &[f32], sample_rate: u32) -> Result<Qwen3AsrAudioEmbeddings> {
+        validate_audio_input(pcm, sample_rate)?;
+        audio_encoder::encode(&self.checkpoint, self.backend, &self.audio, pcm)
+    }
+
+    /// End-to-end ASR remains explicit until the tokenizer and Qwen3 decode
+    /// loop land; the complete audio tower is independently executable through
+    /// [`Self::encode_audio`].
+    pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
+        validate_audio_input(pcm, sample_rate)?;
+        Err(VokraError::UnsupportedOp(format!(
+            "qwen3_asr transcribe (loud-partial): {} has a complete {:?} audio tower, but end-to-end decoding still requires embedded Qwen2 BPE/chat assets and the 28-layer Qwen3 autoregressive loop; no CPU fallback or fabricated transcript is returned",
+            self.checkpoint.model_name(),
+            self.backend
+        )))
+    }
+}
+
+fn validate_audio_input(pcm: &[f32], sample_rate: u32) -> Result<()> {
+    if pcm.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "qwen3_asr: PCM input is empty".to_owned(),
+        ));
+    }
+    if sample_rate != SAMPLE_RATE {
+        return Err(VokraError::InvalidArgument(format!(
+            "qwen3_asr: sample_rate={sample_rate}, expected {SAMPLE_RATE} Hz"
+        )));
+    }
+    Ok(())
 }
 
 fn required_string<'a>(file: &'a GgufFile, key: &str) -> Result<&'a str> {
@@ -512,6 +615,16 @@ fn require_string_value(file: &GgufFile, key: &str, expected: &str) -> Result<()
         )));
     }
     Ok(())
+}
+
+fn optional_string_value(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match file.get(key) {
+        None => Ok(()),
+        Some(GgufMetadataValue::String(value)) if value == expected => Ok(()),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "qwen3_asr: `{key}`={value:?}, expected string {expected:?}"
+        ))),
+    }
 }
 
 fn required_u32(file: &GgufFile, key: &str) -> Result<u32> {
@@ -536,10 +649,50 @@ fn required_f32(file: &GgufFile, key: &str) -> Result<f32> {
     Ok(value as f32)
 }
 
+fn optional_f32(file: &GgufFile, key: &str) -> Result<Option<f32>> {
+    match file.get(key) {
+        None => Ok(None),
+        Some(value) if value.as_f64().is_some() => required_f32(file, key).map(Some),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "qwen3_asr: `{key}`={value:?}, expected float"
+        ))),
+    }
+}
+
+fn require_f32_value(file: &GgufFile, key: &str, expected: f32) -> Result<()> {
+    let value = required_f32(file, key)?;
+    if value.to_bits() != expected.to_bits() {
+        return Err(VokraError::ModelLoad(format!(
+            "qwen3_asr: `{key}`={value}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
 fn required_bool(file: &GgufFile, key: &str) -> Result<bool> {
     file.get(key)
         .and_then(GgufMetadataValue::as_bool)
         .ok_or_else(|| VokraError::ModelLoad(format!("qwen3_asr: missing/non-bool `{key}`")))
+}
+
+fn optional_bool(file: &GgufFile, key: &str) -> Result<Option<bool>> {
+    match file.get(key) {
+        None => Ok(None),
+        Some(GgufMetadataValue::Bool(value)) => Ok(Some(*value)),
+        Some(value) => Err(VokraError::ModelLoad(format!(
+            "qwen3_asr: `{key}`={value:?}, expected bool"
+        ))),
+    }
+}
+
+fn require_bool_value(file: &GgufFile, key: &str, expected: bool) -> Result<()> {
+    let value = required_bool(file, key)?;
+    if value != expected {
+        return Err(VokraError::ModelLoad(format!(
+            "qwen3_asr: `{key}`={value}, expected {expected}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

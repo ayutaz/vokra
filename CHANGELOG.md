@@ -28,11 +28,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   retain all 612/708 tensor descriptors over a true mmap without widening the
   checkpoint, rejects missing/drifted frontend metadata on that executable
   path, and implements the official variable-length log-mel and chunked
-  three-stride length transform. The CLI now reports
+  three-stride length transform. The complete three-layer Conv2D stem,
+  18/24-layer bidirectional audio Transformer and projector now execute through
+  one preflighted CPU or Metal `Compute` backend; Conv2D lowers to im2col plus
+  the existing GEMM kernel and all attention/normalization/activation hot ops
+  are backend-dispatched without per-op fallback. The CLI now reports
   the model-specific bound route instead of claiming that no runtime exists,
   while end-to-end transcription remains an explicit unsupported operation
-  naming the missing convolution/audio-Transformer/Qwen3/BPE pieces. Neither CPU
-  nor Metal completion or real-weight parity is claimed by this binder wave.
+  naming the missing Qwen3/BPE pieces. Full-model completion and real-weight
+  CPU/Metal parity are not claimed by this audio-tower wave.
 - The strict canonical SpeechT5 TTS artifact now has a complete native
   text-to-mel runtime: 12-layer relative-position text encoder, cached
   six-layer autoregressive speech decoder with always-on seeded prenet

@@ -73,6 +73,10 @@ impl Qwen3AsrMappedDescriptors {
         self.config
     }
 
+    pub(super) const fn mapped_model(&self) -> MappedModel {
+        MAPPED
+    }
+
     pub(super) fn convolution(&self, index: usize) -> Qwen3AsrConvDescriptors<'_> {
         debug_assert!((1..=3).contains(&index));
         let start = (index - 1) * 2;

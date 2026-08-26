@@ -8,7 +8,7 @@
 > 1.7B manifest
 > (`9136bf1de42a3248fb1ea55877dced6113a8b1e5a98fcae08b01b67f10a523ee`,
 > public revision `7d160c2a319bfd2bf4b35274ba52af12b302ed62`). The new runtime
-> binder validates those manifests, all 26 converter-stamped topology axes,
+> binder validates those manifests and all 26 historical topology axes,
 > exact upstream repositories and permissive provenance without decoding
 > tensor payloads. The converter now accepts the official 0.6B single
 > safetensors file and 1.7B HF shard index directly, rejects any manifest,
@@ -19,13 +19,18 @@
 > retains and type-checks all 612/708 descriptors without widening payloads;
 > that executable path rejects missing or drifted frontend metadata. The exact
 > variable-length log-mel stage and official 100-frame chunked three-stride
-> output-length transform are implemented. This source route is staged but has not converted either
+> output-length transform are implemented. New conversions also stamp the
+> fixed GELU, PyTorch LayerNorm epsilon and disabled embedding-scale contract.
+> The complete Conv2D stem, 18/24-layer bidirectional audio Transformer and
+> projector now run through a whole-stage CPU/Metal hot-op preflight; Conv2D is
+> lowered to im2col + backend GEMM and there is no per-op CPU fallback. This
+> source route is staged but has not converted either
 > multi-gigabyte release on the maintainer Mac. End-to-end ASR remains an
 > explicit `UnsupportedOp` naming
-> the missing convolutional stem, 18/24-layer audio Transformer,
-> projector, 28-layer Qwen3 decode loop and Qwen2 BPE assets. The two public
+> the missing 28-layer Qwen3 decode loop and Qwen2 BPE/chat assets. The two public
 > repositories therefore move only from `no-runtime-binder` to `partial`;
-> neither CPU nor Metal completion or real-weight parity is claimed. No model
+> repositories remain partial: the audio tower has CPU/Metal code reachability,
+> but full-model completion and real-weight parity are not claimed. No model
 > conversion or inference ran on the maintainer Mac.
 
 > **2026-08-26 SpeechT5 runtime wave:** the strict converter and runtime now
