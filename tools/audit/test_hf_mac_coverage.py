@@ -71,6 +71,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "metricgan_plus",
             "frcrn",
             "miocodec",
+            "moss_audio_tokenizer",
             "musicgen",
             "tiger_separator",
             "deepfake_detection",
@@ -98,6 +99,24 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         musicgen_small = audit.RepoRecord(
             "vokra/musicgen-small", "abc", ("model.gguf",), "musicgen"
+        )
+        moss_full = audit.RepoRecord(
+            "vokra/moss-audio-tokenizer",
+            "abc",
+            ("moss-audio-tokenizer-full.gguf",),
+            "moss_audio_tokenizer",
+        )
+        moss_nano = audit.RepoRecord(
+            "vokra/moss-audio-tokenizer-nano",
+            "abc",
+            ("moss-audio-tokenizer-nano.gguf",),
+            "moss_audio_tokenizer",
+        )
+        corrected_moss_nano = audit.RepoRecord(
+            "vokra/moss-audio-tokenizer-nano-corrected",
+            "abc",
+            ("moss-audio-tokenizer-nano.gguf",),
+            "moss_audio_tokenizer",
         )
         musicgen_medium = audit.RepoRecord(
             "vokra/musicgen-medium", "abc", ("model.gguf",), "musicgen"
@@ -214,6 +233,20 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(moss_full, routed, bound).cpu_code, "partial")
+        self.assertEqual(
+            audit.classify(moss_full, routed, bound).metal_code, "blocked-by-cpu"
+        )
+        self.assertEqual(audit.classify(moss_nano, routed, bound).cpu_code, "partial")
+        self.assertEqual(
+            audit.classify(moss_nano, routed, bound).metal_code, "blocked-by-cpu"
+        )
+        self.assertEqual(
+            audit.classify(corrected_moss_nano, routed, bound).cpu_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(corrected_moss_nano, routed, bound).metal_code, "full"
+        )
         self.assertEqual(audit.classify(musicgen_medium, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(audiogen_medium, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")

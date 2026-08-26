@@ -53,6 +53,19 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/moss-audio-tokenizer": (
+        "partial",
+        "the exact 1,600-tensor Full checkpoint is strictly bound, but its distinct "
+        "24 kHz mono 32-quantizer decoder is not implemented; substituting the Nano "
+        "48 kHz stereo graph or falling back to CPU is forbidden",
+    ),
+    "vokra/moss-audio-tokenizer-nano": (
+        "partial",
+        "the exact 374-tensor Nano checkpoint has a native CPU/Metal decode route, but "
+        "the live GGUF incorrectly stamps Full name, variant and upstream provenance; "
+        "the manifest-scoped legacy repair remains visible pending an authorized "
+        "correctly stamped replacement",
+    ),
     "vokra/audiogen-medium": (
         "partial",
         "the authenticated legacy LM-only artifact has a native CPU/Metal raw-code route, "
@@ -162,6 +175,7 @@ METAL_CODE_ARCHES = {
     "metricgan_plus",
     "mimi",
     "miocodec",
+    "moss_audio_tokenizer",
     "musicgen",
     "mp_senet",
     "moshi",
