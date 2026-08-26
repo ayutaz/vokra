@@ -397,6 +397,41 @@ impl Conv1d {
         })
     }
 
+    fn load_plain(
+        file: &GgufFile,
+        prefix: &str,
+        in_channels: usize,
+        out_channels: usize,
+        kernel: usize,
+        dilation: usize,
+        padding: usize,
+    ) -> Result<Self> {
+        let weight = tensor(file, &format!("{prefix}.weight"))?;
+        let bias = tensor(file, &format!("{prefix}.bias"))?;
+        let expected_weight = out_channels
+            .checked_mul(in_channels)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!("dac: `{prefix}.weight` shape overflows usize"))
+            })?;
+        if weight.len() != expected_weight || bias.len() != out_channels {
+            return Err(VokraError::ModelLoad(format!(
+                "dac: plain conv `{prefix}` buffers are weight={} bias={}, expected {expected_weight} and {out_channels}",
+                weight.len(),
+                bias.len()
+            )));
+        }
+        Ok(Self {
+            weight,
+            bias,
+            in_channels,
+            out_channels,
+            kernel,
+            dilation,
+            padding,
+        })
+    }
+
     fn forward(
         &self,
         ops: &impl HifiGanBackendOps,
@@ -445,6 +480,40 @@ impl ConvTranspose1d {
         Ok(Self {
             weight,
             bias: tensor(file, &format!("{prefix}.bias"))?,
+            in_channels,
+            out_channels,
+            kernel,
+            stride,
+            padding: stride.div_ceil(2),
+        })
+    }
+
+    fn load_plain(
+        file: &GgufFile,
+        prefix: &str,
+        in_channels: usize,
+        out_channels: usize,
+        stride: usize,
+    ) -> Result<Self> {
+        let kernel = 2 * stride;
+        let weight = tensor(file, &format!("{prefix}.weight"))?;
+        let bias = tensor(file, &format!("{prefix}.bias"))?;
+        let expected_weight = in_channels
+            .checked_mul(out_channels)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::ModelLoad(format!("dac: `{prefix}.weight` shape overflows usize"))
+            })?;
+        if weight.len() != expected_weight || bias.len() != out_channels {
+            return Err(VokraError::ModelLoad(format!(
+                "dac: plain transposed conv `{prefix}` buffers are weight={} bias={}, expected {expected_weight} and {out_channels}",
+                weight.len(),
+                bias.len()
+            )));
+        }
+        Ok(Self {
+            weight,
+            bias,
             in_channels,
             out_channels,
             kernel,
@@ -528,6 +597,31 @@ impl ResidualUnit {
         })
     }
 
+    fn load_plain(file: &GgufFile, prefix: &str, channels: usize, dilation: usize) -> Result<Self> {
+        Ok(Self {
+            first_snake: Snake::load(file, &format!("{prefix}.snake1.alpha"), channels)?,
+            first_conv: Conv1d::load_plain(
+                file,
+                &format!("{prefix}.conv1"),
+                channels,
+                channels,
+                7,
+                dilation,
+                3 * dilation,
+            )?,
+            second_snake: Snake::load(file, &format!("{prefix}.snake2.alpha"), channels)?,
+            second_conv: Conv1d::load_plain(
+                file,
+                &format!("{prefix}.conv2"),
+                channels,
+                channels,
+                1,
+                1,
+                0,
+            )?,
+        })
+    }
+
     fn forward(
         &self,
         compute: &Compute,
@@ -585,6 +679,30 @@ impl DecoderBlock {
         })
     }
 
+    fn load_plain(
+        file: &GgufFile,
+        prefix: &str,
+        in_channels: usize,
+        out_channels: usize,
+        stride: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            snake: Snake::load(file, &format!("{prefix}.snake1.alpha"), in_channels)?,
+            upsample: ConvTranspose1d::load_plain(
+                file,
+                &format!("{prefix}.conv_t1"),
+                in_channels,
+                out_channels,
+                stride,
+            )?,
+            residuals: [
+                ResidualUnit::load_plain(file, &format!("{prefix}.res_unit1"), out_channels, 1)?,
+                ResidualUnit::load_plain(file, &format!("{prefix}.res_unit2"), out_channels, 3)?,
+                ResidualUnit::load_plain(file, &format!("{prefix}.res_unit3"), out_channels, 9)?,
+            ],
+        })
+    }
+
     fn forward(
         &self,
         compute: &Compute,
@@ -618,14 +736,32 @@ pub struct DacDecoder {
 
 impl DacDecoder {
     fn load(file: &GgufFile, variant: DacVariant) -> Result<Self> {
-        let pre = Conv1d::load(file, "decoder.model.0", LATENT_DIM, DECODER_DIM, 7, 1, 3)?;
+        Self::load_weight_norm(file, "", variant.decoder_rates())
+    }
+
+    /// Binds a weight-normalized 44.1 kHz DAC decoder nested under a composite
+    /// checkpoint prefix (Parler Mini v1 uses `audio_encoder.model.`).
+    pub(crate) fn load_prefixed_weight_norm_44khz(file: &GgufFile, prefix: &str) -> Result<Self> {
+        Self::load_weight_norm(file, prefix, &[8, 8, 4, 2])
+    }
+
+    fn load_weight_norm(file: &GgufFile, prefix: &str, rates: &[usize; 4]) -> Result<Self> {
+        let pre = Conv1d::load(
+            file,
+            &format!("{prefix}decoder.model.0"),
+            LATENT_DIM,
+            DECODER_DIM,
+            7,
+            1,
+            3,
+        )?;
         let mut blocks = Vec::with_capacity(4);
-        for (stage, &stride) in variant.decoder_rates().iter().enumerate() {
+        for (stage, &stride) in rates.iter().enumerate() {
             let in_channels = DECODER_DIM >> stage;
             let out_channels = in_channels / 2;
             blocks.push(DecoderBlock::load(
                 file,
-                &format!("decoder.model.{}.block", stage + 1),
+                &format!("{prefix}decoder.model.{}.block", stage + 1),
                 in_channels,
                 out_channels,
                 stride,
@@ -634,12 +770,68 @@ impl DacDecoder {
         Ok(Self {
             pre,
             blocks,
-            post_snake: Snake::load(file, "decoder.model.5.alpha", DECODER_DIM / 16)?,
-            post: Conv1d::load(file, "decoder.model.6", DECODER_DIM / 16, 1, 7, 1, 3)?,
+            post_snake: Snake::load(
+                file,
+                &format!("{prefix}decoder.model.5.alpha"),
+                DECODER_DIM / 16,
+            )?,
+            post: Conv1d::load(
+                file,
+                &format!("{prefix}decoder.model.6"),
+                DECODER_DIM / 16,
+                1,
+                7,
+                1,
+                3,
+            )?,
         })
     }
 
-    fn forward_with_compute(&self, features: &[f32], compute: &Compute) -> Result<Vec<f32>> {
+    /// Binds the plain-convolution Transformers DAC decoder nested in Parler
+    /// Mini Multilingual v1.1 (`audio_encoder.decoder.*`).
+    pub(crate) fn load_plain_transformers_44khz(file: &GgufFile, prefix: &str) -> Result<Self> {
+        let pre = Conv1d::load_plain(
+            file,
+            &format!("{prefix}.conv1"),
+            LATENT_DIM,
+            DECODER_DIM,
+            7,
+            1,
+            3,
+        )?;
+        let mut blocks = Vec::with_capacity(4);
+        for (stage, &stride) in [8usize, 8, 4, 2].iter().enumerate() {
+            let in_channels = DECODER_DIM >> stage;
+            let out_channels = in_channels / 2;
+            blocks.push(DecoderBlock::load_plain(
+                file,
+                &format!("{prefix}.block.{stage}"),
+                in_channels,
+                out_channels,
+                stride,
+            )?);
+        }
+        Ok(Self {
+            pre,
+            blocks,
+            post_snake: Snake::load(file, &format!("{prefix}.snake1.alpha"), DECODER_DIM / 16)?,
+            post: Conv1d::load_plain(
+                file,
+                &format!("{prefix}.conv2"),
+                DECODER_DIM / 16,
+                1,
+                7,
+                1,
+                3,
+            )?,
+        })
+    }
+
+    pub(crate) fn forward_with_compute(
+        &self,
+        features: &[f32],
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
         if features.is_empty() || !features.len().is_multiple_of(LATENT_DIM) {
             return Err(VokraError::InvalidArgument(format!(
                 "dac decoder: channel-major feature length {} must be a positive multiple of {LATENT_DIM}",

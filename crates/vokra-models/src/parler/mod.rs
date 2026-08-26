@@ -7,15 +7,18 @@
 //! metadata or silently fetch the DAC that older converter documentation
 //! described as external.
 //!
-//! The English release carries nine separate LM heads and the Transformers
-//! DAC layout; multilingual v1.1 carries one fused LM head and the newer
-//! Descript DAC layout. Those are authenticated release differences, not
-//! runtime heuristics. The shared text/LM portion is executable here; the two
-//! embedded DAC layouts are bound by the sibling codec slice before synthesis
-//! is exposed as a complete public operation.
+//! The English release carries nine separate LM heads and the older
+//! weight-normalized Descript DAC layout; multilingual v1.1 carries one fused
+//! LM head and the plain-convolution Transformers DAC layout. Those are
+//! authenticated release differences, not
+//! runtime heuristics. The shared text/LM path and both embedded DAC layouts
+//! execute end to end on CPU or Metal; an uncovered backend fails the complete
+//! op set before resident weights are decoded.
 
+mod codec;
 mod generation;
 
+pub use codec::ParlerSynthesis;
 pub use generation::{ParlerGeneratedCodes, ParlerGenerationConfig};
 
 use std::path::Path;
@@ -29,6 +32,8 @@ use crate::audiocraft_lm::{AudioCraftLmConfig, AudioCraftLmDecoder};
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 use crate::t5_encoder::{FLAN_T5_LARGE_CONFIG, T5Encoder};
+
+use self::codec::EmbeddedDac;
 
 /// GGUF architecture shared by both releases.
 pub const ARCH: &str = "parler_tts";
@@ -67,6 +72,21 @@ pub const PARLER_LM_HOT_OPS: &[HotOp] = &[
     HotOp::GeluNew,
     HotOp::LayerNorm,
     HotOp::Gelu,
+];
+
+/// Complete learned-op set for end-to-end Parler code generation and embedded
+/// DAC waveform synthesis.
+pub const PARLER_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::RmsNorm,
+    HotOp::GeluNew,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+    HotOp::DacRvq,
+    HotOp::Conv1d,
+    HotOp::SnakeActivation,
 ];
 
 const KEY_VARIANT: &str = "vokra.parler.variant";
@@ -203,7 +223,7 @@ impl ParlerVariant {
     }
 }
 
-/// Strictly authenticated shared text/LM portion of one public Parler GGUF.
+/// Strictly authenticated end-to-end model from one public Parler GGUF.
 #[derive(Debug)]
 pub struct ParlerModel {
     file: Arc<GgufFile>,
@@ -213,6 +233,7 @@ pub struct ParlerModel {
     prompt_embedding: GgufTensorInfo,
     text_encoder: T5Encoder,
     decoder: AudioCraftLmDecoder,
+    codec: EmbeddedDac,
 }
 
 impl ParlerModel {
@@ -254,7 +275,7 @@ impl ParlerModel {
                 checkpoint.weight_license()
             )));
         }
-        let _ = Compute::for_backend(backend, PARLER_LM_HOT_OPS)?;
+        let _ = Compute::for_backend(backend, PARLER_HOT_OPS)?;
 
         let prompt_embedding = exact_f32_info(
             &file,
@@ -270,6 +291,7 @@ impl ParlerModel {
             backend,
             variant.fused_lm_heads(),
         )?;
+        let codec = EmbeddedDac::bind(&file, variant, backend)?;
 
         debug_assert_eq!(checkpoint.model_name(), variant.model_name());
         debug_assert_eq!(checkpoint.tensor_count(), variant.tensor_count());
@@ -281,6 +303,7 @@ impl ParlerModel {
             prompt_embedding,
             text_encoder,
             decoder,
+            codec,
         })
     }
 
@@ -344,6 +367,10 @@ impl ParlerModel {
 
     pub(super) const fn decoder(&self) -> &AudioCraftLmDecoder {
         &self.decoder
+    }
+
+    pub(super) const fn codec(&self) -> &EmbeddedDac {
+        &self.codec
     }
 }
 
@@ -502,6 +529,9 @@ mod tests {
             HotOp::Gelu,
         ] {
             assert!(PARLER_LM_HOT_OPS.contains(&required));
+        }
+        for required in [HotOp::DacRvq, HotOp::Conv1d, HotOp::SnakeActivation] {
+            assert!(PARLER_HOT_OPS.contains(&required));
         }
     }
 }
