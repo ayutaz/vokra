@@ -874,6 +874,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsParler => {
+            return Err(
+                "bench: arch `parler_tts` needs two explicit tokenizer outputs and has content-dependent delayed generation; use `vokra-cli run --model <parler-mini.gguf> --parler-description-token-ids <ids> --parler-prompt-token-ids <ids> [--parler-max-frames <N>] [--parler-seed <u64>] --output <out.wav>` (FR-EX-08: refusing to fabricate either prompt or a duration denominator)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input

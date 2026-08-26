@@ -78,6 +78,10 @@ USAGE:
                   [--output <clean.wav>]
     vokra-cli run --model <ct-punc.gguf> --tokens <tokens.tsv> [--output <restored.txt>]
     vokra-cli run --model <bert-family.gguf> --token-ids <u32,u32,...> [--output <hidden.f32>]
+    vokra-cli run --model <parler-mini.gguf> \
+                  --parler-description-token-ids <u32,u32,...> \
+                  --parler-prompt-token-ids <u32,u32,...> \
+                  [--parler-max-frames <N>] [--parler-seed <u64>] [--output <out.wav>]
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
@@ -294,6 +298,17 @@ OPTIONS:
                                 Bark/Bark Small only: semantic generation cap
                                 in 1..=768 [default 768]. EOS may stop earlier.
     --bark-seed <u64>           Bark/Bark Small sampling seed [default 0].
+    --parler-description-token-ids <ids>
+                                Parler-TTS only, REQUIRED: exact FLAN-T5
+                                description token ids. No tokenizer, padding,
+                                or unknown-token substitution is inferred.
+    --parler-prompt-token-ids <ids>
+                                Parler-TTS only, REQUIRED: exact direct-prompt
+                                token ids for the text to speak. This is a
+                                distinct vocabulary from the description.
+    --parler-max-frames <N>     Parler-TTS only: positive 44.1 kHz DAC-frame
+                                cap. Defaults to the release generation config.
+    --parler-seed <u64>         Parler-TTS sampling seed [default 0].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -479,6 +494,14 @@ struct RunArgs {
     bark_max_semantic_tokens: Option<usize>,
     /// Bark-only deterministic sampler seed. `None` means zero.
     bark_seed: Option<u64>,
+    /// Parler-only FLAN-T5 description token ids.
+    parler_description_token_ids: Option<String>,
+    /// Parler-only direct prompt-embedding token ids.
+    parler_prompt_token_ids: Option<String>,
+    /// Parler-only generated DAC frame cap.
+    parler_max_frames: Option<usize>,
+    /// Parler-only deterministic sampler seed. `None` means zero.
+    parler_seed: Option<u64>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -639,6 +662,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut music_seed: Option<u64> = None;
     let mut bark_max_semantic_tokens: Option<usize> = None;
     let mut bark_seed: Option<u64> = None;
+    let mut parler_description_token_ids: Option<String> = None;
+    let mut parler_prompt_token_ids: Option<String> = None;
+    let mut parler_max_frames: Option<usize> = None;
+    let mut parler_seed: Option<u64> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
@@ -806,6 +833,46 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     value
                         .parse::<u64>()
                         .map_err(|error| format!("--bark-seed must be u64: {error}"))?,
+                );
+                i += 2;
+            }
+            "--parler-description-token-ids" => {
+                parler_description_token_ids = Some(
+                    args.get(i + 1)
+                        .ok_or(
+                            "--parler-description-token-ids requires a comma-separated u32 list",
+                        )?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--parler-prompt-token-ids" => {
+                parler_prompt_token_ids = Some(
+                    args.get(i + 1)
+                        .ok_or("--parler-prompt-token-ids requires a comma-separated u32 list")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--parler-max-frames" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--parler-max-frames requires a positive integer")?;
+                let frames = value
+                    .parse::<usize>()
+                    .map_err(|error| format!("--parler-max-frames must be an integer: {error}"))?;
+                if frames == 0 {
+                    return Err("--parler-max-frames must be positive".to_owned());
+                }
+                parler_max_frames = Some(frames);
+                i += 2;
+            }
+            "--parler-seed" => {
+                let value = args.get(i + 1).ok_or("--parler-seed requires a value")?;
+                parler_seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| format!("--parler-seed must be u64: {error}"))?,
                 );
                 i += 2;
             }
@@ -1058,6 +1125,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         music_seed,
         bark_max_semantic_tokens,
         bark_seed,
+        parler_description_token_ids,
+        parler_prompt_token_ids,
+        parler_max_frames,
+        parler_seed,
         codec_mode,
         num_quantizers,
         bandwidth_id,
@@ -1191,7 +1262,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::VocoderVocos
         | ModelTask::AecNkf
         | ModelTask::MusicGeneration
-        | ModelTask::TtsBark => None,
+        | ModelTask::TtsBark
+        | ModelTask::TtsParler => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -1317,6 +1389,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     {
         return Err(
             "run: --bark-max-semantic-tokens / --bark-seed are only supported for the bark arch"
+                .to_owned(),
+        );
+    }
+    if (a.parler_description_token_ids.is_some()
+        || a.parler_prompt_token_ids.is_some()
+        || a.parler_max_frames.is_some()
+        || a.parler_seed.is_some())
+        && task != ModelTask::TtsParler
+    {
+        return Err(
+            "run: --parler-description-token-ids / --parler-prompt-token-ids / \
+             --parler-max-frames / --parler-seed are only supported for the parler_tts arch"
                 .to_owned(),
         );
     }
@@ -1647,6 +1731,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsBark => {
             run_bark(&a)?;
+        }
+        ModelTask::TtsParler => {
+            run_parler(&a)?;
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
@@ -3314,6 +3401,63 @@ fn run_bark(a: &RunArgs) -> Result<(), String> {
     emit_audio(
         "bark",
         &synthesis.pcm,
+        synthesis.sample_rate,
+        a.output.as_deref(),
+    )
+}
+
+/// Public Parler-TTS Mini English/Multilingual explicit two-tokenizer path.
+///
+/// Neither public GGUF embeds the FLAN-T5 description tokenizer nor the
+/// release-specific prompt tokenizer. The two streams therefore have distinct
+/// required flags and are never inferred from raw text or from each other.
+fn run_parler(a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some()
+        || a.text.is_some()
+        || a.tokens.is_some()
+        || a.token_ids.is_some()
+        || a.music_unconditional_token_ids.is_some()
+        || a.music_frames.is_some()
+        || a.music_seed.is_some()
+        || a.bark_max_semantic_tokens.is_some()
+        || a.bark_seed.is_some()
+    {
+        return Err(
+            "run (Parler-TTS): use explicit --parler-description-token-ids and \
+             --parler-prompt-token-ids; raw/input/generic/MusicGen/Bark prompt flags are not \
+             accepted because the public GGUF has two distinct tokenizer boundaries"
+                .to_owned(),
+        );
+    }
+    let description = parse_comma_u32_ids(
+        a.parler_description_token_ids
+            .as_deref()
+            .ok_or("run (Parler-TTS): --parler-description-token-ids <u32,u32,...> is required")?,
+        "Parler-TTS description",
+        "--parler-description-token-ids",
+    )?;
+    let prompt = parse_comma_u32_ids(
+        a.parler_prompt_token_ids
+            .as_deref()
+            .ok_or("run (Parler-TTS): --parler-prompt-token-ids <u32,u32,...> is required")?,
+        "Parler-TTS prompt",
+        "--parler-prompt-token-ids",
+    )?;
+    let model = vokra_models::parler::ParlerModel::open_mapped_with_backend(&a.model, a.backend)
+        .map_err(|error| format!("run (Parler-TTS bind): {error}"))?;
+    let mut generation = vokra_models::parler::ParlerGenerationConfig::official(
+        model.variant(),
+        a.parler_seed.unwrap_or(0),
+    );
+    if let Some(max_frames) = a.parler_max_frames {
+        generation.max_frames = max_frames;
+    }
+    let synthesis = model
+        .synthesize(&description, None, &prompt, &generation)
+        .map_err(|error| format!("run (Parler-TTS generate): {error}"))?;
+    emit_audio(
+        "parler-tts",
+        &synthesis.samples,
         synthesis.sample_rate,
         a.output.as_deref(),
     )
@@ -6376,6 +6520,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_explicit_parler_two_tokenizer_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "parler-mini.gguf",
+            "--parler-description-token-ids",
+            "71,1234,1",
+            "--parler-prompt-token-ids",
+            "12,34,1",
+            "--parler-max-frames",
+            "128",
+            "--parler-seed",
+            "42",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("Parler explicit input flags parse");
+        assert_eq!(
+            parsed.parler_description_token_ids.as_deref(),
+            Some("71,1234,1")
+        );
+        assert_eq!(parsed.parler_prompt_token_ids.as_deref(), Some("12,34,1"));
+        assert_eq!(parsed.parler_max_frames, Some(128));
+        assert_eq!(parsed.parler_seed, Some(42));
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "parler-mini.gguf",
+                "--parler-max-frames",
+                "0",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn parse_accepts_explicit_moss_tts_companion_contract() {
         let parsed = parse_args(&args(&[
             "--model",
@@ -8136,6 +8315,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::Tts), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::TtsParler), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);

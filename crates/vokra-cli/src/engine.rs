@@ -119,6 +119,14 @@ pub(crate) enum ModelTask {
     /// not embed a tokenizer, so the concrete CLI surface accepts token ids
     /// rather than silently guessing a raw-text frontend.
     TtsBark,
+    /// Parler-TTS Mini English/Multilingual explicit description/prompt-token
+    /// generation through the embedded 44.1 kHz DAC.
+    ///
+    /// The dispatch returns a bare session so the run arm owns one mmap-backed
+    /// strict composite checkpoint while FLAN-T5, the delayed LM and the
+    /// variant-specific DAC execute on one selected backend. Neither public
+    /// GGUF embeds its two tokenizer assets, so both token streams are explicit.
+    TtsParler,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -536,6 +544,8 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 const ARCH_MUSICGEN: &str = "musicgen";
 /// Suno Bark / Bark Small hierarchical TTS family.
 const ARCH_BARK: &str = "bark";
+/// Parler-TTS Mini English/Multilingual composite family.
+const ARCH_PARLER_TTS: &str = "parler_tts";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1610,6 +1620,31 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::TtsBark))
         }
+        ARCH_PARLER_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_PARLER_TTS}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_PARLER_TTS}` is missing `vokra.model.name`; refusing English/Multilingual topology inference"
+                    )
+                })?;
+            let english = vokra_models::parler::ParlerVariant::MiniV1English.model_name();
+            let multilingual =
+                vokra_models::parler::ParlerVariant::MiniMultilingualV11.model_name();
+            if name != english && name != multilingual {
+                return Err(format!(
+                    "arch `{ARCH_PARLER_TTS}` carries unknown model name `{name}`; expected `{english}` or `{multilingual}`"
+                ));
+            }
+            Ok((session, ModelTask::TtsParler))
+        }
         ARCH_MOSS_TTS => {
             if hint.is_some() {
                 return Err(format!(
@@ -2506,6 +2541,47 @@ mod tests {
         ));
         std::fs::write(&path, &bytes).unwrap();
         let error = load_session(path.to_str().unwrap()).expect_err("foreign Bark name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_parler_releases_to_tts() {
+        for variant in [
+            vokra_models::parler::ParlerVariant::MiniV1English,
+            vokra_models::parler::ParlerVariant::MiniMultilingualV11,
+        ] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_PARLER_TTS);
+            builder.add_string(
+                vokra_core::gguf::chunks::KEY_MODEL_NAME,
+                variant.model_name(),
+            );
+            let bytes = builder.to_bytes().expect("serialize Parler route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-{}-arch-{}.gguf",
+                variant.model_name(),
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named Parler session builds (bare)");
+            assert_eq!(task, ModelTask::TtsParler);
+        }
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_PARLER_TTS);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "parler-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Parler GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-parler-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Parler name rejects");
         let _ = std::fs::remove_file(&path);
         assert!(error.contains("unknown model name"));
     }
