@@ -425,9 +425,11 @@ pub mod pyannote_speaker_diarization_3_1;
 // `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
 // (talker.* + code_predictor.*) plus README.md (speaker encoder
 // 24 kHz / 1024-dim). Distinct arch tag from CosyVoice2/3 because
-// Qwen3-TTS is codec-LM not vocoder-LM — the terminal step is
-// qwen3_tts_codec, NOT HiFTChain.
+// Qwen3-TTS is codec-LM not vocoder-LM: the LM emits sixteen code rows and
+// the separately authenticated tokenizer decoder produces PCM. HiFTChain is
+// not compatible, and qwen3_tts_codec alone is only the code-layout seam.
 pub(crate) mod qwen3_tts;
+pub(crate) mod qwen3_tts_tokenizer_12hz;
 // SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
 // (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
 // default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of

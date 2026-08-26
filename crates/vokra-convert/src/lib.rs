@@ -475,25 +475,32 @@ pub enum ModelKind {
     /// `text_hidden_size=2048`) plus a **5-layer code-predictor
     /// parallel head** (same GQA / RoPE / RMSNorm axes,
     /// 2048-per-codebook acoustic vocab, emits **16 codebook rows per
-    /// step**) plus the shared **Qwen3-TTS-Codec** seam
-    /// (`vokra_ops::qwen3_tts_codec` — 16-quantizer semantic +
-    /// acoustic split RVQ at 12.5 Hz output rate, 24 kHz PCM).
+    /// step**) plus the shared **Qwen3-TTS code-layout** seam
+    /// (`vokra_ops::qwen3_tts_codec` — validation and feature folding
+    /// for the 16-quantizer semantic + acoustic split at 12.5 Hz).
     /// Speaker encoder: 24 kHz sample rate, 1024-dim embedding.
     /// Every hparam transcribed verbatim from
     /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
     /// (`talker.*` / `code_predictor.*`) plus `README.md` (speaker
     /// encoder axes). Distinct arch tag from CosyVoice2/3 because
-    /// Qwen3-TTS is **codec-LM**, not vocoder-LM — the terminal step
-    /// is `qwen3_tts_codec`, NOT `HiFTChain`; silently sharing either
-    /// sibling's arch tag would mis-route the runtime dispatch. Reuses
-    /// the existing `qwen3_tts_codec` primitive (SoTA plan Phase 3 TTS
-    /// codec op) — no new op or backend kernel is added by this model.
+    /// Qwen3-TTS is **codec-LM**, not vocoder-LM. Its LM emits the code
+    /// matrix validated by `qwen3_tts_codec`, while terminal PCM requires
+    /// the separately authenticated [`Self::Qwen3TtsTokenizer12Hz`] neural
+    /// decoder; it is not a `HiFTChain` route. Sharing either sibling's arch
+    /// tag would therefore mis-route runtime dispatch.
     /// The upstream release is BF16 (1,829,344,272 bytes at the pinned
     /// revision). BF16 passes through verbatim as GGUF type 30. Convert with
     /// [`convert_qwen3_tts_file`] — the converter takes no config side-car and
     /// authenticates the exact 478-tensor Base versus 402-tensor CustomVoice
     /// manifest before selecting metadata and provenance.
     Qwen3Tts,
+    /// Official **Qwen3-TTS-Tokenizer-12Hz** waveform decoder companion.
+    /// The source checkpoint contains 496 F32 tensors (225 encoder + 271
+    /// decoder). Vokra authenticates the complete immutable artifact and
+    /// emits only the 271 tensors needed to turn Qwen3-TTS's sixteen 12.5 Hz
+    /// codebook rows into 24 kHz PCM. Apache-2.0; distinct arch tag from the
+    /// main codec LM because this is the neural code-to-wave decoder.
+    Qwen3TtsTokenizer12Hz,
     /// Alibaba **Qwen3-TTS-12Hz-1.7B-Base** safetensors checkpoint
     /// (extension of Phase 3, added 2026-08-01, Wave 4). **Apache-2.0
     /// end-to-end** — same license posture as every 1.7B sibling. The
@@ -4092,6 +4099,11 @@ impl ModelKind {
             | "qwen3-tts-12hz-0_6b-customvoice"
             | "qwen3-tts-12hz-0.6b-custom-voice"
             | "qwen/qwen3-tts-12hz-0.6b-customvoice" => Some(Self::Qwen3Tts),
+            "qwen3-tts-tokenizer-12hz"
+            | "qwen3_tts_tokenizer_12hz"
+            | "qwen3-tts-12hz-tokenizer"
+            | "qwen3-tts-code2wav"
+            | "qwen/qwen3-tts-tokenizer-12hz" => Some(Self::Qwen3TtsTokenizer12Hz),
             // OpenBMB VoxCPM family — canonical HF releases + arch-tag
             // spellings + common short forms. Both `openbmb/VoxCPM-0.5B`
             // and `openbmb/VoxCPM2` (2B scale-up, land 2026-07-30 —
@@ -5815,6 +5827,7 @@ impl ModelKind {
             Self::ChatterboxTurbo => "chatterbox-turbo",
             Self::ChatterboxNano => "chatterbox-nano",
             Self::Qwen3Tts => "qwen3-tts",
+            Self::Qwen3TtsTokenizer12Hz => "qwen3-tts-tokenizer-12hz",
             Self::VoxCpm2 => "voxcpm",
             Self::VibeVoice => "vibevoice",
             Self::VibeVoiceRealtime => "vibevoice-realtime",
@@ -7516,6 +7529,16 @@ pub fn convert_file_licensed(
                     .iter()
                     .map(|n| format!("qwen3-tts warning: {n}")),
             );
+            (builder, notes)
+        }
+        ModelKind::Qwen3TtsTokenizer12Hz => {
+            let (builder, report) = models::qwen3_tts_tokenizer_12hz::convert(bytes)?;
+            let notes = vec![format!(
+                "qwen3-tts-tokenizer-12hz: authenticated the complete official {}-tensor F32 checkpoint, wrote {} decode-only tensors, and stripped {} encoder-only tensors",
+                models::qwen3_tts_tokenizer_12hz::INPUT_TENSOR_COUNT,
+                report.written,
+                report.stripped_encoder,
+            )];
             (builder, notes)
         }
         ModelKind::VoxCpm2 => {

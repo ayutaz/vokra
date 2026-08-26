@@ -240,6 +240,7 @@ Vokra::init(VokraConfig {
 - **research flag の実挙動**: `ComplianceLevel::Research`（または `with_research_license(true)` / `VOKRA_ALLOW_RESEARCH_LICENSE=1`）が CC-BY-NC 系 weight（F5-TTS/Fish-Speech/EnCodec）を解錠する。Strict/Standard は解錠せず `VokraError::ResearchLicenseRequired` で拒否（fail-closed、`docs/license-audit.md` §3 参照）。
 - **watermark の自動 policy 接続は据え置き（2026-07-04 依頼者ドロップ）**: `WatermarkConfig` は default ON の設計意図（audioseal/c2pa=true・synthid=false・silent_cipher=true）と opt-out 経路を保持する。AudioSeal 単体の明示 embed/detect は実装済みだが、`WatermarkConfig` から通常の生成経路へ自動適用する接続と C2PA は未実装である。`WatermarkConfig::backend_status()` は `Deferred` を返し、**通常の生成音声を「埋め込み済み」と偽装しない**。したがって **EU AI Act Article 50（NFR-LG-01）/ SB 942（NFR-LG-02）の marking 義務は現時点で自動充足しない**。復帰接続点は policy 統合と検証完了後に `backend_status()` を `Active` に変える箇所。法務的十分性の判断は FR-MD-13 / X-03（依頼者）に従属。
 - **自動地域判定は locale ベース最小版のみ・IP geolocation は据え置き**: zero-dep 不変条件（NFR-DS-02）維持のため geoip 系 crate/DB を core に追加しない。locale ヒントによる Strict 強制/警告は後続の最小実装に委ね、実際の地域確定は deployer 責務（本節の EU 強制は deployer が最も安全側に倒す前提）。
+- **Qwen3-TTS-Tokenizer-12Hz decoder（2026-08-27）**: この companion は16行の離散codeを24 kHz PCMへ戻すterminal decoderであり、speaker音声・speaker embedding・consent manifestを新たに受け取るvoice-clone triggerではない。ただしQwen3-TTS生成経路の一部として出力する音声には§1.4のvisible AI-generated disclosureと、speaker conditioningを使う場合の§3.2 consent要件がそのまま適用される。decoderのGGUF bindはwatermark埋込済みを意味せず、`WatermarkConfig::backend_status()==Deferred` の現状も変えない。
 
 ---
 

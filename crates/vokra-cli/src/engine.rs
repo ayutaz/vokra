@@ -2234,6 +2234,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }),
     },
     BoundArch {
+        arch: "qwen3_tts_tokenizer_12hz",
+        module: "vokra_models::qwen3_tts",
+        entry: "Qwen3TtsTokenizer12HzDecoder::from_gguf → Qwen3TtsTokenizer12HzDecoder::decode_codes",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::qwen3_tts::Qwen3TtsTokenizer12HzDecoder::from_gguf(g).map(|_| ())
+        }),
+    },
+    BoundArch {
         arch: "vibevoice",
         module: "vokra_models::vibevoice",
         entry: "VibeVoiceCheckpoint::from_gguf → VibeVoiceCheckpoint::synthesize",

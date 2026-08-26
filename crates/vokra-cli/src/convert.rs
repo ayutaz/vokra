@@ -37,7 +37,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -46,6 +46,8 @@ USAGE:
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model qwen3-tts-tokenizer-12hz --input <model.safetensors> \
+                      --output <decoder.gguf>
     vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
@@ -112,7 +114,7 @@ OPTIONS:
                               reazonspeech-nemo-v2 |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
+                              qwen3-tts | qwen3-tts-tokenizer-12hz | voxcpm | vibevoice | irodori | vits-ja |
                               sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
@@ -1276,6 +1278,21 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             convert_qwen3_tts_file(&p.input, &p.output)
         }
+        ModelKind::Qwen3TtsTokenizer12Hz => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() || p.tokenizer.is_some() {
+                return Err(
+                    "qwen3-tts-tokenizer-12hz authenticates the immutable official checkpoint and takes no --config/--preprocessor/--tokenizer side-car"
+                        .to_owned(),
+                );
+            }
+            convert_file(ModelKind::Qwen3TtsTokenizer12Hz, &p.input, &p.output)
+        }
         ModelKind::VoxCpm2 => {
             // The pinned VoxCPM2-2B release splits its AudioVAE from the
             // main safetensors.  `voxcpm2_prepare_checkpoint.py` combines
@@ -2281,6 +2298,24 @@ mod tests {
             .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
             assert_eq!(p.model, ModelKind::Qwen3Tts, "--model {spelling}");
             assert!(p.config.is_none(), "qwen3-tts takes no --config side-car");
+        }
+
+        for spelling in [
+            "qwen3-tts-tokenizer-12hz",
+            "qwen3_tts_tokenizer_12hz",
+            "qwen3-tts-12hz-tokenizer",
+            "qwen3-tts-code2wav",
+            "qwen/qwen3-tts-tokenizer-12hz",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(
+                p.model,
+                ModelKind::Qwen3TtsTokenizer12Hz,
+                "--model {spelling}"
+            );
         }
     }
 

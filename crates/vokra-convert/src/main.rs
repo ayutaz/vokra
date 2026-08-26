@@ -1988,6 +1988,37 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  code_predictor.vocab={cp_vocab}"
             );
         }
+        ModelKind::Qwen3TtsTokenizer12Hz => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            let sample_rate = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.output_sample_rate")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let upsample = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.decode_upsample_rate")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let quantizers = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.num_quantizers")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let manifest = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.decoder_manifest_sha256")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} output_sample_rate={sample_rate} \
+                 decode_upsample_rate={upsample} num_quantizers={quantizers} \
+                 decoder_manifest_sha256={manifest}"
+            );
+        }
         ModelKind::VoxCpm2 => {
             // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B verify surface —
             // arch / name plus the MiniCPM-4 LM axes + AudioVAE V2

@@ -54,10 +54,10 @@
 //! 16 Q ÷ 8 KV, RoPE θ = 1 000 000, RMSNorm ε = 1e-6, SwiGLU FFN — the
 //! same op inventory as Qwen2, only widened head split + rope base). The
 //! **code predictor** is a small (5-layer) parallel head that emits 16
-//! codebook rows per talker step; those 16 rows are fed to the
-//! Qwen3-TTS-12Hz codec (implemented in
-//! [`vokra_ops::qwen3_tts_codec`]) which then folds them into a
-//! 512-wide codec-feature stream at 12.5 Hz.
+//! codebook rows per talker step. [`vokra_ops::qwen3_tts_codec`] validates
+//! and folds that 16-row layout into a 512-wide feature stream at 12.5 Hz;
+//! it does **not** produce PCM. Terminal waveform synthesis is owned by the
+//! separately authenticated [`Qwen3TtsTokenizer12HzDecoder`] companion.
 //!
 //! The **tokenizer** is `Qwen2Tokenizer` (a byte-level BPE with
 //! `merges.txt` + `vocab.json` — same tokenizer class CosyVoice2 /
@@ -72,10 +72,9 @@
 //! Distinct architectural axes vs. the closest siblings
 //!
 //! - vs. **CosyVoice2/3** (also Qwen family + HiFT-GAN vocoder):
-//!   Qwen3-TTS-0.6B is **codec-LM, not vocoder-LM** — the terminal step
-//!   is `qwen3_tts_codec` (RVQ code → codec latent → upstream neural
-//!   decoder → PCM), NOT `HiFTChain`. Silently sharing CosyVoice2's
-//!   HiFTChain seam would misroute the topology.
+//!   Qwen3-TTS-0.6B is **codec-LM, not vocoder-LM**: its output is a
+//!   sixteen-row code matrix, not a mel. The separate 12 Hz tokenizer
+//!   decoder maps those codes to PCM; `HiFTChain` is not compatible.
 //! - vs. **Chatterbox / Chatterbox-Nano** (T3 / GPT-2 LM + speech
 //!   tokens): the LM emits **16 codebook rows per step**, not a single
 //!   speech-token stream. The per-step multi-codebook head is the
@@ -118,18 +117,17 @@
 //! - [`Qwen3TtsTts`] — engine handle carrying config + weights.
 //!   [`Qwen3TtsTts::synthesize`] returns [`VokraError::NotImplemented`]
 //!   until real weights are bound and the talker → code-predictor →
-//!   `qwen3_tts_codec` → upstream neural decoder chain is wired
+//!   [`Qwen3TtsTokenizer12HzDecoder`] chain is wired
 //!   end-to-end (T29-equivalent follow-up wave).
 //!
-//! # Reuses existing op — `qwen3_tts_codec`
+//! # Code-layout seam and waveform companion
 //!
-//! The terminal decoding hop reuses [`vokra_ops::qwen3_tts_codec`],
-//! the Phase 3 primitive that lands the RVQ code → codec-latent fold
-//! (16-quantizer semantic + acoustic split at 12.5 Hz). No new op or
-//! backend kernel is added by this model — the code predictor's
-//! per-step 16 codebook rows feed the shared primitive verbatim, and
-//! everything below the primitive (the neural decoder that maps codec
-//! latents → PCM) is the consumer WP's concern.
+//! [`vokra_ops::qwen3_tts_codec`] remains the shared 16-quantizer layout and
+//! feature-fold contract. The official waveform checkpoint has its own
+//! learned Euclidean codebooks, sliding Transformer, ConvNeXt upsamplers and
+//! causal transposed-convolution decoder, bound separately by
+//! [`Qwen3TtsTokenizer12HzDecoder`]. Neither surface silently substitutes for
+//! the other.
 //!
 //! # No ONNX (permanent)
 //!
@@ -143,20 +141,21 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+mod tokenizer_12hz;
 
 pub use bound::{
     Qwen3TtsBoundBlockWeights, Qwen3TtsCheckpoint, Qwen3TtsCheckpointVariant,
     qwen3_tts_code_predictor_block_forward, qwen3_tts_talker_block_forward,
 };
+pub use tokenizer_12hz::{Qwen3TtsTokenizer12HzConfig, Qwen3TtsTokenizer12HzDecoder};
 
 // ---------------------------------------------------------------------------
 // Public seam re-exports — shared with the codec primitive
 // ---------------------------------------------------------------------------
 //
-// The terminal decoding hop for Qwen3-TTS-0.6B is
-// `vokra_ops::qwen3_tts_codec` (the SoTA plan Phase 3 codec primitive
-// this model consumes). Re-export the config alias here so a caller
-// wiring Qwen3-TTS-0.6B sees the codec seam under this module's path
+// `vokra_ops::qwen3_tts_codec` describes the main model's 16-row code-layout
+// seam; it is not the terminal waveform decoder. Re-export the config alias
+// here so a caller wiring Qwen3-TTS sees that handshake under this module's path
 // without a shape-drift wrapper (mirrors `crate::chatterbox_nano` /
 // `crate::cosyvoice3` re-exporting `HiFTChain` from `cosyvoice2`).
 
@@ -1010,7 +1009,7 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// [`vokra_ops::qwen3_tts_codec`] seam (default = the canonical
 /// released variant). [`Self::synthesize`] is the primary text → PCM
 /// entry point; until real weights are bound and the talker → code-
-/// predictor → `qwen3_tts_codec` → upstream neural decoder chain is
+/// predictor → [`Qwen3TtsTokenizer12HzDecoder`] chain is
 /// wired end-to-end (T29-equivalent follow-up wave), it returns
 /// [`VokraError::NotImplemented`] with a message naming the blocker
 /// (FR-EX-08 — never a silent zero-fill or empty audio buffer).
@@ -1091,8 +1090,8 @@ impl Qwen3TtsTts {
     /// the blocker. Callers verify the shape flow through
     /// [`Qwen3TtsTts::new`] + [`Qwen3TtsWeights::synthesized`] today;
     /// a follow-up wave binds real Qwen3-TTS-0.6B weights and wires
-    /// the forward (talker → code-predictor → `qwen3_tts_codec` →
-    /// upstream neural decoder → PCM).
+    /// the forward (talker → code-predictor → authenticated 12 Hz
+    /// tokenizer decoder → PCM).
     ///
     /// # Errors
     ///
@@ -1119,17 +1118,15 @@ impl Qwen3TtsTts {
         }
         Err(VokraError::NotImplemented(
             "qwen3_tts synthesize: real weights are bound but the Qwen3 talker → \
-             code-predictor → qwen3_tts_codec → upstream neural decoder → PCM forward \
+             code-predictor → Qwen3TtsTokenizer12HzDecoder → PCM forward \
              path has not landed yet. Follow-up wave: (1) run the talker (Qwen3 GQA 16 Q \
              ÷ 8 KV / RoPE θ=1000000 / RMSNorm ε=1e-6 / SwiGLU) with the Qwen2Tokenizer \
              text prompt + speaker embedding + text-encoder side-car; (2) sample per-step \
-             16 codebook rows from the 5-layer code predictor; (3) feed the 16 rows to \
-             vokra_ops::qwen3_tts_codec::qwen3_tts_codec_decode (the shared codec \
-             primitive, semantic + acoustic split, 12.5 Hz frame rate); (4) run the \
-             upstream neural decoder (transformer + ConvTranspose1d upsampler) that maps \
-             codec latents → 24 kHz PCM (the consumer WP's decoder, deliberately \
-             out-of-scope for the shared qwen3_tts_codec primitive per its module \
-             docstring).",
+             16 codebook rows from the 5-layer code predictor; (3) reject control ids, then \
+             pass the exact 16-row matrix to the separately bound 271-tensor tokenizer \
+             decoder; (4) execute its learned Euclidean RVQ, sliding Transformer, ConvNeXt \
+             and causal transposed-convolution stack to 24 kHz PCM. The smaller \
+             vokra_ops::qwen3_tts_codec feature-fold helper is not a waveform fallback.",
         ))
     }
 }
@@ -1298,8 +1295,8 @@ mod tests {
     #[test]
     fn arch_is_distinct_from_neighbouring_families() {
         // Qwen3-TTS shares the Qwen family with CosyVoice2/3 but uses a
-        // codec-LM topology (qwen3_tts_codec terminal) instead of a
-        // vocoder-LM topology (HiFTChain terminal). Silently sharing the
+        // codec-LM topology (16-row codes plus a separate tokenizer decoder)
+        // instead of a vocoder-LM topology (HiFTChain terminal). Silently sharing the
         // arch tag with CosyVoice2/3 would mis-route the runtime.
         // (The neighbouring `EXPECTED_ARCH` constants are private to
         // their modules; use the same string literals the converter

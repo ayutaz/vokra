@@ -250,6 +250,24 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS 12 Hz waveform-decoder contract)
+
+The official 682 MB tokenizer checkpoint now has a distinct decode-only GGUF
+contract. Conversion authenticates the whole pinned 496-tensor F32 source by
+SHA-256, validates the exact source manifest, strips 225 encoder tensors and
+emits only the 271 `decoder.*` tensors. The runtime binder rechecks the exact
+architecture, provenance, topology, names, shapes and dtypes under the strict
+license policy. It also validates the sixteen-row code matrix and explicitly
+refuses waveform execution until the native RVQ/Transformer/ConvNeXt/causal
+transposed-convolution graph is connected. This is not a PCM claim and never
+falls back to the smaller `qwen3_tts_codec` feature-fold helper. No C symbol or
+allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.qwen3_tts_tokenizer_12hz.*` | authenticated decoder metadata group | Added | fixed sample-rate/upsample, RVQ, Transformer, waveform-decoder, chunk-context and source-hash keys; array keys are `u32[]`, floating axes are `f32`, all other topology axes are `u32`, hashes/revisions are strings | Distinct `vokra.model.arch=qwen3_tts_tokenizer_12hz`; only the exact pinned decode-only artifact is admitted | no | (this commit) |
+| `vokra-models::qwen3_tts` | `Qwen3TtsTokenizer12HzConfig`, `Qwen3TtsTokenizer12HzDecoder` | Added | strict `from_gguf` / `from_gguf_with_policy`, code-matrix validation, and loud `decode_codes` boundary | Additive Rust model API; Apache-2.0 provenance is fail-closed and terminal PCM remains explicitly unimplemented in this slice | no | (this commit) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox native multimodal companion decode)
 
 The exact separately acquired Llama companion now executes a bounded-memory
