@@ -2565,6 +2565,30 @@ pub(crate) fn relative_positions(frames: usize, width: usize) -> Vec<f32> {
     output
 }
 
+/// Fixed-width relative positions used by NeMo's
+/// `RelPositionMultiHeadAttentionLongformer`. Unlike full Transformer-XL
+/// attention, the positional table is independent of utterance length and
+/// covers exactly `[left, ..., 0, ..., -right]`.
+pub(crate) fn local_relative_positions(
+    left_context: usize,
+    right_context: usize,
+    width: usize,
+) -> Vec<f32> {
+    let count = left_context + right_context + 1;
+    let mut output = vec![0.0; count * width];
+    for position_index in 0..count {
+        let position = left_context as isize - position_index as isize;
+        for pair in 0..width / 2 {
+            let exponent = (2 * pair) as f32 / width as f32;
+            let frequency = 1.0f32 / 10_000.0f32.powf(exponent);
+            let angle = position as f32 * frequency;
+            output[position_index * width + 2 * pair] = angle.sin();
+            output[position_index * width + 2 * pair + 1] = angle.cos();
+        }
+    }
+    output
+}
+
 fn layer_norm(
     compute: &Compute,
     input: &[f32],
@@ -2638,6 +2662,18 @@ pub(crate) enum FastConformerAttentionContext {
         left_context: usize,
         right_context: usize,
     },
+    /// NeMo 1.21 Longformer-style local relative attention. Ordinary
+    /// queries attend to their bounded left/right window plus every global
+    /// key. Global queries attend to the complete sequence. Global keys are
+    /// intentionally represented twice when they are also inside the local
+    /// window, matching NeMo's concatenated global-key + sliding-window
+    /// probability axis.
+    LongformerLocal {
+        left_context: usize,
+        right_context: usize,
+        global_tokens: usize,
+        global_tokens_spacing: usize,
+    },
 }
 
 impl FastConformerAttentionContext {
@@ -2654,8 +2690,226 @@ impl FastConformerAttentionContext {
                 let key_chunk = key / chunk_size;
                 key_chunk <= query_chunk && query_chunk - key_chunk <= left_context_chunks
             }
+            Self::LongformerLocal {
+                left_context,
+                right_context,
+                global_tokens,
+                global_tokens_spacing,
+            } => {
+                let global_limit = global_tokens.saturating_mul(global_tokens_spacing);
+                let is_global = |position: usize| {
+                    global_tokens_spacing != 0
+                        && position < global_limit
+                        && position % global_tokens_spacing == 0
+                };
+                is_global(query)
+                    || is_global(key)
+                    || (key.saturating_add(left_context) >= query
+                        && key <= query.saturating_add(right_context))
+            }
         }
     }
+}
+
+fn attention_forward_longformer(
+    compute: &Compute,
+    input: &[f32],
+    positions: &[f32],
+    frames: usize,
+    block: &ParakeetBoundEncoderBlock,
+    config: &ParakeetEncoderConfig,
+    left_context: usize,
+    right_context: usize,
+    global_tokens: usize,
+    global_tokens_spacing: usize,
+) -> Result<Vec<f32>> {
+    if frames == 0 || left_context == 0 || right_context == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "FastConformer Longformer attention requires non-zero frames and left/right context; found frames={frames}, left={left_context}, right={right_context}"
+        )));
+    }
+    if global_tokens > 0 && global_tokens_spacing == 0 {
+        return Err(VokraError::InvalidArgument(
+            "FastConformer Longformer global_tokens_spacing must be > 0 when global tokens are enabled"
+                .to_owned(),
+        ));
+    }
+    let width = config.d_model;
+    let heads = config.n_head;
+    let head_dim = config.head_dim();
+    let position_count = left_context
+        .checked_add(right_context)
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "FastConformer Longformer positional width overflow".to_owned(),
+            )
+        })?;
+    if positions.len() != position_count * width {
+        return Err(VokraError::InvalidArgument(format!(
+            "FastConformer Longformer positions len {}, expected ({left_context} + {right_context} + 1) * {width} = {}",
+            positions.len(),
+            position_count * width
+        )));
+    }
+
+    let project = |weight: &[f32], bias: Option<&[f32]>| -> Result<Vec<f32>> {
+        let mut output = vec![0.0; frames * width];
+        compute.gemm_f32(frames, width, width, input, weight, bias, &mut output)?;
+        Ok(output)
+    };
+    let q = project(&block.q_w_t, block.q_b.as_deref())?;
+    let k = project(&block.k_w_t, block.k_b.as_deref())?;
+    let v = project(&block.v_w_t, block.v_b.as_deref())?;
+    let mut relative_k = vec![0.0; position_count * width];
+    compute.gemm_f32(
+        position_count,
+        width,
+        width,
+        positions,
+        &block.relative_k_w_t,
+        None,
+        &mut relative_k,
+    )?;
+
+    let global_indices = (0..global_tokens)
+        .filter_map(|index| index.checked_mul(global_tokens_spacing))
+        .take_while(|&index| index < frames)
+        .collect::<Vec<_>>();
+    let is_global_query = |query: usize| global_indices.binary_search(&query).is_ok();
+    let local_queries = (0..frames)
+        .filter(|&query| !is_global_query(query))
+        .collect::<Vec<_>>();
+    let local_columns = global_indices.len() + position_count;
+    let scale = 1.0 / (head_dim as f32).sqrt();
+    let mut context = vec![0.0f32; frames * width];
+
+    if !local_queries.is_empty() {
+        let rows = heads * local_queries.len();
+        let mut scores = vec![f32::NEG_INFINITY; rows * local_columns];
+        for head in 0..heads {
+            let head_offset = head * head_dim;
+            for (query_row, &query) in local_queries.iter().enumerate() {
+                let row = head * local_queries.len() + query_row;
+                let q_offset = query * width + head_offset;
+
+                // NeMo concatenates content-only global-key logits in front
+                // of the local relative-attention logits. A global key that
+                // falls in the local window therefore appears twice by
+                // design; do not deduplicate it here.
+                for (slot, &key) in global_indices.iter().enumerate() {
+                    let k_offset = key * width + head_offset;
+                    let mut score = 0.0f32;
+                    for dim in 0..head_dim {
+                        score += q[q_offset + dim] * k[k_offset + dim];
+                    }
+                    scores[row * local_columns + slot] = score * scale;
+                }
+
+                for position_index in 0..position_count {
+                    let delta = position_index as isize - left_context as isize;
+                    let key_signed = query as isize + delta;
+                    if key_signed < 0 || key_signed >= frames as isize {
+                        continue;
+                    }
+                    let key = key_signed as usize;
+                    let k_offset = key * width + head_offset;
+                    let p_offset = position_index * width + head_offset;
+                    let mut content = 0.0f32;
+                    let mut relative = 0.0f32;
+                    for dim in 0..head_dim {
+                        let hidden = head_offset + dim;
+                        content += (q[q_offset + dim] + block.bias_u[hidden]) * k[k_offset + dim];
+                        relative +=
+                            (q[q_offset + dim] + block.bias_v[hidden]) * relative_k[p_offset + dim];
+                    }
+                    scores[row * local_columns + global_indices.len() + position_index] =
+                        (content + relative) * scale;
+                }
+            }
+        }
+        let mut probabilities = vec![0.0f32; scores.len()];
+        compute.softmax_f32(&scores, &mut probabilities, rows, local_columns)?;
+        for head in 0..heads {
+            let head_offset = head * head_dim;
+            for (query_row, &query) in local_queries.iter().enumerate() {
+                let row = head * local_queries.len() + query_row;
+                for (slot, &key) in global_indices.iter().enumerate() {
+                    let probability = probabilities[row * local_columns + slot];
+                    let v_offset = key * width + head_offset;
+                    for dim in 0..head_dim {
+                        context[query * width + head_offset + dim] +=
+                            probability * v[v_offset + dim];
+                    }
+                }
+                for position_index in 0..position_count {
+                    let delta = position_index as isize - left_context as isize;
+                    let key_signed = query as isize + delta;
+                    if key_signed < 0 || key_signed >= frames as isize {
+                        continue;
+                    }
+                    let key = key_signed as usize;
+                    let probability =
+                        probabilities[row * local_columns + global_indices.len() + position_index];
+                    let v_offset = key * width + head_offset;
+                    for dim in 0..head_dim {
+                        context[query * width + head_offset + dim] +=
+                            probability * v[v_offset + dim];
+                    }
+                }
+            }
+        }
+    }
+
+    // Global queries use content-only attention over every key and overwrite
+    // the local result, exactly as NeMo 1.21's `_compute_out_global_to_all`.
+    if !global_indices.is_empty() {
+        let rows = heads * global_indices.len();
+        let mut scores = vec![0.0f32; rows * frames];
+        for head in 0..heads {
+            let head_offset = head * head_dim;
+            for (global_row, &query) in global_indices.iter().enumerate() {
+                let row = head * global_indices.len() + global_row;
+                let q_offset = query * width + head_offset;
+                for key in 0..frames {
+                    let k_offset = key * width + head_offset;
+                    let mut score = 0.0f32;
+                    for dim in 0..head_dim {
+                        score += q[q_offset + dim] * k[k_offset + dim];
+                    }
+                    scores[row * frames + key] = score * scale;
+                }
+            }
+        }
+        let mut probabilities = vec![0.0f32; scores.len()];
+        compute.softmax_f32(&scores, &mut probabilities, rows, frames)?;
+        for head in 0..heads {
+            let head_offset = head * head_dim;
+            for (global_row, &query) in global_indices.iter().enumerate() {
+                let row = head * global_indices.len() + global_row;
+                for key in 0..frames {
+                    let probability = probabilities[row * frames + key];
+                    let v_offset = key * width + head_offset;
+                    for dim in 0..head_dim {
+                        context[query * width + head_offset + dim] +=
+                            probability * v[v_offset + dim];
+                    }
+                }
+            }
+        }
+    }
+
+    let mut output = vec![0.0; frames * width];
+    compute.gemm_f32(
+        frames,
+        width,
+        width,
+        &context,
+        &block.o_w_t,
+        block.o_b.as_deref(),
+        &mut output,
+    )?;
+    Ok(output)
 }
 
 fn attention_forward(
@@ -2667,6 +2921,26 @@ fn attention_forward(
     config: &ParakeetEncoderConfig,
     attention_context: FastConformerAttentionContext,
 ) -> Result<Vec<f32>> {
+    if let FastConformerAttentionContext::LongformerLocal {
+        left_context,
+        right_context,
+        global_tokens,
+        global_tokens_spacing,
+    } = attention_context
+    {
+        return attention_forward_longformer(
+            compute,
+            input,
+            positions,
+            frames,
+            block,
+            config,
+            left_context,
+            right_context,
+            global_tokens,
+            global_tokens_spacing,
+        );
+    }
     let width = config.d_model;
     let heads = config.n_head;
     let head_dim = config.head_dim();
@@ -3082,6 +3356,29 @@ mod tests {
         // 56 frames / 4 = fourteen prior chunks are retained.
         assert!(context.allows(60, 4));
         assert!(!context.allows(60, 3));
+    }
+
+    #[test]
+    fn longformer_visibility_matches_local_plus_global_contract() {
+        let context = FastConformerAttentionContext::LongformerLocal {
+            left_context: 2,
+            right_context: 1,
+            global_tokens: 1,
+            global_tokens_spacing: 1,
+        };
+        // Token zero is global: it sees all keys and every query sees it.
+        assert!(context.allows(0, 9));
+        assert!(context.allows(9, 0));
+        // Ordinary queries retain their bounded asymmetric window only.
+        assert!(context.allows(5, 3));
+        assert!(context.allows(5, 6));
+        assert!(!context.allows(5, 2));
+        assert!(!context.allows(5, 7));
+    }
+
+    #[test]
+    fn local_relative_positions_are_the_matching_full_table_slice() {
+        assert_eq!(local_relative_positions(2, 2, 8), relative_positions(3, 8));
     }
 
     fn canonical_metadata_file() -> GgufFile {

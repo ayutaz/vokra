@@ -19,6 +19,7 @@ use vokra_models::ecapa_tdnn::EcapaTdnn;
 use vokra_models::hubert::HubertCtc;
 use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
+use vokra_models::reazonspeech_nemo_v2::{KEY_TOKENIZER_VOCAB, ReazonSpeechNemoV2};
 use vokra_models::sepformer::SepFormer;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::speaker::SpeakerEncoder;
@@ -66,6 +67,8 @@ const ARCH_HUBERT: &str = "hubert";
 const ARCH_SEPFORMER: &str = "sepformer";
 /// Asteroid Conv-TasNet Libri1Mix speech enhancement.
 const ARCH_CONV_TASNET: &str = "conv_tasnet";
+/// ReazonSpeech NeMo v2 Japanese FastConformer-Longformer + RNN-T ASR.
+const ARCH_REAZONSPEECH_NEMO_V2: &str = "reazonspeech_nemo_v2";
 
 /// One model buffer shared between the session's `GgufFile` and the
 /// piper-plus engine's second parse (M4-02): a cheap-clone [`AsBytes`] source
@@ -206,6 +209,15 @@ fn inject_engine(
             let model = HubertCtc::from_file(session.gguf())?.with_backend(backend);
             Ok(session.with_asr_engine(Arc::new(model)))
         }
+        ARCH_REAZONSPEECH_NEMO_V2 => {
+            if session.gguf().get(KEY_TOKENIZER_VOCAB).is_none() {
+                return Err(VokraError::ModelLoad(format!(
+                    "ReazonSpeech-NeMo-v2 GGUF has no `{KEY_TOKENIZER_VOCAB}`; reconvert the pinned official checkpoint with `vokra-convert --model reazonspeech-nemo-v2 --tokenizer tokenizer.vocab`. The legacy public artifact is token-level only and cannot satisfy the C ASR text contract"
+                )));
+            }
+            let model = ReazonSpeechNemoV2::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_asr_engine(Arc::new(model)))
+        }
         ARCH_SEPFORMER => {
             let model = SepFormer::from_gguf(session.gguf())?.with_backend(backend);
             Ok(session.with_separation_engine(Arc::new(model)))
@@ -272,7 +284,7 @@ fn inject_engine(
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_MIMI}` / \
              `{ARCH_NANOCODEC}` / `{ARCH_CAMPLUS}` / `{ARCH_XVECTOR}` / `{ARCH_ECAPA_TDNN}` / `{ARCH_WESPEAKER}` / `{ARCH_TITANET}` / `{ARCH_WAV2VEC2_CTC}` / \
              `{ARCH_DATA2VEC_AUDIO}` / `{ARCH_HUBERT}` / `{ARCH_SEPFORMER}` / \
-             `{ARCH_CONV_TASNET}`)"
+             `{ARCH_CONV_TASNET}` / `{ARCH_REAZONSPEECH_NEMO_V2}`)"
         ))),
     }
 }
@@ -772,6 +784,27 @@ mod tests {
         let result = build_session(path.to_str().unwrap(), CPU);
         let _ = std::fs::remove_file(&path);
         assert!(matches!(result, Err(VokraError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn build_session_rejects_legacy_reazonspeech_before_weight_decode() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_REAZONSPEECH_NEMO_V2);
+        let bytes = builder.to_bytes().expect("serialize GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-capi-reazonspeech-no-tokenizer-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write fixture");
+        let error = build_session(path.to_str().expect("UTF-8 path"), CPU)
+            .expect_err("legacy tokenizer-less artifact must fail");
+        let _ = std::fs::remove_file(&path);
+        let VokraError::ModelLoad(message) = error else {
+            panic!("expected ModelLoad, got {error:?}");
+        };
+        assert!(message.contains(KEY_TOKENIZER_VOCAB), "{message}");
+        assert!(message.contains("legacy public artifact"), "{message}");
     }
 
     #[test]

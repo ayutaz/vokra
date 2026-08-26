@@ -22,6 +22,7 @@ use vokra_models::moonshine::Moonshine;
 use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
+use vokra_models::reazonspeech_nemo_v2::{KEY_TOKENIZER_VOCAB, ReazonSpeechNemoV2};
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::wav2vec2_ctc::Wav2Vec2Ctc;
 use vokra_models::whisper::WhisperAsr;
@@ -644,6 +645,8 @@ const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
 const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
 /// NVIDIA Canary-1B-v2 multilingual FastConformer + Transformer AED ASR/AST.
 const ARCH_CANARY_1B_V2: &str = "canary";
+/// ReazonSpeech NeMo v2 Japanese FastConformer-Longformer + RNN-T ASR.
+const ARCH_REAZONSPEECH_NEMO_V2: &str = "reazonspeech_nemo_v2";
 /// Meta Wav2Vec2 raw-waveform encoder with an optional CTC head.
 const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
 /// Corrected Data2Vec Audio arch tag.
@@ -877,6 +880,27 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             let asr = ParakeetCtcAsr::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_REAZONSPEECH_NEMO_V2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_REAZONSPEECH_NEMO_V2}`)"
+                ));
+            }
+            // The already-published legacy GGUF has the complete 965-tensor
+            // checkpoint but no tokenizer. Reject it before decoding ~2.48 GB
+            // of F32 payload, and state exactly which gated replacement is
+            // required instead of returning an empty or token-only transcript.
+            if session.gguf().get(KEY_TOKENIZER_VOCAB).is_none() {
+                return Err(format!(
+                    "ReazonSpeech-NeMo-v2 GGUF has no `{KEY_TOKENIZER_VOCAB}`; reconvert the pinned official checkpoint with `vokra-convert --model reazonspeech-nemo-v2 --tokenizer tokenizer.vocab`. The legacy public artifact is token-level only and is not silently accepted for CLI text ASR"
+                ));
+            }
+            let asr = ReazonSpeechNemoV2::from_gguf(session.gguf())
                 .map_err(|error| error.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
@@ -1744,6 +1768,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
                  `{ARCH_MOONSHINE}` / `{ARCH_PARAKEET_TDT}` / \
                  `{ARCH_PARAKEET_TDT_1_1B}` / \
+                 `{ARCH_REAZONSPEECH_NEMO_V2}` / \
                  `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
@@ -2594,6 +2619,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_rejects_legacy_reazonspeech_before_weight_decode() {
+        let error = with_arch_only_gguf(
+            ARCH_REAZONSPEECH_NEMO_V2,
+            "reazonspeech-legacy-no-tokenizer",
+            |path| load_session(path).expect_err("tokenizer-less legacy GGUF must fail"),
+        );
+        assert!(error.contains(KEY_TOKENIZER_VOCAB), "{error}");
+        assert!(error.contains("legacy public artifact"), "{error}");
+        assert!(!error.contains("unsupported model arch"), "{error}");
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_REAZONSPEECH_NEMO_V2)
+        );
+    }
+
     /// Task hints are rejected on the voxtral arch (FR-EX-08 — no silent
     /// hint drop).
     #[test]
@@ -3373,6 +3415,7 @@ mod tests {
             ARCH_PARAKEET_CTC,
             ARCH_NEMOTRON_ASR,
             ARCH_CANARY_1B_FLASH,
+            ARCH_REAZONSPEECH_NEMO_V2,
             ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(
@@ -3781,6 +3824,7 @@ mod tests {
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_CANARY_1B_FLASH,
+            ARCH_REAZONSPEECH_NEMO_V2,
             ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,

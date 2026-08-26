@@ -294,6 +294,8 @@ pub mod parakeet;
 // the encoder body, vokra_ops::ctc_decode for greedy / beam CTC decoding)
 // rather than duplicating.
 pub mod parakeet_ctc;
+/// Native ReazonSpeech NeMo v2 Japanese long-form FastConformer + RNN-T ASR.
+pub mod reazonspeech_nemo_v2;
 // SoTA plan Phase 2 (2026-07-24): Meta omniASR-CTC-1B — 1600+ language
 // multilingual ASR built on a wav2vec 2.0 waveform-in encoder (7-layer
 // Conv1D feature extractor, 320× downsampling; grouped-Conv1D positional
