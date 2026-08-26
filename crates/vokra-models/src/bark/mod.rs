@@ -14,10 +14,12 @@
 //! [`BarkModel::requires_metadata_repair`]. No count-only, partial, or
 //! same-metadata substitute is accepted.
 
+mod codec;
 mod generation;
 mod transformer;
 mod weights;
 
+pub use codec::BarkSynthesis;
 pub use generation::{BarkGeneratedCodes, BarkGenerationConfig};
 
 use std::path::Path;

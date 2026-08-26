@@ -1785,10 +1785,10 @@ impl Compute {
         }
     }
 
-    /// EnCodec residual VQ codec decode — the M4-04 engine-only op wired into
-    /// the imperative `Compute` seam (FR-OP-32: the op exists, the pretrained
-    /// weights are permanently zoo-excluded — see `vokra_ops::encodec_rvq`
-    /// module docs).
+    /// EnCodec residual VQ codec decode — the M4-04 engine op wired into the
+    /// imperative `Compute` seam (FR-OP-32: standalone pretrained weights are
+    /// permanently zoo-excluded; authenticated composites such as Bark may
+    /// reuse the shape-generic op — see `vokra_ops::encodec_rvq` module docs).
     ///
     /// Same shape-generic gather + FP32 fold as [`Compute::mimi_rvq_f32`].
     /// The CPU arm delegates verbatim to [`vokra_ops::encodec_rvq_decode`];

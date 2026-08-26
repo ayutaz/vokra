@@ -250,6 +250,31 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Bark and Bark Small native CPU/Metal runtime)
+
+The two public Suno Bark GGUFs now bind through their exact complete manifests
+and execute the released three-stage semantic/coarse/fine token hierarchy plus
+the embedded causal 24 kHz EnCodec decoder. The historical Full artifact's
+incorrect Small width/head stamp is admitted only behind its immutable
+758-tensor manifest and remains visibly marked for metadata repair; Small uses
+its exact 518-tensor contract. Callers provide already-tokenized text ids
+because neither public GGUF embeds Bark's tokenizer, so the runtime does not
+guess or download a mutable sidecar. The model preflights one complete CPU or
+Metal hot-op set before generation and never substitutes another execution
+backend. Standalone Meta EnCodec weights remain excluded; this path consumes
+only the codec embedded in the separately audited, signed Bark composite.
+Independent official-reference VAST parity and Apple-device real-weight Metal
+parity remain pending, so this records code reachability rather than a
+numerical-pass claim. No C symbol or publication permission is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.bark.*` | `variant`, complete LM/codec topology and `tensor_manifest_sha256`; exact provenance revision/SHA | Changed / Added | exact 518-tensor Small or 758-tensor Full all-F32 mmap checkpoint | New conversions require the pinned Suno checkpoint and complete tensor manifest. The exact historical Full header may repair only `hidden_size=768` / `num_heads=12` to `1024` / `16` after its immutable manifest matches; any partial or unrelated file fails closed | no | `6c00beca` |
+| `vokra-models::bark` | `BarkModel`, `BarkVariant`, `BarkConfig`, topology constants and `BARK_HOT_OPS` | Added | strict descriptor or mapping-owned CPU/Metal bind for both public variants | Authenticates manifest, metadata, provenance, F32 layout and permissive Bark license before tensor views; unsupported backends fail whole-model preflight | no | `2f265348` |
+| `vokra-models::bark` | `BarkGenerationConfig`, `BarkGeneratedCodes`, `BarkModel::generate_codes_from_tokens` | Added | explicit text token ids + optional mask to frame-major `[frames,8]` codec indices | Implements semantic EOS sampling, alternating two-codebook coarse schedule and six fine passes with deterministic seed; tokenizer/history-prompt composition remains an explicit caller boundary | no | `64de9fa9` |
+| `vokra-models::bark` | `BarkSynthesis`, `BarkModel::decode_codes`, `BarkModel::synthesize_tokens` | Added | frame-major eight-codebook packet to mono `frames*320` FP32 PCM at 24 kHz | Uses only the authenticated embedded 32-table checkpoint's first eight released codebooks, causal reflect-padded SEANet, two-layer LSTM, learned residual shortcuts and exact `[8,5,4,2]` upsampling; no standalone EnCodec loading path | no | (TBD) |
+| `vokra-models::compute`; `vokra-backend-{cpu,metal}` | `HotOp::Elu`, `Compute::elu_f32`, Metal `elu_f32` | Added | element-wise ELU with fixed `alpha=1` | CPU and Metal have explicit kernels and parity coverage; uncovered backends fail preflight rather than running the activation on CPU | no | `b216ad02` |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-ASR native CPU/Metal runtime)
 
 The public Qwen3-ASR 0.6B and 1.7B GGUF headers now bind through exact

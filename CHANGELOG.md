@@ -14,6 +14,16 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The public Bark and Bark Small GGUFs now have a strict mapping-owned native
+  runtime for the semantic, coarse and fine token hierarchy and their embedded
+  causal 24 kHz EnCodec decoder. Exact 758/518-tensor all-F32 manifests select
+  the Full/Small topology; the historical Full width/head metadata is repaired
+  only after its complete immutable manifest matches. Callers pass text token
+  ids explicitly because the public files do not embed a tokenizer. CPU and
+  Metal preflight the complete learned hot-op set, including Bark's ELU codec
+  activation, and unsupported backends fail before generation. Standalone
+  EnCodec weights remain excluded, and VAST official-reference plus Apple
+  real-weight numerical parity are still pending rather than claimed.
 - The two public Qwen3-ASR checkpoints now have a strict, bounded-memory
   runtime binder and a strict streaming converter. Fixed-revision GGUF header
   audits authenticate the complete

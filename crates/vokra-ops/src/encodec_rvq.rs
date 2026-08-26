@@ -1,12 +1,12 @@
-//! EnCodec residual VQ decode — **engine op only; weights permanently
-//! zoo-excluded** (M4-04; FR-OP-30 op / FR-OP-32 permanent constraint).
+//! EnCodec residual VQ decode — **engine op; standalone EnCodec weights stay
+//! permanently zoo-excluded** (M4-04; FR-OP-30 op / FR-OP-32 constraint).
 //!
-//! # The op exists; the weights never ship
+//! # The op exists; standalone EnCodec weights never ship
 //!
 //! EnCodec's **code** is MIT, but the pretrained EnCodec **weights** are
 //! CC-BY-NC 4.0 (non-commercial). FR-OP-32 makes the exclusion permanent:
 //!
-//! - the official model zoo never carries an EnCodec GGUF;
+//! - the official model zoo never carries a standalone EnCodec GGUF;
 //! - `crates/vokra-convert` has **no** `encodec` model kind (this is
 //!   deliberate and load-bearing — `scripts/compliance/check-encodec-exclusion.sh`
 //!   greps vokra-convert to keep it that way);
@@ -19,7 +19,10 @@
 //!
 //! A developer with their own locally obtained EnCodec checkpoint and the
 //! research flag can still evaluate it — that is exactly what this op is for
-//! (ADR M3-06 §D2 / ADR M4-04 §D-d).
+//! (ADR M3-06 §D2 / ADR M4-04 §D-d). Audited composite models may also call
+//! this shape-generic op without creating a standalone EnCodec distribution:
+//! Bark authenticates its complete Suno checkpoint, including the embedded
+//! codec, under Bark's own signed model/license contract.
 //!
 //! # Structure (source: facebookresearch/encodec, MIT — ADR M4-04 §T02)
 //!
@@ -35,18 +38,19 @@
 //!
 //! # No canonical attrs baked
 //!
-//! [`EncodecRvqAttrs`] has **no** canonical constructor: EnCodec is not in
-//! the zoo, so there is no converter default to mirror — attrs are always
-//! caller-supplied (from whatever research checkpoint the caller loaded).
+//! [`EncodecRvqAttrs`] has **no** canonical constructor: standalone EnCodec
+//! is not in the zoo, so there is no standalone converter default to mirror.
+//! Attributes are caller-supplied by the authenticated composite model or by
+//! a research caller.
 //! Shape provenance for the parity fixture is recorded in
 //! `tests/parity/encodec/manifest.txt`.
 //!
 //! # No paged variant
 //!
-//! FR-OP-30's paged variants are model-synced (Mimi → CSM/Moshi, DAC → zoo);
-//! EnCodec has no zoo consumer, so no paged variant is provided. A research
-//! caller who needs paging can decode to features and use the paged store
-//! directly.
+//! FR-OP-30's paged variants are model-synced (Mimi → CSM/Moshi, DAC → zoo).
+//! The Bark composite decodes one complete generated packet, so it does not
+//! establish a paged EnCodec contract. A research caller who needs paging can
+//! decode to features and use the paged store directly.
 //!
 //! # No silent fallback (FR-EX-08)
 //!
@@ -64,10 +68,10 @@ use crate::mimi_rvq::{CodebookTable, rvq_fold_core};
 
 /// Static shape attributes for an EnCodec RVQ decode.
 ///
-/// Deliberately has **no** canonical constructor (module docs): EnCodec is
-/// permanently zoo-excluded (FR-OP-32), so there is no converter-emitted
-/// default to mirror. Callers supply the shape of the research checkpoint
-/// they loaded themselves.
+/// Deliberately has **no** canonical constructor (module docs): standalone
+/// EnCodec is permanently zoo-excluded (FR-OP-32), so there is no standalone
+/// converter-emitted default to mirror. Callers supply an authenticated
+/// composite model's axes or the research checkpoint axes they loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodecRvqAttrs {
     /// Number of quantizers (base + residuals).
