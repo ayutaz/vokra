@@ -10,6 +10,7 @@ mod delay;
 mod delay_transformer;
 mod generation;
 mod transformer;
+mod voice_generator;
 mod weights;
 
 use std::path::Path;
@@ -30,6 +31,7 @@ pub use self::delay_transformer::{
     MossTtsDelayGenerationOptions, MossTtsDelayLogits, MossTtsDelaySynthesis,
 };
 pub use self::generation::MossTtsGeneratedCodes;
+pub use self::voice_generator::MossVoiceGeneratorCheckpoint;
 use self::weights::NanoWeights;
 
 /// GGUF architecture shared by the separately authenticated MOSS-TTS family.

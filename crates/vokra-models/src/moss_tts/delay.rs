@@ -33,6 +33,55 @@ pub(super) const MAX_POSITION_EMBEDDINGS: usize = 40_960;
 pub(super) const RMS_NORM_EPS: f32 = 1.0e-6;
 pub(super) const ROPE_BASE: f32 = 1_000_000.0;
 
+/// Shape-only contract shared by the separate Delay-class checkpoints.
+///
+/// Base/v1.5 and VoiceGenerator execute the same official algorithm, but a
+/// manifest must select one complete topology before any tensor is bound.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct DelayTopology {
+    pub(super) hidden_dim: usize,
+    pub(super) ffn_dim: usize,
+    pub(super) num_layers: usize,
+    pub(super) num_q_heads: usize,
+    pub(super) num_kv_heads: usize,
+    pub(super) head_dim: usize,
+    pub(super) text_vocab_size: usize,
+    pub(super) num_audio_codebooks: usize,
+    pub(super) audio_vocab_with_pad: usize,
+    pub(super) max_position_embeddings: usize,
+    pub(super) rms_norm_eps: f32,
+    pub(super) rope_base: f32,
+}
+
+impl DelayTopology {
+    pub(super) const fn q_dim(self) -> usize {
+        self.num_q_heads * self.head_dim
+    }
+
+    pub(super) const fn kv_dim(self) -> usize {
+        self.num_kv_heads * self.head_dim
+    }
+
+    pub(super) const fn tensor_count(self) -> usize {
+        3 + 2 * self.num_audio_codebooks + 11 * self.num_layers
+    }
+}
+
+pub(super) const DELAY_TOPOLOGY: DelayTopology = DelayTopology {
+    hidden_dim: HIDDEN_DIM,
+    ffn_dim: FFN_DIM,
+    num_layers: NUM_LAYERS,
+    num_q_heads: NUM_Q_HEADS,
+    num_kv_heads: NUM_KV_HEADS,
+    head_dim: HEAD_DIM,
+    text_vocab_size: TEXT_VOCAB_SIZE,
+    num_audio_codebooks: NUM_AUDIO_CODEBOOKS,
+    audio_vocab_with_pad: AUDIO_VOCAB_WITH_PAD,
+    max_position_embeddings: MAX_POSITION_EMBEDDINGS,
+    rms_norm_eps: RMS_NORM_EPS,
+    rope_base: ROPE_BASE,
+};
+
 const MANIFEST_SHA256: [u8; 32] = [
     0x5a, 0x35, 0x78, 0xfb, 0x9e, 0x57, 0x04, 0xbf, 0x80, 0xa1, 0x27, 0x15, 0xe8, 0xc9, 0x44, 0xb2,
     0x34, 0x74, 0x57, 0xb5, 0x7c, 0x9a, 0x4d, 0x6c, 0x05, 0x5d, 0xc5, 0xb3, 0xb2, 0x2e, 0x3d, 0x51,
@@ -172,7 +221,7 @@ impl MossTtsDelayCheckpoint {
             )));
         }
         validate_metadata(&file, release)?;
-        let mapped = Arc::new(DelayMappedDescriptors::bind(file)?);
+        let mapped = Arc::new(DelayMappedDescriptors::bind(file, DELAY_TOPOLOGY, MAPPED)?);
         Ok(Self {
             release,
             checkpoint,
@@ -208,25 +257,35 @@ impl MossTtsDelayCheckpoint {
 pub(super) struct DelayMappedDescriptors {
     file: Arc<GgufFile>,
     infos: Vec<GgufTensorInfo>,
+    topology: DelayTopology,
 }
 
 impl std::fmt::Debug for DelayMappedDescriptors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DelayMappedDescriptors")
             .field("tensor_count", &self.infos.len())
+            .field("topology", &self.topology)
             .finish()
     }
 }
 
 impl DelayMappedDescriptors {
-    fn bind(file: Arc<GgufFile>) -> Result<Self> {
-        let contract = tensor_contract();
-        debug_assert_eq!(contract.len(), TENSOR_COUNT);
+    pub(super) fn bind(
+        file: Arc<GgufFile>,
+        topology: DelayTopology,
+        mapped: MappedModel,
+    ) -> Result<Self> {
+        let contract = tensor_contract(topology);
+        debug_assert_eq!(contract.len(), topology.tensor_count());
         let mut infos = Vec::with_capacity(contract.len());
         for (name, elements) in contract {
-            infos.push(delay_mapped_info(&file, &name, elements)?);
+            infos.push(delay_mapped_info(&file, &name, elements, mapped)?);
         }
-        Ok(Self { file, infos })
+        Ok(Self {
+            file,
+            infos,
+            topology,
+        })
     }
 
     pub(super) fn file(&self) -> &GgufFile {
@@ -237,19 +296,23 @@ impl DelayMappedDescriptors {
         &self.infos[index]
     }
 
+    pub(super) const fn topology(&self) -> DelayTopology {
+        self.topology
+    }
+
     pub(super) fn text_embedding(&self) -> &GgufTensorInfo {
         self.info(0)
     }
 
     pub(super) fn audio_embedding(&self, codebook: usize) -> &GgufTensorInfo {
-        debug_assert!(codebook < NUM_AUDIO_CODEBOOKS);
+        debug_assert!(codebook < self.topology.num_audio_codebooks);
         self.info(1 + codebook)
     }
 
     pub(super) fn layer(&self, layer: usize) -> DelayLayerDescriptors<'_> {
-        debug_assert!(layer < NUM_LAYERS);
+        debug_assert!(layer < self.topology.num_layers);
         const LAYER_WIDTH: usize = 11;
-        let start = 1 + NUM_AUDIO_CODEBOOKS + layer * LAYER_WIDTH;
+        let start = 1 + self.topology.num_audio_codebooks + layer * LAYER_WIDTH;
         DelayLayerDescriptors {
             input_norm: self.info(start),
             q: self.info(start + 1),
@@ -266,12 +329,12 @@ impl DelayMappedDescriptors {
     }
 
     pub(super) fn final_norm(&self) -> &GgufTensorInfo {
-        self.info(1 + NUM_AUDIO_CODEBOOKS + NUM_LAYERS * 11)
+        self.info(1 + self.topology.num_audio_codebooks + self.topology.num_layers * 11)
     }
 
     pub(super) fn head(&self, head: usize) -> &GgufTensorInfo {
-        debug_assert!(head <= NUM_AUDIO_CODEBOOKS);
-        self.info(1 + NUM_AUDIO_CODEBOOKS + NUM_LAYERS * 11 + 1 + head)
+        debug_assert!(head <= self.topology.num_audio_codebooks);
+        self.info(1 + self.topology.num_audio_codebooks + self.topology.num_layers * 11 + 1 + head)
     }
 }
 
@@ -289,73 +352,95 @@ pub(super) struct DelayLayerDescriptors<'a> {
     pub(super) down: &'a GgufTensorInfo,
 }
 
-fn delay_mapped_info(file: &GgufFile, name: &str, elements: usize) -> Result<GgufTensorInfo> {
+fn delay_mapped_info(
+    file: &GgufFile,
+    name: &str,
+    elements: usize,
+    mapped: MappedModel,
+) -> Result<GgufTensorInfo> {
     if let Some(info) = file.tensor_info(name)
         && !matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
     {
         return Err(VokraError::ModelLoad(format!(
-            "{LABEL}: tensor `{name}` uses unsupported mapped dtype {:?}; the Base/v1.5 bounded-memory runtime accepts dense F32, F16 or BF16 only and has no silent resident/CPU fallback",
-            info.dtype
+            "{}: tensor `{name}` uses unsupported mapped dtype {:?}; the bounded-memory runtime accepts dense F32, F16 or BF16 only and has no silent resident/CPU fallback",
+            mapped.name, info.dtype
         )));
     }
-    mapped_info(file, name, elements, MAPPED)
+    mapped_info(file, name, elements, mapped)
 }
 
-fn tensor_contract() -> Vec<(String, usize)> {
-    let mut tensors = Vec::with_capacity(TENSOR_COUNT);
+pub(super) fn tensor_contract(topology: DelayTopology) -> Vec<(String, usize)> {
+    let q_dim = topology.q_dim();
+    let kv_dim = topology.kv_dim();
+    let mut tensors = Vec::with_capacity(topology.tensor_count());
     tensors.push((
         "language_model.embed_tokens.weight".to_owned(),
-        TEXT_VOCAB_SIZE * HIDDEN_DIM,
+        topology.text_vocab_size * topology.hidden_dim,
     ));
-    for codebook in 0..NUM_AUDIO_CODEBOOKS {
+    for codebook in 0..topology.num_audio_codebooks {
         tensors.push((
             format!("emb_ext.{codebook}.weight"),
-            AUDIO_VOCAB_WITH_PAD * HIDDEN_DIM,
+            topology.audio_vocab_with_pad * topology.hidden_dim,
         ));
     }
-    for layer in 0..NUM_LAYERS {
+    for layer in 0..topology.num_layers {
         let prefix = format!("language_model.layers.{layer}");
         tensors.extend([
-            (format!("{prefix}.input_layernorm.weight"), HIDDEN_DIM),
+            (
+                format!("{prefix}.input_layernorm.weight"),
+                topology.hidden_dim,
+            ),
             (
                 format!("{prefix}.self_attn.q_proj.weight"),
-                Q_DIM * HIDDEN_DIM,
+                q_dim * topology.hidden_dim,
             ),
-            (format!("{prefix}.self_attn.q_norm.weight"), HEAD_DIM),
+            (
+                format!("{prefix}.self_attn.q_norm.weight"),
+                topology.head_dim,
+            ),
             (
                 format!("{prefix}.self_attn.k_proj.weight"),
-                KV_DIM * HIDDEN_DIM,
+                kv_dim * topology.hidden_dim,
             ),
-            (format!("{prefix}.self_attn.k_norm.weight"), HEAD_DIM),
+            (
+                format!("{prefix}.self_attn.k_norm.weight"),
+                topology.head_dim,
+            ),
             (
                 format!("{prefix}.self_attn.v_proj.weight"),
-                KV_DIM * HIDDEN_DIM,
+                kv_dim * topology.hidden_dim,
             ),
             (
                 format!("{prefix}.self_attn.o_proj.weight"),
-                HIDDEN_DIM * Q_DIM,
+                topology.hidden_dim * q_dim,
             ),
             (
                 format!("{prefix}.post_attention_layernorm.weight"),
-                HIDDEN_DIM,
+                topology.hidden_dim,
             ),
             (
                 format!("{prefix}.mlp.gate_proj.weight"),
-                FFN_DIM * HIDDEN_DIM,
+                topology.ffn_dim * topology.hidden_dim,
             ),
-            (format!("{prefix}.mlp.up_proj.weight"), FFN_DIM * HIDDEN_DIM),
+            (
+                format!("{prefix}.mlp.up_proj.weight"),
+                topology.ffn_dim * topology.hidden_dim,
+            ),
             (
                 format!("{prefix}.mlp.down_proj.weight"),
-                HIDDEN_DIM * FFN_DIM,
+                topology.hidden_dim * topology.ffn_dim,
             ),
         ]);
     }
-    tensors.push(("language_model.norm.weight".to_owned(), HIDDEN_DIM));
-    tensors.push(("lm_heads.0.weight".to_owned(), TEXT_VOCAB_SIZE * HIDDEN_DIM));
-    for head in 1..=NUM_AUDIO_CODEBOOKS {
+    tensors.push(("language_model.norm.weight".to_owned(), topology.hidden_dim));
+    tensors.push((
+        "lm_heads.0.weight".to_owned(),
+        topology.text_vocab_size * topology.hidden_dim,
+    ));
+    for head in 1..=topology.num_audio_codebooks {
         tensors.push((
             format!("lm_heads.{head}.weight"),
-            AUDIO_VOCAB_WITH_PAD * HIDDEN_DIM,
+            topology.audio_vocab_with_pad * topology.hidden_dim,
         ));
     }
     tensors
@@ -458,7 +543,7 @@ mod tests {
 
     #[test]
     fn mapped_contract_covers_every_manifest_tensor_once() {
-        let contract = tensor_contract();
+        let contract = tensor_contract(DELAY_TOPOLOGY);
         assert_eq!(contract.len(), TENSOR_COUNT);
         let names: BTreeSet<&str> = contract.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names.len(), TENSOR_COUNT);

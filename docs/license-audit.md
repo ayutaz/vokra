@@ -386,7 +386,13 @@ tensors, hidden 2048 and 17 LM heads, with manifest
 The converter now uses dedicated `ModelKind::MossVoiceGenerator` and
 `MossTtsVariant::VoiceGenerator` arms with faithful identity/axes. The already
 published restamped GGUF still carries stale 8B/32-codebook metadata and is
-not republished or treated as corrected by this source change.
+not republished or treated as corrected by this source change. The runtime now
+has a strict mmap binder for the exact 343-tensor manifest. Corrected files
+must carry the fixed revision, source hashes, framing IDs and Full codec
+identity; the existing stale header is accepted only behind that complete
+manifest and reports `requires_metadata_repair = true`. Native generation and
+real-weight parity remain pending, so this binder is not counted as executable
+TTS support.
 2026-08-26 Nano runtime-audit correction: pinned upstream revision
 `44502f80dbf9743528fa921cc544d662c685ebec` declares a custom GPT-2 with
 `position_embedding_type = "rope"`, `rope_base = 10000`, LayerNorm epsilon

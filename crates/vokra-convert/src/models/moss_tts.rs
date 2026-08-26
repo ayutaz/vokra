@@ -258,7 +258,7 @@ const KEY_MOSS_LLM_RMS_NORM_EPS: &str = "vokra.moss_tts.llm.rms_norm_eps";
 /// `"gpt2"` for Nano.
 const KEY_MOSS_LLM_FAMILY: &str = "vokra.moss_tts.llm.family";
 
-/// Exact upstream revision used for the corrected Nano contract.
+/// Exact upstream revision used for corrected release contracts.
 const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 /// SHA-256 of the released Nano `pytorch_model.bin` LFS object.
 const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
@@ -280,8 +280,15 @@ const KEY_MOSS_AUDIO_START_TOKEN_ID: &str = "vokra.moss_tts.audio_start_token_id
 const KEY_MOSS_AUDIO_END_TOKEN_ID: &str = "vokra.moss_tts.audio_end_token_id";
 const KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_user_slot_token_id";
 const KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_assistant_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID: &str =
+    "vokra.moss_tts.audio_assistant_gen_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID: &str =
+    "vokra.moss_tts.audio_assistant_delay_slot_token_id";
 const KEY_MOSS_AUDIO_PAD_TOKEN_ID: &str = "vokra.moss_tts.audio_pad_token_id";
-/// Exact decoder companion selected by the Nano config.
+/// SHA-256 pins for custom model/processor source when the release requires it.
+const KEY_MOSS_MODELING_SOURCE_SHA256: &str = "vokra.moss_tts.modeling_source_sha256";
+const KEY_MOSS_PROCESSING_SOURCE_SHA256: &str = "vokra.moss_tts.processing_source_sha256";
+/// Exact decoder companion selected by the release config.
 const KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM: &str = "vokra.moss_tts.audio_tokenizer_upstream_hf";
 
 // ─── Per-variant transcribed constants ───────────────────────────────
@@ -324,6 +331,25 @@ const VOICE_LLM_HEAD_DIM: u32 = 128;
 const VOICE_LLM_VOCAB: u32 = 155_648;
 const VOICE_LLM_ROPE_BASE: f32 = 1_000_000.0;
 const VOICE_LLM_RMS_NORM_EPS: f32 = 1e-6;
+const VOICE_UPSTREAM_REVISION: &str = "97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4";
+const VOICE_CONFIG_SHA256: &str =
+    "5b6ccfbf309a5844c130d09c9b5fa8b9eef55db27f1b7072695483b6f5524685";
+const VOICE_MODELING_SOURCE_SHA256: &str =
+    "666d7320f93ce6b1c1f6ed4dba6fd4b9520a082a90fa7a17211efd83247d28a0";
+const VOICE_PROCESSING_SOURCE_SHA256: &str =
+    "16dda5233f9f752518d07a6b780d6555945b48547fba0b4e7faf6eb2c4ed0038";
+const VOICE_POSITION_EMBEDDING_TYPE: &str = "rope";
+const VOICE_MAX_POSITION_EMBEDDINGS: u32 = 40_960;
+const VOICE_PAD_TOKEN_ID: u32 = 151_643;
+const VOICE_IM_START_TOKEN_ID: u32 = 151_644;
+const VOICE_IM_END_TOKEN_ID: u32 = 151_645;
+const VOICE_AUDIO_START_TOKEN_ID: u32 = 151_652;
+const VOICE_AUDIO_END_TOKEN_ID: u32 = 151_653;
+const VOICE_AUDIO_USER_SLOT_TOKEN_ID: u32 = 151_654;
+const VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID: u32 = 151_656;
+const VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID: u32 = 151_662;
+const VOICE_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const VOICE_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
 
 /// Nano axes. GPT-2 backbone — no RoPE, no RMSNorm; sentinels written
 /// for those keys so the runtime binder can tell "not applicable"
@@ -844,6 +870,47 @@ fn write_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
             KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
             NANO_AUDIO_TOKENIZER_UPSTREAM,
         );
+    } else if variant == MossTtsVariant::VoiceGenerator {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, VOICE_UPSTREAM_REVISION);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, VOICE_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_MODELING_SOURCE_SHA256,
+            VOICE_MODELING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSING_SOURCE_SHA256,
+            VOICE_PROCESSING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            VOICE_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            VOICE_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, VOICE_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, VOICE_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, VOICE_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, VOICE_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, VOICE_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            VOICE_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+            VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID,
+            VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, VOICE_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            VOICE_AUDIO_TOKENIZER_UPSTREAM,
+        );
     }
 }
 
@@ -1246,6 +1313,33 @@ mod tests {
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), VOICE_LLM_HIDDEN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_FFN_DIM), VOICE_LLM_FFN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_N_LAYER), VOICE_LLM_N_LAYER);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_CONFIG_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_CONFIG_SHA256)
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS),
+            VOICE_MAX_POSITION_EMBEDDINGS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID),
+            VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID),
+            VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_AUDIO_TOKENIZER_UPSTREAM)
+        );
         assert_ne!(
             get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM),
             DELAY_LLM_HIDDEN,
