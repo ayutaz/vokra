@@ -18,23 +18,27 @@ use super::{ARCH, CATEGORY};
 
 const LABEL: &str = "moss_tts/delay";
 const TENSOR_COUNT: usize = 463;
-const HIDDEN_DIM: usize = 4_096;
-const FFN_DIM: usize = 12_288;
-const NUM_LAYERS: usize = 36;
-const NUM_Q_HEADS: usize = 32;
-const NUM_KV_HEADS: usize = 8;
-const HEAD_DIM: usize = 128;
-const KV_DIM: usize = NUM_KV_HEADS * HEAD_DIM;
-const TEXT_VOCAB_SIZE: usize = 155_648;
-const NUM_AUDIO_CODEBOOKS: usize = 32;
-const AUDIO_VOCAB_WITH_PAD: usize = 1_025;
+pub(super) const HIDDEN_DIM: usize = 4_096;
+pub(super) const FFN_DIM: usize = 12_288;
+pub(super) const NUM_LAYERS: usize = 36;
+pub(super) const NUM_Q_HEADS: usize = 32;
+pub(super) const NUM_KV_HEADS: usize = 8;
+pub(super) const HEAD_DIM: usize = 128;
+pub(super) const Q_DIM: usize = NUM_Q_HEADS * HEAD_DIM;
+pub(super) const KV_DIM: usize = NUM_KV_HEADS * HEAD_DIM;
+pub(super) const TEXT_VOCAB_SIZE: usize = 155_648;
+pub(super) const NUM_AUDIO_CODEBOOKS: usize = 32;
+pub(super) const AUDIO_VOCAB_WITH_PAD: usize = 1_025;
+pub(super) const MAX_POSITION_EMBEDDINGS: usize = 40_960;
+pub(super) const RMS_NORM_EPS: f32 = 1.0e-6;
+pub(super) const ROPE_BASE: f32 = 1_000_000.0;
 
 const MANIFEST_SHA256: [u8; 32] = [
     0x5a, 0x35, 0x78, 0xfb, 0x9e, 0x57, 0x04, 0xbf, 0x80, 0xa1, 0x27, 0x15, 0xe8, 0xc9, 0x44, 0xb2,
     0x34, 0x74, 0x57, 0xb5, 0x7c, 0x9a, 0x4d, 0x6c, 0x05, 0x5d, 0xc5, 0xb3, 0xb2, 0x2e, 0x3d, 0x51,
 ];
 
-const MAPPED: MappedModel = MappedModel {
+pub(super) const MAPPED: MappedModel = MappedModel {
     name: LABEL,
     // `delay_mapped_info` intercepts non-dense types with the MOSS-specific
     // no-fallback error before the shared helper reaches this field.
@@ -232,6 +236,57 @@ impl DelayMappedDescriptors {
     pub(super) fn info(&self, index: usize) -> &GgufTensorInfo {
         &self.infos[index]
     }
+
+    pub(super) fn text_embedding(&self) -> &GgufTensorInfo {
+        self.info(0)
+    }
+
+    pub(super) fn audio_embedding(&self, codebook: usize) -> &GgufTensorInfo {
+        debug_assert!(codebook < NUM_AUDIO_CODEBOOKS);
+        self.info(1 + codebook)
+    }
+
+    pub(super) fn layer(&self, layer: usize) -> DelayLayerDescriptors<'_> {
+        debug_assert!(layer < NUM_LAYERS);
+        const LAYER_WIDTH: usize = 11;
+        let start = 1 + NUM_AUDIO_CODEBOOKS + layer * LAYER_WIDTH;
+        DelayLayerDescriptors {
+            input_norm: self.info(start),
+            q: self.info(start + 1),
+            q_norm: self.info(start + 2),
+            k: self.info(start + 3),
+            k_norm: self.info(start + 4),
+            v: self.info(start + 5),
+            o: self.info(start + 6),
+            ffn_norm: self.info(start + 7),
+            gate: self.info(start + 8),
+            up: self.info(start + 9),
+            down: self.info(start + 10),
+        }
+    }
+
+    pub(super) fn final_norm(&self) -> &GgufTensorInfo {
+        self.info(1 + NUM_AUDIO_CODEBOOKS + NUM_LAYERS * 11)
+    }
+
+    pub(super) fn head(&self, head: usize) -> &GgufTensorInfo {
+        debug_assert!(head <= NUM_AUDIO_CODEBOOKS);
+        self.info(1 + NUM_AUDIO_CODEBOOKS + NUM_LAYERS * 11 + 1 + head)
+    }
+}
+
+pub(super) struct DelayLayerDescriptors<'a> {
+    pub(super) input_norm: &'a GgufTensorInfo,
+    pub(super) q: &'a GgufTensorInfo,
+    pub(super) q_norm: &'a GgufTensorInfo,
+    pub(super) k: &'a GgufTensorInfo,
+    pub(super) k_norm: &'a GgufTensorInfo,
+    pub(super) v: &'a GgufTensorInfo,
+    pub(super) o: &'a GgufTensorInfo,
+    pub(super) ffn_norm: &'a GgufTensorInfo,
+    pub(super) gate: &'a GgufTensorInfo,
+    pub(super) up: &'a GgufTensorInfo,
+    pub(super) down: &'a GgufTensorInfo,
 }
 
 fn delay_mapped_info(file: &GgufFile, name: &str, elements: usize) -> Result<GgufTensorInfo> {
@@ -264,7 +319,7 @@ fn tensor_contract() -> Vec<(String, usize)> {
             (format!("{prefix}.input_layernorm.weight"), HIDDEN_DIM),
             (
                 format!("{prefix}.self_attn.q_proj.weight"),
-                NUM_Q_HEADS * HEAD_DIM * HIDDEN_DIM,
+                Q_DIM * HIDDEN_DIM,
             ),
             (format!("{prefix}.self_attn.q_norm.weight"), HEAD_DIM),
             (
@@ -278,7 +333,7 @@ fn tensor_contract() -> Vec<(String, usize)> {
             ),
             (
                 format!("{prefix}.self_attn.o_proj.weight"),
-                HIDDEN_DIM * NUM_Q_HEADS * HEAD_DIM,
+                HIDDEN_DIM * Q_DIM,
             ),
             (
                 format!("{prefix}.post_attention_layernorm.weight"),
@@ -334,8 +389,8 @@ fn validate_metadata(file: &GgufFile, release: MossTtsDelayRelease) -> Result<()
     ] {
         require_u32(file, key, expected)?;
     }
-    require_f32(file, "vokra.moss_tts.llm.rope_base", 1_000_000.0)?;
-    require_f32(file, "vokra.moss_tts.llm.rms_norm_eps", 1.0e-6)?;
+    require_f32(file, "vokra.moss_tts.llm.rope_base", ROPE_BASE)?;
+    require_f32(file, "vokra.moss_tts.llm.rms_norm_eps", RMS_NORM_EPS)?;
     Ok(())
 }
 

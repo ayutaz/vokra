@@ -2594,8 +2594,20 @@ true-mmap binder that authenticates each release identity, the shared complete
 widening payload data. The exact descriptor inventory is 33 embeddings, 396
 Qwen3 layer tensors, one final RMSNorm and 33 LM heads. Quantized, missing or
 wrong-shaped payloads fail explicitly. This is the bounded-memory prerequisite
-for the native generation graph, not a claim that Base/v1.5 synthesis is
-already runnable, so the reachability counts remain unchanged.
+for the native generation graph.
+
+The shared native Qwen3 graph now consumes an explicit `[rows,33]` upstream
+token matrix and returns the last-position text `[155648]` and 32 audio
+`[1025]` head logits. Prompt prefill is chunked, K/V state is cached, one
+transformer layer is widened at a time, embedding rows are gathered directly
+from the mapping and heads are evaluated in 512-row chunks. Q/K/V and FFN
+projections, QK-transpose and probability-value products, softmax, RMSNorm,
+SiLU and all LM-head GEMVs execute through one preflighted CPU/Metal backend.
+RoPE, causal masking, layout changes, residual sums and the SwiGLU pointwise
+product remain deterministic host glue rather than a second learned backend.
+The official delayed-codebook sampling state machine and Full audio-tokenizer
+PCM decode are still pending, so Base/v1.5 are not yet counted as end-to-end
+TTS-complete and the reachability counts remain unchanged.
 
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config
