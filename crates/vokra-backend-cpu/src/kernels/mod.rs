@@ -20,6 +20,7 @@
 //! | [`gelu_new_f32`] | scalar | GPT-2 / Transformers tanh-approximation GELU |
 //! | [`softmax_f32`] | yes (exp scalar; SIMD under `simd-transcendental`) | Whisper attention |
 //! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
+//! | [`scale_norm_f32`] | scalar reduction | MossFormer2 FLASH projections |
 //! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
 //!
 //! **Deliberately not SIMD kernels here** (memory-bound / structural, left to
@@ -653,6 +654,47 @@ pub fn group_norm_f32(
     Ok(())
 }
 
+// ---- ScaleNorm (MossFormer2 FLASH projections) -----------------------------
+
+/// Row-wise ScaleNorm:
+/// `out[r,c] = input[r,c] / max(||row||₂ · cols⁻¹ᐟ², eps) · gain`.
+///
+/// This is deliberately distinct from RMSNorm. ScaleNorm clamps the completed
+/// norm to `eps`, whereas RMSNorm adds epsilon inside the square root. Keeping
+/// a separate kernel preserves the released ClearerVoice-Studio equation and
+/// lets the Metal backend execute the reduction without a host fallback.
+pub fn scale_norm_f32(
+    input: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+    gain: f32,
+    eps: f32,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm rows and cols must be non-zero, got {rows}x{cols}"
+        )));
+    }
+    if !gain.is_finite() || !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm gain must be finite and eps positive, got gain={gain}, eps={eps}"
+        )));
+    }
+    validate_rows_cols(input, out, rows, cols)?;
+    let dimension_scale = (cols as f64).sqrt().recip() as f32;
+    for row in 0..rows {
+        let start = row * cols;
+        let source = &input[start..start + cols];
+        let squared_norm = source.iter().map(|value| value * value).sum::<f32>();
+        let denominator = (squared_norm.sqrt() * dimension_scale).max(eps);
+        for col in 0..cols {
+            out[start + col] = source[col] / denominator * gain;
+        }
+    }
+    Ok(())
+}
+
 // ---- conv1d via im2col + GEMM (M0-08-T08) ----
 
 /// 1-D convolution via im2col + [`gemm_f32`], so it rides the dispatched
@@ -1159,6 +1201,26 @@ mod tests {
     fn group_norm_rejects_invalid_shapes() {
         assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 0, 2, &[], &[], 1e-8).is_err());
         assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 2, 2, &[1.0], &[0.0; 2], 1e-8,).is_err());
+    }
+
+    #[test]
+    fn scale_norm_matches_released_equation_and_clamp() {
+        let input = [3.0f32, 4.0, 0.0, 0.0];
+        let mut out = [f32::NAN; 4];
+        scale_norm_f32(&input, &mut out, 2, 2, 1.5, 1.0e-5).unwrap();
+        let denominator = 5.0 * (2.0f64).sqrt().recip() as f32;
+        assert!((out[0] - 3.0 / denominator * 1.5).abs() <= f32::EPSILON);
+        assert!((out[1] - 4.0 / denominator * 1.5).abs() <= f32::EPSILON);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+    }
+
+    #[test]
+    fn scale_norm_rejects_invalid_contract() {
+        assert!(scale_norm_f32(&[], &mut [], 0, 2, 1.0, 1.0e-5).is_err());
+        assert!(scale_norm_f32(&[1.0], &mut [0.0], 1, 1, f32::NAN, 1.0e-5).is_err());
+        assert!(scale_norm_f32(&[1.0], &mut [0.0], 1, 1, 1.0, 0.0).is_err());
+        assert!(scale_norm_f32(&[1.0; 2], &mut [0.0; 1], 1, 2, 1.0, 1.0e-5).is_err());
     }
 
     #[test]

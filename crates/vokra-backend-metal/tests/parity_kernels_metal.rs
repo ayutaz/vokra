@@ -1918,6 +1918,32 @@ fn rms_norm_metal_matches_cpu() {
     eprintln!("rms_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
 }
 
+#[test]
+fn scale_norm_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("scale_norm");
+    let eps = 1.0e-5f32;
+    let gain = 0.83f32;
+    let shapes = [(1usize, 2usize), (17, 128), (511, 512), (511, 1_024)];
+    let mut worst = 0.0f32;
+    for &(rows, cols) in &shapes {
+        let input = rand_vec(0x5CA1E ^ ((rows * 97 + cols) as u64), rows * cols);
+        let mut cpu_output = vec![f32::NAN; input.len()];
+        cpu::scale_norm_f32(&input, &mut cpu_output, rows, cols, gain, eps)
+            .expect("CPU scale_norm");
+        let mut metal_output = vec![f32::NAN; input.len()];
+        ctx.scale_norm_f32(&input, &mut metal_output, rows, cols, gain, eps)
+            .expect("Metal scale_norm");
+        let difference = max_abs_diff(&metal_output, &cpu_output);
+        eprintln!("scale_norm rows={rows:<4} cols={cols:<4} max|Δ|={difference:.3e}");
+        assert!(
+            difference <= ATOL,
+            "scale_norm rows={rows} cols={cols}: {difference} > {ATOL}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("scale_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
 /// Standard RoPE frequencies `freq_j = base^(-2j/head_dim)` for `j = 0..half`
 /// (the unscaled `llama3_inv_freqs`; the kernel is scale-agnostic, so plain
 /// frequencies exercise it just as well).
@@ -2094,6 +2120,11 @@ fn llama_primitives_reject_bad_shapes_explicitly() {
         ctx.rms_norm_f32(&[1.0; 6], &mut out, 2, 3, &[1.0; 2], 1e-5)
             .is_err(),
         "rms_norm short gamma must be rejected"
+    );
+    assert!(
+        ctx.scale_norm_f32(&[1.0; 6], &mut out, 2, 3, 1.0, 0.0)
+            .is_err(),
+        "scale_norm non-positive epsilon must be rejected"
     );
     // rope: odd head_dim is a loud error.
     let mut ro = vec![0.0f32; 6];

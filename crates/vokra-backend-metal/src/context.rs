@@ -780,6 +780,40 @@ kernel void vokra_rms_norm_f32(
     }
 }
 
+// ---- scale_norm: released MossFormer2 ScaleNorm -----------------------------
+// out[r,c] = inp[r,c] / max(sqrt(sum(inp[r,:]^2))*scale, eps) * gain.
+// `scale = cols^-0.5` is computed once on the Rust host and passed as f32 so
+// the CPU and Metal paths consume the identical rounded constant.
+struct ScaleNormDims {
+    uint  rows;
+    uint  cols;
+    float scale;
+    float eps;
+    float gain;
+};
+
+kernel void vokra_scale_norm_f32(
+    device const float*     inp [[buffer(0)]],
+    device float*           out [[buffer(1)]],
+    constant ScaleNormDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    const uint r = gid;
+    if (r >= d.rows) {
+        return;
+    }
+    const uint base = r * d.cols;
+    float ss = 0.0f;
+    for (uint c = 0; c < d.cols; ++c) {
+        const float v = inp[base + c];
+        ss += v * v;
+    }
+    const float denominator = max(sqrt(ss) * d.scale, d.eps);
+    for (uint c = 0; c < d.cols; ++c) {
+        out[base + c] = inp[base + c] / denominator * d.gain;
+    }
+}
+
 // ---- rope: adjacent-pair rotation over [seq_len, head_dim] row-major ----------
 // Row `i` rotates pair `j` = (x[2j], x[2j+1]) by angle (pos_offset + i)·inv_freqs[j].
 // One thread per (pair, row); `inv_freqs` has head_dim/2 entries (precomputed by
@@ -1837,6 +1871,18 @@ struct RmsNormDims {
     eps: f32,
 }
 
+/// MossFormer2 ScaleNorm dims (`setBytes:` index 2). Field order and widths
+/// mirror the MSL `ScaleNormDims`; all members are four-byte scalars.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ScaleNormDims {
+    rows: u32,
+    cols: u32,
+    scale: f32,
+    eps: f32,
+    gain: f32,
+}
+
 /// Adjacent-pair RoPE dims (`setBytes:` index 3). Mirrors the MSL `struct
 /// RopeDims`; `pos_offset` is the absolute position of sequence row 0.
 #[repr(C)]
@@ -2346,11 +2392,11 @@ pub struct MetalContext {
     dequant_gemv_q4_0_pipeline: Id,
     dequant_gemv_q5_0_pipeline: Id,
     dequant_gemv_q8_0_pipeline: Id,
-    /// M4-05/06 Llama-family decode primitives: gamma-only RMSNorm,
-    /// adjacent-pair RoPE, elementwise SiLU, and the fused SwiGLU FFN
-    /// activation. Each is the GPU implementation of the matching CSM / Moshi
-    /// CPU op (module docs on `KERNELS_MSL`); share the Phase-4/5 library.
+    /// M4-05/06 Llama-family decode primitives plus MossFormer2 ScaleNorm.
+    /// Each is the GPU implementation of its matching CPU equation (module
+    /// docs on `KERNELS_MSL`) and shares the Phase-4/5 library.
     rms_norm_pipeline: Id,
+    scale_norm_pipeline: Id,
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
@@ -2594,6 +2640,10 @@ impl MetalContext {
         // M4-05/06 Llama-family decode primitives; share the same library.
         // SAFETY: as above.
         let rms_norm_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_rms_norm_f32") }?;
+        // MossFormer2 FLASH ScaleNorm; exact clamp-after-norm equation.
+        // SAFETY: as above.
+        let scale_norm_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_scale_norm_f32") }?;
         // SAFETY: as above.
         let rope_adjacent_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_rope_adjacent_f32") }?;
@@ -2687,6 +2737,7 @@ impl MetalContext {
             dequant_gemv_q5_0_pipeline: dequant_gemv_q5_0_pipeline.into_raw(),
             dequant_gemv_q8_0_pipeline: dequant_gemv_q8_0_pipeline.into_raw(),
             rms_norm_pipeline: rms_norm_pipeline.into_raw(),
+            scale_norm_pipeline: scale_norm_pipeline.into_raw(),
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
@@ -3520,6 +3571,62 @@ impl MetalContext {
             "rms_norm",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Released MossFormer2 ScaleNorm applied row-wise:
+    /// `out[r,c] = input[r,c] / max(||row||₂ · cols⁻¹ᐟ², eps) · gain`.
+    ///
+    /// ScaleNorm is not an RMSNorm alias: its epsilon clamps the completed
+    /// norm instead of being added inside the square root. This dedicated
+    /// kernel keeps the FLASH projection normalization on Metal and prevents
+    /// a silent host reduction.
+    pub fn scale_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        validate_scale_norm(input, out, rows, cols, gain, eps)?;
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_scale_norm(input, out, rows, cols, gain, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_scale_norm(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        let input_buffer = self.new_buffer_from_slice(input)?;
+        let output_buffer = self.new_buffer_output(out.len())?;
+        let dims = ScaleNormDims {
+            rows: rows as u32,
+            cols: cols as u32,
+            scale: (cols as f64).sqrt().recip() as f32,
+            eps,
+            gain,
+        };
+        let (grid, threads) = grid_1d(rows);
+        self.dispatch_compute(
+            self.scale_norm_pipeline,
+            &[&input_buffer, &output_buffer],
+            (&dims as *const ScaleNormDims).cast::<c_void>(),
+            size_of::<ScaleNormDims>(),
+            grid,
+            threads,
+            "scale_norm",
+        )?;
+        read_back(&output_buffer, out)
     }
 
     /// Adjacent-pair RoPE over `input = [seq_len, head_dim]` row-major, writing
@@ -7468,6 +7575,7 @@ impl Drop for MetalContext {
             release(self.swiglu_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);
+            release(self.scale_norm_pipeline);
             release(self.rms_norm_pipeline);
             release(self.dequant_gemv_q8_0_pipeline);
             release(self.dequant_gemv_q5_0_pipeline);
@@ -8530,6 +8638,27 @@ fn validate_rms_norm(
 ) -> Result<()> {
     validate_rows_cols(input, out, rows, cols)?;
     expect_len("rms_norm gamma", gamma.len(), cols)
+}
+
+fn validate_scale_norm(
+    input: &[f32],
+    out: &[f32],
+    rows: usize,
+    cols: usize,
+    gain: f32,
+    eps: f32,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm rows and cols must be non-zero, got {rows}x{cols}"
+        )));
+    }
+    if !gain.is_finite() || !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm gain must be finite and eps positive, got gain={gain}, eps={eps}"
+        )));
+    }
+    validate_rows_cols(input, out, rows, cols)
 }
 
 /// Validates the adjacent-pair RoPE shapes: `input`/`out` are `seq_len ×

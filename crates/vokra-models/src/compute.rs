@@ -87,6 +87,13 @@ pub enum HotOp {
     /// `vokra_rms_norm_f32` kernel. Other backends remain explicitly
     /// uncovered until they gain matching kernels.
     RmsNorm,
+    /// Scalar-gain ScaleNorm (`scale_norm_f32`) used by MossFormer2 FLASH
+    /// projections: divide each row by
+    /// `max(||row||₂ * cols^-0.5, eps)`, then multiply by the learned gain.
+    /// This is not an RMSNorm alias because epsilon clamps the completed norm.
+    /// CPU and Metal have dedicated kernels; other backends stay explicitly
+    /// uncovered rather than running the reduction on the host.
+    ScaleNorm,
     /// One-group affine GroupNorm over channel-major audio features. SepFormer
     /// uses this for the full mask tensor and needs a stable large reduction.
     GroupNorm,
@@ -450,6 +457,7 @@ impl HotOp {
                 | HotOp::Softmax
                 | HotOp::LayerNorm
                 | HotOp::RmsNorm
+                | HotOp::ScaleNorm
                 | HotOp::GroupNorm
                 | HotOp::Gelu
                 | HotOp::GeluNew
@@ -1164,6 +1172,35 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "rms_norm_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Scalar-gain ScaleNorm over the innermost axis of a `rows × cols`
+    /// buffer. Unlike [`Self::rms_norm_f32`], epsilon clamps the completed
+    /// scaled L2 norm instead of being added inside the square root.
+    pub fn scale_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::scale_norm_f32(input, out, rows, cols, gain, eps),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.scale_norm_f32(input, out, rows, cols, gain, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "scale_norm_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "scale_norm_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
                     .to_owned(),
             )),
         }
@@ -4218,6 +4255,35 @@ mod tests {
     }
 
     #[test]
+    fn cpu_scale_norm_matches_released_equation() {
+        let input = [1.0f32, -2.0, 3.0, 4.0, -1.0, 0.5];
+        let gain = 0.75f32;
+        let eps = 1.0e-5f32;
+        let mut actual = [0.0f32; 6];
+        Compute::cpu()
+            .scale_norm_f32(&input, &mut actual, 2, 3, gain, eps)
+            .expect("cpu ScaleNorm");
+        let dimension_scale = (3.0f64).sqrt().recip() as f32;
+        for row in 0..2 {
+            let source = &input[row * 3..row * 3 + 3];
+            let squared_norm = source.iter().map(|value| value * value).sum::<f32>();
+            let denominator = (squared_norm.sqrt() * dimension_scale).max(eps);
+            for col in 0..3 {
+                let expected = source[col] / denominator * gain;
+                assert_eq!(actual[row * 3 + col], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_scale_norm_rejects_invalid_epsilon() {
+        assert!(matches!(
+            Compute::cpu().scale_norm_f32(&[1.0], &mut [0.0], 1, 1, 1.0, 0.0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
     fn cpu_for_backend_covers_every_op() {
         // The CPU backend covers the full hot-op set unconditionally —
         // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
@@ -4227,6 +4293,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::GeluNew,
@@ -4304,6 +4371,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::GeluNew,
@@ -4502,6 +4570,7 @@ mod tests {
         // `denoise_apply_mask_f32`).
         for op in [
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Silu,
             HotOp::Relu,
@@ -4585,6 +4654,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
@@ -4650,6 +4720,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
@@ -4702,6 +4773,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
@@ -4771,6 +4843,7 @@ mod tests {
             HotOp::Softmax,
             HotOp::LayerNorm,
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
             HotOp::Relu,
@@ -4953,6 +5026,7 @@ mod tests {
         }
         for op in [
             HotOp::RmsNorm,
+            HotOp::ScaleNorm,
             HotOp::GroupNorm,
             HotOp::Silu,
             HotOp::MimiRvq,
