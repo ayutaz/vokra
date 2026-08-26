@@ -105,6 +105,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "fsmn-vad",
             "firered_vad",
             "focalcodec",
+            "facodec",
             "funcodec",
             "speechtokenizer",
             "ten_vad",
@@ -266,6 +267,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         focalcodec = audit.RepoRecord(
             "vokra/focalcodec-50hz", "abc", ("model.gguf",), "focalcodec"
+        )
+        facodec = audit.RepoRecord(
+            "vokra/naturalspeech3-facodec-v2",
+            "abc",
+            ("naturalspeech3-facodec-v2.gguf",),
+            "facodec",
         )
         ten_vad = audit.RepoRecord("vokra/ten-vad", "abc", ("model.gguf",), "ten_vad")
         rnnoise = audit.RepoRecord("vokra/rnnoise", "abc", ("model.gguf",), "rnnoise")
@@ -444,6 +451,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(fsmn, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(firered, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(focalcodec, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(facodec, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(facodec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(ten_vad, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(rnnoise, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(nkf_aec, routed, bound).metal_code, "full")

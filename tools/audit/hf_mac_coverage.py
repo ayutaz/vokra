@@ -246,6 +246,7 @@ METAL_CODE_ARCHES = {
     "ecapa_tdnn",
     "emotion2vec",
     "facebook_denoiser",
+    "facodec",
     "fcpe",
     "firered_vad",
     "focalcodec",

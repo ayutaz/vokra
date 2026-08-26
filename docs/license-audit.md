@@ -646,7 +646,8 @@ speaker embedding を保持する versioned portable container も追加した�
 だが、依頼者の Mac をモデル処理に使わない方針と本リポジトリの安全運用に従い、
 checkpoint download、reference 生成、workspace build、CPU parity は VAST 専用、
 real Metal parity は remote Apple Silicon 専用とする。worker と `atol = 0.01` の
-Rust gate は staged だが、実行結果は未取得であり対応件数にはまだ加算しない。
+Rust gate は staged だが、実行結果は未取得であり real-weight numerical-pass には
+まだ加算しない（source-level live-artifact reachability とは別の証拠軸）。
 この作業は再 upload / publish を含まず、upload authorization も意味しない。
 
 #### emotion2vec provenance backfill（2026-08-26）

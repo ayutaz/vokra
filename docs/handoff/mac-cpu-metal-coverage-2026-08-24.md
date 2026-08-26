@@ -244,7 +244,8 @@ the MusicGen Small/Melody composite route,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
-MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B and
+MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B,
+NaturalSpeech 3 FACodec V2 and
 Parakeet-TDT-1.1B,
 it reported:
 
@@ -253,13 +254,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 119 |
+| Complete CPU route for the live public artifact | 120 |
 | Route/binder present, released-artifact CPU forward incomplete | 45 |
-| No complete runtime binder | 29 |
+| No complete runtime binder | 28 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 119 |
+| Complete Metal code route among the CPU-complete set | 120 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 74 |
+| Metal blocked by missing/partial CPU forward | 73 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -277,7 +278,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 119 repositories with a complete Metal code route are the Audiobox
+The 120 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -325,13 +326,14 @@ They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
 `vokra/moss-tts-v1.5` and `vokra/moss-voice-generator`; the Local transformer,
 Nano's stale public metadata and both MOSS-Audio Instruct checkpoints remain
 fail-closed as described below. RMVPE is deliberately omitted from
-the live-artifact-complete list (see below). RMVPE now has a complete code route,
+the live-artifact-complete list (see below). The complete set now also includes
+`vokra/naturalspeech3-facodec-v2`. RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 74 Metal-blocked repositories first need a complete released-
+remaining 73 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2900,9 +2902,12 @@ publish path.
 
 No checkpoint payload, model inference or `vokra-models`/workspace Cargo
 command ran on the maintainer Mac. Source-level implementation and static
-gates are staged, but the live inventory remains unchanged until the VAST CPU
-run and real Apple Silicon CPU/Metal parity produce recorded evidence. No
-Hugging Face upload or artifact replacement was performed or authorized.
+gates move this one live repository to CPU `full=120`, `partial=45`,
+`no-runtime-binder=28`, `not-artifact=1` and Metal `full=120`,
+`blocked-by-cpu=73`, `not-artifact=1`. These are code-reachability counts, not
+numerical-pass evidence: the VAST CPU run and real Apple Silicon CPU/Metal
+parity remain required. No Hugging Face upload or artifact replacement was
+performed or authorized.
 
 ## Remaining execution order
 
