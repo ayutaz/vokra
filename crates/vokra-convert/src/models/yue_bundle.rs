@@ -17,8 +17,8 @@
 //! ============================================   ======   =============================================
 //! [`YueBundleVariant::Upsampler`]                145 MB   Vocos backbone + iSTFT head — 44.1 kHz
 //!                                                          vocoder decoding YuE codec latents to PCM
-//! [`YueBundleVariant::XcodecMini`]                2.2 GB   SoundStream RVQ codec (16 kHz, 25 Hz
-//!                                                          frame rate, 640x downsample, up to 6 kbps)
+//! [`YueBundleVariant::XcodecMini`]                2.2 GB   SoundStream RVQ codec (16 kHz, 50 Hz
+//!                                                          frame rate, 320x downsample, up to 6 kbps)
 //!                                                          + HuBERT-base semantic encoder + a byte-
 //!                                                          identical copy of the same Vocos decoder
 //! ============================================   ======   =============================================
@@ -39,10 +39,11 @@
 //!
 //! Output: a GGUF carrying upstream state-dict names verbatim. The
 //! [`YueBundleVariant::Upsampler`] path accepts only the exact 81 F32
-//! `backbone.*` / `head.*` manifest; the still converter-only
-//! [`YueBundleVariant::XcodecMini`] path retains the prep-script's role-prefixed
+//! `backbone.*` / `head.*` manifest. The historical public
+//! [`YueBundleVariant::XcodecMini`] bundle is now strictly bound for its
+//! released 12-codebook token-to-44.1-kHz path and retains the prep-script's role-prefixed
 //! `codec.*` / `semantic.*` / `decoder.*` names — the prep script picks
-//! these prefixes so a future `YueXcodecMini::from_gguf` can locate the
+//! these prefixes so `YueXcodecMini::from_gguf` can locate the
 //! three sub-modules that share one repo). Plus the
 //! `vokra.provenance.*` / `vokra.model.*` / `vokra.yue_bundle.variant`
 //! metadata and the strict upsampler identity/topology contract.
@@ -88,7 +89,7 @@
 //!   accordingly. The two upstream repos are distinct HF publish
 //!   targets → distinct `vokra.model.name` → distinct arch tag.
 //! - `yue_xcodec_mini` — SoundStream RVQ (n_filters=32, D=256,
-//!   ratios=[8,5,4,2] → 640x downsample, sample_rate=16000, bins=1024,
+//!   ratios=[8,5,4,2] → 320x downsample / 50 Hz, sample_rate=16000, bins=1024,
 //!   6 RVQ target bandwidths). Sibling **RVQ** codecs (Mimi / DAC /
 //!   SNAC) share the same quantizer family but wrap different
 //!   encoder/decoder backbones; sibling **FSQ** codecs (WavTokenizer /
@@ -136,23 +137,24 @@
 //! conv_stride=[5,2,2,2,2,2,2], intermediate_size=3072, do_normalize=true,
 //! sampling_rate=16000). YuE's xcodec-mini fuses semantic tokens
 //! (from this encoder) with acoustic RVQ codes (from the SoundStream
-//! codec) for its codec token stream — this is what distinguishes it
-//! from a plain SoundStream codec. The Rust runtime can either
-//! re-implement the HuBERT forward natively (whisper.cpp 型) or
-//! delegate to the sibling wav2vec2/HuBERT-family binder when that
-//! lands; today's converter surface is byte-exact tensor-name
-//! preservation only.
+//! codec) for its PCM-to-token path — this is what distinguishes it
+//! from a plain SoundStream codec. The released token-to-PCM path does not
+//! execute HuBERT: it sums the selected RVQ rows and calls Vocos, which the
+//! Rust runtime now implements. HuBERT/RepCodec fusion remains an explicit
+//! boundary for future PCM encode work.
 //!
 //! # Upstream source-tree attribution (RepCodec + descript-audio-codec)
 //!
 //! `xcodec_mini_infer` ships full source-tree copies of RepCodec
-//! (ByteDance/Chutong Meng, MIT) and Descript-Audio-Codec (MIT) at
+//! and Descript-Audio-Codec at
 //! `RepCodec/` and `descriptaudiocodec/dac/` — these are inference-tree
 //! artefacts of the upstream release process, **not** loaded at
 //! runtime and **not** touched by this converter. The prep bridge
 //! must NOT recurse into these subtrees. NOTICE credit is preserved
 //! because their code informed the YuE codec design, but no weights
-//! are lifted from them.
+//! are lifted from them. RepCodec's bundled license material is mixed
+//! (MIT text plus CC-BY-NC-4.0 text/source headers); the native token
+//! decoder uses only generic RVQ math and separately released Vocos weights.
 //!
 //! # Xcodec-mini BF16 pass-through (mirror of vocos / snac / focalcodec)
 //!
@@ -192,14 +194,15 @@
 //!
 //! Both upstream repos ship PyTorch pickle checkpoints only; this
 //! converter **never** touches ONNX (FR-LD-05) and **never** touches
-//! pickle (NFR-DS-02 zero-dep). The upsampler forward is native Rust; the
-//! xcodec-mini multi-part codec binder remains a separate follow-up.
+//! pickle (NFR-DS-02 zero-dep). Both the upsampler and the released
+//! xcodec-mini token decoder are native Rust.
 //!
 //! # Runtime status
 //!
 //! YuE-upsampler has a strict CPU/Metal reader and CLI feature decode route.
-//! YuE xcodec-mini remains explicit converter-only coverage and cannot be
-//! silently routed through the standalone upsampler.
+//! The exact historical YuE xcodec-mini GGUF has a strict CPU/Metal
+//! `[frames,12]` token-to-44.1-kHz route. PCM encode remains an explicit
+//! unsupported operation and is never substituted with a sibling codec.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -224,7 +227,7 @@ pub const ARCH_UPSAMPLER: &str = "yue_upsampler";
 
 /// `vokra.model.arch` for the YuE xcodec-mini GGUF (SoundStream RVQ
 /// codec + HuBERT semantic encoder + Vocos decoder head bundle at
-/// 16 kHz / 25 Hz frame rate).
+/// 16 kHz / 50 Hz frame rate).
 ///
 /// Intentionally distinct from every sibling codec (`mimi` / `dac` /
 /// `snac` / `wavtokenizer` / `neucodec` / `xcodec2` / `focalcodec` /
@@ -336,7 +339,6 @@ pub const KEY_UPSAMPLER_NUM_LAYERS: &str = "vokra.yue_upsampler.num_layers";
 pub const KEY_UPSAMPLER_N_FFT: &str = "vokra.yue_upsampler.n_fft";
 pub const KEY_UPSAMPLER_HOP_LENGTH: &str = "vokra.yue_upsampler.hop_length";
 pub const KEY_UPSAMPLER_PADDING: &str = "vokra.yue_upsampler.padding";
-
 /// Which YuE bundle repo the caller is converting. Selects the model
 /// name / upstream HF slug / category / arch tag / variant tag
 /// written into the GGUF.
@@ -359,7 +361,7 @@ pub enum YueBundleVariant {
     /// Category = `vocoder`. `vokra.yue_bundle.variant = "upsampler"`.
     Upsampler,
     /// `m-a-p/xcodec_mini_infer`: SoundStream RVQ codec
-    /// (n_filters=32, D=256, ratios=[8,5,4,2] → 640x downsample,
+    /// (n_filters=32, D=256, ratios=[8,5,4,2] → 320x downsample / 50 Hz,
     /// sample_rate=16000, bins=1024, target_bandwidths=[0.5, 1, 1.5,
     /// 2, 4, 6] kbps) + HuBERT-base semantic encoder (hidden_size=768,
     /// 12 layers, sampling_rate=16000, do_normalize=true) + Vocos
@@ -426,7 +428,7 @@ impl YueBundleVariant {
             }
             Self::XcodecMini => {
                 "m-a-p/xcodec_mini_infer (YuE xcodec-mini bundle = SoundStream \
-                 RVQ codec 25 Hz + HuBERT-base semantic encoder + Vocos decoder \
+                 RVQ codec 50 Hz + HuBERT-base semantic encoder + Vocos decoder \
                  head, apache-2.0)"
             }
         }
@@ -920,7 +922,6 @@ mod tests {
             Some(CATEGORY_CODEC),
             "vokra.model.category must be `codec` for the XcodecMini variant"
         );
-
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
     }

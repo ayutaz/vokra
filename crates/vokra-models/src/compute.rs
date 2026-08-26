@@ -1488,31 +1488,27 @@ impl Compute {
     /// M3-09 (CosyVoice2) calls this at chunk granularity, not at the
     /// per-token hot-path granularity the GEMM seam serves.
     ///
-    /// # CPU-only through this seam today (Metal / CUDA arms return `UnsupportedOp`)
+    /// # CPU + Metal through this seam
     ///
     /// The CPU arm delegates verbatim to [`vokra_ops::mimi_rvq_decode`]
     /// (M3-06 T04 kernel; bit-for-bit reproduces a direct kernel call, so a
     /// `Compute::cpu()` run reproduces the pre-seam output exactly). The
-    /// **Metal** and **CUDA** arms return an explicit
-    /// [`VokraError::UnsupportedOp`] because the M3-06 T14 (MSL) / T15 (NVRTC)
-    /// GPU kernels are still deferred to the M3-09 mimi_bridge upgrade past
-    /// stub — this is the honest state today and is *never* a silent CPU
-    /// fall back (FR-EX-08). The coverage gate on
-    /// [`Compute::for_backend`] additionally rejects any model that lists
-    /// [`HotOp::MimiRvq`] against Metal / CUDA / Vulkan, so a well-behaved
-    /// consumer never reaches this method through those arms; the explicit
-    /// error here is the belt-and-braces defence for any consumer that
-    /// bypassed the coverage gate (e.g. built a `Compute::for_backend(Metal,
-    /// &[])` with an empty required set and then reached for
-    /// `mimi_rvq_f32`).
+    /// **Metal** arm validates the complete shape/index contract on the host,
+    /// packs the tables in codebook-major order, and dispatches the M3-06 T14
+    /// MSL gather/fold kernel. The **CUDA** and **WebGPU** arms remain explicit
+    /// [`VokraError::UnsupportedOp`] results; no backend silently runs this op
+    /// on the CPU (FR-EX-08). [`Compute::for_backend`] rejects those uncovered
+    /// backend/op combinations before inference starts.
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
     ///   [`vokra_ops::mimi_rvq_decode`] raises (shape mismatch, out-of-range
     ///   codebook index; never a silent 0-clamp — FR-EX-08).
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`] until the
-    ///   M3-06 T14 / T15 GPU kernels land.
+    /// - Metal arm: the same shape/index errors are checked before dispatch;
+    ///   device or kernel failures are propagated.
+    /// - CUDA / WebGPU arms: explicit [`VokraError::UnsupportedOp`] until a
+    ///   native kernel is wired.
     pub fn mimi_rvq_f32(
         &self,
         codes: &[u32],

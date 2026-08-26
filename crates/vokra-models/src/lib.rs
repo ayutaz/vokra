@@ -640,6 +640,7 @@ pub mod vocos;
 pub mod wavtokenizer;
 /// Native m-a-p YuE 44.1 kHz Vocos upsampler (CPU / Metal).
 pub mod yue_upsampler;
+pub mod yue_xcodec_mini;
 // Wave 4 2026-08-14 audit follow-up (LIB.RS RULE — append at end
 // with Wave 4 comment marker): ReDimNet2 speaker encoder
 // (Wespeaker/wespeaker-voxceleb-redimnet2-B6-LM, apache-2.0). 2D

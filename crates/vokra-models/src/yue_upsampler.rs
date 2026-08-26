@@ -112,7 +112,7 @@ pub const YUE_UPSAMPLER_HOT_OPS: &[HotOp] = &[
     HotOp::Gelu,
 ];
 
-fn attrs() -> VocosAttrs {
+pub(crate) fn attrs() -> VocosAttrs {
     VocosAttrs {
         input_channels: INPUT_CHANNELS,
         dim: DIM,
@@ -228,10 +228,25 @@ impl YueUpsampler {
 }
 
 fn load_weights(file: &GgufFile) -> Result<VocosWeights> {
+    load_prefixed_weights(file, "", LABEL)
+}
+
+/// Loads the same authenticated YuE Vocos topology from a composite GGUF.
+///
+/// `vokra/yue-xcodec-mini` embeds the byte-identical 151k decoder under the
+/// `decoder.` namespace. Keeping one loader prevents the standalone and
+/// composite routes from drifting while still preserving their distinct
+/// checkpoint identities.
+pub(crate) fn load_prefixed_weights(
+    file: &GgufFile,
+    prefix: &str,
+    label: &str,
+) -> Result<VocosWeights> {
+    let name = |suffix: &str| format!("{prefix}{suffix}");
     let norm = |prefix: &str| -> Result<VocosNormWeights> {
         Ok(VocosNormWeights {
-            scale: load_tensor(file, LABEL, &format!("{prefix}.weight"), &[DIM])?,
-            shift: load_tensor(file, LABEL, &format!("{prefix}.bias"), &[DIM])?,
+            scale: load_tensor(file, label, &name(&format!("{prefix}.weight")), &[DIM])?,
+            shift: load_tensor(file, label, &name(&format!("{prefix}.bias")), &[DIM])?,
         })
     };
     let mut blocks = Vec::with_capacity(NUM_LAYERS);
@@ -240,50 +255,65 @@ fn load_weights(file: &GgufFile) -> Result<VocosWeights> {
         blocks.push(VocosBlockWeights {
             depthwise_weight: load_tensor(
                 file,
-                LABEL,
-                &format!("{prefix}.dwconv.weight"),
+                label,
+                &name(&format!("{prefix}.dwconv.weight")),
                 &[DIM, 1, 7],
             )?,
-            depthwise_bias: load_tensor(file, LABEL, &format!("{prefix}.dwconv.bias"), &[DIM])?,
+            depthwise_bias: load_tensor(
+                file,
+                label,
+                &name(&format!("{prefix}.dwconv.bias")),
+                &[DIM],
+            )?,
             norm: norm(&format!("{prefix}.norm"))?,
             pointwise1_weight: load_tensor(
                 file,
-                LABEL,
-                &format!("{prefix}.pwconv1.weight"),
+                label,
+                &name(&format!("{prefix}.pwconv1.weight")),
                 &[INTERMEDIATE_DIM, DIM],
             )?,
             pointwise1_bias: load_tensor(
                 file,
-                LABEL,
-                &format!("{prefix}.pwconv1.bias"),
+                label,
+                &name(&format!("{prefix}.pwconv1.bias")),
                 &[INTERMEDIATE_DIM],
             )?,
             pointwise2_weight: load_tensor(
                 file,
-                LABEL,
-                &format!("{prefix}.pwconv2.weight"),
+                label,
+                &name(&format!("{prefix}.pwconv2.weight")),
                 &[DIM, INTERMEDIATE_DIM],
             )?,
-            pointwise2_bias: load_tensor(file, LABEL, &format!("{prefix}.pwconv2.bias"), &[DIM])?,
-            gamma: load_tensor(file, LABEL, &format!("{prefix}.gamma"), &[DIM])?,
+            pointwise2_bias: load_tensor(
+                file,
+                label,
+                &name(&format!("{prefix}.pwconv2.bias")),
+                &[DIM],
+            )?,
+            gamma: load_tensor(file, label, &name(&format!("{prefix}.gamma")), &[DIM])?,
         });
     }
     let weights = VocosWeights {
         embed_weight: load_tensor(
             file,
-            LABEL,
-            "backbone.embed.weight",
+            label,
+            &name("backbone.embed.weight"),
             &[DIM, INPUT_CHANNELS, 7],
         )?,
-        embed_bias: load_tensor(file, LABEL, "backbone.embed.bias", &[DIM])?,
+        embed_bias: load_tensor(file, label, &name("backbone.embed.bias"), &[DIM])?,
         norm: norm("backbone.norm")?,
         blocks,
-        final_norm_weight: load_tensor(file, LABEL, "backbone.final_layer_norm.weight", &[DIM])?,
-        final_norm_bias: load_tensor(file, LABEL, "backbone.final_layer_norm.bias", &[DIM])?,
-        head_weight: load_tensor(file, LABEL, "head.out.weight", &[N_FFT + 2, DIM])?,
-        head_bias: load_tensor(file, LABEL, "head.out.bias", &[N_FFT + 2])?,
+        final_norm_weight: load_tensor(
+            file,
+            label,
+            &name("backbone.final_layer_norm.weight"),
+            &[DIM],
+        )?,
+        final_norm_bias: load_tensor(file, label, &name("backbone.final_layer_norm.bias"), &[DIM])?,
+        head_weight: load_tensor(file, label, &name("head.out.weight"), &[N_FFT + 2, DIM])?,
+        head_bias: load_tensor(file, label, &name("head.out.bias"), &[N_FFT + 2])?,
     };
-    let _window = load_tensor(file, LABEL, "head.istft.window", &[N_FFT])?;
+    let _window = load_tensor(file, label, &name("head.istft.window"), &[N_FFT])?;
     Ok(weights)
 }
 
