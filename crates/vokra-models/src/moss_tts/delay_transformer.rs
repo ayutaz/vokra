@@ -28,7 +28,7 @@ use super::voice_generator::MossVoiceGeneratorCheckpoint;
 pub use self::generation::{MossTtsDelayGeneration, MossTtsDelayGenerationOptions};
 
 const LABEL: &str = "moss_tts/delay";
-const PREFILL_CHUNK_ROWS: usize = 8;
+pub(super) const PREFILL_CHUNK_ROWS: usize = 8;
 const HEAD_CHUNK_ROWS: usize = 512;
 
 /// Every learned operator required by the Delay-class Qwen3 forward.
@@ -434,7 +434,7 @@ fn synthesize_prompt_rows(
 }
 
 #[derive(Default)]
-struct DelayRuntimeScratch {
+pub(super) struct DelayRuntimeScratch {
     block: Mutex<DelayBlock>,
     head_chunk: Mutex<Vec<f32>>,
 }
@@ -455,7 +455,7 @@ struct DelayBlock {
 }
 
 #[derive(Default)]
-struct DelayStepScratch {
+pub(super) struct DelayStepScratch {
     hidden: Vec<f32>,
     norm: Vec<f32>,
     embed_row: Vec<f32>,
@@ -483,7 +483,7 @@ fn resize_zero(values: &mut Vec<f32>, len: usize) {
     values.resize(len, 0.0);
 }
 
-fn forward_chunk(
+pub(super) fn forward_chunk(
     compute: &Compute,
     mapped: &DelayMappedDescriptors,
     runtime: &DelayRuntimeScratch,
@@ -1013,7 +1013,7 @@ fn last_logits(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn project_head(
+pub(super) fn project_head(
     compute: &Compute,
     mapped: &DelayMappedDescriptors,
     info: &GgufTensorInfo,
@@ -1048,7 +1048,7 @@ fn project_head(
     Ok(())
 }
 
-fn widen_row(
+pub(super) fn widen_row(
     mapped: &DelayMappedDescriptors,
     info: &GgufTensorInfo,
     row: usize,
@@ -1090,7 +1090,7 @@ fn widen_rows(
     widen_into(source, info.dtype, output, mapped.mapped_model())
 }
 
-fn widen_tensor(
+pub(super) fn widen_tensor(
     mapped: &DelayMappedDescriptors,
     info: &GgufTensorInfo,
     output: &mut Vec<f32>,
@@ -1120,7 +1120,25 @@ fn transpose_tensor(
     )
 }
 
-fn reject_non_finite(model_label: &str, value_label: &str, values: &[f32]) -> Result<()> {
+pub(super) fn last_hidden<'a>(
+    mapped: &DelayMappedDescriptors,
+    scratch: &'a DelayStepScratch,
+) -> Result<&'a [f32]> {
+    let topology = mapped.topology();
+    let label = mapped.mapped_model().name;
+    if scratch.norm.len() < topology.hidden_dim {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: no final hidden row is available"
+        )));
+    }
+    Ok(&scratch.norm[scratch.norm.len() - topology.hidden_dim..])
+}
+
+pub(super) fn reject_non_finite(
+    model_label: &str,
+    value_label: &str,
+    values: &[f32],
+) -> Result<()> {
     if let Some((index, value)) = values
         .iter()
         .copied()

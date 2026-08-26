@@ -10,6 +10,7 @@ mod delay;
 mod delay_transformer;
 mod generation;
 mod local;
+mod local_transformer;
 mod transformer;
 mod voice_generator;
 mod weights;
@@ -33,6 +34,9 @@ pub use self::delay_transformer::{
 };
 pub use self::generation::MossTtsGeneratedCodes;
 pub use self::local::MossTtsLocalCheckpoint;
+pub use self::local_transformer::{
+    MOSS_TTS_LOCAL_HOT_OPS, MossTtsLocal, MossTtsLocalGeneration, MossTtsLocalGenerationOptions,
+};
 pub use self::voice_generator::MossVoiceGeneratorCheckpoint;
 use self::weights::NanoWeights;
 
