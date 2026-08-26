@@ -53,6 +53,13 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/canary-1b-flash": (
+        "partial",
+        "the live 1,292-tensor GGUF contains only the FastConformer encoder; "
+        "the strict complete CPU/Metal runtime requires the released four-layer AED "
+        "decoder, 5,248-piece aggregate tokenizer and authenticated 1,374-tensor "
+        "manifest prepared from the pinned .nemo checkpoint",
+    ),
     "vokra/moss-audio-tokenizer-nano": (
         "partial",
         "the exact 374-tensor Nano checkpoint has a native CPU/Metal decode route, but "
@@ -160,6 +167,7 @@ METAL_CODE_ARCHES = {
     "bert_base",
     "bigvgan",
     "campplus",
+    "canary-1b-flash",
     "conv_tasnet",
     "crisper-whisper",
     "dac",

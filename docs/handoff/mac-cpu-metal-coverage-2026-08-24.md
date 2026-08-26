@@ -158,6 +158,8 @@ the MusicGen Small/Melody composite route,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
+MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B and
+Parakeet-TDT-1.1B,
 it reported:
 
 | Inventory / live-artifact reachability | Public repos |
@@ -165,13 +167,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 116 |
-| Route/binder present, released-artifact CPU forward incomplete | 43 |
-| No complete runtime binder | 34 |
+| Complete CPU route for the live public artifact | 119 |
+| Route/binder present, released-artifact CPU forward incomplete | 42 |
+| No complete runtime binder | 32 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 116 |
+| Complete Metal code route among the CPU-complete set | 119 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 77 |
+| Metal blocked by missing/partial CPU forward | 74 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -184,7 +186,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 116 repositories with a complete Metal code route are the Audiobox
+The 119 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -216,6 +218,12 @@ They also include `vokra/utmos22-strong` and
 They also include the decode-only Alibaba DAMO codec `vokra/funcodec`.
 They also include the decode-only Fudan/OpenMOSS codec
 `vokra/speechtokenizer`.
+They also include `vokra/mossformer2-ss-16k` at revision
+`0e9ba9258cead4252f8e5279598af296ada08bf7`,
+`vokra/nemotron-3.5-asr-streaming-0.6b` at revision
+`45d7c1a210bc226d468e09ba09df7f61dd552d5b`, and
+`vokra/parakeet-tdt-1.1b` at revision
+`3bc0fb6f33204d39c8a76fcd1a7dd987f3662192`.
 They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
 They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
@@ -232,7 +240,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 77 Metal-blocked repositories first need a complete released-
+remaining 74 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
