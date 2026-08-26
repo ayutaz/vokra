@@ -111,6 +111,14 @@ pub(crate) enum ModelTask {
     /// Medium/Large files share this arch but fail explicitly when their
     /// absent T5/codec companions are requested.
     MusicGeneration,
+    /// Suno Bark / Bark Small explicit token-id to 24 kHz speech generation.
+    ///
+    /// The dispatch returns a bare session so the run arm can retain the
+    /// complete mmap checkpoint while the semantic, coarse, fine and embedded
+    /// codec stages execute on one selected backend. The public artifacts do
+    /// not embed a tokenizer, so the concrete CLI surface accepts token ids
+    /// rather than silently guessing a raw-text frontend.
+    TtsBark,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -526,6 +534,8 @@ const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
 /// Meta MusicGen family. Small/Melody carry embedded T5 + EnCodec; the
 /// Medium/Large public artifacts are LM-only and stay companion-gated.
 const ARCH_MUSICGEN: &str = "musicgen";
+/// Suno Bark / Bark Small hierarchical TTS family.
+const ARCH_BARK: &str = "bark";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1576,6 +1586,30 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::MossAudioTokenizerCodec))
         }
+        ARCH_BARK => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_BARK}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_BARK}` is missing `vokra.model.name`; refusing Full/Small topology inference"
+                    )
+                })?;
+            let small = vokra_models::bark::BarkVariant::Small.model_name();
+            let full = vokra_models::bark::BarkVariant::Full.model_name();
+            if name != small && name != full {
+                return Err(format!(
+                    "arch `{ARCH_BARK}` carries unknown model name `{name}`; expected `{small}` or `{full}`"
+                ));
+            }
+            Ok((session, ModelTask::TtsBark))
+        }
         ARCH_MOSS_TTS => {
             if hint.is_some() {
                 return Err(format!(
@@ -2433,6 +2467,47 @@ mod tests {
         let error = load_session(path.to_str().unwrap()).expect_err("unknown family name rejects");
         let _ = std::fs::remove_file(&path);
         assert!(error.contains("refusing MusicGen/AudioGen family misrouting"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_bark_releases_to_tts() {
+        for variant in [
+            vokra_models::bark::BarkVariant::Small,
+            vokra_models::bark::BarkVariant::Full,
+        ] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_BARK);
+            builder.add_string(
+                vokra_core::gguf::chunks::KEY_MODEL_NAME,
+                variant.model_name(),
+            );
+            let bytes = builder.to_bytes().expect("serialize Bark route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-{}-arch-{}.gguf",
+                variant.model_name(),
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named Bark session builds (bare)");
+            assert_eq!(task, ModelTask::TtsBark);
+        }
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_BARK);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "bark-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Bark GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-bark-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Bark name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
     }
 
     #[test]

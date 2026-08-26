@@ -868,6 +868,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsBark => {
+            return Err(
+                "bench: arch `bark` needs explicit text token ids and has content-dependent semantic/coarse duration; use `vokra-cli run --model <bark-small.gguf> --token-ids <ids> [--bark-max-semantic-tokens <N>] [--bark-seed <u64>] --output <out.wav>` (FR-EX-08: refusing to fabricate a tokenizer prompt or fixed audio denominator)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input

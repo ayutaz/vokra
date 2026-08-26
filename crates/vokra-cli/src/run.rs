@@ -273,8 +273,9 @@ OPTIONS:
                                 `\n`, `\r`, and `\\u{HEX}` escapes. This keeps
                                 caller token strings paired with the exact ids
                                 passed to the model; no tokenizer is inferred.
-    --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3, or
-                                MusicGen Small/Melody conditional prompt:
+    --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3,
+                                MusicGen Small/Melody conditional prompt, or
+                                Bark/Bark Small text-token sequence:
                                 comma-separated u32 ids (whitespace allowed).
                                 No tokenizer or unknown-token substitution is
                                 inferred. BERT --output writes row-major `[T,D]`
@@ -289,6 +290,10 @@ OPTIONS:
     --max-new-frames <N>        MOSS-TTS only, REQUIRED: positive generation
                                 cap (Nano audio frames; Base/v1.5 delayed rows).
     --music-seed <u64>          MusicGen Small/Melody sampling seed [default 0].
+    --bark-max-semantic-tokens <N>
+                                Bark/Bark Small only: semantic generation cap
+                                in 1..=768 [default 768]. EOS may stop earlier.
+    --bark-seed <u64>           Bark/Bark Small sampling seed [default 0].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -470,6 +475,10 @@ struct RunArgs {
     max_new_frames: Option<usize>,
     /// MusicGen-only deterministic sampler seed. `None` means zero.
     music_seed: Option<u64>,
+    /// Bark-only semantic generation cap. `None` means the official 768.
+    bark_max_semantic_tokens: Option<usize>,
+    /// Bark-only deterministic sampler seed. `None` means zero.
+    bark_seed: Option<u64>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -628,6 +637,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut music_frames: Option<usize> = None;
     let mut max_new_frames: Option<usize> = None;
     let mut music_seed: Option<u64> = None;
+    let mut bark_max_semantic_tokens: Option<usize> = None;
+    let mut bark_seed: Option<u64> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
@@ -771,6 +782,30 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     value
                         .parse::<u64>()
                         .map_err(|error| format!("--music-seed must be u64: {error}"))?,
+                );
+                i += 2;
+            }
+            "--bark-max-semantic-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--bark-max-semantic-tokens requires a value")?;
+                let tokens = value.parse::<usize>().map_err(|error| {
+                    format!("--bark-max-semantic-tokens must be an integer: {error}")
+                })?;
+                if !(1..=768).contains(&tokens) {
+                    return Err(format!(
+                        "--bark-max-semantic-tokens must be in 1..=768, got {tokens}"
+                    ));
+                }
+                bark_max_semantic_tokens = Some(tokens);
+                i += 2;
+            }
+            "--bark-seed" => {
+                let value = args.get(i + 1).ok_or("--bark-seed requires a value")?;
+                bark_seed = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|error| format!("--bark-seed must be u64: {error}"))?,
                 );
                 i += 2;
             }
@@ -1021,6 +1056,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         music_frames,
         max_new_frames,
         music_seed,
+        bark_max_semantic_tokens,
+        bark_seed,
         codec_mode,
         num_quantizers,
         bandwidth_id,
@@ -1153,7 +1190,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
         | ModelTask::AecNkf
-        | ModelTask::MusicGeneration => None,
+        | ModelTask::MusicGeneration
+        | ModelTask::TtsBark => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -1255,10 +1293,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if a.token_ids.is_some() && task != ModelTask::TextEncoder && task != ModelTask::MusicGeneration
+    if a.token_ids.is_some()
+        && task != ModelTask::TextEncoder
+        && task != ModelTask::MusicGeneration
+        && task != ModelTask::TtsBark
     {
         return Err(
-            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3 or musicgen arches"
+            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3, musicgen, or bark arches"
                 .to_owned(),
         );
     }
@@ -1269,6 +1310,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     {
         return Err(
             "run: --music-unconditional-token-ids / --music-frames / --music-seed are only supported for the musicgen arch"
+                .to_owned(),
+        );
+    }
+    if (a.bark_max_semantic_tokens.is_some() || a.bark_seed.is_some()) && task != ModelTask::TtsBark
+    {
+        return Err(
+            "run: --bark-max-semantic-tokens / --bark-seed are only supported for the bark arch"
                 .to_owned(),
         );
     }
@@ -1596,6 +1644,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::MusicGeneration => {
             run_musicgen(&a)?;
+        }
+        ModelTask::TtsBark => {
+            run_bark(&a)?;
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
@@ -3223,6 +3274,47 @@ fn run_musicgen(a: &RunArgs) -> Result<(), String> {
         "musicgen",
         &pcm,
         model.config().sample_rate_hz,
+        a.output.as_deref(),
+    )
+}
+
+/// Public Bark/Bark Small explicit text-token-id generation.
+///
+/// The public GGUFs carry all three language-model stages and the causal
+/// 24 kHz codec, but no tokenizer. Raw text is therefore rejected instead of
+/// being interpreted through an unpinned vocabulary.
+fn run_bark(a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some()
+        || a.text.is_some()
+        || a.tokens.is_some()
+        || a.music_unconditional_token_ids.is_some()
+        || a.music_frames.is_some()
+        || a.music_seed.is_some()
+    {
+        return Err(
+            "run (Bark): use explicit --token-ids; --input/--text/--tokens and MusicGen-specific generation flags are not accepted because the public GGUF has no tokenizer"
+                .to_owned(),
+        );
+    }
+    let token_ids = parse_comma_u32_ids(
+        a.token_ids
+            .as_deref()
+            .ok_or("run (Bark): --token-ids <u32,u32,...> is required")?,
+        "Bark",
+        "--token-ids",
+    )?;
+    let mut generation = vokra_models::bark::BarkGenerationConfig::default();
+    generation.max_semantic_tokens = a.bark_max_semantic_tokens.unwrap_or(768);
+    generation.seed = a.bark_seed.unwrap_or(0);
+    let model = vokra_models::bark::BarkModel::open_mapped_with_backend(&a.model, a.backend)
+        .map_err(|error| format!("run (Bark bind): {error}"))?;
+    let synthesis = model
+        .synthesize_tokens(&token_ids, None, &generation)
+        .map_err(|error| format!("run (Bark generate): {error}"))?;
+    emit_audio(
+        "bark",
+        &synthesis.pcm,
+        synthesis.sample_rate,
         a.output.as_deref(),
     )
 }
@@ -6250,6 +6342,37 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn parse_accepts_explicit_bark_token_and_generation_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "bark-small.gguf",
+            "--token-ids",
+            "71,1234,1",
+            "--bark-max-semantic-tokens",
+            "96",
+            "--bark-seed",
+            "42",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("Bark explicit input flags parse");
+        assert_eq!(parsed.token_ids.as_deref(), Some("71,1234,1"));
+        assert_eq!(parsed.bark_max_semantic_tokens, Some(96));
+        assert_eq!(parsed.bark_seed, Some(42));
+        for invalid in ["0", "769"] {
+            assert!(
+                parse_args(&args(&[
+                    "--model",
+                    "bark-small.gguf",
+                    "--bark-max-semantic-tokens",
+                    invalid,
+                ]))
+                .is_err()
+            );
+        }
     }
 
     #[test]
