@@ -57,6 +57,32 @@ SAFETENSORS_DTYPE_BYTES = {
     "I64": 8,
     "U64": 8,
 }
+GGUF_METADATA = {
+    "vokra.model.arch": "moss_audio_tokenizer",
+    "vokra.model.name": "moss-audio-tokenizer-v2",
+    "vokra.model.category": "codec",
+    "vokra.moss_audio_tokenizer.variant": "v2",
+    "vokra.provenance.weight_license": "permissive",
+    "vokra.provenance.license": "apache-2.0",
+    "vokra.provenance.model_id": "moss-audio-tokenizer-v2",
+    "vokra.provenance.source": (
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2 (48 kHz stereo codec, "
+        "~2.12B F32 params, 32 residual LFQ codebooks, apache-2.0)"
+    ),
+    "vokra.provenance.upstream_hf": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+    "vokra.provenance.upstream_revision": REVISION,
+    "vokra.moss_audio_tokenizer.config_sha256": CONFIG_SHA256,
+    "vokra.moss_audio_tokenizer.configuration_source_sha256": (
+        "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529"
+    ),
+    "vokra.moss_audio_tokenizer.modeling_source_sha256": (
+        "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9"
+    ),
+    "vokra.moss_audio_tokenizer.index_sha256": INDEX_SHA256,
+    "vokra.moss_audio_tokenizer.license_sha256": (
+        "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -259,6 +285,71 @@ def validate_real_shards(
     return shard_results
 
 
+def validate_gguf(
+    path: Path,
+    manifest: dict[str, tuple[int, ...]],
+) -> dict[str, object]:
+    """Authenticate the converted GGUF header without loading tensor payloads."""
+
+    # This sibling module is a zero-dependency, header-only parser. Importing
+    # it keeps GGUF decoding logic in one audit implementation.
+    from gguf_manifest import read_manifest
+
+    metadata, tensors = read_manifest(path)
+    for key, expected in GGUF_METADATA.items():
+        actual = metadata.get(key)
+        if actual != expected:
+            raise ValueError(f"GGUF metadata {key}={actual!r}, expected {expected!r}")
+    if len(tensors) != TENSOR_COUNT:
+        raise ValueError(
+            f"GGUF tensor count {len(tensors)} != pinned {TENSOR_COUNT}"
+        )
+
+    actual: dict[str, tuple[int, ...]] = {}
+    offsets: set[int] = set()
+    for tensor in tensors:
+        name = tensor["name"]
+        if not isinstance(name, str):
+            raise ValueError(f"GGUF tensor has non-string name: {name!r}")
+        if name in actual:
+            raise ValueError(f"GGUF tensor name is duplicated: {name}")
+        dimensions = tensor["dimensions"]
+        if not isinstance(dimensions, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in dimensions
+        ):
+            raise ValueError(f"GGUF tensor {name} has invalid dimensions {dimensions!r}")
+        shape = tuple(dimensions)
+        expected_shape = manifest.get(name)
+        if shape != expected_shape:
+            raise ValueError(f"GGUF tensor {name} shape {shape} != {expected_shape}")
+        if tensor["ggml_type"] != 0:
+            raise ValueError(
+                f"GGUF tensor {name} type {tensor['ggml_type']} != F32 (0)"
+            )
+        offset = tensor["offset"]
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError(f"GGUF tensor {name} has invalid offset {offset!r}")
+        if offset in offsets:
+            raise ValueError(f"GGUF tensor {name} reuses payload offset {offset}")
+        offsets.add(offset)
+        actual[name] = shape
+    if actual != manifest:
+        missing = sorted(set(manifest) - set(actual))
+        unexpected = sorted(set(actual) - set(manifest))
+        raise ValueError(
+            f"GGUF manifest mismatch: missing={missing[:8]}, "
+            f"unexpected={unexpected[:8]}"
+        )
+    digest = manifest_sha256(actual)
+    return {
+        "bytes": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "tensor_count": len(actual),
+        "manifest_sha256": digest,
+    }
+
+
 def add_weight_norm_conv1d(
     manifest: dict[str, tuple[int, ...]],
     prefix: str,
@@ -414,7 +505,17 @@ def main() -> int:
             "required to confirm the candidate manifest (VAST-only)"
         ),
     )
+    parser.add_argument(
+        "--gguf",
+        type=Path,
+        help=(
+            "converted v2 GGUF to authenticate against the confirmed real "
+            "shards; requires --shard-dir"
+        ),
+    )
     args = parser.parse_args()
+    if args.gguf is not None and args.shard_dir is None:
+        parser.error("--gguf requires --shard-dir so conversion is never confirmed from GGUF alone")
 
     for path, expected, label in (
         (args.config, CONFIG_SHA256, "config"),
@@ -489,6 +590,16 @@ def main() -> int:
                 "shards": shards,
             }
         )
+        if args.gguf is not None:
+            if not args.gguf.is_file():
+                raise ValueError(f"--gguf is not a file: {args.gguf}")
+            gguf = validate_gguf(args.gguf, manifest)
+            if gguf["manifest_sha256"] != confirmed_sha256:
+                raise ValueError(
+                    f"GGUF manifest {gguf['manifest_sha256']} != confirmed "
+                    f"safetensors manifest {confirmed_sha256}"
+                )
+            result["gguf"] = gguf
     print(json.dumps(result, sort_keys=True))
     return 0
 

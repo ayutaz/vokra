@@ -2679,6 +2679,14 @@ contract. The derived manifest
 `a83915cffe78cee7f031e18ac3de1bbd64e93b3e4af843ff28d531ccf81748c6`
 is only a candidate until VAST confirms the real safetensors/GGUF header; it is
 not pinned as an authenticated runtime release.
+`run-moss-audio-tokenizer-v2-validation.sh` is the VAST-only confirmation
+worker: it checks the exact sizes and SHA-256 values of all three shards,
+compares every real safetensors header entry with the pinned index/shape
+contract, converts the authenticated checkpoint, rechecks the complete GGUF
+header and metadata, and generates the independent official CUDA reference.
+The worker has no publish/upload path and reports
+`numeric_verdict=NOT_RUN_RUNTIME_BINDER_PENDING_CONFIRMED_MANIFEST_REVIEW`
+until that evidence has been pulled and reviewed.
 
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config,
