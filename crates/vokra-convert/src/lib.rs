@@ -1711,18 +1711,11 @@ pub enum ModelKind {
     /// `[[feedback-large-models-on-vast-ai]]`). Provenance =
     /// **apache-2.0** (Permissive).
     ///
-    /// **Reuses the `models::moss_tts` converter** per the parent
-    /// workflow's REUSE HINT rather than a fresh `models/*.rs` module,
-    /// dispatching through the new `models::moss_tts::MossTtsVariant::AudioInstruct4b`
-    /// arm. That arm inherits the sibling **Local** (Qwen3-flavour 2.5B)
-    /// axes as a **placeholder** while the code-only task discipline
-    /// forbids downloading `configuration_moss_audio.py` for primary-source
-    /// hparam transcription; the emitted GGUF stamps a distinct
-    /// `vokra.moss_tts.variant = "audio_4b"` sub-arch tag so a runtime
-    /// dispatcher can recognise this artifact and refuse to bind the
-    /// placeholder axes until the follow-up wave lands the true axes.
-    /// The **provenance triple** (NAME +
-    /// `vokra.provenance.upstream_hf` + license) is faithful.
+    /// The pass-through writer remains shared with `models::moss_tts`, but
+    /// the emitted graph contract is the dedicated upstream `moss_audio`
+    /// architecture: 32-layer d=1280 audio encoder, four 8192-wide GatedMLPs,
+    /// and 36-layer d=2560 Qwen3. The converter accepts only the complete
+    /// 901-tensor manifest and stamps fixed source/config hashes.
     MossAudio4bInstruct,
     /// OpenMOSS Team **MOSS-Audio-8B-Instruct** checkpoint
     /// (`OpenMOSS-Team/MOSS-Audio-8B-Instruct`, apache-2.0, added
@@ -1735,19 +1728,9 @@ pub enum ModelKind {
     /// `[[feedback-large-models-on-vast-ai]]`). Provenance =
     /// **apache-2.0** (Permissive).
     ///
-    /// **Reuses the `models::moss_tts` converter** per the parent
-    /// workflow's REUSE HINT (mirroring the sibling 4B arm) rather
-    /// than a fresh `models/*.rs` module, dispatching through the new
-    /// `models::moss_tts::MossTtsVariant::AudioInstruct8b` arm. That
-    /// arm inherits the sibling **Local** (Qwen3-flavour 2.5B) axes as
-    /// a **placeholder** while the code-only task discipline forbids
-    /// downloading `configuration_moss_audio.py` for primary-source
-    /// hparam transcription; the emitted GGUF stamps a distinct
-    /// `vokra.moss_tts.variant = "audio_8b"` sub-arch tag so a runtime
-    /// dispatcher can recognise this artifact and refuse to bind the
-    /// placeholder axes until the follow-up wave lands the true axes.
-    /// The **provenance triple** (NAME +
-    /// `vokra.provenance.upstream_hf` + license) is faithful.
+    /// The dedicated `moss_audio` contract shares the 4B audio tower while
+    /// widening the Qwen3 decoder to d=4096 / ffn=12288. Conversion is strict
+    /// over the release's complete 901-tensor manifest.
     MossAudio8bInstruct,
     /// **MeloTTS-English** (`myshell-ai/MeloTTS-English`, MIT).
     /// Implementer C wave 2026-07-30. VITS2-family multilingual TTS
@@ -4859,13 +4842,8 @@ impl ModelKind {
             | "openmoss-team/moss-tts-local-transformer-v1_5" => Some(Self::MossTtsLocal),
             // 2026-08-02 wave: OpenMOSS Team **MOSS-Audio-4B-Instruct**
             // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0).
-            // Distinct 4B audio-LLM sibling of the four `moss_tts_*`
-            // tts variants (custom `configuration_moss_audio.py` +
-            // `trust_remote_code=True`). Reuses the sibling MossTts
-            // converter per the parent workflow's REUSE HINT via the
-            // new `models::moss_tts::MossTtsVariant::AudioInstruct4b`
-            // arm — see [`Self::MossAudio4bInstruct`] doc for the
-            // placeholder-axis + faithful-provenance split.
+            // Dedicated `moss_audio` architecture; the shared writer does not
+            // imply runtime compatibility with the MOSS-TTS family.
             "moss-audio-4b-instruct"
             | "moss_audio_4b_instruct"
             | "moss-audio-4b"
@@ -4877,11 +4855,7 @@ impl ModelKind {
             // Larger 8B sibling of MOSS-Audio-4B-Instruct with the same
             // `configuration_moss_audio.py` custom-code audio-LLM
             // architecture (4 shards ~9.05 GB BF16 — vast.ai required).
-            // Reuses the sibling MossTts converter per the parent
-            // workflow's REUSE HINT via the new
-            // `models::moss_tts::MossTtsVariant::AudioInstruct8b`
-            // arm — see [`Self::MossAudio8bInstruct`] doc for the
-            // placeholder-axis + faithful-provenance split.
+            // Dedicated `moss_audio` architecture with the exact 8B axes.
             "moss-audio-8b-instruct"
             | "moss_audio_8b_instruct"
             | "moss-audio-8b"
@@ -9370,15 +9344,10 @@ pub fn convert_file_licensed(
             });
         }
         // === MossAudio4bInstruct (2026-08-02 wave) ===
-        // Reuses the MossTts converter (parent workflow REUSE HINT)
-        // via the new AudioInstruct4b variant. Placeholder axes
-        // inherited from Local family; distinct sub-arch tag
-        // `vokra.moss_tts.variant = "audio_4b"` lets a runtime
-        // dispatcher recognise the artifact and refuse to bind the
-        // placeholder axes until the follow-up wave lands the true
-        // primary-source hparam transcription. The provenance triple
-        // (NAME + upstream_hf + license = apache-2.0 Permissive +
-        // category = s2s) is faithful.
+        // Uses the pass-through writer shared with MOSS-TTS but emits the
+        // dedicated upstream `moss_audio` architecture contract.  Conversion
+        // requires the exact 901-tensor 4B manifest and stamps the fixed
+        // config/source revisions plus the 16 kHz Whisper frontend.
         ModelKind::MossAudio4bInstruct => {
             let report = models::moss_tts::convert_moss_tts_file(
                 input,
@@ -9388,9 +9357,8 @@ pub fn convert_file_licensed(
             )?;
             let notes = vec![format!(
                 "moss-audio-4b-instruct: {} float weights written verbatim ({} BF16 \
-                 passthrough), {} non-float skipped (variant=audio_4b, backbone=qwen3, \
-                 axes=placeholder-from-local, category=s2s, ~8 GB BF16 across 3 shards — \
-                 primary-source hparam transcription is a follow-up)",
+                 passthrough), {} non-float skipped (arch=moss_audio, variant=4b_instruct, \
+                 audio=32x1280, qwen3=36x2560, strict_manifest=901, category=s2s)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -9403,14 +9371,8 @@ pub fn convert_file_licensed(
         }
         // === MossAudio8bInstruct (2026-08-02 wave) ===
         // Reuses the MossTts converter (parent workflow REUSE HINT)
-        // via the new AudioInstruct8b variant. Same custom-code
-        // audio-LLM architecture as MossAudio4bInstruct, larger 8B
-        // backbone (~9.05 GB BF16 across 4 shards — vast.ai required).
-        // Placeholder axes inherited from Local family; distinct
-        // sub-arch tag `vokra.moss_tts.variant = "audio_8b"` lets a
-        // runtime dispatcher recognise the artifact and refuse to
-        // bind the placeholder axes until the follow-up wave lands
-        // the true primary-source hparam transcription.
+        // Same exact audio tower as the 4B release with the official 4096-wide
+        // Qwen3 decoder axes.  The 18.1 GB output remains VAST-only.
         ModelKind::MossAudio8bInstruct => {
             let report = models::moss_tts::convert_moss_tts_file(
                 input,
@@ -9420,9 +9382,8 @@ pub fn convert_file_licensed(
             )?;
             let notes = vec![format!(
                 "moss-audio-8b-instruct: {} float weights written verbatim ({} BF16 \
-                 passthrough), {} non-float skipped (variant=audio_8b, backbone=qwen3, \
-                 axes=placeholder-from-local, category=s2s, ~9.05 GB BF16 across 4 shards — \
-                 primary-source hparam transcription is a follow-up)",
+                 passthrough), {} non-float skipped (arch=moss_audio, variant=8b_instruct, \
+                 audio=32x1280, qwen3=36x4096, strict_manifest=901, category=s2s)",
                 report.written, report.bf16_passthrough, report.skipped_non_float,
             )];
             return Ok(ConvertSummary {
@@ -16400,24 +16361,23 @@ mod moss_audio_4b_instruct_arm_tests {
     /// category + `audio_4b` sub-arch tag.
     #[test]
     fn smoke_dispatch_emits_faithful_provenance_and_audio_4b_sub_arch() {
-        use models::moss_tts::{MossTtsVariant, convert_variant};
+        use models::moss_tts::{MossTtsReport, MossTtsVariant, metadata_builder};
         // Minimal BF16 safetensors: single 2×3 tensor `embed.weight`.
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
         let payload: Vec<u8> = values
             .iter()
             .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
             .collect();
-        let header = format!(
-            r#"{{"embed.weight":{{"dtype":"BF16","shape":[2,3],"data_offsets":[0,{}]}}}}"#,
-            payload.len()
-        );
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&payload);
-
-        let (builder, report) = convert_variant(buf, MossTtsVariant::AudioInstruct4b)
-            .expect("MossTts AudioInstruct4b BF16 pass-through must succeed");
+        let mut builder = metadata_builder(MossTtsVariant::AudioInstruct4b);
+        builder
+            .add_tensor("embed.weight", GgmlType::BF16, vec![2, 3], payload.clone())
+            .expect("synthetic tensor");
+        let report = MossTtsReport {
+            read: 1,
+            written: 1,
+            skipped_non_float: 0,
+            bf16_passthrough: 1,
+        };
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
@@ -16434,8 +16394,8 @@ mod moss_audio_4b_instruct_arm_tests {
         // (apache-2.0 Permissive) + category (s2s).
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some("moss_tts"),
-            "arch must be moss_tts (shared with the sibling tts variants — REUSE HINT)"
+            Some("moss_audio"),
+            "MOSS-Audio must use its upstream architecture tag"
         );
         assert_eq!(
             file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
@@ -16460,16 +16420,17 @@ mod moss_audio_4b_instruct_arm_tests {
             Some("apache-2.0"),
         );
         assert_eq!(
-            file.get("vokra.moss_tts.variant").and_then(|v| v.as_str()),
-            Some("audio_4b"),
-            "distinct sub-arch tag so a runtime dispatcher can refuse to bind placeholder axes"
+            file.get("vokra.moss_audio.variant")
+                .and_then(|v| v.as_str()),
+            Some("4b_instruct"),
+            "the dedicated MOSS-Audio contract must identify the 4B release"
         );
         // Backbone family = qwen3 (best-guess placeholder, documented in
         // the variant doc comment).
         assert_eq!(
-            file.get("vokra.moss_tts.llm.family")
+            file.get("vokra.moss_audio.source_revision")
                 .and_then(|v| v.as_str()),
-            Some("qwen3")
+            Some("6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d")
         );
         // BF16 payload survives byte-for-byte.
         let info = file
@@ -16481,12 +16442,9 @@ mod moss_audio_4b_instruct_arm_tests {
         // llm.hidden_dim must be a nonzero u32 (Local placeholder = 2560).
         // Guards against a silent regression where the selector routes
         // AudioInstruct4b to a zero-sentinel branch.
-        match file.get("vokra.moss_tts.llm.hidden_dim") {
-            Some(GgufMetadataValue::U32(v)) => assert!(
-                *v > 0,
-                "placeholder hidden_dim must be a positive u32 (Local family = 2560), got {v}"
-            ),
-            other => panic!("vokra.moss_tts.llm.hidden_dim must be a U32, got {other:?}"),
+        match file.get("vokra.moss_audio.text.hidden_size") {
+            Some(GgufMetadataValue::U32(v)) => assert_eq!(*v, 2_560),
+            other => panic!("vokra.moss_audio.text.hidden_size must be a U32, got {other:?}"),
         }
     }
 }
@@ -16552,24 +16510,23 @@ mod moss_audio_8b_instruct_arm_tests {
     /// category + `audio_8b` sub-arch tag.
     #[test]
     fn smoke_dispatch_emits_faithful_provenance_and_audio_8b_sub_arch() {
-        use models::moss_tts::{MossTtsVariant, convert_variant};
+        use models::moss_tts::{MossTtsReport, MossTtsVariant, metadata_builder};
         // Minimal BF16 safetensors: single 2×3 tensor `embed.weight`.
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
         let payload: Vec<u8> = values
             .iter()
             .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
             .collect();
-        let header = format!(
-            r#"{{"embed.weight":{{"dtype":"BF16","shape":[2,3],"data_offsets":[0,{}]}}}}"#,
-            payload.len()
-        );
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&payload);
-
-        let (builder, report) = convert_variant(buf, MossTtsVariant::AudioInstruct8b)
-            .expect("MossTts AudioInstruct8b BF16 pass-through must succeed");
+        let mut builder = metadata_builder(MossTtsVariant::AudioInstruct8b);
+        builder
+            .add_tensor("embed.weight", GgmlType::BF16, vec![2, 3], payload.clone())
+            .expect("synthetic tensor");
+        let report = MossTtsReport {
+            read: 1,
+            written: 1,
+            skipped_non_float: 0,
+            bf16_passthrough: 1,
+        };
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
@@ -16586,8 +16543,8 @@ mod moss_audio_8b_instruct_arm_tests {
         // (apache-2.0 Permissive) + category (s2s).
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some("moss_tts"),
-            "arch must be moss_tts (shared with the sibling tts variants — REUSE HINT)"
+            Some("moss_audio"),
+            "MOSS-Audio must use its upstream architecture tag"
         );
         assert_eq!(
             file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
@@ -16612,16 +16569,17 @@ mod moss_audio_8b_instruct_arm_tests {
             Some("apache-2.0"),
         );
         assert_eq!(
-            file.get("vokra.moss_tts.variant").and_then(|v| v.as_str()),
-            Some("audio_8b"),
-            "distinct sub-arch tag so a runtime dispatcher can refuse to bind placeholder axes"
+            file.get("vokra.moss_audio.variant")
+                .and_then(|v| v.as_str()),
+            Some("8b_instruct"),
+            "the dedicated MOSS-Audio contract must identify the 8B release"
         );
         // Backbone family = qwen3 (best-guess placeholder, documented in
         // the variant doc comment).
         assert_eq!(
-            file.get("vokra.moss_tts.llm.family")
+            file.get("vokra.moss_audio.source_revision")
                 .and_then(|v| v.as_str()),
-            Some("qwen3")
+            Some("6521a39181b47a18f2d9f4b3acfb5bca7b76b57f")
         );
         // BF16 payload survives byte-for-byte.
         let info = file
@@ -16633,12 +16591,9 @@ mod moss_audio_8b_instruct_arm_tests {
         // llm.hidden_dim must be a nonzero u32 (Local placeholder = 2560).
         // Guards against a silent regression where the selector routes
         // AudioInstruct8b to a zero-sentinel branch.
-        match file.get("vokra.moss_tts.llm.hidden_dim") {
-            Some(GgufMetadataValue::U32(v)) => assert!(
-                *v > 0,
-                "placeholder hidden_dim must be a positive u32 (Local family = 2560), got {v}"
-            ),
-            other => panic!("vokra.moss_tts.llm.hidden_dim must be a U32, got {other:?}"),
+        match file.get("vokra.moss_audio.text.hidden_size") {
+            Some(GgufMetadataValue::U32(v)) => assert_eq!(*v, 4_096),
+            other => panic!("vokra.moss_audio.text.hidden_size must be a U32, got {other:?}"),
         }
         // The 8B sub-arch tag must be distinct from the 4B sibling —
         // guards against a silent selector regression where both

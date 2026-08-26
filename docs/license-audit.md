@@ -704,6 +704,12 @@ Rust gate は staged だが、実行結果は未取得であり real-weight nume
 
 公開済み `vokra/emotion2vec@fcdce49fd5ce07ffd37c2f18aaa3ec6fd6c3b78e` の `model.gguf` は 648,576,992 bytes、SHA-256 `052efcdaa000208933bfe1633ae81115fa9aa05b043920bb1cfa92f2827f02bc`、185 個の F32 tensor、tensor-manifest SHA-256 `f5f8f684302cf55fb399277a7446976a77f570816e7e3345a008e4d0b6774401` として identity を固定する。旧行にある汎用 `nemo_pt_to_safetensors.py --squeeze-to-4d` 経路は履歴として残すが、今後の再現変換は `tools/parity/emotion2vec_prepare_checkpoint.py` に限定し、ALiBi scale の既知 shape `[1,1,16,1,1]` から `[16]` への変形以外を拒否する。今回の作業に再 upload / publish は含まない。
 
+### MOSS-Audio architecture correction（2026-08-27）
+
+上の4B/8B行にある旧「MOSS-TTS converter reuse」はpass-through writerの実装共有だけを指し、runtime/metadata architectureを共有してよいという意味ではない。固定した公式model configと`OpenMOSS/MOSS-Audio@5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883`により、両releaseは専用`moss_audio` graph（3段Conv2d + Whisper encoder 32層 + primary/DeepStack GatedMLP + Qwen3 36層）であることを確認した。
+
+新規conversionは専用`vokra.moss_audio.*`軸と完全901-tensor manifestを必須にする。旧公開GGUFの`moss_tts` stampは、4B=`4db8bfa2a54b7541dc092b73919771fdefa952ea1b054ce10845e9d2bcd6fadc`、8B=`76c1275dabd9a3baf0189f5fc335a6c192c472e96bc363cc3a64ad2d37a5f83a`のmanifest限定legacy互換としてのみ扱い、family名からtopologyを推測しない。
+
 ### Ultravox Llama companion boundary（2026-08-27）
 
 公開 `vokra/ultravox-v0-5-llama-3-2-1b` は引き続き MIT の491-tensor
