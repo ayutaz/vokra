@@ -13,8 +13,13 @@
 > = 1,478 floating-point inference tensors + 32 BatchNorm counters. Its strict
 > float manifest is `a7a50151…ae34`; versus Canary-1B-Flash it adds exactly the
 > 104 tensors of decoder layers 4..7 and changes only the three 16,384-vocab
-> axes. The live repository remains partial and no upload was performed;
-> complete conversion and parity stay VAST work.
+> axes. A strict complete-main-checkpoint converter, common native
+> FastConformer/8-layer Transformer-AED binder, exact 25-language tokenizer,
+> CPU/Metal CLI and bench routes, and independent official-NeMo VAST worker
+> are now implemented on this branch. The live repository remains partial and is rejected by the
+> 1,478-tensor gate; no upload was performed. VAST compile/CPU token parity and
+> Apple-silicon real-weight Metal parity remain pending, so this is code
+> reachability rather than a numerical-pass claim.
 
 > **2026-08-26 Canary-1B-Flash source wave:** the exact complete
 > `.nemo`-derived 1,374-F32-tensor release now has a strict native 32-layer
