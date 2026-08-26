@@ -127,6 +127,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "moss_audio_tokenizer",
             "moss_tts",
             "musicgen",
+            "qwen3_asr",
             "tiger_separator",
             "deepfake_detection",
         }
@@ -168,6 +169,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("canary-1b-flash.gguf",),
             "canary-1b-flash",
+        )
+        qwen3_live = audit.RepoRecord(
+            "vokra/qwen3-asr-0.6b",
+            "abc",
+            ("qwen3-asr-0.6b.gguf",),
+            "qwen3_asr",
+        )
+        qwen3_corrected = audit.RepoRecord(
+            "vokra/qwen3-asr-0.6b-corrected",
+            "abc",
+            ("qwen3-asr-0.6b.gguf",),
+            "qwen3_asr",
         )
         miocodec = audit.RepoRecord(
             "vokra/miocodec-25hz-44khz-v2",
@@ -354,6 +367,20 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(
             audit.classify(corrected_canary_flash, routed, bound).metal_code, "full"
         )
+        self.assertEqual(audit.classify(qwen3_live, routed, bound).cpu_code, "partial")
+        self.assertEqual(
+            audit.classify(qwen3_live, routed, bound).metal_code, "blocked-by-cpu"
+        )
+        self.assertIn(
+            "five byte-authenticated",
+            audit.classify(qwen3_live, routed, bound).reason,
+        )
+        self.assertEqual(
+            audit.classify(qwen3_corrected, routed, bound).cpu_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(qwen3_corrected, routed, bound).metal_code, "full"
+        )
         self.assertEqual(audit.classify(miocodec, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(funcodec, routed, bound).cpu_code, "full")
@@ -458,6 +485,25 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(len(lines), 2)
         self.assertEqual(len(lines[0].split("\t")), len(lines[1].split("\t")))
         self.assertEqual(lines[1].split("\t")[5], "full")
+
+    def test_cpu_only_repository_gate_is_fail_closed(self):
+        qwen = audit.RepoRecord(
+            "vokra/qwen3-asr-corrected",
+            "abc",
+            ("model.gguf",),
+            "qwen3_asr",
+        )
+        missing_metal = audit.RepoRecord(
+            "vokra/new-cpu-model",
+            "abc",
+            ("model.gguf",),
+            "new_cpu_arch",
+        )
+        routed = {"qwen3_asr", "new_cpu_arch"}
+        self.assertEqual(
+            audit.cpu_only_repositories([qwen, missing_metal], routed, set()),
+            ["vokra/new-cpu-model"],
+        )
 
 
 if __name__ == "__main__":

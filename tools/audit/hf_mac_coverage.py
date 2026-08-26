@@ -54,6 +54,22 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/qwen3-asr-0.6b": (
+        "partial",
+        "the live dense GGUF predates the executable Qwen3-ASR conversion "
+        "contract: it lacks the three exact audio-execution metadata keys and "
+        "all five byte-authenticated tokenizer/chat/generation sidecars. The "
+        "native source route is complete on CPU/Metal, but deliberately rejects "
+        "this historical artifact pending an authorized gated replacement",
+    ),
+    "vokra/qwen3-asr-1.7b": (
+        "partial",
+        "the live dense GGUF predates the executable Qwen3-ASR conversion "
+        "contract: it lacks the three exact audio-execution metadata keys and "
+        "all five byte-authenticated tokenizer/chat/generation sidecars. The "
+        "native source route is complete on CPU/Metal, but deliberately rejects "
+        "this historical artifact pending an authorized gated replacement",
+    ),
     "vokra/speecht5-tts": (
         "no-runtime-binder",
         "the live 393-F32-tensor GGUF predates the strict pinned SpeechT5 "
@@ -264,6 +280,7 @@ METAL_CODE_ARCHES = {
     "piper-plus-mb-istft-vits2",
     "pyannote-segmentation",
     "pyannote-speaker-diarization",
+    "qwen3_asr",
     "reazonspeech_nemo_v2",
     "rnnoise",
     "rmvpe",
@@ -460,6 +477,17 @@ def render_tsv(
     return "\n".join(rows)
 
 
+def cpu_only_repositories(
+    records: Iterable[RepoRecord], routed: set[str], bound: set[str]
+) -> list[str]:
+    """Return live artifacts that claim complete CPU but lack Metal code."""
+    return sorted(
+        record.repo
+        for record in records
+        if classify(record, routed, bound).metal_code == "cpu-only"
+    )
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     root = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -483,9 +511,19 @@ def main(argv: list[str] | None = None) -> int:
     if invalid_metal:
         raise ValueError(f"Metal audit registry names non-runnable arches: {sorted(invalid_metal)}")
     records = fetch_records(args.org, args.workers)
-    missing_arch = [record.repo for record in records if record.gguf_files and not record.architecture]
+    missing_arch = [
+        record.repo
+        for record in records
+        if record.gguf_files and not record.architecture
+    ]
     if missing_arch:
         raise ValueError(f"GGUF repos without an Architecture card row: {missing_arch}")
+    cpu_only = cpu_only_repositories(records, routed, bound)
+    if cpu_only:
+        raise ValueError(
+            "CPU-complete public repos without complete Metal code paths: "
+            f"{cpu_only}"
+        )
     if args.format == "tsv":
         print(render_tsv(records, routed, bound))
     else:

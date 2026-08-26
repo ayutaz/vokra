@@ -246,8 +246,8 @@ it reported:
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
 | Complete CPU route for the live public artifact | 119 |
-| Route/binder present, released-artifact CPU forward incomplete | 44 |
-| No complete runtime binder | 30 |
+| Route/binder present, released-artifact CPU forward incomplete | 45 |
+| No complete runtime binder | 29 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
 | Complete Metal code route among the CPU-complete set | 119 |
 | CPU-complete but Metal-unsupported | 0 |
@@ -263,6 +263,11 @@ revision, GGUF count, architecture and classification:
 ```text
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
+
+The audit now exits non-zero if any live public artifact is classified as
+CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
+blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
+sibling architecture.
 
 The 119 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
