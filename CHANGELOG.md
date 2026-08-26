@@ -15,10 +15,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 ### Changed
 
 - The two public Qwen3-ASR checkpoints now have a strict, bounded-memory
-  runtime binder. Fixed-revision GGUF header audits authenticate the complete
+  runtime binder and a strict streaming converter. Fixed-revision GGUF header
+  audits authenticate the complete
   612-tensor 0.6B and 708-tensor 1.7B name/shape manifests, every persisted
   audio/text topology axis, exact upstream repository and permissive weight
-  provenance without decoding multi-gigabyte payloads. The CLI now reports
+  provenance without decoding multi-gigabyte payloads. The converter consumes
+  either the official single safetensors file or Hugging Face shard index
+  directly, rejects manifest/dtype/license drift before writing, copies one
+  BF16 tensor at a time, and stamps the immutable source revision plus audited
+  manifest digest. The CLI now reports
   the model-specific bound route instead of claiming that no runtime exists,
   while end-to-end transcription remains an explicit unsupported operation
   naming the missing log-mel/audio-Transformer/Qwen3/BPE pieces. Neither CPU

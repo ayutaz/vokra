@@ -10,7 +10,13 @@
 > public revision `7d160c2a319bfd2bf4b35274ba52af12b302ed62`). The new runtime
 > binder validates those manifests, all 26 converter-stamped topology axes,
 > exact upstream repositories and permissive provenance without decoding
-> tensor payloads. End-to-end ASR remains an explicit `UnsupportedOp` naming
+> tensor payloads. The converter now accepts the official 0.6B single
+> safetensors file and 1.7B HF shard index directly, rejects any manifest,
+> BF16 dtype, shard ownership or Apache-2.0 license drift before output, and
+> copies one tensor at a time while stamping the fixed source revision and
+> manifest digest. This source route is staged but has not converted either
+> multi-gigabyte release on the maintainer Mac. End-to-end ASR remains an
+> explicit `UnsupportedOp` naming
 > the missing log-mel/convolutional frontend, 18/24-layer audio Transformer,
 > projector, 28-layer Qwen3 decode loop and Qwen2 BPE assets. The two public
 > repositories therefore move only from `no-runtime-binder` to `partial`;

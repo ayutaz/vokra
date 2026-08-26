@@ -1546,8 +1546,9 @@ pub enum ModelKind {
     /// `Qwen/Qwen3-ASR-1.7B` (audio encoder 24 × d=1024 × 16h ×
     /// ffn=4096 + Qwen3 text decoder 28 × d=2048 × 16Q ÷ 8KV ×
     /// head_dim=128 × ffn=6144). Both are BF16 (`dtype=bfloat16` in
-    /// `config.json`) — the pass-through arm handles the release
-    /// checkpoints directly. Every hparam is transcribed verbatim
+    /// `config.json`) — the strict streaming arm accepts only the exact
+    /// release manifest and can consume the 1.7B HF shard index directly.
+    /// Every hparam is transcribed verbatim
     /// from `huggingface.co/Qwen/Qwen3-ASR-{0.6B,1.7B}/raw/main/
     /// config.json` (CLAUDE.md「ハルシネーション厳禁」, fetched
     /// 2026-07-30). Provenance = **apache-2.0** (Permissive) per both
@@ -6449,14 +6450,15 @@ pub fn convert_file_with_slug(
                 input, output, variant, license,
             )?;
             let notes = vec![format!(
-                "qwen3-asr ({variant:?}): {} float weights written verbatim ({} BF16 passthrough), \
-                 {} non-float skipped, {} tensors read",
-                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+                "qwen3-asr ({variant:?}): exact {}-tensor BF16 checkpoint streamed from \
+                 single/sharded safetensors after exact manifest, topology and Apache-2.0 \
+                 license validation; pinned source revision stamped, {} tensors read, no tensor skipped",
+                report.bf16_passthrough, report.read,
             )];
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: report.metadata_count,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             })
@@ -9166,14 +9168,15 @@ pub fn convert_file_licensed(
             // model cards' `cardData.license` (CC-verified 2026-07-30).
             let report = models::qwen3_asr::convert_qwen3_asr_file(input, output, license)?;
             let notes = vec![format!(
-                "qwen3-asr: {} float weights written verbatim ({} BF16 passthrough — runtime \
-                 widens to f32 exactly at load), {} non-float skipped, {} tensors read",
-                report.written, report.bf16_passthrough, report.skipped_non_float, report.read,
+                "qwen3-asr: exact {}-tensor BF16 checkpoint streamed from single/sharded \
+                 safetensors after exact manifest, topology and Apache-2.0 license validation; \
+                 pinned source revision stamped, {} tensors read, no tensor skipped",
+                report.bf16_passthrough, report.read,
             )];
             return Ok(ConvertSummary {
                 model: ModelKind::Qwen3Asr,
                 tensor_count: report.written,
-                metadata_count: 0,
+                metadata_count: report.metadata_count,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
