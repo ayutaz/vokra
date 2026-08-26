@@ -1,5 +1,22 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 Parler-TTS Mini source wave:** the public English and
+> multilingual GGUFs now have exact 926/840-F32-tensor manifest gates and a
+> mapping-owned native FLAN-T5-large, delayed nine-codebook LM and embedded
+> 44.1 kHz DAC route. English Mini authenticates nine separate LM heads plus
+> weight-normalized `audio_encoder.model.*`; multilingual v1.1 authenticates a
+> fused LM head plus plain Transformers `audio_encoder.*`. These differences
+> are explicit release contracts, not heuristic fallback. Every learned
+> operation preflights one complete CPU or Metal backend; unsupported
+> operations fail before inference. The CLI requires separate description and
+> prompt token-id streams because the public GGUFs embed neither tokenizer. A
+> locked official `huggingface/parler-tts` oracle at commit
+> `d108732cd57788ec86bc857d99a6cabd66663d68`, exact greedy code comparison,
+> T5/PCM `atol = 0.01` gates and a no-upload VAST worker cover both releases.
+> VAST real-weight CPU parity and remote Apple Silicon Metal parity remain
+> pending; no checkpoint payload, model conversion or inference ran on the
+> maintainer Mac.
+
 > **2026-08-27 Bark Small/Full source wave:** the two public Bark GGUFs now
 > have exact 518/758-F32-tensor manifest gates, mapping-owned three-stage
 > semantic/coarse/fine autoregressive generation and the embedded causal
@@ -260,8 +277,8 @@ and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
 MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B,
-NaturalSpeech 3 FACodec V2, Bark Small/Full and
-Parakeet-TDT-1.1B,
+NaturalSpeech 3 FACodec V2, Bark Small/Full, Parler-TTS Mini
+English/Multilingual and Parakeet-TDT-1.1B,
 it reported:
 
 | Inventory / live-artifact reachability | Public repos |
@@ -269,13 +286,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 122 |
+| Complete CPU route for the live public artifact | 124 |
 | Route/binder present, released-artifact CPU forward incomplete | 45 |
-| No complete runtime binder | 26 |
+| No complete runtime binder | 24 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 122 |
+| Complete Metal code route among the CPU-complete set | 124 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 71 |
+| Metal blocked by missing/partial CPU forward | 69 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -293,7 +310,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 122 repositories with a complete Metal code route are the Audiobox
+The 124 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -342,14 +359,15 @@ They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
 Nano's stale public metadata and both MOSS-Audio Instruct checkpoints remain
 fail-closed as described below. RMVPE is deliberately omitted from
 the live-artifact-complete list (see below). The complete set now also includes
-`vokra/naturalspeech3-facodec-v2`, `vokra/bark-small` and `vokra/bark`.
+`vokra/naturalspeech3-facodec-v2`, `vokra/bark-small`, `vokra/bark`,
+`vokra/parler-tts-mini-v1` and `vokra/parler-tts-mini-multilingual`.
 RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 71 Metal-blocked repositories first need a complete released-
+remaining 69 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2924,6 +2942,49 @@ gates move this one live repository to CPU `full=120`, `partial=45`,
 numerical-pass evidence: the VAST CPU run and real Apple Silicon CPU/Metal
 parity remain required. No Hugging Face upload or artifact replacement was
 performed or authorized.
+
+### Parler-TTS Mini English and Multilingual composite TTS
+
+The public English GGUF
+`vokra/parler-tts-mini-v1@cb02a124c8d125231b396a293608f2488ae2e4d2`
+is 3,511,459,168 bytes with SHA-256
+`7f69b811edae6cbe82fdfa8e72e6181945d4466748349aa74d994fb566785ddc`;
+its complete sorted 926-tensor manifest hashes to
+`62bf9fd0a48215c0376deb81771bf7cc8da76133a5e5e84caa49ee6506c49a17`.
+The multilingual GGUF
+`vokra/parler-tts-mini-multilingual@6f0f56788f06e6d514e0fab8530663b8af8b1fe2`
+is 3,751,292,736 bytes with SHA-256
+`d1edf792305a486192be73dfb279891febb6e81735abf06b2ae90b29da94134d`;
+its complete sorted 840-tensor manifest hashes to
+`8b6f25596f945988f48aa23509f18b1273162192ef6bfa47019b2eeacc2432e4`.
+Both artifacts are VAST-only under the current 2 GB threshold.
+
+The native route implements the released 24-layer gated-GELU FLAN-T5-large
+description encoder, direct prompt embeddings, 24-layer split-Q/K/V delayed
+nine-codebook decoder, factorized 1024-by-8 residual quantizers and the
+embedded four-stage 44.1 kHz DAC. English Mini binds its nine independent LM
+heads and weight-normalized historical Descript layout; multilingual v1.1
+binds its fused LM head and plain-convolution Transformers DAC layout. GEMM,
+GEMV, softmax, RMSNorm, LayerNorm, GELU/GELU-new, DAC RVQ, Conv1D and Snake
+preflight one selected CPU or Metal backend. There is no external DAC fetch
+and no silent CPU fallback.
+
+`tools/parity/parler_tts/dump_reference.py` verifies both immutable upstream
+checkpoint/config/generation hashes and the official Parler-TTS source commit
+`d108732cd57788ec86bc857d99a6cabd66663d68`, then directly invokes
+`ParlerTTSForConditionalGeneration`. The Rust comparison is
+`crates/vokra-models/tests/parity_parler_tts_real.rs`; it compares official
+FLAN-T5 hidden states, greedy code packets exactly and official-packet PCM
+separately. `run-parler-tts-validation.sh` performs all large downloads,
+locked Python 3.12 reference generation, workspace build, CPU parity, CLI
+route and Apple-target Metal feature cross-check on VAST without any publish
+path.
+
+No model data or inference ran on the maintainer Mac. Adding both live public
+artifacts moves the cumulative inventory to CPU `full=124`, `partial=45`,
+`no-runtime-binder=24`, `not-artifact=1` and Metal `full=124`,
+`blocked-by-cpu=69`, `not-artifact=1`. These are source reachability counts;
+the VAST CPU and remote Apple Silicon real-weight parity gates remain pending.
 
 ## Remaining execution order
 

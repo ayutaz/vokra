@@ -268,6 +268,7 @@ METAL_CODE_ARCHES = {
     "moss_tts",
     "moss_audio_tokenizer",
     "musicgen",
+    "parler_tts",
     "mp_senet",
     "moshi",
     "moonshine",

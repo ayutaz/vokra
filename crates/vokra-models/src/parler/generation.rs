@@ -121,6 +121,31 @@ pub struct ParlerGeneratedCodes {
 }
 
 impl ParlerGeneratedCodes {
+    /// Validates an externally produced frame-major `[frames, 9]` packet.
+    ///
+    /// This is the explicit boundary used by independent parity fixtures and
+    /// applications that already own authenticated DAC codes. Structural or
+    /// reserved tokens are rejected rather than filtered silently.
+    pub fn from_frame_major(codes: Vec<u32>, frames: usize) -> Result<Self> {
+        let expected = frames.checked_mul(NUM_CODEBOOKS).ok_or_else(|| {
+            VokraError::InvalidArgument("parler frame-major code extent overflows usize".to_owned())
+        })?;
+        if frames == 0 || codes.len() != expected {
+            return Err(VokraError::InvalidArgument(format!(
+                "parler frame-major codes have len {} for {frames} frames, expected positive frames and {expected} values",
+                codes.len()
+            )));
+        }
+        for (index, &code) in codes.iter().enumerate() {
+            if code as usize >= CODEBOOK_SIZE {
+                return Err(VokraError::InvalidArgument(format!(
+                    "parler frame-major codes[{index}]={code} is outside 0..{CODEBOOK_SIZE}"
+                )));
+            }
+        }
+        Ok(Self { codes, frames })
+    }
+
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
@@ -358,5 +383,17 @@ mod tests {
         assert!(config.validate().is_err());
         config.top_p = Some(0.0);
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn external_frame_major_packet_is_strict() {
+        let packet = ParlerGeneratedCodes::from_frame_major(vec![0; NUM_CODEBOOKS * 2], 2)
+            .expect("valid packet");
+        assert_eq!(packet.frames(), 2);
+        assert!(ParlerGeneratedCodes::from_frame_major(Vec::new(), 0).is_err());
+        assert!(ParlerGeneratedCodes::from_frame_major(vec![0; NUM_CODEBOOKS - 1], 1).is_err());
+        let mut reserved = vec![0; NUM_CODEBOOKS];
+        reserved[4] = CODEBOOK_SIZE as u32;
+        assert!(ParlerGeneratedCodes::from_frame_major(reserved, 1).is_err());
     }
 }

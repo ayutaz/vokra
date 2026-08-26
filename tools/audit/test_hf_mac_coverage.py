@@ -129,6 +129,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "moss_audio_tokenizer",
             "moss_tts",
             "musicgen",
+            "parler_tts",
             "qwen3_asr",
             "tiger_separator",
             "deepfake_detection",
@@ -153,6 +154,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("bark-small.gguf",),
             "bark",
+        )
+        parler = audit.RepoRecord(
+            "vokra/parler-tts-mini-v1",
+            "abc",
+            ("parler-tts-mini-v1.gguf",),
+            "parler_tts",
         )
         canary_flash = audit.RepoRecord(
             "vokra/canary-1b-flash",
@@ -363,6 +370,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(audioseal, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bark, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(bark, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(parler, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(parler, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(canary_flash, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(canary_flash, routed, bound).metal_code, "blocked-by-cpu"
