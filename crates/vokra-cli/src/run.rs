@@ -88,6 +88,8 @@ USAGE:
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
     vokra-cli run --model <focalcodec.gguf> --codec-mode decode --input <codes.vfc> --output <out.wav>
+    vokra-cli run --model <moss-audio-tokenizer-nano.gguf> --codec-mode decode \
+                  --num-quantizers <1..16> --input <codes.u32le> --output <stereo.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -124,6 +126,9 @@ OPTIONS:
                                 little-endian u32 code per 50 Hz frame.
                                 For X-Codec2 decode it is one raw little-endian
                                 u32 code per 50 Hz frame.
+                                For MOSS Audio Tokenizer decode it is raw
+                                frame-major `[frames,num_quantizers]` u32le;
+                                `--num-quantizers` declares the row width.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
                                 For FocalCodec encode it is a 16 kHz mono WAV;
@@ -262,6 +267,13 @@ OPTIONS:
                                 16 kHz WAV). CPU and Metal both run the complete
                                 learned-op set; uncovered backends fail before
                                 inference and never fall back to CPU.
+                                moss_audio_tokenizer: `decode` only. Nano runs
+                                its complete 48 kHz stereo decoder on CPU or
+                                Metal; Full and encode fail explicitly.
+    --num-quantizers <N>       MOSS Audio Tokenizer only: positive row width
+                                of the raw frame-major code matrix. Defaults to
+                                the authenticated release maximum (Nano 16,
+                                Full 32).
     --bandwidth-id <0..3>       vocos-encodec-24khz or WavTokenizer only:
                                 AdaLayerNorm condition. WavTokenizer defaults
                                 to upstream's documented inference id 0.
@@ -369,6 +381,8 @@ struct RunArgs {
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
+    /// MOSS Audio Tokenizer raw code-matrix width.
+    num_quantizers: Option<usize>,
     /// Vocos Encodec AdaLayerNorm condition (`0..4`).
     bandwidth_id: Option<usize>,
     /// Backend the model's hot ops run on (mirrors `bench --backend`).
@@ -518,6 +532,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut music_frames: Option<usize> = None;
     let mut music_seed: Option<u64> = None;
     let mut codec_mode: Option<CodecMode> = None;
+    let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
     let mut backend = vokra_core::BackendKind::Cpu;
     let mut compare: Option<String> = None;
@@ -631,6 +646,19 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                     .get(i + 1)
                     .ok_or("--codec-mode requires encode or decode")?;
                 codec_mode = Some(CodecMode::parse(value)?);
+                i += 2;
+            }
+            "--num-quantizers" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--num-quantizers requires a positive integer")?;
+                let parsed = value
+                    .parse::<usize>()
+                    .map_err(|error| format!("--num-quantizers must be an integer: {error}"))?;
+                if parsed == 0 {
+                    return Err("--num-quantizers must be positive".to_owned());
+                }
+                num_quantizers = Some(parsed);
                 i += 2;
             }
             "--bandwidth-id" => {
@@ -847,6 +875,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         music_frames,
         music_seed,
         codec_mode,
+        num_quantizers,
         bandwidth_id,
         backend,
         compare,
@@ -959,6 +988,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
+        | ModelTask::MossAudioTokenizerCodec
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -1053,10 +1083,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
+        && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
                 .to_owned(),
+        );
+    }
+    if a.num_quantizers.is_some() && task != ModelTask::MossAudioTokenizerCodec {
+        return Err(
+            "run: --num-quantizers is only supported for the moss_audio_tokenizer arch".to_owned(),
         );
     }
     if a.bandwidth_id.is_some()
@@ -1425,6 +1461,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::FocalCodec => {
             run_focalcodec(&session, &a)?;
+        }
+        ModelTask::MossAudioTokenizerCodec => {
+            run_moss_audio_tokenizer_codec(&session, &a)?;
         }
         ModelTask::VocoderBigVgan => {
             run_bigvgan(&session, &a)?;
@@ -3374,6 +3413,95 @@ fn run_xcodec2_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// OpenMOSS Audio Tokenizer raw code-matrix to PCM path.
+///
+/// Nano accepts a caller-declared residual-LFQ width and emits standard
+/// 48 kHz stereo-interleaved float WAV. Full reaches its model-level explicit
+/// unsupported-operation error; the shared Python class is never treated as
+/// evidence that the two release topologies are interchangeable.
+fn run_moss_audio_tokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (moss_audio_tokenizer): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (moss_audio_tokenizer): PCM-to-token encode is not implemented for either audited release; no substitute encoder or CPU fallback is used"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err("run (moss_audio_tokenizer): --codec-mode decode is required".to_owned());
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (moss_audio_tokenizer): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (moss_audio_tokenizer): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let model = vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_with_backend(
+        session.gguf(),
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    if model.requires_metadata_repair() {
+        eprintln!(
+            "vokra: WARNING: this exact public Nano tensor manifest carries the historical Full metadata stamp; routing is authenticated by the complete manifest, but replace the artifact with a correctly stamped publication when authorized"
+        );
+    }
+    let num_quantizers = a.num_quantizers.unwrap_or(model.max_quantizers());
+    if num_quantizers > model.max_quantizers() {
+        return Err(format!(
+            "run (moss_audio_tokenizer): --num-quantizers {num_quantizers} exceeds {:?} maximum {}",
+            model.variant(),
+            model.max_quantizers()
+        ));
+    }
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (moss_audio_tokenizer decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (moss_audio_tokenizer decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    if !codes.len().is_multiple_of(num_quantizers) {
+        return Err(format!(
+            "run (moss_audio_tokenizer decode): {} codes are not divisible by --num-quantizers {num_quantizers}; input must be frame-major [frames,num_quantizers]",
+            codes.len()
+        ));
+    }
+    let frames = codes.len() / num_quantizers;
+    let audio = model
+        .decode_frame_major(&codes, frames, num_quantizers)
+        .map_err(|error| error.to_string())?;
+    wav::write_wav_channels(output_path, &audio.pcm, audio.sample_rate, audio.channels).map_err(
+        |error| format!("run (moss_audio_tokenizer decode): --output {output_path}: {error}"),
+    )?;
+    println!(
+        "moss_audio_tokenizer {:?} decode: {frames} frames x {num_quantizers} quantizers -> {} samples/channel x {} channels @ {} Hz -> {output_path}",
+        model.variant(),
+        audio.samples_per_channel,
+        audio.channels,
+        audio.sample_rate
+    );
+    Ok(())
+}
+
 /// MioCodec 25 Hz FSQ + global-embedding to 44.1 kHz waveform path.
 ///
 /// VKRMIO01 is versioned because raw codes alone are insufficient: the
@@ -5003,6 +5131,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_moss_quantizer_width_and_rejects_zero() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "moss.gguf",
+            "--codec-mode",
+            "decode",
+            "--num-quantizers",
+            "12",
+            "--input",
+            "codes.u32le",
+            "--output",
+            "audio.wav",
+        ]))
+        .expect("MOSS raw-code width parses");
+        assert_eq!(parsed.num_quantizers, Some(12));
+
+        let error = parse_args(&args(&["--model", "moss.gguf", "--num-quantizers", "0"]))
+            .err()
+            .expect("zero quantizers must fail");
+        assert!(error.contains("must be positive"));
+    }
+
+    #[test]
     fn mimi_container_is_bound_to_exact_model_contract() {
         use vokra_models::codec::MimiCodecGguf;
         use vokra_models::mimi::MimiNeuralConfig;
@@ -6587,6 +6738,10 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::MossAudioTokenizerCodec),
+            None
+        );
         assert_eq!(cpu_only_engine_label(ModelTask::S2sDuplex), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFsmn), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VocoderVocos), None);

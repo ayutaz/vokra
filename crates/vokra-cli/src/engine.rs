@@ -313,6 +313,11 @@ pub(crate) enum ModelTask {
     /// and decode route every learned hot op through the selected backend and
     /// exchange a versioned, exact-checkpoint-pinned BSQ token container.
     FocalCodec,
+    /// OpenMOSS Audio Tokenizer Full/Nano family. Nano decodes variable-width
+    /// frame-major LFQ codes to 48 kHz stereo through CPU/Metal. Full binds
+    /// strictly but remains an explicit unsupported decode until its distinct
+    /// 1.77B topology passes real-weight parity.
+    MossAudioTokenizerCodec,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -541,6 +546,8 @@ const ARCH_MIOCODEC: &str = "miocodec";
 const ARCH_SNAC: &str = "snac";
 /// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
 const ARCH_FOCALCODEC: &str = "focalcodec";
+/// OpenMOSS Full/Nano codec family.
+const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
@@ -1367,6 +1374,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::FocalCodec))
         }
+        ARCH_MOSS_AUDIO_TOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_AUDIO_TOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::MossAudioTokenizerCodec))
+        }
         ARCH_BIGVGAN => {
             if hint.is_some() {
                 return Err(format!(
@@ -1588,7 +1603,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -3427,6 +3442,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_session_routes_moss_audio_tokenizer_to_its_codec_task() {
+        let (_session, task) = with_arch_only_gguf(
+            ARCH_MOSS_AUDIO_TOKENIZER,
+            "moss-audio-tokenizer-routed",
+            |path| load_session(path).expect("MOSS Audio Tokenizer session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::MossAudioTokenizerCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_MOSS_AUDIO_TOKENIZER),
+            "the routed MOSS Audio Tokenizer must not retain an unreachable registry row"
+        );
+    }
+
     /// The registry is well formed: no duplicate arch strings, and no row
     /// shadowing an arch the dispatch actually runs (a duplicate there would
     /// be unreachable and would rot into a lie).
@@ -3484,6 +3515,7 @@ mod tests {
             ARCH_MIOCODEC,
             ARCH_SNAC,
             ARCH_FOCALCODEC,
+            ARCH_MOSS_AUDIO_TOKENIZER,
             ARCH_BIGVGAN,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
