@@ -1,56 +1,24 @@
-//! **Qwen3-TTS-0.6B**: safetensors checkpoint → GGUF conversion
-//! (SoTA plan Phase 3, 2026-07-24).
+//! **Qwen3-TTS-12Hz released family**: safetensors checkpoint → GGUF
+//! conversion (SoTA plan Phase 3, 2026-07-24; contract corrected
+//! 2026-08-27).
 //!
-//! Input: the upstream `Qwen/Qwen3-TTS-12Hz-0.6B-Base` release —
-//! `model.safetensors` (1,829,344,272 bytes BF16 at pinned revision
-//! `5d83992436eae1d760afd27aff78a71d676296fc`). Output: a GGUF carrying every
-//! float tensor plus the `vokra.qwen3_tts.*` and `vokra.model.*` /
-//! `vokra.provenance.*` metadata chunks the native Qwen3-TTS
-//! implementation (`crates/vokra-models/src/qwen3_tts/`) reads.
+//! Input: one of the exact official 0.6B/1.7B Base, CustomVoice or
+//! VoiceDesign manifests. Output: a GGUF carrying every float tensor plus
+//! the `vokra.qwen3_tts.*` and `vokra.model.*` / `vokra.provenance.*`
+//! metadata chunks the native Qwen3-TTS implementation
+//! (`crates/vokra-models/src/qwen3_tts/`) reads.
 //!
-//! # ADR: BF16 handling — pass-through, streaming (moshi pattern) — Accepted 2026-07-25
+//! # BF16 handling — exact pass-through
 //!
 //! **Decision**: BF16 tensors are emitted verbatim as GGUF type 30
-//! (`GgmlType::BF16`) via the streaming path
-//! `SafetensorsFileReader::open` + `GgufStreamWriter::begin` + one
-//! reused `Vec<u8>` scratch per tensor — the exact posture of
-//! `crates/vokra-convert/src/models/moshi.rs:390-444 convert_streaming`
-//! and the byte-identity pin `stream_writer_matches_builder_bytes`
-//! (`crates/vokra-core/src/gguf/writer.rs:795`). No convert-time
-//! widening; runtime widens BF16 → f32 losslessly via the single choke
-//! point `crates/vokra-core/src/gguf/quant/mod.rs:65-70 decode_bf16`
-//! (BF16 is the top 16 bits of an f32 — `bits << 16` is exact).
+//! (`GgmlType::BF16`). There is no convert-time widening; runtime widens
+//! only a requested tensor through the canonical BF16 decoder. The current
+//! converter uses the shared in-memory safetensors/builder path, so real
+//! conversion is VAST-only under the repository's aggregate-artifact
+//! threshold. This module does not claim a streaming writer path.
 //!
-//! **Rationale (4 axes)**: (1) precedent — Moshi + Voxtral both land
-//! BF16 pass-through on real Kyutai / HF BF16 checkpoints; (2) peak
-//! footprint = one tensor payload (~350 MiB order for the 0.6B
-//! embedding / lm_head) vs ~7 GiB free on GHA `ubuntu-latest` after
-//! the cleanup recipe — 1-digit headroom + future-proof to Qwen3-1.7B
-//! / 3B / 7B siblings; (3) runtime already supports BF16 GGUF loads
-//! (`GgmlType::BF16 = 30`, safetensors reader `map_dtype` accepts
-//! `"BF16"`); (4) zero-dep (NFR-DS-02) preserved — every helper is
-//! `vokra-core` self-contained.
-//!
-//! **Rejected**: (B) streaming BF16 → F32 widen (doubles on-disk /
-//! cache size, no precedent, breaks CI cache assumptions at 1.7B+);
-//! (C) BF16 → F16 downcast (exponent range 8 → 5 bits — Inf /
-//! underflow on attention scale / LayerNorm gain tensors is
-//! deterministic, not probabilistic).
-//!
-//! **Red-lines** (permanent): F16 downcast forbidden;
-//! `GgufBuilder::to_bytes()` on a whole-model builder forbidden
-//! (streaming end-to-end); the existing regression pin
-//! `bf16_tensor_is_counted_as_skipped_non_float` must be **rewritten
-//! symmetrically** to `bf16_tensor_passes_through_verbatim` (mirror of
-//! `f16_tensor_passes_through_verbatim` + Moshi's `assert_eq!(info.dtype,
-//! GgmlType::BF16, "no convert-time widening")` at
-//! `crates/vokra-core/src/safetensors.rs:728-738`) — one-way removal
-//! would let a latent silent-widen slip in undetected;
-//! no silent BF16 → F32 emit path (FR-EX-08).
-//!
-//! Deep dive (context, memory calculus, TDD-Red assertions, full
-//! alternatives analysis): `docs/adr/qwen3-tts-bf16.md` (local SoT,
-//! gitignored per CLAUDE.md `docs/adr/` policy).
+//! F16 downcast and silent BF16 → F32 conversion remain forbidden. Tests
+//! pin the dtype and payload bytes symmetrically with the F16/F32 paths.
 //!
 //! # What is transcribed vs. shape-driven
 //!
@@ -86,6 +54,10 @@
 //!   (talker hidden=1024, ffn=3072). Primary source
 //!   `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
 //!   fetched 2026-07-24.
+//! - [`Qwen3TtsVariant::_0_6B_CustomVoice`] —
+//!   `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` (same 1024/3072 talker,
+//!   fixed speaker ids, no speaker encoder). The generic 0.6B converter
+//!   distinguishes this 402-tensor manifest from Base's 478 tensors.
 //! - [`Qwen3TtsVariant::_1_7B_Base`] —
 //!   `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (talker hidden=2048,
 //!   ffn=6144; the un-fine-tuned 1.7B backbone that the CustomVoice /
@@ -95,8 +67,8 @@
 //! - [`Qwen3TtsVariant::_1_7B_CustomVoice`] —
 //!   `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` (talker hidden=2048,
 //!   ffn=6144; identical talker + code-predictor axes to the 1.7B-Base
-//!   sibling — only the fine-tune target (`tts_model_type =
-//!   "custom_voice"`) + HF release id + NAME stamp differ). Primary source
+//!   sibling, but no Base-only speaker encoder; the fine-tune target is
+//!   `tts_model_type = "custom_voice"`). Primary source
 //!   `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/raw/main/config.json`
 //!   fetched 2026-07-30.
 //! - [`Qwen3TtsVariant::_1_7B_VoiceDesign`] —
@@ -115,15 +87,13 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox contract). The runtime's
-//! `Qwen3TtsCheckpoint::from_gguf` binder validates the exact official
-//! 0.6B-Base 478-tensor manifest before any block can be decoded.
+//! `Qwen3TtsCheckpoint::from_gguf` validates the exact official
+//! 402/404/478/480-tensor variant manifest before any block is decoded.
 //!
 //! # BF16 posture
 //!
-//! The upstream Qwen3-TTS-0.6B release is served in **BF16**
-//! (README-declared "0.9B parameters in BF16"). Per the accepted ADR
-//! (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough — the Moshi /
-//! Voxtral posture), BF16 tensors pass through **verbatim** as GGUF
+//! The upstream Qwen3-TTS releases are served in **BF16**. BF16 tensors pass
+//! through **verbatim** as GGUF
 //! type 30 (`GgmlType::BF16`) with no convert-time widening; the
 //! runtime widens BF16 → f32 losslessly at load via the single choke
 //! point `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16` (BF16
@@ -134,10 +104,12 @@
 //!
 //! # No ONNX (permanent)
 //!
-//! Qwen3-TTS-0.6B is distributed as safetensors + a Python pipeline;
+//! Qwen3-TTS is distributed as safetensors + a Python pipeline;
 //! this converter **never** touches ONNX (FR-LD-05); the pipeline is
 //! re-implemented natively in `crates/vokra-models/src/qwen3_tts/`
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+
+use std::collections::BTreeMap;
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -154,8 +126,12 @@ use crate::safetensors::SafetensorsFile;
 /// runtime dispatch.
 pub(crate) const ARCH: &str = "qwen3_tts";
 /// `vokra.model.name` value written for the canonical Qwen3-TTS-0.6B-Base
-/// GGUF (default variant of [`convert`]).
+/// GGUF.
 pub(crate) const NAME: &str = "qwen3-tts-12hz-0.6b-base";
+
+/// `vokra.model.name` value written for the
+/// `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` variant.
+pub(crate) const NAME_0_6B_CUSTOM_VOICE: &str = "qwen3-tts-12hz-0.6b-customvoice";
 
 /// `vokra.model.name` value written for the
 /// `Qwen/Qwen3-TTS-12Hz-1.7B-Base` variant (un-fine-tuned 1.7B backbone;
@@ -179,6 +155,9 @@ pub(crate) const NAME_1_7B_VOICE_DESIGN: &str = "qwen3-tts-12hz-1.7b-voicedesign
 // Top-level (speaker encoder + sample rate)
 const KEY_SAMPLE_RATE: &str = "vokra.qwen3_tts.sample_rate";
 const KEY_SPEAKER_EMBED_DIM: &str = "vokra.qwen3_tts.speaker_embed_dim";
+const KEY_HAS_SPEAKER_ENCODER: &str = "vokra.qwen3_tts.has_speaker_encoder";
+const KEY_TTS_MODEL_SIZE: &str = "vokra.qwen3_tts.tts_model_size";
+const KEY_TTS_MODEL_TYPE: &str = "vokra.qwen3_tts.tts_model_type";
 
 // Talker (main AR LM) axes — config.json.talker.*
 const KEY_TALKER_HIDDEN_DIM: &str = "vokra.qwen3_tts.talker.hidden_dim";
@@ -222,8 +201,12 @@ const KEY_MODEL_FAMILY: &str = "vokra.qwen3_tts.model_family";
 /// the [`vokra_ops::qwen3_tts_codec`] seam.
 const QWEN3_TTS_SAMPLE_RATE: u32 = 24_000;
 
-/// Speaker embedding width (`README.md` — "1024-dim encoding").
-const QWEN3_TTS_SPEAKER_EMBED_DIM: u32 = 1024;
+/// Speaker embedding width for 0.6B-Base
+/// (`speaker_encoder_config.enc_dim = 1024`).
+const QWEN3_TTS_0_6B_SPEAKER_EMBED_DIM: u32 = 1024;
+/// Speaker embedding width for 1.7B-Base
+/// (`speaker_encoder_config.enc_dim = 2048`).
+const QWEN3_TTS_1_7B_SPEAKER_EMBED_DIM: u32 = 2048;
 
 // Talker (config.json.talker.*)
 const TALKER_HIDDEN_DIM: u32 = 1024;
@@ -370,6 +353,10 @@ pub(crate) enum Qwen3TtsVariant {
     /// `Qwen/Qwen3-TTS-12Hz-0.6B-Base` — the original 0.6B release.
     /// Talker hidden=1024, ffn=3072.
     _0_6B_Base,
+    /// `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` — fixed-speaker variant.
+    /// Its official config has no speaker encoder and its checkpoint omits
+    /// all 76 `speaker_encoder.*` tensors.
+    _0_6B_CustomVoice,
     /// `Qwen/Qwen3-TTS-12Hz-1.7B-Base` — the un-fine-tuned 1.7B backbone
     /// that the CustomVoice / VoiceDesign 1.7B siblings fine-tune from
     /// (added 2026-08-01, Wave 4). Talker axes are byte-identical to
@@ -397,6 +384,7 @@ impl Qwen3TtsVariant {
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::_0_6B_Base => NAME,
+            Self::_0_6B_CustomVoice => NAME_0_6B_CUSTOM_VOICE,
             Self::_1_7B_Base => NAME_1_7B_BASE,
             Self::_1_7B_CustomVoice => NAME_1_7B_CUSTOM_VOICE,
             Self::_1_7B_VoiceDesign => NAME_1_7B_VOICE_DESIGN,
@@ -408,7 +396,7 @@ impl Qwen3TtsVariant {
     /// `TALKER_1_7B_HIDDEN_DIM = 2048`.
     pub(crate) const fn talker_hidden_dim(self) -> u32 {
         match self {
-            Self::_0_6B_Base => TALKER_HIDDEN_DIM,
+            Self::_0_6B_Base | Self::_0_6B_CustomVoice => TALKER_HIDDEN_DIM,
             Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
                 TALKER_1_7B_HIDDEN_DIM
             }
@@ -419,7 +407,7 @@ impl Qwen3TtsVariant {
     /// Every 1.7B variant shares `TALKER_1_7B_FFN_DIM = 6144`.
     pub(crate) const fn talker_ffn_dim(self) -> u32 {
         match self {
-            Self::_0_6B_Base => TALKER_FFN_DIM,
+            Self::_0_6B_Base | Self::_0_6B_CustomVoice => TALKER_FFN_DIM,
             Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
                 TALKER_1_7B_FFN_DIM
             }
@@ -431,10 +419,52 @@ impl Qwen3TtsVariant {
     /// against the widened talker hidden).
     pub(crate) const fn talker_text_hidden_size(self) -> u32 {
         match self {
-            Self::_0_6B_Base => TALKER_TEXT_HIDDEN_SIZE,
+            Self::_0_6B_Base | Self::_0_6B_CustomVoice => TALKER_TEXT_HIDDEN_SIZE,
             Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => {
                 TALKER_1_7B_TEXT_HIDDEN_SIZE
             }
+        }
+    }
+
+    /// Exact upstream size marker from `config.json.tts_model_size`.
+    const fn model_size(self) -> &'static str {
+        match self {
+            Self::_0_6B_Base | Self::_0_6B_CustomVoice => "0b6",
+            Self::_1_7B_Base | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => "1b7",
+        }
+    }
+
+    /// Exact upstream mode marker from `config.json.tts_model_type`.
+    const fn model_type(self) -> &'static str {
+        match self {
+            Self::_0_6B_Base | Self::_1_7B_Base => "base",
+            Self::_0_6B_CustomVoice | Self::_1_7B_CustomVoice => "custom_voice",
+            Self::_1_7B_VoiceDesign => "voice_design",
+        }
+    }
+
+    /// Only Base checkpoints instantiate `Qwen3TTSSpeakerEncoder` in the
+    /// official implementation.
+    const fn has_speaker_encoder(self) -> bool {
+        matches!(self, Self::_0_6B_Base | Self::_1_7B_Base)
+    }
+
+    /// Exact speaker-encoder output width. Non-Base variants have no speaker
+    /// encoder and therefore stamp zero instead of inventing an axis.
+    const fn speaker_embed_dim(self) -> u32 {
+        match self {
+            Self::_0_6B_Base => QWEN3_TTS_0_6B_SPEAKER_EMBED_DIM,
+            Self::_1_7B_Base => QWEN3_TTS_1_7B_SPEAKER_EMBED_DIM,
+            Self::_0_6B_CustomVoice | Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => 0,
+        }
+    }
+
+    const fn expected_tensor_count(self) -> usize {
+        match self {
+            Self::_0_6B_Base => 478,
+            Self::_0_6B_CustomVoice => 402,
+            Self::_1_7B_Base => 480,
+            Self::_1_7B_CustomVoice | Self::_1_7B_VoiceDesign => 404,
         }
     }
 }
@@ -471,22 +501,23 @@ pub(crate) struct Qwen3TtsReport {
 /// pre-1.7B-variant signature; new callers should prefer
 /// [`convert_variant`].
 ///
-/// Every F32 / F16 tensor passes through under its upstream name; the
+/// Every F32 / F16 / BF16 tensor passes through under its upstream name; the
 /// `vokra.qwen3_tts.*` chunk group is written from the transcribed
 /// constants above; provenance stamps mark the weight as `Permissive`
 /// (apache-2.0 — end-to-end).
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, Qwen3TtsReport), ConvertError> {
-    convert_variant(bytes, Qwen3TtsVariant::_0_6B_Base)
+    let st = SafetensorsFile::parse(bytes)?;
+    let variant = detect_0_6b_variant(&st)?;
+    convert_parsed(st, variant)
 }
 
 /// Converts a Qwen3-TTS safetensors buffer into a populated GGUF builder
 /// for the given release [`Qwen3TtsVariant`].
 ///
-/// The talker axes and `vokra.model.name` stamp are variant-selected;
-/// every other emitted constant (code-predictor axes, sample rate,
-/// speaker-embedding dim, RoPE / RMSNorm / codec handshake) is identical
-/// across the released variants and is transcribed verbatim from primary
-/// source. Every F32 / F16 / BF16 tensor passes through verbatim (ADR
+/// The talker axes, model type and `vokra.model.name` stamp are
+/// variant-selected. Base-only speaker presence and width are also selected
+/// exactly (1024 for 0.6B-Base, 2048 for 1.7B-Base, absent otherwise).
+/// Every F32 / F16 / BF16 tensor passes through verbatim (ADR
 /// A_passthrough). Provenance = `Permissive` (apache-2.0 end-to-end)
 /// for every variant.
 pub(crate) fn convert_variant(
@@ -494,7 +525,14 @@ pub(crate) fn convert_variant(
     variant: Qwen3TtsVariant,
 ) -> Result<(GgufBuilder, Qwen3TtsReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
+    validate_checkpoint(&st, variant)?;
+    convert_parsed(st, variant)
+}
 
+fn convert_parsed(
+    st: SafetensorsFile,
+    variant: Qwen3TtsVariant,
+) -> Result<(GgufBuilder, Qwen3TtsReport), ConvertError> {
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
@@ -509,6 +547,9 @@ pub(crate) fn convert_variant(
     // grant.
     let source = match variant {
         Qwen3TtsVariant::_0_6B_Base => "Qwen/Qwen3-TTS-12Hz-0.6B-Base (apache-2.0 end-to-end)",
+        Qwen3TtsVariant::_0_6B_CustomVoice => {
+            "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice (apache-2.0 end-to-end)"
+        }
         Qwen3TtsVariant::_1_7B_Base => "Qwen/Qwen3-TTS-12Hz-1.7B-Base (apache-2.0 end-to-end)",
         Qwen3TtsVariant::_1_7B_CustomVoice => {
             "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (apache-2.0 end-to-end)"
@@ -570,7 +611,10 @@ pub(crate) fn convert_variant(
 /// selected talker axes.
 fn write_hparams(b: &mut GgufBuilder, variant: Qwen3TtsVariant) {
     b.add_u32(KEY_SAMPLE_RATE, QWEN3_TTS_SAMPLE_RATE);
-    b.add_u32(KEY_SPEAKER_EMBED_DIM, QWEN3_TTS_SPEAKER_EMBED_DIM);
+    b.add_u32(KEY_SPEAKER_EMBED_DIM, variant.speaker_embed_dim());
+    b.add_bool(KEY_HAS_SPEAKER_ENCODER, variant.has_speaker_encoder());
+    b.add_string(KEY_TTS_MODEL_SIZE, variant.model_size());
+    b.add_string(KEY_TTS_MODEL_TYPE, variant.model_type());
     b.add_string(KEY_MODEL_FAMILY, MODEL_FAMILY);
 
     // Talker — variant-selected axes.
@@ -603,6 +647,242 @@ fn write_hparams(b: &mut GgufBuilder, variant: Qwen3TtsVariant) {
     b.add_f32(KEY_CP_ROPE_BASE, CP_ROPE_BASE);
     b.add_f32(KEY_CP_RMS_NORM_EPS, CP_RMS_NORM_EPS);
     b.add_u32(KEY_CP_NUM_CODE_GROUPS, CP_NUM_CODE_GROUPS);
+}
+
+fn actual_manifest(st: &SafetensorsFile) -> BTreeMap<String, Vec<u64>> {
+    st.tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), tensor.shape.clone()))
+        .collect()
+}
+
+/// Auto-detects only the two 0.6B releases accepted by the generic
+/// `ModelKind::Qwen3Tts` route. The two official manifests differ by the 76
+/// Base-only speaker-encoder tensors, so no filename or user assertion is
+/// trusted for this decision.
+fn detect_0_6b_variant(st: &SafetensorsFile) -> Result<Qwen3TtsVariant, ConvertError> {
+    let actual = actual_manifest(st);
+    for variant in [
+        Qwen3TtsVariant::_0_6B_Base,
+        Qwen3TtsVariant::_0_6B_CustomVoice,
+    ] {
+        if actual == expected_manifest(variant) {
+            return Ok(variant);
+        }
+    }
+    Err(ConvertError::Parse(format!(
+        "qwen3-tts: generic 0.6B route requires the exact official 478-tensor Base or 402-tensor CustomVoice manifest; found {} tensors. Select an explicit 1.7B model kind for a 1.7B checkpoint",
+        actual.len()
+    )))
+}
+
+fn validate_checkpoint(st: &SafetensorsFile, variant: Qwen3TtsVariant) -> Result<(), ConvertError> {
+    let expected = expected_manifest(variant);
+    debug_assert_eq!(expected.len(), variant.expected_tensor_count());
+    let actual = actual_manifest(st);
+    if actual == expected {
+        return Ok(());
+    }
+    let missing = expected
+        .keys()
+        .filter(|name| !actual.contains_key(*name))
+        .take(6)
+        .collect::<Vec<_>>();
+    let extra = actual
+        .keys()
+        .filter(|name| !expected.contains_key(*name))
+        .take(6)
+        .collect::<Vec<_>>();
+    let wrong_shape = expected
+        .iter()
+        .filter_map(|(name, shape)| {
+            actual
+                .get(name)
+                .filter(|actual_shape| *actual_shape != shape)
+                .map(|actual_shape| (name, actual_shape, shape))
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+    Err(ConvertError::Parse(format!(
+        "qwen3-tts {} checkpoint manifest mismatch: expected {} tensors, found {}; missing={missing:?}, extra={extra:?}, wrong_shape={wrong_shape:?}",
+        variant.name(),
+        expected.len(),
+        actual.len()
+    )))
+}
+
+fn expected_manifest(variant: Qwen3TtsVariant) -> BTreeMap<String, Vec<u64>> {
+    let mut out = BTreeMap::new();
+    if variant.has_speaker_encoder() {
+        add_speaker_manifest(&mut out, variant.speaker_embed_dim() as u64);
+    }
+
+    let talker_hidden = variant.talker_hidden_dim() as u64;
+    let talker_ffn = variant.talker_ffn_dim() as u64;
+    add_stack_manifest(
+        &mut out,
+        "talker.model",
+        talker_hidden,
+        TALKER_N_LAYER as usize,
+        talker_ffn,
+    );
+    out.insert(
+        "talker.model.text_embedding.weight".into(),
+        vec![
+            TALKER_TEXT_VOCAB_SIZE as u64,
+            TALKER_TEXT_HIDDEN_SIZE as u64,
+        ],
+    );
+    out.insert(
+        "talker.model.codec_embedding.weight".into(),
+        vec![TALKER_VOCAB_SIZE as u64, talker_hidden],
+    );
+    out.insert("talker.model.norm.weight".into(), vec![talker_hidden]);
+    out.insert(
+        "talker.text_projection.linear_fc1.weight".into(),
+        vec![
+            TALKER_TEXT_HIDDEN_SIZE as u64,
+            TALKER_TEXT_HIDDEN_SIZE as u64,
+        ],
+    );
+    out.insert(
+        "talker.text_projection.linear_fc1.bias".into(),
+        vec![TALKER_TEXT_HIDDEN_SIZE as u64],
+    );
+    out.insert(
+        "talker.text_projection.linear_fc2.weight".into(),
+        vec![talker_hidden, TALKER_TEXT_HIDDEN_SIZE as u64],
+    );
+    out.insert(
+        "talker.text_projection.linear_fc2.bias".into(),
+        vec![talker_hidden],
+    );
+    out.insert(
+        "talker.codec_head.weight".into(),
+        vec![TALKER_VOCAB_SIZE as u64, talker_hidden],
+    );
+
+    add_stack_manifest(
+        &mut out,
+        "talker.code_predictor.model",
+        CP_HIDDEN_DIM as u64,
+        CP_N_LAYER as usize,
+        CP_FFN_DIM as u64,
+    );
+    out.insert(
+        "talker.code_predictor.model.norm.weight".into(),
+        vec![CP_HIDDEN_DIM as u64],
+    );
+    for group in 0..CP_NUM_CODE_GROUPS.saturating_sub(1) as usize {
+        // The official code constructs these embeddings with
+        // `embedding_dim=talker_config.hidden_size`, not CP hidden size.
+        out.insert(
+            format!("talker.code_predictor.model.codec_embedding.{group}.weight"),
+            vec![CP_VOCAB_SIZE as u64, talker_hidden],
+        );
+        out.insert(
+            format!("talker.code_predictor.lm_head.{group}.weight"),
+            vec![CP_VOCAB_SIZE as u64, CP_HIDDEN_DIM as u64],
+        );
+    }
+    if talker_hidden != CP_HIDDEN_DIM as u64 {
+        out.insert(
+            "talker.code_predictor.small_to_mtp_projection.weight".into(),
+            vec![CP_HIDDEN_DIM as u64, talker_hidden],
+        );
+        out.insert(
+            "talker.code_predictor.small_to_mtp_projection.bias".into(),
+            vec![CP_HIDDEN_DIM as u64],
+        );
+    }
+    out
+}
+
+fn add_stack_manifest(
+    out: &mut BTreeMap<String, Vec<u64>>,
+    prefix: &str,
+    hidden: u64,
+    layers: usize,
+    ffn: u64,
+) {
+    let query = TALKER_N_HEAD as u64 * TALKER_HEAD_DIM as u64;
+    let key_value = TALKER_N_HEAD_KV as u64 * TALKER_HEAD_DIM as u64;
+    for layer in 0..layers {
+        let prefix = format!("{prefix}.layers.{layer}");
+        for (suffix, shape) in [
+            ("input_layernorm.weight", vec![hidden]),
+            ("self_attn.q_proj.weight", vec![query, hidden]),
+            ("self_attn.q_norm.weight", vec![TALKER_HEAD_DIM as u64]),
+            ("self_attn.k_proj.weight", vec![key_value, hidden]),
+            ("self_attn.k_norm.weight", vec![TALKER_HEAD_DIM as u64]),
+            ("self_attn.v_proj.weight", vec![key_value, hidden]),
+            ("self_attn.o_proj.weight", vec![hidden, query]),
+            ("post_attention_layernorm.weight", vec![hidden]),
+            ("mlp.gate_proj.weight", vec![ffn, hidden]),
+            ("mlp.up_proj.weight", vec![ffn, hidden]),
+            ("mlp.down_proj.weight", vec![hidden, ffn]),
+        ] {
+            out.insert(format!("{prefix}.{suffix}"), shape);
+        }
+    }
+}
+
+fn add_speaker_manifest(out: &mut BTreeMap<String, Vec<u64>>, embedding_dim: u64) {
+    out.insert(
+        "speaker_encoder.blocks.0.conv.weight".into(),
+        vec![512, 128, 5],
+    );
+    out.insert("speaker_encoder.blocks.0.conv.bias".into(), vec![512]);
+    for block in 1..=3 {
+        out.insert(
+            format!("speaker_encoder.blocks.{block}.tdnn1.conv.weight"),
+            vec![512, 512, 1],
+        );
+        out.insert(
+            format!("speaker_encoder.blocks.{block}.tdnn1.conv.bias"),
+            vec![512],
+        );
+        for sub in 0..7 {
+            out.insert(
+                format!("speaker_encoder.blocks.{block}.res2net_block.blocks.{sub}.conv.weight"),
+                vec![64, 64, 3],
+            );
+            out.insert(
+                format!("speaker_encoder.blocks.{block}.res2net_block.blocks.{sub}.conv.bias"),
+                vec![64],
+            );
+        }
+        for (suffix, shape) in [
+            ("tdnn2.conv.weight", vec![512, 512, 1]),
+            ("tdnn2.conv.bias", vec![512]),
+            ("se_block.conv1.weight", vec![128, 512, 1]),
+            ("se_block.conv1.bias", vec![128]),
+            ("se_block.conv2.weight", vec![512, 128, 1]),
+            ("se_block.conv2.bias", vec![512]),
+        ] {
+            out.insert(format!("speaker_encoder.blocks.{block}.{suffix}"), shape);
+        }
+    }
+    for (name, shape) in [
+        ("speaker_encoder.mfa.conv.weight", vec![1536, 1536, 1]),
+        ("speaker_encoder.mfa.conv.bias", vec![1536]),
+        ("speaker_encoder.asp.tdnn.conv.weight", vec![128, 4608, 1]),
+        ("speaker_encoder.asp.tdnn.conv.bias", vec![128]),
+        ("speaker_encoder.asp.conv.weight", vec![1536, 128, 1]),
+        ("speaker_encoder.asp.conv.bias", vec![1536]),
+        ("speaker_encoder.fc.weight", vec![embedding_dim, 3072, 1]),
+        ("speaker_encoder.fc.bias", vec![embedding_dim]),
+    ] {
+        out.insert(name.into(), shape);
+    }
+}
+
+#[cfg(test)]
+fn convert_variant_fixture(
+    bytes: Vec<u8>,
+    variant: Qwen3TtsVariant,
+) -> Result<(GgufBuilder, Qwen3TtsReport), ConvertError> {
+    convert_parsed(SafetensorsFile::parse(bytes)?, variant)
 }
 
 #[cfg(test)]
@@ -686,7 +966,8 @@ mod tests {
     fn transcribed_constants_match_primary_source() {
         // Speaker encoder + sample rate (README.md).
         assert_eq!(QWEN3_TTS_SAMPLE_RATE, 24_000);
-        assert_eq!(QWEN3_TTS_SPEAKER_EMBED_DIM, 1024);
+        assert_eq!(QWEN3_TTS_0_6B_SPEAKER_EMBED_DIM, 1024);
+        assert_eq!(QWEN3_TTS_1_7B_SPEAKER_EMBED_DIM, 2048);
 
         // Talker (config.json.talker.*).
         assert_eq!(TALKER_HIDDEN_DIM, 1024);
@@ -746,7 +1027,9 @@ mod tests {
 
     #[test]
     fn round_trip_carries_arch_chunks_and_provenance() {
-        let (builder, report) = convert(minimal_safetensors_one_f32()).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(minimal_safetensors_one_f32(), Qwen3TtsVariant::_0_6B_Base)
+                .expect("convert fixture");
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
 
@@ -769,7 +1052,7 @@ mod tests {
         // `vokra.qwen3_tts.*` prefix.
         for (key, want) in [
             (KEY_SAMPLE_RATE, QWEN3_TTS_SAMPLE_RATE),
-            (KEY_SPEAKER_EMBED_DIM, QWEN3_TTS_SPEAKER_EMBED_DIM),
+            (KEY_SPEAKER_EMBED_DIM, QWEN3_TTS_0_6B_SPEAKER_EMBED_DIM),
             (KEY_TALKER_HIDDEN_DIM, TALKER_HIDDEN_DIM),
             (KEY_TALKER_N_LAYER, TALKER_N_LAYER),
             (KEY_TALKER_N_HEAD, TALKER_N_HEAD),
@@ -823,7 +1106,11 @@ mod tests {
         // Empty safetensors → the runtime's `Qwen3TtsWeights::from_gguf`
         // would fail loudly at bind time, but the converter itself
         // succeeds and reports the situation so the operator sees it now.
-        let (_, report) = convert(minimal_safetensors_no_tensors()).expect("convert");
+        let (_, report) = convert_variant_fixture(
+            minimal_safetensors_no_tensors(),
+            Qwen3TtsVariant::_0_6B_Base,
+        )
+        .expect("convert fixture");
         assert_eq!(report.written, 0);
         assert!(
             report.notes.iter().any(|n| n.contains("no float tensors")),
@@ -836,7 +1123,9 @@ mod tests {
     /// match arm.
     #[test]
     fn f16_tensor_passes_through_verbatim() {
-        let (builder, report) = convert(minimal_safetensors_one_f16()).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(minimal_safetensors_one_f16(), Qwen3TtsVariant::_0_6B_Base)
+                .expect("convert fixture");
         assert_eq!(report.written, 1, "F16 must reach the pass-through arm");
         assert_eq!(
             report.skipped_non_float, 0,
@@ -884,7 +1173,8 @@ mod tests {
         input.extend_from_slice(header.as_bytes());
         input.extend_from_slice(&bf16);
 
-        let (builder, report) = convert(input).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base).expect("convert fixture");
         assert_eq!(
             report.written, 1,
             "BF16 must reach the pass-through arm (ADR A_passthrough)"
@@ -960,7 +1250,8 @@ mod tests {
         input.extend_from_slice(&bf16);
         input.extend_from_slice(&f32_bytes);
 
-        let (builder, report) = convert(input).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base).expect("convert fixture");
         assert_eq!(
             report.written, 2,
             "both BF16 and F32 tensors must pass through"
@@ -997,7 +1288,9 @@ mod tests {
     /// field does not shift or contaminate the other counters.
     #[test]
     fn bf16_passthrough_report_field_is_additive_default_zero() {
-        let (_, report) = convert(minimal_safetensors_one_f32()).expect("convert");
+        let (_, report) =
+            convert_variant_fixture(minimal_safetensors_one_f32(), Qwen3TtsVariant::_0_6B_Base)
+                .expect("convert fixture");
         assert_eq!(report.written, 1, "F32 tensor still counted verbatim");
         assert_eq!(report.skipped_non_float, 0);
         assert_eq!(
@@ -1152,7 +1445,8 @@ mod tests {
         let bytes = bf16_pattern_bytes(&patterns);
         let input = safetensors_one_bf16(&[3], &bytes);
 
-        let (builder, report) = convert(input).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base).expect("convert fixture");
         assert_eq!(report.written, 1);
         assert_eq!(report.bf16_passthrough, 1);
         assert_eq!(report.skipped_non_float, 0);
@@ -1193,7 +1487,8 @@ mod tests {
         let bytes = bf16_pattern_bytes(&patterns);
         let input = safetensors_one_bf16(&[2], &bytes);
 
-        let (builder, report) = convert(input).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base).expect("convert fixture");
         assert_eq!(report.bf16_passthrough, 1);
 
         let out = builder.to_bytes().expect("serialize");
@@ -1229,7 +1524,8 @@ mod tests {
         let bytes = bf16_pattern_bytes(&patterns);
         let input = safetensors_one_bf16(&[4], &bytes);
 
-        let (builder, report) = convert(input).expect("convert");
+        let (builder, report) =
+            convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base).expect("convert fixture");
         assert_eq!(report.bf16_passthrough, 1);
 
         let out = builder.to_bytes().expect("serialize");
@@ -1303,7 +1599,8 @@ mod tests {
         input.extend_from_slice(&(header.len() as u64).to_le_bytes());
         input.extend_from_slice(header.as_bytes());
 
-        let (builder, report) = convert(input).expect("empty BF16 must convert cleanly");
+        let (builder, report) = convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base)
+            .expect("empty BF16 fixture must convert cleanly");
         assert_eq!(report.written, 1);
         assert_eq!(
             report.bf16_passthrough, 1,
@@ -1376,7 +1673,8 @@ mod tests {
         assert_eq!(bytes.len(), N_BYTES);
         let input = safetensors_one_bf16(&[ROWS as u64, COLS as u64], &bytes);
 
-        let (builder, report) = convert(input).expect("large BF16 must convert");
+        let (builder, report) = convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base)
+            .expect("large BF16 fixture must convert");
         assert_eq!(report.written, 1);
         assert_eq!(report.bf16_passthrough, 1);
 
@@ -1433,7 +1731,8 @@ mod tests {
         input.extend_from_slice(&bf16_bytes);
         input.extend_from_slice(&f16_bytes);
 
-        let (_, report) = convert(input).expect("mixed dtype input must convert");
+        let (_, report) = convert_variant_fixture(input, Qwen3TtsVariant::_0_6B_Base)
+            .expect("mixed dtype fixture must convert");
         let n_input_tensors: usize = 3;
         assert_eq!(
             report.written + report.skipped_non_float,
@@ -1466,12 +1765,9 @@ mod tests {
     //   (b) `Qwen3TtsVariant::name()` stamps the correct HF release name
     //       for each variant;
     //   (c) `convert_variant()` emits the variant-selected talker hidden
-    //       + FFN + text_hidden while keeping every other constant
-    //       (code-predictor, sample-rate, speaker-embed, model_family,
-    //       arch tag, RoPE, RMSNorm, codec handshake) identical across
-    //       variants (bit-identical for the invariant axes);
-    //   (d) `convert()` still resolves to `_0_6B_Base` so pre-1.7B
-    //       callers see no behavioral change.
+    //       + FFN + text_hidden while selecting Base-only speaker metadata;
+    //   (d) `convert()` authenticates either exact 0.6B Base or CustomVoice
+    //       rather than trusting an alias or filename.
 
     /// Primary-source pin for the 1.7B talker axes.
     /// Sources fetched 2026-07-30:
@@ -1513,6 +1809,10 @@ mod tests {
             "qwen3-tts-12hz-0.6b-base"
         );
         assert_eq!(
+            Qwen3TtsVariant::_0_6B_CustomVoice.name(),
+            "qwen3-tts-12hz-0.6b-customvoice"
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_Base.name(),
             "qwen3-tts-12hz-1.7b-base"
         );
@@ -1547,6 +1847,10 @@ mod tests {
             TALKER_HIDDEN_DIM
         );
         assert_eq!(
+            Qwen3TtsVariant::_0_6B_CustomVoice.talker_hidden_dim(),
+            TALKER_HIDDEN_DIM
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_Base.talker_hidden_dim(),
             TALKER_1_7B_HIDDEN_DIM
         );
@@ -1560,6 +1864,10 @@ mod tests {
         );
 
         assert_eq!(Qwen3TtsVariant::_0_6B_Base.talker_ffn_dim(), TALKER_FFN_DIM);
+        assert_eq!(
+            Qwen3TtsVariant::_0_6B_CustomVoice.talker_ffn_dim(),
+            TALKER_FFN_DIM
+        );
         assert_eq!(
             Qwen3TtsVariant::_1_7B_Base.talker_ffn_dim(),
             TALKER_1_7B_FFN_DIM
@@ -1578,6 +1886,10 @@ mod tests {
             TALKER_TEXT_HIDDEN_SIZE
         );
         assert_eq!(
+            Qwen3TtsVariant::_0_6B_CustomVoice.talker_text_hidden_size(),
+            TALKER_TEXT_HIDDEN_SIZE
+        );
+        assert_eq!(
             Qwen3TtsVariant::_1_7B_Base.talker_text_hidden_size(),
             TALKER_1_7B_TEXT_HIDDEN_SIZE
         );
@@ -1591,29 +1903,112 @@ mod tests {
         );
     }
 
-    /// The default [`convert`] entry point must still resolve to the
-    /// 0.6B-Base variant (backward compat with pre-1.7B callers).
+    /// The Base metadata path remains stable while production `convert`
+    /// performs exact Base/CustomVoice manifest detection first.
     #[test]
-    fn default_convert_still_targets_0_6b_base() {
-        let (builder, _) = convert(minimal_safetensors_one_f32()).expect("convert");
+    fn base_variant_still_targets_0_6b_base() {
+        let (builder, _) =
+            convert_variant_fixture(minimal_safetensors_one_f32(), Qwen3TtsVariant::_0_6B_Base)
+                .expect("convert fixture");
         let out = builder.to_bytes().expect("serialize");
         let file = GgufFile::parse(out).expect("parse");
         assert_eq!(
             file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
             Some(NAME),
-            "default convert() must stamp the 0.6B-Base NAME for backward compat"
+            "the explicit Base fixture must stamp the 0.6B-Base name"
         );
         assert_eq!(get_u32(&file, KEY_TALKER_HIDDEN_DIM), TALKER_HIDDEN_DIM);
         assert_eq!(get_u32(&file, KEY_TALKER_FFN_DIM), TALKER_FFN_DIM);
     }
 
+    #[test]
+    fn production_entry_points_reject_shape_fixtures() {
+        let input = minimal_safetensors_one_f32();
+        let generic = convert(input.clone()).expect_err("generic route must authenticate manifest");
+        assert!(
+            generic
+                .to_string()
+                .contains("478-tensor Base or 402-tensor CustomVoice"),
+            "unexpected generic error: {generic}"
+        );
+
+        let selected = convert_variant(input, Qwen3TtsVariant::_1_7B_Base)
+            .expect_err("selected route must authenticate manifest");
+        assert!(
+            selected
+                .to_string()
+                .contains("expected 480 tensors, found 1"),
+            "unexpected selected error: {selected}"
+        );
+    }
+
     fn round_trip_variant(variant: Qwen3TtsVariant) -> GgufFile {
-        let (builder, report) =
-            convert_variant(minimal_safetensors_one_f32(), variant).expect("convert_variant");
+        let (builder, report) = convert_variant_fixture(minimal_safetensors_one_f32(), variant)
+            .expect("convert fixture");
         assert_eq!(report.written, 1);
         assert_eq!(report.skipped_non_float, 0);
         let out = builder.to_bytes().expect("serialize");
         GgufFile::parse(out).expect("parse")
+    }
+
+    #[test]
+    fn official_variant_manifests_match_live_header_contracts() {
+        let base_06 = expected_manifest(Qwen3TtsVariant::_0_6B_Base);
+        let custom_06 = expected_manifest(Qwen3TtsVariant::_0_6B_CustomVoice);
+        let base_17 = expected_manifest(Qwen3TtsVariant::_1_7B_Base);
+        let custom_17 = expected_manifest(Qwen3TtsVariant::_1_7B_CustomVoice);
+        let design_17 = expected_manifest(Qwen3TtsVariant::_1_7B_VoiceDesign);
+
+        assert_eq!(base_06.len(), 478);
+        assert_eq!(custom_06.len(), 402);
+        assert_eq!(base_17.len(), 480);
+        assert_eq!(custom_17.len(), 404);
+        assert_eq!(design_17, custom_17);
+        assert_eq!(base_17["speaker_encoder.fc.weight"], [2048, 3072, 1]);
+        assert!(!custom_17.contains_key("speaker_encoder.fc.weight"));
+        assert_eq!(
+            base_17["talker.code_predictor.model.codec_embedding.0.weight"],
+            [2048, 2048]
+        );
+        assert_eq!(
+            base_17["talker.code_predictor.small_to_mtp_projection.weight"],
+            [1024, 2048]
+        );
+        assert_eq!(
+            base_17["talker.code_predictor.small_to_mtp_projection.bias"],
+            [1024]
+        );
+    }
+
+    #[test]
+    fn customvoice_0_6b_stamps_faithful_variant_metadata() {
+        let file = round_trip_variant(Qwen3TtsVariant::_0_6B_CustomVoice);
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str()),
+            Some(NAME_0_6B_CUSTOM_VOICE)
+        );
+        assert_eq!(get_u32(&file, KEY_SPEAKER_EMBED_DIM), 0);
+        assert_eq!(
+            file.get(KEY_HAS_SPEAKER_ENCODER)
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            file.get(KEY_TTS_MODEL_SIZE)
+                .and_then(|value| value.as_str()),
+            Some("0b6")
+        );
+        assert_eq!(
+            file.get(KEY_TTS_MODEL_TYPE)
+                .and_then(|value| value.as_str()),
+            Some("custom_voice")
+        );
+        assert_eq!(
+            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str()),
+            Some(NAME_0_6B_CUSTOM_VOICE)
+        );
     }
 
     /// Mirror of the CustomVoice / VoiceDesign tests below for the
@@ -1798,14 +2193,10 @@ mod tests {
     }
 
     /// Every 1.7B GGUF (Base + CustomVoice + VoiceDesign) built from the
-    /// same synthetic safetensors input must be **identical up to the
-    /// NAME + provenance model_id + source strings**: same arch, same
-    /// tensor count, same variant-selected talker + CP axes. This pins
-    /// the "1.7B variants share topology, differ only in stamp" contract
-    /// against silent drift. Extended 2026-08-01 (Wave 4) from the
-    /// original 2-variant sweep to include `_1_7B_Base`; the pin now
-    /// enforces pairwise-identical axes across all three 1.7B variants
-    /// and pairwise-distinct NAME stamps.
+    /// same synthetic safetensors input share talker + code-predictor axes.
+    /// Base alone carries the official 2048-wide speaker encoder;
+    /// CustomVoice and VoiceDesign carry none, so that axis is deliberately
+    /// excluded from the shared set.
     #[test]
     fn all_1_7b_variants_share_talker_and_cp_axes() {
         let base_17b = round_trip_variant(Qwen3TtsVariant::_1_7B_Base);
@@ -1834,7 +2225,6 @@ mod tests {
             KEY_CP_VOCAB_SIZE,
             KEY_CP_NUM_CODE_GROUPS,
             KEY_SAMPLE_RATE,
-            KEY_SPEAKER_EMBED_DIM,
         ] {
             assert_eq!(
                 get_u32(&base_17b, key),
@@ -1847,6 +2237,25 @@ mod tests {
                 "{key} must match across 1.7B CustomVoice and VoiceDesign"
             );
         }
+        assert_eq!(get_u32(&base_17b, KEY_SPEAKER_EMBED_DIM), 2048);
+        assert_eq!(get_u32(&cv, KEY_SPEAKER_EMBED_DIM), 0);
+        assert_eq!(get_u32(&vd, KEY_SPEAKER_EMBED_DIM), 0);
+        assert_eq!(
+            base_17b
+                .get(KEY_HAS_SPEAKER_ENCODER)
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_eq!(
+            cv.get(KEY_HAS_SPEAKER_ENCODER)
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            vd.get(KEY_HAS_SPEAKER_ENCODER)
+                .and_then(|value| value.as_bool()),
+            Some(false)
+        );
         // NAME must be PAIRWISE distinct.
         let name_base_17b = base_17b
             .get(chunks::KEY_MODEL_NAME)
@@ -1898,7 +2307,8 @@ mod tests {
             Qwen3TtsVariant::_1_7B_CustomVoice,
             Qwen3TtsVariant::_1_7B_VoiceDesign,
         ] {
-            let (builder, report) = convert_variant(input.clone(), variant).expect("BF16 convert");
+            let (builder, report) =
+                convert_variant_fixture(input.clone(), variant).expect("BF16 convert fixture");
             assert_eq!(report.written, 1);
             assert_eq!(report.bf16_passthrough, 1);
             assert_eq!(report.skipped_non_float, 0);

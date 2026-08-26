@@ -307,9 +307,9 @@ OPTIONS:
                               tag from CosyVoice2/3 because Qwen3-TTS is
                               codec-LM not vocoder-LM (terminal step =
                               qwen3_tts_codec, NOT HiFTChain); upstream
-                              ships BF16 (~0.9 GB) — pre-widen to F32
-                              offline or wait for the streaming BF16
-                              pass-through path; every hparam is
+                              ships BF16 (1,829,344,272 bytes at the pinned
+                              revision) and passes it through verbatim as GGUF
+                              type 30; every hparam is
                               transcribed verbatim from config.json
                               (huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
                               — no --config side-car; weight license =
@@ -1262,11 +1262,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelKind::Qwen3Tts => {
             // SoTA plan Phase 3 (2026-07-24): Qwen3-TTS-12Hz-0.6B-Base ships
-            // a real `config.json`, but every field is fixed for the 0.6B
-            // release and byte-parallel to the transcribed constants in
-            // `models::qwen3_tts` — so the CLI takes no --config side-car
-            // today (a future 0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B
-            // variant that reshapes the backbone would demand one).
+            // real `config.json` files, but the released 0.6B Base and
+            // CustomVoice contracts are pinned in `models::qwen3_tts`, so the
+            // CLI takes no --config side-car. Exact 478-vs-402 manifest
+            // detection selects Base versus speaker-less CustomVoice.
             // Quantization surface is whisper-only (same posture as
             // Chatterbox family / CosyVoice3 / dia / zonos).
             if p.quant.is_some() {
@@ -2255,9 +2254,9 @@ mod tests {
     /// Every accepted spelling from `ModelKind::from_arg` parses via the
     /// CLI front-end for the Qwen3-TTS family — the canonical HF release
     /// id, the arch-tag underscore spelling, and the common short forms.
-    /// Qwen3-TTS takes no --config side-car today (every hparam is fixed
-    /// for the 0.6B-Base release and transcribed as compile-time
-    /// constants).
+    /// Qwen3-TTS takes no --config side-car: the converter authenticates the
+    /// released 0.6B Base/CustomVoice manifest before selecting the pinned
+    /// constants.
     #[test]
     fn parses_qwen3_tts_variant_ids() {
         for spelling in [
@@ -2268,6 +2267,13 @@ mod tests {
             "qwen3-tts-12hz-0.6b-base",
             "qwen3-tts-12hz-0_6b-base",
             "qwen3-tts-12hz-0.6b",
+            "qwen3-tts-0.6b-customvoice",
+            "qwen3-tts-0_6b-customvoice",
+            "qwen3-tts-0.6b-custom-voice",
+            "qwen3-tts-12hz-0.6b-customvoice",
+            "qwen3-tts-12hz-0_6b-customvoice",
+            "qwen3-tts-12hz-0.6b-custom-voice",
+            "qwen/qwen3-tts-12hz-0.6b-customvoice",
         ] {
             let p = parse_args(&args(&[
                 "--model", spelling, "--input", "i", "--output", "o",

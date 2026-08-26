@@ -1053,6 +1053,7 @@ fn synthesize_fr_ex_08_refusal_pins() {
     let cfg = Qwen3TtsConfig {
         sample_rate: QWEN3_TTS_SAMPLE_RATE,
         speaker_embed_dim: 8,
+        has_speaker_encoder: true,
         talker: Qwen3TtsTalkerConfig {
             hidden_dim: 16,
             n_layer: 2,

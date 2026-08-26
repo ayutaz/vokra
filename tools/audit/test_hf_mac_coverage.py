@@ -75,6 +75,26 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 "partial",
                 "2,145-F32-tensor",
             ),
+            (
+                audit.RepoRecord(
+                    "vokra/qwen3-tts-12hz-1.7b-base",
+                    "abc",
+                    ("model.gguf",),
+                    "qwen3_tts",
+                ),
+                "partial",
+                "1024x2048 small-to-MTP projection",
+            ),
+            (
+                audit.RepoRecord(
+                    "vokra/htdemucs-multi",
+                    "abc",
+                    ("model.gguf",),
+                    "htdemucs",
+                ),
+                "no-runtime-binder",
+                "per-member config",
+            ),
         )
 
         for record, cpu_code, reason_fragment in cases:

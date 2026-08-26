@@ -488,12 +488,11 @@ pub enum ModelKind {
     /// sibling's arch tag would mis-route the runtime dispatch. Reuses
     /// the existing `qwen3_tts_codec` primitive (SoTA plan Phase 3 TTS
     /// codec op) — no new op or backend kernel is added by this model.
-    /// The upstream release is BF16 (~0.9 GB); today's F32/F16
-    /// pass-through hits the `skipped_non_float` counter on the BF16
-    /// tensors and the converter surfaces the loud "no float tensors"
-    /// note. Convert with [`convert_qwen3_tts_file`] — the converter
-    /// takes no config side-car (every hparam is fixed for the 0.6B
-    /// release and transcribed as compile-time constants).
+    /// The upstream release is BF16 (1,829,344,272 bytes at the pinned
+    /// revision). BF16 passes through verbatim as GGUF type 30. Convert with
+    /// [`convert_qwen3_tts_file`] — the converter takes no config side-car and
+    /// authenticates the exact 478-tensor Base versus 402-tensor CustomVoice
+    /// manifest before selecting metadata and provenance.
     Qwen3Tts,
     /// Alibaba **Qwen3-TTS-12Hz-1.7B-Base** safetensors checkpoint
     /// (extension of Phase 3, added 2026-08-01, Wave 4). **Apache-2.0
@@ -505,9 +504,9 @@ pub enum ModelKind {
     /// `text_hidden_size=2048`, same `num_hidden_layers=28` /
     /// `num_attention_heads=16` / GQA `num_key_value_heads=8` /
     /// `head_dim=128`); the code-predictor axes, RoPE / RMSNorm, codec
-    /// handshake, sample rate + speaker embedding are all identical to
-    /// the 0.6B / CustomVoice / VoiceDesign siblings — only the HF
-    /// release id + `vokra.model.name` stamp differ. A distinct
+    /// handshake and sample rate match the siblings. Base alone carries a
+    /// speaker encoder, widened to 2048 at 1.7B, plus the learned
+    /// 2048→1024 small-to-MTP projection. A distinct
     /// `Qwen3TtsVariant::_1_7B_Base` arm (rather than a slug-only
     /// registration on `_1_7B_CustomVoice`) is required so a downstream
     /// that ships all three 1.7B GGUFs side-by-side can tell them apart
@@ -531,8 +530,9 @@ pub enum ModelKind {
     /// `hidden_size=2048` (vs 1024), `intermediate_size=6144` (vs 3072),
     /// `text_hidden_size=2048` (vs 2048 = now identity-sized); the
     /// code-predictor axes, GQA head split, RoPE / RMSNorm, codec
-    /// handshake, sample rate + speaker embedding are all identical to
-    /// the 0.6B sibling. Primary source
+    /// handshake and sample rate match the 0.6B sibling. CustomVoice has
+    /// no speaker encoder; 1.7B adds a learned 2048→1024 small-to-MTP
+    /// projection. Primary source
     /// `huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/raw/main/config.json`
     /// fetched 2026-07-30 (CLAUDE.md「ハルシネーション厳禁」). The upstream
     /// release is BF16 (~3.83 GB / 1 916 676 352 params BF16). Convert
@@ -4067,23 +4067,15 @@ impl ModelKind {
             // `ModelKind` values (`Qwen3TtsCustomVoice17B` /
             // `Qwen3TtsVoiceDesign17B`) below because their talker axes widen
             // (hidden 1024 → 2048, ffn 3072 → 6144). The 0.6B-CustomVoice
-            // spelling set added 2026-08-01 (Wave 4 slug-only add) also
-            // routes here — the CustomVoice release is a fine-tune of
+            // spelling set was originally registered as a slug-only alias;
+            // it still routes here, but the converter now distinguishes the
+            // CustomVoice release from Base by its exact manifest. It is a fine-tune of
             // 0.6B-Base with byte-identical talker + code-predictor axes and
-            // an identically-shaped CustomVoice head (`config.json.tts_model_type
-            // = "custom_voice"`), so the existing 0.6B-Base converter branch
-            // covers it verbatim (mirror of the wav2vec2-large-960h-lv60-self
-            // slug-only precedent at rows above). The emitted GGUF stamps
-            // `vokra.model.name = "qwen3-tts-12hz-0.6b-base"` /
-            // `vokra.provenance.upstream_hf = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"`;
-            // a future publish of the CustomVoice checkpoint that needs
-            // faithful provenance either (a) adds a distinct
-            // `Qwen3TtsVariant::_0_6B_CustomVoice` arm to
-            // `crates/vokra-convert/src/models/qwen3_tts.rs` so the stamp
-            // names this row's upstream repo, or (b) runs a `restamp` pass
-            // to rewrite the `vokra.provenance.*` chunks (mirror of the
-            // `restamp_provenance` low-memory rewrite path landed 2026-07-23,
-            // `crates/vokra-convert/src/lib.rs::restamp_file`).
+            // an identically-shaped talker/code-predictor. The generic
+            // converter authenticates the full manifest: 478 tensors means
+            // Base (including its 76 speaker tensors), while 402 means
+            // CustomVoice (no speaker encoder). It then stamps the distinct
+            // `_0_6B_CustomVoice` name and provenance automatically.
             "qwen3-tts"
             | "qwen3_tts"
             | "qwen3-tts-0.6b"
@@ -4091,8 +4083,8 @@ impl ModelKind {
             | "qwen3-tts-12hz-0.6b-base"
             | "qwen3-tts-12hz-0_6b-base"
             | "qwen3-tts-12hz-0.6b"
-            // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice fine-tune
-            // (identical axes to 0.6B-Base per approach directive).
+            // 0.6B-CustomVoice: same talker axes, distinct speaker-less
+            // manifest and faithful model/provenance stamp.
             | "qwen3-tts-0.6b-customvoice"
             | "qwen3-tts-0_6b-customvoice"
             | "qwen3-tts-0.6b-custom-voice"
@@ -9063,8 +9055,9 @@ pub fn convert_file_licensed(
             // primary source
             // `Qwen/Qwen3-TTS-12Hz-1.7B-Base/config.json.talker_config`,
             // fetched 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」);
-            // only the HF release id + `vokra.model.name` /
-            // `vokra.provenance.upstream_hf` stamps differ. Provenance
+            // Base additionally carries the official 2048-wide speaker
+            // encoder; every 1.7B variant carries the 2048→1024
+            // small-to-MTP projection. Provenance
             // = apache-2.0 end-to-end (Permissive — same posture as
             // every other Qwen3-TTS release; LM + codec + tokenizer +
             // speaker encoder all under a single apache-2.0 grant).
@@ -9092,7 +9085,9 @@ pub fn convert_file_licensed(
             // to hidden=2048 / ffn=6144 (primary source
             // `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice/config.json.talker_config`,
             // fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」);
-            // every other constant matches the 0.6B sibling. Provenance
+            // the code predictor remains 1024-wide, adds the 2048→1024
+            // small-to-MTP projection, and the CustomVoice checkpoint has
+            // no speaker encoder. Provenance
             // = apache-2.0 end-to-end (Permissive — same posture as the
             // 0.6B release).
             let (builder, report) = models::qwen3_tts::convert_variant(
@@ -13721,20 +13716,18 @@ pub fn convert_chatterbox_nano_file(
     convert_file(ModelKind::ChatterboxNano, input, output)
 }
 
-/// Convert an Alibaba **Qwen3-TTS-12Hz-0.6B-Base** safetensors
-/// checkpoint into a Vokra GGUF (SoTA plan Phase 3, 2026-07-24).
+/// Convert an Alibaba **Qwen3-TTS-12Hz-0.6B Base or CustomVoice**
+/// safetensors checkpoint into a Vokra GGUF.
 ///
 /// This is the named entry point that mirrors
 /// `convert_chatterbox_nano_file` / `convert_dia_file` /
 /// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
 /// is functionally identical to
 /// `convert_file(ModelKind::Qwen3Tts, input, output)` — Qwen3-TTS
-/// takes no side-car config on this conversion path (every hparam of
-/// the `vokra.qwen3_tts.*` chunk group is transcribed as compile-time
-/// constants in `models::qwen3_tts` from
-/// `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`)
-/// — but the named entry keeps the `convert_*_file` naming symmetry
-/// with the other TTS models.
+/// takes no side-car config on this conversion path. It authenticates the
+/// complete manifest before auto-selecting 0.6B-Base (478 tensors, including
+/// the speaker encoder) or 0.6B-CustomVoice (402 tensors, no speaker encoder)
+/// and stamps the matching model name and provenance.
 ///
 /// Qwen3-TTS-0.6B-Base is Alibaba's discrete multi-codebook LM
 /// speech synthesizer with a **Qwen3-flavour talker** (28-layer /
@@ -15361,10 +15354,9 @@ mod modelkind_alias_and_roundtrip_tests {
             ),
             // Phase 3 — Qwen3-TTS (0.6B family; 1.7B siblings live in the
             // Qwen3TtsCustomVoice17B / Qwen3TtsVoiceDesign17B arms in the
-            // subsequent aliases blocks). The 0.6B-CustomVoice slugs
-            // (2026-08-01 Wave 4 slug-only add) also route here — the
-            // fine-tune shares the 0.6B-Base topology per the parent
-            // decision recorded in `from_arg` above.
+            // subsequent aliases blocks). The 0.6B-CustomVoice slugs also
+            // route here; exact 478-vs-402 tensor-manifest detection selects
+            // Base vs CustomVoice and stamps faithful provenance.
             (
                 ModelKind::Qwen3Tts,
                 &[
@@ -15375,8 +15367,8 @@ mod modelkind_alias_and_roundtrip_tests {
                     "qwen3-tts-12hz-0.6b-base",
                     "qwen3-tts-12hz-0_6b-base",
                     "qwen3-tts-12hz-0.6b",
-                    // 2026-08-01 Wave 4 slug-only add: 0.6B-CustomVoice
-                    // fine-tune (identical axes to 0.6B-Base — pin every
+                    // 0.6B-CustomVoice fine-tune (same talker axes but a
+                    // speaker-less manifest — pin every
                     // spelling so a dropped alias in `from_arg` fails loudly
                     // rather than misrouting to `Unknown`).
                     "qwen3-tts-0.6b-customvoice",

@@ -59,6 +59,40 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/qwen3-tts-12hz-0.6b-base": (
+        "partial",
+        "the live 478-tensor Base manifest is authentic, but the GGUF predates the "
+        "variant size/type/speaker-encoder contract and contains neither the Qwen2 "
+        "BPE sidecars nor the separate Qwen3-TTS-Tokenizer-12Hz neural waveform "
+        "decoder. Main-model binding is strict; end-to-end PCM remains explicit",
+    ),
+    "vokra/qwen3-tts-12hz-0.6b-customvoice": (
+        "partial",
+        "the live 402-tensor CustomVoice manifest correctly omits the Base-only "
+        "speaker encoder, but vokra.model.name is incorrectly stamped as 0.6B-Base "
+        "and the artifact predates the variant metadata, BPE sidecars and neural "
+        "speech-tokenizer decoder required for end-to-end PCM",
+    ),
+    "vokra/qwen3-tts-12hz-1.7b-base": (
+        "partial",
+        "the live 480-tensor 1.7B-Base manifest contains the official 2048-wide "
+        "speaker encoder and 1024x2048 small-to-MTP projection, but its model name "
+        "and topology metadata are mis-stamped as 0.6B. It also lacks the BPE "
+        "sidecars and neural speech-tokenizer decoder required for PCM",
+    ),
+    "vokra/qwen3-tts-12hz-1.7b-customvoice": (
+        "partial",
+        "the live 404-tensor 1.7B-CustomVoice manifest correctly omits the speaker "
+        "encoder and contains the 1024x2048 small-to-MTP projection, but its model "
+        "name/topology are mis-stamped as 0.6B and it lacks the BPE sidecars plus "
+        "neural speech-tokenizer decoder required for PCM",
+    ),
+    "vokra/htdemucs-multi": (
+        "no-runtime-binder",
+        "the live 2,132-tensor GGUF is a bag of multiple prefixed Demucs checkpoints, "
+        "but carries no authenticated member ordering, per-member config or ensemble "
+        "weights. Runtime execution cannot infer those contracts from tensor shapes",
+    ),
     "vokra/qwen3-asr-0.6b": (
         "partial",
         "the live dense GGUF predates the executable Qwen3-ASR conversion "
