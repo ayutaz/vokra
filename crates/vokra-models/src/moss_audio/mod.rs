@@ -24,10 +24,15 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, verify_te
 
 mod audio_encoder;
 mod frontend;
+mod text_decoder;
 mod weights;
 
 use audio_encoder::MossAudioEncoderRuntime;
 pub use audio_encoder::{MOSS_AUDIO_ENCODER_HOT_OPS, MossAudioEmbeddings};
+use text_decoder::MossAudioTextRuntime;
+pub use text_decoder::{
+    MOSS_AUDIO_HOT_OPS, MOSS_AUDIO_TEXT_HOT_OPS, MossAudioGenerationOptions, MossAudioTokenOutput,
+};
 use weights::MossAudioMappedDescriptors;
 
 /// Dedicated architecture emitted by corrected conversions.
@@ -438,16 +443,17 @@ impl MossAudioCheckpoint {
     }
 }
 
-/// Executable MOSS-Audio frontend, audio tower and four GatedMLP adapters.
+/// Executable MOSS-Audio audio tower, adapters and Qwen3 decoder.
 ///
-/// Text generation remains an explicit unsupported operation until the
-/// following Qwen3/DeepStack slice. [`Self::encode_audio`] is complete and
-/// keeps the multi-gigabyte checkpoint mapped, widening one layer at a time.
+/// [`Self::generate_tokens`] keeps the multi-gigabyte checkpoint mapped and
+/// widens one layer at a time. String generation remains explicit until the
+/// tokenizer/chat-template sidecar contract lands.
 #[derive(Clone)]
 pub struct MossAudio {
     checkpoint: MossAudioCheckpoint,
     backend: BackendKind,
     encoder: Arc<MossAudioEncoderRuntime>,
+    text: Arc<MossAudioTextRuntime>,
 }
 
 impl std::fmt::Debug for MossAudio {
@@ -469,11 +475,12 @@ impl MossAudio {
     /// Builds the executable audio side from a mapped strict checkpoint.
     pub fn from_checkpoint(checkpoint: MossAudioCheckpoint, backend: BackendKind) -> Result<Self> {
         checkpoint.mapped()?;
-        let _ = crate::compute::Compute::for_backend(backend, MOSS_AUDIO_ENCODER_HOT_OPS)?;
+        let _ = crate::compute::Compute::for_backend(backend, MOSS_AUDIO_HOT_OPS)?;
         Ok(Self {
             checkpoint,
             backend,
             encoder: Arc::new(MossAudioEncoderRuntime::default()),
+            text: Arc::new(MossAudioTextRuntime::default()),
         })
     }
 
@@ -496,11 +503,36 @@ impl MossAudio {
         audio_encoder::encode(&self.checkpoint, self.backend, &self.encoder, pcm)
     }
 
+    /// Runs audio encoding plus the complete 36-layer Qwen3 decoder from a
+    /// caller-supplied official prompt-token sequence. The sequence must carry
+    /// exactly one `tokens.audio` placeholder for every encoded audio row.
+    /// This token-level entry avoids pretending the historical GGUF embeds a
+    /// tokenizer/chat template; the string route remains loud until that
+    /// authenticated sidecar contract is connected.
+    pub fn generate_tokens(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        prompt_tokens: &[u32],
+        options: &MossAudioGenerationOptions,
+    ) -> Result<MossAudioTokenOutput> {
+        validate_audio_input(pcm, sample_rate)?;
+        let audio = audio_encoder::encode(&self.checkpoint, self.backend, &self.encoder, pcm)?;
+        text_decoder::generate(
+            &self.checkpoint,
+            self.backend,
+            &self.text,
+            prompt_tokens,
+            &audio,
+            options,
+        )
+    }
+
     /// Explicit text-generation boundary until the Qwen3 decoder slice lands.
     pub fn respond(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         validate_audio_input(pcm, sample_rate)?;
         Err(VokraError::UnsupportedOp(format!(
-            "moss_audio respond: {} has a complete CPU/Metal audio tower and four DeepStack adapters, but the 36-layer Qwen3 decoder/tokenizer route is not connected yet; no text or silent CPU fallback is produced",
+            "moss_audio respond: {} has complete CPU/Metal audio and 36-layer Qwen3 token generation through MossAudio::generate_tokens, but this historical GGUF has no authenticated tokenizer/chat-template sidecar; no text or silent CPU fallback is produced",
             self.checkpoint.variant().model_name()
         )))
     }

@@ -603,8 +603,9 @@ pub mod funcodec;
 /// The historical public GGUFs are admitted only behind their exact complete
 /// 901-tensor manifests; corrected conversions use the dedicated `moss_audio`
 /// architecture and fixed-revision topology metadata. The frontend, 32-layer
-/// audio tower and four DeepStack adapters execute on CPU/Metal; Qwen3 text
-/// generation remains an explicit unsupported boundary until its next slice.
+/// audio tower, four DeepStack adapters and 36-layer Qwen3 greedy token
+/// generation execute on CPU/Metal. String I/O remains an explicit boundary
+/// until the tokenizer/chat-template sidecar is authenticated.
 pub mod moss_audio;
 /// Strict Full/Nano MOSS Audio Tokenizer binder plus native CPU/Metal decode.
 /// Full keeps its 7 GB artifact mapped and materialises one layer at a time to

@@ -710,7 +710,7 @@ Rust gate は staged だが、実行結果は未取得であり real-weight nume
 
 新規conversionは専用`vokra.moss_audio.*`軸と完全901-tensor manifestを必須にする。旧公開GGUFの`moss_tts` stampは、4B=`4db8bfa2a54b7541dc092b73919771fdefa952ea1b054ce10845e9d2bcd6fadc`、8B=`76c1275dabd9a3baf0189f5fc335a6c192c472e96bc363cc3a64ad2d37a5f83a`のmanifest限定legacy互換としてのみ扱い、family名からtopologyを推測しない。
 
-runtime側はその厳密binderからmmapでdense F32/F16/BF16だけを受理し、400 mel-frame chunk、3段Conv2d、32層encoder、layer index 8/16/24のDeepStack capture、最終LayerNorm、primary + 3本のGatedMLP adapterを一つの明示CPU/Metal backendで実行する。量子化checkpoint、未接続の36層Qwen3 decoder/tokenizer、未実施のreal-weight parityはいずれも明示エラーまたはpendingであり、CPU fallbackやparity合格を推測しない。
+runtime側はその厳密binderからmmapでdense F32/F16/BF16だけを受理し、400 mel-frame chunk、3段Conv2d、32層encoder、layer index 8/16/24のDeepStack capture、最終LayerNorm、primary + 3本のGatedMLP adapter、36層Qwen3 GQA decoder（最初の3 decoder layer出力へDeepStack加算）、chunked LM headを一つの明示CPU/Metal backendで実行する。現時点の公開APIは認証済みprompt token列を受ける`generate_tokens`までで、旧公開GGUFに含まれないtokenizer/chat templateからの文字列I/O、量子化checkpoint、未実施のreal-weight parityはいずれも明示エラーまたはpendingであり、CPU fallbackやparity合格を推測しない。
 
 ### Ultravox Llama companion boundary（2026-08-27）
 
