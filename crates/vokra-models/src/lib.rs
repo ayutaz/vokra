@@ -586,6 +586,8 @@ pub mod snac;
 // share one WavLM + focal-modulation + BSQ + Vocos implementation; their
 // compressor/decompressor time-scale factors are selected from a pinned
 // release manifest rather than inferred from filenames.
+/// Native Suno Bark / Bark Small strict mmap binder and CPU/Metal runtime.
+pub mod bark;
 /// Native NaturalSpeech 3 FACodec V2 codec (CPU / Metal).
 pub mod facodec;
 pub mod focalcodec;
