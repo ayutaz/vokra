@@ -41,10 +41,10 @@
 //!         "delay pattern" interleave over the 4 codebook streams;
 //!         the exact conditioner path differs between the published
 //!         AudioCraft and Transformers layouts.)
-//!   -> EnCodec RVQ + neural SEANet to 32 kHz PCM       ← **real for
-//!                                                         composite Small/Melody**
+//!   -> EnCodec RVQ + neural SEANet to 32 kHz PCM       ← **real**
 //!        (`decode_codes` / `decode_frame_major`; LM-only Medium/Large
-//!         require an explicit authenticated codec companion)
+//!         use an explicit [`MusicGenCompanion`] strictly extracted from the
+//!         public Small composite)
 //!   -> PCM (mono f32, 32 kHz)
 //! ```
 //!
@@ -95,15 +95,18 @@
 //!     [`MusicGen::generate_from_token_ids`] takes explicit conditional and
 //!     unconditional token ids, then composes T5, LM generation and EnCodec
 //!     decode on the selected CPU/Metal backend.
+//!   - [`MusicGenCompanion`] verifies the exact public Small manifest and
+//!     binds only its T5-base and EnCodec components.  Medium/Large compose
+//!     those components with their own learned description projection and LM
+//!     through [`MusicGen::generate_from_token_ids_with_companion`].  Both
+//!     files independently pass the license gate and use one backend; a
+//!     mismatch is an explicit error with no CPU fallback.
 //!
-//! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
-//!   [`VokraError::UnsupportedOp`] naming the remaining layout-specific pieces:
-//!   1. raw-text prompt tokenization: tokenizer assets are absent from every
-//!      public GGUF. Composite files can use the landed token-id route, whereas
-//!      LM-only files additionally require an authenticated T5 companion;
-//!   2. an authenticated EnCodec companion for LM-only Medium/Large. The
-//!      complete embedded Small/Melody decoder is already available through
-//!      [`MusicGen::decode_codes`].
+//! - **Explicit boundary**: [`MusicGen::generate`] returns
+//!   [`VokraError::UnsupportedOp`] for raw text because tokenizer assets are
+//!   absent from every public GGUF.  Composite and LM-only artifacts both have
+//!   complete explicit token-id-to-waveform routes; no tokenizer or
+//!   unknown-token behavior is guessed.
 //!
 //! The error names the **three primary source URLs** (HF card for the
 //! bound variant + AudioCraft repo + paper), the config axes echoed
@@ -116,10 +119,9 @@
 //! beat_this / mt3 / sortformer loud-partial precedent, CLAUDE.md 教訓
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
-//! enum + FR-EX-08 loud-fails landed first. Raw LM code generation is now
-//! native for both authenticated layouts, and composite T5-to-waveform
-//! generation is native from explicit token ids. Remaining work is raw-text
-//! tokenization and explicit companion binding for LM-only files.
+//! enum + FR-EX-08 loud-fails landed first. Raw LM code generation and
+//! explicit token-id-to-waveform generation are now native for both artifact
+//! layouts. Raw-text tokenization remains an honest caller boundary.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -182,6 +184,7 @@
 //! not part of the runtime), mirroring the SpeechT5-HiFi-GAN /
 //! Sortformer / Charsiu bridge pattern.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use vokra_core::backend::BackendKind;
@@ -798,10 +801,10 @@ impl MusicGenWeights {
 /// CC-BY-NC-4.0 T4 tier).
 ///
 /// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
-/// currently fails explicitly until raw-text tokenization and each layout's
-/// missing companion are connected. Explicit token-id-to-waveform generation
-/// is available for mapping-owned Small/Melody composites; raw LM generation
-/// remains available for every mapping-owned public layout.
+/// fails explicitly for raw text because tokenizer assets are absent. Explicit
+/// token-id-to-waveform generation is available directly for mapping-owned
+/// Small/Melody composites and through [`MusicGenCompanion`] for LM-only
+/// Medium/Large; raw LM generation remains available for every layout.
 #[derive(Debug)]
 pub struct MusicGen {
     config: MusicGenConfig,
@@ -825,6 +828,149 @@ pub struct MusicGen {
     /// which embed the complete 32 kHz EnCodec component.
     codec_decoder: Option<AudioCraftEncodecDecoder>,
     backend: BackendKind,
+}
+
+/// Exact companion surface extracted from the public MusicGen Small
+/// Transformers composite.
+///
+/// Medium and Large were published as AudioCraft LM-only GGUFs.  The public
+/// Small artifact contains the same canonical T5-base conditioner and 32 kHz
+/// four-codebook EnCodec required by those releases, alongside a Small LM that
+/// is deliberately *not* decoded by this handle.  Construction first verifies
+/// the complete Small manifest and license policy, then binds only
+/// `text_encoder.*` and `audio_encoder.*`.  This keeps the dependency explicit
+/// and avoids loading an unused second language model.
+#[derive(Debug)]
+pub struct MusicGenCompanion {
+    text_encoder: T5Encoder,
+    codec_decoder: AudioCraftEncodecDecoder,
+    weight_license: LicenseClass,
+    backend: BackendKind,
+}
+
+impl MusicGenCompanion {
+    /// Opens the exact public MusicGen Small composite on CPU under an
+    /// explicit compliance policy.
+    pub fn from_path_with_policy(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, policy, BackendKind::Cpu)
+    }
+
+    /// Opens and strictly verifies the MusicGen Small composite, then binds
+    /// only its T5-base and EnCodec components on `backend`.
+    ///
+    /// A Medium/Large LM, a Melody composite, a family-shared arch lookalike,
+    /// or a backend with incomplete op coverage is rejected before inference.
+    /// Both this companion and the target LM must pass the caller's compliance
+    /// policy independently.
+    pub fn from_path_with_policy_and_backend(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
+        let authenticated = MusicGen::from_gguf(&file)?;
+        check_weight_license(&file, policy)?;
+        if authenticated.variant() != MusicGenVariant::Small
+            || authenticated.artifact_layout() != MusicGenArtifactLayout::TransformersComposite
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "musicgen companion: expected the exact public `{NAME_SMALL}` Transformers composite, got variant {:?} with layout {:?}; family-shared topology inference is forbidden",
+                authenticated.variant(),
+                authenticated.artifact_layout()
+            )));
+        }
+
+        // Each component preflights its complete learned-op set for `backend`
+        // before decoding payload tensors.  No Small LM decoder is bound.
+        let text_encoder =
+            T5Encoder::t5_base_from_gguf(&file, "text_encoder")?.with_backend(backend);
+        let codec_decoder = AudioCraftEncodecDecoder::bind_transformers_composite(&file, backend)?;
+        Ok(Self {
+            text_encoder,
+            codec_decoder,
+            weight_license: authenticated.weight_license(),
+            backend,
+        })
+    }
+
+    /// Backend used by both companion components.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Fail-closed license class read from the authenticated companion.
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    fn prepare_condition_for(
+        &self,
+        target: &MusicGen,
+        token_ids: &[u32],
+        attention_mask: Option<&[bool]>,
+    ) -> Result<AudioCraftCondition> {
+        validate_external_companion_pair(
+            target.artifact_layout(),
+            target.backend(),
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            self.backend,
+        )?;
+        let hidden = self.text_encoder.encode_tokens(token_ids, attention_mask)?;
+        let lm_mask: Option<Vec<u8>> = attention_mask.map(|mask| {
+            mask.iter()
+                .map(|&visible| if visible { 1 } else { 0 })
+                .collect()
+        });
+        // The target owns the release-specific 768 -> d_model projection.
+        // Reusing the Small LM projection here would be a silent shape/model
+        // substitution for Medium/Large.
+        target.prepare_lm_condition(&hidden, token_ids.len(), lm_mask.as_deref())
+    }
+
+    fn decode_codes(&self, codes: &AudioCraftGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != ENCODEC_NUM_CODEBOOKS {
+            return Err(VokraError::InvalidArgument(format!(
+                "musicgen companion EnCodec decode: generated codebook count {} != expected {ENCODEC_NUM_CODEBOOKS}",
+                codes.num_codebooks()
+            )));
+        }
+        self.codec_decoder
+            .decode_frame_major(codes.as_frame_major(), codes.frames())
+    }
+}
+
+fn validate_external_companion_pair(
+    target_layout: MusicGenArtifactLayout,
+    target_backend: BackendKind,
+    companion_variant: MusicGenVariant,
+    companion_layout: MusicGenArtifactLayout,
+    companion_backend: BackendKind,
+) -> Result<()> {
+    if target_layout != MusicGenArtifactLayout::AudioCraftLm {
+        return Err(VokraError::InvalidArgument(
+            "musicgen companion: the target already embeds T5-base and EnCodec; use its native generate_from_token_ids route instead of substituting an external companion"
+                .to_owned(),
+        ));
+    }
+    if companion_variant != MusicGenVariant::Small
+        || companion_layout != MusicGenArtifactLayout::TransformersComposite
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "musicgen companion: expected exact Small/TransformersComposite identity, got {companion_variant:?}/{companion_layout:?}"
+        )));
+    }
+    if target_backend != companion_backend {
+        return Err(VokraError::InvalidArgument(format!(
+            "musicgen companion backend {companion_backend:?} does not match target LM backend {target_backend:?}; the composed graph must use one backend and never hide a CPU fallback"
+        )));
+    }
+    Ok(())
 }
 
 impl MusicGen {
@@ -1172,6 +1318,61 @@ impl MusicGen {
         self.decode_codes(&codes)
     }
 
+    /// Runs an LM-only Medium/Large checkpoint with the exact public
+    /// MusicGen Small T5/EnCodec companion.
+    ///
+    /// Conditional and classifier-free-null T5 ids remain explicit because
+    /// neither public artifact embeds tokenizer assets.  T5 hidden states are
+    /// projected by this target model's own learned description projection,
+    /// then its LM performs CFG/delay-pattern generation.  Only the resulting
+    /// four EnCodec streams are decoded by the companion.  Target and
+    /// companion must select the same backend; a mismatch is an explicit error
+    /// and never falls back to CPU.
+    pub fn generate_codes_from_token_ids_with_companion(
+        &self,
+        companion: &MusicGenCompanion,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        let conditional = companion.prepare_condition_for(
+            self,
+            conditional_token_ids,
+            conditional_attention_mask,
+        )?;
+        let unconditional = companion.prepare_condition_for(
+            self,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+        )?;
+        self.generate_codes(&conditional, &unconditional, generation)
+    }
+
+    /// Generates mono 32 kHz PCM from an LM-only Medium/Large public GGUF and
+    /// one explicitly supplied, strictly authenticated MusicGen Small
+    /// companion.
+    pub fn generate_from_token_ids_with_companion(
+        &self,
+        companion: &MusicGenCompanion,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<Vec<f32>> {
+        let codes = self.generate_codes_from_token_ids_with_companion(
+            companion,
+            conditional_token_ids,
+            conditional_attention_mask,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+            generation,
+        )?;
+        companion.decode_codes(&codes)
+    }
+
     /// Decodes generated frame-major EnCodec indices to mono 32 kHz PCM.
     ///
     /// This is available on the public Small/Melody composite artifacts,
@@ -1266,15 +1467,13 @@ impl MusicGen {
     /// # Loud-partial (this WP)
     ///
     /// Returns [`VokraError::UnsupportedOp`] — MusicGen's PCM inference path
-    /// still requires the following companion/composition pieces:
+    /// still requires the following caller-owned input:
     ///
-    /// 1. **Raw-text tokenization**: tokenizer assets are absent from the
-    ///    public GGUFs. Composite GGUFs expose the complete explicit token-id
-    ///    route through [`Self::generate_from_token_ids`]; LM-only GGUFs also
-    ///    require a separately authenticated T5 companion.
-    /// 2. **LM-only codec companion**: Medium/Large contain no EnCodec
-    ///    tensors. Composite Small/Melody already expose their complete
-    ///    embedded decoder through [`Self::decode_codes`].
+    /// **Raw-text tokenization**: tokenizer assets are absent from the public
+    /// GGUFs. Composite GGUFs expose the complete explicit token-id route
+    /// through [`Self::generate_from_token_ids`]; LM-only GGUFs expose the
+    /// equivalent route through
+    /// [`Self::generate_from_token_ids_with_companion`].
     ///
     /// The error names **three** primary source URLs (HF card for the
     /// bound variant + AudioCraft repo + paper) so a reader diagnosing
@@ -1320,8 +1519,9 @@ fn generate_forward_loud_partial(
         MusicGenArtifactLayout::AudioCraftLm => {
             "this already-published GGUF is the AudioCraft LM-only layout: it contains \
              neither the frozen text-conditioner weights/tokenizer nor EnCodec weights, \
-             so those must be supplied as explicit authenticated companion components; \
-             its native raw LM + delay/CFG/sampling route is available through generate_codes"
+             and the complete explicit token-id-to-waveform route is available by supplying \
+             the exact public Small composite through MusicGenCompanion; its native raw LM + \
+             delay/CFG/sampling route is also available through generate_codes"
         }
         MusicGenArtifactLayout::TransformersComposite => {
             "this already-published GGUF is the Transformers composite layout: it carries \
@@ -1332,19 +1532,20 @@ fn generate_forward_loud_partial(
     };
     let codec_status = match layout {
         MusicGenArtifactLayout::AudioCraftLm => {
-            "the LM-only artifact still requires an explicit authenticated EnCodec companion"
+            "the LM-only artifact decodes through the strictly authenticated Small \
+             MusicGenCompanion on the same backend"
         }
         MusicGenArtifactLayout::TransformersComposite => {
             "the embedded EnCodec RVQ + SEANet decoder is landed through decode_codes"
         }
     };
     VokraError::UnsupportedOp(format!(
-        "musicgen generate: raw-text tokenization/layout companion composition pending. \
+        "musicgen generate: raw-text tokenization is unavailable. \
          Artifact layout={layout:?}: {companion_gap}. What is missing from this raw-text API is \
          tokenizer data. `generate_from_token_ids` composes native CPU/Metal T5-base, raw LM, \
          delay pattern, CFG, sampling and embedded EnCodec for composite checkpoints, while \
-         LM-only checkpoints require explicit T5 and codec companions; independent real-weight \
-         parity remains pending. Raw LM \
+         `generate_from_token_ids_with_companion` provides the complete LM-only route; \
+         independent real-weight parity remains pending. Raw LM \
          execution, the MusicGen-specific 4-codebook delay pattern, CFG and sampling are \
          landed through generate_codes for both authenticated layouts. Codec status: \
          {codec_status}. \
@@ -1683,6 +1884,50 @@ mod tests {
             assert!(message.contains("tensor count 1"));
             assert!(message.contains(&format!("expected {}", variant.tensor_count())));
         }
+    }
+
+    #[test]
+    fn external_small_companion_is_lm_only_and_backend_exact() {
+        validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Cpu,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect("Medium/Large plus exact Small companion on one backend is valid");
+
+        let embedded_target = validate_external_companion_pair(
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("Small/Melody targets must use their embedded components");
+        assert!(embedded_target.to_string().contains("already embeds"));
+
+        let wrong_variant = validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Cpu,
+            MusicGenVariant::Melody,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("family-shared composite inference must be rejected");
+        assert!(wrong_variant.to_string().contains("exact Small"));
+
+        let backend_mismatch = validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Metal,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("a composed graph may not fall back to CPU");
+        let message = backend_mismatch.to_string();
+        assert!(message.contains("does not match"));
+        assert!(message.contains("never hide a CPU fallback"));
     }
 
     // -----------------------------------------------------------------------

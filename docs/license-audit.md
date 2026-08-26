@@ -163,6 +163,18 @@ publish routeは追加しないため、FR-OP-32の恒久除外と
 `check-encodec-exclusion.sh` は変更しない。runtime対応は再配布許可を意味せず、
 research-license opt-inは引き続き必須。
 
+**2026-08-27 MusicGen Medium/Large runtime closure**: 公開
+`vokra/musicgen-{medium,large}` はAudioCraft LM-only artifactのまま変更せず、
+公開`vokra/musicgen-small`の完全612-tensor manifestを先に認証する専用
+`MusicGenCompanion`が、そのうちcanonical T5-base `text_encoder.*` と32 kHz
+4-codebook EnCodec `audio_encoder.*` だけをbindする。Small側の未使用LMはload
+しない。Medium/Large自身のlearned description projection、LM、delay pattern、
+CFG、samplingをCPU/Metalで実行後、companion codecでPCM化する。両GGUFは個別に
+`NonCommercial` policy gateを通し、backend不一致は明示エラーでCPU fallback
+しない。tokenizer assetはどの公開GGUFにもないため、CLIはconditional/null双方の
+T5 token idsと`--musicgen-companion`を明示要求する。これは既存weightのruntime
+compositionであり、standalone EnCodec配布やHF再公開を追加しない。
+
 **Voice cloning モデル分離** (レビュアー D 指摘 D4):
 - 上記表の RVC v2、GPT-SoVITS、その他話者クローン用途モデルは **`vokra-voiceclone-experimental` リポジトリに完全分離**
 - Vokra core は VAD/ASR/TTS のみを公式パッケージに含める

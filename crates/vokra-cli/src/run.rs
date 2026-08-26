@@ -82,6 +82,10 @@ USAGE:
                   --parler-description-token-ids <u32,u32,...> \
                   --parler-prompt-token-ids <u32,u32,...> \
                   [--parler-max-frames <N>] [--parler-seed <u64>] [--output <out.wav>]
+    vokra-cli run --model <musicgen-medium-or-large.gguf> \
+                  --musicgen-companion <musicgen-small.gguf> \
+                  --token-ids <u32,u32,...> --music-unconditional-token-ids <u32,u32,...> \
+                  --music-frames <N> [--music-seed <u64>] [--output <out.wav>]
     vokra-cli run --model <mimi.gguf> --codec-mode encode --input <in.wav> --output <codes.vmc>
     vokra-cli run --model <mimi.gguf> --codec-mode decode --input <codes.vmc> --output <out.wav>
     vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>
@@ -282,22 +286,27 @@ OPTIONS:
                                 caller token strings paired with the exact ids
                                 passed to the model; no tokenizer is inferred.
     --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3,
-                                MusicGen Small/Melody conditional prompt, or
+                                MusicGen conditional prompt, or
                                 Bark/Bark Small text-token sequence:
                                 comma-separated u32 ids (whitespace allowed).
                                 No tokenizer or unknown-token substitution is
                                 inferred. BERT --output writes row-major `[T,D]`
                                 little-endian f32.
     --music-unconditional-token-ids <ids>
-                                MusicGen Small/Melody only, REQUIRED: exact T5
+                                MusicGen only, REQUIRED: exact T5
                                 token ids for the classifier-free null prompt.
                                 The CLI never guesses how an empty prompt was
                                 tokenized.
-    --music-frames <N>          MusicGen Small/Melody only, REQUIRED: positive
+    --musicgen-companion <path> MusicGen Medium/Large only, REQUIRED: exact
+                                public musicgen-small composite GGUF providing
+                                its strictly authenticated T5-base and 32 kHz
+                                EnCodec components. Its Small LM is not loaded.
+                                Target and companion use the same --backend.
+    --music-frames <N>          MusicGen only, REQUIRED: positive
                                 number of 50 Hz EnCodec frames to generate.
     --max-new-frames <N>        MOSS-TTS only, REQUIRED: positive generation
                                 cap (Nano audio frames; Base/v1.5 delayed rows).
-    --music-seed <u64>          MusicGen Small/Melody sampling seed [default 0].
+    --music-seed <u64>          MusicGen sampling seed [default 0].
     --bark-max-semantic-tokens <N>
                                 Bark/Bark Small only: semantic generation cap
                                 in 1..=768 [default 768]. EOS may stop earlier.
@@ -493,6 +502,8 @@ struct RunArgs {
     token_ids: Option<String>,
     /// MusicGen-only classifier-free null-prompt T5 ids.
     music_unconditional_token_ids: Option<String>,
+    /// MusicGen Medium/Large-only exact Small T5/EnCodec companion GGUF.
+    musicgen_companion: Option<String>,
     /// MusicGen-only number of 50 Hz codec frames to generate.
     music_frames: Option<usize>,
     /// MOSS-TTS-Nano-only generation cap.
@@ -666,6 +677,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut tokens: Option<String> = None;
     let mut token_ids: Option<String> = None;
     let mut music_unconditional_token_ids: Option<String> = None;
+    let mut musicgen_companion: Option<String> = None;
     let mut music_frames: Option<usize> = None;
     let mut max_new_frames: Option<usize> = None;
     let mut music_seed: Option<u64> = None;
@@ -786,6 +798,14 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                         .ok_or(
                             "--music-unconditional-token-ids requires a comma-separated u32 list",
                         )?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--musicgen-companion" => {
+                musicgen_companion = Some(
+                    args.get(i + 1)
+                        .ok_or("--musicgen-companion requires a GGUF path")?
                         .clone(),
                 );
                 i += 2;
@@ -1129,6 +1149,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         tokens,
         token_ids,
         music_unconditional_token_ids,
+        musicgen_companion,
         music_frames,
         max_new_frames,
         music_seed,
@@ -1386,12 +1407,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         );
     }
     if (a.music_unconditional_token_ids.is_some()
+        || a.musicgen_companion.is_some()
         || a.music_frames.is_some()
         || a.music_seed.is_some())
         && task != ModelTask::MusicGeneration
     {
         return Err(
-            "run: --music-unconditional-token-ids / --music-frames / --music-seed are only supported for the musicgen arch"
+            "run: --music-unconditional-token-ids / --musicgen-companion / --music-frames / --music-seed are only supported for the musicgen arch"
                 .to_owned(),
         );
     }
@@ -3328,13 +3350,13 @@ fn run_bert_encoder(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Public MusicGen Small/Melody explicit token-id generation.
+/// Public MusicGen explicit token-id generation.
 ///
-/// The public composite GGUFs contain T5-base, the autoregressive LM and the
-/// 32 kHz EnCodec decoder, but no tokenizer. Both the conditional and CFG-null
-/// token sequences are therefore required inputs rather than guessed from raw
-/// text. Medium/Large share the arch tag and fail from the model binder with
-/// their explicit missing-companion diagnostic.
+/// Small/Melody contain T5-base, the autoregressive LM and 32 kHz EnCodec.
+/// Medium/Large are LM-only and require `--musicgen-companion` pointing at the
+/// exact public Small composite; the dedicated companion binder loads only its
+/// T5/codec components. Every route still requires explicit conditional and
+/// CFG-null token ids because no public artifact embeds a tokenizer.
 fn run_musicgen(a: &RunArgs) -> Result<(), String> {
     if a.input.is_some() || a.text.is_some() || a.tokens.is_some() {
         return Err("run (MusicGen): use explicit --token-ids and \
@@ -3368,9 +3390,44 @@ fn run_musicgen(a: &RunArgs) -> Result<(), String> {
         &a.model, &policy, a.backend,
     )
     .map_err(|error| format!("run (MusicGen bind): {error}"))?;
-    let pcm = model
-        .generate_from_token_ids(&conditional, None, &unconditional, None, &generation)
-        .map_err(|error| format!("run (MusicGen generate): {error}"))?;
+    let pcm = match model.artifact_layout() {
+        vokra_models::musicgen::MusicGenArtifactLayout::TransformersComposite => {
+            if a.musicgen_companion.is_some() {
+                return Err(format!(
+                    "run (MusicGen {:?}): --musicgen-companion is invalid because this composite already embeds T5-base and EnCodec",
+                    model.variant()
+                ));
+            }
+            model
+                .generate_from_token_ids(&conditional, None, &unconditional, None, &generation)
+                .map_err(|error| format!("run (MusicGen generate): {error}"))?
+        }
+        vokra_models::musicgen::MusicGenArtifactLayout::AudioCraftLm => {
+            let companion_path = a.musicgen_companion.as_deref().ok_or_else(|| {
+                format!(
+                    "run (MusicGen {:?}): --musicgen-companion <musicgen-small.gguf> is required because the public target is LM-only",
+                    model.variant()
+                )
+            })?;
+            let companion =
+                vokra_models::musicgen::MusicGenCompanion::from_path_with_policy_and_backend(
+                    companion_path,
+                    &policy,
+                    a.backend,
+                )
+                .map_err(|error| format!("run (MusicGen companion bind): {error}"))?;
+            model
+                .generate_from_token_ids_with_companion(
+                    &companion,
+                    &conditional,
+                    None,
+                    &unconditional,
+                    None,
+                    &generation,
+                )
+                .map_err(|error| format!("run (MusicGen generate with companion): {error}"))?
+        }
+    };
     emit_audio(
         "musicgen",
         &pcm,
@@ -6544,6 +6601,8 @@ mod tests {
             "71,1234,1",
             "--music-unconditional-token-ids",
             "1",
+            "--musicgen-companion",
+            "musicgen-small.gguf",
             "--music-frames",
             "250",
             "--music-seed",
@@ -6554,6 +6613,10 @@ mod tests {
         .expect("MusicGen explicit input flags parse");
         assert_eq!(parsed.token_ids.as_deref(), Some("71,1234,1"));
         assert_eq!(parsed.music_unconditional_token_ids.as_deref(), Some("1"));
+        assert_eq!(
+            parsed.musicgen_companion.as_deref(),
+            Some("musicgen-small.gguf")
+        );
         assert_eq!(parsed.music_frames, Some(250));
         assert_eq!(parsed.music_seed, Some(42));
         assert!(
@@ -6565,6 +6628,15 @@ mod tests {
             ]))
             .is_err()
         );
+        let error = match parse_args(&args(&[
+            "--model",
+            "musicgen-medium.gguf",
+            "--musicgen-companion",
+        ])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --musicgen-companion must be rejected"),
+        };
+        assert_eq!(error, "--musicgen-companion requires a GGUF path");
     }
 
     #[test]

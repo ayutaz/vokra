@@ -253,6 +253,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         musicgen_medium = audit.RepoRecord(
             "vokra/musicgen-medium", "abc", ("model.gguf",), "musicgen"
         )
+        musicgen_large = audit.RepoRecord(
+            "vokra/musicgen-large", "abc", ("model.gguf",), "musicgen"
+        )
         audiogen_medium = audit.RepoRecord(
             "vokra/audiogen-medium", "abc", ("model.gguf",), "musicgen"
         )
@@ -447,7 +450,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
             audit.classify(moss_audio_instruct, routed, bound).cpu_code,
             "no-runtime-binder",
         )
-        self.assertEqual(audit.classify(musicgen_medium, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(musicgen_medium, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(musicgen_medium, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(musicgen_large, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(musicgen_large, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(audiogen_medium, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(silero, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(dac, routed, bound).metal_code, "full")

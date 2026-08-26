@@ -146,18 +146,6 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "but contains neither its T5-large conditioner nor the official 16 kHz EnCodec "
         "decoder; both remain explicit companion boundaries",
     ),
-    "vokra/musicgen-medium": (
-        "partial",
-        "the public AudioCraft-layout artifact has native CPU/Metal LM generation but "
-        "contains neither T5-base nor EnCodec; explicit authenticated companions are "
-        "required before token-id-to-waveform execution",
-    ),
-    "vokra/musicgen-large": (
-        "partial",
-        "the public AudioCraft-layout artifact has native CPU/Metal LM generation but "
-        "contains neither T5-base nor EnCodec; explicit authenticated companions are "
-        "required before token-id-to-waveform execution",
-    ),
     "vokra/nsnet2": (
         "partial",
         "the exact public tensor header is runtime-compatible, but the live GGUF "

@@ -183,11 +183,22 @@
 > authenticated split-Q/K/V autoregressive LM, four-codebook delay/CFG/sampling
 > and embedded 32 kHz EnCodec RVQ+SEANet without a silent CPU fallback. The CLI
 > requires exact conditional/null T5 ids and generated frame count because the
-> public files contain no tokenizer assets. Medium/Large remain artifact-partial
-> because their public files omit both T5 and EnCodec; AudioGen remains partial
-> because its LM-only file omits T5-large and the distinct 16 kHz codec. VAST
+> public files contain no tokenizer assets. AudioGen remains partial because
+> its LM-only file omits T5-large and the distinct 16 kHz codec. VAST
 > real-weight CPU parity and Apple-device Metal parity are still pending, so
 > this is code reachability rather than a numerical-pass claim.
+
+> **2026-08-27 MusicGen LM-only companion wave:** public
+> `musicgen-medium` and `musicgen-large` now compose their already-native
+> CPU/Metal AudioCraft LM with an explicit, separately policy-checked
+> `musicgen-small` companion. A dedicated binder authenticates Small's exact
+> 612-tensor manifest and loads only canonical T5-base plus 32 kHz EnCodec, not
+> its unused Small LM. T5 output is projected by each target's own learned
+> description projection before CFG/delay/sampling; generated codes return to
+> the companion codec. The CLI requires `--musicgen-companion` and exact
+> conditional/null ids. Backend mismatch and family-shared lookalikes are
+> explicit errors; no CPU fallback or HF replacement is involved. VAST CPU
+> real-weight and external Apple Silicon Metal parity remain pending.
 
 > **2026-08-26 shared T5 source wave:** native non-gated T5 encoder math now
 > exists for CPU and Metal, including exact T5 relative-position buckets,
@@ -305,7 +316,8 @@ MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
 Facebook Denoiser DNS48, NISQA v2, FRCRN-SE-16K, YuE-upsampler and
 emotion2vec+ Large, deepfake detection, pyannote segmentation 3.0 and the
 speaker-diarization 3.1 pipeline,
-the MusicGen Small/Melody composite route,
+the MusicGen Small/Melody composite route and Medium/Large explicit-companion
+route,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
@@ -319,13 +331,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 125 |
-| Route/binder present, released-artifact CPU forward incomplete | 46 |
+| Complete CPU route for the live public artifact | 127 |
+| Route/binder present, released-artifact CPU forward incomplete | 44 |
 | No complete runtime binder | 22 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 125 |
+| Complete Metal code route among the CPU-complete set | 127 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 68 |
+| Metal blocked by missing/partial CPU forward | 66 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -343,7 +355,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 125 repositories with a complete Metal code route are the Audiobox
+The 127 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -388,8 +400,10 @@ They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
 They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
 `vokra/deepfake-audio-detection-v2`, `vokra/pyannote-segmentation-3.0` and
-`vokra/pyannote-speaker-diarization-3.1`, plus `vokra/musicgen-small` and
-`vokra/musicgen-melody`. The MOSS set in this count is
+`vokra/pyannote-speaker-diarization-3.1`, plus `vokra/musicgen-small`,
+`vokra/musicgen-medium`, `vokra/musicgen-large` and `vokra/musicgen-melody`.
+Medium/Large require the exact Small composite through the explicit companion
+contract. The MOSS set in this count is
 `vokra/moss-audio-tokenizer-full`, `vokra/moss-tts`,
 `vokra/moss-tts-v1.5` and `vokra/moss-voice-generator`; the Local transformer,
 Nano's stale public metadata and both MOSS-Audio Instruct checkpoints remain
@@ -403,7 +417,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 68 Metal-blocked repositories first need a complete released-
+remaining 66 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
