@@ -35,17 +35,17 @@ USER_AGENT = "vokra-hf-mac-coverage/1.0"
 # These arches have an ARCH_* route but not a public-artifact-complete CPU
 # runtime. MAGNeT/MelodyFlow are loud partial diagnostics; CSM still binds a
 # synthesized model bridge instead of released weights; SBV2's public
-# conversion does not yet satisfy the strict runtime tensor-name contract;
-# Pyannote keeps its real forward behind an owner parity opt-in. RMVPE now has
-# an exact code route, but its live artifact remains blocked below by invalid
-# provenance.
+# conversion does not yet satisfy the strict runtime tensor-name contract.
+# RMVPE now has an exact code route, but its live artifact remains blocked
+# below by invalid provenance. Pyannote is complete: its exact historical
+# 54-F32-tensor artifact receives a narrowly scoped metadata repair and then
+# executes the default-on CPU/Metal route.
 # Subtracting only BOUND_ARCHES would therefore overstate CPU coverage.
 ROUTED_PARTIAL_ARCHES = {
     "csm",
     "magnet_small_10secs",
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
-    "pyannote-segmentation",
     "sbv2",
 }
 
@@ -154,6 +154,7 @@ METAL_CODE_ARCHES = {
     "parakeet-ctc",
     "parakeet-tdt",
     "piper-plus-mb-istft-vits2",
+    "pyannote-segmentation",
     "rnnoise",
     "rmvpe",
     "silero-vad",

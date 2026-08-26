@@ -4,9 +4,8 @@
 //!
 //! Composes four independent pieces into an end-to-end diarizer:
 //!
-//! 1. [`PyanNet::segment_powerset`] — per-frame powerset multiclass
-//!    probabilities over the input PCM. Wave 3 lands this method (this
-//!    module consumes it — it does not implement inference).
+//! 1. [`PyanNet::segment_powerset`] — default-on per-frame powerset
+//!    multiclass probabilities over the input PCM.
 //! 2. **Powerset → per-speaker activity**: argmax the class distribution
 //!    per frame, then decode the winning class into a per-speaker binary
 //!    mask under the segmentation-3.0 powerset scheme
@@ -37,19 +36,16 @@
 //! # Primary source
 //!
 //! - Upstream reference (algorithm shape, not code lift):
-//!   <https://github.com/pyannote/pyannote-audio/develop/src/pyannote/audio/pipelines/speaker_diarization.py>
+//!   <https://github.com/pyannote/pyannote-audio/blob/3.0.0/pyannote/audio/pipelines/speaker_diarization.py>
 //!   (MIT LICENSE, Copyright (c) 2020 CNRS).
-//! - PyanNet backbone: `develop/src/pyannote/audio/models/segmentation/PyanNet.py`
-//!   (same LICENSE, fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
+//! - PyanNet backbone: `3.0.0/pyannote/audio/models/segmentation/PyanNet.py`
+//!   (same LICENSE).
 //! - Weight license: **MIT** (HF cardData primary source 2026-07-30 CC 直接
 //!   照合、`docs/license-audit.md` §3.1 row 263 yousan ☑ Commercial
 //!   sign-off 2026-07-30 — the license half of the FR-OP-82 double
-//!   blocker is unblocked; the runtime op landing is what remains).
+//!   blocker is unblocked).
 //!
-//! # Runtime status (2026-07-30, Wave 4 scaffold)
-//!
-//! This module is honest about what it can and cannot verify in the
-//! landing worktree:
+//! # Runtime status
 //!
 //! - The **pipeline plumbing is real** — powerset decoding, contiguous-
 //!   region extraction, embedding-region assembly, cluster label
@@ -57,18 +53,10 @@
 //!   real, deterministic, and tested against a mock encoder + synthetic
 //!   PCM. No silent all-zero output; every unsupported input is a loud
 //!   [`VokraError`] (FR-EX-08).
-//! - The **kernel behind [`PyanNet::segment_powerset`] is Wave 3** — a
-//!   pipeline invocation on a real GGUF will therefore surface Wave 3's
-//!   current loud-partial [`VokraError::UnsupportedOp`] until the
-//!   SincNet primitive lands. This module never fabricates the missing
-//!   step; the pipeline simply propagates whatever `segment_powerset`
-//!   returns.
-//! - The **CAM++ `SpeakerEncoder` impl is a follow-up commit** — the
-//!   trait definition here is the sole thing the pipeline needs; the
-//!   bridge from CAM++'s `fbank → 192-d embedding` API to
-//!   `SpeakerEncoder::encode`'s `PCM + sample_rate → Vec<f32>` API
-//!   lands separately so `speaker/campplus.rs` stays untouched by this
-//!   wave (task-mandated).
+//! - The PyanNet backbone binds the exact public 54-F32-tensor release and
+//!   executes on CPU or Metal without a silent per-op fallback.
+//! - The caller supplies a [`SpeakerEncoder`], keeping segmentation and
+//!   embedding checkpoint identity independently auditable.
 //!
 //! # No unsafe (workspace-wide `unsafe_code = "deny"` — inherited).
 
@@ -193,9 +181,8 @@ impl<E: SpeakerEncoder> DiarizationPipeline<E> {
     ///
     /// # Errors
     ///
-    /// * Propagates whatever [`PyanNet::segment_powerset`] returns
-    ///   (Wave 3 kernel — current landing is a loud-partial
-    ///   [`VokraError::UnsupportedOp`]).
+    /// * Propagates the default-on [`PyanNet`] CPU/Metal forward errors,
+    ///   including unavailable or unsupported backends.
     /// * [`VokraError::InvalidArgument`] on `sample_rate == 0`, on a
     ///   powerset activity matrix whose class count is not one of the
     ///   supported `num_speakers_from_powerset` shapes, or on an
@@ -211,21 +198,15 @@ impl<E: SpeakerEncoder> DiarizationPipeline<E> {
                 "diarize: sample_rate must be > 0 (FR-EX-08)".to_owned(),
             ));
         }
-        // Empty PCM → the pipeline collapses to no segments loudly-
-        // free (the primary-source pyannote pipeline behaves the same
-        // way). Wave 3 might also short-circuit inside
-        // `segment_powerset`; both paths are honored.
+        // Empty PCM → the pipeline collapses to no segments (the
+        // primary-source pyannote pipeline behaves the same way).
         if pcm.is_empty() {
             return Ok(Vec::new());
         }
 
-        // 1. PyanNet forward — powerset probabilities per output frame.
-        // Wave 3 exposes `segment_real` (pub(crate), returns raw
-        // `Vec<Vec<f32>>` rows) plus the env-gated `segment` /
-        // `segment_powerset` wrappers. This crate-internal orchestrator
-        // reaches for `segment_real` directly so the per-frame decode
-        // below stays self-contained (Wave 3's SpeakerActivity helper
-        // is a different post-processing shape and is redundant here).
+        // 1. PyanNet forward — powerset probabilities per output frame. This
+        // crate-internal orchestrator uses the sample-rate-explicit sibling so
+        // the per-frame decode below stays self-contained.
         let per_frame = self.pyannet.segment_real(pcm, sample_rate)?;
         if per_frame.is_empty() {
             return Ok(Vec::new());
@@ -545,18 +526,6 @@ fn per_speaker_regions(active: &[Vec<bool>], n_speakers: usize) -> Vec<SpeakerRe
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Wave 3 mod.rs's `vokra.pyannote.*` metadata keys + primary-source
-    // constants. Re-imported at the sibling `pyannote::` root because
-    // diarization.rs is a peer of the mod.rs config constants (not a
-    // nested submodule of them).
-    use super::super::{
-        DEFAULT_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_NUM_LAYERS, DEFAULT_LSTM_BIDIRECTIONAL,
-        DEFAULT_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_MONOLITHIC, DEFAULT_LSTM_NUM_LAYERS,
-        DEFAULT_NUM_POWERSET_CLASSES, DEFAULT_SAMPLE_RATE, DEFAULT_SINCNET_STRIDE,
-        GGUF_KEY_LINEAR_HIDDEN_SIZE, GGUF_KEY_LINEAR_NUM_LAYERS, GGUF_KEY_LSTM_BIDIRECTIONAL,
-        GGUF_KEY_LSTM_HIDDEN_SIZE, GGUF_KEY_LSTM_MONOLITHIC, GGUF_KEY_LSTM_NUM_LAYERS,
-        GGUF_KEY_NUM_POWERSET_CLASSES, GGUF_KEY_SAMPLE_RATE, GGUF_KEY_SINCNET_STRIDE,
-    };
 
     // ---- Powerset arithmetic -------------------------------------------------
 
@@ -700,10 +669,6 @@ mod tests {
         }
     }
 
-    // Local copies of the mod.rs::tests helpers (private there ゆえ
-    // duplicated here — the shape+dim schema is a stable primary-source
-    // constant so drift risk is bounded, and the duplication keeps this
-    // test module self-contained per the workflow integrator handoff).
     fn local_scratch_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!(
@@ -719,41 +684,7 @@ mod tests {
     }
 
     fn local_synthetic_pyannet_gguf() -> Vec<u8> {
-        use vokra_core::gguf::{GgmlType, GgufBuilder};
-        let mut b = GgufBuilder::new();
-        // Arch stamp — `PyanNetWeights::from_gguf` (reached through
-        // `PyanNet::from_gguf`) gates on it before any tensor scan
-        // (FR-EX-08).
-        b.add_string(
-            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
-            crate::pyannote::EXPECTED_ARCH,
-        );
-        b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
-        b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
-        b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
-        b.add_u32(GGUF_KEY_LSTM_NUM_LAYERS, DEFAULT_LSTM_NUM_LAYERS);
-        b.add_bool(GGUF_KEY_LSTM_BIDIRECTIONAL, DEFAULT_LSTM_BIDIRECTIONAL);
-        b.add_bool(GGUF_KEY_LSTM_MONOLITHIC, DEFAULT_LSTM_MONOLITHIC);
-        b.add_u32(GGUF_KEY_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_HIDDEN_SIZE);
-        b.add_u32(GGUF_KEY_LINEAR_NUM_LAYERS, DEFAULT_LINEAR_NUM_LAYERS);
-        b.add_u32(GGUF_KEY_NUM_POWERSET_CLASSES, DEFAULT_NUM_POWERSET_CLASSES);
-
-        let tensor_specs: [(&str, &[u64]); 4] = [
-            ("sincnet.conv1d.0.weight", &[8, 1, 251]),
-            ("lstm.weight_ih_l0", &[512, 60]),
-            ("linear.0.weight", &[128, 256]),
-            ("classifier.weight", &[7, 128]),
-        ];
-        for (name, shape) in tensor_specs {
-            let elems: u64 = shape.iter().product();
-            let bytes: Vec<u8> = (0..elems as usize)
-                .flat_map(|i| (i as f32 * 0.001).to_le_bytes())
-                .collect();
-            b.add_tensor(name, GgmlType::F32, shape.to_vec(), bytes)
-                .expect("add_tensor");
-        }
-
-        b.to_bytes().expect("gguf serialize")
+        crate::pyannote::tests::synthetic_full_pyannet_gguf()
     }
 
     #[test]
@@ -762,12 +693,8 @@ mod tests {
         // it short-circuits to `Ok(vec![])` per the primary-source
         // pyannote pipeline's behavior.
         //
-        // Building a PyanNet requires a synthetic GGUF; we borrow
-        // Wave 1+2's helper from `pyannote/mod.rs` tests. Under the
-        // Wave 1+2 landing `PyanNet::segment_powerset` does not exist
-        // yet — Wave 3 lands it. If cargo build fails here it is
-        // expected (see the module docstring and the task's
-        // integrator handoff).
+        // Building a PyanNet requires the exact synthetic release fixture, but
+        // the empty-input fast path does not execute its weights.
         let bytes = local_synthetic_pyannet_gguf();
         let path = local_scratch_path("empty-pcm");
         std::fs::write(&path, &bytes).unwrap();
@@ -785,18 +712,14 @@ mod tests {
 
     #[test]
     fn pipeline_wire_check_with_mock_encoder() {
-        // End-to-end wire check on the Wave 3+ world:
-        // - Build a PyanNet from the synthetic GGUF (Wave 1+2 helper).
+        // End-to-end wire check:
+        // - Build a PyanNet from the exact synthetic release GGUF.
         // - Drive it with a synthetic PCM sized so segment_powerset
         //   produces at least a handful of frames.
         // - Verify diarize returns a `Vec<DiarizationSegment>` (may be
         //   empty on garbage synthetic weights, but must not panic and
         //   must not surface a silent-fake output).
         //
-        // Under Wave 1+2 alone this test fails because
-        // segment_powerset returns UnsupportedOp; the pipeline
-        // faithfully propagates it. Under Wave 3+ the test verifies
-        // the plumbing works with a mock encoder.
         let bytes = local_synthetic_pyannet_gguf();
         let path = local_scratch_path("wire-check");
         std::fs::write(&path, &bytes).unwrap();
@@ -812,45 +735,13 @@ mod tests {
             pcm.push(phase);
         }
 
-        match pipeline.diarize(&pcm, 16_000) {
-            Ok(segments) => {
-                // Whatever segments come back, they must have
-                // well-formed times + labels.
-                for s in &segments {
-                    assert!(s.start_s >= 0.0);
-                    assert!(s.duration_s > 0.0);
-                    // speaker_id is `usize`; renders as SPEAKER_{k:02}
-                    // via `write_rttm`.
-                    let _ = s.speaker_id;
-                }
-            }
-            Err(VokraError::UnsupportedOp(msg)) => {
-                // Wave 1+2 loud-partial state: acceptable, but the
-                // error must be honest (name Wave 3 or FR-EX-08).
-                assert!(
-                    msg.contains("Wave 3") || msg.contains("FR-EX-08") || msg.contains("SincNet"),
-                    "loud-partial error must reference the pending wave: {msg}"
-                );
-            }
-            Err(VokraError::ModelLoad(msg)) => {
-                // Wave 3+ real-forward with a minimal fixture that omits
-                // the full SincNet learnable-filterbank tensor set — the
-                // `local_synthetic_pyannet_gguf` helper only provides the
-                // shape-passing "one tensor per REQUIRED_TENSOR_PREFIXES
-                // entry" set (enough for `PyanNetWeights::from_gguf`'s
-                // non-emptiness gate). SincNet forward correctly refuses
-                // loudly (FR-EX-08). Accept as an honest wire-check
-                // outcome; the full-fixture parity path lives in Wave 3's
-                // in-module tests using `synthetic_full_pyannet_gguf`.
-                assert!(
-                    msg.contains("FR-EX-08")
-                        || msg.contains("SincNet")
-                        || msg.contains("filterbank")
-                        || msg.contains("tensor"),
-                    "ModelLoad must be an honest loud-refusal: {msg}"
-                );
-            }
-            Err(other) => panic!("unexpected error: {other:?}"),
+        let segments = pipeline
+            .diarize(&pcm, 16_000)
+            .expect("default-on PyanNet pipeline");
+        for segment in &segments {
+            assert!(segment.start_s >= 0.0);
+            assert!(segment.duration_s > 0.0);
+            let _ = segment.speaker_id;
         }
 
         std::fs::remove_file(&path).ok();

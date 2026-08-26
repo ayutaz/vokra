@@ -219,13 +219,9 @@ pub(crate) enum ModelTask {
     Separation,
     /// Speaker segmentation through pyannote `segmentation-3.0` (PyanNet).
     ///
-    /// The SincNet + BiLSTM + linear + powerset-classifier forward is real
-    /// but sits behind the binder's own env opt-in
-    /// (`VOKRA_PYANNET_ENABLE_FORWARD=1`): the BiLSTM stack has not been
-    /// byte-compared against PyTorch cuDNN yet. Routing here is precisely
-    /// the honest outcome — without the opt-in the user sees the binder's
-    /// own [`vokra_core::VokraError::UnsupportedOp`] naming the gate and the
-    /// reason, instead of a misleading "unsupported model arch".
+    /// The run/bench arms bind the exact release manifest and preflight the
+    /// selected CPU or Metal backend before executing the default-on SincNet +
+    /// four-layer BiLSTM + projection + powerset-classifier forward.
     Segment,
     /// F0 (pitch) extraction through RMVPE.
     ///
@@ -1201,11 +1197,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      `{ARCH_PYANNOTE_SEGMENTATION}`"
                 ));
             }
-            // Bare session — `PyanNet::open` takes a path, and the `run` arm
-            // binds it there. The forward is real but env-gated by the binder
-            // itself; the `run` arm deliberately does NOT set that env var,
-            // so a user without the opt-in sees pyannote's own explanation of
-            // why the BiLSTM stack is still loud-pending.
+            // Bare session — PyanNet takes a path, and run/bench bind it there
+            // while preflighting the selected CPU or Metal backend.
             Ok((session, ModelTask::Segment))
         }
         ARCH_RMVPE => {

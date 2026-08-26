@@ -1036,21 +1036,32 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             (label, audio_seconds, samples)
         }
-        // pyannote's forward is real but sits behind the binder's own
-        // `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (its BiLSTM stack has not been
-        // byte-compared against PyTorch cuDNN yet). Timing a numeric path that
-        // is not yet validated would publish an RTF for a result nobody has
-        // signed off on, so reject and point at `run` — which surfaces the
-        // binder's own explanation (FR-EX-08).
         ModelTask::Segment => {
-            return Err(
-                "bench: arch `pyannote-segmentation` has no bench task — its forward is \
-                 still behind the binder's `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (the \
-                 BiLSTM stack is not byte-compared against PyTorch cuDNN yet), and an RTF \
-                 for an unvalidated numeric path would be a misleading number. Use \
-                 `vokra-cli run --model <pyannote.gguf> --input <in.wav>`"
-                    .to_owned(),
-            );
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (segment): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let model = vokra_models::pyannote::PyanNet::from_gguf_with_backend(
+                std::path::Path::new(model_path),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let rate = model.config().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (segment): {path} is {} Hz, but pyannote-segmentation requires {rate} Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let probabilities = model.segment(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(probabilities);
+                Ok(())
+            })?;
+            ("pyannote-segmentation", audio_seconds, samples)
         }
         // RMVPE runs for real through `run`, but a pitch-track RTF needs a
         // settled window definition (hop vs. centered-STFT frame count) before

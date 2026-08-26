@@ -1,12 +1,11 @@
 //! **pyannote/segmentation-3.0** (Bredin, CNRS, MIT) — PyanNet
-//! voice-activity-detection / speaker-segmentation backbone (2026-07-30
-//! Wave 2 runtime scaffold with **loud-partial forward**).
+//! voice-activity-detection / speaker-segmentation backbone.
 //!
 //! # Primary source
 //!
 //! - Upstream reference:
-//!   <https://github.com/pyannote/pyannote-audio/develop/src/pyannote/audio/models/segmentation/PyanNet.py>
-//!   (CC 直接 fetch 2026-07-30, MIT LICENSE Copyright (c) 2020 CNRS).
+//!   <https://github.com/pyannote/pyannote-audio/blob/3.0.0/pyannote/audio/models/segmentation/PyanNet.py>
+//!   (MIT, exact source tag pinned below).
 //! - Weight license: **MIT** (HF cardData primary source 2026-07-30,
 //!   `docs/license-audit.md` §3.1 row 263 yousan ☑ Commercial).
 //! - `gated: auto` is access control only (HF UI accept で誰でも DL 可、
@@ -22,8 +21,8 @@
 //!      - sample_rate=16000
 //!      - output: (batch, 60, num_frames)
 //!   -> rearrange "batch feature frame -> batch frame feature"
-//!   -> LSTM (monolithic=True default, LSTM_DEFAULTS)
-//!      - nn.LSTM(input_size=60, hidden_size=128, num_layers=2,
+//!   -> LSTM (monolithic=True, release config override)
+//!      - nn.LSTM(input_size=60, hidden_size=128, num_layers=4,
 //!                bidirectional=True, batch_first=True)
 //!      - output: (batch, num_frames, 256)  # 2 * 128 bidirectional
 //!   -> Linear stack (LINEAR_DEFAULTS, num_layers=2, hidden_size=128)
@@ -39,61 +38,22 @@
 //! **class 0 = silence, 1 = spk A, 2 = spk B, 3 = spk C, 4 = A+B overlap,
 //! 5 = A+C overlap, 6 = B+C overlap** (3 speakers × 2 overlap slots).
 //!
-//! # Implementation status (VAD tier, 2026-07-30, Wave 2)
+//! # Runtime contract
 //!
-//! This module now:
+//! [`PyanNet::open`] first binds the exact 54-F32-tensor public manifest,
+//! enforces its owner-signed MIT provenance, and validates one of two
+//! all-or-nothing metadata layouts. New files carry the immutable release and
+//! public-artifact identity group. The historical public GGUF is accepted
+//! only when its complete name/shape manifest and every old metadata value
+//! match; its incorrect `lstm.num_layers=2` stamp is then repaired to the four
+//! layers independently proven by `lstm.*_l0..l3{,_reverse}`. Partial or
+//! foreign contracts fail before weight decode.
 //!
-//! 1. **Loads the PyanNet hparams verbatim** from the
-//!    `vokra.pyannote.*` chunk group (with primary-source constant
-//!    fallback for a GGUF that never carried the chunk) —
-//!    [`PyanNetConfig::from_gguf`].
-//! 2. **Binds real weight tensors** via
-//!    [`PyanNetWeights::from_gguf`]. Every tensor referenced by the
-//!    SincNet + LSTM + Linear + Classifier is required
-//!    (`vokra_core::VokraError::ModelLoad` on missing / mis-shaped /
-//!    wrong-dtype — FR-EX-08). A GGUF that carries *no* upstream
-//!    PyanNet tensors is refused loudly rather than silently running
-//!    an all-zero forward.
-//! 3. **Computes the real receptive-field arithmetic** —
-//!    [`PyanNet::num_frames`] — algebraically from the SincNet stride
-//!    and the LSTM / Linear frame-preserving structure (no learnable
-//!    parameters involved, primary-source `sincnet.num_frames()`
-//!    reproduction).
-//!
-//! The **SincNet + LSTM + Linear + Classifier inner forward** (waveform
-//! → 7-class powerset logits) is the remaining follow-up wave (Wave 3
-//! in `docs/handoff/pyannote-implementation-plan-2026-07-30.md`) gated
-//! on:
-//!
-//! - The **SincNet primitive** — a Vokra-new op (learnable sinc
-//!   conv1d + Conv1D stack + LayerNorm + MaxPool1d), not covered by
-//!   the existing conv1d / LSTM / Linear primitives.
-//! - The owner-side real-checkpoint parity harness
-//!   (`crates/vokra-parity/tests/parity_pyannote_segmentation.rs`,
-//!   env-gated on `PARITY_PYANNOTE_REAL_GGUF`) — enabled after the HF
-//!   gate accept + `bin_to_safetensors.py` bridge run + `vokra-cli
-//!   convert --model pyannote-segmentation` land the round-trip.
-//!
-//! Under this landing:
-//!
-//! - When [`PyanNetWeights::from_gguf`] finds a tensor manifest that
-//!   matches the upstream PyanNet (`sincnet.*` / `lstm.*` / `linear.*`
-//!   / `classifier.*` prefixes), the weights are loaded but the inner
-//!   forward returns [`vokra_core::VokraError::UnsupportedOp`] via
-//!   [`PyanNet::segment`] — an honest "weights are bound, kernel
-//!   binding pending" signal (FR-EX-08).
-//! - [`PyanNet::num_frames`] retains the frame-count contract so
-//!   downstream consumers (diarization pipelines that expect a
-//!   per-frame powerset stream) can wire the API surface without
-//!   waiting on the kernel binding.
-//!
-//! This posture keeps `from_gguf` a real load (mis-shaped tensor → loud
-//! error), keeps the receptive-field arithmetic real, and keeps the
-//! API surface complete — rather than making the forward silently fake
-//! with all-zero output (`class 0 = silence` masquerading as a real
-//! prediction). Same posture as sibling RMVPE
-//! (`crates/vokra-models/src/f0/rmvpe.rs`) and Charsiu
-//! (`crates/vokra-models/src/align/charsiu.rs`).
+//! SincNet, four-layer bidirectional LSTM, two projection layers, classifier,
+//! and softmax execute by default. Every learned Conv1D, GEMV/GEMM, and
+//! softmax operation uses one selected [`Compute`] backend. Only CPU and Metal
+//! are accepted; unsupported or unavailable backends return an explicit error
+//! and never fall back to CPU.
 //!
 //! # No ONNX (permanent)
 //!
@@ -104,10 +64,11 @@
 
 use std::path::Path;
 
-use vokra_core::gguf::{GgmlType, GgufFile};
-use vokra_core::{BackendKind, VokraError};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, chunks};
+use vokra_core::{BackendKind, CompliancePolicy, LicenseClass, VokraError, check_weight_license};
 
 use crate::compute::{Compute, HotOp};
+use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 pub mod sincnet;
 use sincnet::SincNet;
@@ -138,6 +99,30 @@ use sincnet::SincNet;
 /// a confusing "carries no PyanNet tensor" message instead of the honest
 /// "you handed me a pipeline, not a backbone".
 pub const EXPECTED_ARCH: &str = "pyannote-segmentation";
+/// Canonical `vokra.model.name` for the released backbone.
+pub const NAME: &str = "pyannote-segmentation-3.0";
+/// Canonical model-zoo category.
+pub const CATEGORY: &str = "vad";
+/// Immutable official upstream repository.
+pub const UPSTREAM_HF: &str = "pyannote/segmentation-3.0";
+/// Immutable official upstream model revision.
+pub const UPSTREAM_REVISION: &str = "e66f3d3b9eb0873085418a7b813d3b369bf160bb";
+/// Exact pyannote.audio source version used by the release.
+pub const PYANNOTE_AUDIO_VERSION: &str = "3.0.0";
+/// Peeled official pyannote.audio 3.0.0 tag revision.
+pub const PYANNOTE_AUDIO_REVISION: &str = "795b92ab265888c58d160f90ae4d91b7bcc6aa2c";
+/// Immutable historical public Vokra repository.
+pub const PUBLIC_HF: &str = "vokra/pyannote-segmentation-3.0";
+/// Immutable historical public Vokra revision.
+pub const PUBLIC_REVISION: &str = "50bf4e510e0c689668384aec0f866f02e0fcaea8";
+/// Historical public GGUF filename.
+pub const PUBLIC_FILE: &str = "pyannote-seg.gguf";
+/// Historical public GGUF byte size.
+pub const PUBLIC_BYTES: u32 = 5_898_272;
+/// Historical public GGUF SHA-256.
+pub const PUBLIC_SHA256: &str = "22ff05fddf19e69c8d9aac8daa6d99014e6718bcd8d8c527d26da677d00c63f1";
+/// Canonical raw SPDX spelling.
+pub const DEFAULT_LICENSE: &str = "mit";
 
 /// `vokra.pyannote.sample_rate` — input sample rate the SincNet was
 /// tuned for (upstream PyanNet default 16000).
@@ -167,6 +152,51 @@ pub const GGUF_KEY_LINEAR_NUM_LAYERS: &str = "vokra.pyannote.linear.num_layers";
 /// terminal classifier (3 speakers × 2 overlap = 7 for
 /// segmentation-3.0).
 pub const GGUF_KEY_NUM_POWERSET_CLASSES: &str = "vokra.pyannote.num_powerset_classes";
+/// Immutable upstream model revision within the PyanNet contract.
+pub const GGUF_KEY_UPSTREAM_REVISION: &str = "vokra.pyannote.upstream_revision";
+/// pyannote.audio source version within the PyanNet contract.
+pub const GGUF_KEY_PYANNOTE_AUDIO_VERSION: &str = "vokra.pyannote.pyannote_audio_version";
+/// Exact pyannote.audio source revision within the PyanNet contract.
+pub const GGUF_KEY_PYANNOTE_AUDIO_REVISION: &str = "vokra.pyannote.pyannote_audio_revision";
+/// Sorted name/shape manifest SHA-256 within the PyanNet contract.
+pub const GGUF_KEY_MANIFEST_SHA256: &str = "vokra.pyannote.tensor_manifest_sha256";
+/// Historical public artifact repository within the PyanNet contract.
+pub const GGUF_KEY_PUBLIC_HF: &str = "vokra.pyannote.public_hf";
+/// Historical public artifact revision within the PyanNet contract.
+pub const GGUF_KEY_PUBLIC_REVISION: &str = "vokra.pyannote.public_revision";
+/// Historical public filename within the PyanNet contract.
+pub const GGUF_KEY_PUBLIC_FILE: &str = "vokra.pyannote.public_file";
+/// Historical public artifact byte size within the PyanNet contract.
+pub const GGUF_KEY_PUBLIC_BYTES: &str = "vokra.pyannote.public_bytes";
+/// Historical public artifact SHA-256 within the PyanNet contract.
+pub const GGUF_KEY_PUBLIC_SHA256: &str = "vokra.pyannote.public_sha256";
+
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const LEGACY_SOURCE: &str = "pyannote/segmentation-3.0";
+const CANONICAL_SOURCE: &str = concat!(
+    "pyannote/segmentation-3.0@",
+    "e66f3d3b9eb0873085418a7b813d3b369bf160bb",
+    " exact 54-F32-tensor inference manifest"
+);
+
+/// SHA-256 over the sorted canonical `(tensor name, dimensions)` encoding.
+pub const MANIFEST_SHA256: &str =
+    "a1c783d4df253742ad5e0e796402310930f52b1a80597420f79a6eba830670d8";
+const MANIFEST_SHA256_BYTES: [u8; 32] = [
+    0xa1, 0xc7, 0x83, 0xd4, 0xdf, 0x25, 0x37, 0x42, 0xad, 0x5e, 0x0e, 0x79, 0x64, 0x02, 0x31, 0x09,
+    0x30, 0xf5, 0x2b, 0x1a, 0x80, 0x59, 0x74, 0x20, 0xf7, 0x9a, 0x6e, 0xba, 0x83, 0x06, 0x70, 0xd8,
+];
+const TENSOR_COUNT: usize = 54;
+const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
+    label: NAME,
+    arch: EXPECTED_ARCH,
+    model_name: NAME,
+    model_name_alias: None,
+    tensor_count: TENSOR_COUNT,
+    manifest_sha256: MANIFEST_SHA256_BYTES,
+};
 
 // Primary-source constants transcribed from PyanNet.py (SINCNET_DEFAULTS
 // + LSTM_DEFAULTS + LINEAR_DEFAULTS, fetched 2026-07-30 — CLAUDE.md
@@ -177,8 +207,9 @@ pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
 pub const DEFAULT_SINCNET_STRIDE: u32 = 10;
 /// BiLSTM default hidden dim.
 pub const DEFAULT_LSTM_HIDDEN_SIZE: u32 = 128;
-/// BiLSTM default layer count.
-pub const DEFAULT_LSTM_NUM_LAYERS: u32 = 2;
+/// Released checkpoint BiLSTM layer count. The class default is two, but the
+/// exact segmentation-3.0 config and state dict override it to four.
+pub const DEFAULT_LSTM_NUM_LAYERS: u32 = 4;
 /// BiLSTM default directionality.
 pub const DEFAULT_LSTM_BIDIRECTIONAL: bool = true;
 /// BiLSTM default monolithic flag (single multi-layer nn.LSTM).
@@ -205,10 +236,12 @@ pub const PYANNOTE_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Gemv, HotOp::Softma
 /// PyanNet hyperparameters as they ride the `vokra.pyannote.*` chunk
 /// group.
 ///
-/// [`from_gguf`](Self::from_gguf) reads the chunk with primary-source
-/// constant fallback per key — a GGUF that never carried the chunk
-/// still loads with the upstream defaults. All numeric axes are `u32`
-/// in the GGUF; boolean flags are `bool`.
+/// [`from_gguf`](Self::from_gguf) is the loose projection used by component
+/// tests and tooling. The public [`PyanNet::from_gguf`] release binder does
+/// not use its per-key fallbacks: it validates the complete topology and
+/// immutable identity group first, including the historical public file's
+/// narrowly-scoped two-to-four-layer metadata repair. All numeric axes are
+/// `u32` in the GGUF; boolean flags are `bool`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PyanNetConfig {
     /// Input sample rate (default 16000, PyanNet fixed default).
@@ -217,7 +250,8 @@ pub struct PyanNetConfig {
     pub sincnet_stride: u32,
     /// BiLSTM hidden dim (default 128, LSTM_DEFAULTS).
     pub lstm_hidden_size: u32,
-    /// BiLSTM layer count (default 2, LSTM_DEFAULTS).
+    /// Released BiLSTM layer count (4; the class default of 2 is overridden
+    /// by the segmentation-3.0 config and state dict).
     pub lstm_num_layers: u32,
     /// BiLSTM directionality (default true, LSTM_DEFAULTS).
     pub lstm_bidirectional: bool,
@@ -249,8 +283,11 @@ impl Default for PyanNetConfig {
 }
 
 impl PyanNetConfig {
-    /// Reads the `vokra.pyannote.*` chunk group from a GGUF, falling
-    /// back to the primary-source [`Default`] constants per absent key.
+    /// Loosely projects the `vokra.pyannote.*` chunk group, falling back to
+    /// the released [`Default`] constants per absent key.
+    ///
+    /// Production callers should use [`PyanNet::from_gguf`], whose strict
+    /// all-or-nothing metadata contract rejects missing or mixed keys.
     pub fn from_gguf(gguf: &GgufFile) -> Self {
         let default = Self::default();
         Self {
@@ -301,14 +338,216 @@ impl PyanNetConfig {
     }
 }
 
+const IDENTITY_KEYS: &[&str] = &[
+    GGUF_KEY_UPSTREAM_REVISION,
+    GGUF_KEY_PYANNOTE_AUDIO_VERSION,
+    GGUF_KEY_PYANNOTE_AUDIO_REVISION,
+    GGUF_KEY_MANIFEST_SHA256,
+    GGUF_KEY_PUBLIC_HF,
+    GGUF_KEY_PUBLIC_REVISION,
+    GGUF_KEY_PUBLIC_FILE,
+    GGUF_KEY_PUBLIC_BYTES,
+    GGUF_KEY_PUBLIC_SHA256,
+];
+
+/// Validates the all-or-nothing release metadata and returns the effective
+/// config plus whether the immutable historical two-layer metadata stamp was
+/// repaired. The tensor manifest is already strict-bound before this runs.
+fn validate_release_metadata(gguf: &GgufFile) -> Result<(PyanNetConfig, bool), VokraError> {
+    require_string(gguf, KEY_MODEL_CATEGORY, CATEGORY)?;
+    require_string(gguf, chunks::KEY_PROVENANCE_MODEL_ID, NAME)?;
+    let raw_license = required_string(gguf, chunks::KEY_PROVENANCE_LICENSE)?;
+    if !raw_license.eq_ignore_ascii_case(DEFAULT_LICENSE) {
+        return Err(metadata_error(
+            chunks::KEY_PROVENANCE_LICENSE,
+            raw_license,
+            DEFAULT_LICENSE,
+        ));
+    }
+    let class = required_string(gguf, chunks::KEY_PROVENANCE_WEIGHT_LICENSE)?;
+    if LicenseClass::from_class_str(class) != Some(LicenseClass::Permissive) {
+        return Err(metadata_error(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            class,
+            LicenseClass::Permissive.as_str(),
+        ));
+    }
+
+    let source = required_string(gguf, chunks::KEY_PROVENANCE_SOURCE)?;
+    let identity_count = count_present(gguf, IDENTITY_KEYS);
+    match identity_count {
+        0 => {
+            if source != LEGACY_SOURCE {
+                return Err(metadata_error(
+                    chunks::KEY_PROVENANCE_SOURCE,
+                    source,
+                    LEGACY_SOURCE,
+                ));
+            }
+            if gguf.get(KEY_PROVENANCE_UPSTREAM_HF).is_some()
+                || gguf.get(KEY_PROVENANCE_UPSTREAM_REVISION).is_some()
+            {
+                return Err(VokraError::ModelLoad(
+                    "pyannote-segmentation: historical metadata repair requires both generic upstream identity keys to be absent; refusing a mixed contract"
+                        .to_owned(),
+                ));
+            }
+            validate_topology(gguf, 2)?;
+            Ok((PyanNetConfig::default(), true))
+        }
+        count if count == IDENTITY_KEYS.len() => {
+            if source != CANONICAL_SOURCE {
+                return Err(metadata_error(
+                    chunks::KEY_PROVENANCE_SOURCE,
+                    source,
+                    CANONICAL_SOURCE,
+                ));
+            }
+            require_string(gguf, KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF)?;
+            require_string(gguf, KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+            validate_topology(gguf, DEFAULT_LSTM_NUM_LAYERS)?;
+            require_string(gguf, GGUF_KEY_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
+            require_string(
+                gguf,
+                GGUF_KEY_PYANNOTE_AUDIO_VERSION,
+                PYANNOTE_AUDIO_VERSION,
+            )?;
+            require_string(
+                gguf,
+                GGUF_KEY_PYANNOTE_AUDIO_REVISION,
+                PYANNOTE_AUDIO_REVISION,
+            )?;
+            require_string(gguf, GGUF_KEY_MANIFEST_SHA256, MANIFEST_SHA256)?;
+            require_string(gguf, GGUF_KEY_PUBLIC_HF, PUBLIC_HF)?;
+            require_string(gguf, GGUF_KEY_PUBLIC_REVISION, PUBLIC_REVISION)?;
+            require_string(gguf, GGUF_KEY_PUBLIC_FILE, PUBLIC_FILE)?;
+            require_u64(gguf, GGUF_KEY_PUBLIC_BYTES, u64::from(PUBLIC_BYTES))?;
+            require_string(gguf, GGUF_KEY_PUBLIC_SHA256, PUBLIC_SHA256)?;
+            Ok((PyanNetConfig::default(), false))
+        }
+        _ => Err(VokraError::ModelLoad(format!(
+            "pyannote-segmentation: partial immutable metadata {identity_count}/{} keys; refusing topology repair",
+            IDENTITY_KEYS.len()
+        ))),
+    }
+}
+
+fn validate_topology(gguf: &GgufFile, stamped_lstm_layers: u32) -> Result<(), VokraError> {
+    require_u64(gguf, GGUF_KEY_SAMPLE_RATE, u64::from(DEFAULT_SAMPLE_RATE))?;
+    require_u64(
+        gguf,
+        GGUF_KEY_SINCNET_STRIDE,
+        u64::from(DEFAULT_SINCNET_STRIDE),
+    )?;
+    require_u64(
+        gguf,
+        GGUF_KEY_LSTM_HIDDEN_SIZE,
+        u64::from(DEFAULT_LSTM_HIDDEN_SIZE),
+    )?;
+    require_u64(
+        gguf,
+        GGUF_KEY_LSTM_NUM_LAYERS,
+        u64::from(stamped_lstm_layers),
+    )?;
+    require_bool(
+        gguf,
+        GGUF_KEY_LSTM_BIDIRECTIONAL,
+        DEFAULT_LSTM_BIDIRECTIONAL,
+    )?;
+    require_bool(gguf, GGUF_KEY_LSTM_MONOLITHIC, DEFAULT_LSTM_MONOLITHIC)?;
+    require_u64(
+        gguf,
+        GGUF_KEY_LINEAR_HIDDEN_SIZE,
+        u64::from(DEFAULT_LINEAR_HIDDEN_SIZE),
+    )?;
+    require_u64(
+        gguf,
+        GGUF_KEY_LINEAR_NUM_LAYERS,
+        u64::from(DEFAULT_LINEAR_NUM_LAYERS),
+    )?;
+    require_u64(
+        gguf,
+        GGUF_KEY_NUM_POWERSET_CLASSES,
+        u64::from(DEFAULT_NUM_POWERSET_CLASSES),
+    )
+}
+
+fn validate_canonical_dtypes(gguf: &GgufFile) -> Result<(), VokraError> {
+    for tensor in gguf.tensors() {
+        if tensor.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "pyannote-segmentation: tensor {:?} has {:?}, expected canonical F32",
+                tensor.name, tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn count_present(gguf: &GgufFile, keys: &[&str]) -> usize {
+    keys.iter().filter(|key| gguf.get(key).is_some()).count()
+}
+
+fn required_string<'a>(gguf: &'a GgufFile, key: &str) -> Result<&'a str, VokraError> {
+    gguf.get(key)
+        .and_then(GgufMetadataValue::as_str)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("pyannote-segmentation: missing/non-string `{key}`"))
+        })
+}
+
+fn require_string(gguf: &GgufFile, key: &str, expected: &str) -> Result<(), VokraError> {
+    let actual = required_string(gguf, key)?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_u64(gguf: &GgufFile, key: &str, expected: u64) -> Result<(), VokraError> {
+    let actual = gguf
+        .get(key)
+        .and_then(GgufMetadataValue::as_u64)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("pyannote-segmentation: missing/non-u32 `{key}`"))
+        })?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn require_bool(gguf: &GgufFile, key: &str, expected: bool) -> Result<(), VokraError> {
+    let actual = gguf
+        .get(key)
+        .and_then(GgufMetadataValue::as_bool)
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("pyannote-segmentation: missing/non-bool `{key}`"))
+        })?;
+    if actual != expected {
+        return Err(metadata_error(key, actual, expected));
+    }
+    Ok(())
+}
+
+fn metadata_error(
+    key: &str,
+    actual: impl std::fmt::Debug,
+    expected: impl std::fmt::Debug,
+) -> VokraError {
+    VokraError::ModelLoad(format!(
+        "pyannote-segmentation: `{key}` is {actual:?}, expected {expected:?}"
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // PyanNetWeights — real weight-tensor binding with loud-error on missing
 // ---------------------------------------------------------------------------
 
-/// The upstream PyanNet state_dict tensor-name prefixes the runtime
-/// binder scans for. A GGUF that carries at least one of these is
-/// accepted as a PyanNet checkpoint; a GGUF that has none is refused
-/// loudly rather than silently running an all-zero forward (FR-EX-08).
+/// The upstream PyanNet state_dict tensor-name prefixes the component weight
+/// binder scans for. The public [`PyanNet`] loader first verifies the exact
+/// 54-tensor release manifest, so this looser seam exists only for internal
+/// primitive tests and diagnostics.
 ///
 /// Sourced from the upstream PyanNet.py class definition: SincNet
 /// module (`sincnet.*`), monolithic BiLSTM (`lstm.*`), Linear stack
@@ -354,11 +593,10 @@ pub(crate) fn verify_arch(gguf: &GgufFile) -> Result<(), VokraError> {
 
 /// Weight tensors bound from a PyanNet GGUF.
 ///
-/// Each field carries the flattened f32 payload of a tensor read from
-/// the GGUF by its upstream `state_dict` name. Under the current
-/// landing this struct stores the raw (name, dims, f32 payload) tuples
-/// of every recognized PyanNet tensor — enough for a downstream SincNet
-/// + BiLSTM kernel wave to walk them without re-parsing the GGUF.
+/// Each field carries the flattened f32 payload of a tensor read from the GGUF
+/// by its upstream `state_dict` name. The public release binder admits only
+/// the canonical F32 manifest; F16/BF16 widening remains available here for
+/// isolated component fixtures and does not relax that release contract.
 ///
 /// **Contract**: [`from_gguf`](Self::from_gguf) is a *loud*
 /// verification step. A GGUF that carries no PyanNet-typical tensor is
@@ -448,12 +686,10 @@ impl PyanNetWeights {
             .map(|(_, d, p)| (d.as_slice(), p.as_slice()))
     }
 
-    /// Load-time shape gate — promotes the four core PyanNet tensor
-    /// shape assertions previously buried in
-    /// [`sincnet::SincNet::from_weights`] (which only fired when a
-    /// caller crossed the [`PyanNet::segment`] env gate) UP to the
-    /// load path so a drifted / illustrative fixture fails loudly
-    /// *before* the env gate (FR-EX-08 shape-validation-load-time).
+    /// Supplementary component shape gate for the four core PyanNet tensors.
+    /// The public release loader already rejects every complete-manifest drift
+    /// before decode; this helper preserves focused diagnostics for smaller
+    /// primitive fixtures.
     ///
     /// # Sentinel-gated strict mode
     ///
@@ -467,8 +703,8 @@ impl PyanNetWeights {
     /// - When the sentinel is absent, the fixture is treated as
     ///   illustrative (binder / plumbing smoke test) and missing
     ///   tensors pass through silently — the downstream forward will
-    ///   still loud-fail via [`sincnet::SincNet::from_weights`] if a
-    ///   caller crosses the [`PyanNet::segment`] env gate.
+    ///   still loud-fail via [`sincnet::SincNet::from_weights`] if a caller
+    ///   tries to execute it.
     /// - **Present-but-mis-shaped tensors are always rejected loudly**,
     ///   regardless of sentinel presence — an obviously-wrong shape is
     ///   a silent-fake risk that must not survive the load path.
@@ -562,8 +798,8 @@ impl PyanNetWeights {
                 }
                 None => {
                     // Illustrative fixture (no sentinel) — the downstream
-                    // forward will loud-fail via SincNet::from_weights
-                    // if the caller ever crosses the env gate. Skip.
+                    // forward will loud-fail via SincNet::from_weights if the
+                    // caller ever tries to execute it. Skip.
                 }
             }
         }
@@ -672,6 +908,15 @@ fn f16_bits_to_f32(h: u16) -> f32 {
     f32::from_bits(bits)
 }
 
+fn validate_backend(backend: BackendKind) -> Result<(), VokraError> {
+    match backend {
+        BackendKind::Cpu | BackendKind::Metal => Ok(()),
+        other => Err(VokraError::UnsupportedOp(format!(
+            "pyannote-segmentation: backend {other:?} is unsupported; the complete release is implemented for Mac CPU and Metal only (FR-EX-08, no CPU fallback)"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // PyanNet — the public engine handle
 // ---------------------------------------------------------------------------
@@ -686,15 +931,11 @@ fn f16_bits_to_f32(h: u16) -> f32 {
 /// contract on the SincNet + BiLSTM + Linear forward.
 #[derive(Debug)]
 pub struct PyanNet {
+    checkpoint: StrictCheckpoint,
     config: PyanNetConfig,
-    // The bound weights are held (real, dequantized) but the inner
-    // SincNet + BiLSTM + Linear kernel binding is a follow-up wave;
-    // the field is deliberately `#[allow(dead_code)]` until the kernel
-    // lands so a reader is not misled by an unused field. Same
-    // posture as RMVPE / Charsiu.
-    #[allow(dead_code)]
     weights: PyanNetWeights,
     backend: BackendKind,
+    legacy_metadata_repaired: bool,
 }
 
 impl PyanNet {
@@ -707,38 +948,40 @@ impl PyanNet {
     /// 2. Carry a `vokra.model.arch` equal to [`EXPECTED_ARCH`] — checked
     ///    by [`PyanNetWeights::from_gguf`] before any tensor is scanned
     ///    (FR-EX-08).
-    /// 3. Carry at least one recognized PyanNet state_dict tensor
-    ///    (`REQUIRED_TENSOR_PREFIXES`) — otherwise
-    ///    [`PyanNetWeights::from_gguf`] refuses the bind (FR-EX-08).
-    /// 4. Pass the load-time shape gate
-    ///    ([`PyanNetWeights::verify_core_shapes`]) — a GGUF that
-    ///    carries the SincNet filterbank sentinel
-    ///    (`sincnet.conv1d.0.filterbank.low_hz_`) must carry ALL four
-    ///    core tensors at the primary-source shapes; any present
-    ///    core tensor with a shape drift is a loud
-    ///    [`VokraError::ModelLoad`] regardless of sentinel presence.
-    ///    Illustrative fixtures with no filterbank pass through the
-    ///    gate permissively (the downstream forward still loud-fails
-    ///    via SincNet::from_weights, so silent-fake is impossible).
-    ///
-    /// `vokra.pyannote.*` metadata is optional (absent keys fall back
-    /// to primary-source constants per [`PyanNetConfig::from_gguf`]).
+    /// 3. Match the exact 54-tensor sorted name/shape manifest and F32 dtype.
+    /// 4. Carry either the complete new immutable metadata group or the exact
+    ///    historical public group whose two-layer stamp is safely repaired.
+    /// 5. Pass the strict MIT compliance gate.
     pub fn from_gguf(path: &Path) -> Result<Self, VokraError> {
         let gguf = GgufFile::open(path)?;
-        let config = PyanNetConfig::from_gguf(&gguf);
+        let checkpoint = StrictCheckpoint::bind(&gguf, SPEC)?;
+        validate_canonical_dtypes(&gguf)?;
+        let license = check_weight_license(&gguf, &CompliancePolicy::strict())?;
+        if license.class != LicenseClass::Permissive
+            || checkpoint.weight_license() != LicenseClass::Permissive
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "pyannote-segmentation: weight license resolves to {}, expected Permissive for the owner-signed MIT release",
+                license.class.as_str()
+            )));
+        }
+        let (config, legacy_metadata_repaired) = validate_release_metadata(&gguf)?;
         let weights = PyanNetWeights::from_gguf(&gguf)?;
-        // Load-time shape gate — promote the SincNet forward-time shape
-        // assertions up to the load path so a drifted / illustrative
-        // fixture fails loudly *before* the [`Self::segment`] env gate
-        // (FR-EX-08 shape-validation-load-time; primary source:
-        // PyanNet.py CNRS MIT). See [`PyanNetWeights::verify_core_shapes`]
-        // for the sentinel-gated strict / permissive contract.
         weights.verify_core_shapes(&config)?;
         Ok(Self {
+            checkpoint,
             config,
             weights,
             backend: BackendKind::Cpu,
+            legacy_metadata_repaired,
         })
+    }
+
+    /// Strictly opens a release and preflights complete backend coverage.
+    pub fn from_gguf_with_backend(path: &Path, backend: BackendKind) -> Result<Self, VokraError> {
+        validate_backend(backend)?;
+        Compute::for_backend(backend, PYANNOTE_HOT_OPS)?;
+        Ok(Self::from_gguf(path)?.with_backend(backend))
     }
 
     /// Convenience alias for [`from_gguf`](Self::from_gguf).
@@ -746,14 +989,33 @@ impl PyanNet {
         Self::from_gguf(path.as_ref())
     }
 
-    /// The bound hyperparameter set (from GGUF chunk group with
-    /// primary-source constant fallback).
+    /// The strictly validated released hyperparameter set.
     pub fn config(&self) -> &PyanNetConfig {
         &self.config
     }
 
+    /// Canonical model identity proven by the strict manifest binder.
+    #[must_use]
+    pub fn model_name(&self) -> &str {
+        self.checkpoint.model_name()
+    }
+
+    /// Owner-signed license class proven at load time.
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.checkpoint.weight_license()
+    }
+
+    /// Whether the exact historical public artifact's incorrect two-layer
+    /// metadata stamp was repaired from its four-layer tensor manifest.
+    #[must_use]
+    pub const fn legacy_metadata_repaired(&self) -> bool {
+        self.legacy_metadata_repaired
+    }
+
     /// Selects the backend for every learned SincNet, BiLSTM, linear and
-    /// classifier operation. The existing parity opt-in remains unchanged.
+    /// classifier operation. Unsupported selections fail when inference is
+    /// called; use [`Self::from_gguf_with_backend`] for eager preflight.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
@@ -791,43 +1053,13 @@ impl PyanNet {
         sincnet::num_frames(num_samples, self.config.sincnet_stride as usize)
     }
 
-    /// Environment variable owner opts in with to run the real
-    /// SincNet + BiLSTM + Linear + Classifier forward. Absent = the
-    /// method returns [`VokraError::UnsupportedOp`] naming the
-    /// precondition (FR-EX-08 loud-partial, mirror of DFN3 T17 Phase B
-    /// and RMVPE `extract_real`).
-    ///
-    /// Rationale for the env gate: the BiLSTM stack (60 → 128 × 2
-    /// layers monolithic bidirectional) is a scalar reference
-    /// implementation with the standard `nn.LSTM` gate math — it
-    /// has *not* been byte-compared to PyTorch cuDNN's `nn.LSTM`
-    /// forward on a real reference dump. Silent-wrong is a much
-    /// worse failure mode than loud-pending, so the runtime keeps
-    /// the loud-pending default until an owner opts in for the
-    /// real forward with a real GGUF and a real reference dump.
-    /// See `docs/adr/pyannote-implementation-plan-2026-07-30.md`
-    /// for the Phase B parity harness recipe.
+    /// Deprecated compatibility spelling. Execution is now default-on and the
+    /// environment variable is ignored.
+    #[deprecated(note = "PyanNet execution is default-on; this env variable is ignored")]
     pub const ENV_ENABLE_FORWARD: &'static str = "VOKRA_PYANNET_ENABLE_FORWARD";
 
     /// Segments a mono-channel 16-kHz PCM buffer into per-frame
     /// powerset multiclass **probabilities** (post-softmax).
-    ///
-    /// # Landing (2026-07-30, Wave 3 loud-partial)
-    ///
-    /// - The SincNet primitive is real (see [`sincnet::SincNet`]),
-    ///   with pin-tested receptive-field arithmetic and unit-tested
-    ///   sinc filter synthesis / InstanceNorm / MaxPool / Conv1d
-    ///   composition.
-    /// - The BiLSTM stack + Linear stack + Classifier + Softmax are
-    ///   implemented as scalar reference code following the PyTorch
-    ///   `nn.LSTM` gate layout (`weight_ih_l0` = `[4·H, I]`, gate
-    ///   order `i | f | g | o`). See `bilstm::BiLstmLayer` for the
-    ///   reduction-ordering rationale that mirrors Kokoro's
-    ///   `BiLstm1d`.
-    /// - `segment` runs the real forward **only** when the env var
-    ///   [`Self::ENV_ENABLE_FORWARD`] is set — an owner opts in per
-    ///   session after provisioning a real GGUF and reference dumper
-    ///   (loud-partial precedent from RMVPE / DFN3 T17 Phase B).
     ///
     /// # Returns
     ///
@@ -841,29 +1073,13 @@ impl PyanNet {
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] when the env gate is unset —
-    ///   the message names the FR-EX-08 clause and the precondition
-    ///   for an opt-in.
-    /// - Any SincNet forward error propagates verbatim (wrong sample
-    ///   rate, sub-kernel PCM, shape assertions).
+    /// Unsupported/unavailable backends and invalid PCM fail explicitly.
     pub fn segment(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>, VokraError> {
-        if std::env::var(Self::ENV_ENABLE_FORWARD).is_err() {
-            return Err(VokraError::UnsupportedOp(format!(
-                "pyannote-segmentation: PyanNet real forward requires \
-                 `{}=1` env opt-in; the BiLSTM stack is a scalar reference \
-                 that has not been byte-compared to PyTorch cuDNN yet, so \
-                 the runtime keeps the loud-pending default (FR-EX-08 \
-                 loud-partial, same posture as RMVPE / DFN3 T17). See the \
-                 module doc for the opt-in recipe.",
-                Self::ENV_ENABLE_FORWARD
-            )));
-        }
         self.segment_real(pcm, self.config.sample_rate)
     }
 
     /// Real SincNet + BiLSTM + Linear + Classifier + Softmax forward
-    /// without the env gate. Called by [`Self::segment`] when the opt-in
-    /// is set, and by the parity harness which drives its own gating.
+    /// shared by the public method and the staged parity harness.
     pub(crate) fn segment_real(
         &self,
         pcm: &[f32],
@@ -872,16 +1088,9 @@ impl PyanNet {
         // Step 1: SincNet frontend — real, tested primitive.
         let stride = self.config.sincnet_stride as usize;
         let sn = SincNet::from_weights(&self.weights, stride)?;
-        let compute = if self.backend == BackendKind::Cpu {
-            None
-        } else {
-            Some(Compute::for_backend(self.backend, PYANNOTE_HOT_OPS)?)
-        };
-        let sinc_out = if let Some(compute) = compute.as_ref() {
-            sn.forward_with_compute(pcm, sample_rate, compute)?
-        } else {
-            sn.forward(pcm, sample_rate)?
-        };
+        validate_backend(self.backend)?;
+        let compute = Compute::for_backend(self.backend, PYANNOTE_HOT_OPS)?;
+        let sinc_out = sn.forward_with_compute(pcm, sample_rate, &compute)?;
         // sinc_out.features is [num_channels · num_frames] channel-major
         // (row-major with channel outer); the downstream BiLSTM expects
         // row-major [num_frames · num_channels] (batch_first=True). Do
@@ -894,18 +1103,14 @@ impl PyanNet {
             }
         }
 
-        // Step 2: BiLSTM stack (2 layers monolithic bidirectional).
+        // Step 2: released four-layer monolithic bidirectional LSTM.
         let bilstm = bilstm::MonoLithicBiLstmStack::from_weights(
             &self.weights,
             c,                                     // input_dim = 60
             self.config.lstm_hidden_size as usize, // hidden_dim = 128
-            self.config.lstm_num_layers as usize,  // num_layers = 2
+            self.config.lstm_num_layers as usize,  // num_layers = 4
         )?;
-        let lstm_out = if let Some(compute) = compute.as_ref() {
-            bilstm.forward_with_compute(&lstm_in, t, compute)?
-        } else {
-            bilstm.forward(&lstm_in, t)
-        };
+        let lstm_out = bilstm.forward_with_compute(&lstm_in, t, &compute)?;
         // lstm_out is [t · (2 · hidden_dim)] row-major.
         let lstm_out_dim = 2 * self.config.lstm_hidden_size as usize;
 
@@ -916,11 +1121,7 @@ impl PyanNet {
             self.config.linear_hidden_size as usize, // linear.*.out = 128
             self.config.linear_num_layers as usize,  // 2
         )?;
-        let linear_out = if let Some(compute) = compute.as_ref() {
-            linear.forward_with_compute(&lstm_out, t, compute)?
-        } else {
-            linear.forward(&lstm_out, t)
-        };
+        let linear_out = linear.forward_with_compute(&lstm_out, t, &compute)?;
         // linear_out is [t · linear_hidden_size].
 
         // Step 4: Classifier + Softmax.
@@ -929,11 +1130,7 @@ impl PyanNet {
             self.config.linear_hidden_size as usize,
             self.config.num_powerset_classes as usize,
         )?;
-        let probs = if let Some(compute) = compute.as_ref() {
-            classifier.forward_with_compute(&linear_out, t, compute)?
-        } else {
-            classifier.forward(&linear_out, t)
-        };
+        let probs = classifier.forward_with_compute(&linear_out, t, &compute)?;
         // Reshape to Vec<Vec<f32>> per frame.
         let n_classes = self.config.num_powerset_classes as usize;
         let mut out: Vec<Vec<f32>> = Vec::with_capacity(t);
@@ -947,9 +1144,7 @@ impl PyanNet {
     /// per-frame powerset probabilities into per-frame active-speaker
     /// sets (multi-label decode, per [`decode_powerset`]).
     ///
-    /// Composition of [`Self::segment`] + [`decode_powerset`]. Same env
-    /// gate applies — the composition does not weaken the loud-pending
-    /// default.
+    /// Composition of [`Self::segment`] + [`decode_powerset`].
     pub fn segment_powerset(&self, pcm: &[f32]) -> Result<Vec<SpeakerActivity>, VokraError> {
         let probs = self.segment(pcm)?;
         let stride = self.config.sincnet_stride as usize;
@@ -961,12 +1156,8 @@ impl PyanNet {
         ))
     }
 
-    /// [`Self::segment_powerset`] variant that bypasses the env gate.
-    /// Used by the parity harness (which drives its own gating) and by
-    /// in-crate tests. Not exposed as `pub` because callers should go
-    /// through [`Self::segment_powerset`] which enforces the FR-EX-08
-    /// loud-partial default.
-    #[allow(dead_code)] // consumed by in-crate tests + future Phase B parity harness
+    /// Sample-rate-explicit sibling used by in-crate tests.
+    #[allow(dead_code)]
     pub(crate) fn segment_powerset_real(
         &self,
         pcm: &[f32],
@@ -1122,13 +1313,13 @@ pub mod rttm;
 /// Vokra-native diarization pipeline orchestrator composing PyanNet +
 /// [`crate::speaker`]-family [`diarization::SpeakerEncoder`] +
 /// [`vokra_ops::clustering::AgglomerativeClustering`] + [`rttm`]. Real
-/// segment_powerset (Wave 3 env-gated forward) → per-frame powerset
+/// default-on segment_powerset → per-frame powerset
 /// decode → per-speaker regions → speaker embeddings → AHC clustering →
 /// merged RTTM segments.
 pub mod diarization;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
@@ -1195,35 +1386,82 @@ mod tests {
         b.to_bytes().expect("gguf serialize")
     }
 
-    /// A GGUF with the FULL upstream PyanNet tensor manifest at every
-    /// primary-source shape — SincNet learnable filters + affine +
-    /// Conv1d weights/biases, monolithic 2-layer bidirectional BiLSTM
-    /// with all 16 tensors (`weight_ih_l0`, `weight_hh_l0`, `bias_ih_l0`,
-    /// `bias_hh_l0` × forward/reverse × 2 layers), Linear stack
-    /// weight/bias × 2 layers, and classifier weight/bias. Every
-    /// payload is deterministic small-scale f32 so the softmax is
-    /// numerically stable for downstream tests.
-    ///
-    /// This fixture is enough to drive [`PyanNet::segment_real`] end
-    /// to end. Real numeric parity requires an owner-provisioned
-    /// checkpoint via the env-gated `parity_pyannote_segmentation`
-    /// harness (Wave 3 loud-partial).
-    fn synthetic_full_pyannet_gguf() -> Vec<u8> {
-        use crate::pyannote::sincnet::{
-            CONV_KERNEL_LATER, CONV1_IN_CH, CONV1_OUT_CH, CONV2_IN_CH, CONV2_OUT_CH, N_FILTERS_SINC,
-        };
-        let mut b = GgufBuilder::new();
-        // Arch stamp — required by the `PyanNetWeights::from_gguf` gate.
+    #[derive(Clone, Copy)]
+    enum TestMetadata {
+        Canonical,
+        Legacy,
+        PartialCanonical,
+    }
+
+    fn stamp_test_metadata(b: &mut GgufBuilder, metadata: TestMetadata) {
         b.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        b.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, NAME);
+        b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
         b.add_u32(GGUF_KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
         b.add_u32(GGUF_KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
         b.add_u32(GGUF_KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
-        b.add_u32(GGUF_KEY_LSTM_NUM_LAYERS, DEFAULT_LSTM_NUM_LAYERS);
+        b.add_u32(
+            GGUF_KEY_LSTM_NUM_LAYERS,
+            match metadata {
+                TestMetadata::Legacy => 2,
+                TestMetadata::Canonical | TestMetadata::PartialCanonical => DEFAULT_LSTM_NUM_LAYERS,
+            },
+        );
         b.add_bool(GGUF_KEY_LSTM_BIDIRECTIONAL, DEFAULT_LSTM_BIDIRECTIONAL);
         b.add_bool(GGUF_KEY_LSTM_MONOLITHIC, DEFAULT_LSTM_MONOLITHIC);
         b.add_u32(GGUF_KEY_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_HIDDEN_SIZE);
         b.add_u32(GGUF_KEY_LINEAR_NUM_LAYERS, DEFAULT_LINEAR_NUM_LAYERS);
         b.add_u32(GGUF_KEY_NUM_POWERSET_CLASSES, DEFAULT_NUM_POWERSET_CLASSES);
+
+        let source = match metadata {
+            TestMetadata::Legacy => LEGACY_SOURCE,
+            TestMetadata::Canonical | TestMetadata::PartialCanonical => CANONICAL_SOURCE,
+        };
+        vokra_core::stamp_provenance(
+            b,
+            LicenseClass::Permissive,
+            DEFAULT_LICENSE,
+            Some(NAME),
+            Some(source),
+        );
+
+        if !matches!(metadata, TestMetadata::Legacy) {
+            b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+            b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
+            b.add_string(GGUF_KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+            b.add_string(GGUF_KEY_PYANNOTE_AUDIO_VERSION, PYANNOTE_AUDIO_VERSION);
+            b.add_string(GGUF_KEY_PYANNOTE_AUDIO_REVISION, PYANNOTE_AUDIO_REVISION);
+            b.add_string(GGUF_KEY_MANIFEST_SHA256, MANIFEST_SHA256);
+            b.add_string(GGUF_KEY_PUBLIC_HF, PUBLIC_HF);
+            b.add_string(GGUF_KEY_PUBLIC_REVISION, PUBLIC_REVISION);
+            b.add_string(GGUF_KEY_PUBLIC_FILE, PUBLIC_FILE);
+            b.add_u32(GGUF_KEY_PUBLIC_BYTES, PUBLIC_BYTES);
+            if matches!(metadata, TestMetadata::Canonical) {
+                b.add_string(GGUF_KEY_PUBLIC_SHA256, PUBLIC_SHA256);
+            }
+        }
+    }
+
+    /// A GGUF with the exact 54-tensor released PyanNet manifest: SincNet
+    /// learned parameters and persistent buffers, four-layer bidirectional
+    /// LSTM (32 tensors), two projection layers, and the classifier. Payloads
+    /// are deterministic synthetic f32 values, so this proves serialization,
+    /// binding, routing and output invariants rather than upstream numerical
+    /// parity.
+    ///
+    /// This fixture is enough to drive [`PyanNet::segment`] end to end. Real
+    /// numeric parity requires the official pyannote.audio reference and the
+    /// immutable public checkpoint on VAST.
+    pub(crate) fn synthetic_full_pyannet_gguf() -> Vec<u8> {
+        synthetic_full_pyannet_gguf_with_metadata(TestMetadata::Canonical)
+    }
+
+    fn synthetic_full_pyannet_gguf_with_metadata(metadata: TestMetadata) -> Vec<u8> {
+        use crate::pyannote::sincnet::{
+            CONV_KERNEL_LATER, CONV1_IN_CH, CONV1_OUT_CH, CONV2_IN_CH, CONV2_OUT_CH, N_FILTERS_SINC,
+        };
+        let mut b = GgufBuilder::new();
+        stamp_test_metadata(&mut b, metadata);
 
         // Helper closures to keep the tensor list readable.
         let add_scalar = |b: &mut GgufBuilder, name: &str, shape: Vec<u64>, val: f32| {
@@ -1254,6 +1492,13 @@ mod tests {
             "sincnet.conv1d.0.filterbank.band_hz_",
             vec![n_learn, 1],
             100.0,
+        );
+        add_scalar(&mut b, "sincnet.conv1d.0.filterbank.n_", vec![1, 125], 0.0);
+        add_scalar(
+            &mut b,
+            "sincnet.conv1d.0.filterbank.window_",
+            vec![125],
+            0.0,
         );
         // --- SincNet affine (identity: γ=1, β=0) ---
         add_scalar(&mut b, "sincnet.wav_norm1d.weight", vec![1], 1.0);
@@ -1306,10 +1551,10 @@ mod tests {
             0.0,
         );
 
-        // --- Monolithic 2-layer BiLSTM ---
+        // --- Monolithic 4-layer BiLSTM ---
         let h = DEFAULT_LSTM_HIDDEN_SIZE as usize; // 128
         let g = 4 * h; // 512
-        let layer_in_dims = [CONV2_OUT_CH, 2 * h]; // 60 for l0, 256 for l1
+        let layer_in_dims = [CONV2_OUT_CH, 2 * h, 2 * h, 2 * h];
         for (k, &in_dim) in layer_in_dims.iter().enumerate() {
             for suffix in ["", "_reverse"] {
                 add_scalar(
@@ -1380,7 +1625,7 @@ mod tests {
         assert_eq!(c.sample_rate, 16000);
         assert_eq!(c.sincnet_stride, 10);
         assert_eq!(c.lstm_hidden_size, 128);
-        assert_eq!(c.lstm_num_layers, 2);
+        assert_eq!(c.lstm_num_layers, 4);
         assert!(c.lstm_bidirectional);
         assert!(c.lstm_monolithic);
         assert_eq!(c.linear_hidden_size, 128);
@@ -1555,12 +1800,15 @@ mod tests {
 
     #[test]
     fn pyannet_from_gguf_loads_and_config_is_real() {
-        let bytes = synthetic_pyannet_gguf();
+        let bytes = synthetic_full_pyannet_gguf();
         let path = scratch_path("engine-load");
         std::fs::write(&path, &bytes).unwrap();
 
         let p = PyanNet::from_gguf(&path).expect("load");
         assert_eq!(p.config(), &PyanNetConfig::default());
+        assert_eq!(p.model_name(), NAME);
+        assert_eq!(p.weight_license(), LicenseClass::Permissive);
+        assert!(!p.legacy_metadata_repaired());
 
         // Receptive-field arithmetic is real via the primary-source
         // `multi_conv_num_frames` recurrence (Wave 3 landing —
@@ -1576,72 +1824,54 @@ mod tests {
     }
 
     #[test]
-    fn segment_defaults_to_loud_partial_env_gate() {
-        // Without `VOKRA_PYANNET_ENABLE_FORWARD` set, the real forward
-        // is refused loudly. This is the loud-partial default that
-        // mirrors DFN3 T17 Phase B and RMVPE `extract_real` — a scalar
-        // reference LSTM that has not been byte-compared to PyTorch
-        // cuDNN is silent-wrong risk we deliberately defer.
-        //
-        // The env var is read-only from this test — we deliberately do
-        // NOT touch it (the crate denies `unsafe_code`, and mutating a
-        // process-wide env var in a multi-thread test is unsafe on
-        // Rust 2024+). If a parallel test has set the var, the
-        // assertion will fail loudly, which is the correct FR-EX-08
-        // signal (never a silent pass).
-        let bytes = synthetic_pyannet_gguf();
-        let path = scratch_path("segment-env-gate");
+    fn historical_public_metadata_is_narrowly_repaired_to_four_layers() {
+        let bytes = synthetic_full_pyannet_gguf_with_metadata(TestMetadata::Legacy);
+        let path = scratch_path("legacy-metadata-repair");
         std::fs::write(&path, &bytes).unwrap();
 
         let p = PyanNet::from_gguf(&path).expect("load");
-        let pcm = vec![0.0f32; 16000];
+        assert_eq!(p.config().lstm_num_layers, 4);
+        assert!(p.legacy_metadata_repaired());
 
-        // Skip only when a parallel test / user shell explicitly set
-        // the env var; the assertion below would then be a false
-        // negative rather than a real regression.
-        if std::env::var(PyanNet::ENV_ENABLE_FORWARD).is_ok() {
-            eprintln!(
-                "{} is set; skipping loud-partial env-gate assertion \
-                 to avoid a cross-test race. Unset the env var to run \
-                 the assertion.",
-                PyanNet::ENV_ENABLE_FORWARD
-            );
-            std::fs::remove_file(&path).ok();
-            return;
-        }
+        std::fs::remove_file(&path).ok();
+    }
 
-        let err = p.segment(&pcm).unwrap_err();
+    #[test]
+    fn partial_immutable_metadata_is_rejected() {
+        let bytes = synthetic_full_pyannet_gguf_with_metadata(TestMetadata::PartialCanonical);
+        let path = scratch_path("partial-metadata");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf(&path).unwrap_err();
         match err {
-            VokraError::UnsupportedOp(msg) => {
+            VokraError::ModelLoad(msg) => {
                 assert!(
-                    msg.contains(PyanNet::ENV_ENABLE_FORWARD) && msg.contains("FR-EX-08"),
-                    "error must name the env gate + FR-EX-08: {msg}"
+                    msg.contains("partial immutable metadata") && msg.contains("8/9"),
+                    "error must name the incomplete identity group: {msg}"
                 );
             }
-            other => panic!("expected UnsupportedOp, got {other:?}"),
+            other => panic!("expected ModelLoad, got {other:?}"),
         }
 
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn segment_real_produces_probability_matrix() {
-        // Directly call `segment_real` (bypass the env gate) — the real
-        // forward should emit `[num_frames][num_powerset_classes]`
-        // rows of finite probabilities that sum to ~1.
+    fn segment_is_default_on_and_produces_probability_matrix() {
+        // The public method executes directly: there is no hidden environment
+        // opt-in. Synthetic values prove routing and probability invariants;
+        // the VAST suite supplies independent official numeric parity.
         let bytes = synthetic_full_pyannet_gguf();
-        let path = scratch_path("segment-real");
+        let path = scratch_path("segment-default-on");
         std::fs::write(&path, &bytes).unwrap();
 
         let p = PyanNet::from_gguf(&path).expect("load");
-        // 1 s of 16 kHz sine at 440 Hz.
+        // 0.1 s of 16 kHz sine at 440 Hz.
         let sr = DEFAULT_SAMPLE_RATE as f32;
-        let pcm: Vec<f32> = (0..DEFAULT_SAMPLE_RATE as usize)
+        let pcm: Vec<f32> = (0..1_600)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
             .collect();
-        let out = p
-            .segment_real(&pcm, DEFAULT_SAMPLE_RATE)
-            .expect("real segment forward");
+        let out = p.segment(&pcm).expect("default-on segment forward");
         // Frame count matches the SincNet recurrence.
         assert_eq!(out.len(), p.num_frames(pcm.len()));
         for row in &out {
@@ -1661,23 +1891,18 @@ mod tests {
     }
 
     #[test]
-    fn segment_powerset_real_emits_speaker_activity_per_frame() {
-        // Bypass the env gate via `segment_powerset_real` so the test
-        // doesn't need to mutate a process-wide env var (crate denies
-        // unsafe_code, and env mutation is `unsafe` on Rust 2024+).
+    fn segment_powerset_emits_speaker_activity_per_frame() {
         let bytes = synthetic_full_pyannet_gguf();
         let path = scratch_path("segment-powerset");
         std::fs::write(&path, &bytes).unwrap();
 
         let p = PyanNet::from_gguf(&path).expect("load");
         let sr = DEFAULT_SAMPLE_RATE as f32;
-        let pcm: Vec<f32> = (0..DEFAULT_SAMPLE_RATE as usize)
+        let pcm: Vec<f32> = (0..1_600)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * (i as f32) / sr).sin())
             .collect();
 
-        let activity = p
-            .segment_powerset_real(&pcm, DEFAULT_SAMPLE_RATE)
-            .expect("segment_powerset_real");
+        let activity = p.segment_powerset(&pcm).expect("segment_powerset");
 
         assert_eq!(activity.len(), p.num_frames(pcm.len()));
         for a in &activity {
@@ -1687,6 +1912,26 @@ mod tests {
             for &spk in &a.active_speakers {
                 assert!(spk < 3);
             }
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn unsupported_backend_is_explicit_and_never_falls_back() {
+        let bytes = synthetic_full_pyannet_gguf();
+        let path = scratch_path("unsupported-backend");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PyanNet::from_gguf_with_backend(&path, BackendKind::Vulkan).unwrap_err();
+        match err {
+            VokraError::UnsupportedOp(msg) => {
+                assert!(
+                    msg.contains("Vulkan") && msg.contains("no CPU fallback"),
+                    "backend refusal must name the selection and no-fallback rule: {msg}"
+                );
+            }
+            other => panic!("expected UnsupportedOp, got {other:?}"),
         }
 
         std::fs::remove_file(&path).ok();
@@ -1746,11 +1991,9 @@ mod tests {
     // -----------------------------------------------------------------------
     //
     // These tests exercise the [`PyanNetWeights::verify_core_shapes`]
-    // load-time gate that promotes the SincNet-forward-time shape
-    // assertions (sincnet.rs `bind_tensor`) UP to
-    // [`PyanNet::from_gguf`] so a drifted or incomplete real GGUF fails
-    // loudly *before* the [`PyanNet::segment`] env gate
-    // (FR-EX-08 shape-validation-load-time).
+    // component gate used by the SincNet-forward-time shape assertions. The
+    // public [`PyanNet::from_gguf`] binder is stronger: it pins the complete
+    // 54-tensor manifest before decoding any payload.
     //
     // Coverage plan (matches the FQ-05 gap description — four core
     // tensors that a real PyanNet-3.0 checkpoint MUST carry):
@@ -1812,23 +2055,26 @@ mod tests {
         b.to_bytes().expect("gguf serialize")
     }
 
+    fn verify_core_override(
+        override_key: &str,
+        override_shape: Option<Vec<u64>>,
+    ) -> Result<(), VokraError> {
+        let gguf = GgufFile::parse(pyannet_gguf_with_core_override(
+            override_key,
+            override_shape,
+        ))?;
+        let weights = PyanNetWeights::from_gguf(&gguf)?;
+        let config = PyanNetConfig::from_gguf(&gguf);
+        weights.verify_core_shapes(&config)
+    }
+
     #[test]
     fn pyannet_from_gguf_rejects_wrong_filterbank_shape_at_load_time() {
         // Real-GGUF sentinel present (`sincnet.conv1d.0.filterbank.low_hz_`)
         // at the WRONG shape [10, 1] instead of the primary-source [40, 1].
-        // The load path must reject loudly *before* the env gate — the
-        // previous silent-accept path deferred this check to
-        // SincNet::from_weights which only fired when a caller opted
-        // into VOKRA_PYANNET_ENABLE_FORWARD (the FQ-05 gap).
-        let bytes = pyannet_gguf_with_core_override(
-            "sincnet.conv1d.0.filterbank.low_hz_",
-            Some(vec![10, 1]),
-        );
-        let path = scratch_path("load-gate-filterbank");
-        std::fs::write(&path, &bytes).unwrap();
-
-        let err = PyanNet::from_gguf(&path).unwrap_err();
-        match err {
+        // The component gate must reject this before a primitive can execute.
+        let err = verify_core_override("sincnet.conv1d.0.filterbank.low_hz_", Some(vec![10, 1]));
+        match err.unwrap_err() {
             VokraError::ModelLoad(msg) => {
                 assert!(
                     msg.contains("sincnet.conv1d.0.filterbank.low_hz_") && msg.contains("FR-EX-08"),
@@ -1837,8 +2083,6 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1846,12 +2090,8 @@ mod tests {
         // lstm.weight_ih_l0 must be [4·H, SincNet.out] = [512, 60] per
         // PyTorch nn.LSTM's `(gates * hidden, input)` layout. A drifted
         // [64, 60] fixture must be caught at load time.
-        let bytes = pyannet_gguf_with_core_override("lstm.weight_ih_l0", Some(vec![64, 60]));
-        let path = scratch_path("load-gate-lstm");
-        std::fs::write(&path, &bytes).unwrap();
-
-        let err = PyanNet::from_gguf(&path).unwrap_err();
-        match err {
+        let err = verify_core_override("lstm.weight_ih_l0", Some(vec![64, 60]));
+        match err.unwrap_err() {
             VokraError::ModelLoad(msg) => {
                 assert!(
                     msg.contains("lstm.weight_ih_l0") && msg.contains("FR-EX-08"),
@@ -1860,8 +2100,6 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1870,12 +2108,8 @@ mod tests {
         // primary-source Linear stack (bidirectional BiLSTM output is
         // concatenated → 2·H channels feed the first Linear). A drifted
         // [64, 256] fixture must be caught at load time.
-        let bytes = pyannet_gguf_with_core_override("linear.0.weight", Some(vec![64, 256]));
-        let path = scratch_path("load-gate-linear");
-        std::fs::write(&path, &bytes).unwrap();
-
-        let err = PyanNet::from_gguf(&path).unwrap_err();
-        match err {
+        let err = verify_core_override("linear.0.weight", Some(vec![64, 256]));
+        match err.unwrap_err() {
             VokraError::ModelLoad(msg) => {
                 assert!(
                     msg.contains("linear.0.weight") && msg.contains("FR-EX-08"),
@@ -1884,8 +2118,6 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1895,12 +2127,8 @@ mod tests {
         // (e.g. a `speaker-diarization` variant leaked into a segmentation
         // GGUF) must be caught at load time so decode_powerset does not
         // hit an argmax over a wrong-cardinality row.
-        let bytes = pyannet_gguf_with_core_override("classifier.weight", Some(vec![3, 128]));
-        let path = scratch_path("load-gate-classifier");
-        std::fs::write(&path, &bytes).unwrap();
-
-        let err = PyanNet::from_gguf(&path).unwrap_err();
-        match err {
+        let err = verify_core_override("classifier.weight", Some(vec![3, 128]));
+        match err.unwrap_err() {
             VokraError::ModelLoad(msg) => {
                 assert!(
                     msg.contains("classifier.weight") && msg.contains("FR-EX-08"),
@@ -1909,8 +2137,6 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]
@@ -1920,12 +2146,8 @@ mod tests {
         // dropped entirely. The sentinel-gated strict mode must name
         // both the missing tensor AND the sentinel that triggered the
         // co-presence gate (so the caller knows *why* the check fired).
-        let bytes = pyannet_gguf_with_core_override("lstm.weight_ih_l0", None);
-        let path = scratch_path("load-gate-incomplete");
-        std::fs::write(&path, &bytes).unwrap();
-
-        let err = PyanNet::from_gguf(&path).unwrap_err();
-        match err {
+        let err = verify_core_override("lstm.weight_ih_l0", None);
+        match err.unwrap_err() {
             VokraError::ModelLoad(msg) => {
                 assert!(
                     msg.contains("lstm.weight_ih_l0")
@@ -1936,8 +2158,6 @@ mod tests {
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
-
-        std::fs::remove_file(&path).ok();
     }
 
     #[test]

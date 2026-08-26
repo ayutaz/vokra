@@ -62,11 +62,11 @@
 //!
 //! # Runtime binder / real forward
 //!
-//! The runtime already contains the native SincNet, bidirectional LSTM,
-//! two-layer projection, and powerset classifier. Default-on execution and
-//! independent upstream probability parity are completed in the runtime
-//! change following this converter contract; until then the coverage audit
-//! continues to classify the architecture as partial.
+//! The runtime contains the native SincNet, four-layer bidirectional LSTM,
+//! two-layer projection, and powerset classifier. Execution is default-on for
+//! CPU and Metal after this exact manifest binds; unsupported backends fail
+//! explicitly. Independent upstream probability parity remains a separate
+//! VAST gate and is not implied by the synthetic converter tests.
 //!
 //! # No ONNX (permanent)
 //!

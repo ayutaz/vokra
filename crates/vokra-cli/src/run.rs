@@ -2341,16 +2341,9 @@ fn separation_stream_path(base: &str, source: usize) -> std::path::PathBuf {
 /// seen. The per-frame powerset decode itself is
 /// [`vokra_models::pyannote::PyanNet::segment_powerset`].
 ///
-/// # The env gate is deliberately NOT set here
-///
-/// PyanNet's SincNet + BiLSTM + linear + classifier forward is real, but the
-/// binder keeps it behind `VOKRA_PYANNET_ENABLE_FORWARD=1` because the BiLSTM
-/// stack has not been byte-compared against PyTorch cuDNN yet. This function
-/// does not set that variable: a user without the opt-in gets pyannote's own
-/// [`vokra_core::VokraError::UnsupportedOp`], which names the gate and the
-/// reason, and that is a far more useful answer than the "unsupported model
-/// arch" this arch used to produce. Setting it from the CLI would silently
-/// promote an unvalidated numeric path to a default.
+/// The selected CPU or Metal backend is preflighted before the WAV is read.
+/// Unsupported or unavailable selections fail explicitly; the model never
+/// falls back to CPU per operation.
 fn run_segment(a: &RunArgs) -> Result<(), String> {
     use vokra_models::pyannote::PyanNet;
 
@@ -2358,9 +2351,8 @@ fn run_segment(a: &RunArgs) -> Result<(), String> {
         .input
         .as_deref()
         .ok_or("run (segment): --input <in.wav> is required")?;
-    let model = PyanNet::open(&a.model)
-        .map_err(|e| e.to_string())?
-        .with_backend(a.backend);
+    let model = PyanNet::from_gguf_with_backend(std::path::Path::new(&a.model), a.backend)
+        .map_err(|e| e.to_string())?;
     let rate = model.config().sample_rate;
     let clip = wav::read_wav(path)?;
     if clip.sample_rate != rate {

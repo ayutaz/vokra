@@ -2427,6 +2427,45 @@ on the maintainer Mac. The resulting live reachability totals are CPU
 `full=104`, `partial=44`, `no-runtime-binder=45`, `not-artifact=1` and Metal
 `full=104`, `blocked-by-cpu=89`, `not-artifact=1`.
 
+### Pyannote segmentation-3.0 strict runtime source wave
+
+The immutable public
+`vokra/pyannote-segmentation-3.0@50bf4e510e0c689668384aec0f866f02e0fcaea8`
+artifact is `pyannote-seg.gguf`, 5,898,272 bytes, SHA-256
+`22ff05fddf19e69c8d9aac8daa6d99014e6718bcd8d8c527d26da677d00c63f1`.
+Its 54 F32 tensors have complete name/shape manifest SHA-256
+`a1c783d4df253742ad5e0e796402310930f52b1a80597420f79a6eba830670d8`.
+Both the state dict (`l0..l3` in both directions) and preserved release config
+prove four recurrent layers; the historical GGUF metadata's value `2` was the
+PyanNet class default, not the released topology.
+
+The public loader now requires that exact manifest, owner-signed MIT
+provenance and either the complete new immutable identity group or every exact
+historical metadata value. Only the latter case repairs the stamp to four
+layers. Partial, mixed, foreign, wrong-dtype and wrong-shape contracts fail
+before tensor decode. The native default-on forward runs SincNet, four-layer
+bidirectional LSTM, two projections, classifier and softmax. Learned Conv1D,
+GEMV/GEMM and softmax operations use one selected CPU or Metal `Compute`
+backend; filter construction, normalization, pooling, recurrent state and
+layouts are deterministic host DSP/control flow. Unsupported and unavailable
+backends fail explicitly without a per-op CPU fallback. CLI run and bench
+preflight the chosen backend.
+
+The real-GGUF smoke pins identity, effective topology, CPU output invariants
+and Apple-gated CPU/Metal parity at the standard FP32 bound 0.01. It does not
+invent official probabilities. A separate VAST dumper must import the pinned
+official `pyannote.audio==3.0.0` implementation directly, and the first VAST
+measurement must diagnose any miss rather than widening the bound.
+
+No `vokra-models` Cargo command or model inference ran on the maintainer Mac.
+VAST compilation/official CPU parity and Apple-device parity remain pending
+behind credential rotation. No Hugging Face upload or artifact replacement
+was performed or authorized. The post-source read-only Hub audit (API and
+README only; no GGUF download) confirmed 194 public repositories, 193 GGUF
+repositories and 198 files, with CPU `full=106`, `partial=43`,
+`no-runtime-binder=44`, `not-artifact=1` and Metal `full=106`,
+`blocked-by-cpu=87`, `not-artifact=1`.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a

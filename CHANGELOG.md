@@ -14,6 +14,17 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The exact public pyannote segmentation-3.0 checkpoint now strict-binds and
+  executes by default on CPU or Metal: SincNet, the released four-layer
+  bidirectional LSTM, both projection layers, classifier and softmax all use
+  one selected backend for learned reductions, with no silent CPU fallback.
+  The immutable historical 54-F32-tensor GGUF receives only its audited
+  two-to-four-layer metadata repair; partial/foreign metadata still fails
+  closed. CLI `run` and `bench` preflight the selected backend, and the public
+  coverage audit now classifies the architecture as CPU/Metal code-complete.
+  Independent official pyannote.audio parity and real Apple measurements
+  remain separate VAST/device gates rather than being inferred from synthetic
+  tests.
 - The pyannote segmentation-3.0 converter now accepts only the exact public
   54-F32-tensor PyanNet manifest and stamps immutable upstream/source/public
   artifact identities. The released checkpoint's four-layer bidirectional

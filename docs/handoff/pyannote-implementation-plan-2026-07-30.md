@@ -1,17 +1,16 @@
 # pyannote 実装計画 handoff (2026-07-30)
 
-> **2026-08-18 status review:** This is the original implementation plan, not
-> a live list of missing files. The segmentation and weightless-pipeline
-> converters, `vokra.pyannote{,_pipeline}.*` metadata, native PyanNet
-> SincNet/BiLSTM/linear/classifier path, diarization scaffolding, CLI segment
-> dispatch, and env-gated real-GGUF harness have landed. The real forward is
-> deliberately not the default: it requires
-> `VOKRA_PYANNET_ENABLE_FORWARD=1` until an upstream-independent probability
-> dump pins numerical parity. Full default-on diarization and publication
-> therefore remain pending. Treat the wave/file lists below as dated design
-> provenance; use `crates/vokra-models/src/pyannote/` and
-> `crates/vokra-models/tests/parity_pyannote_segmentation.rs` for current
-> behavior.
+> **2026-08-26 live correction:** This is the original implementation plan,
+> not a live list of missing files. The exact 54-F32-tensor release now binds
+> strictly and its SincNet/four-layer-BiLSTM/projection/classifier forward runs
+> by default on CPU or Metal. CLI run/bench preflight the chosen backend; an
+> unsupported or unavailable backend fails explicitly without CPU fallback.
+> The old `VOKRA_PYANNET_ENABLE_FORWARD` opt-in is ignored and retained only
+> as a deprecated source-compatibility constant. Independent official
+> pyannote.audio probability parity and Apple real-device measurement remain
+> pending VAST/device gates. Treat the wave/file lists below as dated design
+> provenance; current behavior lives in `crates/vokra-models/src/pyannote/`
+> and `crates/vokra-models/tests/parity_pyannote_segmentation.rs`.
 
 > **2026-08-26 artifact correction:** The immutable public
 > `vokra/pyannote-segmentation-3.0@50bf4e510e0c689668384aec0f866f02e0fcaea8`

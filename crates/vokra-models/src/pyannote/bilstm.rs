@@ -2,15 +2,17 @@
 //!
 //! # Primary source
 //!
-//! PyanNet.py L98 declares
+//! PyanNet.py declares a monolithic bidirectional `nn.LSTM`. Its class default
+//! is two layers, while the immutable segmentation-3.0 model config overrides
+//! it to four:
 //!
 //! ```python
-//! self.lstm = nn.LSTM(60, hidden_size=128, num_layers=2,
+//! self.lstm = nn.LSTM(60, hidden_size=128, num_layers=4,
 //!                     bidirectional=True, batch_first=True, dropout=0.0)
 //! ```
 //!
-//! — a single monolithic multi-layer bidirectional PyTorch `nn.LSTM`.
-//! The `state_dict` layout is the standard PyTorch one:
+//! The released `state_dict` independently proves layers `l0..l3` in both
+//! directions. Its layout is the standard PyTorch one:
 //!
 //! ```text
 //! lstm.weight_ih_l0        (4·H, I)          # forward,  layer 0
@@ -21,14 +23,14 @@
 //! lstm.weight_hh_l0_reverse(4·H, H)
 //! lstm.bias_ih_l0_reverse  (4·H,)
 //! lstm.bias_hh_l0_reverse  (4·H,)
-//! lstm.weight_ih_l1        (4·H, 2·H)        # forward,  layer 1 (2·H because layer 0 is bidirectional)
-//! lstm.weight_hh_l1        (4·H, H)
-//! lstm.bias_ih_l1          (4·H,)
-//! lstm.bias_hh_l1          (4·H,)
-//! lstm.weight_ih_l1_reverse(4·H, 2·H)        # backward, layer 1
-//! lstm.weight_hh_l1_reverse(4·H, H)
-//! lstm.bias_ih_l1_reverse  (4·H,)
-//! lstm.bias_hh_l1_reverse  (4·H,)
+//! lstm.weight_ih_lN        (4·H, 2·H)        # forward,  layers N=1..3
+//! lstm.weight_hh_lN        (4·H, H)
+//! lstm.bias_ih_lN          (4·H,)
+//! lstm.bias_hh_lN          (4·H,)
+//! lstm.weight_ih_lN_reverse(4·H, 2·H)        # backward, layers N=1..3
+//! lstm.weight_hh_lN_reverse(4·H, H)
+//! lstm.bias_ih_lN_reverse  (4·H,)
+//! lstm.bias_hh_lN_reverse  (4·H,)
 //! ```
 //!
 //! Gate order in each row-major weight: `i | f | g | o` at
@@ -314,14 +316,14 @@ fn sigmoid(x: f32) -> f32 {
 // Monolithic multi-layer BiLSTM stack
 // ---------------------------------------------------------------------------
 
-/// Two-layer monolithic bidirectional LSTM stack, matching PyanNet's
-/// `nn.LSTM(60, hidden_size=128, num_layers=2, bidirectional=True,
+/// Released four-layer monolithic bidirectional LSTM stack, matching
+/// segmentation-3.0's `nn.LSTM(60, hidden_size=128, num_layers=4, bidirectional=True,
 /// batch_first=True, dropout=0.0)`.
 ///
 /// Layer indexing follows PyTorch's `_lN` suffix (l0 = first layer,
-/// l1 = second layer). Layer `l1`'s input dim is `2·hidden_dim` because
-/// the layer 0 output is a concatenation of forward + reverse hidden
-/// states.
+/// l1..l3 = subsequent layers). Every layer after `l0` consumes
+/// `2·hidden_dim` because the preceding output concatenates forward and
+/// reverse hidden states.
 #[derive(Debug)]
 pub(crate) struct MonoLithicBiLstmStack {
     layers: Vec<BiLstmLayer>,
