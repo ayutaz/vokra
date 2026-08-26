@@ -1,5 +1,21 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 shared T5 source wave:** native non-gated T5 encoder math now
+> exists for CPU and Metal, including exact T5 relative-position buckets,
+> gamma-only RMSNorm, unscaled attention and ReLU feed-forward blocks. Metal
+> ReLU is a dedicated kernel and non-covered backends remain explicit errors;
+> there is no per-op CPU fallback. The independent oracle directly calls the
+> official `transformers.T5EncoderModel.forward` and records immutable source
+> revision plus checkpoint hashes. VAST compile/official CPU parity and an
+> Apple-device Metal run are still pending, so no public MusicGen, AudioGen,
+> AudioLDM2, JASCO or MT3 repository changes classification yet. Those families
+> still need tokenizer/tensor binding and their model-specific decoder or
+> diffusion composition. Reproduction is staged in
+> `scripts/publish/vast-ai/run-t5-encoder-parity.sh`; its locked Linux-only
+> Python environment is `tools/parity/t5_encoder/`, the independent dumper is
+> `tools/parity/t5_encoder_dump_reference.py`, and the opted-in Rust comparison
+> is `crates/vokra-models/tests/parity_t5_encoder.rs`.
+>
 > **2026-08-26 pyannote diarization source wave:** the public weightless
 > `pyannote-speaker-diarization-3.1` GGUF now has an exact native three-artifact
 > route over PyanNet segmentation and masked WeSpeaker embeddings, including
