@@ -583,6 +583,7 @@ pub mod focalcodec;
 /// tensor manifest and remains visible as a repair requirement; Full decode
 /// remains an explicit unsupported operation.
 pub mod moss_audio_tokenizer;
+pub mod moss_tts;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
 // vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT
 // forward. CPU preserves the independent scalar reference; Metal dispatches
