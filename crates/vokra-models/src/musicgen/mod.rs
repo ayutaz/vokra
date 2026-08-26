@@ -32,9 +32,11 @@
 //!         carry `text_encoder.*`; Medium/Large are AudioCraft LM-only
 //!         files and require explicit companion conditioner assets.
 //!         Tokenizer assets are not embedded in any of the GGUFs.)
-//!   -> autoregressive transformer LM with            ← **loud-partial**
-//!      4-codebook delay pattern and layout-specific
-//!      prompt conditioning
+//!   -> autoregressive transformer LM                 ← **real raw step for
+//!      with layout-specific prompt conditioning          AudioCraft Medium/Large**
+//!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`;
+//!         Small/Melody use a separate composite tensor layout)
+//!   -> 4-codebook delay pattern + CFG + sampling     ← **loud-partial**
 //!        (Copet et al. Algorithm 1 — the MusicGen-specific
 //!         "delay pattern" interleave over the 4 codebook streams;
 //!         the exact conditioner path differs between the published
@@ -71,6 +73,13 @@
 //!     [`LicenseClass::NonCommercial`] per the MusicGen converter's
 //!     stamped `cc-by-nc-4.0` — T4 tier, fail-closed at the runtime
 //!     compliance gate M2-13).
+//!   - Mapping-owned [`MusicGen::from_path_with_policy_and_backend`] plus the
+//!     shared [`crate::audiocraft_lm::AudioCraftLmDecoder`] execute the exact
+//!     AudioCraft Medium/Large learned condition projection, pre-norm
+//!     self/cross-attention stack, GELU MLP and four logits heads on one
+//!     selected CPU/Metal backend. Unsupported backend operations fail before
+//!     state mutation; borrowed handles and composite Small/Melody layouts
+//!     fail explicitly instead of falling back.
 //!
 //! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
 //!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
@@ -78,9 +87,8 @@
 //!      composite files can use the landed
 //!      [`crate::t5_encoder::T5Encoder`] over `text_encoder.*`, whereas
 //!      LM-only files require an authenticated conditioner companion;
-//!   2. the autoregressive transformer LM decode with the **4-codebook
-//!      delay pattern** and the conditioner topology appropriate to the
-//!      bound layout;
+//!   2. generation orchestration around the landed raw LM step: the
+//!      **4-codebook delay pattern**, classifier-free guidance and sampling;
 //!   3. complete EnCodec waveform decoding. The landed
 //!      `vokra_ops::encodec_rvq_decode` performs only the codebook-to-
 //!      latent fold; the neural SEANet latent-to-PCM decoder is still
@@ -97,10 +105,9 @@
 //! beat_this / mt3 / sortformer loud-partial precedent, CLAUDE.md 教訓
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
-//! enum + FR-EX-08 loud-fails land first so the execution wave can bind
-//! authenticated companion assets where needed, implement the shared
-//! delay-pattern AR decoder, and compose the RVQ latent fold with a
-//! native SEANet waveform decoder.
+//! enum + FR-EX-08 loud-fails landed first. The AudioCraft raw LM step is now
+//! native; remaining work is the layout-specific conditioner/composite path,
+//! generation scheduler and native SEANet waveform decoder.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -163,9 +170,16 @@
 //! not part of the runtime), mirroring the SpeechT5-HiFi-GAN /
 //! Sortformer / Charsiu bridge pattern.
 
+use std::sync::Arc;
+
+use vokra_core::backend::BackendKind;
+use vokra_core::compliance::{CompliancePolicy, check_weight_license};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use crate::audiocraft_lm::{
+    AudioCraftCondition, AudioCraftLmConfig, AudioCraftLmDecoder, AudioCraftLmState,
+};
 use crate::strict_checkpoint::verify_tensor_manifest;
 
 // ---------------------------------------------------------------------------
@@ -784,6 +798,11 @@ pub struct MusicGen {
     #[allow(dead_code)]
     weights: MusicGenWeights,
     weight_license: LicenseClass,
+    /// Present for the authenticated AudioCraft LM-only Medium/Large layouts
+    /// opened through [`Self::from_path_with_policy_and_backend`]. Composite
+    /// Small/Melody execution remains a distinct tensor-layout binder.
+    decoder: Option<AudioCraftLmDecoder>,
+    backend: BackendKind,
 }
 
 impl MusicGen {
@@ -911,7 +930,53 @@ impl MusicGen {
             variant,
             weights,
             weight_license,
+            decoder: None,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Opens a mapped MusicGen GGUF under the fail-closed compliance policy.
+    ///
+    /// Official MusicGen weights are non-commercial, so this default refuses
+    /// them until the caller explicitly opts into research-license use through
+    /// [`Self::from_path_with_policy`].
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, &CompliancePolicy::strict(), BackendKind::Cpu)
+    }
+
+    /// Opens a mapped MusicGen GGUF with an explicit compliance policy on CPU.
+    pub fn from_path_with_policy(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, policy, BackendKind::Cpu)
+    }
+
+    /// Opens a mapped MusicGen GGUF, enforces weight-license policy, and binds
+    /// the selected backend without a silent CPU fallback.
+    pub fn from_path_with_policy_and_backend(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
+        let mut model = Self::from_gguf(&file)?;
+        check_weight_license(&file, policy)?;
+        if model.artifact_layout() != MusicGenArtifactLayout::AudioCraftLm {
+            return Err(VokraError::UnsupportedOp(format!(
+                "musicgen {:?} uses the public Transformers composite tensor layout; \
+                 from_path_with_policy_and_backend currently executes only authenticated \
+                 AudioCraft LM-only Medium/Large checkpoints (FR-EX-08: explicit, no CPU fallback)",
+                model.variant
+            )));
+        }
+        model.decoder = Some(AudioCraftLmDecoder::bind(
+            Arc::clone(&file),
+            model.audiocraft_lm_config(),
+            backend,
+        )?);
+        model.backend = backend;
+        Ok(model)
     }
 
     /// The bound topology axes (from `vokra.musicgen.*` chunk group with
@@ -957,6 +1022,75 @@ impl MusicGen {
     #[must_use]
     pub const fn artifact_layout(&self) -> MusicGenArtifactLayout {
         self.weights.artifact_layout()
+    }
+
+    /// Backend selected for the executable LM route.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Applies the learned AudioCraft T5 output projection.
+    ///
+    /// This route is available for the public Medium/Large LM-only layouts.
+    /// Small/Melody carry a different Transformers composite tensor layout and
+    /// fail explicitly until that binder is selected.
+    pub fn prepare_lm_condition(
+        &self,
+        hidden: &[f32],
+        frames: usize,
+        mask: Option<&[u8]>,
+    ) -> Result<AudioCraftCondition> {
+        self.lm_decoder()?.prepare_condition(hidden, frames, mask)
+    }
+
+    /// Precomputes cross-attention K/V for one AudioCraft LM stream.
+    pub fn new_lm_state(
+        &self,
+        condition: &AudioCraftCondition,
+        max_steps: usize,
+    ) -> Result<AudioCraftLmState> {
+        self.lm_decoder()?.new_state(condition, max_steps)
+    }
+
+    /// Advances one delayed MusicGen position and writes four codebook-logit
+    /// rows. No waveform or fake token sequence is fabricated.
+    pub fn lm_step_into(
+        &self,
+        state: &mut AudioCraftLmState,
+        tokens: &[u32],
+        logits: &mut [f32],
+    ) -> Result<()> {
+        self.lm_decoder()?.step_into(state, tokens, logits)
+    }
+
+    fn audiocraft_lm_config(&self) -> AudioCraftLmConfig {
+        AudioCraftLmConfig {
+            d_model: self.config.d_model as usize,
+            num_layers: self.config.num_layers as usize,
+            n_heads: self.config.n_heads as usize,
+            ffn_dim: self.config.ffn_dim as usize,
+            vocab_size: self.config.vocab_size as usize,
+            num_codebooks: self.config.num_codebooks as usize,
+        }
+    }
+
+    fn lm_decoder(&self) -> Result<&AudioCraftLmDecoder> {
+        self.decoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so the mapping stays alive"
+                }
+                MusicGenArtifactLayout::TransformersComposite => {
+                    "this public Small/Melody artifact uses the Transformers composite tensor \
+                     layout; its split q/k/v decoder binder is not the AudioCraft LM-only route"
+                }
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native LM execution unavailable: {reason} (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
     }
 
     /// Generates a `duration_secs`-length 32 kHz PCM stream conditioned

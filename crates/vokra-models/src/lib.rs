@@ -62,6 +62,8 @@ pub mod align;
 pub mod ast;
 /// Native Meta Audiobox Aesthetics WavLM quality scorer (CPU / Metal).
 pub mod audiobox_aesthetics;
+/// Shared bounded-memory AudioCraft autoregressive LM used by MusicGen and AudioGen.
+pub mod audiocraft_lm;
 /// Native AudioSeal watermark generator/detector (CPU / Metal).
 pub mod audioseal;
 pub mod canary;
@@ -631,10 +633,12 @@ pub mod demucs;
 // + medium 1.5B, CC-BY-NC-4.0 T4). Autoregressive transformer LM over
 // EnCodec RVQ tokens (4 codebooks, 50 Hz frame rate, 32 kHz output)
 // conditioned on frozen T5-base text encoder with delay pattern across
-// codebooks. Real config / variant / from_gguf / weight-license
-// surfacing; generate loud-partial pending T5 text-encoder forward +
-// AR LM with 4-codebook delay-pattern + text-conditioned cross-
-// attention (EnCodec RVQ decode primitive exists via
+// codebooks. Real config / variant / mapping-owned load / weight-license
+// surfacing; the AudioCraft Medium/Large raw LM step executes on CPU/Metal,
+// while Small/Melody retain a distinct composite-layout binder gap. Full
+// generate remains loud-partial pending prompt tokenization/conditioner,
+// delay-pattern + CFG + sampling, and SEANet waveform decode (the EnCodec
+// RVQ latent-fold primitive exists via
 // vokra_ops::encodec_rvq_decode). Primary sources:
 // huggingface.co/facebook/musicgen-{small,medium} +
 // github.com/facebookresearch/audiocraft (MIT code) + arXiv:2306.05284
@@ -725,7 +729,7 @@ pub mod audioldm2;
 // RULE append at end with Wave 6 comment marker): audiogen = Meta
 // AudioCraft AudioGen-Medium runtime binder (`facebook/audiogen-medium`,
 // CC-BY-NC-4.0 T4). 1.5B autoregressive transformer LM over EnCodec RVQ
-// tokens (4 codebooks, 50 Hz, 32 kHz) conditioned on frozen T5-base text
+// tokens (4 codebooks, 50 Hz, 16 kHz) conditioned on frozen T5-large text
 // encoder with delay pattern across codebooks — MusicGen sibling by
 // topology (Kreuk et al. 2023 arXiv:2209.15352), distinct by training
 // corpus (environmental sounds / SFX vs music) and by arch tag
@@ -733,14 +737,12 @@ pub mod audioldm2;
 // retags the converter from the Wave 5 shared `musicgen` arch tag so a
 // future modality-specific head (SFX-only conditioning stack, stereo
 // output head, per-class embedding table) does not silent-mis-bind
-// against MusicGen's music-only runtime path). Real config / from_gguf
-// / weight-license surfacing; generate loud-partial pending T5 text-
-// encoder forward + AR LM with 4-codebook delay-pattern +
-// text-conditioned cross-attention (EnCodec RVQ decode primitive exists
-// via vokra_ops::encodec_rvq_decode — shared composition anchor with
-// MusicGen; a single follow-up wave unblocks both binders because
-// pieces (i) T5-base and (ii) AR-LM-with-delay-pattern are shared by
-// construction). §3.1 row 402 = ☑ Research-only 2026-08-01 yousan
+// against MusicGen's music-only runtime path). Real config / mapping-owned
+// load / weight-license surfacing; the raw AudioCraft LM step now executes
+// on CPU/Metal. Full generate remains loud-partial pending T5-large companion
+// tokenization/encoding, delay-pattern + CFG + sampling, and SEANet waveform
+// decode (the EnCodec RVQ latent-fold primitive exists via
+// vokra_ops::encodec_rvq_decode). §3.1 row 402 = ☑ Research-only 2026-08-01 yousan
 // (X-Codec-2 T4 precedent inheritance). Loud-partial pattern per Wave 5
 // musicgen precedent.
 pub mod audiogen;
