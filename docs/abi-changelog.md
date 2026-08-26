@@ -263,6 +263,18 @@ without copying the full decoder into memory. No C ABI or GGUF schema changes.
 | `vokra-models::audiocraft_lm` | `AudioCraftLmDecoder` mapped layout support | Changed | Transformers split-Q/K/V LM step and CFG/delay sampling | Mapping-owned only; CPU/Metal selected once; unsupported backends fail explicitly | no | (TBD) |
 | `vokra-models::musicgen::MusicGen` | `from_path*`, `prepare_lm_condition`, `new_lm_state`, `lm_step_into`, `generate_codes` | Changed | raw T5-hidden-to-four-codebook route for public Small/Melody composites | Text tokenization/composition remains a loud companion boundary | no | (TBD) |
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen embedded T5 token-id route)
+
+The public Transformers-composite Small/Melody artifacts now bind their
+embedded canonical T5-base encoder on the same selected CPU/Metal backend.
+Callers provide conditional and unconditional token ids explicitly because
+the GGUFs do not embed tokenizer assets; no tokenizer or null prompt is
+guessed. No C ABI or GGUF schema changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::musicgen::MusicGen` | `prepare_text_condition`, `generate_codes_from_token_ids`, `generate_from_token_ids` | Added | explicit T5 token ids + optional masks to prepared condition, frame-major codes or mono 32 kHz PCM | Mapping-owned Small/Melody composites only; Medium/Large return explicit missing-companion errors | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MusicGen embedded EnCodec waveform decode)
 
 The already-published Transformers-composite MusicGen Small/Melody artifacts

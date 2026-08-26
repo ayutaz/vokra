@@ -91,13 +91,16 @@
 //!     convolution, transposed-convolution projection and LSTM projections
 //!     execute on the selected CPU/Metal backend; [`MusicGen::decode_codes`]
 //!     emits real 32 kHz mono PCM.
+//!   - Those same composites bind their embedded canonical T5-base encoder.
+//!     [`MusicGen::generate_from_token_ids`] takes explicit conditional and
+//!     unconditional token ids, then composes T5, LM generation and EnCodec
+//!     decode on the selected CPU/Metal backend.
 //!
 //! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
 //!   [`VokraError::UnsupportedOp`] naming the remaining layout-specific pieces:
-//!   1. prompt tokenization plus layout-specific conditioner binding:
-//!      composite files can use the landed
-//!      [`crate::t5_encoder::T5Encoder`] over `text_encoder.*`, whereas
-//!      LM-only files require an authenticated conditioner companion;
+//!   1. raw-text prompt tokenization: tokenizer assets are absent from every
+//!      public GGUF. Composite files can use the landed token-id route, whereas
+//!      LM-only files additionally require an authenticated T5 companion;
 //!   2. an authenticated EnCodec companion for LM-only Medium/Large. The
 //!      complete embedded Small/Melody decoder is already available through
 //!      [`MusicGen::decode_codes`].
@@ -114,9 +117,9 @@
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
 //! enum + FR-EX-08 loud-fails landed first. Raw LM code generation is now
-//! native for both authenticated layouts, and composite EnCodec waveform
-//! decode is native. Remaining work is prompt composition and explicit
-//! companion binding for LM-only files.
+//! native for both authenticated layouts, and composite T5-to-waveform
+//! generation is native from explicit token ids. Remaining work is raw-text
+//! tokenization and explicit companion binding for LM-only files.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -192,6 +195,7 @@ use crate::audiocraft_lm::{
     AudioCraftLmDecoder, AudioCraftLmState,
 };
 use crate::strict_checkpoint::verify_tensor_manifest;
+use crate::t5_encoder::T5Encoder;
 
 // ---------------------------------------------------------------------------
 // Arch / metadata-key constants — mirror of
@@ -794,10 +798,10 @@ impl MusicGenWeights {
 /// CC-BY-NC-4.0 T4 tier).
 ///
 /// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
-/// currently fails explicitly until prompt conditioning and each layout's
-/// missing companion is connected. Raw LM generation is exposed for every
-/// mapping-owned public layout; embedded EnCodec waveform decode is exposed
-/// for Small/Melody.
+/// currently fails explicitly until raw-text tokenization and each layout's
+/// missing companion are connected. Explicit token-id-to-waveform generation
+/// is available for mapping-owned Small/Melody composites; raw LM generation
+/// remains available for every mapping-owned public layout.
 #[derive(Debug)]
 pub struct MusicGen {
     config: MusicGenConfig,
@@ -814,6 +818,9 @@ pub struct MusicGen {
     /// [`Self::from_path_with_policy_and_backend`]. AudioCraft LM-only files
     /// use fused attention tensors; composite files use split Q/K/V tensors.
     decoder: Option<AudioCraftLmDecoder>,
+    /// Present for authenticated Transformers-composite Small/Melody files,
+    /// which embed canonical T5-base under `text_encoder.*`.
+    text_encoder: Option<T5Encoder>,
     /// Present for authenticated Transformers-composite Small/Melody files,
     /// which embed the complete 32 kHz EnCodec component.
     codec_decoder: Option<AudioCraftEncodecDecoder>,
@@ -946,6 +953,7 @@ impl MusicGen {
             weights,
             weight_license,
             decoder: None,
+            text_encoder: None,
             codec_decoder: None,
             backend: BackendKind::Cpu,
         })
@@ -987,6 +995,9 @@ impl MusicGen {
                 )?);
             }
             MusicGenArtifactLayout::TransformersComposite => {
+                model.text_encoder = Some(
+                    T5Encoder::t5_base_from_gguf(&file, "text_encoder")?.with_backend(backend),
+                );
                 model.decoder = Some(AudioCraftLmDecoder::bind_transformers_musicgen(
                     Arc::clone(&file),
                     model.audiocraft_lm_config(),
@@ -1066,6 +1077,29 @@ impl MusicGen {
         self.lm_decoder()?.prepare_condition(hidden, frames, mask)
     }
 
+    /// Encodes caller-supplied T5 token ids and prepares one LM condition.
+    ///
+    /// The public Small/Melody composites embed canonical T5-base weights but
+    /// not tokenizer assets. Accepting explicit ids keeps this offline and
+    /// exact instead of inventing a tokenizer. `attention_mask`, when present,
+    /// is used by T5 self-attention and then removes padded rows from the
+    /// Transformers MusicGen cross-attention condition.
+    pub fn prepare_text_condition(
+        &self,
+        token_ids: &[u32],
+        attention_mask: Option<&[bool]>,
+    ) -> Result<AudioCraftCondition> {
+        let hidden = self
+            .text_encoder()?
+            .encode_tokens(token_ids, attention_mask)?;
+        let lm_mask: Option<Vec<u8>> = attention_mask.map(|mask| {
+            mask.iter()
+                .map(|&visible| if visible { 1 } else { 0 })
+                .collect()
+        });
+        self.prepare_lm_condition(&hidden, token_ids.len(), lm_mask.as_deref())
+    }
+
     /// Precomputes cross-attention K/V for one AudioCraft LM stream.
     pub fn new_lm_state(
         &self,
@@ -1097,6 +1131,45 @@ impl MusicGen {
     ) -> Result<AudioCraftGeneratedCodes> {
         self.lm_decoder()?
             .generate_codes(conditional, unconditional, generation)
+    }
+
+    /// Runs embedded T5-base plus LM generation from explicit conditional and
+    /// unconditional token ids. The caller supplies both sequences so the
+    /// classifier-free null prompt is never guessed.
+    pub fn generate_codes_from_token_ids(
+        &self,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        let conditional =
+            self.prepare_text_condition(conditional_token_ids, conditional_attention_mask)?;
+        let unconditional =
+            self.prepare_text_condition(unconditional_token_ids, unconditional_attention_mask)?;
+        self.generate_codes(&conditional, &unconditional, generation)
+    }
+
+    /// Generates mono 32 kHz PCM from explicit T5 token ids on a public
+    /// Small/Melody composite. Medium/Large return their existing explicit
+    /// missing-T5 or missing-codec companion error.
+    pub fn generate_from_token_ids(
+        &self,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<Vec<f32>> {
+        let codes = self.generate_codes_from_token_ids(
+            conditional_token_ids,
+            conditional_attention_mask,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+            generation,
+        )?;
+        self.decode_codes(&codes)
     }
 
     /// Decodes generated frame-major EnCodec indices to mono 32 kHz PCM.
@@ -1148,6 +1221,26 @@ impl MusicGen {
         })
     }
 
+    fn text_encoder(&self) -> Result<&T5Encoder> {
+        self.text_encoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::TransformersComposite => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so embedded T5-base weights \
+                     can be bound"
+                }
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "this public Medium/Large artifact is LM-only and contains no T5 tensors; \
+                     supply an authenticated T5-base companion explicitly"
+                }
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native T5 text encoding unavailable: {reason} \
+                 (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
+    }
+
     fn codec_decoder(&self) -> Result<&AudioCraftEncodecDecoder> {
         self.codec_decoder.as_ref().ok_or_else(|| {
             let reason = match self.artifact_layout() {
@@ -1175,11 +1268,10 @@ impl MusicGen {
     /// Returns [`VokraError::UnsupportedOp`] — MusicGen's PCM inference path
     /// still requires the following companion/composition pieces:
     ///
-    /// 1. **Prompt composition**: tokenizer assets plus the conditioner
-    ///    appropriate to the bound artifact layout. Composite GGUFs carry
-    ///    `text_encoder.*` for the shared native
-    ///    [`crate::t5_encoder::T5Encoder`]; LM-only GGUFs require a
-    ///    separately authenticated companion conditioner.
+    /// 1. **Raw-text tokenization**: tokenizer assets are absent from the
+    ///    public GGUFs. Composite GGUFs expose the complete explicit token-id
+    ///    route through [`Self::generate_from_token_ids`]; LM-only GGUFs also
+    ///    require a separately authenticated T5 companion.
     /// 2. **LM-only codec companion**: Medium/Large contain no EnCodec
     ///    tensors. Composite Small/Melody already expose their complete
     ///    embedded decoder through [`Self::decode_codes`].
@@ -1233,9 +1325,9 @@ fn generate_forward_loud_partial(
         }
         MusicGenArtifactLayout::TransformersComposite => {
             "this already-published GGUF is the Transformers composite layout: it carries \
-             `text_encoder.*` and `audio_encoder.*`; the complete embedded EnCodec decoder is \
-             available through decode_codes, while tokenizer assets and strict text-encoder \
-             composition into the generation API remain pending"
+             `text_encoder.*` and `audio_encoder.*`; complete token-id-to-waveform generation is \
+             available through generate_from_token_ids, while raw-text tokenizer assets remain \
+             absent"
         }
     };
     let codec_status = match layout {
@@ -1247,11 +1339,12 @@ fn generate_forward_loud_partial(
         }
     };
     VokraError::UnsupportedOp(format!(
-        "musicgen generate: prompt/layout companion composition pending. \
-         Artifact layout={layout:?}: {companion_gap}. What is missing is (a) the prompt \
-         path — `crate::t5_encoder::T5Encoder` supplies native CPU/Metal T5-base math \
-         for composite checkpoints, while LM-only checkpoints require an explicit \
-         conditioner companion; independent real-weight parity remains pending. Raw LM \
+        "musicgen generate: raw-text tokenization/layout companion composition pending. \
+         Artifact layout={layout:?}: {companion_gap}. What is missing from this raw-text API is \
+         tokenizer data. `generate_from_token_ids` composes native CPU/Metal T5-base, raw LM, \
+         delay pattern, CFG, sampling and embedded EnCodec for composite checkpoints, while \
+         LM-only checkpoints require explicit T5 and codec companions; independent real-weight \
+         parity remains pending. Raw LM \
          execution, the MusicGen-specific 4-codebook delay pattern, CFG and sampling are \
          landed through generate_codes for both authenticated layouts. Codec status: \
          {codec_status}. \
@@ -1662,7 +1755,11 @@ mod tests {
                 // route MUST all be named so the follow-up is unambiguous.
                 assert!(
                     m.contains("T5"),
-                    "message must name the T5-base text encoder deferred piece, got `{m}`"
+                    "message must name the embedded T5-base route, got `{m}`"
+                );
+                assert!(
+                    m.contains("generate_from_token_ids"),
+                    "message must point to the complete composite token-id route, got `{m}`"
                 );
                 assert!(
                     m.contains("delay pattern"),
@@ -1721,6 +1818,16 @@ mod tests {
             }
             other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
         }
+
+        let error = mg
+            .prepare_text_condition(&[1], None)
+            .expect_err("borrowed fixture cannot own embedded T5 weights");
+        assert!(
+            error
+                .to_string()
+                .contains("from_path_with_policy_and_backend"),
+            "borrowed-handle text error must name the mapping-owned constructor: {error}"
+        );
 
         // Same assertion against a Medium GGUF — the message must swap
         // the HF card URL to the medium variant's card.
