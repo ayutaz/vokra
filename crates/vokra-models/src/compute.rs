@@ -154,10 +154,15 @@ pub enum HotOp {
     /// refuses them without a research flag). Separate variant for honest
     /// per-op coverage (ADR M4-04 §D-e).
     ///
-    /// **CPU-only on every backend today** — the last RVQ variant with no
-    /// Metal kernel (its siblings [`HotOp::MimiRvq`] and [`HotOp::DacRvq`]
-    /// both flipped to Metal-covered on 2026-08-13; this one did not, which is
-    /// exactly why the coverage table is per-op).
+    /// **Metal-covered since the AudioCraft waveform-decode wave
+    /// (2026-08-26)** — EnCodec's unfactorized RVQ is mathematically the same
+    /// shape-generic gather + FP32 fold as [`HotOp::MimiRvq`]. The Metal arm
+    /// therefore dispatches the already-parity-pinned
+    /// `vokra_mimi_rvq_gather_fold_f32` kernel after EnCodec-specific host
+    /// shape/index validation. This does not change FR-OP-32: standalone
+    /// pretrained EnCodec artifacts remain excluded from the official model
+    /// zoo; the consumer is an authenticated MusicGen composite artifact.
+    /// CUDA / Vulkan / WebGPU remain explicitly unsupported.
     EncodecRvq,
     /// WavTokenizer single-codebook VQ decode (`wavtokenizer_vq_decode`) —
     /// M4-16, FR-OP-31 **FSQ family** (single-stage, *separate subgraph from
@@ -408,10 +413,11 @@ impl HotOp {
     /// factorized gather + per-quantizer projection + FP32 fold behind
     /// [`Compute::dac_rvq_f32`] (semantics equal to
     /// `vokra_ops::dac_rvq::dac_rvq_decode` within FP32 fast-math tolerance,
-    /// host-side per-index bound check upstream — FR-EX-08). [`HotOp::EncodecRvq`]
-    /// and the M4-16 FSQ family stay deferred (each lands its own kernel /
-    /// coverage flip). CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai
-    /// owner track and remains uncovered here. (The *graph* backend
+    /// host-side per-index bound check upstream — FR-EX-08). The AudioCraft
+    /// waveform-decode wave (2026-08-26) wires [`HotOp::EncodecRvq`] through
+    /// that same shape-generic Mimi kernel with EnCodec-specific validation.
+    /// CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai owner track and
+    /// remains uncovered here. (The *graph* backend
     /// `MetalBackend::supports` / `eval_op` is a separate path and still
     /// covers only `MatMul` — the two coverage surfaces are intentionally
     /// independent.)
@@ -426,9 +432,11 @@ impl HotOp {
         // added `SnakeActivation` via `vokra_snake_activation_f32`; Vocoder
         // Metal wave WF5 (2026-08-13) added `SnacDecode` via
         // `vokra_snac_decode_f32` and `DenoiseApplyMask` via
-        // `vokra_denoise_apply_mask_f32`. Any model listing the still-deferred
-        // sibling (`EncodecRvq`) continues to fail the Metal coverage gate —
-        // no silent CPU fall back (FR-EX-08).
+        // `vokra_denoise_apply_mask_f32`. AudioCraft waveform decoding
+        // (2026-08-26) added EncodecRvq through
+        // the same shape-generic gather + fold kernel as MimiRvq. The
+        // EnCodec-specific seam still performs its own host validation before
+        // dispatch; no CPU fall back is involved (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
@@ -444,6 +452,7 @@ impl HotOp {
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
+                | HotOp::EncodecRvq
                 | HotOp::WavTokenizerVq
                 | HotOp::Xcodec2Fsq
                 | HotOp::SnakeActivation
@@ -1657,17 +1666,18 @@ impl Compute {
     /// weights are permanently zoo-excluded — see `vokra_ops::encodec_rvq`
     /// module docs).
     ///
-    /// Same shape-generic gather + FP32 fold as [`Compute::mimi_rvq_f32`];
-    /// the CPU arm delegates verbatim to [`vokra_ops::encodec_rvq_decode`],
-    /// the Metal / CUDA arms are explicit [`VokraError::UnsupportedOp`]
-    /// (FR-EX-08 — no silent CPU fall back), and the coverage gate rejects
-    /// [`HotOp::EncodecRvq`] against every GPU backend.
+    /// Same shape-generic gather + FP32 fold as [`Compute::mimi_rvq_f32`].
+    /// The CPU arm delegates verbatim to [`vokra_ops::encodec_rvq_decode`];
+    /// Metal dispatches the already-pinned Mimi gather/fold kernel after
+    /// EnCodec-specific host validation. CUDA / WebGPU remain explicit
+    /// [`VokraError::UnsupportedOp`] (FR-EX-08 — no silent CPU fall back).
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates [`vokra_ops::encodec_rvq_decode`]'s
     ///   [`VokraError::InvalidArgument`].
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    /// - Metal arm: EnCodec-specific validation plus backend failures.
+    /// - CUDA / WebGPU arms: explicit [`VokraError::UnsupportedOp`].
     pub fn encodec_rvq_f32(
         &self,
         codes: &[u32],
@@ -1678,12 +1688,80 @@ impl Compute {
         match &self.be {
             Be::Cpu => encodec_rvq_decode(codes, time, codebook_tables, attrs),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(VokraError::UnsupportedOp(
-                "encodec_rvq_f32 has no wired Metal MSL kernel; the M4-04 GPU arm is deferred. \
-                 Select BackendKind::Cpu (which delegates to vokra_ops::encodec_rvq_decode) — \
-                 Vokra does not silently run the op on the CPU (FR-EX-08)."
-                    .to_owned(),
-            )),
+            Be::Metal(ctx) => {
+                if attrs.n_codebooks == 0 || attrs.codebook_size == 0 || attrs.d_model == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: attrs must have every axis > 0, got \
+                         n_codebooks={} codebook_size={} d_model={}",
+                        attrs.n_codebooks, attrs.codebook_size, attrs.d_model,
+                    )));
+                }
+                if codebook_tables.len() != attrs.n_codebooks {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: codebook_tables.len() {} != \
+                         attrs.n_codebooks {}",
+                        codebook_tables.len(),
+                        attrs.n_codebooks
+                    )));
+                }
+                for (index, table) in codebook_tables.iter().enumerate() {
+                    if table.codebook_size != attrs.codebook_size || table.d_model != attrs.d_model
+                    {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "encodec_rvq_f32 metal: codebook_tables[{index}] shape [{},{}] \
+                             != attrs [{},{}]",
+                            table.codebook_size, table.d_model, attrs.codebook_size, attrs.d_model
+                        )));
+                    }
+                }
+                let expected_codes = time.checked_mul(attrs.n_codebooks).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: time ({time}) * n_codebooks ({}) overflows usize",
+                        attrs.n_codebooks
+                    ))
+                })?;
+                if codes.len() != expected_codes {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: codes.len() {} != time * n_codebooks \
+                         {expected_codes}",
+                        codes.len()
+                    )));
+                }
+                for (position, &code) in codes.iter().enumerate() {
+                    if (code as usize) >= attrs.codebook_size {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "encodec_rvq_f32 metal: codes[{position}] = {code} >= \
+                             codebook_size {} (no silent clamp — FR-EX-08)",
+                            attrs.codebook_size
+                        )));
+                    }
+                }
+                if time == 0 {
+                    return Ok(Vec::new());
+                }
+                let table_values = attrs
+                    .n_codebooks
+                    .checked_mul(attrs.codebook_size)
+                    .and_then(|value| value.checked_mul(attrs.d_model))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "encodec_rvq_f32 metal: flattened codebook size overflows usize"
+                                .to_owned(),
+                        )
+                    })?;
+                let mut tables_flat = Vec::with_capacity(table_values);
+                for table in codebook_tables {
+                    tables_flat.extend_from_slice(&table.data);
+                }
+                ctx.mimi_rvq_gather_fold_f32(
+                    codes,
+                    &tables_flat,
+                    attrs.n_codebooks,
+                    attrs.codebook_size,
+                    attrs.d_model,
+                    time,
+                )
+            }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => Err(VokraError::UnsupportedOp(
                 "encodec_rvq_f32 has no wired CUDA NVRTC kernel; the M4-04 GPU arm is deferred. \
@@ -3798,15 +3876,10 @@ mod tests {
         }
     }
 
-    /// On a Metal build the `encodec_rvq_f32` Metal arm is still an explicit
-    /// `UnsupportedOp` — the M4-04 EnCodec GPU kernel stays deferred (Meta
-    /// EnCodec's pretrained weights are on the FR-OP-32 permanent-exclusion
-    /// list, so its Metal arm was never wired). The `dac_rvq_f32` Metal arm
-    /// is now wired (commit `f9f6e40`, MSL kernel
-    /// `vokra_dac_rvq_gather_project_fold_f32`), so its trivial (1,1,1)
-    /// shape should return an `Ok` fold — this test confirms both siblings
-    /// stay in lock-step with their [`HotOp::covered_by_metal`] flags
-    /// (FR-EX-08, mirror of the mimi test above).
+    /// On a Metal build both DAC and EnCodec RVQ arms dispatch real kernels.
+    /// EnCodec reuses Mimi's identical shape-generic gather/fold kernel; the
+    /// standalone-weight exclusion is a publication rule, not a reason to
+    /// leave an authenticated MusicGen composite's learned gather on CPU.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn metal_dac_and_encodec_rvq_arms_track_coverage_no_silent_fallback() {
@@ -3836,22 +3909,36 @@ mod tests {
             .expect("DAC Metal arm is wired (Vocoder wave WF2, 2026-08-13) — must succeed");
         assert_eq!(dac_out.len(), 1);
 
-        // EnCodec Metal arm stays deferred (FR-OP-32 permanent weight
-        // exclusion — the Metal kernel would never have real callers).
         let enc_attrs = EncodecRvqAttrs {
             n_codebooks: 1,
             codebook_size: 1,
             d_model: 1,
         };
         let enc_tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
-        assert!(
-            matches!(
-                compute.encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs),
-                Err(VokraError::UnsupportedOp(_)),
-            ),
-            "EnCodec Metal arm must stay `UnsupportedOp` (FR-OP-32 permanent weight exclusion — \
-             never a silent CPU fall back, FR-EX-08)",
-        );
+        let enc_out = compute
+            .encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs)
+            .expect("EnCodec Metal arm reuses the wired Mimi gather/fold kernel");
+        assert_eq!(enc_out, vec![0.0]);
+        assert!(matches!(
+            compute.encodec_rvq_f32(&[1u32], 1, &enc_tables, &enc_attrs),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+
+        let parity_attrs = EncodecRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 2,
+        };
+        let parity_tables = vec![
+            CodebookTable::new(3, 2, vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5]).unwrap(),
+            CodebookTable::new(3, 2, vec![3.0, 3.5, 4.0, 4.5, 5.0, 5.5]).unwrap(),
+        ];
+        let parity_codes = [0, 2, 1, 1, 2, 0];
+        let cpu_out = encodec_rvq_decode(&parity_codes, 3, &parity_tables, &parity_attrs).unwrap();
+        let metal_out = compute
+            .encodec_rvq_f32(&parity_codes, 3, &parity_tables, &parity_attrs)
+            .expect("nontrivial EnCodec gather/fold must run on Metal");
+        assert_eq!(metal_out, cpu_out);
     }
 
     /// On a CUDA build the `dac_rvq_f32` / `encodec_rvq_f32` CUDA arms are
@@ -4181,8 +4268,9 @@ mod tests {
         // the Vocoder Metal wave WF2 (2026-08-13, MSL kernel
         // `vokra_snake_activation_f32`); SnacDecode and DenoiseApplyMask are
         // covered as of the Vocoder Metal wave WF5 (2026-08-13, MSL kernels
-        // `vokra_snac_decode_f32` / `vokra_denoise_apply_mask_f32`). Only
-        // EncodecRvq stays deferred.
+        // `vokra_snac_decode_f32` / `vokra_denoise_apply_mask_f32`).
+        // EncodecRvq reuses Mimi's identical shape-generic gather/fold kernel
+        // as of the AudioCraft waveform-decode wave (2026-08-26).
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
@@ -4197,6 +4285,7 @@ mod tests {
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
+            HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
@@ -4218,10 +4307,10 @@ mod tests {
             );
         }
 
-        // The remaining M4-04 RVQ sibling and the two NanoCodec hot ops are
-        // deliberately CPU-only. Keep these flags in lock-step with the
+        // The two NanoCodec hot ops remain deliberately CPU-only. Keep these
+        // flags in lock-step with the
         // corresponding model required-op registries and Compute method arms.
-        for op in [HotOp::EncodecRvq, HotOp::GroupFsq, HotOp::CausalHifiGan] {
+        for op in [HotOp::GroupFsq, HotOp::CausalHifiGan] {
             assert!(
                 !op.covered_by_metal(),
                 "{op:?} unexpectedly Metal-covered — its GPU kernel is deferred; if it has \
