@@ -2520,6 +2520,45 @@ confirmed 194 public repositories, 193 GGUF repositories and 198 files, with
 CPU `full=106`, `partial=43`, `no-runtime-binder=44`, `not-artifact=1` and
 Metal `full=106`, `blocked-by-cpu=87`, `not-artifact=1`.
 
+### MOSS-TTS Nano native source wave
+
+The public `vokra/moss-tts-nano-100m` artifact at revision
+`a540cb68f55195dbb6644f191fd67d61e2f6061f` is 284,968,000 bytes with 194
+BF16 tensors and complete name/shape manifest SHA-256
+`125c074b9cd4237e0d051f1cc86f84e8150a0d854f4beea977c67d8f35e39ea5`.
+The binder accepts only that manifest, the Apache-2.0/permissive release
+identity and either the full corrected Nano metadata or the exact historical
+header. The historical `rope_base=0` stamp is surfaced as a repair
+requirement; a partial mixture of old and new keys fails closed.
+
+The native language-model path implements the official 12-layer global and
+one-layer local custom GPT-2 order: additive text/audio embeddings, adjacent
+pair RoPE with base 10,000, affine LayerNorm, fused QKV causal attention,
+GPT-2 `gelu_new`, assistant-slot/audio-end selection and greedy generation of
+all 16 audio codebooks. GEMM, softmax, LayerNorm and `gelu_new` use one
+selected CPU/Metal `Compute` backend. Embedding lookup, RoPE, causal masking,
+layout changes, residual addition and argmax are deterministic host glue.
+The initial implementation intentionally matches upstream
+`use_kv_cache=False`; a later cache optimization must preserve this result.
+
+The composed library and CLI routes require the exact MOSS Audio Tokenizer
+Nano companion on the same backend and decode generated frame-major codes to
+48 kHz stereo PCM. Because `tokenizer.model` is not included in the public
+GGUF, the entry point accepts an explicit upstream-compatible `[rows,17]`
+u32 prompt matrix and refuses raw text rather than inventing tokenization or a
+prompt template. Delay, Local, Full-codec and MOSS-Audio sibling topologies
+remain separately named explicit errors.
+
+No model inference, model-weight download or `vokra-models`/workspace Cargo
+command ran on the maintainer Mac. Only the 13,874-byte public GGUF header and
+pinned official source text were read. VAST compilation and independent
+official CPU parity remain pending behind credential rotation, followed by
+Apple CPU/Metal real-GGUF parity. No Hugging Face upload or artifact
+replacement was performed or authorized. The source-reachability inventory
+moves to CPU `full=111`, `partial=42`, `no-runtime-binder=40`,
+`not-artifact=1` and Metal `full=111`, `blocked-by-cpu=82`,
+`not-artifact=1`.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a
