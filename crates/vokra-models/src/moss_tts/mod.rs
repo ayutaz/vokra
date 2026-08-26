@@ -5,6 +5,8 @@
 //! manifest and is surfaced through [`MossTtsNano::requires_metadata_repair`].
 //! No other MOSS-TTS family topology is inferred from the shared arch tag.
 
+mod generation;
+mod transformer;
 mod weights;
 
 use std::path::Path;
@@ -16,6 +18,7 @@ use vokra_core::{LicenseClass, Result, VokraError};
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+pub use self::generation::MossTtsGeneratedCodes;
 use self::weights::NanoWeights;
 
 /// GGUF architecture shared by the separately authenticated MOSS-TTS family.
@@ -134,8 +137,18 @@ impl MossTtsNano {
         self.requires_metadata_repair
     }
 
-    pub(super) fn weights(&self) -> &NanoWeights {
-        &self.weights
+    /// Greedily generates frame-major 16-codebook tokens from an explicit
+    /// upstream-compatible `[rows, 17]` prompt matrix. Column zero is a text
+    /// token; columns 1..16 are audio codes or [`AUDIO_PAD_TOKEN_ID`]. The
+    /// public GGUF does not bundle `tokenizer.model`, so this API never
+    /// invents a raw-text tokenizer or prompt template.
+    pub fn generate_codes(
+        &self,
+        prompt_rows: &[u32],
+        max_new_frames: usize,
+    ) -> Result<MossTtsGeneratedCodes> {
+        let compute = Compute::for_backend(self.backend, MOSS_TTS_NANO_HOT_OPS)?;
+        generation::generate_codes(&compute, &self.weights, prompt_rows, max_new_frames)
     }
 }
 

@@ -282,6 +282,7 @@ this entry does not authorize an upload.
 | `gguf:vokra.moss_tts.*` | `config_sha256`, `llm.position_embedding_type`, `llm.layer_norm_eps`, `llm.max_position_embeddings`, `local_transformer_layers`, eight framing token IDs, `audio_tokenizer_upstream_hf` | Added | strings, `f32`, `u32` | Nano-only additive contract; other MOSS variants do not receive guessed values | no | (TBD) |
 | `gguf:vokra.provenance.*` | `upstream_revision`, `checkpoint_sha256` | Added | pinned 40-hex revision and 64-hex checkpoint digest | Nano-only provenance identity; exact historical artifact may omit only behind its complete manifest | no | (TBD) |
 | `vokra-models::moss_tts` | `MossTtsNano`, release/topology constants, `MOSS_TTS_NANO_HOT_OPS` | Added | strict `open` / `from_gguf*`, backend/license/repair accessors and owned 194-tensor weight binding | Accepts the old header only behind manifest SHA-256 `125c074b…`; partial corrected metadata fails closed and no other MOSS topology is inferred | no | (TBD) |
+| `vokra-models::moss_tts` | `MossTtsGeneratedCodes`, `MossTtsNano::generate_codes` | Added | explicit frame-major `[rows,17]` prompt IDs plus a frame cap to greedy `[frames,16]` codes | Runs the official no-KV-cache global/local GPT-2 order on one CPU/Metal backend; tokenizer/template and codec remain explicit companions | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS Audio Tokenizer strict runtime)
 
