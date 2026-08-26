@@ -1662,86 +1662,28 @@ pub mod firered_asr_aed;
 // pinned separately by tests.
 pub mod gigaam;
 
-// Wave C1 (2026-08-15) — runtime binder for the `canary-1b-flash` converter
-// arch (NVIDIA Canary-1B-Flash, CC-BY 4.0, 883M params, multitask ASR + AST +
-// timestamps over English / German / French / Spanish). LIB.RS RULE: append at
-// the END of the `pub mod` block with a Wave marker; do NOT alphabetize —
-// rustfmt has reordered these before and broken a commit.
+// Wave C1 (2026-08-15), completed source route 2026-08-26 — NVIDIA
+// Canary-1B-Flash (CC-BY-4.0, 883M, English/German/French/Spanish ASR + AST).
+// Keep this module in append-only Wave order; do not alphabetize the block.
 //
-// Closes a real read-side gap: the converter
-// (`crates/vokra-convert/src/models/canary_1b_flash.rs`, coverage-audit
-// 2026-08-03 Wave B) has stamped `vokra.model.arch = "canary-1b-flash"` /
-// `vokra.model.name = "canary-1b-flash"` / `vokra.model.category = "asr"` /
-// `vokra.provenance.upstream_hf = "nvidia/canary-1b-flash"`, but a
-// workspace-wide grep proved NOTHING read that arch string back — a converted
-// checkpoint was unloadable. This module is that consumer.
+// The strict runtime now authenticates the complete `.nemo`-derived release:
+// 1,374 F32 tensors (the 32 BatchNorm counters are preparation-only), 32-layer
+// FastConformer, four-layer pre-LN Transformer AED, 5,248-piece aggregate
+// vocabulary and exact nine-token Canary2 prompt. The historical public
+// `vokra/canary-1b-flash` GGUF is encoder-only (1,292 tensors) and is rejected;
+// no decoder, tokenizer, model or backend is substituted.
 //
-// STRUCTURE REUSE, NOT A THIRD SHAPE: the axes reuse `crate::canary`'s
-// `CanaryEncoderConfig` / `CanaryDecoderConfig` / `CanaryHeadConfig` verbatim
-// (re-exported), and `Canary1bFlashConfig::validate_for_forward` DELEGATES to
-// the shared Canary-family validator instead of duplicating ~130 lines of
-// shape algebra — the same posture `canary_qwen` takes when it re-exports the
-// encoder types. Flash-specific state is only what genuinely differs.
+// CPU and Metal share one `Compute` hot-op registry. Unsupported backends fail
+// explicitly before inference rather than falling back per operation. The
+// dedicated VAST worker converts and compares English ASR plus English→German
+// AST tokens against the official NeMo `EncDecMultiTaskModel`; those real-
+// weight results remain pending until the remote credential is rotated. A
+// separate Apple-silicon run is still required for real-weight Metal parity.
 //
-// WHY A SEPARATE ARCH TAG: Canary-1B-Flash keeps Canary-1B-v2's 32-layer
-// FastConformer encoder verbatim but distils the Transformer AED decoder from
-// 8 layers to **4** (Canary-1B-v1: 24) — the axis behind the model card's
-// "1000+ RTFx" claim. A loader that walks an 8-block decoder manifest against a
-// 4-block payload does not crash, it silently mis-reads, so `canary` /
-// `canary-1b-flash` / `canary-qwen` (Qwen LLM decoder, soft-prompt prefix) stay
-// three distinct tags and the arch gate is strict (FR-EX-08).
-//
-// REAL: strict `vokra.model.arch` verification refusing a foreign GGUF loudly
-// with BOTH tags named and the Canary / NeMo-ASR neighbourhood enumerated
-// (`canary` / `canary-qwen` / `parakeet-ctc` / `parakeet-tdt` / `whisper` /
-// `voxtral` / `kyutai-stt`); primary-source axis transcription (32 encoder
-// layers + 4 decoder layers from the model card; d_model / lm_dec_hidden /
-// max_sequence_length = 1024 attested for `canary-1b-flash` BY NAME in the
-// `fast-conformer_aed.yaml` variant table; the remaining axes from that same
-// family reference); a forward-compatible OPTIONAL `vokra.canary_1b_flash.*`
-// axis-override group (the current converter stamps NONE of it, so a real
-// artifact resolves to `ConfigSource::FamilyAnchored` — absence is normal,
-// but a PRESENT key of the wrong dtype fails loud rather than being silently
-// ignored); a tensor manifest over the verbatim upstream safetensors names the
-// converter passes through, with a non-empty gate plus `require_tensor` /
-// `require_tensor_dims` lookups that NAME the missing tensor or BOTH the
-// expected and actual dims; and weight-license + FR-MD-09 attribution
-// surfacing that fail-closes to `LicenseClass::Unknown`.
-//
-// DELIBERATELY NOT TRANSCRIBED: `head.vocab_size` / `pad` / `bos` / `eos` stay
-// `0` sentinels that `validate_for_forward` REFUSES. No primary source states
-// them (the card says only "the 4-language subset of the unified Canary
-// SentencePiece"), and copying Canary-1B-v2's 25-language 16384 would be
-// fabrication across a different tokenizer.
-//
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より
-// honest」): `transcribe` / `transcribe_with_task` return
-// `VokraError::UnsupportedOp` naming four blockers — (i) NO TENSOR-NAME
-// MANIFEST: the converter copies every float tensor under its verbatim
-// upstream name and nothing in-repo transcribes NeMo's `EncDecMultiTaskModel`
-// state_dict naming, so walking guessed names into typed slots would bind
-// shape-valid garbage; (ii) NO TOKENIZER: the SentencePiece model, its width
-// and the pad/bos/eos/`<taskname>` ids live inside the `.nemo` tarball;
-// (iii) the `0` head sentinel that follows from (ii), so no logits array can
-// even be shaped; (iv) the 4-layer AED decoder STEP is unwired — a gap SHARED
-// with `crate::canary`, not specific to Flash. The message names the
-// primitives that DO exist and that the follow-up wave composes
-// (`vokra_ops::waveform_frontend`, `vokra_ops::conformer` with
-// `Stacking { factor: 8 }`, `vokra_core::decode::beam_search`). No fabricated
-// token ids are ever emitted (FR-EX-08).
-//
-// LICENSING: the converter stamps `cc-by-4.0` -> `AttributionRequired`, so the
-// FR-MD-09 attribution surface activates and `Canary1bFlashAsr::attribution`
-// returns the stamped text a downstream must display. This binder only
-// SURFACES whatever class the artifact carries and fail-closes to `Unknown`.
-// `docs/license-audit.md` §3.1 sign-off stays BLANK (owner-only per
-// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign).
-//
-// Cross-crate string handshake via duplicated `pub const ARCH =
-// "canary-1b-flash"` / `NAME` / `CATEGORY` / `UPSTREAM_HF` / `DEFAULT_LICENSE`
-// (mirror of the converter's constants, preserving the layered convention
-// `vokra-ops → nothing GGUF-aware`, `vokra-core → GGUF reader`, `vokra-models
-// → GGUF binder`, `vokra-convert → GGUF writer`).
+// The existing §3.1 owner sign-off is preserved: CC-BY-4.0 maps to
+// `AttributionRequired`, and the runtime surfaces the artifact's attribution.
+// Publication or replacement of the incomplete public GGUF is a separate,
+// explicitly authorized operation and is not performed by this source wave.
 pub mod canary_1b_flash;
 
 // Wave C2 (2026-08-15) — runtime binder for the `eat` converter arch (EAT,

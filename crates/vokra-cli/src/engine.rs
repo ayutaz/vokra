@@ -65,6 +65,14 @@ pub(crate) enum ModelTask {
     /// That concrete surface also exposes the released language-prompt map;
     /// neither facility exists on the generic `AsrEngine` trait.
     AsrNemotron,
+    /// NVIDIA Canary-1B-Flash multilingual ASR / AST.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the concrete
+    /// engine exactly once and pass the source/target-language Canary2 prompt.
+    /// The generic [`vokra_core::AsrEngine`] trait has no multilingual AST
+    /// request surface; attaching only that trait would silently collapse the
+    /// released four-language contract to English ASR.
+    AsrCanary1bFlash,
     /// NVIDIA Parakeet-TDT-1.1B with an optional authenticated plaintext
     /// SentencePiece vocabulary sidecar. The concrete engine binds once in
     /// run/bench so the 4.28 GB F32 payload is never duplicated.
@@ -626,6 +634,8 @@ const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 /// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
 const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
+/// NVIDIA Canary-1B-Flash multilingual FastConformer + Transformer AED ASR/AST.
+const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
 /// Meta Wav2Vec2 raw-waveform encoder with an optional CTC head.
 const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
 /// Corrected Data2Vec Audio arch tag.
@@ -879,6 +889,15 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::AsrNemotron))
+        }
+        ARCH_CANARY_1B_FLASH => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_CANARY_1B_FLASH}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrCanary1bFlash))
         }
         ARCH_WAV2VEC2_CTC => {
             if hint.is_some() {
@@ -1807,14 +1826,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::canary::CanaryAsr::from_gguf(g).map(|_| ())),
     },
     BoundArch {
-        arch: "canary-1b-flash",
-        module: "vokra_models::canary_1b_flash",
-        entry: "Canary1bFlashAsr::from_gguf → Canary1bFlashAsr::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::canary_1b_flash::Canary1bFlashAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
@@ -2541,6 +2552,21 @@ mod tests {
             BOUND_ARCHES
                 .iter()
                 .all(|row| row.arch != ARCH_PARAKEET_TDT_1_1B)
+        );
+    }
+
+    #[test]
+    fn load_session_routes_canary_1b_flash_to_the_concrete_native_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_CANARY_1B_FLASH, "canary-1b-flash-routed", |path| {
+                load_session(path).expect("Canary binds once in its concrete run/bench arm")
+            });
+        assert_eq!(task, ModelTask::AsrCanary1bFlash);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_CANARY_1B_FLASH),
+            "a routed Canary forward must not retain an unreachable bound-only row"
         );
     }
 
@@ -3322,6 +3348,7 @@ mod tests {
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_NEMOTRON_ASR,
+            ARCH_CANARY_1B_FLASH,
             ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(
@@ -3729,6 +3756,7 @@ mod tests {
             ARCH_PARAKEET_TDT,
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
+            ARCH_CANARY_1B_FLASH,
             ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,

@@ -31,6 +31,8 @@ USAGE:
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <canary-1b-flash.gguf> --input <16k-mono.wav> \
+                  [--language en|de|es|fr] [--target-language en|de|es|fr]
     vokra-cli run --model <nemotron-asr.gguf> --input <16k-mono.wav> \
                   [--tokenizer <tokenizer.json>] [--language <code|auto>]
     vokra-cli run --model <wav2vec2.gguf> --input <16k-mono.wav> [--output <features.f32>]
@@ -352,6 +354,12 @@ OPTIONS:
                                 than the silent any-non-`en`-is-JA default
                                 the underlying TtsEngine adapter otherwise
                                 applies (FR-EX-08).
+                                canary-1b-flash: source language (`en`, `de`,
+                                `es`, or `fr`; default `en`).
+    --target-language <code>    canary-1b-flash only: target language (`en`,
+                                `de`, `es`, or `fr`). Defaults to the source
+                                language for ASR; a different value selects
+                                the released AST prompt.
     --bare-prompt               voxtral only: decode from the bare
                                 soft-prefix + BOS layout instead of the
                                 trained transcription prompt. Honest LM
@@ -463,10 +471,11 @@ struct RunArgs {
     /// Whisper only (cc-19): emit per-word timestamps after the transcript.
     /// Any other arch rejects the flag loudly (FR-EX-08).
     word_timestamps: bool,
-    /// Voxtral only: the raw `--language` value. `None` = flag absent (keep
-    /// the engine default, `en`); `Some("auto")` = omit the `lang:` segment
-    /// entirely; `Some(code)` = that code.
+    /// Architecture-specific source / prompt language.
     language: Option<String>,
+    /// Canary-1B-Flash only: target language. A value different from
+    /// `language` selects the released AST prompt.
+    target_language: Option<String>,
     /// Voxtral only: opt into the bare soft-prefix + BOS layout.
     bare_prompt: bool,
     /// S2S: explicit fixture-tokenizer opt-in (host-only smoke).
@@ -602,6 +611,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut no_repeat_ngram: usize = 0;
     let mut word_timestamps = false;
     let mut language: Option<String> = None;
+    let mut target_language: Option<String> = None;
     let mut bare_prompt = false;
     let mut fixture_tokenizer = false;
     let mut interrupt_after: Option<usize> = None;
@@ -815,6 +825,16 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 language = Some(v.clone());
                 i += 2;
             }
+            "--target-language" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("--target-language requires a value")?;
+                if v.is_empty() {
+                    return Err("--target-language must not be empty".to_owned());
+                }
+                target_language = Some(v.clone());
+                i += 2;
+            }
             "--bare-prompt" => {
                 bare_prompt = true;
                 i += 1;
@@ -971,6 +991,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         no_repeat_ngram,
         word_timestamps,
         language,
+        target_language,
         bare_prompt,
         fixture_tokenizer,
         interrupt_after,
@@ -1044,6 +1065,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         ModelTask::Asr
         | ModelTask::AsrVoxtral
         | ModelTask::AsrNemotron
+        | ModelTask::AsrCanary1bFlash
         | ModelTask::AsrParakeetTdt11b
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
@@ -1267,19 +1289,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    // `--language` is shared by two archs with distinct meanings: Voxtral's
-    // transcription-prompt `lang:` segment, and SBV2's JA/EN phonemizer +
-    // BERT-encoder routing (Task 38). Rejected off every other arch rather
-    // than silently ignored (FR-EX-08).
+    // `--language` has architecture-specific prompt/front-end meanings.
+    // Rejected off every other arch rather than silently ignored (FR-EX-08).
     if a.language.is_some()
         && task != ModelTask::AsrVoxtral
         && task != ModelTask::AsrNemotron
+        && task != ModelTask::AsrCanary1bFlash
         && task != ModelTask::Sbv2
     {
         return Err(
-            "run: --language is only supported for the voxtral arch (the trained \
-             transcription prompt's `lang:` segment), nemotron_asr_streaming (the released \
-             prompt-id map), or the sbv2 arch (JA/EN phonemizer + BERT-encoder routing)"
+            "run: --language is only supported for voxtral, nemotron_asr_streaming, \
+             canary-1b-flash, or sbv2; each architecture validates its own released \
+             prompt/front-end language inventory"
+                .to_owned(),
+        );
+    }
+    if a.target_language.is_some() && task != ModelTask::AsrCanary1bFlash {
+        return Err(
+            "run: --target-language is only supported for canary-1b-flash AST; other ASR architectures have no compatible target-language prompt slot"
                 .to_owned(),
         );
     }
@@ -1395,6 +1422,17 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // it, a beam-only flag on the Whisper path would be silently
             // dropped, so it is a hard error instead (FR-EX-08).
             if a.word_timestamps {
+                if !matches!(
+                    arch,
+                    Some("whisper")
+                        | Some("distil-whisper")
+                        | Some("kotoba-whisper")
+                        | Some("crisper-whisper")
+                ) {
+                    return Err(format!(
+                        "run ({arch:?} ASR): --word-timestamps is only supported for Whisper-family architectures with authenticated alignment heads"
+                    ));
+                }
                 run_whisper_word_timestamps(&a.model, a.backend, &clip.samples, &a)?;
                 return Ok(ExitCode::SUCCESS);
             }
@@ -1426,6 +1464,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrNemotron => {
             run_nemotron_asr(&session, &a)?;
+        }
+        ModelTask::AsrCanary1bFlash => {
+            run_canary_1b_flash(&session, &a)?;
         }
         ModelTask::AsrParakeetTdt11b => {
             run_parakeet_tdt_1_1b(&session, &a)?;
@@ -5159,6 +5200,72 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .text)
 }
 
+fn parse_canary_language(
+    code: &str,
+) -> Result<vokra_models::canary_1b_flash::CanaryLanguage, String> {
+    use vokra_models::canary_1b_flash::CanaryLanguage;
+
+    match code {
+        "en" => Ok(CanaryLanguage::English),
+        "de" => Ok(CanaryLanguage::German),
+        "es" => Ok(CanaryLanguage::Spanish),
+        "fr" => Ok(CanaryLanguage::French),
+        other => Err(format!(
+            "run (Canary-1B-Flash): unsupported language {other:?}; use one of en, de, es, fr (the released four-language inventory)"
+        )),
+    }
+}
+
+/// Runs the complete released Canary-1B-Flash graph. Equal source/target
+/// languages select ASR; a different explicit target selects AST through the
+/// exact nine-token Canary2 prompt embedded in the native runtime.
+fn run_canary_1b_flash(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::canary_1b_flash::{
+        CANARY_1B_FLASH_SAMPLE_RATE, Canary1bFlashAsr, Canary1bFlashOptions,
+    };
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (Canary-1B-Flash): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != CANARY_1B_FLASH_SAMPLE_RATE {
+        return Err(format!(
+            "run (Canary-1B-Flash): {path} is {} Hz, expected {CANARY_1B_FLASH_SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (Canary-1B-Flash): the released beam_size=1 greedy contract does not accept --beam-size / --no-repeat-ngram / --length-penalty"
+                .to_owned(),
+        );
+    }
+
+    let source_code = a.language.as_deref().unwrap_or("en");
+    let target_code = a.target_language.as_deref().unwrap_or(source_code);
+    let source_language = parse_canary_language(source_code)?;
+    let target_language = parse_canary_language(target_code)?;
+    let options = Canary1bFlashOptions {
+        source_language,
+        target_language,
+        ..Canary1bFlashOptions::default()
+    };
+    let model = Canary1bFlashAsr::from_gguf_with_backend(session.gguf(), a.backend)
+        .map_err(|error| error.to_string())?;
+    let text = model
+        .transcribe_text_with_options(&clip.samples, options)
+        .map_err(|error| error.to_string())?;
+    let task = if source_language == target_language {
+        "asr"
+    } else {
+        "ast"
+    };
+    println!("{task}: {text}");
+    Ok(())
+}
+
 /// Runs the released Nemotron 3.5 offline causal path with an explicit
 /// language prompt. The public July GGUF predates tokenizer embedding, so an
 /// authenticated sidecar is accepted without requiring an irreversible model
@@ -6228,6 +6335,7 @@ mod tests {
         let a = parse_args(&args(&["--model", "m.gguf", "--input", "in.wav"])).expect("valid");
         assert!(!a.word_timestamps);
         assert_eq!(a.language, None);
+        assert_eq!(a.target_language, None);
         assert!(!a.bare_prompt);
 
         let a = parse_args(&args(&[
@@ -6253,6 +6361,18 @@ mod tests {
         assert_eq!(a.language.as_deref(), Some("fr"));
         assert!(a.bare_prompt);
 
+        let a = parse_args(&args(&[
+            "--model",
+            "canary.gguf",
+            "--language",
+            "de",
+            "--target-language",
+            "en",
+        ]))
+        .expect("Canary ASR/AST language pair parses");
+        assert_eq!(a.language.as_deref(), Some("de"));
+        assert_eq!(a.target_language.as_deref(), Some("en"));
+
         // `auto` is carried verbatim; the run arm maps it to "omit the
         // lang: segment".
         let a = parse_args(&args(&["--model", "v.gguf", "--language", "auto"])).expect("valid");
@@ -6272,6 +6392,12 @@ mod tests {
                 .err()
                 .unwrap()
                 .contains("must not be empty")
+        );
+        assert_eq!(
+            parse_args(&args(&["--model", "v.gguf", "--target-language"]))
+                .err()
+                .unwrap(),
+            "--target-language requires a value"
         );
     }
 
@@ -6293,19 +6419,24 @@ mod tests {
         );
     }
 
-    /// `--language` / `--bare-prompt` off the voxtral arch likewise.
+    /// Prompt-language flags remain explicit on unrelated architectures.
     #[test]
     fn voxtral_prompt_flags_on_other_arch_are_rejected() {
-        // `--language` is now shared by voxtral AND sbv2 (Task 38), so its
-        // rejection message differs from `--bare-prompt`'s (voxtral-only) —
-        // check each flag against its own message rather than one shared
-        // substring.
         let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
         argv.extend(vec!["--language".to_owned(), "fr".to_owned()]);
         let err = main(&argv).unwrap_err();
         assert!(
-            err.contains("--language is only supported for the voxtral arch")
-                && err.contains("sbv2 arch"),
+            err.contains("--language is only supported for voxtral")
+                && err.contains("canary-1b-flash")
+                && err.contains("sbv2"),
+            "got: {err}"
+        );
+
+        let mut argv = args(&["--model", &silero_fixture(), "--input", "unused.wav"]);
+        argv.extend(vec!["--target-language".to_owned(), "en".to_owned()]);
+        let err = main(&argv).unwrap_err();
+        assert!(
+            err.contains("--target-language is only supported for canary-1b-flash AST"),
             "got: {err}"
         );
 
@@ -7462,6 +7593,7 @@ mod tests {
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bFlash), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);

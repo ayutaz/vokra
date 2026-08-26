@@ -250,6 +250,24 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Canary-1B-Flash CPU/Metal ASR and AST)
+
+The complete immutable `nvidia/canary-1b-flash` release now has a strict
+native PCM-to-token/text route over its 1,374 F32 inference tensors, aggregate
+5,248-piece tokenizer and exact Canary2 prompt. CPU and Metal share one
+whole-model hot-op registry; an unavailable or uncovered backend returns an
+explicit error. The historical public `vokra/canary-1b-flash` GGUF remains an
+encoder-only 1,292-tensor artifact and is rejected rather than completed with
+fabricated state. The independent VAST NeMo ASR/AST token gate and Apple-device
+real-weight Metal parity remain pending. No C ABI symbol is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::canary_1b_flash` | `Canary1bFlashAsr`, `Canary1bFlashOptions`, `CanaryLanguage`, `CanaryEmotion`, `CanaryTokenizer`, `CANARY_1B_FLASH_HOT_OPS` | Changed | strict complete bind; CPU/Metal ASR/AST token and text forward | Replaces the earlier loud partial; exact legacy encoder-only artifact now fails its complete-manifest gate | no | (TBD) |
+| `gguf:vokra.canary_1b_flash.*` | complete topology and aggregate tokenizer vocabulary/hash metadata | Added | released encoder/decoder/head axes plus authenticated `u8[]` decode table | Canonical complete conversion is self-describing; missing/conflicting metadata or tokenizer fails closed | no | `48dda91a` |
+| `vokra-cli run`, `vokra-cli bench` | `canary-1b-flash` ASR/AST dispatch; `--target-language` | Added | 16 kHz mono, `en/de/es/fr`; equal language pair = ASR, different pair = AST | Unsupported language/search/backend combinations return explicit errors; no alternate model or CPU fallback | no | (TBD) |
+| VAST parity worker | `run-canary-1b-flash-validation.sh` and official NeMo dumper | Added | exact English ASR and English→German AST greedy token equality | Large artefacts stay remote; worker performs no upload/push and evidence is pulled before instance destruction | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (Parakeet-TDT-1.1B CPU/Metal runtime)
 
 The immutable 1,667-F32-tensor `nvidia/parakeet-tdt-1.1b` release now has a
