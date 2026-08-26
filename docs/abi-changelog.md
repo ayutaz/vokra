@@ -250,6 +250,18 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (pyannote diarization pipeline contract)
+
+The public zero-tensor `pyannote-speaker-diarization-3.1` GGUF now has a
+strict runtime metadata binder. This change does not yet claim end-to-end
+diarization: it establishes the fail-closed orchestration contract that the
+subsequent PyanNet + masked WeSpeaker + centroid-clustering execution route
+must consume. No C symbol, allocation rule or ownership ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::pyannote::diarization` | `PyannoteSpeakerDiarization31Config`, `PIPELINE_{MODEL_TAG,NAME,CATEGORY,UPSTREAM_HF,SOURCE_REVISION,PUBLIC_HF,PUBLIC_REVISION,PUBLIC_FILE,PUBLIC_BYTES,PUBLIC_SHA256}` | Added | `from_gguf(&GgufFile) -> Result<Self>` plus immutable public/source identity constants | Accepts only the exact MIT/permissive zero-tensor pipeline identity and all 13 typed `vokra.pyannote_pipeline.*` values; a foreign tensor payload, missing key, wrong type, model reference or clustering method fails closed | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (deepfake Wav2Vec2 CPU/Metal runtime)
 
 The exact public 215-F32-tensor deepfake-audio-detection-v2 artifact gains a
