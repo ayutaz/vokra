@@ -85,16 +85,15 @@
 //!
 //! MOSS-TTS is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future `crates/vokra-models/src/moss_tts/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! re-implemented natively in `crates/vokra-models/src/moss_tts/`.
 //!
 //! # Vast.ai
 //!
 //! The Delay variants (`MOSS-TTS` + `MOSS-TTS-v1.5`, both ~17 GB BF16
 //! across 4 safetensors shards) and the Local variant (~9 GB BF16) all
-//! exceed the M1 iMac 16 GB dev machine's whole-file
-//! `std::fs::read` capacity per memory
-//! [[feedback-large-models-on-vast-ai]] (>8 GB safetensors → vast.ai).
+//! exceed the repository's 2 GB local-artifact ceiling and therefore belong
+//! on vast.ai. This non-streaming converter must not run on the maintainer Mac
+//! for those variants.
 //! The Nano variant fits locally but ships as a torch pickle
 //! `pytorch_model.bin` and needs a bridge pass first. Owner runs the
 //! actual conversion on vast.ai per the model-publish runbook
@@ -288,8 +287,26 @@ const KEY_MOSS_AUDIO_PAD_TOKEN_ID: &str = "vokra.moss_tts.audio_pad_token_id";
 /// SHA-256 pins for custom model/processor source when the release requires it.
 const KEY_MOSS_MODELING_SOURCE_SHA256: &str = "vokra.moss_tts.modeling_source_sha256";
 const KEY_MOSS_PROCESSING_SOURCE_SHA256: &str = "vokra.moss_tts.processing_source_sha256";
+/// SHA-256 pins for the remaining fixed-revision Local custom-code files.
+const KEY_MOSS_CONFIGURATION_SOURCE_SHA256: &str = "vokra.moss_tts.configuration_source_sha256";
+const KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256: &str = "vokra.moss_tts.qwen3_decoder_source_sha256";
+const KEY_MOSS_GPT2_DECODER_SOURCE_SHA256: &str = "vokra.moss_tts.gpt2_decoder_source_sha256";
+const KEY_MOSS_PROCESSOR_CONFIG_SHA256: &str = "vokra.moss_tts.processor_config_sha256";
 /// Exact decoder companion selected by the release config.
 const KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM: &str = "vokra.moss_tts.audio_tokenizer_upstream_hf";
+/// Local GPT-2 decoder contract. These axes are deliberately distinct from
+/// the global Qwen3 `llm.*` keys above.
+const KEY_MOSS_LOCAL_HIDDEN_DIM: &str = "vokra.moss_tts.local_transformer.hidden_dim";
+const KEY_MOSS_LOCAL_FFN_DIM: &str = "vokra.moss_tts.local_transformer.ffn_dim";
+const KEY_MOSS_LOCAL_N_HEAD: &str = "vokra.moss_tts.local_transformer.n_head";
+const KEY_MOSS_LOCAL_HEAD_DIM: &str = "vokra.moss_tts.local_transformer.head_dim";
+const KEY_MOSS_LOCAL_POSITION_EMBEDDING_TYPE: &str =
+    "vokra.moss_tts.local_transformer.position_embedding_type";
+const KEY_MOSS_LOCAL_ROPE_BASE: &str = "vokra.moss_tts.local_transformer.rope_base";
+const KEY_MOSS_LOCAL_LAYER_NORM_EPS: &str = "vokra.moss_tts.local_transformer.layer_norm_eps";
+const KEY_MOSS_LOCAL_ACTIVATION: &str = "vokra.moss_tts.local_transformer.activation";
+const KEY_MOSS_LOCAL_TEXT_HEAD_MODE: &str = "vokra.moss_tts.local_text_head_mode";
+const KEY_MOSS_LOCAL_STATIC_KV_CACHE: &str = "vokra.moss_tts.local_transformer.use_static_kv_cache";
 
 // ─── Per-variant transcribed constants ───────────────────────────────
 
@@ -414,6 +431,42 @@ const LOCAL_LLM_HEAD_DIM: u32 = 128;
 const LOCAL_LLM_VOCAB: u32 = 151_936;
 const LOCAL_LLM_ROPE_BASE: f32 = 1_000_000.0;
 const LOCAL_LLM_RMS_NORM_EPS: f32 = 1e-6;
+const LOCAL_UPSTREAM_REVISION: &str = "be7766a6735b98bd793f7c79fb720b4d0f5d13b8";
+const LOCAL_CONFIG_SHA256: &str =
+    "826f81f163b1b557ad13f83c4f35008f4fee5a6cb6311b4316ff3dbb25149411";
+const LOCAL_CONFIGURATION_SOURCE_SHA256: &str =
+    "ab6debcb92032cb9dc91ae80aed77dbadd2e59848208baef2b062bd6def3f3be";
+const LOCAL_MODELING_SOURCE_SHA256: &str =
+    "b0a66211943ae580b087f3e71495fea2f455701a4f6c29b6d3562218f7668c5f";
+const LOCAL_PROCESSING_SOURCE_SHA256: &str =
+    "3fc5616b1ec3408162b7d859a7696725a40525313b20f9b31a06ee55c93bd7ad";
+const LOCAL_GPT2_DECODER_SOURCE_SHA256: &str =
+    "f2e877104669f1e6c7cd34680f0da1a8a159e032123ee56b660b63929b6c8989";
+const LOCAL_QWEN3_DECODER_SOURCE_SHA256: &str =
+    "100163bd7ecf31a59bafacc0b032ace9339edc992a3eb4cc80662502e04e46f0";
+const LOCAL_PROCESSOR_CONFIG_SHA256: &str =
+    "db574bfebad009e05193196a63a4eeecd353eeca177ccfff28b9379d595d88b7";
+const LOCAL_POSITION_EMBEDDING_TYPE: &str = "rope";
+const LOCAL_MAX_POSITION_EMBEDDINGS: u32 = 32_768;
+const LOCAL_TRANSFORMER_LAYERS: u32 = 1;
+const LOCAL_TRANSFORMER_HIDDEN: u32 = 2_560;
+const LOCAL_TRANSFORMER_FFN: u32 = 9_728;
+const LOCAL_TRANSFORMER_N_HEAD: u32 = 32;
+const LOCAL_TRANSFORMER_HEAD_DIM: u32 = 80;
+const LOCAL_TRANSFORMER_POSITION_EMBEDDING_TYPE: &str = "rope";
+const LOCAL_TRANSFORMER_ROPE_BASE: f32 = 1_000_000.0;
+const LOCAL_TRANSFORMER_LAYER_NORM_EPS: f32 = 1e-6;
+const LOCAL_TRANSFORMER_ACTIVATION: &str = "silu";
+const LOCAL_TEXT_HEAD_MODE: &str = "binary";
+const LOCAL_PAD_TOKEN_ID: u32 = 151_643;
+const LOCAL_IM_START_TOKEN_ID: u32 = 151_644;
+const LOCAL_IM_END_TOKEN_ID: u32 = 151_645;
+const LOCAL_AUDIO_START_TOKEN_ID: u32 = 151_669;
+const LOCAL_AUDIO_END_TOKEN_ID: u32 = 151_670;
+const LOCAL_AUDIO_USER_SLOT_TOKEN_ID: u32 = 151_654;
+const LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID: u32 = 151_656;
+const LOCAL_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const LOCAL_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2";
 
 // ─── Variant enum + selectors ────────────────────────────────────────
 
@@ -870,6 +923,80 @@ fn write_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
             KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
             NANO_AUDIO_TOKENIZER_UPSTREAM,
         );
+    } else if variant == MossTtsVariant::Local {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, LOCAL_UPSTREAM_REVISION);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, LOCAL_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_CONFIGURATION_SOURCE_SHA256,
+            LOCAL_CONFIGURATION_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_MODELING_SOURCE_SHA256,
+            LOCAL_MODELING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSING_SOURCE_SHA256,
+            LOCAL_PROCESSING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256,
+            LOCAL_QWEN3_DECODER_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_GPT2_DECODER_SOURCE_SHA256,
+            LOCAL_GPT2_DECODER_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSOR_CONFIG_SHA256,
+            LOCAL_PROCESSOR_CONFIG_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            LOCAL_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            LOCAL_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(KEY_MOSS_LOCAL_TRANSFORMER_LAYERS, LOCAL_TRANSFORMER_LAYERS);
+        b.add_u32(KEY_MOSS_LOCAL_HIDDEN_DIM, LOCAL_TRANSFORMER_HIDDEN);
+        b.add_u32(KEY_MOSS_LOCAL_FFN_DIM, LOCAL_TRANSFORMER_FFN);
+        b.add_u32(KEY_MOSS_LOCAL_N_HEAD, LOCAL_TRANSFORMER_N_HEAD);
+        b.add_u32(KEY_MOSS_LOCAL_HEAD_DIM, LOCAL_TRANSFORMER_HEAD_DIM);
+        b.add_string(
+            KEY_MOSS_LOCAL_POSITION_EMBEDDING_TYPE,
+            LOCAL_TRANSFORMER_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_f32(KEY_MOSS_LOCAL_ROPE_BASE, LOCAL_TRANSFORMER_ROPE_BASE);
+        b.add_f32(
+            KEY_MOSS_LOCAL_LAYER_NORM_EPS,
+            LOCAL_TRANSFORMER_LAYER_NORM_EPS,
+        );
+        b.add_string(KEY_MOSS_LOCAL_ACTIVATION, LOCAL_TRANSFORMER_ACTIVATION);
+        b.add_string(KEY_MOSS_LOCAL_TEXT_HEAD_MODE, LOCAL_TEXT_HEAD_MODE);
+        b.add_bool(KEY_MOSS_LOCAL_STATIC_KV_CACHE, true);
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, LOCAL_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, LOCAL_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, LOCAL_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, LOCAL_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, LOCAL_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, LOCAL_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            LOCAL_AUDIO_TOKENIZER_UPSTREAM,
+        );
     } else if variant == MossTtsVariant::VoiceGenerator {
         b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, VOICE_UPSTREAM_REVISION);
         b.add_string(KEY_MOSS_CONFIG_SHA256, VOICE_CONFIG_SHA256);
@@ -1291,6 +1418,99 @@ mod tests {
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), LOCAL_LLM_HIDDEN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_FFN_DIM), LOCAL_LLM_FFN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_VOCAB_SIZE), LOCAL_LLM_VOCAB);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_UPSTREAM_REVISION)
+        );
+        for (key, expected) in [
+            (KEY_MOSS_CONFIG_SHA256, LOCAL_CONFIG_SHA256),
+            (
+                KEY_MOSS_CONFIGURATION_SOURCE_SHA256,
+                LOCAL_CONFIGURATION_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_MODELING_SOURCE_SHA256,
+                LOCAL_MODELING_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_PROCESSING_SOURCE_SHA256,
+                LOCAL_PROCESSING_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256,
+                LOCAL_QWEN3_DECODER_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_GPT2_DECODER_SOURCE_SHA256,
+                LOCAL_GPT2_DECODER_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_PROCESSOR_CONFIG_SHA256,
+                LOCAL_PROCESSOR_CONFIG_SHA256,
+            ),
+        ] {
+            assert_eq!(
+                file.get(key).and_then(GgufMetadataValue::as_str),
+                Some(expected),
+                "fixed Local provenance key {key}"
+            );
+        }
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS),
+            LOCAL_MAX_POSITION_EMBEDDINGS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_TRANSFORMER_LAYERS),
+            LOCAL_TRANSFORMER_LAYERS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_HIDDEN_DIM),
+            LOCAL_TRANSFORMER_HIDDEN
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_FFN_DIM),
+            LOCAL_TRANSFORMER_FFN
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_N_HEAD),
+            LOCAL_TRANSFORMER_N_HEAD
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_HEAD_DIM),
+            LOCAL_TRANSFORMER_HEAD_DIM
+        );
+        assert_eq!(
+            get_f32(&file, KEY_MOSS_LOCAL_ROPE_BASE),
+            LOCAL_TRANSFORMER_ROPE_BASE
+        );
+        assert_eq!(
+            get_f32(&file, KEY_MOSS_LOCAL_LAYER_NORM_EPS),
+            LOCAL_TRANSFORMER_LAYER_NORM_EPS
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_LOCAL_TEXT_HEAD_MODE)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_TEXT_HEAD_MODE)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_LOCAL_STATIC_KV_CACHE)
+                .and_then(GgufMetadataValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_START_TOKEN_ID),
+            LOCAL_AUDIO_START_TOKEN_ID
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_END_TOKEN_ID),
+            LOCAL_AUDIO_END_TOKEN_ID
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_AUDIO_TOKENIZER_UPSTREAM)
+        );
     }
 
     #[test]
