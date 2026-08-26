@@ -2625,9 +2625,15 @@ VoiceGenerator now has a separate strict mmap checkpoint binder for its
 revision `97521ec2…`, config/modeling/processing hashes, framing IDs and the
 Full codec companion. The historical public GGUF's `moss-tts`/8B header is
 accepted only when the entire VoiceGenerator manifest matches and is surfaced
-as a metadata-repair requirement. The shared Delay forward has not yet been
-made topology-dynamic, so VoiceGenerator remains explicitly non-executable at
-this point rather than being misrouted through the 8B graph.
+as a metadata-repair requirement. The shared Delay forward, KV cache,
+embedding/head materialization, sampling drain and de-delay path are now driven
+by the authenticated topology, so VoiceGenerator executes its 2048/6144/28-
+layer/16-codebook contract on CPU or Metal and composes with the exact Full
+codec on the same backend. The CLI accepts explicit `[rows,17]` prompt IDs and
+routes both corrected files and the exact historical public identity through
+the VoiceGenerator binder rather than the 8B graph. Source-level execution is
+complete; workspace compilation, real-GGUF smoke and independent numerical
+parity remain VAST-only release gates.
 
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config

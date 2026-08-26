@@ -1,4 +1,4 @@
-//! Bounded-memory native Qwen3 forward for MOSS-TTS Base/v1.5 Delay.
+//! Bounded-memory native Qwen3 forward for MOSS-TTS Delay-class releases.
 //!
 //! The model stays in its BF16/F16/F32 GGUF mapping. Each transformer layer
 //! is widened and transposed into one reused scratch block, while embeddings
@@ -22,20 +22,16 @@ use crate::moss_audio_tokenizer::{
     MossAudioTokenizer, MossAudioTokenizerVariant, MossDecodedAudio,
 };
 
-use super::delay::{
-    AUDIO_VOCAB_WITH_PAD, DelayMappedDescriptors, FFN_DIM, HEAD_DIM, HIDDEN_DIM, KV_DIM, MAPPED,
-    MAX_POSITION_EMBEDDINGS, MossTtsDelayCheckpoint, NUM_AUDIO_CODEBOOKS, NUM_KV_HEADS, NUM_LAYERS,
-    NUM_Q_HEADS, Q_DIM, RMS_NORM_EPS, ROPE_BASE, TEXT_VOCAB_SIZE,
-};
+use super::delay::{DelayMappedDescriptors, DelayTopology, MossTtsDelayCheckpoint};
+use super::voice_generator::MossVoiceGeneratorCheckpoint;
 
 pub use self::generation::{MossTtsDelayGeneration, MossTtsDelayGenerationOptions};
 
 const LABEL: &str = "moss_tts/delay";
-const INPUT_COLUMNS: usize = 1 + NUM_AUDIO_CODEBOOKS;
 const PREFILL_CHUNK_ROWS: usize = 8;
 const HEAD_CHUNK_ROWS: usize = 512;
 
-/// Every learned operator required by the Base/v1.5 Delay Qwen3 forward.
+/// Every learned operator required by the Delay-class Qwen3 forward.
 /// A selected backend must cover the complete set before inference starts.
 pub const MOSS_TTS_DELAY_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
@@ -45,23 +41,28 @@ pub const MOSS_TTS_DELAY_HOT_OPS: &[HotOp] = &[
     HotOp::Silu,
 ];
 
-/// Last-position output of all 33 official Delay heads.
+/// Last-position output of every authenticated Delay-class head.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MossTtsDelayLogits {
     /// Text head (`lm_heads.0`) logits, length 155,648.
     pub text_logits: Vec<f32>,
-    /// Flat codebook-major audio logits: 32 rows × 1,025 values. Index 1,024
-    /// is the official audio-pad sentinel and remains present for the caller's
-    /// generation mask.
+    /// Flat codebook-major audio logits: `num_audio_codebooks` rows × 1,025
+    /// values. Index 1,024 is the official audio-pad sentinel and remains
+    /// present for the caller's generation mask.
     pub audio_logits: Vec<f32>,
+    /// Authenticated number of audio-codebook heads (32 or 16).
+    pub num_audio_codebooks: usize,
+    /// Logit width per audio-codebook head, including pad (1,025).
+    pub audio_vocab_with_pad: usize,
+    model_label: &'static str,
 }
 
 /// One independently decoded audio segment from an official delayed stream.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MossTtsDelayAudioSegment {
-    /// De-delayed frame-major `[frames, 32]` Full-codec values.
+    /// De-delayed frame-major `[frames, num_audio_codebooks]` Full-codec values.
     pub codes: Vec<u32>,
     /// Codec-frame count before continuation trimming.
     pub frames: usize,
@@ -72,7 +73,7 @@ pub struct MossTtsDelayAudioSegment {
     pub trimmed_prefix_samples: usize,
 }
 
-/// Complete Base/v1.5 generation plus zero or more official audio segments.
+/// Complete Delay-class generation plus zero or more official audio segments.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MossTtsDelaySynthesis {
@@ -83,15 +84,30 @@ pub struct MossTtsDelaySynthesis {
 }
 
 impl MossTtsDelayLogits {
-    /// Returns one audio-codebook head (`0..32`).
+    /// Returns one authenticated audio-codebook head.
     pub fn audio_codebook(&self, codebook: usize) -> Result<&[f32]> {
-        if codebook >= NUM_AUDIO_CODEBOOKS {
+        if codebook >= self.num_audio_codebooks {
             return Err(VokraError::InvalidArgument(format!(
-                "{LABEL}: audio codebook {codebook} is outside 0..{NUM_AUDIO_CODEBOOKS}"
+                "{}: audio codebook {codebook} is outside 0..{}",
+                self.model_label, self.num_audio_codebooks
             )));
         }
-        let start = codebook * AUDIO_VOCAB_WITH_PAD;
-        Ok(&self.audio_logits[start..start + AUDIO_VOCAB_WITH_PAD])
+        let start = codebook * self.audio_vocab_with_pad;
+        let end = start
+            .checked_add(self.audio_vocab_with_pad)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "{}: audio head {codebook} range overflows",
+                    self.model_label
+                ))
+            })?;
+        self.audio_logits.get(start..end).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "{}: audio head {codebook} range {start}..{end} exceeds {} logits",
+                self.model_label,
+                self.audio_logits.len()
+            ))
+        })
     }
 }
 
@@ -146,6 +162,11 @@ impl MossTtsDelay {
         &self.checkpoint
     }
 
+    /// Official Base/v1.5 generation defaults.
+    pub fn default_generation_options(&self) -> MossTtsDelayGenerationOptions {
+        MossTtsDelayGenerationOptions::default()
+    }
+
     /// Runs an explicit upstream-compatible `[rows, 33]` prompt matrix and
     /// returns all last-position text/audio logits.
     ///
@@ -154,39 +175,16 @@ impl MossTtsDelay {
     /// accepted because the GGUF does not embed the official tokenizer or
     /// chat-template assets.
     pub fn forward_prompt_last_logits(&self, prompt_rows: &[u32]) -> Result<MossTtsDelayLogits> {
-        if prompt_rows.is_empty() || !prompt_rows.len().is_multiple_of(INPUT_COLUMNS) {
-            return Err(VokraError::InvalidArgument(format!(
-                "{LABEL}: prompt must be a non-empty [rows,{INPUT_COLUMNS}] u32 matrix, got {} values",
-                prompt_rows.len()
-            )));
-        }
-        let rows = prompt_rows.len() / INPUT_COLUMNS;
-        if rows > MAX_POSITION_EMBEDDINGS {
-            return Err(VokraError::InvalidArgument(format!(
-                "{LABEL}: prompt rows {rows} exceed max positions {MAX_POSITION_EMBEDDINGS}"
-            )));
-        }
+        forward_prompt_last_logits(self, prompt_rows)
+    }
 
-        let compute = Compute::for_backend(self.backend, MOSS_TTS_DELAY_HOT_OPS)?;
-        let mapped = self.checkpoint.mapped();
-        let reserve = rows.min(256).max(1);
-        let mut kv_cache = KvCache::with_reserve(NUM_LAYERS, KV_DIM, reserve);
-        let mut scratch = DelayStepScratch::default();
-        for row_start in (0..rows).step_by(PREFILL_CHUNK_ROWS) {
-            let chunk_rows = PREFILL_CHUNK_ROWS.min(rows - row_start);
-            let start = row_start * INPUT_COLUMNS;
-            let end = start + chunk_rows * INPUT_COLUMNS;
-            forward_chunk(
-                &compute,
-                mapped,
-                &self.runtime,
-                &mut scratch,
-                &mut kv_cache,
-                &prompt_rows[start..end],
-                chunk_rows,
-            )?;
-        }
-        last_logits(&compute, mapped, &self.runtime, &scratch)
+    /// Runs the official delayed-codebook state machine.
+    pub fn generate_delay_rows(
+        &self,
+        prompt_rows: &[u32],
+        options: &MossTtsDelayGenerationOptions,
+    ) -> Result<MossTtsDelayGeneration> {
+        generation::generate_delay_rows(self, prompt_rows, options)
     }
 
     /// Generates delayed Base/v1.5 rows, restores official 32-codebook frame
@@ -202,68 +200,237 @@ impl MossTtsDelay {
         prompt_rows: &[u32],
         options: &MossTtsDelayGenerationOptions,
     ) -> Result<MossTtsDelaySynthesis> {
-        if codec.variant() != MossAudioTokenizerVariant::Full {
-            return Err(VokraError::UnsupportedOp(format!(
-                "{LABEL}: Base/v1.5 synthesis requires the exact MOSS Audio Tokenizer Full companion; got {:?}",
-                codec.variant()
-            )));
-        }
-        if codec.backend() != self.backend {
-            return Err(VokraError::InvalidArgument(format!(
-                "{LABEL}: LLM backend {:?} does not match Full codec backend {:?}; the composed graph must select one backend and never hide a CPU fallback",
-                self.backend,
-                codec.backend()
-            )));
-        }
+        synthesize_prompt_rows(self, codec, prompt_rows, options)
+    }
+}
 
-        let generated = self.generate_delay_rows(prompt_rows, options)?;
-        let generation::DeDelayedAudio {
-            start_length,
-            segments: code_segments,
-        } = generation::de_delay_audio_segments(prompt_rows, &generated)?;
-        let mut segments = Vec::with_capacity(code_segments.len());
-        for (index, code_segment) in code_segments.into_iter().enumerate() {
-            let mut audio = codec.decode_frame_major(
-                &code_segment.codes,
-                code_segment.frames,
-                NUM_AUDIO_CODEBOOKS,
-            )?;
-            let mut trimmed_prefix_samples = 0;
-            if index == 0 && start_length > 0 {
-                if start_length >= code_segment.frames {
-                    continue;
-                }
-                trimmed_prefix_samples = audio
-                    .samples_per_channel
-                    .checked_mul(start_length)
-                    .ok_or_else(|| {
-                        VokraError::InvalidArgument(format!(
-                            "{LABEL}: continuation trim sample count overflows"
-                        ))
-                    })?
-                    / code_segment.frames;
-                let interleaved = trimmed_prefix_samples
-                    .checked_mul(audio.channels)
-                    .ok_or_else(|| {
-                        VokraError::InvalidArgument(format!(
-                            "{LABEL}: continuation interleaved trim overflows"
-                        ))
-                    })?;
-                audio.pcm.drain(..interleaved);
-                audio.samples_per_channel -= trimmed_prefix_samples;
-            }
-            segments.push(MossTtsDelayAudioSegment {
-                codes: code_segment.codes,
-                frames: code_segment.frames,
-                audio,
-                trimmed_prefix_samples,
-            });
-        }
-        Ok(MossTtsDelaySynthesis {
-            generated,
-            segments,
+/// Native MOSS-VoiceGenerator Qwen3-1.7B model on CPU or Metal.
+#[derive(Clone)]
+pub struct MossVoiceGenerator {
+    checkpoint: MossVoiceGeneratorCheckpoint,
+    backend: BackendKind,
+    runtime: Arc<DelayRuntimeScratch>,
+}
+
+impl std::fmt::Debug for MossVoiceGenerator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MossVoiceGenerator")
+            .field("backend", &self.backend)
+            .field(
+                "requires_metadata_repair",
+                &self.checkpoint.requires_metadata_repair(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl MossVoiceGenerator {
+    /// Opens and strictly binds the true-mmap VoiceGenerator checkpoint.
+    pub fn open_mapped(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
+        Self::from_checkpoint(MossVoiceGeneratorCheckpoint::open_mapped(path)?, backend)
+    }
+
+    /// Builds the executable model from an authenticated VoiceGenerator map.
+    pub fn from_checkpoint(
+        checkpoint: MossVoiceGeneratorCheckpoint,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let _ = Compute::for_backend(backend, MOSS_TTS_DELAY_HOT_OPS)?;
+        Ok(Self {
+            checkpoint,
+            backend,
+            runtime: Arc::new(DelayRuntimeScratch::default()),
         })
     }
+
+    /// Selected backend for the complete learned graph.
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Strict VoiceGenerator checkpoint retained by this model.
+    pub const fn checkpoint(&self) -> &MossVoiceGeneratorCheckpoint {
+        &self.checkpoint
+    }
+
+    /// Official VoiceGenerator release defaults. These intentionally differ
+    /// from Base/v1.5 audio sampling.
+    pub fn default_generation_options(&self) -> MossTtsDelayGenerationOptions {
+        MossTtsDelayGenerationOptions::voice_generator()
+    }
+
+    /// Runs explicit upstream-compatible `[rows,17]` prompt IDs.
+    pub fn forward_prompt_last_logits(&self, prompt_rows: &[u32]) -> Result<MossTtsDelayLogits> {
+        forward_prompt_last_logits(self, prompt_rows)
+    }
+
+    /// Generates raw delayed VoiceGenerator rows.
+    pub fn generate_delay_rows(
+        &self,
+        prompt_rows: &[u32],
+        options: &MossTtsDelayGenerationOptions,
+    ) -> Result<MossTtsDelayGeneration> {
+        generation::generate_delay_rows(self, prompt_rows, options)
+    }
+
+    /// Generates, de-delays and decodes through the exact Full codec.
+    pub fn synthesize_prompt_rows(
+        &self,
+        codec: &MossAudioTokenizer,
+        prompt_rows: &[u32],
+        options: &MossTtsDelayGenerationOptions,
+    ) -> Result<MossTtsDelaySynthesis> {
+        synthesize_prompt_rows(self, codec, prompt_rows, options)
+    }
+}
+
+trait DelayRuntimeAccess {
+    fn backend(&self) -> BackendKind;
+    fn mapped(&self) -> &DelayMappedDescriptors;
+    fn runtime(&self) -> &DelayRuntimeScratch;
+}
+
+impl DelayRuntimeAccess for MossTtsDelay {
+    fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    fn mapped(&self) -> &DelayMappedDescriptors {
+        self.checkpoint.mapped()
+    }
+
+    fn runtime(&self) -> &DelayRuntimeScratch {
+        &self.runtime
+    }
+}
+
+impl DelayRuntimeAccess for MossVoiceGenerator {
+    fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    fn mapped(&self) -> &DelayMappedDescriptors {
+        self.checkpoint.mapped()
+    }
+
+    fn runtime(&self) -> &DelayRuntimeScratch {
+        &self.runtime
+    }
+}
+
+fn forward_prompt_last_logits(
+    model: &impl DelayRuntimeAccess,
+    prompt_rows: &[u32],
+) -> Result<MossTtsDelayLogits> {
+    let mapped = model.mapped();
+    let topology = mapped.topology();
+    let columns = topology.input_columns();
+    let label = mapped.mapped_model().name;
+    if prompt_rows.is_empty() || !prompt_rows.len().is_multiple_of(columns) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: prompt must be a non-empty [rows,{columns}] u32 matrix, got {} values",
+            prompt_rows.len()
+        )));
+    }
+    let rows = prompt_rows.len() / columns;
+    if rows > topology.max_position_embeddings {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: prompt rows {rows} exceed max positions {}",
+            topology.max_position_embeddings
+        )));
+    }
+
+    let compute = Compute::for_backend(model.backend(), MOSS_TTS_DELAY_HOT_OPS)?;
+    let reserve = rows.min(256).max(1);
+    let mut kv_cache = KvCache::with_reserve(topology.num_layers, topology.kv_dim(), reserve);
+    let mut scratch = DelayStepScratch::default();
+    for row_start in (0..rows).step_by(PREFILL_CHUNK_ROWS) {
+        let chunk_rows = PREFILL_CHUNK_ROWS.min(rows - row_start);
+        let start = row_start * columns;
+        let end = start + chunk_rows * columns;
+        forward_chunk(
+            &compute,
+            mapped,
+            model.runtime(),
+            &mut scratch,
+            &mut kv_cache,
+            &prompt_rows[start..end],
+            chunk_rows,
+        )?;
+    }
+    last_logits(&compute, mapped, model.runtime(), &scratch)
+}
+
+fn synthesize_prompt_rows(
+    model: &impl DelayRuntimeAccess,
+    codec: &MossAudioTokenizer,
+    prompt_rows: &[u32],
+    options: &MossTtsDelayGenerationOptions,
+) -> Result<MossTtsDelaySynthesis> {
+    let mapped = model.mapped();
+    let label = mapped.mapped_model().name;
+    let num_audio_codebooks = mapped.topology().num_audio_codebooks;
+    if codec.variant() != MossAudioTokenizerVariant::Full {
+        return Err(VokraError::UnsupportedOp(format!(
+            "{label}: synthesis requires the exact MOSS Audio Tokenizer Full companion; got {:?}",
+            codec.variant()
+        )));
+    }
+    if codec.backend() != model.backend() {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label}: LLM backend {:?} does not match Full codec backend {:?}; the composed graph must select one backend and never hide a CPU fallback",
+            model.backend(),
+            codec.backend()
+        )));
+    }
+
+    let generated = generation::generate_delay_rows(model, prompt_rows, options)?;
+    let generation::DeDelayedAudio {
+        start_length,
+        segments: code_segments,
+    } = generation::de_delay_audio_segments(prompt_rows, &generated, label)?;
+    let mut segments = Vec::with_capacity(code_segments.len());
+    for (index, code_segment) in code_segments.into_iter().enumerate() {
+        let mut audio = codec.decode_frame_major(
+            &code_segment.codes,
+            code_segment.frames,
+            num_audio_codebooks,
+        )?;
+        let mut trimmed_prefix_samples = 0;
+        if index == 0 && start_length > 0 {
+            if start_length >= code_segment.frames {
+                continue;
+            }
+            trimmed_prefix_samples = audio
+                .samples_per_channel
+                .checked_mul(start_length)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "{label}: continuation trim sample count overflows"
+                    ))
+                })?
+                / code_segment.frames;
+            let interleaved = trimmed_prefix_samples
+                .checked_mul(audio.channels)
+                .ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "{label}: continuation interleaved trim overflows"
+                    ))
+                })?;
+            audio.pcm.drain(..interleaved);
+            audio.samples_per_channel -= trimmed_prefix_samples;
+        }
+        segments.push(MossTtsDelayAudioSegment {
+            codes: code_segment.codes,
+            frames: code_segment.frames,
+            audio,
+            trimmed_prefix_samples,
+        });
+    }
+    Ok(MossTtsDelaySynthesis {
+        generated,
+        segments,
+    })
 }
 
 #[derive(Default)]
@@ -325,51 +492,58 @@ fn forward_chunk(
     prompt: &[u32],
     rows: usize,
 ) -> Result<()> {
-    if rows == 0 || prompt.len() != rows * INPUT_COLUMNS {
+    let topology = mapped.topology();
+    let columns = topology.input_columns();
+    let mapped_model = mapped.mapped_model();
+    let label = mapped_model.name;
+    let q_dim = topology.q_dim();
+    let kv_dim = topology.kv_dim();
+    if rows == 0 || prompt.len() != rows * columns {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: forward chunk shape mismatch: prompt={}, rows={rows}, columns={INPUT_COLUMNS}",
+            "{label}: forward chunk shape mismatch: prompt={}, rows={rows}, columns={columns}",
             prompt.len()
         )));
     }
     let position_offset = kv_cache.positions();
-    if position_offset + rows > MAX_POSITION_EMBEDDINGS {
+    if position_offset + rows > topology.max_position_embeddings {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: decode position {} exceeds max positions {MAX_POSITION_EMBEDDINGS}",
-            position_offset + rows
+            "{label}: decode position {} exceeds max positions {}",
+            position_offset + rows,
+            topology.max_position_embeddings
         )));
     }
 
     embed_prompt(mapped, prompt, rows, scratch)?;
-    resize_zero(&mut scratch.norm, rows * HIDDEN_DIM);
-    resize_zero(&mut scratch.q_raw, rows * Q_DIM);
-    resize_zero(&mut scratch.q, rows * Q_DIM);
-    resize_zero(&mut scratch.k_raw, rows * KV_DIM);
-    resize_zero(&mut scratch.k, rows * KV_DIM);
-    resize_zero(&mut scratch.v, rows * KV_DIM);
-    resize_zero(&mut scratch.query, rows * HEAD_DIM);
-    resize_zero(&mut scratch.attention, rows * Q_DIM);
-    resize_zero(&mut scratch.attention_out, rows * HIDDEN_DIM);
-    resize_zero(&mut scratch.ffn_gate, rows * FFN_DIM);
-    resize_zero(&mut scratch.ffn_activated, rows * FFN_DIM);
-    resize_zero(&mut scratch.ffn_up, rows * FFN_DIM);
-    resize_zero(&mut scratch.ffn_down, rows * HIDDEN_DIM);
+    resize_zero(&mut scratch.norm, rows * topology.hidden_dim);
+    resize_zero(&mut scratch.q_raw, rows * q_dim);
+    resize_zero(&mut scratch.q, rows * q_dim);
+    resize_zero(&mut scratch.k_raw, rows * kv_dim);
+    resize_zero(&mut scratch.k, rows * kv_dim);
+    resize_zero(&mut scratch.v, rows * kv_dim);
+    resize_zero(&mut scratch.query, rows * topology.head_dim);
+    resize_zero(&mut scratch.attention, rows * q_dim);
+    resize_zero(&mut scratch.attention_out, rows * topology.hidden_dim);
+    resize_zero(&mut scratch.ffn_gate, rows * topology.ffn_dim);
+    resize_zero(&mut scratch.ffn_activated, rows * topology.ffn_dim);
+    resize_zero(&mut scratch.ffn_up, rows * topology.ffn_dim);
+    resize_zero(&mut scratch.ffn_down, rows * topology.hidden_dim);
 
-    let mut block = lock_scratch(&runtime.block, MAPPED)?;
-    for layer in 0..NUM_LAYERS {
+    let mut block = lock_scratch(&runtime.block, mapped_model)?;
+    for layer in 0..topology.num_layers {
         materialize_layer(mapped, layer, &mut block)?;
 
         compute.rms_norm_f32(
             &scratch.hidden,
             &mut scratch.norm,
             rows,
-            HIDDEN_DIM,
+            topology.hidden_dim,
             &block.input_norm,
-            RMS_NORM_EPS,
+            topology.rms_norm_eps,
         )?;
         compute.gemm_f32(
             rows,
-            Q_DIM,
-            HIDDEN_DIM,
+            q_dim,
+            topology.hidden_dim,
             &scratch.norm,
             &block.q_w_t,
             None,
@@ -377,8 +551,8 @@ fn forward_chunk(
         )?;
         compute.gemm_f32(
             rows,
-            KV_DIM,
-            HIDDEN_DIM,
+            kv_dim,
+            topology.hidden_dim,
             &scratch.norm,
             &block.k_w_t,
             None,
@@ -386,8 +560,8 @@ fn forward_chunk(
         )?;
         compute.gemm_f32(
             rows,
-            KV_DIM,
-            HIDDEN_DIM,
+            kv_dim,
+            topology.hidden_dim,
             &scratch.norm,
             &block.v_w_t,
             None,
@@ -396,21 +570,37 @@ fn forward_chunk(
         compute.rms_norm_f32(
             &scratch.q_raw,
             &mut scratch.q,
-            rows * NUM_Q_HEADS,
-            HEAD_DIM,
+            rows * topology.num_q_heads,
+            topology.head_dim,
             &block.q_norm,
-            RMS_NORM_EPS,
+            topology.rms_norm_eps,
         )?;
         compute.rms_norm_f32(
             &scratch.k_raw,
             &mut scratch.k,
-            rows * NUM_KV_HEADS,
-            HEAD_DIM,
+            rows * topology.num_kv_heads,
+            topology.head_dim,
             &block.k_norm,
-            RMS_NORM_EPS,
+            topology.rms_norm_eps,
         )?;
-        apply_half_split_rope(&mut scratch.q, rows, NUM_Q_HEADS, position_offset)?;
-        apply_half_split_rope(&mut scratch.k, rows, NUM_KV_HEADS, position_offset)?;
+        apply_half_split_rope(
+            &mut scratch.q,
+            rows,
+            topology.num_q_heads,
+            topology.head_dim,
+            topology.rope_base,
+            position_offset,
+            label,
+        )?;
+        apply_half_split_rope(
+            &mut scratch.k,
+            rows,
+            topology.num_kv_heads,
+            topology.head_dim,
+            topology.rope_base,
+            position_offset,
+            label,
+        )?;
 
         kv_cache.append(layer, &scratch.k, &scratch.v);
         attention(
@@ -420,11 +610,13 @@ fn forward_chunk(
             kv_cache.v(layer),
             rows,
             position_offset,
+            topology,
+            label,
         )?;
         compute.gemm_f32(
             rows,
-            HIDDEN_DIM,
-            Q_DIM,
+            topology.hidden_dim,
+            q_dim,
             &scratch.attention,
             &block.o_w_t,
             None,
@@ -438,14 +630,14 @@ fn forward_chunk(
             &scratch.hidden,
             &mut scratch.norm,
             rows,
-            HIDDEN_DIM,
+            topology.hidden_dim,
             &block.ffn_norm,
-            RMS_NORM_EPS,
+            topology.rms_norm_eps,
         )?;
         compute.gemm_f32(
             rows,
-            FFN_DIM,
-            HIDDEN_DIM,
+            topology.ffn_dim,
+            topology.hidden_dim,
             &scratch.norm,
             &block.gate_w_t,
             None,
@@ -453,8 +645,8 @@ fn forward_chunk(
         )?;
         compute.gemm_f32(
             rows,
-            FFN_DIM,
-            HIDDEN_DIM,
+            topology.ffn_dim,
+            topology.hidden_dim,
             &scratch.norm,
             &block.up_w_t,
             None,
@@ -466,8 +658,8 @@ fn forward_chunk(
         }
         compute.gemm_f32(
             rows,
-            HIDDEN_DIM,
-            FFN_DIM,
+            topology.hidden_dim,
+            topology.ffn_dim,
             &scratch.ffn_activated,
             &block.down_w_t,
             None,
@@ -485,11 +677,11 @@ fn forward_chunk(
         &scratch.hidden,
         &mut scratch.norm,
         rows,
-        HIDDEN_DIM,
+        topology.hidden_dim,
         &final_norm,
-        RMS_NORM_EPS,
+        topology.rms_norm_eps,
     )?;
-    reject_non_finite("final hidden", &scratch.norm)
+    reject_non_finite(label, "final hidden", &scratch.norm)
 }
 
 fn embed_prompt(
@@ -498,13 +690,17 @@ fn embed_prompt(
     rows: usize,
     scratch: &mut DelayStepScratch,
 ) -> Result<()> {
-    resize_zero(&mut scratch.hidden, rows * HIDDEN_DIM);
+    let topology = mapped.topology();
+    let columns = topology.input_columns();
+    let label = mapped.mapped_model().name;
+    resize_zero(&mut scratch.hidden, rows * topology.hidden_dim);
     for row in 0..rows {
-        let row_tokens = &prompt[row * INPUT_COLUMNS..(row + 1) * INPUT_COLUMNS];
+        let row_tokens = &prompt[row * columns..(row + 1) * columns];
         let text = row_tokens[0] as usize;
-        if text >= TEXT_VOCAB_SIZE {
+        if text >= topology.text_vocab_size {
             return Err(VokraError::InvalidArgument(format!(
-                "{LABEL}: text token at row {row} is {text}, outside 0..{TEXT_VOCAB_SIZE}"
+                "{label}: text token at row {row} is {text}, outside 0..{}",
+                topology.text_vocab_size
             )));
         }
         widen_row(
@@ -513,13 +709,15 @@ fn embed_prompt(
             text,
             &mut scratch.embed_row,
         )?;
-        let hidden = &mut scratch.hidden[row * HIDDEN_DIM..(row + 1) * HIDDEN_DIM];
+        let hidden =
+            &mut scratch.hidden[row * topology.hidden_dim..(row + 1) * topology.hidden_dim];
         hidden.copy_from_slice(&scratch.embed_row);
-        for codebook in 0..NUM_AUDIO_CODEBOOKS {
+        for codebook in 0..topology.num_audio_codebooks {
             let token = row_tokens[1 + codebook] as usize;
-            if token >= AUDIO_VOCAB_WITH_PAD {
+            if token >= topology.audio_vocab_with_pad {
                 return Err(VokraError::InvalidArgument(format!(
-                    "{LABEL}: audio token at row {row}, codebook {codebook} is {token}, outside 0..{AUDIO_VOCAB_WITH_PAD}"
+                    "{label}: audio token at row {row}, codebook {codebook} is {token}, outside 0..{}",
+                    topology.audio_vocab_with_pad
                 )));
             }
             widen_row(
@@ -533,7 +731,7 @@ fn embed_prompt(
             }
         }
     }
-    reject_non_finite("prompt embedding", &scratch.hidden)
+    reject_non_finite(label, "prompt embedding", &scratch.hidden)
 }
 
 fn attention(
@@ -543,44 +741,49 @@ fn attention(
     value_cache: &[f32],
     rows: usize,
     position_offset: usize,
+    topology: DelayTopology,
+    label: &str,
 ) -> Result<()> {
+    let q_dim = topology.q_dim();
+    let kv_dim = topology.kv_dim();
     let total_rows = position_offset + rows;
-    let expected = total_rows * KV_DIM;
+    let expected = total_rows * kv_dim;
     if key_cache.len() != expected || value_cache.len() != expected {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: KV cache length mismatch: key={}, value={}, expected={expected}",
+            "{label}: KV cache length mismatch: key={}, value={}, expected={expected}",
             key_cache.len(),
             value_cache.len()
         )));
     }
-    resize_zero(&mut scratch.key_t, HEAD_DIM * total_rows);
-    resize_zero(&mut scratch.value, total_rows * HEAD_DIM);
+    resize_zero(&mut scratch.key_t, topology.head_dim * total_rows);
+    resize_zero(&mut scratch.value, total_rows * topology.head_dim);
     resize_zero(&mut scratch.scores, rows * total_rows);
     resize_zero(&mut scratch.probabilities, rows * total_rows);
-    resize_zero(&mut scratch.attended, rows * HEAD_DIM);
+    resize_zero(&mut scratch.attended, rows * topology.head_dim);
     scratch.attention.fill(0.0);
-    let groups = NUM_Q_HEADS / NUM_KV_HEADS;
-    let scale = (HEAD_DIM as f32).sqrt().recip();
+    let groups = topology.num_q_heads / topology.num_kv_heads;
+    let scale = (topology.head_dim as f32).sqrt().recip();
 
-    for kv_head in 0..NUM_KV_HEADS {
+    for kv_head in 0..topology.num_kv_heads {
         for position in 0..total_rows {
-            let source = position * KV_DIM + kv_head * HEAD_DIM;
-            for dimension in 0..HEAD_DIM {
+            let source = position * kv_dim + kv_head * topology.head_dim;
+            for dimension in 0..topology.head_dim {
                 scratch.key_t[dimension * total_rows + position] = key_cache[source + dimension];
-                scratch.value[position * HEAD_DIM + dimension] = value_cache[source + dimension];
+                scratch.value[position * topology.head_dim + dimension] =
+                    value_cache[source + dimension];
             }
         }
         for group in 0..groups {
             let q_head = kv_head * groups + group;
             for row in 0..rows {
-                let source = row * Q_DIM + q_head * HEAD_DIM;
-                scratch.query[row * HEAD_DIM..(row + 1) * HEAD_DIM]
-                    .copy_from_slice(&scratch.q[source..source + HEAD_DIM]);
+                let source = row * q_dim + q_head * topology.head_dim;
+                scratch.query[row * topology.head_dim..(row + 1) * topology.head_dim]
+                    .copy_from_slice(&scratch.q[source..source + topology.head_dim]);
             }
             compute.gemm_f32(
                 rows,
                 total_rows,
-                HEAD_DIM,
+                topology.head_dim,
                 &scratch.query,
                 &scratch.key_t,
                 None,
@@ -592,6 +795,7 @@ fn attention(
                 total_rows,
                 position_offset,
                 scale,
+                label,
             )?;
             compute.softmax_f32(
                 &scratch.scores,
@@ -601,7 +805,7 @@ fn attention(
             )?;
             compute.gemm_f32(
                 rows,
-                HEAD_DIM,
+                topology.head_dim,
                 total_rows,
                 &scratch.probabilities,
                 &scratch.value,
@@ -609,9 +813,10 @@ fn attention(
                 &mut scratch.attended,
             )?;
             for row in 0..rows {
-                let target = row * Q_DIM + q_head * HEAD_DIM;
-                scratch.attention[target..target + HEAD_DIM]
-                    .copy_from_slice(&scratch.attended[row * HEAD_DIM..(row + 1) * HEAD_DIM]);
+                let target = row * q_dim + q_head * topology.head_dim;
+                scratch.attention[target..target + topology.head_dim].copy_from_slice(
+                    &scratch.attended[row * topology.head_dim..(row + 1) * topology.head_dim],
+                );
             }
         }
     }
@@ -624,6 +829,7 @@ fn scale_and_mask(
     total_rows: usize,
     position_offset: usize,
     scale: f32,
+    label: &str,
 ) -> Result<()> {
     if rows == 0
         || total_rows < rows
@@ -632,7 +838,7 @@ fn scale_and_mask(
         || !scale.is_finite()
     {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: causal mask shape mismatch: scores={}, rows={rows}, total_rows={total_rows}, offset={position_offset}, scale={scale}",
+            "{label}: causal mask shape mismatch: scores={}, rows={rows}, total_rows={total_rows}, offset={position_offset}, scale={scale}",
             scores.len()
         )));
     }
@@ -654,25 +860,30 @@ fn apply_half_split_rope(
     values: &mut [f32],
     rows: usize,
     heads: usize,
+    head_dim: usize,
+    rope_base: f32,
     position_offset: usize,
+    label: &str,
 ) -> Result<()> {
     if rows == 0
         || heads == 0
-        || !HEAD_DIM.is_multiple_of(2)
-        || values.len() != rows * heads * HEAD_DIM
+        || !head_dim.is_multiple_of(2)
+        || !rope_base.is_finite()
+        || rope_base <= 0.0
+        || values.len() != rows * heads * head_dim
     {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: RoPE shape mismatch: values={}, rows={rows}, heads={heads}, head_dim={HEAD_DIM}",
+            "{label}: RoPE shape mismatch: values={}, rows={rows}, heads={heads}, head_dim={head_dim}, rope_base={rope_base}",
             values.len()
         )));
     }
-    let half = HEAD_DIM / 2;
+    let half = head_dim / 2;
     for row in 0..rows {
         let position = (position_offset + row) as f32;
         for head in 0..heads {
-            let base = (row * heads + head) * HEAD_DIM;
+            let base = (row * heads + head) * head_dim;
             for pair in 0..half {
-                let frequency = ROPE_BASE.powf(-(2 * pair) as f32 / HEAD_DIM as f32);
+                let frequency = rope_base.powf(-(2 * pair) as f32 / head_dim as f32);
                 let angle = position * frequency;
                 let (sin, cos) = angle.sin_cos();
                 let first = values[base + pair];
@@ -690,34 +901,61 @@ fn materialize_layer(
     layer: usize,
     block: &mut DelayBlock,
 ) -> Result<()> {
+    let topology = mapped.topology();
+    let q_dim = topology.q_dim();
+    let kv_dim = topology.kv_dim();
     let descriptors = mapped.layer(layer);
     widen_tensor(mapped, descriptors.input_norm, &mut block.input_norm)?;
-    transpose_tensor(mapped, descriptors.q, Q_DIM, HIDDEN_DIM, &mut block.q_w_t)?;
+    transpose_tensor(
+        mapped,
+        descriptors.q,
+        q_dim,
+        topology.hidden_dim,
+        &mut block.q_w_t,
+    )?;
     widen_tensor(mapped, descriptors.q_norm, &mut block.q_norm)?;
-    transpose_tensor(mapped, descriptors.k, KV_DIM, HIDDEN_DIM, &mut block.k_w_t)?;
+    transpose_tensor(
+        mapped,
+        descriptors.k,
+        kv_dim,
+        topology.hidden_dim,
+        &mut block.k_w_t,
+    )?;
     widen_tensor(mapped, descriptors.k_norm, &mut block.k_norm)?;
-    transpose_tensor(mapped, descriptors.v, KV_DIM, HIDDEN_DIM, &mut block.v_w_t)?;
-    transpose_tensor(mapped, descriptors.o, HIDDEN_DIM, Q_DIM, &mut block.o_w_t)?;
+    transpose_tensor(
+        mapped,
+        descriptors.v,
+        kv_dim,
+        topology.hidden_dim,
+        &mut block.v_w_t,
+    )?;
+    transpose_tensor(
+        mapped,
+        descriptors.o,
+        topology.hidden_dim,
+        q_dim,
+        &mut block.o_w_t,
+    )?;
     widen_tensor(mapped, descriptors.ffn_norm, &mut block.ffn_norm)?;
     transpose_tensor(
         mapped,
         descriptors.gate,
-        FFN_DIM,
-        HIDDEN_DIM,
+        topology.ffn_dim,
+        topology.hidden_dim,
         &mut block.gate_w_t,
     )?;
     transpose_tensor(
         mapped,
         descriptors.up,
-        FFN_DIM,
-        HIDDEN_DIM,
+        topology.ffn_dim,
+        topology.hidden_dim,
         &mut block.up_w_t,
     )?;
     transpose_tensor(
         mapped,
         descriptors.down,
-        HIDDEN_DIM,
-        FFN_DIM,
+        topology.hidden_dim,
+        topology.ffn_dim,
         &mut block.down_w_t,
     )?;
     Ok(())
@@ -729,41 +967,46 @@ fn last_logits(
     runtime: &DelayRuntimeScratch,
     scratch: &DelayStepScratch,
 ) -> Result<MossTtsDelayLogits> {
-    if scratch.norm.len() < HIDDEN_DIM {
+    let topology = mapped.topology();
+    let label = mapped.mapped_model().name;
+    if scratch.norm.len() < topology.hidden_dim {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: no final hidden row is available"
+            "{label}: no final hidden row is available"
         )));
     }
-    let hidden = &scratch.norm[scratch.norm.len() - HIDDEN_DIM..];
-    let mut chunk = lock_scratch(&runtime.head_chunk, MAPPED)?;
-    let mut text_logits = vec![0.0; TEXT_VOCAB_SIZE];
+    let hidden = &scratch.norm[scratch.norm.len() - topology.hidden_dim..];
+    let mut chunk = lock_scratch(&runtime.head_chunk, mapped.mapped_model())?;
+    let mut text_logits = vec![0.0; topology.text_vocab_size];
     project_head(
         compute,
         mapped,
         mapped.head(0),
-        TEXT_VOCAB_SIZE,
+        topology.text_vocab_size,
         hidden,
         &mut chunk,
         &mut text_logits,
     )?;
-    let mut audio_logits = vec![0.0; NUM_AUDIO_CODEBOOKS * AUDIO_VOCAB_WITH_PAD];
-    for codebook in 0..NUM_AUDIO_CODEBOOKS {
-        let start = codebook * AUDIO_VOCAB_WITH_PAD;
+    let mut audio_logits = vec![0.0; topology.num_audio_codebooks * topology.audio_vocab_with_pad];
+    for codebook in 0..topology.num_audio_codebooks {
+        let start = codebook * topology.audio_vocab_with_pad;
         project_head(
             compute,
             mapped,
             mapped.head(1 + codebook),
-            AUDIO_VOCAB_WITH_PAD,
+            topology.audio_vocab_with_pad,
             hidden,
             &mut chunk,
-            &mut audio_logits[start..start + AUDIO_VOCAB_WITH_PAD],
+            &mut audio_logits[start..start + topology.audio_vocab_with_pad],
         )?;
     }
-    reject_non_finite("text logits", &text_logits)?;
-    reject_non_finite("audio logits", &audio_logits)?;
+    reject_non_finite(label, "text logits", &text_logits)?;
+    reject_non_finite(label, "audio logits", &audio_logits)?;
     Ok(MossTtsDelayLogits {
         text_logits,
         audio_logits,
+        num_audio_codebooks: topology.num_audio_codebooks,
+        audio_vocab_with_pad: topology.audio_vocab_with_pad,
+        model_label: label,
     })
 }
 
@@ -777,9 +1020,11 @@ fn project_head(
     chunk: &mut Vec<f32>,
     output: &mut [f32],
 ) -> Result<()> {
-    if hidden.len() != HIDDEN_DIM || output.len() != rows {
+    let topology = mapped.topology();
+    let label = mapped.mapped_model().name;
+    if hidden.len() != topology.hidden_dim || output.len() != rows {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: head projection shape mismatch: hidden={}, rows={rows}, output={} ",
+            "{label}: head projection shape mismatch: hidden={}, rows={rows}, output={} ",
             hidden.len(),
             output.len()
         )));
@@ -790,7 +1035,7 @@ fn project_head(
         widen_rows(mapped, info, row, chunk_rows, chunk)?;
         compute.gemv_f32(
             chunk_rows,
-            HIDDEN_DIM,
+            topology.hidden_dim,
             chunk,
             hidden,
             None,
@@ -817,28 +1062,30 @@ fn widen_rows(
     rows: usize,
     output: &mut Vec<f32>,
 ) -> Result<()> {
+    let topology = mapped.topology();
+    let label = mapped.mapped_model().name;
     let element_size = info.dtype.type_size();
     let bytes = mapped.file().tensor_bytes(info);
     let start = first_row
-        .checked_mul(HIDDEN_DIM)
+        .checked_mul(topology.hidden_dim)
         .and_then(|value| value.checked_mul(element_size))
-        .ok_or_else(|| VokraError::InvalidArgument(format!("{LABEL}: row offset overflow")))?;
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: row offset overflow")))?;
     let len = rows
-        .checked_mul(HIDDEN_DIM)
+        .checked_mul(topology.hidden_dim)
         .and_then(|value| value.checked_mul(element_size))
-        .ok_or_else(|| VokraError::InvalidArgument(format!("{LABEL}: row length overflow")))?;
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: row length overflow")))?;
     let end = start
         .checked_add(len)
-        .ok_or_else(|| VokraError::InvalidArgument(format!("{LABEL}: row range overflow")))?;
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{label}: row range overflow")))?;
     let source = bytes.get(start..end).ok_or_else(|| {
         VokraError::ModelLoad(format!(
-            "{LABEL}: tensor `{}` row range {first_row}..{} exceeds {} bytes",
+            "{label}: tensor `{}` row range {first_row}..{} exceeds {} bytes",
             info.name,
             first_row + rows,
             bytes.len()
         ))
     })?;
-    widen_into(source, info.dtype, output, MAPPED)
+    widen_into(source, info.dtype, output, mapped.mapped_model())
 }
 
 fn widen_tensor(
@@ -846,7 +1093,12 @@ fn widen_tensor(
     info: &GgufTensorInfo,
     output: &mut Vec<f32>,
 ) -> Result<()> {
-    widen_into(mapped.file().tensor_bytes(info), info.dtype, output, MAPPED)
+    widen_into(
+        mapped.file().tensor_bytes(info),
+        info.dtype,
+        output,
+        mapped.mapped_model(),
+    )
 }
 
 fn transpose_tensor(
@@ -862,11 +1114,11 @@ fn transpose_tensor(
         rows,
         columns,
         output,
-        MAPPED,
+        mapped.mapped_model(),
     )
 }
 
-fn reject_non_finite(label: &str, values: &[f32]) -> Result<()> {
+fn reject_non_finite(model_label: &str, value_label: &str, values: &[f32]) -> Result<()> {
     if let Some((index, value)) = values
         .iter()
         .copied()
@@ -874,7 +1126,7 @@ fn reject_non_finite(label: &str, values: &[f32]) -> Result<()> {
         .find(|(_, value)| !value.is_finite())
     {
         return Err(VokraError::InvalidArgument(format!(
-            "{LABEL}: {label} contains non-finite value {value} at index {index}"
+            "{model_label}: {value_label} contains non-finite value {value} at index {index}"
         )));
     }
     Ok(())
@@ -898,16 +1150,17 @@ mod tests {
 
     #[test]
     fn half_split_rope_position_zero_is_identity() {
-        let mut values = (0..HEAD_DIM).map(|value| value as f32).collect::<Vec<_>>();
+        let head_dim = 128;
+        let mut values = (0..head_dim).map(|value| value as f32).collect::<Vec<_>>();
         let expected = values.clone();
-        apply_half_split_rope(&mut values, 1, 1, 0).unwrap();
+        apply_half_split_rope(&mut values, 1, 1, head_dim, 1_000_000.0, 0, LABEL).unwrap();
         assert_eq!(values, expected);
     }
 
     #[test]
     fn causal_mask_respects_cached_prefix() {
         let mut scores = vec![2.0; 6];
-        scale_and_mask(&mut scores, 2, 3, 1, 0.5).unwrap();
+        scale_and_mask(&mut scores, 2, 3, 1, 0.5, LABEL).unwrap();
         assert_eq!(&scores[..3], &[1.0, 1.0, f32::MIN]);
         assert_eq!(&scores[3..], &[1.0, 1.0, 1.0]);
     }

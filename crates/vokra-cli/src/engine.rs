@@ -324,6 +324,10 @@ pub(crate) enum ModelTask {
     /// mmap-backed Qwen3 model and required Full codec sidecar bind in `run`
     /// and select the same CPU/Metal backend.
     TtsMossDelay,
+    /// OpenMOSS MOSS-VoiceGenerator delayed prompt-token generation. Its
+    /// Qwen3-1.7B/16-codebook manifest is distinct from Base/v1.5 even though
+    /// both use the Full codec and the same CPU/Metal execution algorithm.
+    TtsMossVoiceGenerator,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -1405,7 +1409,15 @@ pub(crate) fn load_session_with_backend_and_mimi(
                         "arch `{ARCH_MOSS_TTS}` is missing `vokra.model.name`; refusing family-shared topology inference"
                     )
                 })?;
-            if name == vokra_models::moss_tts::NAME {
+            let provenance_model_id = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str());
+            if name == vokra_models::moss_tts::VOICE_GENERATOR_NAME
+                || provenance_model_id == Some(vokra_models::moss_tts::VOICE_GENERATOR_NAME)
+            {
+                Ok((session, ModelTask::TtsMossVoiceGenerator))
+            } else if name == vokra_models::moss_tts::NAME {
                 Ok((session, ModelTask::TtsMossNano))
             } else if name == vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name()
                 || name == vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name()
@@ -1413,10 +1425,11 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 Ok((session, ModelTask::TtsMossDelay))
             } else {
                 Err(format!(
-                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not an authenticated executable release; expected Nano `{}`, Base `{}` or v1.5 `{}`. Local and VoiceGenerator remain distinct explicit contracts and are never routed through another topology",
+                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not an authenticated executable release; expected Nano `{}`, Base `{}`, v1.5 `{}` or VoiceGenerator `{}`. Local remains a distinct explicit contract and is never routed through another topology",
                     vokra_models::moss_tts::NAME,
                     vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name(),
                     vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name(),
+                    vokra_models::moss_tts::VOICE_GENERATOR_NAME,
                 ))
             }
         }
@@ -2745,6 +2758,33 @@ mod tests {
         out
     }
 
+    fn with_named_arch_gguf<T>(
+        arch: &str,
+        name: &str,
+        provenance_model_id: Option<&str>,
+        tag: &str,
+        f: impl FnOnce(&str) -> T,
+    ) -> T {
+        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, arch);
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, name);
+        if let Some(model_id) = provenance_model_id {
+            builder.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID, model_id);
+        }
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        path.push(format!(
+            "vokra-cli-{tag}-{}-{fixture_id}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let out = f(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
     /// An `fsmn-vad` GGUF is a REAL VAD: the dispatch binds
     /// [`vokra_models::fsmn_vad::FsmnVadV1`] into the session's VAD slot. A
     /// metadata-only fixture cannot bind (no config chunk, no tensors), so
@@ -3498,21 +3538,43 @@ mod tests {
 
     #[test]
     fn load_session_routes_moss_tts_releases_to_distinct_generation_tasks() {
-        let (_session, task) =
-            with_arch_only_gguf(ARCH_MOSS_TTS, vokra_models::moss_tts::NAME, |path| {
-                load_session(path).expect("MOSS-TTS Nano session builds (bare)")
-            });
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::NAME,
+            None,
+            "moss-tts-nano",
+            |path| load_session(path).expect("MOSS-TTS Nano session builds (bare)"),
+        );
         assert_eq!(task, ModelTask::TtsMossNano);
         for release in [
             vokra_models::moss_tts::MossTtsDelayRelease::Base,
             vokra_models::moss_tts::MossTtsDelayRelease::V1_5,
         ] {
-            let (_session, task) =
-                with_arch_only_gguf(ARCH_MOSS_TTS, release.model_name(), |path| {
-                    load_session(path).expect("MOSS-TTS Delay session builds (bare)")
-                });
+            let (_session, task) = with_named_arch_gguf(
+                ARCH_MOSS_TTS,
+                release.model_name(),
+                None,
+                release.model_name(),
+                |path| load_session(path).expect("MOSS-TTS Delay session builds (bare)"),
+            );
             assert_eq!(task, ModelTask::TtsMossDelay);
         }
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::VOICE_GENERATOR_NAME,
+            None,
+            "moss-voice-generator-corrected",
+            |path| load_session(path).expect("corrected VoiceGenerator session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossVoiceGenerator);
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name(),
+            Some(vokra_models::moss_tts::VOICE_GENERATOR_NAME),
+            "moss-voice-generator-legacy",
+            |path| load_session(path).expect("legacy VoiceGenerator session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossVoiceGenerator);
         assert!(
             BOUND_ARCHES
                 .iter()

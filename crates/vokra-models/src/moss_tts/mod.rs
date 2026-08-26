@@ -3,8 +3,8 @@
 //! The first public Vokra GGUF predates the corrected RoPE/provenance
 //! metadata. It is accepted only behind the exact 194-tensor name/shape
 //! manifest and is surfaced through [`MossTtsNano::requires_metadata_repair`].
-//! Base/v1.5 use a separate strict 463-tensor mapped Delay contract; Local and
-//! VoiceGenerator are never inferred from the shared arch tag.
+//! Base/v1.5 and VoiceGenerator use separately authenticated mapped Delay
+//! contracts. Local is never inferred from the shared arch tag.
 
 mod delay;
 mod delay_transformer;
@@ -28,7 +28,7 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 pub use self::delay::{MossTtsDelayCheckpoint, MossTtsDelayRelease};
 pub use self::delay_transformer::{
     MOSS_TTS_DELAY_HOT_OPS, MossTtsDelay, MossTtsDelayAudioSegment, MossTtsDelayGeneration,
-    MossTtsDelayGenerationOptions, MossTtsDelayLogits, MossTtsDelaySynthesis,
+    MossTtsDelayGenerationOptions, MossTtsDelayLogits, MossTtsDelaySynthesis, MossVoiceGenerator,
 };
 pub use self::generation::MossTtsGeneratedCodes;
 pub use self::voice_generator::MossVoiceGeneratorCheckpoint;
@@ -38,6 +38,8 @@ use self::weights::NanoWeights;
 pub const ARCH: &str = "moss_tts";
 /// Canonical public Nano identity.
 pub const NAME: &str = "moss-tts-nano-100m";
+/// Canonical public MOSS-VoiceGenerator identity.
+pub const VOICE_GENERATOR_NAME: &str = "moss-voice-generator";
 /// Model-zoo category.
 pub const CATEGORY: &str = "tts";
 /// Official upstream repository.

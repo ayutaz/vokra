@@ -96,6 +96,9 @@ USAGE:
     vokra-cli run --model <moss-tts-v1.5.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-full.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <mono.wav>
+    vokra-cli run --model <moss-voice-generator.gguf> \
+                  --audio-tokenizer <moss-audio-tokenizer-full.gguf> \
+                  --max-new-frames <N> --input <prompt-rows.u32le> --output <mono.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -1036,6 +1039,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::MossAudioTokenizerCodec
         | ModelTask::TtsMossNano
         | ModelTask::TtsMossDelay
+        | ModelTask::TtsMossVoiceGenerator
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -1081,7 +1085,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
     }
     if a.audio_tokenizer.is_some()
-        && !matches!(task, ModelTask::TtsMossNano | ModelTask::TtsMossDelay)
+        && !matches!(
+            task,
+            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+        )
     {
         return Err(
             "run: --audio-tokenizer is only supported for authenticated MOSS-TTS releases"
@@ -1089,7 +1096,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         );
     }
     if a.max_new_frames.is_some()
-        && !matches!(task, ModelTask::TtsMossNano | ModelTask::TtsMossDelay)
+        && !matches!(
+            task,
+            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+        )
     {
         return Err(
             "run: --max-new-frames is only supported for authenticated MOSS-TTS releases"
@@ -1418,6 +1428,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsMossDelay => {
             run_moss_tts_delay(&session, &a)?;
+        }
+        ModelTask::TtsMossVoiceGenerator => {
+            run_moss_voice_generator(&session, &a)?;
         }
         ModelTask::TtsKokoro => {
             run_kokoro(&a)?;
@@ -3744,6 +3757,97 @@ fn run_moss_tts_delay(session: &Session, a: &RunArgs) -> Result<(), String> {
     println!(
         "moss_tts {release:?}: {} prompt rows -> {} generated delayed rows -> {} codec frames (trimmed {} prefix samples) -> {} mono samples @ {} Hz -> {output_path}",
         prompt_rows.len() / 33,
+        synthesis.generated.row_count(),
+        segment.frames,
+        segment.trimmed_prefix_samples,
+        segment.audio.samples_per_channel,
+        segment.audio.sample_rate,
+    );
+    Ok(())
+}
+
+/// MOSS-VoiceGenerator explicit 17-column prompt to Full codec decode.
+fn run_moss_voice_generator(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const RUN_LABEL: &str = "run (moss-voice-generator)";
+    if a.text.is_some() {
+        return Err(format!(
+            "{RUN_LABEL}: --text is unavailable because the GGUF does not bundle the pinned tokenizer/template; pass explicit [rows,17] u32le prompt ids with --input"
+        ));
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or_else(|| format!("{RUN_LABEL}: --input <prompt-rows.u32le> is required"))?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or_else(|| format!("{RUN_LABEL}: --output <mono.wav> is required"))?;
+    let codec_path = a.audio_tokenizer.as_deref().ok_or_else(|| {
+        format!("{RUN_LABEL}: --audio-tokenizer <moss-audio-tokenizer-full.gguf> is required")
+    })?;
+    let max_new_tokens = a
+        .max_new_frames
+        .ok_or_else(|| format!("{RUN_LABEL}: --max-new-frames <N> is required"))?;
+
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
+    let codec_file = std::sync::Arc::new(
+        vokra_mmap::open_gguf(codec_path)
+            .map_err(|error| format!("{RUN_LABEL}: codec {codec_path}: {error}"))?,
+    );
+    vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
+
+    let checkpoint =
+        vokra_models::moss_tts::MossVoiceGeneratorCheckpoint::from_gguf_mapped(session.gguf_arc())
+            .map_err(|error| error.to_string())?;
+    let requires_metadata_repair = checkpoint.requires_metadata_repair();
+    let model = vokra_models::moss_tts::MossVoiceGenerator::from_checkpoint(checkpoint, a.backend)
+        .map_err(|error| error.to_string())?;
+    let codec =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            codec_file, a.backend,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let bytes =
+        std::fs::read(input_path).map_err(|error| format!("{RUN_LABEL}: {input_path}: {error}"))?;
+    const ROW_BYTES: usize = 17 * 4;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(ROW_BYTES) {
+        return Err(format!(
+            "{RUN_LABEL}: {input_path} has {} bytes; expected a positive multiple of {ROW_BYTES} for frame-major [rows,17] u32le prompt ids",
+            bytes.len()
+        ));
+    }
+    let prompt_rows: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let mut options = model.default_generation_options();
+    options.max_new_tokens = max_new_tokens;
+    let synthesis = model
+        .synthesize_prompt_rows(&codec, &prompt_rows, &options)
+        .map_err(|error| error.to_string())?;
+    let [segment] = synthesis.segments.as_slice() else {
+        return Err(format!(
+            "{RUN_LABEL}: generation produced {} audio segments; the single-WAV CLI requires exactly one (the library API preserves zero/multiple official segments explicitly)",
+            synthesis.segments.len()
+        ));
+    };
+    wav::write_wav_channels(
+        output_path,
+        &segment.audio.pcm,
+        segment.audio.sample_rate,
+        segment.audio.channels,
+    )
+    .map_err(|error| format!("{RUN_LABEL}: --output {output_path}: {error}"))?;
+    if requires_metadata_repair {
+        eprintln!(
+            "warning: {RUN_LABEL}: the exact historical public GGUF has the authenticated VoiceGenerator tensor manifest but a stale MOSS-TTS 8B header; execution used the strict 343-tensor VoiceGenerator contract"
+        );
+    }
+    println!(
+        "moss-voice-generator: {} prompt rows -> {} generated delayed rows -> {} codec frames (trimmed {} prefix samples) -> {} mono samples @ {} Hz -> {output_path}",
+        prompt_rows.len() / 17,
         synthesis.generated.row_count(),
         segment.frames,
         segment.trimmed_prefix_samples,

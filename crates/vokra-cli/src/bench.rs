@@ -1271,6 +1271,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsMossVoiceGenerator => {
+            return Err(
+                "bench: MOSS-VoiceGenerator requires an explicit 17-column prompt matrix and Full Audio Tokenizer sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-voice-generator.gguf> --audio-tokenizer <moss-audio-tokenizer-full.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::VocoderBigVgan => {
             return Err(
                 "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"

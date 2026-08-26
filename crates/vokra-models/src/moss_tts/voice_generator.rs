@@ -20,7 +20,7 @@ use super::delay::{DelayMappedDescriptors, DelayTopology};
 use super::{ARCH, CATEGORY};
 
 const LABEL: &str = "moss_tts/voice_generator";
-const NAME: &str = "moss-voice-generator";
+const NAME: &str = super::VOICE_GENERATOR_NAME;
 const LEGACY_NAME: &str = "moss-tts";
 const UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-VoiceGenerator";
 const UPSTREAM_REVISION: &str = "97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4";

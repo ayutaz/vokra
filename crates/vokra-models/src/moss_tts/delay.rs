@@ -65,6 +65,10 @@ impl DelayTopology {
     pub(super) const fn tensor_count(self) -> usize {
         3 + 2 * self.num_audio_codebooks + 11 * self.num_layers
     }
+
+    pub(super) const fn input_columns(self) -> usize {
+        1 + self.num_audio_codebooks
+    }
 }
 
 pub(super) const DELAY_TOPOLOGY: DelayTopology = DelayTopology {
@@ -258,6 +262,7 @@ pub(super) struct DelayMappedDescriptors {
     file: Arc<GgufFile>,
     infos: Vec<GgufTensorInfo>,
     topology: DelayTopology,
+    mapped: MappedModel,
 }
 
 impl std::fmt::Debug for DelayMappedDescriptors {
@@ -285,6 +290,7 @@ impl DelayMappedDescriptors {
             file,
             infos,
             topology,
+            mapped,
         })
     }
 
@@ -298,6 +304,10 @@ impl DelayMappedDescriptors {
 
     pub(super) const fn topology(&self) -> DelayTopology {
         self.topology
+    }
+
+    pub(super) const fn mapped_model(&self) -> MappedModel {
+        self.mapped
     }
 
     pub(super) fn text_embedding(&self) -> &GgufTensorInfo {
