@@ -87,6 +87,14 @@
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
 //! re-implemented natively in `crates/vokra-models/src/moss_tts/`.
 //!
+//! Corrected MOSS-Audio Instruct conversions additionally require the exact
+//! `vocab.json`, `merges.txt`, `tokenizer_config.json`,
+//! `chat_template.jinja`, `generation_config.json` and
+//! `processor_config.json` beside the merged safetensors input. Their bytes
+//! are authenticated against the selected immutable 4B/8B revision and
+//! embedded into the GGUF. Runtime text generation never downloads or trusts
+//! mutable tokenizer files from the host.
+//!
 //! # Vast.ai
 //!
 //! The Delay variants (`MOSS-TTS` + `MOSS-TTS-v1.5`, both ~17 GB BF16
@@ -144,6 +152,56 @@ const MOSS_AUDIO_MODELING_SHA256: &str =
     "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c";
 const MOSS_AUDIO_PROCESSING_SHA256: &str =
     "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6";
+
+// -- Fixed-revision MOSS-Audio tokenizer / processor sidecars ------------
+
+const KEY_MOSS_AUDIO_TOKENIZER_VOCAB: &str = "vokra.moss_audio.tokenizer.vocab_json";
+const KEY_MOSS_AUDIO_TOKENIZER_MERGES: &str = "vokra.moss_audio.tokenizer.merges_txt";
+const KEY_MOSS_AUDIO_TOKENIZER_CONFIG: &str = "vokra.moss_audio.tokenizer.config_json";
+const KEY_MOSS_AUDIO_CHAT_TEMPLATE: &str = "vokra.moss_audio.tokenizer.chat_template_jinja";
+const KEY_MOSS_AUDIO_GENERATION_CONFIG: &str = "vokra.moss_audio.generation.config_json";
+const KEY_MOSS_AUDIO_PROCESSOR_CONFIG: &str = "vokra.moss_audio.processor.config_json";
+
+const MOSS_AUDIO_VOCAB_FILE: ExactSidecar = ExactSidecar {
+    name: "vocab.json",
+    bytes: 3_383_407,
+    sha256: "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+};
+const MOSS_AUDIO_MERGES_FILE: ExactSidecar = ExactSidecar {
+    name: "merges.txt",
+    bytes: 1_671_853,
+    sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+};
+const MOSS_AUDIO_CHAT_TEMPLATE_FILE: ExactSidecar = ExactSidecar {
+    name: "chat_template.jinja",
+    bytes: 4_116,
+    sha256: "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+};
+const MOSS_AUDIO_GENERATION_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "generation_config.json",
+    bytes: 121,
+    sha256: "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+};
+const MOSS_AUDIO_4B_TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 5_404,
+    sha256: "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+};
+const MOSS_AUDIO_8B_TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 6_114,
+    sha256: "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
+};
+const MOSS_AUDIO_4B_PROCESSOR_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "processor_config.json",
+    bytes: 426,
+    sha256: "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+};
+const MOSS_AUDIO_8B_PROCESSOR_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "processor_config.json",
+    bytes: 427,
+    sha256: "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+};
 
 /// Model-category tag written under `vokra.model.category`. `"tts"`
 /// distinguishes MOSS-TTS from speaker / codec / ASR siblings so a
@@ -795,6 +853,135 @@ pub struct MossTtsReport {
     pub bf16_passthrough: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExactSidecar {
+    name: &'static str,
+    bytes: usize,
+    sha256: &'static str,
+}
+
+#[derive(Debug)]
+struct MossAudioTokenizerAssets {
+    vocab: Vec<u8>,
+    merges: Vec<u8>,
+    tokenizer_config: Vec<u8>,
+    chat_template: Vec<u8>,
+    generation_config: Vec<u8>,
+    processor_config: Vec<u8>,
+}
+
+impl MossAudioTokenizerAssets {
+    fn load(input: &Path, variant: MossTtsVariant) -> Result<Self, ConvertError> {
+        debug_assert!(variant.is_audio_instruct());
+        let directory = input.parent().unwrap_or_else(|| Path::new("."));
+        let (tokenizer_config, processor_config) = match variant {
+            MossTtsVariant::AudioInstruct4b => (
+                MOSS_AUDIO_4B_TOKENIZER_CONFIG_FILE,
+                MOSS_AUDIO_4B_PROCESSOR_CONFIG_FILE,
+            ),
+            MossTtsVariant::AudioInstruct8b => (
+                MOSS_AUDIO_8B_TOKENIZER_CONFIG_FILE,
+                MOSS_AUDIO_8B_PROCESSOR_CONFIG_FILE,
+            ),
+            _ => unreachable!("MOSS-Audio sidecars require an audio-instruct variant"),
+        };
+        Ok(Self {
+            vocab: read_exact_moss_audio_sidecar(directory, MOSS_AUDIO_VOCAB_FILE, variant)?,
+            merges: read_exact_moss_audio_sidecar(directory, MOSS_AUDIO_MERGES_FILE, variant)?,
+            tokenizer_config: read_exact_moss_audio_sidecar(directory, tokenizer_config, variant)?,
+            chat_template: read_exact_moss_audio_sidecar(
+                directory,
+                MOSS_AUDIO_CHAT_TEMPLATE_FILE,
+                variant,
+            )?,
+            generation_config: read_exact_moss_audio_sidecar(
+                directory,
+                MOSS_AUDIO_GENERATION_CONFIG_FILE,
+                variant,
+            )?,
+            processor_config: read_exact_moss_audio_sidecar(directory, processor_config, variant)?,
+        })
+    }
+
+    fn embed(&self, builder: &mut GgufBuilder) {
+        add_u8_array(builder, KEY_MOSS_AUDIO_TOKENIZER_VOCAB, &self.vocab);
+        add_u8_array(builder, KEY_MOSS_AUDIO_TOKENIZER_MERGES, &self.merges);
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_TOKENIZER_CONFIG,
+            &self.tokenizer_config,
+        );
+        add_u8_array(builder, KEY_MOSS_AUDIO_CHAT_TEMPLATE, &self.chat_template);
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_GENERATION_CONFIG,
+            &self.generation_config,
+        );
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_PROCESSOR_CONFIG,
+            &self.processor_config,
+        );
+    }
+}
+
+fn read_exact_moss_audio_sidecar(
+    directory: &Path,
+    spec: ExactSidecar,
+    variant: MossTtsVariant,
+) -> Result<Vec<u8>, ConvertError> {
+    let path = directory.join(spec.name);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        ConvertError::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "moss-audio: reading required {}@{} sidecar {}: {error}",
+                variant.upstream_hf(),
+                variant
+                    .upstream_revision()
+                    .expect("audio-instruct revision"),
+                path.display()
+            ),
+        ))
+    })?;
+    if bytes.len() != spec.bytes {
+        return Err(ConvertError::Parse(format!(
+            "{}@{} sidecar {} is {} bytes, expected exactly {}",
+            variant.upstream_hf(),
+            variant
+                .upstream_revision()
+                .expect("audio-instruct revision"),
+            spec.name,
+            bytes.len(),
+            spec.bytes
+        )));
+    }
+    let actual =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&bytes));
+    if actual != spec.sha256 {
+        return Err(ConvertError::Parse(format!(
+            "{}@{} sidecar {} SHA-256 {actual}, expected {}",
+            variant.upstream_hf(),
+            variant
+                .upstream_revision()
+                .expect("audio-instruct revision"),
+            spec.name,
+            spec.sha256
+        )));
+    }
+    Ok(bytes)
+}
+
+fn add_u8_array(builder: &mut GgufBuilder, key: &str, bytes: &[u8]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: bytes.iter().copied().map(GgufMetadataValue::U8).collect(),
+        }),
+    );
+}
+
 // ─── convert / convert_variant / convert_moss_tts_file ───────────────
 
 /// Byte-based converter — used by tests and by the file-based helper.
@@ -869,8 +1056,17 @@ pub fn convert_moss_tts_file(
     variant: MossTtsVariant,
     license: Option<&str>,
 ) -> Result<MossTtsReport, ConvertError> {
+    // Fail before reading a multi-gigabyte merged checkpoint when any exact
+    // release sidecar is missing or modified.
+    let tokenizer_assets = variant
+        .is_audio_instruct()
+        .then(|| MossAudioTokenizerAssets::load(input, variant))
+        .transpose()?;
     let bytes = std::fs::read(input)?;
     let (mut builder, report) = convert_variant(bytes, variant)?;
+    if let Some(tokenizer_assets) = tokenizer_assets {
+        tokenizer_assets.embed(&mut builder);
+    }
     // Apply the caller-supplied SPDX override on top of the built-in
     // apache-2.0 stamp (mirror of `convert_wespeaker_file`). We
     // re-stamp by writing the override provenance chunk over the
@@ -1416,6 +1612,20 @@ mod tests {
             Some(GgufMetadataValue::F32(v)) => *v,
             other => panic!("{key}: unexpected {other:?}"),
         }
+    }
+
+    fn scratch_directory(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-moss-audio-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("create scratch directory");
+        path
     }
 
     fn round_trip(variant: MossTtsVariant) -> GgufFile {
@@ -2109,6 +2319,41 @@ mod tests {
         };
         assert!(message.contains("expected 901"));
         assert!(message.contains("missing="));
+    }
+
+    #[test]
+    fn moss_audio_sidecar_reader_rejects_size_and_hash_drift() {
+        let directory = scratch_directory("sidecars");
+        let path = directory.join("asset.bin");
+        std::fs::write(&path, b"abc").expect("write exact sidecar");
+        let exact = ExactSidecar {
+            name: "asset.bin",
+            bytes: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        assert_eq!(
+            read_exact_moss_audio_sidecar(&directory, exact, MossTtsVariant::AudioInstruct4b)
+                .expect("exact sidecar"),
+            b"abc"
+        );
+        let short = ExactSidecar { bytes: 4, ..exact };
+        assert!(
+            read_exact_moss_audio_sidecar(&directory, short, MossTtsVariant::AudioInstruct4b)
+                .expect_err("size drift")
+                .to_string()
+                .contains("expected exactly 4")
+        );
+        let wrong_hash = ExactSidecar {
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            ..exact
+        };
+        assert!(
+            read_exact_moss_audio_sidecar(&directory, wrong_hash, MossTtsVariant::AudioInstruct4b)
+                .expect_err("hash drift")
+                .to_string()
+                .contains("SHA-256")
+        );
+        std::fs::remove_dir_all(directory).expect("remove scratch directory");
     }
 
     // ─── Errors ─────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, verify_te
 mod audio_encoder;
 mod frontend;
 mod text_decoder;
+mod tokenizer;
 mod weights;
 
 use audio_encoder::MossAudioEncoderRuntime;
@@ -32,6 +33,10 @@ pub use audio_encoder::{MOSS_AUDIO_ENCODER_HOT_OPS, MossAudioEmbeddings};
 use text_decoder::MossAudioTextRuntime;
 pub use text_decoder::{
     MOSS_AUDIO_HOT_OPS, MOSS_AUDIO_TEXT_HOT_OPS, MossAudioGenerationOptions, MossAudioTokenOutput,
+};
+pub use tokenizer::{
+    AUDIO_END_TOKEN_ID, AUDIO_START_TOKEN_ID, AUDIO_TOKEN_ID, BASE_VOCAB_SIZE, DEFAULT_USER_PROMPT,
+    END_OF_TEXT_TOKEN_ID, IM_END_TOKEN_ID, IM_START_TOKEN_ID, MossAudioTextTokenizer,
 };
 use weights::MossAudioMappedDescriptors;
 
@@ -280,6 +285,7 @@ pub struct MossAudioCheckpoint {
     weight_license: LicenseClass,
     legacy_public_metadata: bool,
     mapped: Option<Arc<MossAudioMappedDescriptors>>,
+    tokenizer: Option<Arc<MossAudioTextTokenizer>>,
 }
 
 impl std::fmt::Debug for MossAudioCheckpoint {
@@ -290,6 +296,7 @@ impl std::fmt::Debug for MossAudioCheckpoint {
             .field("weight_license", &self.weight_license)
             .field("legacy_public_metadata", &self.legacy_public_metadata)
             .field("mapped", &self.mapped.is_some())
+            .field("tokenizer", &self.tokenizer.is_some())
             .finish()
     }
 }
@@ -305,8 +312,17 @@ impl MossAudioCheckpoint {
     /// Strictly binds an already mmap-backed GGUF.
     pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
         let mut checkpoint = Self::from_gguf(&file)?;
+        let tokenizer = if checkpoint.legacy_public_metadata {
+            None
+        } else {
+            Some(Arc::new(MossAudioTextTokenizer::from_gguf(
+                &file,
+                checkpoint.variant,
+            )?))
+        };
         let mapped = MossAudioMappedDescriptors::bind(file, checkpoint.config)?;
         checkpoint.mapped = Some(Arc::new(mapped));
+        checkpoint.tokenizer = tokenizer;
         Ok(checkpoint)
     }
 
@@ -372,6 +388,7 @@ impl MossAudioCheckpoint {
             weight_license: LicenseClass::Permissive,
             legacy_public_metadata,
             mapped: None,
+            tokenizer: None,
         })
     }
 
@@ -411,11 +428,18 @@ impl MossAudioCheckpoint {
         self.mapped.is_some()
     }
 
-    /// Loud diagnostic forward for the binder-only implementation slice.
+    /// Whether this executable checkpoint carries all six authenticated text
+    /// tokenizer/chat/generation/processor sidecars.
+    #[must_use]
+    pub const fn has_text_tokenizer(&self) -> bool {
+        self.tokenizer.is_some()
+    }
+
+    /// Loud boundary on the checkpoint descriptor handle.
     ///
-    /// The next slices connect the authenticated mapped descriptors to the
-    /// native audio tower, adapters and Qwen3 decoder. Until then this method
-    /// never manufactures text or selects a CPU fallback.
+    /// Executable inference lives on [`MossAudio`], which requires an explicit
+    /// CPU or Metal backend. Keeping this method non-executing prevents a
+    /// backend-less checkpoint from selecting CPU implicitly.
     pub fn respond(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -428,7 +452,7 @@ impl MossAudioCheckpoint {
             )));
         }
         Err(VokraError::UnsupportedOp(format!(
-            "moss_audio respond: the exact {} 901-tensor checkpoint is bound, but native execution still requires the 32-layer audio tower, four GatedMLP adapters with DeepStack injection, and 36-layer Qwen3 decoder implementation; no text or silent CPU fallback is produced",
+            "moss_audio checkpoint respond: {} is a descriptor handle without a selected backend; construct MossAudio::from_checkpoint(checkpoint, BackendKind::Cpu or BackendKind::Metal) explicitly",
             self.variant.model_name()
         )))
     }
@@ -441,19 +465,52 @@ impl MossAudioCheckpoint {
             )
         })
     }
+
+    fn text_tokenizer(&self) -> Result<&MossAudioTextTokenizer> {
+        self.tokenizer.as_deref().ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "moss_audio tokenizer: {} has no authenticated embedded tokenizer/chat/generation/processor sidecars; historical GGUFs remain token-level only and must be re-converted from the fixed upstream revision for string generation",
+                self.variant.model_name()
+            ))
+        })
+    }
 }
 
 /// Executable MOSS-Audio audio tower, adapters and Qwen3 decoder.
 ///
-/// [`Self::generate_tokens`] keeps the multi-gigabyte checkpoint mapped and
-/// widens one layer at a time. String generation remains explicit until the
-/// tokenizer/chat-template sidecar contract lands.
+/// Every route keeps the multi-gigabyte checkpoint mapped and widens one layer
+/// at a time. Corrected GGUFs expose authenticated string generation; exact
+/// historical publications without sidecars remain token-level only.
 #[derive(Clone)]
 pub struct MossAudio {
     checkpoint: MossAudioCheckpoint,
     backend: BackendKind,
     encoder: Arc<MossAudioEncoderRuntime>,
     text: Arc<MossAudioTextRuntime>,
+}
+
+/// Decoded MOSS-Audio response plus the exact generated token sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MossAudioResponse {
+    text: String,
+    token_ids: Vec<u32>,
+}
+
+impl MossAudioResponse {
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub fn token_ids(&self) -> &[u32] {
+        &self.token_ids
+    }
+
+    #[must_use]
+    pub fn into_text(self) -> String {
+        self.text
+    }
 }
 
 impl std::fmt::Debug for MossAudio {
@@ -506,9 +563,8 @@ impl MossAudio {
     /// Runs audio encoding plus the complete 36-layer Qwen3 decoder from a
     /// caller-supplied official prompt-token sequence. The sequence must carry
     /// exactly one `tokens.audio` placeholder for every encoded audio row.
-    /// This token-level entry avoids pretending the historical GGUF embeds a
-    /// tokenizer/chat template; the string route remains loud until that
-    /// authenticated sidecar contract is connected.
+    /// This token-level entry remains available for the exact historical
+    /// publications that predate embedded tokenizer sidecars.
     pub fn generate_tokens(
         &self,
         pcm: &[f32],
@@ -528,13 +584,45 @@ impl MossAudio {
         )
     }
 
-    /// Explicit text-generation boundary until the Qwen3 decoder slice lands.
+    /// Runs the official example prompt (`"Describe this audio."`) with the
+    /// default deterministic generation controls.
     pub fn respond(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
+        self.respond_with_prompt(
+            pcm,
+            sample_rate,
+            DEFAULT_USER_PROMPT,
+            &MossAudioGenerationOptions::default(),
+        )
+        .map(MossAudioResponse::into_text)
+    }
+
+    /// Runs one official single-audio ChatML request with caller-supplied text.
+    ///
+    /// Corrected conversions authenticate all six fixed-revision sidecars.
+    /// The legacy public GGUFs fail before audio execution because using a
+    /// host tokenizer would make the checkpoint mutable and unverifiable.
+    pub fn respond_with_prompt(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        prompt: &str,
+        options: &MossAudioGenerationOptions,
+    ) -> Result<MossAudioResponse> {
         validate_audio_input(pcm, sample_rate)?;
-        Err(VokraError::UnsupportedOp(format!(
-            "moss_audio respond: {} has complete CPU/Metal audio and 36-layer Qwen3 token generation through MossAudio::generate_tokens, but this historical GGUF has no authenticated tokenizer/chat-template sidecar; no text or silent CPU fallback is produced",
-            self.checkpoint.variant().model_name()
-        )))
+        let tokenizer = self.checkpoint.text_tokenizer()?;
+        let audio = audio_encoder::encode(&self.checkpoint, self.backend, &self.encoder, pcm)?;
+        let prompt_tokens = tokenizer.prompt_ids(audio.frames(), prompt)?;
+        let output = text_decoder::generate(
+            &self.checkpoint,
+            self.backend,
+            &self.text,
+            &prompt_tokens,
+            &audio,
+            options,
+        )?;
+        let token_ids = output.into_token_ids();
+        let text = tokenizer.decode_generated_ids(&token_ids)?;
+        Ok(MossAudioResponse { text, token_ids })
     }
 }
 

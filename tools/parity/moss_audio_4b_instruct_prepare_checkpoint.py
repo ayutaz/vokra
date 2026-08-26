@@ -67,14 +67,18 @@ input → byte-identical output.
     uv run --project tools/parity python \\
         tools/parity/moss_audio_4b_instruct_prepare_checkpoint.py \\
         --input-dir ~/hf-snapshots/moss-audio-4b-instruct \\
-        --output /tmp/moss-audio-4b-instruct.safetensors \\
+        --output ~/hf-snapshots/moss-audio-4b-instruct/model.merged.safetensors \\
         [--strict]
 
 Then::
 
     vokra-cli convert --model moss-audio \\
-        --input /tmp/moss-audio-4b-instruct.safetensors \\
+        --input ~/hf-snapshots/moss-audio-4b-instruct/model.merged.safetensors \\
         --output /tmp/moss-audio-4b-instruct.gguf
+
+The merged input intentionally remains inside the fixed-revision snapshot so
+the Rust converter can authenticate and embed the adjacent tokenizer, chat,
+generation and processor sidecars before reading the multi-gigabyte weights.
 
 # Self-test
 

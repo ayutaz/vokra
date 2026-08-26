@@ -3141,6 +3141,34 @@ still a VAST-only gate, and real CPU/Metal comparison is still an external
 Apple-Silicon gate. No Hugging Face upload or artifact replacement occurred
 or was authorized.
 
+### MOSS-Audio 4B/8B Instruct native understanding route
+
+The corrected contract binds the exact 901-tensor BF16 manifests for
+`OpenMOSS-Team/MOSS-Audio-4B-Instruct@6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d`
+and
+`OpenMOSS-Team/MOSS-Audio-8B-Instruct@6521a39181b47a18f2d9f4b3acfb5bca7b76b57f`.
+It executes the variable-length 16 kHz Whisper frontend, three stride-two
+convolutions, 32-layer audio tower, primary plus three DeepStack GatedMLP
+adapters and 36-layer Qwen3 decoder through one preflighted CPU or Metal
+backend. Learned GEMM/GEMV, attention, normalization and activation never
+select an implicit CPU fallback.
+
+Corrected conversions now require and authenticate the six adjacent
+`vocab.json`, `merges.txt`, `tokenizer_config.json`, `chat_template.jinja`,
+`generation_config.json` and `processor_config.json` sidecars before reading
+the multi-gigabyte merged checkpoint. The sidecars are embedded as exact U8
+arrays. Runtime string prompts reproduce the official one-audio default
+ChatML envelope and its two-second time-marker insertion (25 audio rows at
+12.5 Hz); generated text follows the authenticated variant-specific added
+token table. The historical public GGUFs have the wrong `moss_tts` arch and no
+sidecars, so they remain exact-manifest token-level-only instead of consulting
+a mutable host tokenizer.
+
+No MOSS-Audio weight payload, model inference or `vokra-models` Cargo command
+ran on the maintainer Mac. Compilation, official-reference parity, converted
+4B/8B real-file CPU execution and Apple CPU/Metal comparison remain remote
+gates. This source route does not authorize replacing either public artifact.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a
