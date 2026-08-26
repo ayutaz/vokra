@@ -48,6 +48,7 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
     "sbv2",
+    "yue_xcodec_mini",
 }
 
 # Artifact-specific failures that cannot be inferred from the repo-card arch.
@@ -218,6 +219,14 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "E2E0 tensor manifest, but mis-stamps yxlllc/RMVPE as MIT/permissive even "
         "though that exact repository declares no license; the strict CPU/Metal "
         "loader rejects it pending an authorized provenance-corrected replacement",
+    ),
+    "vokra/yue-xcodec-mini": (
+        "partial",
+        "the exact 2,145-F32-tensor public composite now has strict CPU/Metal "
+        "12-codebook token-to-44.1-kHz decode through its embedded Vocos head. "
+        "PCM encode remains an explicit boundary until the released acoustic "
+        "encoder, HuBERT/RepCodec semantic path, fusion projection and RVQ search "
+        "are independently bound; no simpler codec or CPU fallback is substituted",
     ),
 }
 

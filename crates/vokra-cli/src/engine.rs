@@ -365,6 +365,11 @@ pub(crate) enum ModelTask {
     /// GroupNorm and LSTM projections through one CPU/Metal backend. PCM encode
     /// remains an explicit unsupported operation.
     FunCodec,
+    /// YuE xcodec-mini fixed 12-codebook token-to-44.1-kHz decode.
+    /// The exact public composite checkpoint sums the released residual-VQ
+    /// tables and executes its embedded 151k Vocos head on CPU or Metal.
+    /// PCM encode remains an explicit unsupported operation.
+    YueXcodecMini,
     /// Fudan/OpenMOSS SpeechTokenizer 16 kHz residual-VQ token-to-waveform
     /// decode. The exact public eight-codebook checkpoint routes RVQ,
     /// weight-normalized SEANet convolution and LSTM projections through one
@@ -634,6 +639,8 @@ const ARCH_NEUCODEC: &str = "neucodec";
 const ARCH_XCODEC2: &str = "xcodec2";
 /// Alibaba DAMO FunCodec 16 kHz / 32-codebook codec.
 const ARCH_FUNCODEC: &str = "funcodec";
+/// m-a-p YuE xcodec-mini 12-codebook composite codec.
+const ARCH_YUE_XCODEC_MINI: &str = "yue_xcodec_mini";
 /// Fudan/OpenMOSS SpeechTokenizer 16 kHz / eight-codebook codec.
 const ARCH_SPEECHTOKENIZER: &str = "speechtokenizer";
 /// Aratako MioCodec 25 Hz / 44.1 kHz v2 codec.
@@ -1547,6 +1554,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::FunCodec))
+        }
+        ARCH_YUE_XCODEC_MINI => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_YUE_XCODEC_MINI}`"
+                ));
+            }
+            Ok((session, ModelTask::YueXcodecMini))
         }
         ARCH_SPEECHTOKENIZER => {
             if hint.is_some() {
@@ -3921,6 +3936,21 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_yue_xcodec_mini_to_its_fixed_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_YUE_XCODEC_MINI, "yue-xcodec-mini-routed", |path| {
+                load_session(path).expect("YuE xcodec-mini session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::YueXcodecMini);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_YUE_XCODEC_MINI),
+            "the routed YuE xcodec-mini must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_speechtokenizer_to_the_residual_vq_codec_task() {
         let (_session, task) =
             with_arch_only_gguf(ARCH_SPEECHTOKENIZER, "speechtokenizer-routed", |path| {
@@ -4115,6 +4145,7 @@ mod tests {
             ARCH_NEUCODEC,
             ARCH_XCODEC2,
             ARCH_FUNCODEC,
+            ARCH_YUE_XCODEC_MINI,
             ARCH_SPEECHTOKENIZER,
             ARCH_MIOCODEC,
             ARCH_SNAC,

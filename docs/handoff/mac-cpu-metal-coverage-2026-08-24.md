@@ -1,5 +1,25 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 YuE xcodec-mini source wave:** bounded reads of only the
+> public GGUF header authenticated revision
+> `83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa`, 1,810,001,760 bytes,
+> SHA-256 `60e21aa5335646080102196454d7ffad5e012467d6f5eb9b776bf07d666b02bc`,
+> 2,145 F32 tensors and name/shape manifest
+> `cc0a5e9a5a6f1cfbd93b1869bbcb70744814bd8c855d173949abbf6b6cc08f15`.
+> The historical conversion accidentally retained `optimizer_g` and
+> `optimizer_d`; the strict binder authenticates the complete historical
+> identity but loads only the twelve 1024×1024 RVQ tables and byte-identical
+> 81-tensor 151k Vocos head. The released `[frames,12]` code route now runs
+> 50 Hz token-to-44.1-kHz PCM on CPU or Metal with one whole-path backend
+> preflight and no fallback. The prior 640×/25 Hz documentation was corrected
+> to the upstream `[8,5,4,2]` product 320×/50 Hz. Fresh prep now unwraps only
+> `codec_model`, authenticates all fixed source payloads and excludes optimizer
+> state. PCM encode remains an explicit boundary for the acoustic encoder,
+> HuBERT/RepCodec semantic path, fusion and RVQ search. A fixed-upstream
+> quantizer plus `vocos==0.1.0` oracle and measurement-only VAST/Apple tests
+> are staged; real-weight numerical bounds remain unset. No model payload,
+> conversion or inference ran on the maintainer Mac, and no upload occurred.
+
 > **2026-08-27 Parler-TTS Mini source wave:** the public English and
 > multilingual GGUFs now have exact 926/840-F32-tensor manifest gates and a
 > mapping-owned native FLAN-T5-large, delayed nine-codebook LM and embedded
@@ -287,8 +307,8 @@ it reported:
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
 | Complete CPU route for the live public artifact | 124 |
-| Route/binder present, released-artifact CPU forward incomplete | 45 |
-| No complete runtime binder | 24 |
+| Route/binder present, released-artifact CPU forward incomplete | 46 |
+| No complete runtime binder | 23 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
 | Complete Metal code route among the CPU-complete set | 124 |
 | CPU-complete but Metal-unsupported | 0 |
@@ -371,12 +391,15 @@ remaining 69 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
-The generic routed-partial set deliberately includes `csm` and `sbv2`. CSM
+The generic routed-partial set deliberately includes `csm`, `sbv2` and
+`yue_xcodec_mini`. CSM
 still constructs synthesized model weights in its public GGUF loader, and
 SBV2's public conversion does not satisfy the strict runtime tensor-name
-contract. These two have substantial code, but neither is a
-released-artifact-complete CPU runtime; counting them as complete would hide
-the actual blocker.
+contract. YuE xcodec-mini has complete CPU/Metal token decode but not the
+released PCM encode graph, so it remains partial rather than overstating
+model-wide coverage. These entries have substantial code, but none is a
+released-artifact-complete whole-model CPU runtime; counting them as complete
+would hide the actual blocker.
 
 RMVPE is instead an artifact-specific blocker, like NSNet2: the 623 inference
 tensor + 118 counter topology is now exact, while the public header's

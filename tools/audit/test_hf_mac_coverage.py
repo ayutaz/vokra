@@ -75,6 +75,16 @@ const BOUND_ARCHES: &[BoundArch] = &[
                 "no-runtime-binder",
                 "empty tensor manifest",
             ),
+            (
+                audit.RepoRecord(
+                    "vokra/yue-xcodec-mini",
+                    "abc",
+                    ("yue-xcodec-mini.gguf",),
+                    "yue_xcodec_mini",
+                ),
+                "partial",
+                "2,145-F32-tensor",
+            ),
         )
 
         for record, cpu_code, reason_fragment in cases:
@@ -133,6 +143,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "qwen3_asr",
             "tiger_separator",
             "deepfake_detection",
+            "yue_xcodec_mini",
         }
         bound = set()
         full = audit.RepoRecord("vokra/whisper", "abc", ("model.gguf",), "whisper")

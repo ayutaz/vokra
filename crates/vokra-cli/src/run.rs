@@ -93,6 +93,8 @@ USAGE:
                   --output <out.wav>
     vokra-cli run --model <funcodec.gguf> --codec-mode decode --num-quantizers <1..32> \
                   --input <codes.u32le> --output <out.wav>
+    vokra-cli run --model <yue-xcodec-mini.gguf> --codec-mode decode \
+                  --input <12cb-codes.u32le> --output <44.1k-out.wav>
     vokra-cli run --model <speechtokenizer.gguf> --codec-mode decode \
                   --num-quantizers <1..8> --input <codes.u32le> --output <out.wav>
     vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
@@ -170,6 +172,8 @@ OPTIONS:
                                 `[frames,num_quantizers]` u32le at 50 Hz;
                                 `--num-quantizers` declares the residual-VQ
                                 prefix width.
+                                For YuE xcodec-mini decode it is fixed-width
+                                frame-major `[frames,12]` u32le at 50 Hz.
                                 For SpeechTokenizer decode it is the same raw
                                 frame-major residual-VQ matrix at 50 Hz with
                                 a release maximum of eight codebooks.
@@ -332,6 +336,11 @@ OPTIONS:
                                 residual-VQ u32le matrix. CPU and Metal cover
                                 the complete token-to-waveform graph; encode
                                 remains an explicit error.
+                                yue_xcodec_mini: `decode` only, from a fixed
+                                frame-major `[frames,12]` residual-VQ u32le
+                                matrix. CPU and Metal sum the released tables
+                                and execute the embedded 44.1 kHz Vocos head;
+                                PCM encode remains an explicit error.
                                 speechtokenizer: `decode` only, from a
                                 frame-major residual-VQ u32le matrix. CPU and
                                 Metal cover the complete token-to-waveform
@@ -1248,6 +1257,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::NeuCodec
         | ModelTask::XCodec2
         | ModelTask::FunCodec
+        | ModelTask::YueXcodecMini
         | ModelTask::SpeechTokenizer
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
@@ -1411,6 +1421,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::NeuCodec
         && task != ModelTask::XCodec2
         && task != ModelTask::FunCodec
+        && task != ModelTask::YueXcodecMini
         && task != ModelTask::SpeechTokenizer
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
@@ -1419,7 +1430,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
@@ -1849,6 +1860,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::FunCodec => {
             run_funcodec_codec(&session, &a)?;
+        }
+        ModelTask::YueXcodecMini => {
+            run_yue_xcodec_mini(&session, &a)?;
         }
         ModelTask::SpeechTokenizer => {
             run_speechtokenizer_codec(&session, &a)?;
@@ -3988,6 +4002,71 @@ fn run_funcodec_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
         "funcodec decode: {frames} frames x {num_quantizers} quantizers -> {} samples @ {} Hz -> {output_path}",
         pcm.len(),
         model.sample_rate()
+    );
+    Ok(())
+}
+
+/// m-a-p YuE xcodec-mini fixed-width residual-VQ token-to-PCM path.
+fn run_yue_xcodec_mini(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const CODEBOOKS: usize = vokra_models::yue_xcodec_mini::CODEBOOKS;
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (yue-xcodec-mini): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (yue-xcodec-mini): PCM-to-token encode is not implemented: the released DAC acoustic encoder, HuBERT frontend, RepCodec semantic encoder, fusion projection, and RVQ search are not yet bound; no substitute encoder or CPU fallback is used"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err("run (yue-xcodec-mini): --codec-mode decode is required".to_owned());
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (yue-xcodec-mini): --input <12cb-codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (yue-xcodec-mini): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let model = vokra_models::yue_xcodec_mini::YueXcodecMini::from_gguf_with_backend(
+        session.gguf(),
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (yue-xcodec-mini decode): {input_path}: {error}"))?;
+    let row_bytes = CODEBOOKS * std::mem::size_of::<u32>();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(row_bytes) {
+        return Err(format!(
+            "run (yue-xcodec-mini decode): {input_path} has {} bytes; expected a positive multiple of {row_bytes} for frame-major [frames,{CODEBOOKS}] u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let frames = codes.len() / CODEBOOKS;
+    let audio = model
+        .decode_codes_44khz(&codes, frames)
+        .map_err(|error| format!("run (yue-xcodec-mini decode): {error}"))?;
+    wav::write_wav(output_path, &audio.samples, audio.sample_rate).map_err(|error| {
+        format!("run (yue-xcodec-mini decode): --output {output_path}: {error}")
+    })?;
+    println!(
+        "yue-xcodec-mini decode: {frames} frames x {CODEBOOKS} codebooks -> {} samples @ {} Hz -> {output_path}",
+        audio.samples.len(),
+        audio.sample_rate
     );
     Ok(())
 }
@@ -7507,6 +7586,8 @@ mod tests {
         assert!(USAGE.contains("VKRFA2V1"));
         assert!(USAGE.contains("miocodec.gguf"));
         assert!(USAGE.contains("VKRMIO01"));
+        assert!(USAGE.contains("yue-xcodec-mini.gguf"));
+        assert!(USAGE.contains("[frames,12]"));
     }
 
     #[test]
@@ -7583,7 +7664,7 @@ mod tests {
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
         assert!(err.contains(
             "--codec-mode is only supported for standalone \
-             mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
+             mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
         ));
     }
 
@@ -8326,6 +8407,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::NeuCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::XCodec2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FunCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::YueXcodecMini), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SpeechTokenizer), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
