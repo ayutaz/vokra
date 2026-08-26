@@ -607,6 +607,8 @@ pub mod moss_audio_tokenizer;
 /// codec companion; Base/v1.5 additionally have a strict 463-tensor
 /// mmap-backed Delay checkpoint binder while their generation graph lands.
 pub mod moss_tts;
+/// Native Parler-TTS Mini English / Multilingual strict composite runtime.
+pub mod parler;
 /// Native Microsoft SpeechT5 TTS strict checkpoint and tokenizer contract.
 pub mod speecht5;
 /// Fudan/OpenMOSS SpeechTokenizer 16 kHz / eight-codebook native RVQ +
