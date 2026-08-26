@@ -5028,7 +5028,10 @@ impl ModelKind {
             | "openmoss-team/moss-audio-tokenizer"
             | "moss-audio-tokenizer-nano"
             | "moss_audio_tokenizer_nano"
-            | "openmoss-team/moss-audio-tokenizer-nano" => Some(Self::MossAudioTokenizer),
+            | "openmoss-team/moss-audio-tokenizer-nano"
+            | "moss-audio-tokenizer-v2"
+            | "moss_audio_tokenizer_v2"
+            | "openmoss-team/moss-audio-tokenizer-v2" => Some(Self::MossAudioTokenizer),
             // Amphion NaturalSpeech 3 FACodec — factorized VQ codec
             // (2026-08-01 Wave 3, apache-2.0). Four variants share
             // this single ModelKind; the slug picks the encoder+decoder
@@ -6408,6 +6411,11 @@ pub fn convert_file_with_slug(
                 | "moss_audio_tokenizer_nano"
                 | "openmoss-team/moss-audio-tokenizer-nano" => {
                     models::moss_audio_tokenizer::MossAudioTokenizerVariant::Nano
+                }
+                "moss-audio-tokenizer-v2"
+                | "moss_audio_tokenizer_v2"
+                | "openmoss-team/moss-audio-tokenizer-v2" => {
+                    models::moss_audio_tokenizer::MossAudioTokenizerVariant::V2
                 }
                 // Canonical "moss-audio-tokenizer" / -full →
                 // Full default.

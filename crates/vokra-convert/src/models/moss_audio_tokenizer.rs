@@ -1,9 +1,10 @@
 #![allow(clippy::doc_lazy_continuation)]
 //! **MOSS-Audio-Tokenizer** (`OpenMOSS-Team/MOSS-Audio-Tokenizer`,
-//! `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`, apache-2.0): safetensors →
+//! `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`,
+//! `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`, apache-2.0): safetensors →
 //! GGUF conversion (2026-08-01 Wave 3).
 //!
-//! Input: one of the two OpenMOSS MOSS-Audio-Tokenizer release
+//! Input: one of the three OpenMOSS MOSS-Audio-Tokenizer release
 //! safetensors — the codec half of the MOSS-TTS pipeline (waveform →
 //! discrete tokens fed into the sibling MOSS-TTS LLM at
 //! `crates/vokra-convert/src/models/moss_tts.rs`). Publishing this
@@ -16,7 +17,7 @@
 //!
 //! # Family coverage — variant selectors
 //!
-//! Both variants share `model_type = "moss-audio-tokenizer"` and a
+//! All variants share `model_type = "moss-audio-tokenizer"` and a
 //! single `MossAudioTokenizerModel` class per upstream
 //! `config.json.architectures`; they are distinct codec topologies, not
 //! merely two parameter scales
@@ -38,6 +39,12 @@
 //!   config.json, configuration_moss_audio_tokenizer.py,
 //!   modeling_moss_audio_tokenizer.py]`). Additionally distilled per
 //!   arXiv:2603.18090 encoder distillation reference.
+//! - [`MossAudioTokenizerVariant::V2`] —
+//!   `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2` at immutable revision
+//!   `f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169` (2,123,701,248 F32
+//!   params, 2,094 tensors, three shards / 8,494,804,992 tensor bytes).
+//!   This is the 48 kHz stereo, 32-RLFQ-codebook codec required by
+//!   `MOSS-TTS-Local-Transformer` and is not the Nano topology.
 //!
 //! # Sharded safetensors → single-file bridge
 //!
@@ -187,6 +194,24 @@ pub const UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
 /// via HF cardData tag only).
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
+/// Immutable public v2 revision audited on 2026-08-26.
+pub const V2_UPSTREAM_REVISION: &str = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169";
+/// SHA-256 of v2 `config.json` at [`V2_UPSTREAM_REVISION`].
+pub const V2_CONFIG_SHA256: &str =
+    "aeb9a0e9d88c74bf9fbaa81ee54443d463e09b5f335b3306bb798e282a10e564";
+/// SHA-256 of v2 `configuration_moss_audio_tokenizer.py`.
+pub const V2_CONFIGURATION_SOURCE_SHA256: &str =
+    "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529";
+/// SHA-256 of v2 `modeling_moss_audio_tokenizer.py`.
+pub const V2_MODELING_SOURCE_SHA256: &str =
+    "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9";
+/// SHA-256 of v2 `model.safetensors.index.json`.
+pub const V2_INDEX_SHA256: &str =
+    "912f52f053e04ff7e9abc8f05aa75dfbb40b31c86a0f4ad5c5a36e4aa28a624f";
+/// SHA-256 of the upstream Apache-2.0 `LICENSE` file.
+pub const V2_LICENSE_SHA256: &str =
+    "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a";
+
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (mirror of the sibling BF16 pass-through
 // converters' cross-crate constant duplication rule).
@@ -197,25 +222,38 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.model.name` (mirrors `super::snac` +
 /// `super::focalcodec` discriminators).
 pub const KEY_VARIANT: &str = "vokra.moss_audio_tokenizer.variant";
+/// Fixed upstream revision for contracts audited at an immutable commit.
+pub const KEY_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+/// Fixed-revision v2 configuration hash.
+pub const KEY_CONFIG_SHA256: &str = "vokra.moss_audio_tokenizer.config_sha256";
+/// Fixed-revision v2 custom configuration-source hash.
+pub const KEY_CONFIGURATION_SOURCE_SHA256: &str =
+    "vokra.moss_audio_tokenizer.configuration_source_sha256";
+/// Fixed-revision v2 modeling-source hash.
+pub const KEY_MODELING_SOURCE_SHA256: &str = "vokra.moss_audio_tokenizer.modeling_source_sha256";
+/// Fixed-revision v2 shard-index hash.
+pub const KEY_INDEX_SHA256: &str = "vokra.moss_audio_tokenizer.index_sha256";
+/// Fixed-revision v2 license-file hash.
+pub const KEY_LICENSE_SHA256: &str = "vokra.moss_audio_tokenizer.license_sha256";
 
 /// Which MOSS-Audio-Tokenizer release the caller is converting.
 /// Selects the model name / upstream HF slug / variant tag written
 /// into the GGUF.
 ///
-/// Both variants share [`ARCH`] `moss_audio_tokenizer` because upstream uses
+/// All variants share [`ARCH`] `moss_audio_tokenizer` because upstream uses
 /// the same `MossAudioTokenizerModel` class, while their runtime topology is
 /// selected independently from the variant tag and complete tensor manifest.
 ///
 /// # Per-variant primary-source axes
 ///
-/// Values from HF `api/models/<id>` fetched 2026-08-01:
+/// Values from the fixed upstream releases audited through 2026-08-26:
 ///
-/// | axis | Full | Nano |
-/// |---|---|---|
-/// | params (F32) | 1,774,566,400 | 21,969,664 |
-/// | `usedStorage` | 7.10 GB | 87.9 MB |
-/// | shards | 2 | 1 |
-/// | vast.ai required | yes (>=2 GB artifact) | no (trivial local) |
+/// | axis | Full | Nano | v2 |
+/// |---|---|---|---|
+/// | params (F32) | 1,774,566,400 | 21,969,664 | 2,123,701,248 |
+/// | tensor bytes | ~7.10 GB | 87.9 MB | 8,494,804,992 |
+/// | shards | 2 | 1 | 3 |
+/// | vast.ai required | yes | no | yes |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MossAudioTokenizerVariant {
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer`: the full-scale (~1.77B
@@ -236,6 +274,12 @@ pub enum MossAudioTokenizerVariant {
     /// convert locally on the M1 iMac dev machine).
     /// `vokra.moss_audio_tokenizer.variant = "nano"`.
     Nano,
+    /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`: 48 kHz stereo,
+    /// channel-interleaved, 32 residual LFQ codebooks and a six-stage
+    /// decoder. This is the codec named by the pinned
+    /// `MOSS-TTS-Local-Transformer` configuration.
+    /// `vokra.moss_audio_tokenizer.variant = "v2"`.
+    V2,
 }
 
 impl MossAudioTokenizerVariant {
@@ -244,6 +288,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => "moss-audio-tokenizer",
             Self::Nano => "moss-audio-tokenizer-nano",
+            Self::V2 => "moss-audio-tokenizer-v2",
         }
     }
 
@@ -254,6 +299,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => "OpenMOSS-Team/MOSS-Audio-Tokenizer",
             Self::Nano => "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano",
+            Self::V2 => "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
         }
     }
 
@@ -263,6 +309,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => "full",
             Self::Nano => "nano",
+            Self::V2 => "v2",
         }
     }
 
@@ -280,6 +327,18 @@ impl MossAudioTokenizerVariant {
                  codec Nano ~22M params F32 distilled per arXiv:2603.18090, \
                  apache-2.0)"
             }
+            Self::V2 => {
+                "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2 (48 kHz stereo codec, \
+                 ~2.12B F32 params, 32 residual LFQ codebooks, apache-2.0)"
+            }
+        }
+    }
+
+    /// Immutable upstream revision when this variant has a fixed contract.
+    pub const fn upstream_revision(self) -> Option<&'static str> {
+        match self {
+            Self::V2 => Some(V2_UPSTREAM_REVISION),
+            Self::Full | Self::Nano => None,
         }
     }
 }
@@ -413,6 +472,17 @@ pub fn convert_moss_audio_tokenizer_variant_file(
         Some(variant.source_description()),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+    if let Some(revision) = variant.upstream_revision() {
+        b.add_string(KEY_UPSTREAM_REVISION, revision);
+        b.add_string(KEY_CONFIG_SHA256, V2_CONFIG_SHA256);
+        b.add_string(
+            KEY_CONFIGURATION_SOURCE_SHA256,
+            V2_CONFIGURATION_SOURCE_SHA256,
+        );
+        b.add_string(KEY_MODELING_SOURCE_SHA256, V2_MODELING_SOURCE_SHA256);
+        b.add_string(KEY_INDEX_SHA256, V2_INDEX_SHA256);
+        b.add_string(KEY_LICENSE_SHA256, V2_LICENSE_SHA256);
+    }
 
     let mut report = MossAudioTokenizerReport {
         variant: Some(variant),
@@ -779,6 +849,52 @@ mod tests {
     }
 
     #[test]
+    fn v2_variant_pins_the_fixed_revision_contract() {
+        let f32_bytes = 1.0_f32.to_le_bytes();
+        let input_bytes =
+            safetensors_one_f32("quantizer.quantizers.0.codebook.weight", &[1], &f32_bytes);
+        let input_path = write_temp("v2-in", &input_bytes);
+        let output_path = write_temp("v2-out", &[]);
+
+        let report = convert_moss_audio_tokenizer_variant_file(
+            &input_path,
+            &output_path,
+            MossAudioTokenizerVariant::V2,
+            None,
+        )
+        .expect("convert v2 variant");
+        assert_eq!(report.variant, Some(MossAudioTokenizerVariant::V2));
+
+        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
+        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
+        for (key, expected) in [
+            (chunks::KEY_MODEL_NAME, "moss-audio-tokenizer-v2"),
+            (KEY_VARIANT, "v2"),
+            (
+                KEY_PROVENANCE_UPSTREAM_HF,
+                "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+            ),
+            (KEY_UPSTREAM_REVISION, V2_UPSTREAM_REVISION),
+            (KEY_CONFIG_SHA256, V2_CONFIG_SHA256),
+            (
+                KEY_CONFIGURATION_SOURCE_SHA256,
+                V2_CONFIGURATION_SOURCE_SHA256,
+            ),
+            (KEY_MODELING_SOURCE_SHA256, V2_MODELING_SOURCE_SHA256),
+            (KEY_INDEX_SHA256, V2_INDEX_SHA256),
+            (KEY_LICENSE_SHA256, V2_LICENSE_SHA256),
+        ] {
+            assert_eq!(
+                file.get(key).and_then(|value| value.as_str()),
+                Some(expected)
+            );
+        }
+
+        std::fs::remove_file(&input_path).ok();
+        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
     fn license_override_flows_through() {
         // A user who re-trained on a permissive corpus supplies a
         // different SPDX id at conversion time — the override must
@@ -873,6 +989,7 @@ mod tests {
         let variants = [
             MossAudioTokenizerVariant::Full,
             MossAudioTokenizerVariant::Nano,
+            MossAudioTokenizerVariant::V2,
         ];
         for i in 0..variants.len() {
             for j in (i + 1)..variants.len() {
