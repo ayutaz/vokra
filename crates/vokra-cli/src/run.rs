@@ -90,6 +90,9 @@ USAGE:
                   --input <16k-mono.wav> --token-ids <expanded-prompt-u32,...> \
                   --ultravox-audio-start <N> --ultravox-stop-token-ids <u32,u32,...> \
                   [--ultravox-max-new-tokens <N>] [--output <generated-ids.txt>]
+    vokra-cli run --model <moss-audio-instruct.gguf> --input <16k-mono.wav> \
+                  [--text <question>] [--moss-audio-max-new-tokens <N>] \
+                  [--output <response.txt>]
     vokra-cli run --model <musicgen-medium-or-large.gguf> \
                   --musicgen-companion <musicgen-small.gguf> \
                   --token-ids <u32,u32,...> --music-unconditional-token-ids <u32,u32,...> \
@@ -215,6 +218,9 @@ OPTIONS:
                                 of at most one 30-second chunk; longer audio is
                                 rejected until multi-chunk prompt composition
                                 is represented explicitly.
+                                For MOSS-Audio it is a non-empty 16 kHz mono
+                                WAV; the corrected GGUF embeds the exact
+                                tokenizer/chat/processor sidecars.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -253,6 +259,10 @@ OPTIONS:
                                 phone vocabulary (for example `SH IY`); no G2P,
                                 case folding, or unknown-token substitution is
                                 inferred.
+                                For MOSS-Audio this is the user question paired
+                                with the single `--input` audio. If omitted,
+                                the official `Describe this audio.` prompt is
+                                used. Reserved control tags are rejected.
     --voice <name>              kokoro only: voice name from the GGUF's
                                 vokra.kokoro.voice_names. The name resolves,
                                 but mapping it to a style row is NOT
@@ -283,6 +293,7 @@ OPTIONS:
                                 as raw little-endian f32 (`[dim]`).
                                 Ultravox writes generated comma-separated token
                                 IDs as UTF-8 because no tokenizer is bundled.
+                                MOSS-Audio writes its decoded UTF-8 response.
                                 Mimi requires it: code container for encode,
                                 WAV for decode. DAC decode also requires a WAV
                                 output. SNAC requires a `.vsc` code container
@@ -363,6 +374,9 @@ OPTIONS:
     --ultravox-max-new-tokens <N>
                                 Ultravox only: positive greedy generation cap
                                 [default 512].
+    --moss-audio-max-new-tokens <N>
+                                MOSS-Audio only: positive deterministic greedy
+                                generation cap [default 512].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -581,6 +595,8 @@ struct RunArgs {
     ultravox_stop_token_ids: Option<String>,
     /// Ultravox-only bounded greedy generation cap.
     ultravox_max_new_tokens: Option<usize>,
+    /// MOSS-Audio-only bounded deterministic generation cap.
+    moss_audio_max_new_tokens: Option<usize>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -755,6 +771,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut ultravox_audio_start: Option<usize> = None;
     let mut ultravox_stop_token_ids: Option<String> = None;
     let mut ultravox_max_new_tokens: Option<usize> = None;
+    let mut moss_audio_max_new_tokens: Option<usize> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
@@ -1054,6 +1071,19 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 ultravox_max_new_tokens = Some(tokens);
                 i += 2;
             }
+            "--moss-audio-max-new-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--moss-audio-max-new-tokens requires a positive integer")?;
+                let tokens = value.parse::<usize>().map_err(|error| {
+                    format!("--moss-audio-max-new-tokens must be an integer: {error}")
+                })?;
+                if tokens == 0 {
+                    return Err("--moss-audio-max-new-tokens must be positive".to_owned());
+                }
+                moss_audio_max_new_tokens = Some(tokens);
+                i += 2;
+            }
             "--codec-mode" => {
                 let value = args
                     .get(i + 1)
@@ -1317,6 +1347,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         ultravox_audio_start,
         ultravox_stop_token_ids,
         ultravox_max_new_tokens,
+        moss_audio_max_new_tokens,
         codec_mode,
         num_quantizers,
         bandwidth_id,
@@ -1454,7 +1485,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::TtsBark
         | ModelTask::TtsParler
         | ModelTask::TtsNeuTtsAir
-        | ModelTask::AudioLlmUltravox => None,
+        | ModelTask::AudioLlmUltravox
+        | ModelTask::AudioLlmMossAudio => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -1620,6 +1652,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
              --ultravox-stop-token-ids / --ultravox-max-new-tokens are only \
              supported for the ultravox arch"
             .to_owned());
+    }
+    if a.moss_audio_max_new_tokens.is_some() && task != ModelTask::AudioLlmMossAudio {
+        return Err(
+            "run: --moss-audio-max-new-tokens is only supported for the moss_audio arch".to_owned(),
+        );
     }
     if a.codec_mode.is_some()
         && task != ModelTask::MimiCodec
@@ -1958,6 +1995,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AudioLlmUltravox => {
             run_ultravox(&a)?;
+        }
+        ModelTask::AudioLlmMossAudio => {
+            run_moss_audio(&a)?;
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
@@ -3893,6 +3933,62 @@ fn run_ultravox(a: &RunArgs) -> Result<(), String> {
             "ultravox: token_ids={rendered} stop={:?}",
             generation.stop_token
         );
+    }
+    Ok(())
+}
+
+/// Runs the complete corrected MOSS-Audio 4B/8B Instruct graph.
+///
+/// The GGUF itself authenticates and embeds the fixed tokenizer, ChatML and
+/// processor sidecars, so raw text is accepted without a mutable host asset.
+/// Historical public files have no sidecars and fail loudly in the binder.
+fn run_moss_audio(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::moss_audio::{
+        DEFAULT_USER_PROMPT, MossAudio, MossAudioGenerationOptions, SAMPLE_RATE,
+    };
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (MOSS-Audio): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (MOSS-Audio): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (MOSS-Audio): --input WAV contains no samples".to_owned());
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (MOSS-Audio): the released deterministic greedy contract does not accept --beam-size / --no-repeat-ngram / --length-penalty"
+                .to_owned(),
+        );
+    }
+
+    let prompt = a.text.as_deref().unwrap_or(DEFAULT_USER_PROMPT);
+    let mut options = MossAudioGenerationOptions::default();
+    if let Some(max_new_tokens) = a.moss_audio_max_new_tokens {
+        options.max_new_tokens = max_new_tokens;
+    }
+    let model = MossAudio::open_mapped(&a.model, a.backend)
+        .map_err(|error| format!("run (MOSS-Audio bind): {error}"))?;
+    let response = model
+        .respond_with_prompt(&clip.samples, clip.sample_rate, prompt, &options)
+        .map_err(|error| format!("run (MOSS-Audio generate): {error}"))?;
+
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, response.text())
+            .map_err(|error| format!("run (MOSS-Audio): --output {output}: {error}"))?;
+        eprintln!(
+            "moss-audio: generated {} token(s) -> {output}",
+            response.token_ids().len()
+        );
+    } else {
+        println!("moss-audio: {}", response.text());
     }
     Ok(())
 }
@@ -7160,6 +7256,49 @@ mod tests {
             Ok(_) => panic!("bare --ultravox-companion must be rejected"),
         };
         assert_eq!(error, "--ultravox-companion requires a GGUF path");
+    }
+
+    #[test]
+    fn parse_accepts_moss_audio_question_and_generation_cap() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "moss-audio-4b-instruct.gguf",
+            "--input",
+            "speech.wav",
+            "--text",
+            "Describe the speakers.",
+            "--moss-audio-max-new-tokens",
+            "128",
+            "--output",
+            "response.txt",
+        ]))
+        .expect("MOSS-Audio text request parses");
+        assert_eq!(parsed.input.as_deref(), Some("speech.wav"));
+        assert_eq!(parsed.text.as_deref(), Some("Describe the speakers."));
+        assert_eq!(parsed.moss_audio_max_new_tokens, Some(128));
+        assert_eq!(parsed.output.as_deref(), Some("response.txt"));
+
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "moss-audio-4b-instruct.gguf",
+                "--moss-audio-max-new-tokens",
+                "0",
+            ]))
+            .is_err()
+        );
+        let error = match parse_args(&args(&[
+            "--model",
+            "moss-audio-4b-instruct.gguf",
+            "--moss-audio-max-new-tokens",
+        ])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --moss-audio-max-new-tokens must be rejected"),
+        };
+        assert_eq!(
+            error,
+            "--moss-audio-max-new-tokens requires a positive integer"
+        );
     }
 
     #[test]

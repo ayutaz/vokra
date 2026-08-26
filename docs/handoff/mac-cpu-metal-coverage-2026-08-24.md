@@ -3164,6 +3164,15 @@ token table. The historical public GGUFs have the wrong `moss_tts` arch and no
 sidecars, so they remain exact-manifest token-level-only instead of consulting
 a mutable host tokenizer.
 
+The corrected `moss_audio` arch is now a concrete `vokra-cli run` task rather
+than a bound-library-only row. It accepts a non-empty 16 kHz mono WAV and an
+optional `--text` question (defaulting to the official
+`Describe this audio.`), applies `--moss-audio-max-new-tokens`, and emits the
+decoded response to stdout or a UTF-8 `--output` file. Dispatch admits only
+the exact 4B/8B model names and threads the selected CPU/Metal backend into
+the complete audio/Qwen3 graph; it cannot silently route a historical
+sidecar-less file or an unknown sibling.
+
 No MOSS-Audio weight payload, model inference or `vokra-models` Cargo command
 ran on the maintainer Mac. The independent oracle is now staged under
 `tools/parity/moss_audio/`: it imports the exact official OpenMOSS source

@@ -145,6 +145,14 @@ pub(crate) enum ModelTask {
     /// Neither tokenizer/chat templating nor the gated companion is inferred
     /// or downloaded.
     AudioLlmUltravox,
+    /// OpenMOSS MOSS-Audio 4B/8B Instruct audio understanding.
+    ///
+    /// Corrected GGUFs embed the authenticated Qwen2 tokenizer, ChatML
+    /// template and processor controls, so the concrete `run` arm accepts a
+    /// 16 kHz WAV plus an optional raw-text question. Historical public files
+    /// retain their wrong `moss_tts` stamp and therefore never enter this
+    /// route; their library-only exact-token compatibility remains explicit.
+    AudioLlmMossAudio,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -573,6 +581,8 @@ const ARCH_PARLER_TTS: &str = "parler_tts";
 const ARCH_NEUTTS_AIR: &str = "neutts-air";
 /// Ultravox v0.5 public MIT audio tower; its Llama sidecar stays separate.
 const ARCH_ULTRAVOX: &str = "ultravox";
+/// OpenMOSS MOSS-Audio 4B/8B Instruct complete audio/Qwen3 graph.
+const ARCH_MOSS_AUDIO: &str = "moss_audio";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1726,6 +1736,30 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::AudioLlmUltravox))
         }
+        ARCH_MOSS_AUDIO => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_AUDIO}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MOSS_AUDIO}` is missing `vokra.model.name`; refusing 4B/8B topology inference"
+                    )
+                })?;
+            let accepted = ["moss-audio-4b-instruct", "moss-audio-8b-instruct"];
+            if !accepted.contains(&name) {
+                return Err(format!(
+                    "arch `{ARCH_MOSS_AUDIO}` carries unknown model name `{name}`; expected `{}` or `{}`",
+                    accepted[0], accepted[1]
+                ));
+            }
+            Ok((session, ModelTask::AudioLlmMossAudio))
+        }
         ARCH_MOSS_TTS => {
             if hint.is_some() {
                 return Err(format!(
@@ -1988,7 +2022,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_SPEECHTOKENIZER}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_SPEECHTOKENIZER}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / `{ARCH_MOSS_AUDIO}` / \
                  `{ARCH_FOCALCODEC}` / `{ARCH_FACODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -2273,14 +2307,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::voila",
         entry: "Voila::from_gguf → Voila::converse",
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "moss_audio",
-        module: "vokra_models::moss_audio",
-        entry: "MossAudio::open_mapped → MossAudio::generate_tokens (complete audio/Qwen3 graph; tokenizer/chat-template string route loud-partial)",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::moss_audio::MossAudioCheckpoint::from_gguf(g).map(|_| ())
-        }),
     },
     // User-acquired, separately licensed Llama base. Strict mmap decoding and
     // the exact consecutive audio-embedding replacement are available through
@@ -2751,6 +2777,46 @@ mod tests {
         ));
         std::fs::write(&path, &bytes).unwrap();
         let error = load_session(path.to_str().unwrap()).expect_err("foreign Ultravox rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_moss_audio_releases_to_audio_llm() {
+        for name in ["moss-audio-4b-instruct", "moss-audio-8b-instruct"] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_MOSS_AUDIO);
+            builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, name);
+            let bytes = builder.to_bytes().expect("serialize MOSS-Audio route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-moss-audio-{name}-{}.gguf",
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named MOSS-Audio session builds (bare)");
+            assert_eq!(task, ModelTask::AudioLlmMossAudio);
+        }
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_MOSS_AUDIO));
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_MOSS_AUDIO);
+        unknown.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            "moss-audio-foreign",
+        );
+        let bytes = unknown
+            .to_bytes()
+            .expect("serialize foreign MOSS-Audio GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-moss-audio-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign MOSS-Audio rejects");
         let _ = std::fs::remove_file(&path);
         assert!(error.contains("unknown model name"));
     }
@@ -4269,6 +4335,8 @@ mod tests {
             ARCH_TITANET,
             ARCH_VOXTRAL,
             ARCH_QWEN3_ASR,
+            ARCH_ULTRAVOX,
+            ARCH_MOSS_AUDIO,
             ARCH_KOKORO,
             ARCH_MUSICGEN,
             ARCH_SBV2,

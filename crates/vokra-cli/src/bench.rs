@@ -892,6 +892,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::AudioLlmMossAudio => {
+            return Err(
+                "bench: arch `moss_audio` has content-dependent autoregressive response length and bench exposes no prompt/token cap contract; use `vokra-cli run --model <moss-audio-instruct.gguf> --input <16k-mono.wav> [--text <question>] [--moss-audio-max-new-tokens <N>]` (FR-EX-08: refusing to report an undefined response RTF)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input
