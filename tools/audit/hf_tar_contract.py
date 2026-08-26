@@ -9,8 +9,9 @@ multi-gigabyte checkpoint payloads entirely.
 The reader is deliberately fail-closed:
 
 * every response must be ``206 Partial Content`` with an exact Content-Range;
-* ordinary member payloads are never requested;
-* only bounded GNU long-name / PAX metadata payloads may be read; and
+* ordinary member payloads are skipped unless an exact ``--text-member`` is
+  explicitly requested;
+* only bounded GNU long-name / PAX metadata or UTF-8 text payloads may be read;
 * checksum, alignment, archive-size, and end-marker inconsistencies abort.
 
 Run through the repository Python policy::
@@ -38,6 +39,7 @@ from typing import Callable
 
 BLOCK_SIZE = 512
 MAX_METADATA_BYTES = 1024 * 1024
+MAX_TEXT_MEMBER_BYTES = 1024 * 1024
 USER_AGENT = "vokra-hf-tar-contract/1.0"
 CONTENT_RANGE = re.compile(r"^bytes (\d+)-(\d+)/(\d+)$")
 
@@ -280,6 +282,50 @@ def manifest_sha256(members: list[TarMemberContract]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def read_text_members(
+    members: list[TarMemberContract],
+    requested: list[str],
+    read: Callable[[int, int], bytes],
+) -> dict[str, dict[str, object]]:
+    """Read explicitly selected, bounded UTF-8 members by exact archive path."""
+
+    by_name: dict[str, TarMemberContract] = {}
+    for member in members:
+        if member.name in by_name:
+            raise TarContractError(f"duplicate tar member path {member.name!r}")
+        by_name[member.name] = member
+
+    report: dict[str, dict[str, object]] = {}
+    for name in requested:
+        if name in report:
+            raise TarContractError(f"text member requested more than once: {name!r}")
+        member = by_name.get(name)
+        if member is None:
+            raise TarContractError(f"requested text member is absent: {name!r}")
+        if member.type not in {"0", "7"}:
+            raise TarContractError(
+                f"requested text member {name!r} has non-regular type {member.type!r}"
+            )
+        if member.size > MAX_TEXT_MEMBER_BYTES:
+            raise TarContractError(
+                f"requested text member {name!r} is {member.size} bytes; refusing "
+                f"more than {MAX_TEXT_MEMBER_BYTES} bytes"
+            )
+        payload = read(member.payload_offset, member.size) if member.size else b""
+        try:
+            decoded = payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise TarContractError(
+                f"requested text member {name!r} is not valid UTF-8"
+            ) from error
+        report[name] = {
+            "size": member.size,
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "text": decoded,
+        }
+    return report
+
+
 def self_test() -> None:
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w", format=tarfile.PAX_FORMAT) as archive:
@@ -301,9 +347,17 @@ def self_test() -> None:
         "nested/" + "long-name-" * 12 + "model_weights.ckpt",
     ]
     assert [member.size for member in members] == [14, 7]
-    # The regular payloads themselves are skipped by list_tar_contract; the
-    # synthetic reader remains capable of serving PAX metadata when needed.
+    # Regular payloads are skipped by list_tar_contract.  A caller may then
+    # explicitly select a bounded text member for a second read.
     assert manifest_sha256(members) == manifest_sha256(members)
+    text = read_text_members(members, ["model_config.yaml"], read)
+    assert text["model_config.yaml"]["text"] == "model: canary\n"
+    try:
+        read_text_members(members, ["missing.yaml"], read)
+    except TarContractError as error:
+        assert "absent" in str(error)
+    else:
+        raise AssertionError("missing text member must fail closed")
     print("hf_tar_contract: self-test PASS")
 
 
@@ -314,6 +368,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--revision", default="main")
     parser.add_argument("--expected-size", type=int)
     parser.add_argument("--member-regex")
+    parser.add_argument(
+        "--text-member",
+        action="append",
+        default=[],
+        help=(
+            "exact archive path of a UTF-8 member to read (repeatable, each "
+            f"limited to {MAX_TEXT_MEMBER_BYTES} bytes)"
+        ),
+    )
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -358,6 +421,10 @@ def main() -> int:
         "bytes_received": fetcher.bytes_received,
         "members": [asdict(member) for member in selected],
     }
+    if args.text_member:
+        report["text_members"] = read_text_members(members, args.text_member, read)
+        report["range_request_count"] = fetcher.request_count
+        report["bytes_received"] = fetcher.bytes_received
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
