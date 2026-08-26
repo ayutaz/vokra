@@ -546,7 +546,7 @@ import os, re, sys
 (conv_models, conv_src, models_dir, engine_path, ledger_a, ledger_b,
  convert_lib, ledger_c, ledger_sup, ledger_d) = sys.argv[1:11]
 
-# BOTH binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
+# All three binder spellings are in scope. `EXPECTED_ARCH` is not a stylistic
 # variant nobody uses: it is what 29 of the 89 arch constants under
 # vokra-models/src are called (charsiu, csm, moshi, silero-vad, voxtral,
 # zonos, the whole chatterbox family, …). Until 2026-08-15 this regex matched
@@ -557,7 +557,7 @@ import os, re, sys
 # no gate: it certifies the thing it failed to check. LOOSE_ARCH_CONST below
 # is what keeps the NEXT spelling from going invisible the same way.
 ARCH_CONST = re.compile(
-    r'^\s*pub\s+const\s+((?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
 )
 # Deliberately sloppy twin of ARCH_CONST: ANY `pub const <name>: &str = "…";`
 # whose name contains `ARCH`. Never used for discovery — only to prove that
@@ -1956,6 +1956,9 @@ self_test() {
         # below, so the base tree is clean for it. Case 15 removes this line
         # to prove that spelling is genuinely discovered and checked.
         printf 'const EMITS_EXPECTED: &str = "mexpected";\n'
+        # Emits the authenticated compatibility tag declared through
+        # `LEGACY_PUBLIC_ARCH` below.
+        printf 'const EMITS_LEGACY_PUBLIC: &str = "mlegacypublic";\n'
         # A comment naming `mlonely` must NOT count as an emitter.
         printf '// this comment mentions "mlonely" and must not satisfy leg (b)\n'
     } >"$tmp/conv/models/convs.rs"
@@ -1973,6 +1976,9 @@ self_test() {
     # it needs no ledger entry and perturbs none of the existing cases.
     mkdir -p "$tmp/models/expected"
     printf 'pub const EXPECTED_ARCH: &str = "mexpected";\n' >"$tmp/models/expected/mod.rs"
+    mkdir -p "$tmp/models/legacy_public"
+    printf 'pub const LEGACY_PUBLIC_ARCH: &str = "mlegacypublic";\n' \
+        >"$tmp/models/legacy_public/mod.rs"
 
     # Leg (c) fixture: a stand-in `ModelKind::from_arg` accepting three
     # spellings, plus a `PolicyPreset::from_arg` in the same file whose
@@ -2298,6 +2304,21 @@ self_test() {
         echo "self-test PASS: a \`pub const EXPECTED_ARCH\` binder is discovered and checked"
     else
         echo "self-test FAIL: leg (b) failure did not name \`mexpected\`" >&2
+        printf '%s\n' "$out" >&2
+        status=1
+    fi
+    cp "$tmp/convs_saved.rs" "$tmp/conv/models/convs.rs"
+
+    # 15b. AudioGen's `LEGACY_PUBLIC_ARCH` spelling is likewise genuinely
+    #      discovered. Removing its emitter must expose a leg-(b) failure.
+    grep -v 'EMITS_LEGACY_PUBLIC' "$tmp/convs_saved.rs" >"$tmp/conv/models/convs.rs"
+    if out="$(run "$ok" -- "$okb" 2>&1)"; then
+        echo "self-test FAIL: a LEGACY_PUBLIC_ARCH binder with no emitter should fail" >&2
+        status=1
+    elif grep -q 'leg b.*`mlegacypublic`' <<<"$out"; then
+        echo "self-test PASS: a \`pub const LEGACY_PUBLIC_ARCH\` binder is discovered and checked"
+    else
+        echo "self-test FAIL: leg (b) failure did not name \`mlegacypublic\`" >&2
         printf '%s\n' "$out" >&2
         status=1
     fi

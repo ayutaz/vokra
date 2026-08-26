@@ -84,7 +84,8 @@ models_dir, engine_path = sys.argv[1], sys.argv[2]
 
 # ---- 1. binders: every arch constant under vokra-models/src ----------------
 # Matches `pub const ARCH: &str = "x";`, `pub const ARCH_V3: &str = "x";` and
-# `pub const EXPECTED_ARCH: &str = "x";`. `&'static str` is accepted too.
+# `pub const EXPECTED_ARCH: &str = "x";`, and the authenticated compatibility
+# spelling `pub const LEGACY_PUBLIC_ARCH`. `&'static str` is accepted too.
 #
 # The EXPECTED_ARCH alternative was added 2026-08-15. Its absence was not a
 # cosmetic omission: 29 of the 89 arch constants under vokra-models/src use
@@ -96,7 +97,7 @@ models_dir, engine_path = sys.argv[1], sys.argv[2]
 # rounds behind two green gates. LOOSE_ARCH_CONST below exists so the next
 # new spelling fails loudly instead of shrinking the population in silence.
 ARCH_CONST = re.compile(
-    r'^\s*pub\s+const\s+((?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?)\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
+    r'^\s*pub\s+const\s+((?:(?:EXPECTED_)?ARCH(?:_[A-Z0-9_]+)?|LEGACY_PUBLIC_ARCH))\s*:\s*&(?:\'static\s+)?str\s*=\s*"([^"]+)"\s*;'
 )
 # Deliberately sloppy twin of ARCH_CONST: ANY `pub const <name>: &str = "…";`
 # whose name contains `ARCH`. Never used for discovery — only to prove
@@ -259,7 +260,7 @@ self_test() {
     trap 'rm -rf "$tmp"' RETURN
 
     mkdir -p "$tmp/models/alpha" "$tmp/models/beta" "$tmp/models/nested/gamma" \
-        "$tmp/models/nested/delta"
+        "$tmp/models/nested/delta" "$tmp/models/nested/epsilon"
     printf 'pub const ARCH: &str = "alpha";\n' >"$tmp/models/alpha/mod.rs"
     printf 'pub const ARCH: &str = "beta";\n' >"$tmp/models/beta/mod.rs"
     # Nested + suffixed constant: proves the walk recurses and that the
@@ -269,6 +270,11 @@ self_test() {
     # invisible to this gate until 2026-08-15. Present in the BASE fixture so
     # every case below exercises it, not just the one that names it.
     printf 'pub const EXPECTED_ARCH: &str = "delta";\n' >"$tmp/models/nested/delta/mod.rs"
+    # AudioGen's authenticated legacy-public compatibility tag uses this
+    # spelling. It must be discovered as a real binder arch, not only noticed
+    # by the loose parser guard.
+    printf 'pub const LEGACY_PUBLIC_ARCH: &str = "epsilon";\n' \
+        >"$tmp/models/nested/epsilon/mod.rs"
 
     # write_engine <registry-arch...> — one engine.rs with `alpha` routed and
     # the named arches as BOUND_ARCHES rows.
@@ -286,8 +292,8 @@ self_test() {
     passes() { run_check "$tmp/models" "$tmp/engine.rs" >/dev/null 2>&1; }
 
     # Fixture 1: every binder accounted for (alpha routed, beta + gamma +
-    # delta rows).
-    write_engine beta gamma delta
+    # delta + epsilon rows).
+    write_engine beta gamma delta epsilon
     if passes; then
         echo "self-test PASS: a complete registry passes (routed + rows, nested walk)"
     else
@@ -295,7 +301,7 @@ self_test() {
     fi
 
     # Fixture 2: gamma's row dropped -> the defect this gate exists to catch.
-    write_engine beta delta
+    write_engine beta delta epsilon
     if passes; then
         echo "self-test FAIL: a missing BOUND_ARCHES row should fail" >&2; status=1
     else
@@ -305,13 +311,24 @@ self_test() {
     # Fixture 2b: delta's row dropped. Same defect, but on the EXPECTED_ARCH
     # spelling — if discovery ever narrows back to `ARCH` only, this case
     # passes vacuously, so it is the regression test for the 2026-08-15 bug.
-    write_engine beta gamma
+    write_engine beta gamma epsilon
     if out="$(run_check "$tmp/models" "$tmp/engine.rs" 2>&1)"; then
         echo "self-test FAIL: an unaccounted EXPECTED_ARCH binder should fail" >&2; status=1
     elif grep -q 'binder arch `delta`' <<<"$out"; then
         echo "self-test PASS: a \`pub const EXPECTED_ARCH\` binder is discovered and checked"
     else
         echo "self-test FAIL: the failure did not name \`delta\`" >&2
+        printf '%s\n' "$out" >&2; status=1
+    fi
+
+    # Fixture 2c: the legacy-public spelling is discovered independently.
+    write_engine beta gamma delta
+    if out="$(run_check "$tmp/models" "$tmp/engine.rs" 2>&1)"; then
+        echo "self-test FAIL: an unaccounted LEGACY_PUBLIC_ARCH binder should fail" >&2; status=1
+    elif grep -q 'binder arch `epsilon`' <<<"$out"; then
+        echo "self-test PASS: a \`pub const LEGACY_PUBLIC_ARCH\` binder is discovered and checked"
+    else
+        echo "self-test FAIL: the failure did not name \`epsilon\`" >&2
         printf '%s\n' "$out" >&2; status=1
     fi
 
@@ -322,6 +339,7 @@ self_test() {
         printf 'const ARCH_BETA: &str = "beta";\n'
         printf 'const ARCH_GAMMA: &str = "gamma";\n'
         printf 'const ARCH_DELTA: &str = "delta";\n\n'
+        printf 'const ARCH_EPSILON: &str = "epsilon";\n\n'
         printf 'const BOUND_ARCHES: &[BoundArch] = &[\n    BoundArch {\n        arch: "unrelated",\n    },\n];\n'
     } >"$tmp/engine.rs"
     if passes; then
@@ -336,6 +354,7 @@ self_test() {
         printf 'const ARCH_BETA: &str = "beta";\n'
         printf 'const ARCH_GAMMA: &str = "gamma";\n'
         printf 'const ARCH_DELTA: &str = "delta";\n'
+        printf 'const ARCH_EPSILON: &str = "epsilon";\n'
     } >"$tmp/engine.rs"
     if passes; then
         echo "self-test FAIL: a missing BOUND_ARCHES literal should fail the guard" >&2; status=1
@@ -344,7 +363,7 @@ self_test() {
     fi
 
     # Fixture 5: a models tree the walk finds nothing in -> parser guard.
-    write_engine beta gamma delta
+    write_engine beta gamma delta epsilon
     mkdir -p "$tmp/empty"
     if run_check "$tmp/empty" "$tmp/engine.rs" >/dev/null 2>&1; then
         echo "self-test FAIL: scanning zero binders should fail the guard" >&2; status=1
