@@ -198,7 +198,17 @@
 > the companion codec. The CLI requires `--musicgen-companion` and exact
 > conditional/null ids. Backend mismatch and family-shared lookalikes are
 > explicit errors; no CPU fallback or HF replacement is involved. VAST CPU
-> real-weight and external Apple Silicon Metal parity remain pending.
+> and external Apple Silicon real-weight route gates are now staged in
+> `scripts/publish/vast-ai/run-musicgen-companion-validation.sh` and
+> `scripts/verify/apple-silicon-musicgen-companion.sh`. They authenticate the
+> exact public Small/Medium/Large byte sizes and SHA-256 values, then require
+> finite non-zero three-frame PCM from both Medium and Large. The Apple worker
+> runs the same test once on CPU and once on real Metal, refuses the 16-GB
+> maintainer class, and also exercises the Medium Metal CLI. Neither worker
+> uploads or publishes. These are complete-route smokes, not an independent
+> AudioCraft LM oracle; VAST CPU execution, external Apple Metal execution and
+> whole-LM numerical parity remain pending and are not inferred from source
+> reachability.
 
 > **2026-08-26 shared T5 source wave:** native non-gated T5 encoder math now
 > exists for CPU and Metal, including exact T5 relative-position buckets,
