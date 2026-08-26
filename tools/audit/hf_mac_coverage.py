@@ -176,6 +176,7 @@ METAL_CODE_ARCHES = {
     "bert_base",
     "bigvgan",
     "campplus",
+    "canary",
     "canary-1b-flash",
     "conv_tasnet",
     "crisper-whisper",

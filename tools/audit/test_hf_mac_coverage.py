@@ -41,6 +41,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "audiobox-aesthetics",
             "audioseal_real_weight",
             "ast",
+            "canary",
             "canary-1b-flash",
             "whisper",
             "silero-vad",
@@ -106,6 +107,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "vokra/canary-1b-v2",
             "abc",
             ("canary.gguf", "model.gguf"),
+            "canary",
+        )
+        corrected_canary_v2 = audit.RepoRecord(
+            "vokra/canary-1b-v2-corrected",
+            "abc",
+            ("canary.gguf",),
             "canary",
         )
         corrected_canary_flash = audit.RepoRecord(
@@ -286,6 +293,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(canary_v2, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(canary_v2, routed, bound).metal_code, "blocked-by-cpu"
+        )
+        self.assertEqual(
+            audit.classify(corrected_canary_v2, routed, bound).cpu_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(corrected_canary_v2, routed, bound).metal_code, "full"
         )
         self.assertEqual(
             audit.classify(corrected_canary_flash, routed, bound).cpu_code, "full"
