@@ -8,8 +8,13 @@
 > 32-layer AED. The official 6,358,958,080-byte `.nemo` separately carries the
 > correct 3,853,798,427-byte `./model_weights.ckpt`. The generic NeMo extractor
 > now normalizes `./` member prefixes, chooses a unique main checkpoint and
-> refuses ambiguous fallback. The live repository remains partial and no
-> upload was performed; complete conversion and parity stay VAST work.
+> refuses ambiguous fallback. A metadata-only nested ZIP audit then read
+> 399,769 bytes total and no tensor payload, authenticating 1,510 state tensors
+> = 1,478 floating-point inference tensors + 32 BatchNorm counters. Its strict
+> float manifest is `a7a50151…ae34`; versus Canary-1B-Flash it adds exactly the
+> 104 tensors of decoder layers 4..7 and changes only the three 16,384-vocab
+> axes. The live repository remains partial and no upload was performed;
+> complete conversion and parity stay VAST work.
 
 > **2026-08-26 Canary-1B-Flash source wave:** the exact complete
 > `.nemo`-derived 1,374-F32-tensor release now has a strict native 32-layer

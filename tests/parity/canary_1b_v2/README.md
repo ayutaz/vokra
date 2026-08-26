@@ -1,0 +1,50 @@
+# Canary-1B-v2 structural checkpoint fixture
+
+`state_dict_manifest.json` is a tensor-name/dtype/shape fixture derived from
+the official immutable NVIDIA release. It is not a synthetic model and it is
+not numerical parity output.
+
+Source contract:
+
+- repository: `nvidia/canary-1b-v2`
+- revision: `87bc52657add533cd0156b3fc1aef027280754bf`
+- archive: `canary-1b-v2.nemo`, 6,358,958,080 bytes,
+  SHA-256 `ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094`
+- selected tar member: `./model_weights.ckpt`, 3,853,798,427 bytes
+- embedded `data.pkl`: 289,666 bytes,
+  SHA-256 `9d8020dacbb2cb97c32614a0460365c8ed7ad3809e942183774e9af94269dba6`
+
+The fixture was generated without downloading or opening a tensor-storage
+payload:
+
+```bash
+UV_CACHE_DIR=/private/tmp/vokra-uv-cache \
+  uv run --no-project --offline --python 3.12 python \
+  tools/audit/hf_tar_torch_contract.py \
+  nvidia/canary-1b-v2 canary-1b-v2.nemo ./model_weights.ckpt \
+  --revision 87bc52657add533cd0156b3fc1aef027280754bf \
+  --expected-archive-size 6358958080 \
+  --expected-checkpoint-size 3853798427 \
+  --state-dict-output tests/parity/canary_1b_v2/state_dict_manifest.json \
+  --omit-tensors
+```
+
+The fail-closed Range audit used 20 HTTP requests and received 399,769 bytes
+in total. Seven bounded reads into the selected checkpoint received 393,113
+bytes. The archive and checkpoint tensor payloads remained remote.
+
+The authenticated state dict contains 1,510 tensors: 1,478 floating-point
+inference tensors and 32 scalar I64 BatchNorm counters. The strict GGUF
+contract strips only those counters and pins the floating-point name/shape
+manifest to
+`a7a50151cdf5503430492a0d610600ba901c180e249e25e202f7294ddbafae34`.
+The full state-dict name/shape manifest is
+`30cfa42e04ff9b6b127d97a882f51fb6ce62a6d7fbeba914b84402a7165661f9`.
+
+Compared mechanically with the released Canary-1B-Flash fixture, v2 has no
+missing Flash tensors, adds exactly 104 tensors for AED decoder layers 4
+through 7 (26 per layer), and changes only the token embedding plus output
+weight/bias vocabulary axes from 5,248 to 16,384. This authenticates the shared
+32-layer FastConformer/four-layer-prefix topology used by the common runtime
+binder. It does not claim forward-value parity; official NeMo output fixtures
+and real-weight Vokra comparison remain VAST work.
