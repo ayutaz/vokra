@@ -99,6 +99,19 @@ V2_FILE_SHA256 = {
     "configuration_moss_audio_tokenizer.py": "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529",
     "model.safetensors.index.json": "912f52f053e04ff7e9abc8f05aa75dfbb40b31c86a0f4ad5c5a36e4aa28a624f",
     "modeling_moss_audio_tokenizer.py": "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9",
+    "model-00001-of-00003.safetensors": "2d9f9182f17b143a23937feb87c63c08221bd28e685e4bc2fa55dcdce17fcde7",
+    "model-00002-of-00003.safetensors": "d4e48106d0254fe3b00ea0707e88fc6aee076993825e108dd9cef847f9db236e",
+    "model-00003-of-00003.safetensors": "d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da",
+}
+V2_FILE_BYTES = {
+    "LICENSE": 11_324,
+    "config.json": 10_166,
+    "configuration_moss_audio_tokenizer.py": 19_772,
+    "model.safetensors.index.json": 191_718,
+    "modeling_moss_audio_tokenizer.py": 105_970,
+    "model-00001-of-00003.safetensors": 3_978_639_168,
+    "model-00002-of-00003.safetensors": 3_992_738_352,
+    "model-00003-of-00003.safetensors": 523_681_336,
 }
 
 # Files the downstream Vokra converter needs. We deliberately fetch the
@@ -199,11 +212,19 @@ def _sha256_file(path: Path) -> str:
 
 
 def _validate_v2_contract(src_dir: Path) -> None:
-    """Fail closed unless every small fixed-revision contract file matches."""
+    """Fail closed unless every fixed-revision source and shard matches."""
     for relative, expected in V2_FILE_SHA256.items():
         path = src_dir / relative
         if not path.is_file():
             sys.exit(f"{LOG_PREFIX} v2 contract file is missing: {path}")
+        actual_bytes = path.stat().st_size
+        expected_bytes = V2_FILE_BYTES[relative]
+        if actual_bytes != expected_bytes:
+            sys.exit(
+                f"{LOG_PREFIX} v2 contract size mismatch for {relative}: "
+                f"got {actual_bytes}, expected {expected_bytes} at revision "
+                f"{V2_REVISION}"
+            )
         actual = _sha256_file(path)
         if actual != expected:
             sys.exit(

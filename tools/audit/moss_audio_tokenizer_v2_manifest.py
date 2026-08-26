@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Derive the fixed MOSS Audio Tokenizer v2 tensor manifest from small files.
+"""Audit the fixed MOSS Audio Tokenizer v2 tensor manifest.
 
-This audit reads only ``config.json`` and ``model.safetensors.index.json`` at
-revision ``f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169``. It does not download or
-open any weight shard. The derived digest is a candidate runtime contract and
-must still be compared with the real safetensors/GGUF header on VAST before it
-is pinned in Rust.
+Without ``--shard-dir`` this audit reads only ``config.json`` and
+``model.safetensors.index.json`` at revision
+``f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169``. The derived digest remains a
+candidate runtime contract.
+
+With ``--shard-dir`` it additionally verifies the exact byte size and SHA-256
+of all three 8.49 GB upstream shards, parses their safetensors headers without
+mapping tensor payloads, and checks every name, shape, F32 dtype, data range,
+and index-to-shard assignment. Only that VAST-only mode emits a confirmed
+manifest and clears ``requires_vast_header_confirmation``.
 """
 
 from __future__ import annotations
@@ -23,6 +28,35 @@ CONFIG_SHA256 = "aeb9a0e9d88c74bf9fbaa81ee54443d463e09b5f335b3306bb798e282a10e56
 INDEX_SHA256 = "912f52f053e04ff7e9abc8f05aa75dfbb40b31c86a0f4ad5c5a36e4aa28a624f"
 TENSOR_COUNT = 2_094
 PARAMETER_COUNT = 2_123_701_248
+SHARD_CONTRACTS = {
+    "model-00001-of-00003.safetensors": (
+        3_978_639_168,
+        "2d9f9182f17b143a23937feb87c63c08221bd28e685e4bc2fa55dcdce17fcde7",
+    ),
+    "model-00002-of-00003.safetensors": (
+        3_992_738_352,
+        "d4e48106d0254fe3b00ea0707e88fc6aee076993825e108dd9cef847f9db236e",
+    ),
+    "model-00003-of-00003.safetensors": (
+        523_681_336,
+        "d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da",
+    ),
+}
+SAFETENSORS_DTYPE_BYTES = {
+    "BOOL": 1,
+    "U8": 1,
+    "I8": 1,
+    "I16": 2,
+    "U16": 2,
+    "F16": 2,
+    "BF16": 2,
+    "I32": 4,
+    "U32": 4,
+    "F32": 4,
+    "F64": 8,
+    "I64": 8,
+    "U64": 8,
+}
 
 
 @dataclass(frozen=True)
@@ -58,6 +92,171 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def safetensors_header(path: Path) -> dict[str, dict[str, object]]:
+    """Read and validate one safetensors header without loading tensor data."""
+
+    file_size = path.stat().st_size
+    with path.open("rb") as handle:
+        prefix = handle.read(8)
+        if len(prefix) != 8:
+            raise ValueError(f"{path}: truncated safetensors length prefix")
+        header_size = struct.unpack("<Q", prefix)[0]
+        if header_size == 0 or header_size > file_size - 8:
+            raise ValueError(
+                f"{path}: invalid safetensors header size {header_size} "
+                f"for {file_size}-byte file"
+            )
+        try:
+            raw_header = json.loads(handle.read(header_size).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{path}: invalid safetensors header JSON: {exc}") from exc
+    if not isinstance(raw_header, dict):
+        raise ValueError(f"{path}: safetensors header is not an object")
+
+    payload_size = file_size - 8 - header_size
+    tensors: dict[str, dict[str, object]] = {}
+    ranges: list[tuple[int, int, str]] = []
+    for name, descriptor in raw_header.items():
+        if name == "__metadata__":
+            if not isinstance(descriptor, dict):
+                raise ValueError(f"{path}: __metadata__ is not an object")
+            continue
+        if not isinstance(name, str) or not isinstance(descriptor, dict):
+            raise ValueError(f"{path}: invalid tensor descriptor for {name!r}")
+        dtype = descriptor.get("dtype")
+        shape = descriptor.get("shape")
+        offsets = descriptor.get("data_offsets")
+        if dtype not in SAFETENSORS_DTYPE_BYTES:
+            raise ValueError(f"{path}: {name} has unsupported dtype {dtype!r}")
+        if not isinstance(shape, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in shape
+        ):
+            raise ValueError(f"{path}: {name} has invalid shape {shape!r}")
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in offsets
+            )
+        ):
+            raise ValueError(f"{path}: {name} has invalid data_offsets {offsets!r}")
+        start, end = offsets
+        expected_bytes = dimension_product(tuple(shape)) * SAFETENSORS_DTYPE_BYTES[dtype]
+        if end < start or end - start != expected_bytes:
+            raise ValueError(
+                f"{path}: {name} byte range [{start}, {end}) does not match "
+                f"{dtype} shape {shape} ({expected_bytes} bytes)"
+            )
+        if end > payload_size:
+            raise ValueError(
+                f"{path}: {name} ends at {end}, beyond payload size {payload_size}"
+            )
+        tensors[name] = {
+            "dtype": dtype,
+            "shape": tuple(shape),
+            "data_offsets": (start, end),
+        }
+        ranges.append((start, end, name))
+    if not tensors:
+        raise ValueError(f"{path}: safetensors header contains no tensors")
+
+    cursor = 0
+    for start, end, name in sorted(ranges):
+        if start != cursor:
+            raise ValueError(
+                f"{path}: non-contiguous payload before {name}: "
+                f"expected offset {cursor}, got {start}"
+            )
+        cursor = end
+    if cursor != payload_size:
+        raise ValueError(
+            f"{path}: tensor payload ends at {cursor}, file payload is {payload_size}"
+        )
+    return tensors
+
+
+def validate_real_shards(
+    shard_dir: Path,
+    weight_map: dict[str, object],
+    manifest: dict[str, tuple[int, ...]],
+) -> dict[str, dict[str, object]]:
+    """Authenticate every fixed shard and compare its real header to the index."""
+
+    unexpected_shards = sorted(
+        {
+            shard
+            for shard in weight_map.values()
+            if isinstance(shard, str) and shard not in SHARD_CONTRACTS
+        }
+    )
+    if unexpected_shards:
+        raise ValueError(f"index references unexpected shards: {unexpected_shards}")
+    invalid_assignments = sorted(
+        name for name, shard in weight_map.items() if not isinstance(shard, str)
+    )
+    if invalid_assignments:
+        raise ValueError(
+            f"index has non-string shard assignments: {invalid_assignments[:8]}"
+        )
+
+    actual: dict[str, tuple[int, ...]] = {}
+    shard_results: dict[str, dict[str, object]] = {}
+    for filename, (expected_size, expected_sha256) in SHARD_CONTRACTS.items():
+        path = shard_dir / filename
+        if not path.is_file():
+            raise ValueError(f"missing pinned shard: {path}")
+        actual_size = path.stat().st_size
+        if actual_size != expected_size:
+            raise ValueError(
+                f"{filename} size {actual_size} != {expected_size} at {REVISION}"
+            )
+        actual_sha256 = sha256_file(path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError(
+                f"{filename} SHA-256 {actual_sha256} != {expected_sha256} "
+                f"at {REVISION}"
+            )
+        header = safetensors_header(path)
+        declared = {name for name, shard in weight_map.items() if shard == filename}
+        header_names = set(header)
+        if header_names != declared:
+            missing = sorted(declared - header_names)
+            unexpected = sorted(header_names - declared)
+            raise ValueError(
+                f"{filename} header/index mismatch: missing={missing[:8]}, "
+                f"unexpected={unexpected[:8]}"
+            )
+        for name, descriptor in header.items():
+            if name in actual:
+                raise ValueError(f"tensor {name} occurs in multiple shards")
+            dtype = descriptor["dtype"]
+            shape = descriptor["shape"]
+            if dtype != "F32":
+                raise ValueError(f"{filename}: {name} dtype {dtype} != F32")
+            expected_shape = manifest.get(name)
+            if shape != expected_shape:
+                raise ValueError(
+                    f"{filename}: {name} shape {shape} != {expected_shape}"
+                )
+            actual[name] = shape  # type: ignore[assignment]
+        shard_results[filename] = {
+            "bytes": actual_size,
+            "sha256": actual_sha256,
+            "tensor_count": len(header),
+        }
+
+    if actual != manifest:
+        missing = sorted(set(manifest) - set(actual))
+        unexpected = sorted(set(actual) - set(manifest))
+        raise ValueError(
+            f"real shard manifest mismatch: missing={missing[:8]}, "
+            f"unexpected={unexpected[:8]}"
+        )
+    return shard_results
 
 
 def add_weight_norm_conv1d(
@@ -207,6 +406,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--index", type=Path, required=True)
+    parser.add_argument(
+        "--shard-dir",
+        type=Path,
+        help=(
+            "directory containing the three pinned real safetensors shards; "
+            "required to confirm the candidate manifest (VAST-only)"
+        ),
+    )
     args = parser.parse_args()
 
     for path, expected, label in (
@@ -256,14 +463,32 @@ def main() -> int:
             f"index total_size={total_size!r}, expected {PARAMETER_COUNT * 4}"
         )
 
-    result = {
+    candidate_sha256 = manifest_sha256(manifest)
+    result: dict[str, object] = {
         "revision": REVISION,
         "tensor_count": len(manifest),
         "parameter_count": parameters,
         "tensor_bytes_f32": total_size,
-        "manifest_sha256_candidate": manifest_sha256(manifest),
-        "requires_vast_header_confirmation": True,
+        "manifest_sha256_candidate": candidate_sha256,
     }
+    if args.shard_dir is None:
+        result["requires_vast_header_confirmation"] = True
+    else:
+        if not args.shard_dir.is_dir():
+            raise ValueError(f"--shard-dir is not a directory: {args.shard_dir}")
+        shards = validate_real_shards(args.shard_dir, weight_map, manifest)
+        confirmed_sha256 = manifest_sha256(manifest)
+        if confirmed_sha256 != candidate_sha256:
+            raise ValueError(
+                f"confirmed manifest {confirmed_sha256} != candidate {candidate_sha256}"
+            )
+        result.update(
+            {
+                "manifest_sha256": confirmed_sha256,
+                "requires_vast_header_confirmation": False,
+                "shards": shards,
+            }
+        )
     print(json.dumps(result, sort_keys=True))
     return 0
 
