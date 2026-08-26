@@ -599,6 +599,12 @@ pub mod focalcodec;
 /// decode on CPU and Metal; waveform encode remains an explicit unsupported
 /// operation at the CLI boundary.
 pub mod funcodec;
+/// Native OpenMOSS MOSS-Audio 4B/8B Instruct strict mmap binder.
+/// The historical public GGUFs are admitted only behind their exact complete
+/// 901-tensor manifests; corrected conversions use the dedicated `moss_audio`
+/// architecture and fixed-revision topology metadata. CPU/Metal execution is
+/// connected in the following implementation slices.
+pub mod moss_audio;
 /// Strict Full/Nano MOSS Audio Tokenizer binder plus native CPU/Metal decode.
 /// Full keeps its 7 GB artifact mapped and materialises one layer at a time to
 /// 24 kHz mono; Nano owns its compact weights and emits 48 kHz stereo. The

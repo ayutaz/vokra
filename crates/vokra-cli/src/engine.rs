@@ -2274,6 +2274,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "Voila::from_gguf → Voila::converse",
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
+    BoundArch {
+        arch: "moss_audio",
+        module: "vokra_models::moss_audio",
+        entry: "MossAudioCheckpoint::from_gguf → MossAudioCheckpoint::respond",
+        probe: Some(|g: &GgufFile| {
+            vokra_models::moss_audio::MossAudioCheckpoint::from_gguf(g).map(|_| ())
+        }),
+    },
     // User-acquired, separately licensed Llama base. Strict mmap decoding and
     // the exact consecutive audio-embedding replacement are available through
     // the library API. This sidecar arch is not a standalone `run` target: the
