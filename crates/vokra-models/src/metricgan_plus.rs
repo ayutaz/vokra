@@ -509,35 +509,36 @@ impl BiLstmLayer {
         expected: &mut BTreeSet<String>,
     ) -> Result<Self> {
         let gates = 4 * HIDDEN_SIZE;
-        let bind_direction = |reverse: bool, expected: &mut BTreeSet<String>| {
-            let suffix = if reverse { "_reverse" } else { "" };
-            Ok(LstmDirection {
-                weight_ih: load_tensor(
-                    file,
-                    &format!("blstm.rnn.weight_ih_l{layer}{suffix}"),
-                    &[gates, input_dim],
-                    expected,
-                )?,
-                weight_hh: load_tensor(
-                    file,
-                    &format!("blstm.rnn.weight_hh_l{layer}{suffix}"),
-                    &[gates, HIDDEN_SIZE],
-                    expected,
-                )?,
-                bias_ih: load_tensor(
-                    file,
-                    &format!("blstm.rnn.bias_ih_l{layer}{suffix}"),
-                    &[gates],
-                    expected,
-                )?,
-                bias_hh: load_tensor(
-                    file,
-                    &format!("blstm.rnn.bias_hh_l{layer}{suffix}"),
-                    &[gates],
-                    expected,
-                )?,
-            })
-        };
+        let bind_direction =
+            |reverse: bool, expected: &mut BTreeSet<String>| -> Result<LstmDirection> {
+                let suffix = if reverse { "_reverse" } else { "" };
+                Ok(LstmDirection {
+                    weight_ih: load_tensor(
+                        file,
+                        &format!("blstm.rnn.weight_ih_l{layer}{suffix}"),
+                        &[gates, input_dim],
+                        expected,
+                    )?,
+                    weight_hh: load_tensor(
+                        file,
+                        &format!("blstm.rnn.weight_hh_l{layer}{suffix}"),
+                        &[gates, HIDDEN_SIZE],
+                        expected,
+                    )?,
+                    bias_ih: load_tensor(
+                        file,
+                        &format!("blstm.rnn.bias_ih_l{layer}{suffix}"),
+                        &[gates],
+                        expected,
+                    )?,
+                    bias_hh: load_tensor(
+                        file,
+                        &format!("blstm.rnn.bias_hh_l{layer}{suffix}"),
+                        &[gates],
+                        expected,
+                    )?,
+                })
+            };
         Ok(Self {
             input_dim,
             direction: [
