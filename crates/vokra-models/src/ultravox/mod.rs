@@ -6,8 +6,10 @@
 //! `meta-llama/Llama-3.2-1B-Instruct` language model is intentionally not
 //! bundled.  This module therefore exposes the complete learned audio path and
 //! keeps text generation separate from the user-acquired Llama companion.
-//! [`UltravoxLlamaCompanion`] now strictly binds that exact gated checkpoint;
-//! the generation/interleave module is the next explicit composition step.
+//! [`UltravoxLlamaCompanion`] strictly binds that exact gated checkpoint and
+//! replaces the official consecutive prompt span with projected audio before
+//! bounded greedy generation. Tokenization/chat templating remains an explicit
+//! caller boundary because neither artifact embeds those sidecars.
 //!
 //! Weight binding is mmap-backed and layer-at-a-time.  Selecting Metal sends
 //! every learned operation through the same preflighted [`crate::compute::Compute`]
@@ -25,6 +27,7 @@ use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 mod companion;
+mod companion_decoder;
 mod companion_weights;
 mod encoder;
 mod projector;
@@ -32,8 +35,8 @@ mod weights;
 
 pub use companion::{
     COMPANION_ARCH, COMPANION_LICENSE, COMPANION_MANIFEST_SHA256, COMPANION_MODEL_NAME,
-    COMPANION_SOURCE_REVISION, COMPANION_UPSTREAM_HF, ULTRAVOX_LLAMA_HOT_OPS,
-    UltravoxLlamaCompanion, UltravoxLlamaConfig,
+    COMPANION_SOURCE_REVISION, COMPANION_UPSTREAM_HF, ULTRAVOX_LLAMA_HOT_OPS, UltravoxGeneration,
+    UltravoxGenerationOptions, UltravoxLlamaCompanion, UltravoxLlamaConfig,
 };
 use encoder::UltravoxAudioRuntime;
 pub use projector::UltravoxAudioEmbeddings;
@@ -229,6 +232,37 @@ impl UltravoxAudioTower {
         encoder::encode(self, log_mel, n_frames)
     }
 
+    /// Runs the complete learned audio tower and separately licensed Llama
+    /// companion over an exact pre-tokenized prompt.
+    ///
+    /// Both artifacts must have been opened on the same backend. The method
+    /// checks that before any encoder work, so a Metal request can never run
+    /// one stage on CPU or leave a partially executed mixed-backend result.
+    pub fn generate_from_log_mel_with_companion(
+        &self,
+        companion: &UltravoxLlamaCompanion,
+        log_mel: &[f32],
+        n_frames: usize,
+        prompt_token_ids: &[u32],
+        audio_token_start_idx: usize,
+        options: &UltravoxGenerationOptions,
+    ) -> Result<UltravoxGeneration> {
+        if companion.backend() != self.backend {
+            return Err(VokraError::InvalidArgument(format!(
+                "ultravox: audio tower backend {:?} and Llama companion backend {:?} differ; every learned stage must use one backend",
+                self.backend,
+                companion.backend()
+            )));
+        }
+        let audio = self.encode_log_mel(log_mel, n_frames)?;
+        companion.generate_with_audio_embeddings(
+            prompt_token_ids,
+            audio_token_start_idx,
+            &audio,
+            options,
+        )
+    }
+
     /// Reports the deliberate standalone-generation boundary of this public
     /// artifact.
     ///
@@ -237,7 +271,7 @@ impl UltravoxAudioTower {
     /// audio-to-text engine.
     pub fn require_text_companion(&self) -> Result<()> {
         Err(VokraError::UnsupportedOp(format!(
-            "ultravox: `{PUBLIC_FILENAME}` contains only the MIT Whisper audio tower and projector; text generation requires the separately licensed `{TEXT_COMPANION}` companion and a complete tokenizer/chat route. No Llama weights are bundled and Vokra will not substitute another decoder or silently run a partial model."
+            "ultravox: `{PUBLIC_FILENAME}` contains only the MIT Whisper audio tower and projector; text generation requires the separately licensed `{TEXT_COMPANION}` companion plus an exact pre-tokenized prompt passed to `generate_from_log_mel_with_companion`. No Llama weights or tokenizer/chat sidecars are bundled, and Vokra will not substitute another decoder or silently run a partial model."
         )))
     }
 }

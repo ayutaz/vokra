@@ -14,9 +14,9 @@ const RMS_NORM_EPS: f32 = 1.0e-6;
 /// Audio-prefix embeddings ready to replace Ultravox audio placeholder tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UltravoxAudioEmbeddings {
-    values: Vec<f32>,
-    frames: usize,
-    hidden_size: usize,
+    pub(super) values: Vec<f32>,
+    pub(super) frames: usize,
+    pub(super) hidden_size: usize,
 }
 
 impl UltravoxAudioEmbeddings {

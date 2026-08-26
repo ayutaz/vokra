@@ -15,7 +15,9 @@ use vokra_core::{LicenseClass, Result, VokraError};
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+use super::companion_decoder::UltravoxLlamaDecoderRuntime;
 use super::companion_weights::UltravoxLlamaMappedDescriptors;
+use super::projector::UltravoxAudioEmbeddings;
 
 /// Architecture tag of the separately acquired text companion.
 pub const COMPANION_ARCH: &str = "ultravox_llama_companion";
@@ -99,10 +101,85 @@ impl UltravoxLlamaConfig {
     };
 }
 
+/// Bounded deterministic generation controls over an exact token-id prompt.
+///
+/// The companion GGUF intentionally contains no tokenizer or generation
+/// sidecar. Callers must therefore provide the exact stop-token IDs belonging
+/// to the tokenizer that produced the prompt; Vokra never guesses them.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UltravoxGenerationOptions {
+    /// Maximum tokens emitted after the complete multimodal prompt.
+    pub max_new_tokens: usize,
+    /// One or more exact tokenizer IDs that terminate generation.
+    pub stop_token_ids: Vec<u32>,
+}
+
+impl UltravoxGenerationOptions {
+    /// Constructs an explicit deterministic greedy request.
+    #[must_use]
+    pub fn greedy(max_new_tokens: usize, stop_token_ids: Vec<u32>) -> Self {
+        Self {
+            max_new_tokens,
+            stop_token_ids,
+        }
+    }
+
+    fn validate(&self, prompt_len: usize, config: UltravoxLlamaConfig) -> Result<()> {
+        if self.max_new_tokens == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: max_new_tokens must be greater than zero"
+            )));
+        }
+        if self.stop_token_ids.is_empty() {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: stop_token_ids must name at least one exact tokenizer terminator"
+            )));
+        }
+        if let Some((index, token)) = self
+            .stop_token_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, token)| *token >= config.vocab_size)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: stop_token_ids[{index}]={token} is outside vocabulary 0..{}",
+                config.vocab_size
+            )));
+        }
+        let positions = prompt_len
+            .checked_add(self.max_new_tokens - 1)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "{LABEL}: prompt plus generation position count overflows"
+                ))
+            })?;
+        if positions > config.max_positions as usize {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: prompt {prompt_len} + at most {} forwarded generation rows exceeds max positions {}",
+                self.max_new_tokens - 1,
+                config.max_positions
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Exact greedy token sequence emitted by the companion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UltravoxGeneration {
+    /// Every generated token, including the terminating token when observed.
+    pub token_ids: Vec<u32>,
+    /// The first caller-supplied stop token observed, or `None` at the cap.
+    pub stop_token: Option<u32>,
+}
+
 /// Strict mmap-backed handle for the user-acquired Llama companion.
 pub struct UltravoxLlamaCompanion {
     checkpoint: StrictCheckpoint,
     mapped: Arc<UltravoxLlamaMappedDescriptors>,
+    runtime: UltravoxLlamaDecoderRuntime,
     backend: BackendKind,
     source_revision: String,
 }
@@ -193,6 +270,7 @@ impl UltravoxLlamaCompanion {
         Ok(Self {
             checkpoint,
             mapped,
+            runtime: UltravoxLlamaDecoderRuntime::default(),
             backend,
             source_revision,
         })
@@ -227,6 +305,128 @@ impl UltravoxLlamaCompanion {
     pub fn tensor_count(&self) -> usize {
         self.mapped.descriptor_count()
     }
+
+    /// Greedily generates from an exact pre-tokenized Ultravox prompt.
+    ///
+    /// `audio_token_start_idx` is the first row that the official processor
+    /// reserved for audio. Exactly `audio.frames()` consecutive ordinary token
+    /// embeddings are replaced, matching the upstream `inputs_embeds` route.
+    /// The prompt's IDs, placeholder expansion and stop IDs remain explicit so
+    /// this tokenizer-less companion never downloads or invents sidecars.
+    pub fn generate_with_audio_embeddings(
+        &self,
+        prompt_token_ids: &[u32],
+        audio_token_start_idx: usize,
+        audio: &UltravoxAudioEmbeddings,
+        options: &UltravoxGenerationOptions,
+    ) -> Result<UltravoxGeneration> {
+        validate_audio_prompt(
+            prompt_token_ids,
+            audio_token_start_idx,
+            audio,
+            self.config(),
+        )?;
+        options.validate(prompt_token_ids.len(), self.config())?;
+        super::companion_decoder::generate(
+            &self.mapped,
+            self.backend,
+            &self.runtime,
+            prompt_token_ids,
+            audio_token_start_idx,
+            audio,
+            options,
+        )
+    }
+
+    /// Returns full-vocabulary logits for the first generated position.
+    ///
+    /// This deterministic parity tap executes the same mapped prefill,
+    /// audio-embedding replacement and selected backend as generation.
+    pub fn next_token_logits_with_audio_embeddings(
+        &self,
+        prompt_token_ids: &[u32],
+        audio_token_start_idx: usize,
+        audio: &UltravoxAudioEmbeddings,
+    ) -> Result<Vec<f32>> {
+        validate_audio_prompt(
+            prompt_token_ids,
+            audio_token_start_idx,
+            audio,
+            self.config(),
+        )?;
+        super::companion_decoder::next_token_logits(
+            &self.mapped,
+            self.backend,
+            &self.runtime,
+            prompt_token_ids,
+            audio_token_start_idx,
+            audio,
+        )
+    }
+}
+
+fn validate_audio_prompt(
+    prompt: &[u32],
+    audio_start: usize,
+    audio: &UltravoxAudioEmbeddings,
+    config: UltravoxLlamaConfig,
+) -> Result<()> {
+    if prompt.is_empty() {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: prompt token IDs are empty"
+        )));
+    }
+    if prompt.len() > config.max_positions as usize {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: prompt length {} exceeds max positions {}",
+            prompt.len(),
+            config.max_positions
+        )));
+    }
+    if audio.frames() == 0
+        || audio.hidden_size() != config.hidden_size as usize
+        || audio.values().len() != audio.frames().saturating_mul(audio.hidden_size())
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: projected audio shape is [{},{}] with {} values; decoder requires non-empty [frames,{}]",
+            audio.frames(),
+            audio.hidden_size(),
+            audio.values().len(),
+            config.hidden_size
+        )));
+    }
+    let audio_end = audio_start.checked_add(audio.frames()).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: audio placeholder span overflows usize"))
+    })?;
+    if audio_end > prompt.len() {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: audio rows {audio_start}..{audio_end} exceed prompt length {}",
+            prompt.len()
+        )));
+    }
+    if let Some((index, token)) = prompt
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, token)| *token >= config.vocab_size)
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: prompt token {token} at row {index} is outside vocabulary 0..{}",
+            config.vocab_size
+        )));
+    }
+    if let Some((index, value)) = audio
+        .values()
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: projected audio contains non-finite value {value} at index {index}"
+        )));
+    }
+    Ok(())
 }
 
 fn read_config(file: &GgufFile) -> Result<UltravoxLlamaConfig> {
@@ -357,5 +557,41 @@ mod tests {
         assert_eq!(config.n_head % config.n_kv_head, 0);
         assert_eq!(config.rope_original_max_positions, 8_192);
         assert!(config.rope_high_freq_factor > config.rope_low_freq_factor);
+    }
+
+    #[test]
+    fn audio_prompt_requires_an_exact_consecutive_replacement_span() {
+        let config = UltravoxLlamaConfig::OFFICIAL;
+        let audio = UltravoxAudioEmbeddings {
+            values: vec![0.0; 2 * config.hidden_size as usize],
+            frames: 2,
+            hidden_size: config.hidden_size as usize,
+        };
+        validate_audio_prompt(&[1, 2, 3, 4], 1, &audio, config).expect("valid span");
+        assert!(validate_audio_prompt(&[1, 2], 1, &audio, config).is_err());
+        assert!(validate_audio_prompt(&[], 0, &audio, config).is_err());
+    }
+
+    #[test]
+    fn generation_requires_explicit_bounded_stop_ids() {
+        let config = UltravoxLlamaConfig::OFFICIAL;
+        assert!(
+            UltravoxGenerationOptions::greedy(0, vec![1])
+                .validate(4, config)
+                .is_err()
+        );
+        assert!(
+            UltravoxGenerationOptions::greedy(1, vec![])
+                .validate(4, config)
+                .is_err()
+        );
+        assert!(
+            UltravoxGenerationOptions::greedy(1, vec![config.vocab_size])
+                .validate(4, config)
+                .is_err()
+        );
+        UltravoxGenerationOptions::greedy(4, vec![1])
+            .validate(4, config)
+            .expect("bounded explicit generation");
     }
 }

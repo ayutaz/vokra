@@ -2,7 +2,7 @@
 //!
 //! The admitted BF16 checkpoint is larger than 2 GB, so binding must remain
 //! header-only. Tensor payloads stay in the original mapping; the decoder
-//! materializes one layer at a time in a follow-up execution module.
+//! materializes one layer at a time into reusable bounded scratch.
 
 use std::sync::Arc;
 
@@ -12,6 +12,10 @@ use vokra_core::{Result, VokraError};
 use crate::mapped_weights::{MappedModel, mapped_info};
 
 use super::companion::UltravoxLlamaConfig;
+
+const FIXED_WIDTH: usize = 1;
+const LAYER_WIDTH: usize = 9;
+const POST_WIDTH: usize = 1;
 
 const MAPPED: MappedModel = MappedModel {
     name: "ultravox_llama_companion",
@@ -64,10 +68,58 @@ impl UltravoxLlamaMappedDescriptors {
         self.config
     }
 
+    pub(super) fn file(&self) -> &GgufFile {
+        &self.file
+    }
+
+    pub(super) const fn mapped_model(&self) -> MappedModel {
+        MAPPED
+    }
+
+    pub(super) fn embedding(&self) -> &GgufTensorInfo {
+        self.info(0)
+    }
+
+    pub(super) fn layer(&self, layer: usize) -> UltravoxLlamaLayerDescriptors<'_> {
+        debug_assert!(layer < self.config.n_layer as usize);
+        let start = FIXED_WIDTH + layer * LAYER_WIDTH;
+        UltravoxLlamaLayerDescriptors {
+            input_norm: self.info(start),
+            q_weight: self.info(start + 1),
+            k_weight: self.info(start + 2),
+            v_weight: self.info(start + 3),
+            o_weight: self.info(start + 4),
+            ffn_norm: self.info(start + 5),
+            gate: self.info(start + 6),
+            up: self.info(start + 7),
+            down: self.info(start + 8),
+        }
+    }
+
+    pub(super) fn final_norm(&self) -> &GgufTensorInfo {
+        self.info(FIXED_WIDTH + self.config.n_layer as usize * LAYER_WIDTH)
+    }
+
     pub(super) fn descriptor_count(&self) -> usize {
         debug_assert_eq!(self.file.tensors().len(), self.infos.len());
         self.infos.len()
     }
+
+    fn info(&self, index: usize) -> &GgufTensorInfo {
+        &self.infos[index]
+    }
+}
+
+pub(super) struct UltravoxLlamaLayerDescriptors<'a> {
+    pub(super) input_norm: &'a GgufTensorInfo,
+    pub(super) q_weight: &'a GgufTensorInfo,
+    pub(super) k_weight: &'a GgufTensorInfo,
+    pub(super) v_weight: &'a GgufTensorInfo,
+    pub(super) o_weight: &'a GgufTensorInfo,
+    pub(super) ffn_norm: &'a GgufTensorInfo,
+    pub(super) gate: &'a GgufTensorInfo,
+    pub(super) up: &'a GgufTensorInfo,
+    pub(super) down: &'a GgufTensorInfo,
 }
 
 pub(super) fn tensor_contract(config: UltravoxLlamaConfig) -> Vec<(String, Vec<u64>)> {
@@ -76,7 +128,7 @@ pub(super) fn tensor_contract(config: UltravoxLlamaConfig) -> Vec<(String, Vec<u
     let q_width = u64::from(config.n_head) * u64::from(config.head_dim);
     let kv_width = u64::from(config.n_kv_head) * u64::from(config.head_dim);
     let vocab = u64::from(config.vocab_size);
-    let expected = 2 + config.n_layer as usize * 9;
+    let expected = FIXED_WIDTH + config.n_layer as usize * LAYER_WIDTH + POST_WIDTH;
     let mut tensors = Vec::with_capacity(expected);
     tensors.push(("model.embed_tokens.weight".to_owned(), vec![vocab, hidden]));
     for layer in 0..config.n_layer {

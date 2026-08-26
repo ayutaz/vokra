@@ -250,6 +250,26 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox native multimodal companion decode)
+
+The exact separately acquired Llama companion now executes a bounded-memory
+native decoder. It widens one authenticated BF16 layer at a time, keeps the
+tied embedding mmap-backed for both token gather and a chunked vocabulary
+head, applies Llama-3 scaled half-split RoPE and replaces exactly the
+processor-declared consecutive prompt span with projected audio embeddings.
+The combined audio-tower route requires both artifacts to use the same CPU or
+Metal backend before any encoder work. Because neither GGUF embeds a tokenizer,
+chat template or generation sidecar, callers provide exact prompt, audio-start
+and stop-token IDs; malformed spans and missing stop IDs are explicit errors.
+This records source reachability only—real-checkpoint VAST CPU and Apple-device
+Metal parity remain pending. No C symbol, allocation ABI or publication
+permission changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::ultravox` | `UltravoxGenerationOptions`, `UltravoxGeneration`; `UltravoxLlamaCompanion::{generate_with_audio_embeddings,next_token_logits_with_audio_embeddings}` | Added | exact token IDs + one consecutive `[audio_frames,2048]` replacement span → bounded greedy token IDs or full first-step logits | Requires explicit in-vocabulary stop IDs and validates prompt/span/finite audio/context bounds. One BF16 layer and at most 512 tied-head rows are widened at a time; no tokenizer download, guessed sidecar or CPU fallback | no | (TBD) |
+| `vokra-models::ultravox::UltravoxAudioTower` | `generate_from_log_mel_with_companion` | Added | exact `[128,n_frames]` log-mel + separately licensed strict companion + explicit prompt/start/stop IDs → generated IDs | Rejects mixed CPU/Metal artifacts before audio execution. Public MIT audio weights and gated conditional-commercial Llama weights remain separate mappings and licenses | no | (TBD) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox gated Llama companion boundary)
 
 The separately licensed Meta Llama-3.2-1B-Instruct companion now has a strict,

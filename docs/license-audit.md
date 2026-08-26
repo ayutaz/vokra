@@ -718,8 +718,11 @@ exact raw license IDは `llama3.2`、classは `ConditionalCommercial` とし、M
 このcompanionにはpublish経路を設けず、公開MIT artifactへの合成・自動取得・
 代替decoder fallbackも行わない。2 GB超の実変換とvalidationはVAST限定で、
 runtime strict mmap binderは同じ固定revision、完全manifest、dense dtype、license
-classと全decoder hot-opをfail-closed検証する。tokenizer/chat/interleave/generation
-および実weight parityは後続gateである。
+classと全decoder hot-opをfail-closed検証する。native decoderは一層ずつmmapから
+widenし、tied embeddingをchunked LM headにも使い、processorが指定した連続prompt
+spanをaudio embeddingで置換してbounded greedy生成する。audio towerとcompanionは
+同一backend必須である。tokenizer/chat sidecar、CLI routeおよび実weight parityは
+後続gateである。
 
 ### 3.2 Corpus / dataset owner sign-off（依頼者記入）
 

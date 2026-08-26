@@ -14,7 +14,12 @@
 > authenticates the same revision, complete topology/manifest, dense dtype and
 > `ConditionalCommercial` class before preflighting the full CPU/Metal decoder
 > hot-op set. No download, merge into the MIT artifact or publish path exists.
-> Tokenizer/chat composition, multimodal embedding interleave and generation
+> The bounded-memory native Llama decoder now widens one layer at a time,
+> reuses the tied embedding as a chunked vocabulary head, applies exact
+> Llama-3 scaled half-split RoPE and replaces the processor-declared consecutive
+> prompt span with projected audio before greedy generation. A combined library
+> route requires both artifacts on one backend and explicit pre-tokenized
+> prompt/start/stop IDs. Tokenizer/chat sidecars and the equivalent CLI route
 > remain pending, so public-artifact reachability totals do not change. No model
 > payload, conversion, inference or heavy Cargo command ran on the maintainer
 > Mac.
