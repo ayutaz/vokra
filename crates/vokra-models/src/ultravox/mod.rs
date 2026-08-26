@@ -91,6 +91,24 @@ pub const ULTRAVOX_AUDIO_HOT_OPS: &[HotOp] = &[
     HotOp::Conv1d,
 ];
 
+/// Union of every learned operation in the complete audio-to-text route.
+///
+/// The audio tower and Llama companion each preflight their own subset when
+/// they bind.  The composed route also checks this union before doing any
+/// work, making the all-or-error CPU/Metal contract explicit at the model
+/// boundary rather than relying on the order in which the two artifacts were
+/// opened.
+pub const ULTRAVOX_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::RmsNorm,
+    HotOp::Gelu,
+    HotOp::Silu,
+    HotOp::Conv1d,
+];
+
 /// Immutable dimensions of the public Ultravox v0.5 audio checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UltravoxAudioConfig {
@@ -254,6 +272,7 @@ impl UltravoxAudioTower {
                 companion.backend()
             )));
         }
+        Compute::for_backend(self.backend, ULTRAVOX_HOT_OPS)?;
         let audio = self.encode_log_mel(log_mel, n_frames)?;
         companion.generate_with_audio_embeddings(
             prompt_token_ids,
@@ -331,5 +350,15 @@ mod tests {
             UltravoxAudioConfig::OFFICIAL.projector_packed_size,
             2 * UltravoxAudioConfig::OFFICIAL.text_hidden_size
         );
+    }
+
+    #[test]
+    fn complete_route_preflights_the_union_on_cpu() {
+        let compute = Compute::for_backend(BackendKind::Cpu, ULTRAVOX_HOT_OPS)
+            .expect("CPU implements the complete Ultravox learned-op union");
+        assert_eq!(compute.backend_name(), "cpu");
+        assert!(ULTRAVOX_HOT_OPS.contains(&HotOp::Gemv));
+        assert!(ULTRAVOX_HOT_OPS.contains(&HotOp::LayerNorm));
+        assert!(ULTRAVOX_HOT_OPS.contains(&HotOp::Conv1d));
     }
 }

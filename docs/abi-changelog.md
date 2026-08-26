@@ -258,17 +258,23 @@ tied embedding mmap-backed for both token gather and a chunked vocabulary
 head, applies Llama-3 scaled half-split RoPE and replaces exactly the
 processor-declared consecutive prompt span with projected audio embeddings.
 The combined audio-tower route requires both artifacts to use the same CPU or
-Metal backend before any encoder work. Because neither GGUF embeds a tokenizer,
-chat template or generation sidecar, callers provide exact prompt, audio-start
-and stop-token IDs; malformed spans and missing stop IDs are explicit errors.
-This records source reachability only—real-checkpoint VAST CPU and Apple-device
+Metal backend and preflights the union of all learned operations before any
+encoder work. Because neither GGUF embeds a tokenizer, chat template or
+generation sidecar, callers provide exact prompt, audio-start and stop-token
+IDs; malformed spans and missing stop IDs are explicit errors. The CLI accepts
+one 16 kHz mono WAV and follows the official variable-length Whisper processor
+contract (minimum two hops, hop-rounded valid frames); over-30-second audio is
+rejected until multi-chunk prompt composition is represented explicitly. This
+records source reachability only—real-checkpoint VAST CPU and Apple-device
 Metal parity remain pending. No C symbol, allocation ABI or publication
 permission changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-models::ultravox` | `UltravoxGenerationOptions`, `UltravoxGeneration`; `UltravoxLlamaCompanion::{generate_with_audio_embeddings,next_token_logits_with_audio_embeddings}` | Added | exact token IDs + one consecutive `[audio_frames,2048]` replacement span → bounded greedy token IDs or full first-step logits | Requires explicit in-vocabulary stop IDs and validates prompt/span/finite audio/context bounds. One BF16 layer and at most 512 tied-head rows are widened at a time; no tokenizer download, guessed sidecar or CPU fallback | no | (TBD) |
-| `vokra-models::ultravox::UltravoxAudioTower` | `generate_from_log_mel_with_companion` | Added | exact `[128,n_frames]` log-mel + separately licensed strict companion + explicit prompt/start/stop IDs → generated IDs | Rejects mixed CPU/Metal artifacts before audio execution. Public MIT audio weights and gated conditional-commercial Llama weights remain separate mappings and licenses | no | (TBD) |
+| `vokra-models::ultravox::UltravoxAudioTower` | `generate_from_log_mel_with_companion`, `ULTRAVOX_HOT_OPS` | Added | exact `[128,n_frames]` log-mel + separately licensed strict companion + explicit prompt/start/stop IDs → generated IDs | Rejects mixed CPU/Metal artifacts and preflights the complete audio+Llama learned-op union before execution. Public MIT audio weights and gated conditional-commercial Llama weights remain separate mappings and licenses | no | (TBD) |
+| `vokra-models::whisper::mel` | `log_mel_variable` | Added | mono PCM up to 30 s + mel count → channel-major variable frame tensor and valid frame count | Reproduces Ultravox's minimum-two-hop / hop-rounded single-clip contract; long-audio chunking is explicit unsupported rather than a silent truncate | no | (TBD) |
+| `vokra-cli run` | `ultravox` task; `--ultravox-companion`, `--ultravox-audio-start`, `--ultravox-stop-token-ids`, `--ultravox-max-new-tokens` | Added | 16 kHz mono WAV + exact expanded prompt contract → generated token IDs on stdout or UTF-8 output file | Both strict GGUFs bind on one selected CPU/Metal backend; no tokenizer/template/download/fallback. `bench` rejects because prompt and generated duration are content-dependent | no | (TBD) |
 
 ### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox gated Llama companion boundary)
 

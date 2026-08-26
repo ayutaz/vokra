@@ -135,6 +135,16 @@ pub(crate) enum ModelTask {
     /// prompt ids and an explicit Base/Distill NeuCodec companion. Both
     /// learned stages use the same selected CPU or Metal backend.
     TtsNeuTtsAir,
+    /// Ultravox v0.5 audio-to-text generation through the public MIT audio
+    /// tower and a separately acquired, conditional-commercial Llama 3.2
+    /// companion.
+    ///
+    /// The dispatch returns a bare mmap-backed session. The `run` arm opens
+    /// both strict artifacts on the same selected backend and requires the
+    /// exact expanded prompt, audio replacement start, and stop-token IDs.
+    /// Neither tokenizer/chat templating nor the gated companion is inferred
+    /// or downloaded.
+    AudioLlmUltravox,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -561,6 +571,8 @@ const ARCH_BARK: &str = "bark";
 const ARCH_PARLER_TTS: &str = "parler_tts";
 /// Neuphonic NeuTTS Air Qwen2 LM emitting NeuCodec speech tokens.
 const ARCH_NEUTTS_AIR: &str = "neutts-air";
+/// Ultravox v0.5 public MIT audio tower; its Llama sidecar stays separate.
+const ARCH_ULTRAVOX: &str = "ultravox";
 
 /// Standalone SBV2 Chinese plain-BERT sidecar.
 const ARCH_BERT_BASE: &str = "bert_base";
@@ -1692,6 +1704,28 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::TtsNeuTtsAir))
         }
+        ARCH_ULTRAVOX => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_ULTRAVOX}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_ULTRAVOX}` is missing `vokra.model.name`; refusing topology inference"
+                    )
+                })?;
+            if name != "ultravox-v0-5-llama-3-2-1b" {
+                return Err(format!(
+                    "arch `{ARCH_ULTRAVOX}` carries unknown model name `{name}`; expected `ultravox-v0-5-llama-3-2-1b`"
+                ));
+            }
+            Ok((session, ModelTask::AudioLlmUltravox))
+        }
         ARCH_MOSS_TTS => {
             if hint.is_some() {
                 return Err(format!(
@@ -2240,23 +2274,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "Voila::from_gguf → Voila::converse",
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
-    // The published file is intentionally the MIT audio component only.  Its
-    // Whisper tower + projector execute through `encode_log_mel`; a complete
-    // CLI conversation still needs the separately licensed Llama companion,
-    // tokenizer and chat/audio-placeholder route.  Keep it in this registry
-    // until that composition is executable rather than claiming a standalone
-    // audio-LLM route for an artifact with no language-model weights.
-    BoundArch {
-        arch: "ultravox",
-        module: "vokra_models::ultravox",
-        entry: "UltravoxAudioTower::open_mapped → encode_log_mel / require_text_companion",
-        probe: None,
-    },
     // User-acquired, separately licensed Llama base. Strict mmap decoding and
     // the exact consecutive audio-embedding replacement are available through
-    // the library API. The CLI remains bound-only until it accepts the two
-    // explicit artifacts plus pre-tokenized prompt/start/stop IDs; it must not
-    // guess tokenizer or chat-template sidecars.
+    // the library API. This sidecar arch is not a standalone `run` target: the
+    // routed `ultravox` primary accepts it through `--ultravox-companion`.
     BoundArch {
         arch: "ultravox_llama_companion",
         module: "vokra_models::ultravox",
@@ -2686,6 +2707,42 @@ mod tests {
         ));
         std::fs::write(&path, &bytes).unwrap();
         let error = load_session(path.to_str().unwrap()).expect_err("foreign NeuTTS name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_ultravox_release_to_audio_llm() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_ULTRAVOX);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            "ultravox-v0-5-llama-3-2-1b",
+        );
+        let bytes = builder.to_bytes().expect("serialize Ultravox route GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-ultravox-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named Ultravox session builds (bare)");
+        assert_eq!(task, ModelTask::AudioLlmUltravox);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_ULTRAVOX));
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_ULTRAVOX);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "ultravox-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Ultravox GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-ultravox-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Ultravox rejects");
         let _ = std::fs::remove_file(&path);
         assert!(error.contains("unknown model name"));
     }

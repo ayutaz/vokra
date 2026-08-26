@@ -86,6 +86,10 @@ USAGE:
                   --token-ids <official-prompt-u32,...> [--neutts-max-new-tokens <N>] \
                   [--neutts-min-new-tokens <N>] [--neutts-seed <u64>] [--neutts-greedy] \
                   [--output <out.wav>]
+    vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> \
+                  --input <16k-mono.wav> --token-ids <expanded-prompt-u32,...> \
+                  --ultravox-audio-start <N> --ultravox-stop-token-ids <u32,u32,...> \
+                  [--ultravox-max-new-tokens <N>] [--output <generated-ids.txt>]
     vokra-cli run --model <musicgen-medium-or-large.gguf> \
                   --musicgen-companion <musicgen-small.gguf> \
                   --token-ids <u32,u32,...> --music-unconditional-token-ids <u32,u32,...> \
@@ -207,6 +211,10 @@ OPTIONS:
                                 release-pinned phoneme/tone/language ids and
                                 position-major BERT/JA-BERT features; raw text
                                 is not inferred from the acoustic GGUF.
+                                For Ultravox it is a non-empty 16 kHz mono WAV
+                                of at most one 30-second chunk; longer audio is
+                                rejected until multi-chunk prompt composition
+                                is represented explicitly.
                                 For BigVGAN, both HiFi-GAN variants, and Vocos
                                 it is raw little-endian f32 feature data in
                                 channel-major `[channels, frames]` order;
@@ -273,6 +281,8 @@ OPTIONS:
                                 writes exact UTF-8 restored text when present.
                                 Speaker encoders write their native embedding
                                 as raw little-endian f32 (`[dim]`).
+                                Ultravox writes generated comma-separated token
+                                IDs as UTF-8 because no tokenizer is bundled.
                                 Mimi requires it: code container for encode,
                                 WAV for decode. DAC decode also requires a WAV
                                 output. SNAC requires a `.vsc` code container
@@ -292,7 +302,8 @@ OPTIONS:
     --token-ids <ids>           standalone bert_base/deberta_v2/deberta_v3,
                                 MusicGen conditional prompt, or
                                 Bark/Bark Small text-token sequence, or
-                                complete NeuTTS Air official prompt:
+                                complete NeuTTS Air official prompt, or the
+                                expanded Ultravox chat/audio-placeholder prompt:
                                 comma-separated u32 ids (whitespace allowed).
                                 No tokenizer or unknown-token substitution is
                                 inferred. BERT --output writes row-major `[T,D]`
@@ -337,6 +348,21 @@ OPTIONS:
     --neutts-seed <u64>         NeuTTS Air sampling seed [default 0].
     --neutts-greedy             NeuTTS Air only: deterministic argmax route;
                                 intended for parity/backend validation.
+    --ultravox-companion <path> Ultravox v0.5 only, REQUIRED: user-acquired
+                                conversion of the exact audited gated
+                                Meta-Llama-3.2-1B-Instruct revision. It stays
+                                separate from the public MIT audio GGUF; both
+                                stages use the same --backend.
+    --ultravox-audio-start <N>  Ultravox only, REQUIRED: zero-based start of
+                                the consecutive audio-placeholder span in the
+                                already expanded --token-ids prompt.
+    --ultravox-stop-token-ids <ids>
+                                Ultravox only, REQUIRED: one or more exact
+                                tokenizer terminator IDs. No tokenizer or
+                                generation sidecar is guessed.
+    --ultravox-max-new-tokens <N>
+                                Ultravox only: positive greedy generation cap
+                                [default 512].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
                                 The v1 container pins time-major `[frame,cb]`
@@ -547,6 +573,14 @@ struct RunArgs {
     neutts_seed: Option<u64>,
     /// NeuTTS Air-only deterministic argmax mode.
     neutts_greedy: bool,
+    /// Ultravox-only exact gated Llama 3.2 companion GGUF.
+    ultravox_companion: Option<String>,
+    /// Ultravox-only start of the consecutive audio replacement span.
+    ultravox_audio_start: Option<usize>,
+    /// Ultravox-only exact tokenizer terminators.
+    ultravox_stop_token_ids: Option<String>,
+    /// Ultravox-only bounded greedy generation cap.
+    ultravox_max_new_tokens: Option<usize>,
     /// Standalone codec direction. Required on Mimi/SNAC and on DAC decode;
     /// rejected for every non-codec architecture.
     codec_mode: Option<CodecMode>,
@@ -717,6 +751,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut neutts_min_new_tokens: Option<usize> = None;
     let mut neutts_seed: Option<u64> = None;
     let mut neutts_greedy = false;
+    let mut ultravox_companion: Option<String> = None;
+    let mut ultravox_audio_start: Option<usize> = None;
+    let mut ultravox_stop_token_ids: Option<String> = None;
+    let mut ultravox_max_new_tokens: Option<usize> = None;
     let mut codec_mode: Option<CodecMode> = None;
     let mut num_quantizers: Option<usize> = None;
     let mut bandwidth_id: Option<usize> = None;
@@ -978,6 +1016,44 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 neutts_greedy = true;
                 i += 1;
             }
+            "--ultravox-companion" => {
+                ultravox_companion = Some(
+                    args.get(i + 1)
+                        .ok_or("--ultravox-companion requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--ultravox-audio-start" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--ultravox-audio-start requires a zero-based index")?;
+                ultravox_audio_start = Some(value.parse::<usize>().map_err(|error| {
+                    format!("--ultravox-audio-start must be an integer: {error}")
+                })?);
+                i += 2;
+            }
+            "--ultravox-stop-token-ids" => {
+                ultravox_stop_token_ids = Some(
+                    args.get(i + 1)
+                        .ok_or("--ultravox-stop-token-ids requires a comma-separated u32 list")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--ultravox-max-new-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--ultravox-max-new-tokens requires a positive integer")?;
+                let tokens = value.parse::<usize>().map_err(|error| {
+                    format!("--ultravox-max-new-tokens must be an integer: {error}")
+                })?;
+                if tokens == 0 {
+                    return Err("--ultravox-max-new-tokens must be positive".to_owned());
+                }
+                ultravox_max_new_tokens = Some(tokens);
+                i += 2;
+            }
             "--codec-mode" => {
                 let value = args
                     .get(i + 1)
@@ -1237,6 +1313,10 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         neutts_min_new_tokens,
         neutts_seed,
         neutts_greedy,
+        ultravox_companion,
+        ultravox_audio_start,
+        ultravox_stop_token_ids,
+        ultravox_max_new_tokens,
         codec_mode,
         num_quantizers,
         bandwidth_id,
@@ -1373,7 +1453,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::MusicGeneration
         | ModelTask::TtsBark
         | ModelTask::TtsParler
-        | ModelTask::TtsNeuTtsAir => None,
+        | ModelTask::TtsNeuTtsAir
+        | ModelTask::AudioLlmUltravox => None,
         // Bench-only tasks — unreachable from `run` (each hits its own explicit
         // rejection in `main`'s `match`). Returning `None` lets that more
         // specific error fire instead of a backend complaint.
@@ -1480,9 +1561,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MusicGeneration
         && task != ModelTask::TtsBark
         && task != ModelTask::TtsNeuTtsAir
+        && task != ModelTask::AudioLlmUltravox
     {
         return Err(
-            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3, musicgen, bark, or neutts-air arches"
+            "run: --token-ids is only supported for standalone bert_base/deberta_v2/deberta_v3, musicgen, bark, neutts-air, or ultravox arches"
                 .to_owned(),
         );
     }
@@ -1526,6 +1608,17 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         return Err("run: --neutts-companion / --neutts-max-new-tokens / \
              --neutts-min-new-tokens / --neutts-seed / --neutts-greedy are only \
              supported for the neutts-air arch"
+            .to_owned());
+    }
+    if (a.ultravox_companion.is_some()
+        || a.ultravox_audio_start.is_some()
+        || a.ultravox_stop_token_ids.is_some()
+        || a.ultravox_max_new_tokens.is_some())
+        && task != ModelTask::AudioLlmUltravox
+    {
+        return Err("run: --ultravox-companion / --ultravox-audio-start / \
+             --ultravox-stop-token-ids / --ultravox-max-new-tokens are only \
+             supported for the ultravox arch"
             .to_owned());
     }
     if a.codec_mode.is_some()
@@ -1862,6 +1955,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsNeuTtsAir => {
             run_neutts_air(&a)?;
+        }
+        ModelTask::AudioLlmUltravox => {
+            run_ultravox(&a)?;
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
@@ -3693,6 +3789,112 @@ fn run_neutts_air(a: &RunArgs) -> Result<(), String> {
         synthesis.sample_rate,
         a.output.as_deref(),
     )
+}
+
+/// Public Ultravox v0.5 one-chunk audio-to-token generation.
+///
+/// The public MIT GGUF contains only the Whisper tower and projector. The
+/// gated Llama weights, expanded chat prompt, audio replacement start, and
+/// tokenizer stop IDs are all explicit caller inputs. This route never
+/// downloads or infers a tokenizer/template and never mixes backends between
+/// the two learned artifacts.
+fn run_ultravox(a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (Ultravox): use --input plus exact expanded --token-ids; --text/--tokens are not accepted because neither GGUF embeds the tokenizer or chat template"
+                .to_owned(),
+        );
+    }
+    let input = a
+        .input
+        .as_deref()
+        .ok_or("run (Ultravox): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(input).map_err(|error| format!("run (Ultravox): {input}: {error}"))?;
+    if clip.sample_rate != vokra_models::ultravox::SAMPLE_RATE {
+        return Err(format!(
+            "run (Ultravox): {input} is {} Hz, expected {} Hz; resample explicitly before inference",
+            clip.sample_rate,
+            vokra_models::ultravox::SAMPLE_RATE,
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (Ultravox): --input WAV contains no samples".to_owned());
+    }
+
+    let prompt = parse_comma_u32_ids(
+        a.token_ids
+            .as_deref()
+            .ok_or("run (Ultravox): --token-ids <expanded-prompt-u32,...> is required")?,
+        "Ultravox",
+        "--token-ids",
+    )?;
+    let audio_start = a.ultravox_audio_start.ok_or(
+        "run (Ultravox): --ultravox-audio-start <zero-based-placeholder-index> is required",
+    )?;
+    let stop_token_ids = parse_comma_u32_ids(
+        a.ultravox_stop_token_ids
+            .as_deref()
+            .ok_or("run (Ultravox): --ultravox-stop-token-ids <u32,u32,...> is required")?,
+        "Ultravox",
+        "--ultravox-stop-token-ids",
+    )?;
+    let companion_path = a.ultravox_companion.as_deref().ok_or(
+        "run (Ultravox): --ultravox-companion <llama.gguf> is required; the public MIT audio GGUF does not contain Llama weights",
+    )?;
+
+    let (log_mel, n_frames) = vokra_models::whisper::mel::log_mel_variable(
+        &clip.samples,
+        vokra_models::ultravox::UltravoxAudioConfig::OFFICIAL.n_mels,
+    )
+    .map_err(|error| format!("run (Ultravox frontend): {error}"))?;
+    let policy = vokra_core::CompliancePolicy::from_env();
+    let audio = vokra_models::ultravox::UltravoxAudioTower::open_mapped_with_policy_and_backend(
+        &a.model, &policy, a.backend,
+    )
+    .map_err(|error| format!("run (Ultravox audio bind): {error}"))?;
+    let companion =
+        vokra_models::ultravox::UltravoxLlamaCompanion::open_mapped_with_policy_and_backend(
+            companion_path,
+            &policy,
+            a.backend,
+        )
+        .map_err(|error| format!("run (Ultravox companion bind): {error}"))?;
+    let options = vokra_models::ultravox::UltravoxGenerationOptions::greedy(
+        a.ultravox_max_new_tokens.unwrap_or(512),
+        stop_token_ids,
+    );
+    let generation = audio
+        .generate_from_log_mel_with_companion(
+            &companion,
+            &log_mel,
+            n_frames,
+            &prompt,
+            audio_start,
+            &options,
+        )
+        .map_err(|error| format!("run (Ultravox generate): {error}"))?;
+
+    let rendered = generation
+        .token_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{rendered}\n"))
+            .map_err(|error| format!("run (Ultravox): --output {output}: {error}"))?;
+        eprintln!(
+            "ultravox: generated {} token(s), stop={:?} -> {output}",
+            generation.token_ids.len(),
+            generation.stop_token,
+        );
+    } else {
+        println!(
+            "ultravox: token_ids={rendered} stop={:?}",
+            generation.stop_token
+        );
+    }
+    Ok(())
 }
 
 /// Standalone Mimi encode/decode using the portable `VKRMCODE` v1 contract.
@@ -6912,6 +7114,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_explicit_ultravox_prompt_and_companion_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "ultravox-audio.gguf",
+            "--ultravox-companion",
+            "llama.gguf",
+            "--input",
+            "speech.wav",
+            "--token-ids",
+            "128000,128009,128009,128001",
+            "--ultravox-audio-start",
+            "1",
+            "--ultravox-stop-token-ids",
+            "128001,128009",
+            "--ultravox-max-new-tokens",
+            "128",
+            "--output",
+            "generated-ids.txt",
+        ]))
+        .expect("Ultravox explicit multimodal inputs parse");
+        assert_eq!(parsed.ultravox_companion.as_deref(), Some("llama.gguf"));
+        assert_eq!(parsed.ultravox_audio_start, Some(1));
+        assert_eq!(
+            parsed.ultravox_stop_token_ids.as_deref(),
+            Some("128001,128009")
+        );
+        assert_eq!(parsed.ultravox_max_new_tokens, Some(128));
+
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "ultravox-audio.gguf",
+                "--ultravox-max-new-tokens",
+                "0",
+            ]))
+            .is_err()
+        );
+        let error = match parse_args(&args(&[
+            "--model",
+            "ultravox-audio.gguf",
+            "--ultravox-companion",
+        ])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --ultravox-companion must be rejected"),
+        };
+        assert_eq!(error, "--ultravox-companion requires a GGUF path");
+    }
+
+    #[test]
     fn parse_accepts_explicit_moss_tts_companion_contract() {
         let parsed = parse_args(&args(&[
             "--model",
@@ -8676,6 +8927,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsParler), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsNeuTtsAir), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AudioLlmUltravox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);

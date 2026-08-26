@@ -30,7 +30,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use vokra_core::gguf::GgufFile;
-use vokra_core::{FrontendPolicy, FrontendSpec, Result};
+use vokra_core::{FrontendPolicy, FrontendSpec, Result, VokraError};
 use vokra_ops::{
     fused_log_mel_scalar, mel_attrs_from_spec, mel_filterbank, stft, stft_attrs_from_spec,
 };
@@ -121,6 +121,48 @@ pub const N_FRAMES: usize = 3000;
 /// The input is zero-padded or trimmed to 30 s, so the output frame count is
 /// always [`N_FRAMES`] regardless of the input length.
 pub fn log_mel(pcm: &[f32], n_mels: usize) -> Vec<f32> {
+    // 1. Pad / trim to exactly 30 s. Both paths pad to `N_SAMPLES` so the
+    //    STFT frame grid is fixed and independent of `pcm.len()`.
+    let mut buf = vec![0.0f32; N_SAMPLES];
+    let n = pcm.len().min(N_SAMPLES);
+    buf[..n].copy_from_slice(&pcm[..n]);
+
+    log_mel_padded(&buf, n_mels, N_FRAMES)
+}
+
+/// Computes the variable-length Whisper features used by Ultravox.
+///
+/// Ultravox calls the official Whisper feature extractor with
+/// `padding="longest"`, `pad_to_multiple_of=HOP`, no truncation, and first
+/// pads clips shorter than two hops to exactly two hops. For one clip this
+/// yields `max(2, ceil(samples / HOP))` valid mel frames rather than Whisper
+/// ASR's fixed 3,000-frame window. The returned tensor is channel-major
+/// `[n_mels, frames]` and contains no padded 30-second tail.
+///
+/// The public v0.5 runtime currently accepts one audio chunk, so clips longer
+/// than 30 seconds fail explicitly instead of being silently truncated or
+/// partially composed. Multi-chunk prompt expansion needs a separate API.
+pub fn log_mel_variable(pcm: &[f32], n_mels: usize) -> Result<(Vec<f32>, usize)> {
+    if pcm.len() > N_SAMPLES {
+        return Err(VokraError::InvalidArgument(format!(
+            "variable Whisper log-mel accepts at most {N_SAMPLES} samples (30 seconds), got {}; split long audio explicitly",
+            pcm.len()
+        )));
+    }
+    if n_mels == 0 {
+        return Err(VokraError::InvalidArgument(
+            "variable Whisper log-mel requires at least one mel channel".to_owned(),
+        ));
+    }
+
+    let padded_samples = pcm.len().max(2 * HOP).div_ceil(HOP) * HOP;
+    let frames = padded_samples / HOP;
+    let mut padded = vec![0.0f32; padded_samples];
+    padded[..pcm.len()].copy_from_slice(pcm);
+    Ok((log_mel_padded(&padded, n_mels, frames), frames))
+}
+
+fn log_mel_padded(buf: &[f32], n_mels: usize, output_frames: usize) -> Vec<f32> {
     // Data-driven front-end (M1-03): build the STFT / mel attributes from the
     // one runtime spec via the vokra-ops translation, instead of hard-coding
     // `400 / 160 / Slaney` a second time here (NFR-QL-03). `runtime_frontend_spec`
@@ -128,12 +170,6 @@ pub fn log_mel(pcm: &[f32], n_mels: usize) -> Vec<f32> {
     let spec = runtime_frontend_spec(n_mels);
     let stft_attrs = stft_attrs_from_spec(&spec).expect("runtime frontend spec is well-formed");
     let mel_attrs = mel_attrs_from_spec(&spec).expect("runtime frontend spec is well-formed");
-
-    // 1. Pad / trim to exactly 30 s. Both paths pad to `N_SAMPLES` so the
-    //    STFT frame grid is fixed and independent of `pcm.len()`.
-    let mut buf = vec![0.0f32; N_SAMPLES];
-    let n = pcm.len().min(N_SAMPLES);
-    buf[..n].copy_from_slice(&pcm[..n]);
 
     // M2-04-T08: route through the fused single-pass kernel when enabled
     // (default). Falls through to the pre-fusion imperative path when the
@@ -144,18 +180,18 @@ pub fn log_mel(pcm: &[f32], n_mels: usize) -> Vec<f32> {
     if fusion::is_enabled() {
         let fb = mel_filterbank(&mel_attrs);
         let floor_log = 1e-10f32.log10();
-        let mut out = vec![floor_log; n_mels * N_FRAMES];
-        fused_log_mel_scalar(&buf, &stft_attrs, &fb, N_FRAMES, &mut out);
+        let mut out = vec![floor_log; n_mels * output_frames];
+        fused_log_mel_scalar(buf, &stft_attrs, &fb, output_frames, &mut out);
         return out;
     }
 
     // --- Unfused reference path (bit-identical to the pre-M2-04 code) --------
 
     // 2. STFT → power, drop the trailing frame.
-    let stft_out = stft(&buf, &stft_attrs).expect("valid whisper STFT attrs");
+    let stft_out = stft(buf, &stft_attrs).expect("valid whisper STFT attrs");
     let bins = stft_out.bins; // n_fft/2 + 1 = 201
-    let frames = stft_out.frames.min(N_FRAMES + 1);
-    let kept = frames.min(N_FRAMES);
+    let frames = stft_out.frames.min(output_frames + 1);
+    let kept = frames.min(output_frames);
     let power = stft_out.power();
 
     // 3. Mel projection on the kept frames → [kept, n_mels].
@@ -163,15 +199,14 @@ pub fn log_mel(pcm: &[f32], n_mels: usize) -> Vec<f32> {
     let mel = fb.apply(&power[..kept * bins], kept);
 
     // 4. log10 + dynamic-range compression + normalization, transposed to
-    //    [n_mels, N_FRAMES]. Frames beyond `kept` (only possible for absurdly
-    //    short inputs) stay at the log floor.
+    //    [n_mels, output_frames]. Frames beyond `kept` stay at the log floor.
     let floor_log = 1e-10f32.log10();
-    let mut out = vec![floor_log; n_mels * N_FRAMES];
+    let mut out = vec![floor_log; n_mels * output_frames];
     let mut gmax = f32::NEG_INFINITY;
     for t in 0..kept {
         for m in 0..n_mels {
             let l = mel[t * n_mels + m].max(1e-10).log10();
-            out[m * N_FRAMES + t] = l;
+            out[m * output_frames + t] = l;
             if l > gmax {
                 gmax = l;
             }
@@ -272,6 +307,40 @@ mod tests {
         let out = log_mel(&pcm, 80);
         assert_eq!(out.len(), 80 * N_FRAMES);
         assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn variable_frontend_matches_ultravox_frame_contract() {
+        for (samples, expected_frames) in [
+            (0, 2),
+            (1, 2),
+            (2 * HOP, 2),
+            (2 * HOP + 1, 3),
+            (SAMPLE_RATE as usize, 100),
+            (N_SAMPLES, N_FRAMES),
+        ] {
+            let (mel, frames) = log_mel_variable(&vec![0.0; samples], 128).expect("valid clip");
+            assert_eq!(frames, expected_frames, "samples={samples}");
+            assert_eq!(mel.len(), 128 * expected_frames, "samples={samples}");
+            assert!(mel.iter().all(|value| value.is_finite()));
+        }
+    }
+
+    #[test]
+    fn variable_frontend_rejects_implicit_long_audio_chunking() {
+        let error = log_mel_variable(&vec![0.0; N_SAMPLES + 1], 128)
+            .expect_err("long audio must not be truncated silently");
+        assert!(error.to_string().contains("split long audio explicitly"));
+    }
+
+    #[test]
+    fn full_window_variable_and_fixed_frontends_are_identical() {
+        let _guard = FUSION_TOGGLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let pcm = vec![0.125; N_SAMPLES];
+        let fixed = log_mel(&pcm, 128);
+        let (variable, frames) = log_mel_variable(&pcm, 128).expect("full window");
+        assert_eq!(frames, N_FRAMES);
+        assert_eq!(variable, fixed);
     }
 
     // --- M2-04-T08: fusion toggle behaviour ---------------------------------

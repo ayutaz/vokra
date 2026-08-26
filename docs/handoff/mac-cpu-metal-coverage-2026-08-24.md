@@ -19,10 +19,15 @@
 > Llama-3 scaled half-split RoPE and replaces the processor-declared consecutive
 > prompt span with projected audio before greedy generation. A combined library
 > route requires both artifacts on one backend and explicit pre-tokenized
-> prompt/start/stop IDs. Tokenizer/chat sidecars and the equivalent CLI route
-> remain pending, so public-artifact reachability totals do not change. No model
-> payload, conversion, inference or heavy Cargo command ran on the maintainer
-> Mac.
+> prompt/start/stop IDs. The public CLI now exposes that same explicit
+> two-artifact contract, uses the official variable-length Whisper processor
+> rule (minimum two 160-sample hops, then hop-rounded valid frames), and emits
+> generated token IDs without guessing a tokenizer/chat template. The complete
+> audio+Llama learned-op union is preflighted before execution; audio longer
+> than the one supported 30-second chunk is an explicit error rather than a
+> silent truncate. Real-checkpoint VAST CPU and Apple-device Metal parity remain
+> pending. No model payload, conversion, inference or heavy Cargo command ran
+> on the maintainer Mac.
 
 > **2026-08-27 YuE xcodec-mini source wave:** bounded reads of only the
 > public GGUF header authenticated revision

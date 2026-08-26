@@ -886,6 +886,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::AudioLlmUltravox => {
+            return Err(
+                "bench: arch `ultravox` needs a separately licensed Llama companion, exact expanded prompt/audio span/stop IDs, and content-dependent generation length; use `vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> --input <16k-mono.wav> --token-ids <expanded-prompt-ids> --ultravox-audio-start <N> --ultravox-stop-token-ids <ids>` (FR-EX-08: refusing to fabricate tokenizer, chat template, gated weights, or a duration denominator)"
+                    .to_owned(),
+            );
+        }
         ModelTask::SmartTurn => {
             let path = args
                 .input
