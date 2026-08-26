@@ -71,16 +71,6 @@ PUBLIC_ARTIFACT_CPU_BLOCKERS = {
         "native source route is complete on CPU/Metal, but deliberately rejects "
         "this historical artifact pending an authorized gated replacement",
     ),
-    "vokra/speecht5-tts": (
-        "no-runtime-binder",
-        "the live 393-F32-tensor GGUF predates the strict pinned SpeechT5 "
-        "conversion contract and contains neither the exact 79-piece "
-        "spm_char.model plus two fixed added tokens nor the fixed "
-        "source/manifest/runtime "
-        "metadata. It cannot execute text TTS and must remain a loud public "
-        "artifact boundary pending the native runtime and an authorized "
-        "gated replacement",
-    ),
     "vokra/sbv2-v2-jp-extra-base": (
         "partial",
         "the live 1,264-tensor GGUF predates the strict SBV2 converter and keeps "
@@ -263,6 +253,7 @@ METAL_CODE_ARCHES = {
     "frcrn",
     "funcodec",
     "speechtokenizer",
+    "speecht5",
     "fsmn-vad",
     "hifigan_vocoder",
     "hubert",

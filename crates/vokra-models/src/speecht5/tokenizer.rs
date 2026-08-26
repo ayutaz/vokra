@@ -48,6 +48,122 @@ const MASK_ID: u32 = 79;
 const CTC_BLANK_ID: u32 = 80;
 const SPACE_PIECE_ID: u32 = 4;
 
+// Exact expanded vocabulary authenticated from microsoft/speecht5_tts at
+// SOURCE_REVISION. Keeping the already-audited pieces and scores in the
+// zero-dependency runtime lets the exact historical Vokra GGUF recover its
+// omitted tokenizer without accepting caller-provided or inferred data.
+const OFFICIAL_PIECES: [&str; VOCAB_SIZE] = [
+    "<s>",
+    "<pad>",
+    "</s>",
+    "<unk>",
+    "▁",
+    "e",
+    "t",
+    "a",
+    "o",
+    "n",
+    "i",
+    "h",
+    "s",
+    "r",
+    "d",
+    "l",
+    "u",
+    "c",
+    "m",
+    "f",
+    "w",
+    "g",
+    "y",
+    ",",
+    "p",
+    "b",
+    ".",
+    "v",
+    "k",
+    "\"",
+    "I",
+    "'",
+    "T",
+    "A",
+    "S",
+    "H",
+    ";",
+    "x",
+    "W",
+    "-",
+    "B",
+    "?",
+    "C",
+    "M",
+    "!",
+    "q",
+    "j",
+    "E",
+    "N",
+    "P",
+    "O",
+    "D",
+    "L",
+    "G",
+    "R",
+    "F",
+    "Y",
+    "z",
+    "J",
+    ":",
+    "K",
+    "U",
+    "V",
+    ")",
+    "(",
+    "Q",
+    "Z",
+    "]",
+    "[",
+    "X",
+    "—",
+    "/",
+    "æ",
+    "é",
+    "{",
+    "}",
+    "ê",
+    "œ",
+    "̄",
+    "<mask>",
+    "<ctc_blank>",
+];
+
+const OFFICIAL_SCORE_BITS: [u32; VOCAB_SIZE] = [
+    0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xbfdad4ee, 0xc0144b19, 0xc029bbf7, 0xc033608a,
+    0xc0356c63, 0xc03cceb9, 0xc0408fc8, 0xc04107d2, 0xc042aade, 0xc0468320, 0xc0586b8b, 0xc05de7a9,
+    0xc07427a1, 0xc07ee1f4, 0xc07f1e67, 0xc081bc95, 0xc081e942, 0xc08607d9, 0xc0867cd7, 0xc0899ec9,
+    0xc08a5dd0, 0xc090e0d6, 0xc09519f9, 0xc09e3f33, 0xc0a271c1, 0xc0a806b5, 0xc0b20357, 0xc0bb0c55,
+    0xc0bdf983, 0xc0cc9862, 0xc0d19ff8, 0xc0d1f8e5, 0xc0d68b7f, 0xc0d70a8b, 0xc0d888b9, 0xc0d966bc,
+    0xc0d9a725, 0xc0dfe98d, 0xc0e08c1b, 0xc0e19b80, 0xc0e5477a, 0xc0e592a7, 0xc0e605d6, 0xc0e7b454,
+    0xc0e8c199, 0xc0e98082, 0xc0ea2577, 0xc0ed7ab8, 0xc0ee6306, 0xc0f1770d, 0xc0f1b0aa, 0xc0f24280,
+    0xc0f5ad01, 0xc0f91a48, 0xc101d045, 0xc102e2a2, 0xc1094073, 0xc10be725, 0xc10de4c3, 0xc118aae6,
+    0xc1194e85, 0xc11ee7a3, 0xc12b88a0, 0xc13d4fbe, 0xc13e6794, 0xc1401bbc, 0xc144a6c4, 0xc14d4f3d,
+    0xc171beed, 0xc17cd60f, 0xc183f698, 0xc183f698, 0xc183f698, 0xc183f698, 0xc183f698, 0x00000000,
+    0x00000000,
+];
+
+fn official_parts() -> (Vec<String>, Vec<f32>) {
+    (
+        OFFICIAL_PIECES
+            .iter()
+            .map(|piece| (*piece).to_owned())
+            .collect(),
+        OFFICIAL_SCORE_BITS
+            .iter()
+            .copied()
+            .map(f32::from_bits)
+            .collect(),
+    )
+}
+
 /// Self-contained, fail-closed SpeechT5 text tokenizer.
 #[derive(Debug, Clone)]
 pub struct SpeechT5Tokenizer {
@@ -55,6 +171,13 @@ pub struct SpeechT5Tokenizer {
 }
 
 impl SpeechT5Tokenizer {
+    /// Constructs the authenticated expanded vocabulary without requiring the
+    /// raw SentencePiece blob omitted by the historical public Vokra GGUF.
+    pub(super) fn official() -> Result<Self> {
+        let (pieces, scores) = official_parts();
+        Self::from_parts(pieces, scores)
+    }
+
     pub(super) fn from_gguf(file: &GgufFile) -> Result<Self> {
         required_string(file, &format!("{PREFIX}.scheme"), "char")?;
         required_string(file, &format!("{PREFIX}.kind"), "sentencepiece-char")?;
@@ -362,112 +485,6 @@ fn required_f32_array(file: &GgufFile, key: &str) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn official_parts() -> (Vec<String>, Vec<f32>) {
-        let raw = [
-            "<s>",
-            "<pad>",
-            "</s>",
-            "<unk>",
-            "▁",
-            "e",
-            "t",
-            "a",
-            "o",
-            "n",
-            "i",
-            "h",
-            "s",
-            "r",
-            "d",
-            "l",
-            "u",
-            "c",
-            "m",
-            "f",
-            "w",
-            "g",
-            "y",
-            ",",
-            "p",
-            "b",
-            ".",
-            "v",
-            "k",
-            "\"",
-            "I",
-            "'",
-            "T",
-            "A",
-            "S",
-            "H",
-            ";",
-            "x",
-            "W",
-            "-",
-            "B",
-            "?",
-            "C",
-            "M",
-            "!",
-            "q",
-            "j",
-            "E",
-            "N",
-            "P",
-            "O",
-            "D",
-            "L",
-            "G",
-            "R",
-            "F",
-            "Y",
-            "z",
-            "J",
-            ":",
-            "K",
-            "U",
-            "V",
-            ")",
-            "(",
-            "Q",
-            "Z",
-            "]",
-            "[",
-            "X",
-            "—",
-            "/",
-            "æ",
-            "é",
-            "{",
-            "}",
-            "ê",
-            "œ",
-            "̄",
-            "<mask>",
-            "<ctc_blank>",
-        ];
-        // The manifest hash is the gate in production. Unit tests use the
-        // exact upstream scores so they exercise the same constructor.
-        let score_bits = [
-            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0xbfdad4ee, 0xc0144b19, 0xc029bbf7,
-            0xc033608a, 0xc0356c63, 0xc03cceb9, 0xc0408fc8, 0xc04107d2, 0xc042aade, 0xc0468320,
-            0xc0586b8b, 0xc05de7a9, 0xc07427a1, 0xc07ee1f4, 0xc07f1e67, 0xc081bc95, 0xc081e942,
-            0xc08607d9, 0xc0867cd7, 0xc0899ec9, 0xc08a5dd0, 0xc090e0d6, 0xc09519f9, 0xc09e3f33,
-            0xc0a271c1, 0xc0a806b5, 0xc0b20357, 0xc0bb0c55, 0xc0bdf983, 0xc0cc9862, 0xc0d19ff8,
-            0xc0d1f8e5, 0xc0d68b7f, 0xc0d70a8b, 0xc0d888b9, 0xc0d966bc, 0xc0d9a725, 0xc0dfe98d,
-            0xc0e08c1b, 0xc0e19b80, 0xc0e5477a, 0xc0e592a7, 0xc0e605d6, 0xc0e7b454, 0xc0e8c199,
-            0xc0e98082, 0xc0ea2577, 0xc0ed7ab8, 0xc0ee6306, 0xc0f1770d, 0xc0f1b0aa, 0xc0f24280,
-            0xc0f5ad01, 0xc0f91a48, 0xc101d045, 0xc102e2a2, 0xc1094073, 0xc10be725, 0xc10de4c3,
-            0xc118aae6, 0xc1194e85, 0xc11ee7a3, 0xc12b88a0, 0xc13d4fbe, 0xc13e6794, 0xc1401bbc,
-            0xc144a6c4, 0xc14d4f3d, 0xc171beed, 0xc17cd60f, 0xc183f698, 0xc183f698, 0xc183f698,
-            0xc183f698, 0xc183f698, 0x00000000, 0x00000000,
-        ];
-        (
-            raw.into_iter().map(str::to_owned).collect(),
-            score_bits.into_iter().map(f32::from_bits).collect(),
-        )
-    }
 
     #[test]
     fn official_char_ids_match_sentencepiece_reference() {

@@ -40,16 +40,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         cases = (
             (
                 audit.RepoRecord(
-                    "vokra/speecht5-tts",
-                    "abc",
-                    ("speecht5.gguf",),
-                    "speecht5",
-                ),
-                "no-runtime-binder",
-                "spm_char.model",
-            ),
-            (
-                audit.RepoRecord(
                     "vokra/sbv2-v2-jp-extra-base",
                     "abc",
                     ("model.gguf",),
@@ -119,6 +109,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "facodec",
             "funcodec",
             "speechtokenizer",
+            "speecht5",
             "ten_vad",
             "rnnoise",
             "snac",
@@ -219,6 +210,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         speechtokenizer = audit.RepoRecord(
             "vokra/speechtokenizer", "abc", ("model.gguf",), "speechtokenizer"
+        )
+        speecht5 = audit.RepoRecord(
+            "vokra/speecht5-tts", "abc", ("speecht5.gguf",), "speecht5"
         )
         musicgen_small = audit.RepoRecord(
             "vokra/musicgen-small", "abc", ("model.gguf",), "musicgen"
@@ -427,6 +421,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(
             audit.classify(speechtokenizer, routed, bound).metal_code, "full"
         )
+        self.assertEqual(audit.classify(speecht5, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(speecht5, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(moss_full, routed, bound).cpu_code, "full")

@@ -16,6 +16,9 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 TTS_REVISION="30fcde30f19b87502b8435427b5f5068e401d5f6"
 TTS_SOURCE_SHA256="d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
+PUBLIC_TTS_REVISION="43cf6592038616d116a98fde4764d827ece59033"
+PUBLIC_TTS_BYTES="585382432"
+PUBLIC_TTS_SHA256="f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0"
 VOCODER_REVISION="bb6f429406e86a9992357a972c0698b22043307d"
 VOCODER_SOURCE_SHA256="b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
 MIN_VAST_MEM_KIB=60000000
@@ -32,8 +35,9 @@ usage: run-speecht5-tts-validation.sh [--work-dir <empty-dir>]
 
 VAST-only SpeechT5 TTS validation worker. It downloads immutable Microsoft
 SpeechT5 TTS + HiFi-GAN sources, verifies their identities, converts both,
-runs the independent Transformers 4.45.2 oracle, compares native CPU mel,
-exercises the complete CLI waveform route, then runs workspace Rust gates.
+authenticates the fixed public tokenizer-less GGUF, runs the independent
+Transformers 4.45.2 oracle against both canonical and public text models,
+exercises both complete CLI waveform routes, then runs workspace Rust gates.
 
 Actual runs require Linux, VOKRA_PUBLISH_ON_VAST=1, at least 60,000,000 KiB
 RAM and 30,000,000 KiB free disk. There is no upload/publish operation. Pull
@@ -75,7 +79,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc git awk grep find tee wc tr rustfmt cargo-deny cargo-audit; do
+  for tool in uv cargo rustc git awk curl grep find tee wc tr rustfmt cargo-deny cargo-audit; do
     command -v "$tool" >/dev/null 2>&1 || die "required VAST tool missing: $tool"
   done
   cargo clippy --version >/dev/null 2>&1 \
@@ -104,7 +108,8 @@ run_self_test() {
 
   cases=$((cases + 1))
   for required in "$TTS_REVISION" "$TTS_SOURCE_SHA256" "$VOCODER_REVISION" \
-    "$VOCODER_SOURCE_SHA256" "SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu" \
+    "$VOCODER_SOURCE_SHA256" "$PUBLIC_TTS_REVISION" "$PUBLIC_TTS_SHA256" \
+    "SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu" \
     "--vocoder" "--speaker-embedding" "--frozen --python 3.12"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
@@ -150,8 +155,10 @@ record_environment() {
 
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir source_dir logs_dir reference_dir
-  local tts_source vocoder_source tts_gguf vocoder_gguf output_wav parity_text
-  local run_log env_log compile_log parity_log cli_log workspace_log clippy_log summary_file
+  local tts_source vocoder_source tts_gguf public_tts_gguf vocoder_gguf output_wav
+  local public_output_wav parity_text public_url public_bytes
+  local run_log env_log compile_log parity_log public_parity_log cli_log public_cli_log
+  local workspace_log clippy_log summary_file
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -182,8 +189,10 @@ main() {
   tts_source="$source_dir/tts"
   vocoder_source="$source_dir/vocoder"
   tts_gguf="$work_dir/speecht5-tts.gguf"
+  public_tts_gguf="$work_dir/speecht5-public.gguf"
   vocoder_gguf="$work_dir/speecht5-hifigan.gguf"
   output_wav="$work_dir/speecht5-cli.wav"
+  public_output_wav="$work_dir/speecht5-public-cli.wav"
   mkdir -p "$logs_dir" "$reference_dir" "$tts_source" "$vocoder_source"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-speecht5-tts"
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
@@ -192,7 +201,9 @@ main() {
   env_log="$logs_dir/environment.txt"
   compile_log="$logs_dir/models-compile.log"
   parity_log="$logs_dir/official-cpu.log"
+  public_parity_log="$logs_dir/public-official-cpu.log"
   cli_log="$logs_dir/cli-waveform.log"
+  public_cli_log="$logs_dir/public-cli-waveform.log"
   workspace_log="$logs_dir/workspace-test.log"
   clippy_log="$logs_dir/workspace-clippy.log"
   summary_file="$logs_dir/summary.txt"
@@ -234,6 +245,16 @@ main() {
     --input "$vocoder_source/model.safetensors" \
     --output "$vocoder_gguf"
 
+  step "Download and authenticate exact historical public SpeechT5 GGUF"
+  public_url="https://huggingface.co/vokra/speecht5-tts/resolve/$PUBLIC_TTS_REVISION/speecht5.gguf"
+  curl --fail --location --retry 5 --retry-all-errors \
+    --output "$public_tts_gguf" "$public_url"
+  public_bytes="$(wc -c < "$public_tts_gguf" | tr -d '[:space:]')"
+  [[ "$public_bytes" == "$PUBLIC_TTS_BYTES" ]] \
+    || die "public SpeechT5 GGUF has $public_bytes bytes, expected $PUBLIC_TTS_BYTES"
+  [[ "$(sha256_file "$public_tts_gguf")" == "$PUBLIC_TTS_SHA256" ]] \
+    || die "public SpeechT5 GGUF SHA-256 mismatch"
+
   step "Generate independent official Transformers reference"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
     "$PARITY_DUMPER" --checkpoint "$tts_source" --output-dir "$reference_dir"
@@ -250,6 +271,17 @@ main() {
     | grep -F "verdict=PASS" >/dev/null \
     || die "official SpeechT5 CPU parity PASS sentinel missing"
 
+  step "Compare exact public legacy GGUF CPU mel with official reference"
+  VOKRA_SPEECHT5_TTS_GGUF="$public_tts_gguf" \
+  VOKRA_SPEECHT5_TTS_REFERENCE_DIR="$reference_dir" \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+      -p vokra-models --test parity_speecht5_tts_real \
+      released_cpu_mel_matches_official_transformers -- --exact --nocapture \
+      2>&1 | tee "$public_parity_log"
+  grep -F "SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu" "$public_parity_log" \
+    | grep -F "verdict=PASS" >/dev/null \
+    || die "public legacy SpeechT5 CPU parity PASS sentinel missing"
+
   step "Exercise complete CLI text-to-waveform route"
   IFS= read -r parity_text < "$reference_dir/text.txt"
   "$VOKRA_ROOT/target/release/vokra-cli" run \
@@ -259,6 +291,16 @@ main() {
     --text "$parity_text" --backend cpu --deterministic --output "$output_wav" \
     2>&1 | tee "$cli_log"
   [[ -s "$output_wav" ]] || die "complete SpeechT5 CLI route emitted no WAV"
+
+  step "Exercise exact public legacy GGUF CLI text-to-waveform route"
+  "$VOKRA_ROOT/target/release/vokra-cli" run \
+    --model "$public_tts_gguf" \
+    --vocoder "$vocoder_gguf" \
+    --speaker-embedding "$reference_dir/speaker.f32" \
+    --text "$parity_text" --backend cpu --deterministic --output "$public_output_wav" \
+    2>&1 | tee "$public_cli_log"
+  [[ -s "$public_output_wav" ]] \
+    || die "public legacy SpeechT5 CLI route emitted no WAV"
 
   step "Run full workspace verification on VAST"
   cargo fmt --manifest-path "$VOKRA_ROOT/Cargo.toml" --all -- --check
@@ -280,13 +322,18 @@ main() {
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "tts_revision=$TTS_REVISION"
     echo "tts_source_sha256=$TTS_SOURCE_SHA256"
+    echo "public_tts_revision=$PUBLIC_TTS_REVISION"
+    echo "public_tts_bytes=$PUBLIC_TTS_BYTES"
+    echo "public_tts_sha256=$(sha256_file "$public_tts_gguf")"
     echo "vocoder_revision=$VOCODER_REVISION"
     echo "vocoder_source_sha256=$VOCODER_SOURCE_SHA256"
     echo "tts_gguf_sha256=$(sha256_file "$tts_gguf")"
     echo "vocoder_gguf_sha256=$(sha256_file "$vocoder_gguf")"
     echo "reference_manifest_sha256=$(sha256_file "$reference_dir/reference.json")"
     echo "cli_wav_sha256=$(sha256_file "$output_wav")"
+    echo "public_cli_wav_sha256=$(sha256_file "$public_output_wav")"
     grep -F "SPEECHT5_TTS_OFFICIAL_PARITY" "$parity_log"
+    grep -F "SPEECHT5_TTS_OFFICIAL_PARITY" "$public_parity_log"
   } | tee "$summary_file"
   trap - EXIT
   log "PASS: pull $work_dir/evidence, then destroy the VAST instance"

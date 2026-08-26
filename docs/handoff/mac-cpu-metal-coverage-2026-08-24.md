@@ -111,10 +111,23 @@
 > exact vocoder and 512-value x-vector sidecars and forwards one backend to
 > both stages. A locked official Transformers 4.45.2 oracle, Rust real-weight
 > test and no-upload VAST worker are staged without running model work on the
-> maintainer Mac. VAST real CPU and Apple Metal parity remain pending, and the
-> live tokenizer-less GGUF still fails the strict contract, so the public
-> repository stays in the explicit
-> `no-runtime-binder` artifact class until a corrected artifact is published.
+> maintainer Mac. A 2026-08-27 bounded-header audit then proved that the live
+> tokenizer-less GGUF at revision
+> `43cf6592038616d116a98fde4764d827ece59033` is 585,382,432 bytes, SHA-256
+> `f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0`,
+> and has the exact same 393-F32-tensor manifest
+> `fd6a1323b4994781daf6b657e690cca1e741ee2f7810fab03d0d22bf62301e04`
+> as the canonical runtime. The binder now recognizes only its exact 23-key
+> legacy metadata contract and supplies the already-audited 81-piece expanded
+> vocabulary/config from compiled constants; partial or unknown metadata still
+> fails closed. This makes the existing public file CPU/Metal reachable without
+> replacing or uploading it. The no-upload VAST worker now authenticates that
+> exact public blob and runs the same official CPU mel parity plus complete CLI
+> waveform route for both the canonical conversion and legacy public file.
+> `scripts/verify/apple-silicon-speecht5-tts.sh` separately refuses the
+> maintainer class of Mac and runs the exact public SHA against that reference
+> on a clean ≥32-GB external Darwin/arm64 host. VAST real CPU and Apple Metal
+> parity remain pending and are not inferred from header identity.
 
 > **2026-08-26 Canary-1B-v2 artifact correction:** fixed-revision Range
 > auditing transferred only tar/GGUF headers and proved that the two live
@@ -298,7 +311,7 @@ the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
 Audio Tokenizer Full decoder,
 MossFormer2-SS-16K, Nemotron-3.5-ASR-Streaming-0.6B,
 NaturalSpeech 3 FACodec V2, Bark Small/Full, Parler-TTS Mini
-English/Multilingual and Parakeet-TDT-1.1B,
+English/Multilingual, SpeechT5-TTS and Parakeet-TDT-1.1B,
 it reported:
 
 | Inventory / live-artifact reachability | Public repos |
@@ -306,13 +319,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 124 |
+| Complete CPU route for the live public artifact | 125 |
 | Route/binder present, released-artifact CPU forward incomplete | 46 |
-| No complete runtime binder | 23 |
+| No complete runtime binder | 22 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 124 |
+| Complete Metal code route among the CPU-complete set | 125 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 69 |
+| Metal blocked by missing/partial CPU forward | 68 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -330,7 +343,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 124 repositories with a complete Metal code route are the Audiobox
+The 125 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -362,6 +375,9 @@ They also include `vokra/utmos22-strong` and
 They also include the decode-only Alibaba DAMO codec `vokra/funcodec`.
 They also include the decode-only Fudan/OpenMOSS codec
 `vokra/speechtokenizer`.
+They also include the exact historical `vokra/speecht5-tts` GGUF, whose
+canonical 393-tensor payload is paired at load time with its fixed audited
+SpeechT5 tokenizer/config contract.
 They also include `vokra/mossformer2-ss-16k` at revision
 `0e9ba9258cead4252f8e5279598af296ada08bf7`,
 `vokra/nemotron-3.5-asr-streaming-0.6b` at revision
@@ -387,7 +403,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 69 Metal-blocked repositories first need a complete released-
+remaining 68 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 

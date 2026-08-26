@@ -1,10 +1,14 @@
 //! Native Microsoft SpeechT5 TTS checkpoint contract.
 //!
-//! This module binds only the immutable, executable release produced by the
-//! strict `vokra-convert` path: 393 F32 tensors, the fixed source/manifests,
-//! and the exact 79-piece SentencePiece CHAR model plus the two Hugging Face
-//! added tokens. Historical tokenizer-less public artifacts fail before any
-//! tensor payload is decoded.
+//! This module binds two immutable identities with the same authenticated
+//! 393-F32-tensor manifest: the complete release produced by the strict
+//! `vokra-convert` path, and the exact historical `vokra/speecht5-tts` GGUF.
+//! The historical file has an exact 23-key metadata contract but omitted the
+//! tokenizer and newer runtime axes. Only after its complete tensor manifest
+//! and all 23 legacy fields match do we supply the audited official config and
+//! 79-piece SentencePiece CHAR vocabulary plus two Hugging Face added tokens
+//! from compiled constants. Unknown or partially upgraded artifacts still
+//! fail before tensor payload decoding.
 //!
 //! The cheap checkpoint handle lets callers audit identity and text
 //! tokenization without widening all ~585 MB of F32 payload. [`SpeechT5Tts`]
@@ -34,6 +38,14 @@ pub const SOURCE_WEIGHT_SHA256: &str =
 /// Canonical 393-tensor name/shape manifest hash.
 pub const TENSOR_MANIFEST_SHA256: &str =
     "fd6a1323b4994781daf6b657e690cca1e741ee2f7810fab03d0d22bf62301e04";
+/// Revision carrying the exact historical public Vokra GGUF.
+pub const LEGACY_PUBLIC_REVISION: &str = "43cf6592038616d116a98fde4764d827ece59033";
+/// Exact byte length of the historical public Vokra GGUF.
+pub const LEGACY_PUBLIC_GGUF_BYTES: u64 = 585_382_432;
+/// SHA-256 of the historical public Vokra GGUF hosted at
+/// [`LEGACY_PUBLIC_REVISION`].
+pub const LEGACY_PUBLIC_GGUF_SHA256: &str =
+    "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0";
 
 pub const HIDDEN_SIZE: usize = 768;
 pub const ENCODER_LAYERS: usize = 12;
@@ -78,6 +90,7 @@ const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 const KEY_SOURCE_REVISION: &str = "vokra.speecht5.source_revision";
 const KEY_SOURCE_WEIGHT_SHA256: &str = "vokra.speecht5.source_weight_sha256";
 const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.speecht5.tensor_manifest_sha256";
+const LEGACY_PUBLIC_METADATA_COUNT: usize = 23;
 
 /// Immutable topology/generation snapshot consumed by the native forward.
 #[derive(Debug, Clone, PartialEq)]
@@ -280,8 +293,19 @@ impl SpeechT5Checkpoint {
                 strict.weight_license()
             )));
         }
-        let config = SpeechT5Config::from_gguf(file)?;
-        let tokenizer = SpeechT5Tokenizer::from_gguf(file)?;
+        let modern_contract = file.get(KEY_SOURCE_REVISION).is_some()
+            || file.get(tokenizer::KEY_MODEL_SHA256).is_some();
+        let (config, tokenizer) = if modern_contract {
+            (
+                SpeechT5Config::from_gguf(file)?,
+                SpeechT5Tokenizer::from_gguf(file)?,
+            )
+        } else {
+            validate_legacy_public_metadata(file)?;
+            let config = SpeechT5Config::official();
+            config.validate()?;
+            (config, SpeechT5Tokenizer::official()?)
+        };
         Ok(Self {
             config,
             tokenizer,
@@ -314,6 +338,62 @@ impl SpeechT5Checkpoint {
     }
 }
 
+/// Validates the complete 23-key header of the one historical public GGUF.
+///
+/// The caller has already passed [`SPEC`], so tensor count, names, shapes,
+/// architecture, model name, and weight-license class are exact. Requiring
+/// every remaining legacy key plus the exact metadata count leaves no room
+/// for an unknown or partially upgraded contract to inherit modern defaults.
+fn validate_legacy_public_metadata(file: &GgufFile) -> Result<()> {
+    if file.metadata().len() != LEGACY_PUBLIC_METADATA_COUNT {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: tokenizer-less metadata count {} != exact historical public count {LEGACY_PUBLIC_METADATA_COUNT} (vokra/speecht5-tts@{LEGACY_PUBLIC_REVISION}, sha256={LEGACY_PUBLIC_GGUF_SHA256})",
+            file.metadata().len()
+        )));
+    }
+    for (key, expected) in [
+        (chunks::KEY_MODEL_ARCH, EXPECTED_ARCH),
+        (chunks::KEY_MODEL_NAME, MODEL_NAME),
+        (KEY_CATEGORY, "tts"),
+        (chunks::KEY_PROVENANCE_LICENSE, "mit"),
+        (chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME),
+        (chunks::KEY_PROVENANCE_SOURCE, "microsoft/speecht5_tts"),
+        (KEY_UPSTREAM_HF, "microsoft/speecht5_tts"),
+        (
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::Permissive.as_str(),
+        ),
+    ] {
+        required_string(file, key, expected)?;
+    }
+    required_nonempty_string(file, chunks::KEY_SCHEMA_PRODUCER)?;
+    required_u32(file, chunks::KEY_SCHEMA_VERSION, 1)?;
+    for (suffix, expected) in [
+        ("hidden_size", HIDDEN_SIZE as u32),
+        ("encoder_layers", ENCODER_LAYERS as u32),
+        ("decoder_layers", DECODER_LAYERS as u32),
+        ("encoder_attention_heads", ENCODER_ATTENTION_HEADS as u32),
+        ("decoder_attention_heads", DECODER_ATTENTION_HEADS as u32),
+        ("encoder_ffn_dim", ENCODER_FFN_DIM as u32),
+        ("decoder_ffn_dim", DECODER_FFN_DIM as u32),
+        ("vocab_size", VOCAB_SIZE as u32),
+        ("num_mel_bins", NUM_MEL_BINS as u32),
+        ("reduction_factor", REDUCTION_FACTOR as u32),
+        ("speaker_embedding_dim", SPEAKER_EMBEDDING_DIM as u32),
+        (
+            "speech_decoder_postnet_layers",
+            SPEECH_DECODER_POSTNET_LAYERS as u32,
+        ),
+        (
+            "speech_decoder_prenet_units",
+            SPEECH_DECODER_PRENET_UNITS as u32,
+        ),
+    ] {
+        required_u32(file, &format!("{PREFIX}.{suffix}"), expected)?;
+    }
+    Ok(())
+}
+
 fn required_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
     let actual = file
         .get(key)
@@ -322,6 +402,19 @@ fn required_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
     if actual != expected {
         return Err(VokraError::ModelLoad(format!(
             "{LABEL}: `{key}`={actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn required_nonempty_string(file: &GgufFile, key: &str) -> Result<()> {
+    if file
+        .get(key)
+        .and_then(GgufMetadataValue::as_str)
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "{LABEL}: missing/empty `{key}`"
         )));
     }
     Ok(())
@@ -448,6 +541,55 @@ mod tests {
         GgufFile::parse(builder.to_bytes().unwrap()).unwrap()
     }
 
+    fn legacy_public_metadata_only_file(extra: bool) -> GgufFile {
+        let config = SpeechT5Config::official();
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, EXPECTED_ARCH);
+        builder.add_string(chunks::KEY_MODEL_NAME, MODEL_NAME);
+        builder.add_string(KEY_CATEGORY, "tts");
+        builder.add_string(chunks::KEY_PROVENANCE_LICENSE, "mit");
+        builder.add_string(chunks::KEY_PROVENANCE_MODEL_ID, MODEL_NAME);
+        builder.add_string(chunks::KEY_PROVENANCE_SOURCE, "microsoft/speecht5_tts");
+        builder.add_string(KEY_UPSTREAM_HF, "microsoft/speecht5_tts");
+        builder.add_string(
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::Permissive.as_str(),
+        );
+        for (suffix, value) in [
+            ("hidden_size", config.hidden_size as u32),
+            ("encoder_layers", config.encoder_layers as u32),
+            ("decoder_layers", config.decoder_layers as u32),
+            (
+                "encoder_attention_heads",
+                config.encoder_attention_heads as u32,
+            ),
+            (
+                "decoder_attention_heads",
+                config.decoder_attention_heads as u32,
+            ),
+            ("encoder_ffn_dim", config.encoder_ffn_dim as u32),
+            ("decoder_ffn_dim", config.decoder_ffn_dim as u32),
+            ("vocab_size", config.vocab_size as u32),
+            ("num_mel_bins", config.num_mel_bins as u32),
+            ("reduction_factor", config.reduction_factor as u32),
+            ("speaker_embedding_dim", config.speaker_embedding_dim as u32),
+            (
+                "speech_decoder_postnet_layers",
+                config.speech_decoder_postnet_layers as u32,
+            ),
+            (
+                "speech_decoder_prenet_units",
+                config.speech_decoder_prenet_units as u32,
+            ),
+        ] {
+            builder.add_u32(&format!("{PREFIX}.{suffix}"), value);
+        }
+        if extra {
+            builder.add_string("vokra.speecht5.unknown_future_key", "reject");
+        }
+        GgufFile::parse(builder.to_bytes().unwrap()).unwrap()
+    }
+
     #[test]
     fn official_config_round_trips_typed_metadata() {
         let file = config_only_file();
@@ -462,5 +604,25 @@ mod tests {
         let file = GgufFile::parse(GgufBuilder::new().to_bytes().unwrap()).unwrap();
         let error = SpeechT5Config::from_gguf(&file).unwrap_err();
         assert!(error.to_string().contains(KEY_CATEGORY));
+    }
+
+    #[test]
+    fn exact_legacy_public_metadata_inherits_only_audited_constants() {
+        let file = legacy_public_metadata_only_file(false);
+        assert_eq!(file.metadata().len(), LEGACY_PUBLIC_METADATA_COUNT);
+        validate_legacy_public_metadata(&file).unwrap();
+        let tokenizer = SpeechT5Tokenizer::official().unwrap();
+        assert_eq!(
+            tokenizer.encode("Hello world").unwrap(),
+            vec![4, 35, 5, 15, 15, 8, 4, 20, 8, 13, 15, 14, 2]
+        );
+    }
+
+    #[test]
+    fn tokenizerless_contract_with_any_extra_metadata_fails_closed() {
+        let file = legacy_public_metadata_only_file(true);
+        let error = validate_legacy_public_metadata(&file).unwrap_err();
+        assert!(error.to_string().contains("metadata count"));
+        assert!(error.to_string().contains(LEGACY_PUBLIC_REVISION));
     }
 }
