@@ -53,18 +53,30 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
-    "vokra/moss-audio-tokenizer": (
-        "partial",
-        "the exact 1,600-tensor Full checkpoint is strictly bound, but its distinct "
-        "24 kHz mono 32-quantizer decoder is not implemented; substituting the Nano "
-        "48 kHz stereo graph or falling back to CPU is forbidden",
-    ),
     "vokra/moss-audio-tokenizer-nano": (
         "partial",
         "the exact 374-tensor Nano checkpoint has a native CPU/Metal decode route, but "
         "the live GGUF incorrectly stamps Full name, variant and upstream provenance; "
         "the manifest-scoped legacy repair remains visible pending an authorized "
         "correctly stamped replacement",
+    ),
+    "vokra/moss-audio-4b-instruct": (
+        "no-runtime-binder",
+        "the public file shares the broad moss_tts arch tag but is not one of the "
+        "strictly authenticated Nano, Base, v1.5, Local or VoiceGenerator releases; "
+        "the CLI refuses family-shared topology inference",
+    ),
+    "vokra/moss-audio-8b-instruct": (
+        "no-runtime-binder",
+        "the public file shares the broad moss_tts arch tag but is not one of the "
+        "strictly authenticated Nano, Base, v1.5, Local or VoiceGenerator releases; "
+        "the CLI refuses family-shared topology inference",
+    ),
+    "vokra/moss-tts-local-transformer-v1.5": (
+        "partial",
+        "the fixed-revision Local binder and CPU/Metal generation source are present, "
+        "but the CLI intentionally has no Local task until the required 48 kHz stereo "
+        "MOSS Audio Tokenizer v2 companion is strictly bound and real-weight verified",
     ),
     "vokra/audiogen-medium": (
         "partial",
@@ -175,6 +187,7 @@ METAL_CODE_ARCHES = {
     "metricgan_plus",
     "mimi",
     "miocodec",
+    "moss_tts",
     "moss_audio_tokenizer",
     "musicgen",
     "mp_senet",

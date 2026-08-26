@@ -129,6 +129,8 @@ emotion2vec+ Large, deepfake detection, pyannote segmentation 3.0 and the
 speaker-diarization 3.1 pipeline,
 the MusicGen Small/Melody composite route,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
+the strict MOSS-TTS Base/v1.5 and VoiceGenerator Delay routes and the MOSS
+Audio Tokenizer Full decoder,
 it reported:
 
 | Inventory / live-artifact reachability | Public repos |
@@ -136,13 +138,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 109 |
-| Route/binder present, released-artifact CPU forward incomplete | 41 |
-| No complete runtime binder | 43 |
+| Complete CPU route for the live public artifact | 114 |
+| Route/binder present, released-artifact CPU forward incomplete | 43 |
+| No complete runtime binder | 36 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 109 |
+| Complete Metal code route among the CPU-complete set | 114 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 84 |
+| Metal blocked by missing/partial CPU forward | 79 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -155,7 +157,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 109 repositories with a complete Metal code route are the Audiobox
+The 114 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -189,14 +191,18 @@ They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
 They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
 `vokra/deepfake-audio-detection-v2`, `vokra/pyannote-segmentation-3.0` and
 `vokra/pyannote-speaker-diarization-3.1`, plus `vokra/musicgen-small` and
-`vokra/musicgen-melody`. RMVPE is deliberately omitted from
+`vokra/musicgen-melody`. The MOSS set in this count is
+`vokra/moss-audio-tokenizer-full`, `vokra/moss-tts`,
+`vokra/moss-tts-v1.5` and `vokra/moss-voice-generator`; the Local transformer,
+Nano's stale public metadata and both MOSS-Audio Instruct checkpoints remain
+fail-closed as described below. RMVPE is deliberately omitted from
 the live-artifact-complete list (see below). RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 84 Metal-blocked repositories first need a complete released-
+remaining 79 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2635,9 +2641,31 @@ the VoiceGenerator binder rather than the 8B graph. Source-level execution is
 complete; workspace compilation, real-GGUF smoke and independent numerical
 parity remain VAST-only release gates.
 
+Local Transformer v1.5 now has its own fixed-revision 438-tensor mmap binder
+and native Qwen3 plus one-layer local GPT-2 generation path. Its learned
+GEMM/GEMV, attention, normalization, activation and head operations use one
+preflighted CPU or Metal `Compute` backend; unsupported device operations fail
+explicitly. The route remains live-artifact partial because Local requires the
+distinct MOSS Audio Tokenizer v2 companion and intentionally has no CLI task
+until that companion is strictly bound and verified.
+
+The v2 companion conversion contract is pinned to official revision
+`f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169`. Its official config and shard
+index establish 2,094 tensor names, 2,123,701,248 parameters and 8,494,804,992
+F32 payload bytes. The mapped native decoder has the official six-stage
+32/12/12/12/12/12-layer topology and 7,680 interleaved-patch product for 48 kHz
+stereo. The independent official-reference oracle supports the same v2
+contract. The derived manifest
+`a83915cffe78cee7f031e18ac3de1bbd64e93b3e4af843ff28d531ccf81748c6`
+is only a candidate until VAST confirms the real safetensors/GGUF header; it is
+not pinned as an authenticated runtime release.
+
 No weight payload, model inference or `vokra-models` Cargo command was run on
-the maintainer Mac for this audit. Only public GGUF prefixes, official config
-and source text, and the package-scoped serial converter test were used.
+the maintainer Mac for this audit. Only public GGUF prefixes, official config,
+shard index and source text, and the package-scoped serial converter test were
+used. The corrected live Hub inventory is CPU `full=114`, `partial=43`,
+`no-runtime-binder=36`, `not-artifact=1` and Metal `full=114`,
+`blocked-by-cpu=79`, `not-artifact=1`.
 
 ## Remaining execution order
 
