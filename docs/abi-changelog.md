@@ -269,15 +269,17 @@ widened at a time and the vocabulary head is evaluated in bounded row chunks.
 All learned audio/text projections, normalizations, activations, attention
 softmaxes and the output head use one preflighted CPU or Metal `Compute`
 backend. Unsupported backends fail before inference; no operation silently
-selects CPU. Real-checkpoint CPU and Apple-device Metal numerical parity remain
-pending and are not inferred from source reachability. No C symbol, ownership
-rule or allocation ABI changes.
+selects CPU. `vokra-cli run` and `bench` now route `qwen3_asr` through the
+concrete mmap runtime instead of the bound-only diagnostic registry; `run`
+accepts optional official language names or `auto`. Real-checkpoint CPU and
+Apple-device Metal numerical parity remain pending and are not inferred from
+source reachability. No C symbol, ownership rule or allocation ABI changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-convert::qwen3_asr` | `convert_qwen3_asr_file_with_variant`; `vokra.qwen3_asr.source_revision`; `vokra.qwen3_asr.tensor_manifest_sha256`; `vokra.frontend.*`; audio execution keys; tokenizer/chat/generation U8 keys | Changed / Added | single `.safetensors` or local `.index.json` + shards plus five exact fixed-revision sidecars → exact 612/708-BF16-tensor self-contained GGUF with 13 frontend fields and exact GELU/LayerNorm/scale/tokenizer contract | Rejects extra/missing/renamed/reshaped/non-BF16 tensors, unsafe/non-local shard paths, index ownership drift, conflicting license and sidecar size/SHA drift; bounded by the largest tensor rather than the checkpoint total | no | (TBD) |
 | `vokra-models::qwen3_asr` | `Qwen3Asr`, `Qwen3AsrAudioEmbeddings`, `Qwen3AsrTokenizer`, `Qwen3AsrTranscription`, `Qwen3AsrGenerationOptions`, Qwen3-ASR token/language constants, `QWEN3_ASR_AUDIO_HOT_OPS`, `QWEN3_ASR_TEXT_HOT_OPS`, `QWEN3_ASR_HOT_OPS`, mapped checkpoint constructors | Changed / Added | variable-length 16 kHz PCM → parsed multilingual transcription through one explicit CPU/Metal backend; optional context, forced language and bounded greedy generation | Exact 612/708 descriptors stay mmap-backed; Conv2D and decoder projections lower to backend GEMM, the vocabulary head uses chunked GEMV, and softmax/LayerNorm/RMSNorm/GELU/SiLU are preflighted as a whole. Historical headers remain descriptor-bindable, while execution requires all 29 topology keys, exact frontend metadata and byte-authenticated `vocab.json` / `merges.txt` / tokenizer / chat / generation sidecars. Unexpected generated control tokens, non-finite values, position overflow, malformed audio placeholders, missing assets and unsupported backends are explicit errors; no runtime download or silent CPU fallback | no | (TBD) |
-| `vokra-cli run` diagnostics | `qwen3_asr` `BOUND_ARCHES` row and binder probe | Added | `Qwen3AsrCheckpoint::from_gguf -> Qwen3AsrCheckpoint::transcribe` | Valid released headers report the concrete bound API plus the remaining execution boundary; malformed headers report the binder error. The architecture is still classified partial, not CPU/Metal-complete | no | (TBD) |
+| `vokra-cli run` / `bench` | `ModelTask::AsrQwen3`; `qwen3_asr` dispatch; concrete mmap runner | Changed | mono 16 kHz WAV + optional `--language <official-name\|auto>` + explicit CPU/Metal backend → parsed transcript/language; bench measures the same complete graph | Removes the stale `BOUND_ARCHES` diagnostic row. Exact tokenizer/frontend/tensor drift and unsupported backend operations remain explicit errors; beam-only flags and implicit resampling are rejected rather than ignored | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 CPU/Metal TTS runtime)
 

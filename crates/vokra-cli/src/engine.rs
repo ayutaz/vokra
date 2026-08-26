@@ -58,6 +58,14 @@ pub(crate) enum ModelTask {
     /// decodes to ~12 GB of f32 weights, so two live copies do not fit on a
     /// 16 GB machine. One load, both surfaces.
     AsrVoxtral,
+    /// Alibaba Qwen3-ASR 0.6B / 1.7B multilingual transcription.
+    ///
+    /// The dispatch returns a bare mmap-backed session and the run/bench arm
+    /// opens [`vokra_models::qwen3_asr::Qwen3Asr`] through its mapped
+    /// constructor exactly once. The concrete surface carries the optional
+    /// forced-language result and bounded generation controls that the generic
+    /// [`vokra_core::AsrEngine`] trait cannot represent.
+    AsrQwen3,
     /// Prompt-conditioned Nemotron 3.5 ASR.
     ///
     /// The dispatch returns a bare session so `run` can bind the concrete
@@ -476,6 +484,8 @@ const ARCH_WESPEAKER: &str = "wespeaker";
 const ARCH_TITANET: &str = "titanet-large";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
 const ARCH_VOXTRAL: &str = "voxtral";
+/// Alibaba Qwen3-ASR 0.6B / 1.7B shared runtime architecture.
+const ARCH_QWEN3_ASR: &str = "qwen3_asr";
 /// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
 /// what `vokra-convert --model kokoro` writes.
 const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
@@ -923,6 +933,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::AsrParakeetTdt11b))
+        }
+        ARCH_QWEN3_ASR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_QWEN3_ASR}`)"
+                ));
+            }
+            // Bare session: Qwen3-ASR requires true mmap descriptors plus its
+            // concrete language/generation result. The run/bench arm opens
+            // Qwen3Asr exactly once and preflights its whole CPU/Metal graph.
+            Ok((session, ModelTask::AsrQwen3))
         }
         ARCH_NEMOTRON_ASR => {
             if hint.is_some() {
@@ -1883,14 +1905,6 @@ struct BoundArch {
 const BOUND_ARCHES: &[BoundArch] = &[
     // --- ASR / speech-to-text -------------------------------------------
     BoundArch {
-        arch: "qwen3_asr",
-        module: "vokra_models::qwen3_asr",
-        entry: "Qwen3AsrCheckpoint::from_gguf → Qwen3AsrCheckpoint::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::qwen3_asr::Qwen3AsrCheckpoint::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
@@ -2596,6 +2610,18 @@ mod tests {
         let (_session, task) = result.expect("Nemotron session builds bare");
         assert_eq!(task, ModelTask::AsrNemotron);
         assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_NEMOTRON_ASR));
+    }
+
+    #[test]
+    fn load_session_routes_qwen3_asr_to_the_concrete_native_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_QWEN3_ASR, "qwen3-asr-routed", |path| {
+            load_session(path).expect("Qwen3-ASR binds once in its concrete run/bench arm")
+        });
+        assert_eq!(task, ModelTask::AsrQwen3);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_QWEN3_ASR),
+            "a routed Qwen3-ASR forward must not retain an unreachable bound-only row"
+        );
     }
 
     #[test]
@@ -3442,6 +3468,7 @@ mod tests {
             ARCH_PARAKEET_TDT,
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
+            ARCH_QWEN3_ASR,
             ARCH_NEMOTRON_ASR,
             ARCH_CANARY_1B_FLASH,
             ARCH_REAZONSPEECH_NEMO_V2,
@@ -3877,6 +3904,7 @@ mod tests {
             ARCH_WESPEAKER,
             ARCH_TITANET,
             ARCH_VOXTRAL,
+            ARCH_QWEN3_ASR,
             ARCH_KOKORO,
             ARCH_MUSICGEN,
             ARCH_SBV2,

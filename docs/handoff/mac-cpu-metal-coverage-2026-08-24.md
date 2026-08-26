@@ -29,7 +29,9 @@
 > Qwen2 BPE/chat/generation assets. The bounded native 28-layer Qwen3 decoder
 > now runs chunked prefill, grouped-query causal attention, half-split RoPE,
 > K/V caching, SwiGLU and a chunked vocabulary head through a whole-model
-> CPU/Metal hot-op preflight with no silent CPU fallback. The live public GGUFs
+> CPU/Metal hot-op preflight with no silent CPU fallback. CLI run/bench now
+> route the architecture to this concrete mmap runtime instead of the stale
+> bound-only diagnostic. The live public GGUFs
 > predate the embedded assets and therefore remain artifact-partial until a
 > separately authorized replacement; source-level end-to-end execution is
 > complete. VAST real-weight CPU parity and Apple-device Metal parity remain

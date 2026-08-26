@@ -364,6 +364,9 @@ OPTIONS:
                                 `es`, or `fr`; default `en`).
                                 canary: source language from the released
                                 25-language inventory (default `en`).
+                                qwen3_asr: official language name such as
+                                `English`, `Japanese`, or `Chinese`; `auto`
+                                (default) lets the model detect it.
     --target-language <code>    canary / canary-1b-flash: target language.
                                 Defaults to the source language for ASR; a
                                 different value selects the released AST
@@ -1087,6 +1090,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // NOT fire for these.
         ModelTask::Asr
         | ModelTask::AsrVoxtral
+        | ModelTask::AsrQwen3
         | ModelTask::AsrNemotron
         | ModelTask::AsrCanary1bFlash
         | ModelTask::AsrCanary1bV2
@@ -1324,17 +1328,16 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // Rejected off every other arch rather than silently ignored (FR-EX-08).
     if a.language.is_some()
         && task != ModelTask::AsrVoxtral
+        && task != ModelTask::AsrQwen3
         && task != ModelTask::AsrNemotron
         && task != ModelTask::AsrCanary1bFlash
         && task != ModelTask::AsrCanary1bV2
         && task != ModelTask::Sbv2
     {
-        return Err(
-            "run: --language is only supported for voxtral, nemotron_asr_streaming, \
-             canary, canary-1b-flash, or sbv2; each architecture validates its own released \
-             prompt/front-end language inventory"
-                .to_owned(),
-        );
+        return Err("run: --language is only supported for voxtral, qwen3_asr, \
+             nemotron_asr_streaming, canary, canary-1b-flash, or sbv2; each architecture \
+             validates its own released prompt/front-end language inventory"
+            .to_owned());
     }
     if a.target_language.is_some()
         && task != ModelTask::AsrCanary1bFlash
@@ -1499,6 +1502,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrNemotron => {
             run_nemotron_asr(&session, &a)?;
+        }
+        ModelTask::AsrQwen3 => {
+            run_qwen3_asr(&a)?;
         }
         ModelTask::AsrCanary1bFlash => {
             run_canary_1b_flash(&session, &a)?;
@@ -5300,6 +5306,47 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .text)
 }
 
+/// Runs the complete mapped Qwen3-ASR 0.6B / 1.7B graph. The model is opened
+/// through its true-mmap constructor so the multi-gigabyte dense payload stays
+/// mapped and only one decoder layer / vocabulary chunk is widened at a time.
+fn run_qwen3_asr(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::qwen3_asr::{Qwen3Asr, Qwen3AsrGenerationOptions, SAMPLE_RATE};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (Qwen3-ASR): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (Qwen3-ASR): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (Qwen3-ASR): the released deterministic greedy contract does not accept --beam-size / --no-repeat-ngram / --length-penalty"
+                .to_owned(),
+        );
+    }
+
+    let mut options = Qwen3AsrGenerationOptions::default();
+    options.language = match a.language.as_deref() {
+        None | Some("auto") => None,
+        Some(language) => Some(language.to_owned()),
+    };
+    let model = Qwen3Asr::open_mapped(&a.model, a.backend).map_err(|error| error.to_string())?;
+    let result = model
+        .transcribe_with_options(&clip.samples, clip.sample_rate, &options)
+        .map_err(|error| error.to_string())?;
+    if !result.language.is_empty() {
+        println!("asr-language: {}", result.language);
+    }
+    println!("asr: {}", result.text);
+    Ok(())
+}
+
 fn parse_canary_language(
     code: &str,
 ) -> Result<vokra_models::canary_1b_flash::CanaryLanguage, String> {
@@ -7770,6 +7817,7 @@ mod tests {
         // fire (no regression). This is the piece that covers whisper.
         assert_eq!(cpu_only_engine_label(ModelTask::Asr), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrVoxtral), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrQwen3), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bFlash), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bV2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);

@@ -661,6 +661,35 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::AsrQwen3 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Qwen3-ASR): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::qwen3_asr::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Qwen3-ASR): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::qwen3_asr::SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::qwen3_asr::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::qwen3_asr::Qwen3Asr::open_mapped(
+                args.model.as_deref().expect("model path is present"),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe(&pcm, vokra_models::qwen3_asr::SAMPLE_RATE)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-qwen3", audio_seconds, samples)
+        }
         // Same posture for the Moshi duplex (M4-06): per-frame latency
         // reference numbers ride the duplex demo + owner track (T26/T30).
         ModelTask::S2sDuplex => {
