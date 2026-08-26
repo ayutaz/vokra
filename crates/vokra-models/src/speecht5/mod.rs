@@ -17,6 +17,7 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 mod tokenizer;
 pub use tokenizer::SpeechT5Tokenizer;
+mod weights;
 
 /// Architecture tag written by the strict converter.
 pub const EXPECTED_ARCH: &str = "speecht5";
