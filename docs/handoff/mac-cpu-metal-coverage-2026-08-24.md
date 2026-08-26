@@ -2453,18 +2453,27 @@ preflight the chosen backend.
 
 The real-GGUF smoke pins identity, effective topology, CPU output invariants
 and Apple-gated CPU/Metal parity at the standard FP32 bound 0.01. It does not
-invent official probabilities. A separate VAST dumper must import the pinned
-official `pyannote.audio==3.0.0` implementation directly, and the first VAST
-measurement must diagnose any miss rather than widening the bound.
+invent official probabilities. The independent chain is now staged in
+`tools/parity/pyannote_segmentation_dump_reference.py`, its dedicated locked
+`tools/parity/pyannote_segmentation/` Python 3.12 project, the ignored Rust
+comparison in
+`crates/vokra-models/tests/parity_pyannote_segmentation.rs`, and
+`scripts/publish/vast-ai/run-pyannote-segmentation-parity.sh`. The dumper
+imports the exact official `PyanNet.forward`, verifies the clean source
+revision and six primary files, strictly restores all 54 public GGUF tensors,
+and records intermediate tensors plus official probabilities. The VAST worker
+must diagnose any miss rather than widening the 0.01 bound.
 
-No `vokra-models` Cargo command or model inference ran on the maintainer Mac.
-VAST compilation/official CPU parity and Apple-device parity remain pending
-behind credential rotation. No Hugging Face upload or artifact replacement
-was performed or authorized. The post-source read-only Hub audit (API and
-README only; no GGUF download) confirmed 194 public repositories, 193 GGUF
-repositories and 198 files, with CPU `full=106`, `partial=43`,
-`no-runtime-binder=44`, `not-artifact=1` and Metal `full=106`,
-`blocked-by-cpu=87`, `not-artifact=1`.
+No `vokra-models` Cargo command, Python environment sync, model download or
+model inference ran on the maintainer Mac. Local checks covered dependency
+resolution/dry-run, dumper/worker self-tests, shell syntax/static analysis and
+the exact official source identity only. VAST compilation/official CPU parity
+and Apple-device parity remain pending behind credential rotation. No Hugging
+Face upload or artifact replacement was performed or authorized. The
+post-source read-only Hub audit (API and README only; no GGUF download)
+confirmed 194 public repositories, 193 GGUF repositories and 198 files, with
+CPU `full=106`, `partial=43`, `no-runtime-binder=44`, `not-artifact=1` and
+Metal `full=106`, `blocked-by-cpu=87`, `not-artifact=1`.
 
 ## Remaining execution order
 

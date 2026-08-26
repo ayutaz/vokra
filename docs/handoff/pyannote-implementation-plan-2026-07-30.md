@@ -6,9 +6,10 @@
 > by default on CPU or Metal. CLI run/bench preflight the chosen backend; an
 > unsupported or unavailable backend fails explicitly without CPU fallback.
 > The old `VOKRA_PYANNET_ENABLE_FORWARD` opt-in is ignored and retained only
-> as a deprecated source-compatibility constant. Independent official
-> pyannote.audio probability parity and Apple real-device measurement remain
-> pending VAST/device gates. Treat the wave/file lists below as dated design
+> as a deprecated source-compatibility constant. The independent official
+> pyannote.audio probability dumper, dedicated lock, VAST worker and Rust gate
+> are staged; their VAST execution and Apple real-device measurement remain
+> pending. Treat the wave/file lists below as dated design
 > provenance; current behavior lives in `crates/vokra-models/src/pyannote/`
 > and `crates/vokra-models/tests/parity_pyannote_segmentation.rs`.
 
@@ -241,9 +242,12 @@ pyannote pipeline の Python 版に依存せず、Vokra native の diarization p
 1. **HF gate accept** for `pyannote/segmentation-3.0` + `pyannote/speaker-diarization-3.1` (HF UI で非拘束 advisory の accept ボタンをクリック、Vokra 配布側は Meta Llama tokenizer と同じ non-bundle 方式 = consumer 側 accept)
 2. **pytorch_model.bin download** (~5.7 MB、gate accept 後は誰でも DL 可)
 3. **Tensor manifest verify** (実 checkpoint で上記 Expected pattern を確認、drift があれば本 handoff 更新)
-4. **Real weight parity harness owner run** — VAST で
-   `PARITY_PYANNOTE_REAL_GGUF=<path> VOKRA_PYANNET_ENABLE_FORWARD=1 cargo test -p vokra-models --test parity_pyannote_segmentation -- --nocapture`
-   を実行し、upstream-independent probability dump との parity を判定
+4. **Real weight parity harness owner run** — credential rotation 後の VAST で
+   `scripts/publish/vast-ai/run-pyannote-segmentation-parity.sh`
+   を実行する。worker は exact public GGUF と固定 official source を取得し、
+   upstream-independent probability dump、strict CPU smoke、0.01-bound Rust
+   comparison を一括して fail-closed 実行する。旧
+   `VOKRA_PYANNET_ENABLE_FORWARD` は不要で無視される
 5. **§3.1 publish sign-off** — pyannote weight を `huggingface.co/vokra/pyannote-segmentation-3.0` へ mirror publish するか (weight license MIT clean、Vokra converter output GGUF の再配布)、mirror でなく consumer-side download で済ませるか (Meta Llama tokenizer 前例と同じ non-bundle)
 
 ## verify (本 handoff の primary source claim)

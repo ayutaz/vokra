@@ -11,12 +11,13 @@
 //! `22ff05fddf19e69c8d9aac8daa6d99014e6718bcd8d8c527d26da677d00c63f1`).
 //! The VAST worker validates those values before invoking this suite.
 //!
-//! This smoke suite does not fabricate an upstream fixture or tolerance.
-//! Independent official `pyannote.audio==3.0.0` probability parity is a
-//! separate VAST suite; the default FP32 bound remains 0.01 until actual
-//! measurements prove whether the implementation passes or needs diagnosis.
+//! [`parity_pyannote_official_probabilities`] consumes the independent dump
+//! made by `tools/parity/pyannote_segmentation_dump_reference.py`. The oracle
+//! imports the pinned official `PyanNet.forward`; the standard FP32 absolute
+//! bound is 0.01 and any opted-in mismatch is a hard failure.
 
 use std::env;
+use std::fs;
 use std::path::Path;
 
 use vokra_models::pyannote::{PyanNet, PyanNetConfig, decode_powerset};
@@ -24,6 +25,18 @@ use vokra_models::pyannote::{PyanNet, PyanNetConfig, decode_powerset};
 /// Exact real GGUF supplied by the VAST worker. Absent means a clean skip;
 /// present means all binding and execution failures are hard.
 const GGUF_ENV: &str = "PARITY_PYANNOTE_REAL_GGUF";
+/// Directory emitted by the independent official `PyanNet.forward` dumper.
+const REFERENCE_DIR_ENV: &str = "PARITY_PYANNOTE_REFERENCE_DIR";
+const OFFICIAL_FP32_ATOL: f32 = 0.01;
+
+fn read_f32(path: &Path) -> Vec<f32> {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
+    assert_eq!(bytes.len() % 4, 0, "unaligned f32 reference {path:?}");
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
 
 #[test]
 fn decode_powerset_matches_primary_source_mapping_table() {
@@ -123,6 +136,53 @@ fn parity_pyannote_public_gguf_smoke() {
         config.num_powerset_classes,
         cpu.len(),
         model.legacy_metadata_repaired(),
+    );
+}
+
+#[test]
+#[ignore = "requires the immutable public GGUF and independent official VAST dump"]
+fn parity_pyannote_official_probabilities() {
+    let gguf_path = env::var(GGUF_ENV)
+        .unwrap_or_else(|_| panic!("{GGUF_ENV} must point at the immutable public PyanNet GGUF"));
+    let reference_dir = env::var(REFERENCE_DIR_ENV).unwrap_or_else(|_| {
+        panic!("{REFERENCE_DIR_ENV} must point at the independent official dump")
+    });
+    let reference_dir = Path::new(&reference_dir);
+    let pcm = read_f32(&reference_dir.join("input_pcm.f32"));
+    let expected = read_f32(&reference_dir.join("probabilities.f32"));
+    assert_eq!(pcm.len(), 1_600, "official deterministic PCM length");
+    assert_eq!(expected.len(), 3 * 7, "official probability shape [1,3,7]");
+    assert!(
+        expected.iter().all(|value| value.is_finite()),
+        "official reference probabilities must be finite"
+    );
+
+    let model = PyanNet::from_gguf(Path::new(&gguf_path))
+        .unwrap_or_else(|error| panic!("strict public PyanNet bind failed: {error:?}"));
+    let actual = model
+        .segment(&pcm)
+        .unwrap_or_else(|error| panic!("native PyanNet CPU forward failed: {error:?}"));
+    let actual: Vec<f32> = actual.into_iter().flatten().collect();
+    assert_eq!(actual.len(), expected.len(), "official probability length");
+    assert!(
+        actual.iter().all(|value| value.is_finite()),
+        "native probabilities must be finite"
+    );
+
+    let mut max_abs = 0.0f32;
+    let mut absolute_sum = 0.0f64;
+    for (&native, &official) in actual.iter().zip(&expected) {
+        let difference = (native - official).abs();
+        max_abs = max_abs.max(difference);
+        absolute_sum += f64::from(difference);
+    }
+    let mean_abs = absolute_sum / actual.len() as f64;
+    assert!(
+        max_abs <= OFFICIAL_FP32_ATOL,
+        "PyanNet CPU vs official max_abs={max_abs:.9e} exceeds {OFFICIAL_FP32_ATOL:.9e}"
+    );
+    eprintln!(
+        "PYANNOTE_OFFICIAL_PARITY backend=cpu max_abs={max_abs:.9e} mean_abs={mean_abs:.9e} bound={OFFICIAL_FP32_ATOL:.9e} frames=3 classes=7 verdict=PASS"
     );
 }
 

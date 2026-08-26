@@ -22,9 +22,11 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   two-to-four-layer metadata repair; partial/foreign metadata still fails
   closed. CLI `run` and `bench` preflight the selected backend, and the public
   coverage audit now classifies the architecture as CPU/Metal code-complete.
-  Independent official pyannote.audio parity and real Apple measurements
-  remain separate VAST/device gates rather than being inferred from synthetic
-  tests.
+  A dedicated Python 3.12 lock, source-identity-checking official
+  `pyannote.audio==3.0.0` dumper, VAST-only worker and ignored Rust comparison
+  test now stage the independent probability gate at the standard FP32 bound
+  0.01. The VAST run and real Apple measurement remain pending rather than
+  being inferred from synthetic tests.
 - The pyannote segmentation-3.0 converter now accepts only the exact public
   54-F32-tensor PyanNet manifest and stamps immutable upstream/source/public
   artifact identities. The released checkpoint's four-layer bidirectional
