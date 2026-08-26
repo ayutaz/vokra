@@ -551,6 +551,15 @@ impl MossAudio {
         &self.checkpoint
     }
 
+    /// Returns the authenticated fixed-revision text tokenizer.
+    ///
+    /// Historical public GGUFs intentionally return an error because they do
+    /// not embed the six required sidecars; callers may still use their
+    /// explicit token-level route.
+    pub fn tokenizer(&self) -> Result<&MossAudioTextTokenizer> {
+        self.checkpoint.text_tokenizer()
+    }
+
     /// Runs the exact frontend, 3-stage convolutional stem, 32 Whisper-style
     /// layers, final LayerNorm and four GatedMLP projections. The result
     /// contains primary text-width audio embeddings plus all three DeepStack

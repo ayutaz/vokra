@@ -3165,9 +3165,17 @@ sidecars, so they remain exact-manifest token-level-only instead of consulting
 a mutable host tokenizer.
 
 No MOSS-Audio weight payload, model inference or `vokra-models` Cargo command
-ran on the maintainer Mac. Compilation, official-reference parity, converted
-4B/8B real-file CPU execution and Apple CPU/Metal comparison remain remote
-gates. This source route does not authorize replacing either public artifact.
+ran on the maintainer Mac. The independent oracle is now staged under
+`tools/parity/moss_audio/`: it imports the exact official OpenMOSS source
+commit, authenticates both model revisions and their tokenizer sidecars, and
+records primary plus all three DeepStack projections, the official prompt,
+greedy IDs and decoded text. `run-moss-audio-validation.sh` performs the
+large conversion and CPU comparison only on a 128-GB-class VAST host;
+`apple-silicon-moss-audio.sh` refuses the maintainer machine and runs the
+same GGUF/reference pairs on a disposable Apple host with at least 64 GB.
+Both routes are non-publishing and fail if either variant is absent. No
+fixture or PASS result is claimed until those remote runs actually complete,
+and this source route does not authorize replacing either public artifact.
 
 ## Remaining execution order
 
