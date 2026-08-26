@@ -277,6 +277,7 @@ upload the already-public GGUF with its stale legacy header.
 | `vokra-convert::ModelKind` | `MossVoiceGenerator` | Added | dedicated CLI/converter selector | Existing VoiceGenerator aliases now preserve the official release instead of routing through `MossTts` | behavior correction | (TBD) |
 | `vokra-convert::models::moss_tts` | `MossTtsVariant::VoiceGenerator` | Added | Qwen3 2048/6144/28/16Q/8KV, 16 codebooks, 24 kHz | Pinned to official revision `97521ec2…`; distinct from Delay despite shared upstream class | no | (TBD) |
 | `gguf:vokra.model.*`, `gguf:vokra.provenance.*`, `gguf:vokra.moss_tts.*` | VoiceGenerator identity and axes | Corrected | name `moss-voice-generator`, upstream `OpenMOSS-Team/MOSS-VoiceGenerator`, variant `voice_generator` | Future conversions are faithful; the published legacy artifact remains explicitly stale | yes for code relying on the incorrect 8B header | (TBD) |
+| `vokra-models::moss_tts` | `MossTtsDelayCheckpoint`, `MossTtsDelayRelease` | Added | mmap-backed strict bind for Base/v1.5, complete 463-tensor manifest `5a3578fb…`, dense F32/F16/BF16 only | Keeps the ~17 GB payload mapped and validates every descriptor without widening; native generation remains a separately tracked follow-up and is not implied by this binder | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS-TTS Nano contract correction)
 

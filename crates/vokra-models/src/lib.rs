@@ -583,6 +583,9 @@ pub mod focalcodec;
 /// tensor manifest and remains visible as a repair requirement; Full decode
 /// remains an explicit unsupported operation.
 pub mod moss_audio_tokenizer;
+/// Native MOSS-TTS family. Nano is runnable end to end with its explicit
+/// codec companion; Base/v1.5 additionally have a strict 463-tensor
+/// mmap-backed Delay checkpoint binder while their generation graph lands.
 pub mod moss_tts;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
 // vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT

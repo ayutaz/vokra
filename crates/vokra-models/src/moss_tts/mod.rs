@@ -1,10 +1,12 @@
-//! Native OpenMOSS MOSS-TTS Nano language-model runtime.
+//! Native OpenMOSS MOSS-TTS family runtime.
 //!
 //! The first public Vokra GGUF predates the corrected RoPE/provenance
 //! metadata. It is accepted only behind the exact 194-tensor name/shape
 //! manifest and is surfaced through [`MossTtsNano::requires_metadata_repair`].
-//! No other MOSS-TTS family topology is inferred from the shared arch tag.
+//! Base/v1.5 use a separate strict 463-tensor mapped Delay contract; Local and
+//! VoiceGenerator are never inferred from the shared arch tag.
 
+mod delay;
 mod generation;
 mod transformer;
 mod weights;
@@ -21,6 +23,7 @@ use crate::moss_audio_tokenizer::{
 };
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+pub use self::delay::{MossTtsDelayCheckpoint, MossTtsDelayRelease};
 pub use self::generation::MossTtsGeneratedCodes;
 use self::weights::NanoWeights;
 

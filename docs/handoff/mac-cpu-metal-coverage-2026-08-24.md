@@ -2588,6 +2588,15 @@ under its own exact dimensions and manifest. Local remains a separate local-
 decoder implementation. These audit and converter changes do not alter the
 current runtime reachability counts.
 
+The first Base/v1.5 runtime slice now provides `MossTtsDelayCheckpoint`: a
+true-mmap binder that authenticates each release identity, the shared complete
+463-tensor manifest and every dense tensor descriptor at load time without
+widening payload data. The exact descriptor inventory is 33 embeddings, 396
+Qwen3 layer tensors, one final RMSNorm and 33 LM heads. Quantized, missing or
+wrong-shaped payloads fail explicitly. This is the bounded-memory prerequisite
+for the native generation graph, not a claim that Base/v1.5 synthesis is
+already runnable, so the reachability counts remain unchanged.
+
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config
 and source text, and the package-scoped serial converter test were used.
