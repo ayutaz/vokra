@@ -396,6 +396,14 @@ decoder companion. The public `vokra/moss-tts-nano-100m` GGUF has the exact
 `rope_base = 0` converter stamp. It remains partial and requires a separately
 authorized corrected publication; no upload or parity result is implied here.
 
+2026-08-26 Base/v1.5 runtime clarification (license verdict unchanged): the
+two ~17 GB Delay checkpoints now have an mmap-owned native `[rows,33]`
+generation path, official 32-codebook de-delay/segment handling and composition
+with the exact MOSS Audio Tokenizer Full decoder on one selected CPU/Metal
+backend. The source and CLI route are present, but workspace build, real-GGUF
+smoke and independent numerical parity remain VAST-only pending gates. This
+runtime change neither republishes nor uploads either model.
+
 | **MeloTTS-English** (`myshell-ai/MeloTTS-English`) | MIT | 2026-07-30（primary source: HF cardData API = `license: mit, pipeline: text-to-speech`、CC 直接照合） | 2026-07-30 yousan（依頼者委任 = CC 判断） | ☑ Commercial / ☐ Research-only / ☐ Rejected | **判定根拠**: MIT（MyShell.ai MeloTTS EN、VITS-based multilingual TTS）。TIER 1+2 impl C-1 対応、`ModelKind::MeloTtsEnglish`。~150MB safe local |
 | **MeloTTS-Chinese** (`myshell-ai/MeloTTS-Chinese`) | MIT | 2026-07-30（primary source: HF cardData API sibling of English、MIT family） | 2026-07-30 yousan（依頼者委任 = CC 判断） | ☑ Commercial / ☐ Research-only / ☐ Rejected | **判定根拠**: MIT（MeloTTS ZH sibling of EN、同 MIT）。TIER 1+2 impl C-2 対応 |
 | **MeloTTS-Korean** (`myshell-ai/MeloTTS-Korean`) | MIT | 2026-07-30（primary source: HF cardData API sibling、MIT family） | 2026-07-30 yousan（依頼者委任 = CC 判断） | ☑ Commercial / ☐ Research-only / ☐ Rejected | **判定根拠**: MIT（MeloTTS KO sibling）。TIER 1+2 impl C-3 対応 |

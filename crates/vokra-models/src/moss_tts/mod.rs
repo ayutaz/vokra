@@ -26,8 +26,8 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 pub use self::delay::{MossTtsDelayCheckpoint, MossTtsDelayRelease};
 pub use self::delay_transformer::{
-    MOSS_TTS_DELAY_HOT_OPS, MossTtsDelay, MossTtsDelayGeneration, MossTtsDelayGenerationOptions,
-    MossTtsDelayLogits,
+    MOSS_TTS_DELAY_HOT_OPS, MossTtsDelay, MossTtsDelayAudioSegment, MossTtsDelayGeneration,
+    MossTtsDelayGenerationOptions, MossTtsDelayLogits, MossTtsDelaySynthesis,
 };
 pub use self::generation::MossTtsGeneratedCodes;
 use self::weights::NanoWeights;

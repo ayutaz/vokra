@@ -7,6 +7,7 @@ use vokra_core::{Sampler, SamplerConfig};
 use super::*;
 
 const PAD_TOKEN_ID: u32 = 151_643;
+const IM_START_TOKEN_ID: u32 = 151_644;
 const IM_END_TOKEN_ID: u32 = 151_645;
 const AUDIO_START_TOKEN_ID: u32 = 151_652;
 const AUDIO_END_TOKEN_ID: u32 = 151_653;
@@ -81,6 +82,119 @@ impl MossTtsDelayGeneration {
         let start = index * INPUT_COLUMNS;
         Ok(&self.generated_rows[start..start + INPUT_COLUMNS])
     }
+}
+
+pub(super) struct DeDelayedAudio {
+    pub(super) start_length: usize,
+    pub(super) segments: Vec<DeDelayedCodeSegment>,
+}
+
+pub(super) struct DeDelayedCodeSegment {
+    pub(super) codes: Vec<u32>,
+    pub(super) frames: usize,
+}
+
+/// Ports `MossTTSDelayProcessor.apply_de_delay_pattern` and the following
+/// all-pad segment split from the fixed official processor source.
+pub(super) fn de_delay_audio_segments(
+    prompt: &[u32],
+    generated: &MossTtsDelayGeneration,
+) -> Result<DeDelayedAudio> {
+    if prompt.is_empty() || !prompt.len().is_multiple_of(INPUT_COLUMNS) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: de-delay prompt must be non-empty [rows,{INPUT_COLUMNS}], got {} values",
+            prompt.len()
+        )));
+    }
+    if !generated.generated_rows.len().is_multiple_of(INPUT_COLUMNS) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: generated de-delay rows have {} values, not a multiple of {INPUT_COLUMNS}",
+            generated.generated_rows.len()
+        )));
+    }
+    let prompt_rows = prompt.len() / INPUT_COLUMNS;
+    let im_start = prompt
+        .chunks_exact(INPUT_COLUMNS)
+        .rposition(|row| row[0] == IM_START_TOKEN_ID)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "{LABEL}: synthesis prompt has no official im_start token {IM_START_TOKEN_ID}; continuation trim cannot be inferred"
+            ))
+        })?;
+    let assistant_start = im_start.checked_add(3).ok_or_else(|| {
+        VokraError::InvalidArgument(format!("{LABEL}: assistant start index overflows"))
+    })?;
+    if assistant_start > prompt_rows {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: official assistant slice starts at row {assistant_start}, beyond prompt rows {prompt_rows}"
+        )));
+    }
+    let start_length = prompt_rows - assistant_start;
+    let generated_rows = generated.row_count();
+    let delay_rows = start_length
+        .checked_add(generated_rows)
+        .ok_or_else(|| VokraError::InvalidArgument(format!("{LABEL}: de-delay rows overflow")))?;
+    if delay_rows < NUM_AUDIO_CODEBOOKS {
+        return Err(VokraError::InvalidArgument(format!(
+            "{LABEL}: de-delay requires at least {NUM_AUDIO_CODEBOOKS} assistant rows, got {delay_rows}; increase max_new_tokens so the codebook drain can finish"
+        )));
+    }
+
+    let audio_row = |row: usize, codebook: usize| -> u32 {
+        if row < start_length {
+            prompt[(assistant_start + row) * INPUT_COLUMNS + 1 + codebook]
+        } else {
+            generated.generated_rows[(row - start_length) * INPUT_COLUMNS + 1 + codebook]
+        }
+    };
+    let frames = delay_rows - NUM_AUDIO_CODEBOOKS + 1;
+    let mut de_delayed = Vec::with_capacity(frames * NUM_AUDIO_CODEBOOKS);
+    for frame in 0..frames {
+        for codebook in 0..NUM_AUDIO_CODEBOOKS {
+            de_delayed.push(audio_row(frame + codebook, codebook));
+        }
+    }
+
+    let mut segments = Vec::new();
+    let mut segment_start = None;
+    for frame in 0..frames {
+        let row = &de_delayed[frame * NUM_AUDIO_CODEBOOKS..(frame + 1) * NUM_AUDIO_CODEBOOKS];
+        let all_pad = row.iter().all(|code| *code == AUDIO_PAD_CODE);
+        if let Some((codebook, code)) = row
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, code)| !all_pad && *code >= AUDIO_PAD_CODE)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: de-delayed frame {frame} codebook {codebook} contains pad/out-of-range code {code}; generation ended before a complete 32-codebook segment"
+            )));
+        }
+        match (segment_start, all_pad) {
+            (None, false) => segment_start = Some(frame),
+            (Some(start), true) => {
+                let codes =
+                    de_delayed[start * NUM_AUDIO_CODEBOOKS..frame * NUM_AUDIO_CODEBOOKS].to_vec();
+                segments.push(DeDelayedCodeSegment {
+                    frames: frame - start,
+                    codes,
+                });
+                segment_start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = segment_start {
+        let codes = de_delayed[start * NUM_AUDIO_CODEBOOKS..].to_vec();
+        segments.push(DeDelayedCodeSegment {
+            frames: frames - start,
+            codes,
+        });
+    }
+    Ok(DeDelayedAudio {
+        start_length,
+        segments,
+    })
 }
 
 impl MossTtsDelay {
@@ -397,6 +511,30 @@ fn validate_sampler(label: &str, config: &SamplerConfig) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn prompt_before_assistant_audio() -> Vec<u32> {
+        let mut prompt = vec![AUDIO_PAD_CODE; 3 * INPUT_COLUMNS];
+        prompt[0] = IM_START_TOKEN_ID;
+        prompt[INPUT_COLUMNS] = PAD_TOKEN_ID;
+        prompt[2 * INPUT_COLUMNS] = PAD_TOKEN_ID;
+        prompt
+    }
+
+    fn delay_frames(frames: &[u32], frame_count: usize) -> MossTtsDelayGeneration {
+        assert_eq!(frames.len(), frame_count * NUM_AUDIO_CODEBOOKS);
+        let delay_rows = frame_count + NUM_AUDIO_CODEBOOKS - 1;
+        let mut generated_rows = vec![AUDIO_PAD_CODE; delay_rows * INPUT_COLUMNS];
+        for row in generated_rows.chunks_exact_mut(INPUT_COLUMNS) {
+            row[0] = AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID;
+        }
+        for frame in 0..frame_count {
+            for codebook in 0..NUM_AUDIO_CODEBOOKS {
+                generated_rows[(frame + codebook) * INPUT_COLUMNS + 1 + codebook] =
+                    frames[frame * NUM_AUDIO_CODEBOOKS + codebook];
+            }
+        }
+        MossTtsDelayGeneration { generated_rows }
+    }
+
     #[test]
     fn delay_drain_advances_one_codebook_per_row() {
         let mut state = DelayGenerationState {
@@ -437,5 +575,39 @@ mod tests {
         history[2 * INPUT_COLUMNS + 1] = 1;
         apply_repetition_penalty(&mut logits, &history, 0, 2.0).unwrap();
         assert_eq!(logits, vec![1.0, -4.0, 4.0]);
+    }
+
+    #[test]
+    fn official_de_delay_restores_frame_major_codes_and_pad_segments() {
+        let mut codes = (0..3 * NUM_AUDIO_CODEBOOKS)
+            .map(|index| (index % 1_024) as u32)
+            .collect::<Vec<_>>();
+        codes[NUM_AUDIO_CODEBOOKS..2 * NUM_AUDIO_CODEBOOKS].fill(AUDIO_PAD_CODE);
+        let generated = delay_frames(&codes, 3);
+        let parsed = de_delay_audio_segments(&prompt_before_assistant_audio(), &generated).unwrap();
+        assert_eq!(parsed.start_length, 0);
+        assert_eq!(parsed.segments.len(), 2);
+        assert_eq!(parsed.segments[0].frames, 1);
+        assert_eq!(parsed.segments[0].codes, codes[..NUM_AUDIO_CODEBOOKS]);
+        assert_eq!(parsed.segments[1].frames, 1);
+        assert_eq!(parsed.segments[1].codes, codes[2 * NUM_AUDIO_CODEBOOKS..]);
+    }
+
+    #[test]
+    fn de_delay_includes_prompt_prefix_for_continuation() {
+        let codes = (0..2 * NUM_AUDIO_CODEBOOKS)
+            .map(|index| (index % 1_024) as u32)
+            .collect::<Vec<_>>();
+        let full = delay_frames(&codes, 2);
+        let mut prompt = prompt_before_assistant_audio();
+        prompt.extend_from_slice(&full.generated_rows[..INPUT_COLUMNS]);
+        let generated = MossTtsDelayGeneration {
+            generated_rows: full.generated_rows[INPUT_COLUMNS..].to_vec(),
+        };
+        let parsed = de_delay_audio_segments(&prompt, &generated).unwrap();
+        assert_eq!(parsed.start_length, 1);
+        assert_eq!(parsed.segments.len(), 1);
+        assert_eq!(parsed.segments[0].frames, 2);
+        assert_eq!(parsed.segments[0].codes, codes);
     }
 }

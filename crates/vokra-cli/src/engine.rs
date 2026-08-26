@@ -313,15 +313,17 @@ pub(crate) enum ModelTask {
     /// and decode route every learned hot op through the selected backend and
     /// exchange a versioned, exact-checkpoint-pinned BSQ token container.
     FocalCodec,
-    /// OpenMOSS Audio Tokenizer Full/Nano family. Nano decodes variable-width
-    /// frame-major LFQ codes to 48 kHz stereo through CPU/Metal. Full binds
-    /// strictly but remains an explicit unsupported decode until its distinct
-    /// 1.77B topology passes real-weight parity.
+    /// OpenMOSS Audio Tokenizer Full/Nano family. Both decode variable-width
+    /// frame-major LFQ codes through CPU/Metal using their distinct topology.
     MossAudioTokenizerCodec,
     /// OpenMOSS MOSS-TTS Nano explicit prompt-token generation. The concrete
     /// LLM and required MOSS Audio Tokenizer Nano sidecar bind in `run` so
     /// both large weight sets are loaded exactly once and select one backend.
     TtsMossNano,
+    /// OpenMOSS MOSS-TTS Base/v1.5 delayed prompt-token generation. The
+    /// mmap-backed Qwen3 model and required Full codec sidecar bind in `run`
+    /// and select the same CPU/Metal backend.
+    TtsMossDelay,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -552,7 +554,7 @@ const ARCH_SNAC: &str = "snac";
 const ARCH_FOCALCODEC: &str = "focalcodec";
 /// OpenMOSS Full/Nano codec family.
 const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
-/// OpenMOSS TTS family; only the exact Nano release is routed today.
+/// OpenMOSS TTS family; exact Nano and Base/v1.5 releases route separately.
 const ARCH_MOSS_TTS: &str = "moss_tts";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
@@ -1403,13 +1405,20 @@ pub(crate) fn load_session_with_backend_and_mimi(
                         "arch `{ARCH_MOSS_TTS}` is missing `vokra.model.name`; refusing family-shared topology inference"
                     )
                 })?;
-            if name != vokra_models::moss_tts::NAME {
-                return Err(format!(
-                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not the authenticated Nano release `{}`; Delay, Local and MOSS-Audio siblings have distinct unimplemented topologies and are never routed through Nano",
-                    vokra_models::moss_tts::NAME
-                ));
+            if name == vokra_models::moss_tts::NAME {
+                Ok((session, ModelTask::TtsMossNano))
+            } else if name == vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name()
+                || name == vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name()
+            {
+                Ok((session, ModelTask::TtsMossDelay))
+            } else {
+                Err(format!(
+                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not an authenticated executable release; expected Nano `{}`, Base `{}` or v1.5 `{}`. Local and VoiceGenerator remain distinct explicit contracts and are never routed through another topology",
+                    vokra_models::moss_tts::NAME,
+                    vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name(),
+                    vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name(),
+                ))
             }
-            Ok((session, ModelTask::TtsMossNano))
         }
         ARCH_BIGVGAN => {
             if hint.is_some() {
@@ -3488,17 +3497,27 @@ mod tests {
     }
 
     #[test]
-    fn load_session_routes_only_moss_tts_nano_to_its_generation_task() {
+    fn load_session_routes_moss_tts_releases_to_distinct_generation_tasks() {
         let (_session, task) =
             with_arch_only_gguf(ARCH_MOSS_TTS, vokra_models::moss_tts::NAME, |path| {
                 load_session(path).expect("MOSS-TTS Nano session builds (bare)")
             });
         assert_eq!(task, ModelTask::TtsMossNano);
+        for release in [
+            vokra_models::moss_tts::MossTtsDelayRelease::Base,
+            vokra_models::moss_tts::MossTtsDelayRelease::V1_5,
+        ] {
+            let (_session, task) =
+                with_arch_only_gguf(ARCH_MOSS_TTS, release.model_name(), |path| {
+                    load_session(path).expect("MOSS-TTS Delay session builds (bare)")
+                });
+            assert_eq!(task, ModelTask::TtsMossDelay);
+        }
         assert!(
             BOUND_ARCHES
                 .iter()
                 .all(|binding| binding.arch != ARCH_MOSS_TTS),
-            "the routed MOSS-TTS Nano arch must not retain an unreachable registry row"
+            "the routed MOSS-TTS arch must not retain an unreachable registry row"
         );
     }
 

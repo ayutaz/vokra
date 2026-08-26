@@ -93,6 +93,9 @@ USAGE:
     vokra-cli run --model <moss-tts-nano.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-nano.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <stereo.wav>
+    vokra-cli run --model <moss-tts-v1.5.gguf> \
+                  --audio-tokenizer <moss-audio-tokenizer-full.gguf> \
+                  --max-new-frames <N> --input <prompt-rows.u32le> --output <mono.wav>
     vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <hifigan-vocoder.gguf> --input <mel.f32> [--output <out.wav>]
     vokra-cli run --model <speecht5-hifigan.gguf> --input <mel.f32> [--output <out.wav>]
@@ -114,9 +117,10 @@ OPTIONS:
                                 exact pyannote WeSpeaker ResNet34-LM GGUF.
                                 It keeps its independent CC-BY attribution and
                                 strict manifest gate.
-    --audio-tokenizer <path>    MOSS-TTS Nano only, REQUIRED: exact MOSS Audio
-                                Tokenizer Nano GGUF. It must support the same
-                                selected backend as the language model.
+    --audio-tokenizer <path>    MOSS-TTS only, REQUIRED: exact companion GGUF.
+                                Nano requires Audio Tokenizer Nano; Base/v1.5
+                                require Audio Tokenizer Full. Both stages must
+                                support the same selected backend.
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
@@ -135,11 +139,12 @@ OPTIONS:
                                 For MOSS Audio Tokenizer decode it is raw
                                 frame-major `[frames,num_quantizers]` u32le;
                                 `--num-quantizers` declares the row width.
-                                For MOSS-TTS Nano it is a raw frame-major
-                                `[rows,17]` u32le prompt matrix: text id first,
-                                then 16 audio ids/pad sentinels. The model GGUF
-                                does not bundle its SentencePiece asset, so raw
-                                text is never guessed here.
+                                For MOSS-TTS it is a raw frame-major u32le
+                                prompt matrix: `[rows,17]` for Nano or
+                                `[rows,33]` for Base/v1.5, with text id first
+                                and audio ids/pad sentinels after it. The model
+                                GGUF does not bundle its tokenizer/template
+                                assets, so raw text is never guessed here.
                                 For SNAC encode it is a mono WAV; for decode it
                                 is a `VKRSNAC1` v1 hierarchical code container.
                                 For FocalCodec encode it is a 16 kHz mono WAV;
@@ -243,8 +248,8 @@ OPTIONS:
                                 tokenized.
     --music-frames <N>          MusicGen Small/Melody only, REQUIRED: positive
                                 number of 50 Hz EnCodec frames to generate.
-    --max-new-frames <N>        MOSS-TTS Nano only, REQUIRED: positive maximum
-                                number of 12.5 Hz audio-token frames to emit.
+    --max-new-frames <N>        MOSS-TTS only, REQUIRED: positive generation
+                                cap (Nano audio frames; Base/v1.5 delayed rows).
     --music-seed <u64>          MusicGen Small/Melody sampling seed [default 0].
     --codec-mode <mode>         mimi: `encode` (mono WAV -> portable code
                                 container) or `decode` (container -> WAV).
@@ -1030,6 +1035,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::FocalCodec
         | ModelTask::MossAudioTokenizerCodec
         | ModelTask::TtsMossNano
+        | ModelTask::TtsMossDelay
         | ModelTask::S2sDuplex
         | ModelTask::VadFsmn
         | ModelTask::VocoderVocos
@@ -1074,14 +1080,20 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             );
         }
     }
-    if a.audio_tokenizer.is_some() && task != ModelTask::TtsMossNano {
+    if a.audio_tokenizer.is_some()
+        && !matches!(task, ModelTask::TtsMossNano | ModelTask::TtsMossDelay)
+    {
         return Err(
-            "run: --audio-tokenizer is only supported for the exact MOSS-TTS Nano arch".to_owned(),
+            "run: --audio-tokenizer is only supported for authenticated MOSS-TTS releases"
+                .to_owned(),
         );
     }
-    if a.max_new_frames.is_some() && task != ModelTask::TtsMossNano {
+    if a.max_new_frames.is_some()
+        && !matches!(task, ModelTask::TtsMossNano | ModelTask::TtsMossDelay)
+    {
         return Err(
-            "run: --max-new-frames is only supported for the exact MOSS-TTS Nano arch".to_owned(),
+            "run: --max-new-frames is only supported for authenticated MOSS-TTS releases"
+                .to_owned(),
         );
     }
 
@@ -1403,6 +1415,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
+        }
+        ModelTask::TtsMossDelay => {
+            run_moss_tts_delay(&session, &a)?;
         }
         ModelTask::TtsKokoro => {
             run_kokoro(&a)?;
@@ -3642,6 +3657,98 @@ fn run_moss_tts_nano(session: &Session, a: &RunArgs) -> Result<(), String> {
         synthesis.audio.samples_per_channel,
         synthesis.audio.channels,
         synthesis.audio.sample_rate
+    );
+    Ok(())
+}
+
+/// MOSS-TTS Base/v1.5 explicit 33-column prompt to Full codec decode.
+///
+/// The official tokenizer/template remains an explicit caller companion. The
+/// mapped 8B LLM and 7 GB codec retain their mappings and execute every learned
+/// reduction on the same selected CPU/Metal backend.
+fn run_moss_tts_delay(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() {
+        return Err(
+            "run (moss_tts Base/v1.5): --text is unavailable because the GGUF does not bundle the pinned tokenizer/template; pass explicit [rows,33] u32le prompt ids with --input"
+                .to_owned(),
+        );
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (moss_tts Base/v1.5): --input <prompt-rows.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (moss_tts Base/v1.5): --output <mono.wav> is required")?;
+    let codec_path = a.audio_tokenizer.as_deref().ok_or(
+        "run (moss_tts Base/v1.5): --audio-tokenizer <moss-audio-tokenizer-full.gguf> is required",
+    )?;
+    let max_new_tokens = a
+        .max_new_frames
+        .ok_or("run (moss_tts Base/v1.5): --max-new-frames <N> is required")?;
+
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
+    let codec_file = std::sync::Arc::new(
+        vokra_mmap::open_gguf(codec_path)
+            .map_err(|error| format!("run (moss_tts Base/v1.5): codec {codec_path}: {error}"))?,
+    );
+    vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
+
+    let checkpoint =
+        vokra_models::moss_tts::MossTtsDelayCheckpoint::from_gguf_mapped(session.gguf_arc())
+            .map_err(|error| error.to_string())?;
+    let model = vokra_models::moss_tts::MossTtsDelay::from_checkpoint(checkpoint, a.backend)
+        .map_err(|error| error.to_string())?;
+    let codec =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            codec_file, a.backend,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (moss_tts Base/v1.5): {input_path}: {error}"))?;
+    const ROW_BYTES: usize = 33 * 4;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(ROW_BYTES) {
+        return Err(format!(
+            "run (moss_tts Base/v1.5): {input_path} has {} bytes; expected a positive multiple of {ROW_BYTES} for frame-major [rows,33] u32le prompt ids",
+            bytes.len()
+        ));
+    }
+    let prompt_rows: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let options = vokra_models::moss_tts::MossTtsDelayGenerationOptions {
+        max_new_tokens,
+        ..Default::default()
+    };
+    let release = model.checkpoint().release();
+    let synthesis = model
+        .synthesize_prompt_rows(&codec, &prompt_rows, &options)
+        .map_err(|error| error.to_string())?;
+    let [segment] = synthesis.segments.as_slice() else {
+        return Err(format!(
+            "run (moss_tts Base/v1.5): generation produced {} audio segments; the single-WAV CLI requires exactly one (the library API preserves zero/multiple official segments explicitly)",
+            synthesis.segments.len()
+        ));
+    };
+    wav::write_wav_channels(
+        output_path,
+        &segment.audio.pcm,
+        segment.audio.sample_rate,
+        segment.audio.channels,
+    )
+    .map_err(|error| format!("run (moss_tts Base/v1.5): --output {output_path}: {error}"))?;
+    println!(
+        "moss_tts {release:?}: {} prompt rows -> {} generated delayed rows -> {} codec frames (trimmed {} prefix samples) -> {} mono samples @ {} Hz -> {output_path}",
+        prompt_rows.len() / 33,
+        synthesis.generated.row_count(),
+        segment.frames,
+        segment.trimmed_prefix_samples,
+        segment.audio.samples_per_channel,
+        segment.audio.sample_rate,
     );
     Ok(())
 }

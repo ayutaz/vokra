@@ -18,6 +18,9 @@ use vokra_core::{KvCache, Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 use crate::mapped_weights::{lock_scratch, transpose_widen, widen_into};
+use crate::moss_audio_tokenizer::{
+    MossAudioTokenizer, MossAudioTokenizerVariant, MossDecodedAudio,
+};
 
 use super::delay::{
     AUDIO_VOCAB_WITH_PAD, DelayMappedDescriptors, FFN_DIM, HEAD_DIM, HIDDEN_DIM, KV_DIM, MAPPED,
@@ -52,6 +55,31 @@ pub struct MossTtsDelayLogits {
     /// is the official audio-pad sentinel and remains present for the caller's
     /// generation mask.
     pub audio_logits: Vec<f32>,
+}
+
+/// One independently decoded audio segment from an official delayed stream.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MossTtsDelayAudioSegment {
+    /// De-delayed frame-major `[frames, 32]` Full-codec values.
+    pub codes: Vec<u32>,
+    /// Codec-frame count before continuation trimming.
+    pub frames: usize,
+    /// 24 kHz mono waveform. For a continued first segment, the official
+    /// waveform-ratio trim has already been applied.
+    pub audio: MossDecodedAudio,
+    /// Number of leading PCM samples removed after full causal decode.
+    pub trimmed_prefix_samples: usize,
+}
+
+/// Complete Base/v1.5 generation plus zero or more official audio segments.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct MossTtsDelaySynthesis {
+    /// Raw appended delayed rows, retained for text/continuation callers.
+    pub generated: MossTtsDelayGeneration,
+    /// Consecutive non-pad de-delayed segments, each decoded independently.
+    pub segments: Vec<MossTtsDelayAudioSegment>,
 }
 
 impl MossTtsDelayLogits {
@@ -159,6 +187,82 @@ impl MossTtsDelay {
             )?;
         }
         last_logits(&compute, mapped, &self.runtime, &scratch)
+    }
+
+    /// Generates delayed Base/v1.5 rows, restores official 32-codebook frame
+    /// order, splits all-pad separators and decodes every segment through the
+    /// exact Full MOSS Audio Tokenizer companion.
+    ///
+    /// The prompt must contain the official last `im_start` framing token so
+    /// continuation length can be recovered without guessing. The LLM and
+    /// codec must select the same backend; neither stage may fall back to CPU.
+    pub fn synthesize_prompt_rows(
+        &self,
+        codec: &MossAudioTokenizer,
+        prompt_rows: &[u32],
+        options: &MossTtsDelayGenerationOptions,
+    ) -> Result<MossTtsDelaySynthesis> {
+        if codec.variant() != MossAudioTokenizerVariant::Full {
+            return Err(VokraError::UnsupportedOp(format!(
+                "{LABEL}: Base/v1.5 synthesis requires the exact MOSS Audio Tokenizer Full companion; got {:?}",
+                codec.variant()
+            )));
+        }
+        if codec.backend() != self.backend {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: LLM backend {:?} does not match Full codec backend {:?}; the composed graph must select one backend and never hide a CPU fallback",
+                self.backend,
+                codec.backend()
+            )));
+        }
+
+        let generated = self.generate_delay_rows(prompt_rows, options)?;
+        let generation::DeDelayedAudio {
+            start_length,
+            segments: code_segments,
+        } = generation::de_delay_audio_segments(prompt_rows, &generated)?;
+        let mut segments = Vec::with_capacity(code_segments.len());
+        for (index, code_segment) in code_segments.into_iter().enumerate() {
+            let mut audio = codec.decode_frame_major(
+                &code_segment.codes,
+                code_segment.frames,
+                NUM_AUDIO_CODEBOOKS,
+            )?;
+            let mut trimmed_prefix_samples = 0;
+            if index == 0 && start_length > 0 {
+                if start_length >= code_segment.frames {
+                    continue;
+                }
+                trimmed_prefix_samples = audio
+                    .samples_per_channel
+                    .checked_mul(start_length)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(format!(
+                            "{LABEL}: continuation trim sample count overflows"
+                        ))
+                    })?
+                    / code_segment.frames;
+                let interleaved = trimmed_prefix_samples
+                    .checked_mul(audio.channels)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(format!(
+                            "{LABEL}: continuation interleaved trim overflows"
+                        ))
+                    })?;
+                audio.pcm.drain(..interleaved);
+                audio.samples_per_channel -= trimmed_prefix_samples;
+            }
+            segments.push(MossTtsDelayAudioSegment {
+                codes: code_segment.codes,
+                frames: code_segment.frames,
+                audio,
+                trimmed_prefix_samples,
+            });
+        }
+        Ok(MossTtsDelaySynthesis {
+            generated,
+            segments,
+        })
     }
 }
 
