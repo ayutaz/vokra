@@ -9,10 +9,10 @@
 //!
 //! The exact variable-length frontend, three-convolution audio stem,
 //! 18/24-layer audio Transformer, projector and fixed-revision Qwen2 BPE/chat
-//! contract are executable without runtime downloads. Full ASR remains
-//! deliberately loud-partial only at the 28-layer Qwen3 decoder boundary;
-//! [`Qwen3AsrCheckpoint::transcribe`] names that missing stage instead of
-//! returning fabricated text or silently selecting the CPU backend.
+//! contract and bounded-memory 28-layer Qwen3 decoder are executable without
+//! runtime downloads. Every learned audio and text op uses one preflighted CPU
+//! or Metal backend; unsupported backends fail explicitly rather than silently
+//! selecting the CPU.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -25,11 +25,14 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 mod audio_encoder;
 mod frontend;
+mod text_decoder;
 mod tokenizer;
 mod weights;
 
 use audio_encoder::Qwen3AsrAudioRuntime;
 pub use audio_encoder::{QWEN3_ASR_AUDIO_HOT_OPS, Qwen3AsrAudioEmbeddings};
+use text_decoder::Qwen3AsrTextRuntime;
+pub use text_decoder::{QWEN3_ASR_HOT_OPS, QWEN3_ASR_TEXT_HOT_OPS, Qwen3AsrGenerationOptions};
 pub use tokenizer::{
     ASR_TEXT_TOKEN_ID, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID,
     END_OF_TEXT_TOKEN_ID, IM_END_TOKEN_ID, IM_START_TOKEN_ID, Qwen3AsrTokenizer,
@@ -518,8 +521,8 @@ impl Qwen3AsrCheckpoint {
         })
     }
 
-    /// Descriptor-only diagnostic entry point. Use [`Qwen3Asr::encode_audio`]
-    /// for the executable CPU/Metal audio tower.
+    /// Descriptor-only diagnostic entry point. Construct [`Qwen3Asr`] through
+    /// its mapped constructor to select and preflight an execution backend.
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -532,7 +535,7 @@ impl Qwen3AsrCheckpoint {
             )));
         }
         Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint is descriptor-bound; construct Qwen3Asr::open_mapped to authenticate the embedded tokenizer contract and run its complete {}-layer CPU/Metal audio tower. End-to-end transcription still requires the 28-layer Qwen3 autoregressive decoder; no backend is silently substituted.",
+            "qwen3_asr transcribe: the exact {} {}-tensor checkpoint is descriptor-only and has no selected backend; construct Qwen3Asr::open_mapped to authenticate the tokenizer and run its complete {}-layer audio tower plus 28-layer decoder on one explicit CPU or Metal backend",
             self.variant.model_name(),
             self.tensor_count(),
             self.config.audio.n_layer
@@ -546,6 +549,7 @@ pub struct Qwen3Asr {
     checkpoint: Qwen3AsrCheckpoint,
     backend: BackendKind,
     audio: Arc<Qwen3AsrAudioRuntime>,
+    text: Arc<Qwen3AsrTextRuntime>,
     tokenizer: Arc<Qwen3AsrTokenizer>,
 }
 
@@ -560,7 +564,7 @@ impl std::fmt::Debug for Qwen3Asr {
 
 impl Qwen3Asr {
     /// Opens an exact dense GGUF through mmap, authenticates the tokenizer and
-    /// preflights the complete audio tower on `backend`.
+    /// preflights the complete audio/text graph on `backend`.
     pub fn open_mapped(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
         Self::from_checkpoint(Qwen3AsrCheckpoint::open_mapped(path)?, backend)
     }
@@ -569,16 +573,17 @@ impl Qwen3Asr {
     pub fn from_checkpoint(checkpoint: Qwen3AsrCheckpoint, backend: BackendKind) -> Result<Self> {
         checkpoint.mapped()?;
         let tokenizer = Arc::clone(checkpoint.tokenizer()?);
-        let _ = crate::compute::Compute::for_backend(backend, QWEN3_ASR_AUDIO_HOT_OPS)?;
+        let _ = crate::compute::Compute::for_backend(backend, QWEN3_ASR_HOT_OPS)?;
         Ok(Self {
             checkpoint,
             backend,
             audio: Arc::new(Qwen3AsrAudioRuntime::default()),
+            text: Arc::new(Qwen3AsrTextRuntime::default()),
             tokenizer,
         })
     }
 
-    /// Selected backend for every learned audio-tower operation.
+    /// Selected backend for every learned audio and decoder operation.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
@@ -603,16 +608,31 @@ impl Qwen3Asr {
         audio_encoder::encode(&self.checkpoint, self.backend, &self.audio, pcm)
     }
 
-    /// End-to-end ASR remains explicit until the Qwen3 decode loop lands; the
-    /// complete audio tower and tokenizer contract are independently
-    /// executable through [`Self::encode_audio`] and [`Self::tokenizer`].
+    /// Runs deterministic end-to-end ASR with the released generation
+    /// defaults and returns the transcript text.
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
+        Ok(self
+            .transcribe_with_options(pcm, sample_rate, &Qwen3AsrGenerationOptions::default())?
+            .text)
+    }
+
+    /// Runs end-to-end ASR with explicit context, language and length controls.
+    pub fn transcribe_with_options(
+        &self,
+        pcm: &[f32],
+        sample_rate: u32,
+        options: &Qwen3AsrGenerationOptions,
+    ) -> Result<Qwen3AsrTranscription> {
         validate_audio_input(pcm, sample_rate)?;
-        Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): {} has a complete {:?} audio tower and authenticated embedded Qwen2 BPE/chat assets, but end-to-end decoding still requires the 28-layer Qwen3 autoregressive loop; no CPU fallback or fabricated transcript is returned",
-            self.checkpoint.model_name(),
-            self.backend
-        )))
+        let audio = audio_encoder::encode(&self.checkpoint, self.backend, &self.audio, pcm)?;
+        text_decoder::transcribe(
+            &self.checkpoint,
+            self.backend,
+            &self.text,
+            &self.tokenizer,
+            &audio,
+            options,
+        )
     }
 }
 

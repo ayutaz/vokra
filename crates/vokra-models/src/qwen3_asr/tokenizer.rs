@@ -270,6 +270,17 @@ pub const fn is_eos(id: u32) -> bool {
 }
 
 fn normalize_language(language: &str) -> Result<String> {
+    let normalized = canonicalize_language_name(language)?;
+    if !SUPPORTED_LANGUAGES.contains(&normalized.as_str()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "qwen3_asr tokenizer: unsupported language {language:?}; expected one of {}",
+            SUPPORTED_LANGUAGES.join(", ")
+        )));
+    }
+    Ok(normalized)
+}
+
+fn canonicalize_language_name(language: &str) -> Result<String> {
     let trimmed = language.trim();
     if trimmed.is_empty() {
         return Err(VokraError::InvalidArgument(
@@ -282,12 +293,6 @@ fn normalize_language(language: &str) -> Result<String> {
         .to_uppercase()
         .chain(chars.flat_map(char::to_lowercase))
         .collect::<String>();
-    if !SUPPORTED_LANGUAGES.contains(&normalized.as_str()) {
-        return Err(VokraError::InvalidArgument(format!(
-            "qwen3_asr tokenizer: unsupported language {language:?}; expected one of {}",
-            SUPPORTED_LANGUAGES.join(", ")
-        )));
-    }
     Ok(normalized)
 }
 
@@ -299,16 +304,17 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
             text: String::new(),
         });
     }
+    let value = detect_and_fix_repetitions(value, 20);
     if let Some(language) = forced_language {
         return Ok(Qwen3AsrTranscription {
             language: normalize_language(language)?,
-            text: value.to_owned(),
+            text: value,
         });
     }
     let Some((metadata, text)) = value.split_once(ASR_TEXT_TAG) else {
         return Ok(Qwen3AsrTranscription {
             language: String::new(),
-            text: value.to_owned(),
+            text: value,
         });
     };
     if metadata.to_ascii_lowercase().contains("language none") {
@@ -329,7 +335,10 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
         {
             let candidate = line[LANG_PREFIX.len()..].trim();
             if !candidate.is_empty() {
-                language = normalize_language(candidate)?;
+                // Match the official output parser: a caller-forced language
+                // is validated before generation, while model-detected
+                // metadata is only case-normalized and otherwise preserved.
+                language = canonicalize_language_name(candidate)?;
             }
             break;
         }
@@ -338,6 +347,75 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
         language,
         text: text.trim().to_owned(),
     })
+}
+
+// Direct structural port of the official inference wrapper's repetition
+// cleanup. Rust `char` matches Python string indexing by Unicode scalar for
+// the release's text processing purposes; all thresholds and strict `>`
+// behavior are preserved.
+fn detect_and_fix_repetitions(text: &str, threshold: usize) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut collapsed = Vec::with_capacity(chars.len());
+    let mut index = 0;
+    while index < chars.len() {
+        let mut count = 1;
+        while index + count < chars.len() && chars[index + count] == chars[index] {
+            count += 1;
+        }
+        if count > threshold {
+            collapsed.push(chars[index]);
+        } else {
+            collapsed.extend_from_slice(&chars[index..index + count]);
+        }
+        index += count;
+    }
+    fix_pattern_repeats(&collapsed, threshold, 20)
+        .into_iter()
+        .collect()
+}
+
+fn fix_pattern_repeats(chars: &[char], threshold: usize, max_len: usize) -> Vec<char> {
+    let minimum = threshold.saturating_mul(2);
+    if chars.len() < minimum {
+        return chars.to_vec();
+    }
+    let mut output = Vec::with_capacity(chars.len());
+    let mut index = 0;
+    while index <= chars.len() - minimum {
+        let mut repeated = None;
+        for pattern_len in 1..=max_len {
+            let repeated_len = match pattern_len.checked_mul(threshold) {
+                Some(value) => value,
+                None => break,
+            };
+            if index + repeated_len > chars.len() {
+                break;
+            }
+            let pattern = &chars[index..index + pattern_len];
+            let valid = (1..threshold).all(|repeat| {
+                let start = index + repeat * pattern_len;
+                &chars[start..start + pattern_len] == pattern
+            });
+            if valid {
+                let mut end = index + repeated_len;
+                while end + pattern_len <= chars.len() && &chars[end..end + pattern_len] == pattern
+                {
+                    end += pattern_len;
+                }
+                repeated = Some((pattern.to_vec(), end));
+                break;
+            }
+        }
+        if let Some((pattern, end)) = repeated {
+            output.extend(pattern);
+            output.extend(fix_pattern_repeats(&chars[end..], threshold, max_len));
+            return output;
+        }
+        output.push(chars[index]);
+        index += 1;
+    }
+    output.extend_from_slice(&chars[index..]);
+    output
 }
 
 fn read_exact_u8_array(file: &GgufFile, asset: ExactAsset) -> Result<Vec<u8>> {
@@ -516,11 +594,38 @@ mod tests {
             }
         );
         assert_eq!(
+            parse_asr_output("language klingon<asr_text>Qapla'", None)
+                .expect("detected metadata is not a caller option"),
+            Qwen3AsrTranscription {
+                language: "Klingon".to_owned(),
+                text: "Qapla'".to_owned(),
+            }
+        );
+        assert_eq!(
             parse_asr_output("forced text", Some("japanese")).expect("forced"),
             Qwen3AsrTranscription {
                 language: "Japanese".to_owned(),
                 text: "forced text".to_owned(),
             }
+        );
+        let twenty = "x".repeat(20);
+        assert_eq!(
+            parse_asr_output(&twenty, None)
+                .expect("threshold preserved")
+                .text,
+            twenty
+        );
+        assert_eq!(
+            parse_asr_output(&"x".repeat(21), None)
+                .expect("char repetition")
+                .text,
+            "x"
+        );
+        assert_eq!(
+            parse_asr_output(&"ab".repeat(20), None)
+                .expect("pattern repetition")
+                .text,
+            "ab"
         );
     }
 

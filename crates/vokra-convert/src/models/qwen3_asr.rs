@@ -98,10 +98,10 @@
 //! Qwen3-ASR is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05). The strict binder lives in
 //! `crates/vokra-models/src/qwen3_asr/`; its log-mel frontend, audio encoder,
-//! projector and fixed-revision Qwen2 BPE/chat contract are native there. The
-//! 28-layer Qwen3 decode loop remains the next implementation stage.
-//! Conversion authenticates and embeds all five tokenizer/chat/generation
-//! sidecars; no mutable runtime download is permitted.
+//! projector, fixed-revision Qwen2 BPE/chat contract and bounded-memory
+//! 28-layer Qwen3 decode loop are native there. Conversion authenticates and
+//! embeds all five tokenizer/chat/generation sidecars; no mutable runtime
+//! download is permitted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};

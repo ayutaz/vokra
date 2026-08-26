@@ -24,14 +24,17 @@
 > The complete Conv2D stem, 18/24-layer bidirectional audio Transformer and
 > projector now run through a whole-stage CPU/Metal hot-op preflight; Conv2D is
 > lowered to im2col + backend GEMM and there is no per-op CPU fallback. This
-> source route is staged but has not converted either
-> multi-gigabyte release on the maintainer Mac. End-to-end ASR remains an
-> explicit `UnsupportedOp` naming
-> the missing 28-layer Qwen3 decode loop and Qwen2 BPE/chat assets. The two public
-> repositories therefore move only from `no-runtime-binder` to `partial`;
-> repositories remain partial: the audio tower has CPU/Metal code reachability,
-> but full-model completion and real-weight parity are not claimed. No model
-> conversion or inference ran on the maintainer Mac.
+> source route is staged but has not converted either multi-gigabyte release
+> on the maintainer Mac. New conversions embed and authenticate the five exact
+> Qwen2 BPE/chat/generation assets. The bounded native 28-layer Qwen3 decoder
+> now runs chunked prefill, grouped-query causal attention, half-split RoPE,
+> K/V caching, SwiGLU and a chunked vocabulary head through a whole-model
+> CPU/Metal hot-op preflight with no silent CPU fallback. The live public GGUFs
+> predate the embedded assets and therefore remain artifact-partial until a
+> separately authorized replacement; source-level end-to-end execution is
+> complete. VAST real-weight CPU parity and Apple-device Metal parity remain
+> pending and are not inferred from source reachability. No model conversion
+> or inference ran on the maintainer Mac.
 
 > **2026-08-26 SpeechT5 runtime wave:** the strict converter and runtime now
 > agree on the official 79-piece SentencePiece CHAR model plus Hugging Face

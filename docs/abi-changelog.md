@@ -250,7 +250,7 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
-### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-ASR strict conversion and audio tower)
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-ASR native CPU/Metal runtime)
 
 The public Qwen3-ASR 0.6B and 1.7B GGUF headers now bind through exact
 release-specific contracts without eagerly decoding their multi-gigabyte BF16
@@ -263,16 +263,20 @@ assets. The runtime validates those blobs again and exposes the Qwen2 BPE,
 exact ChatML/audio-placeholder prompt and structural ASR output parser.
 The runtime adds true-mmap constructors, structures all 612/708 descriptors
 without payload decode and implements the variable-length log-mel, Conv2D,
-18/24-layer audio Transformer and projector through explicit CPU/Metal hot-op
-coverage. This is deliberately a partial runtime
-milestone: transcription still returns an explicit unsupported-operation error
-naming the missing Qwen3 decoder stage, so full-model Mac CPU/Metal
-completion is not claimed. No C symbol, ownership rule or allocation ABI changes.
+18/24-layer audio Transformer, projector and 28-layer autoregressive Qwen3
+decoder. Prompt prefill is chunked, K/V state is cached, one decoder layer is
+widened at a time and the vocabulary head is evaluated in bounded row chunks.
+All learned audio/text projections, normalizations, activations, attention
+softmaxes and the output head use one preflighted CPU or Metal `Compute`
+backend. Unsupported backends fail before inference; no operation silently
+selects CPU. Real-checkpoint CPU and Apple-device Metal numerical parity remain
+pending and are not inferred from source reachability. No C symbol, ownership
+rule or allocation ABI changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `vokra-convert::qwen3_asr` | `convert_qwen3_asr_file_with_variant`; `vokra.qwen3_asr.source_revision`; `vokra.qwen3_asr.tensor_manifest_sha256`; `vokra.frontend.*`; audio execution keys; tokenizer/chat/generation U8 keys | Changed / Added | single `.safetensors` or local `.index.json` + shards plus five exact fixed-revision sidecars → exact 612/708-BF16-tensor self-contained GGUF with 13 frontend fields and exact GELU/LayerNorm/scale/tokenizer contract | Rejects extra/missing/renamed/reshaped/non-BF16 tensors, unsafe/non-local shard paths, index ownership drift, conflicting license and sidecar size/SHA drift; bounded by the largest tensor rather than the checkpoint total | no | (TBD) |
-| `vokra-models::qwen3_asr` | `Qwen3Asr`, `Qwen3AsrAudioEmbeddings`, `Qwen3AsrTokenizer`, `Qwen3AsrTranscription`, Qwen3-ASR token/language constants, `QWEN3_ASR_AUDIO_HOT_OPS`, mapped checkpoint constructors | Changed / Added | variable-length 16 kHz PCM → `[audio_frames,text_hidden]` through CPU/Metal; fixed-revision Qwen2 BPE → ChatML/audio-placeholder ids and parsed ASR output; full `transcribe` remains loud-partial only at the decoder | Exact 612/708 descriptors stay mmap-backed; Conv2D lowers to backend GEMM, and GEMM/softmax/LayerNorm/GELU are preflighted as a whole. Historical headers remain descriptor-bindable, while execution requires all 29 topology keys, exact frontend metadata and byte-authenticated `vocab.json` / `merges.txt` / tokenizer / chat / generation sidecars. Unexpected generated control tokens and missing assets are explicit errors; no runtime download or silent CPU fallback | no | (TBD) |
+| `vokra-models::qwen3_asr` | `Qwen3Asr`, `Qwen3AsrAudioEmbeddings`, `Qwen3AsrTokenizer`, `Qwen3AsrTranscription`, `Qwen3AsrGenerationOptions`, Qwen3-ASR token/language constants, `QWEN3_ASR_AUDIO_HOT_OPS`, `QWEN3_ASR_TEXT_HOT_OPS`, `QWEN3_ASR_HOT_OPS`, mapped checkpoint constructors | Changed / Added | variable-length 16 kHz PCM → parsed multilingual transcription through one explicit CPU/Metal backend; optional context, forced language and bounded greedy generation | Exact 612/708 descriptors stay mmap-backed; Conv2D and decoder projections lower to backend GEMM, the vocabulary head uses chunked GEMV, and softmax/LayerNorm/RMSNorm/GELU/SiLU are preflighted as a whole. Historical headers remain descriptor-bindable, while execution requires all 29 topology keys, exact frontend metadata and byte-authenticated `vocab.json` / `merges.txt` / tokenizer / chat / generation sidecars. Unexpected generated control tokens, non-finite values, position overflow, malformed audio placeholders, missing assets and unsupported backends are explicit errors; no runtime download or silent CPU fallback | no | (TBD) |
 | `vokra-cli run` diagnostics | `qwen3_asr` `BOUND_ARCHES` row and binder probe | Added | `Qwen3AsrCheckpoint::from_gguf -> Qwen3AsrCheckpoint::transcribe` | Valid released headers report the concrete bound API plus the remaining execution boundary; malformed headers report the binder error. The architecture is still classified partial, not CPU/Metal-complete | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 CPU/Metal TTS runtime)
