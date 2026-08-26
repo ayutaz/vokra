@@ -1,10 +1,12 @@
-//! Mmap-backed native decoder for the public Full MOSS Audio Tokenizer.
+//! Mmap-backed native decoder for the public Full and v2 MOSS Audio Tokenizer.
 //!
 //! The released GGUF is about 7.1 GB of dense F32 weights.  This module keeps
 //! the file mapping alive and materialises one Transformer layer (or one LFQ
 //! projection) at a time.  It never creates a resident copy of the complete
-//! checkpoint.  Every learned reduction is dispatched through [`Compute`],
-//! so selecting Metal cannot silently execute a CPU kernel.
+//! checkpoint. The v2 release is larger and uses two additional stages but
+//! shares the same bounded-memory execution strategy. Every learned reduction
+//! is dispatched through [`Compute`], so selecting Metal cannot silently
+//! execute a CPU kernel.
 
 use std::sync::Arc;
 
@@ -1002,7 +1004,7 @@ fn full_mapped_info(file: &GgufFile, name: &str, elements: usize) -> Result<Gguf
         && !matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
     {
         return Err(VokraError::ModelLoad(format!(
-            "{LABEL}: tensor `{name}` uses unsupported mapped dtype {:?}; the Full bounded-memory runtime accepts dense F32, F16 or BF16 only and has no resident or CPU fallback",
+            "{LABEL}: tensor `{name}` uses unsupported mapped dtype {:?}; the bounded-memory runtime accepts dense F32, F16 or BF16 only and has no resident or CPU fallback",
             info.dtype
         )));
     }
@@ -1061,6 +1063,207 @@ fn reject_non_finite(label: &str, values: &[f32]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const V2_OFFICIAL_REVISION: &str = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169";
+    const V2_MODEL_SOURCE_SHA256: &str =
+        "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9";
+    const V2_CONFIG_SOURCE_SHA256: &str =
+        "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529";
+
+    struct V2Reference {
+        frames: usize,
+        num_quantizers: usize,
+        codes: Vec<u32>,
+        interleaved: Vec<f32>,
+    }
+
+    fn parse_v2_usize(value: Option<&str>, label: &str) -> usize {
+        value
+            .unwrap_or_else(|| panic!("MOSS v2 reference is missing {label}"))
+            .parse()
+            .unwrap_or_else(|error| panic!("MOSS v2 reference {label} is invalid: {error}"))
+    }
+
+    fn load_v2_reference(path: &std::path::Path) -> V2Reference {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("read MOSS v2 reference {}: {error}", path.display()));
+        let source =
+            format!("source,v2,OpenMOSS-Team/MOSS-Audio-Tokenizer-v2,{V2_OFFICIAL_REVISION}");
+        assert!(
+            text.lines().any(|line| line == source),
+            "MOSS v2 reference lost its pinned official source"
+        );
+        for (kind, digest) in [
+            ("model", V2_MODEL_SOURCE_SHA256),
+            ("config", V2_CONFIG_SOURCE_SHA256),
+        ] {
+            assert!(
+                text.lines().any(|line| {
+                    line.starts_with(&format!("source_file,{kind},"))
+                        && line.ends_with(&format!(",{digest}"))
+                }),
+                "MOSS v2 reference lost its pinned {kind} source digest"
+            );
+        }
+        assert!(
+            text.lines().any(|line| line.starts_with("runtime,torch-")),
+            "MOSS v2 reference must record its Torch environment"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("environment,cpu,")),
+            "MOSS v2 reference must record CPU/ISA context"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("environment,device,")),
+            "MOSS v2 reference must record the execution device"
+        );
+        for label in std::iter::once("quantizer".to_owned())
+            .chain((0..12).map(|index| format!("decoder_{index}")))
+            .chain(std::iter::once("audio".to_owned()))
+        {
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!("tensor,{label},"))),
+                "MOSS v2 reference is missing official tap {label}"
+            );
+        }
+
+        let contract = text
+            .lines()
+            .find(|line| line.starts_with("contract,"))
+            .expect("MOSS v2 reference is missing contract");
+        let mut contract = contract.split(',');
+        assert_eq!(contract.next(), Some("contract"));
+        let frames = parse_v2_usize(contract.next(), "frames");
+        let num_quantizers = parse_v2_usize(contract.next(), "num_quantizers");
+        assert_eq!(parse_v2_usize(contract.next(), "codebook_size"), 1_024);
+        assert_eq!(parse_v2_usize(contract.next(), "sample_rate"), 48_000);
+        assert_eq!(parse_v2_usize(contract.next(), "channels"), 2);
+        assert_eq!(parse_v2_usize(contract.next(), "frame_hop"), 3_840);
+        assert_eq!(contract.next(), None, "unexpected MOSS v2 contract field");
+        assert!(frames > 0);
+        assert!((1..=32).contains(&num_quantizers));
+
+        let codes = text
+            .lines()
+            .find_map(|line| line.strip_prefix("codes,"))
+            .expect("MOSS v2 reference is missing codes")
+            .split(',')
+            .map(|value| value.parse().expect("invalid MOSS v2 reference code"))
+            .collect::<Vec<u32>>();
+        assert_eq!(codes.len(), frames * num_quantizers);
+        assert!(codes.iter().all(|code| *code < CODEBOOK_SIZE as u32));
+
+        let decoder_line = text
+            .lines()
+            .find(|line| line.starts_with("tensor,decoder_11,"))
+            .expect("MOSS v2 reference is missing final interleaved decoder tap");
+        let mut fields = decoder_line.split(',');
+        assert_eq!(fields.next(), Some("tensor"));
+        assert_eq!(fields.next(), Some("decoder_11"));
+        let expected_shape = format!("1x1x{}", frames * 7_680);
+        assert_eq!(fields.next(), Some(expected_shape.as_str()));
+        let interleaved = fields
+            .map(|value| value.parse().expect("invalid MOSS v2 reference sample"))
+            .collect::<Vec<f32>>();
+        assert_eq!(interleaved.len(), frames * 7_680);
+        assert!(interleaved.iter().all(|sample| sample.is_finite()));
+
+        let audio_line = text
+            .lines()
+            .find(|line| line.starts_with("tensor,audio,"))
+            .expect("MOSS v2 reference is missing restored stereo audio");
+        let mut audio_fields = audio_line.split(',');
+        assert_eq!(audio_fields.next(), Some("tensor"));
+        assert_eq!(audio_fields.next(), Some("audio"));
+        let samples_per_channel = frames * 3_840;
+        let expected_audio_shape = format!("1x2x{samples_per_channel}");
+        assert_eq!(audio_fields.next(), Some(expected_audio_shape.as_str()));
+        let channel_major = audio_fields
+            .map(|value| value.parse().expect("invalid restored v2 audio sample"))
+            .collect::<Vec<f32>>();
+        assert_eq!(channel_major.len(), interleaved.len());
+        for sample in 0..samples_per_channel {
+            for channel in 0..2 {
+                assert_eq!(
+                    interleaved[sample * 2 + channel],
+                    channel_major[channel * samples_per_channel + sample],
+                    "official v2 channel restore drifted at sample {sample}, channel {channel}"
+                );
+            }
+        }
+
+        V2Reference {
+            frames,
+            num_quantizers,
+            codes,
+            interleaved,
+        }
+    }
+
+    fn numeric_error(actual: &[f32], expected: &[f32]) -> (usize, f32, f64) {
+        assert_eq!(actual.len(), expected.len());
+        let mut max_index = 0;
+        let mut max_abs = 0.0_f32;
+        let mut sum_squared = 0.0_f64;
+        for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+            let delta = (actual - expected).abs();
+            if delta.total_cmp(&max_abs).is_gt() {
+                max_index = index;
+                max_abs = delta;
+            }
+            sum_squared += f64::from(delta) * f64::from(delta);
+        }
+        let rms = (sum_squared / actual.len() as f64).sqrt();
+        (max_index, max_abs, rms)
+    }
+
+    #[test]
+    #[ignore = "requires the 8.49 GB converted v2 GGUF and independent official reference"]
+    fn measure_v2_real_cpu_and_optional_metal_against_official() {
+        let gguf_path = std::path::PathBuf::from(
+            std::env::var_os("VOKRA_MOSS_AUDIO_TOKENIZER_V2_GGUF")
+                .expect("set VOKRA_MOSS_AUDIO_TOKENIZER_V2_GGUF for ignored real measurement"),
+        );
+        let reference_path = std::path::PathBuf::from(
+            std::env::var_os("VOKRA_MOSS_AUDIO_TOKENIZER_V2_REFERENCE")
+                .expect("set VOKRA_MOSS_AUDIO_TOKENIZER_V2_REFERENCE for ignored real measurement"),
+        );
+        let reference = load_v2_reference(&reference_path);
+        let file = Arc::new(vokra_mmap::open_gguf(&gguf_path).expect("mmap MOSS v2 GGUF"));
+        let decoder = MappedDecoder::bind_v2(file).expect("bind mapped MOSS v2 decoder");
+        let cpu = decoder
+            .decode_frame_major(
+                BackendKind::Cpu,
+                &reference.codes,
+                reference.frames,
+                reference.num_quantizers,
+            )
+            .expect("MOSS v2 CPU decode");
+        let (index, max_abs, rms) = numeric_error(&cpu, &reference.interleaved);
+        eprintln!(
+            "MOSS_AUDIO_TOKENIZER_V2_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs={max_abs:.9e} rms={rms:.9e} index={index} actual={:.9e} reference={:.9e}",
+            cpu[index], reference.interleaved[index]
+        );
+
+        if std::env::var_os("VOKRA_MOSS_AUDIO_TOKENIZER_V2_METAL_MEASUREMENT").is_some() {
+            let metal = decoder
+                .decode_frame_major(
+                    BackendKind::Metal,
+                    &reference.codes,
+                    reference.frames,
+                    reference.num_quantizers,
+                )
+                .expect("MOSS v2 Metal decode");
+            let (index, max_abs, rms) = numeric_error(&metal, &cpu);
+            eprintln!(
+                "MOSS_AUDIO_TOKENIZER_V2_MEASUREMENT_ONLY backend=metal numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs={max_abs:.9e} rms={rms:.9e} index={index} metal={:.9e} cpu={:.9e}",
+                metal[index], cpu[index]
+            );
+        }
+    }
 
     #[test]
     fn full_stage_contract_reconstructs_1920_samples_per_frame() {

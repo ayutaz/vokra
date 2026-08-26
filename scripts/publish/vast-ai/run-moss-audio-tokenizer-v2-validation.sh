@@ -39,10 +39,11 @@ the immutable official three-shard release, verifies every exact file and real
 safetensors header, merges and converts it, authenticates the resulting GGUF
 header, and invokes the pinned official model's decode path on CUDA.
 
-This worker deliberately does not declare numerical parity: its output is the
-authenticated manifest plus independent reference needed to land and measure
-the strict runtime binder. It contains no publish, upload, or Hugging Face push
-operation. Pull only logs/reference evidence, then destroy the instance.
+This worker deliberately does not invent a numerical bound: after producing
+the authenticated manifest and independent reference it runs the mapped native
+CPU decoder as a measurement-only comparison and cross-checks the Apple Metal
+feature build. It contains no publish, upload, or Hugging Face push operation.
+Pull only logs/reference evidence, then destroy the instance.
 
 Actual runs require Linux, VOKRA_PUBLISH_ON_VAST=1 from provision.sh, at least
 60,000,000 KiB RAM, 100,000,000 KiB free disk, and a CUDA GPU with at least
@@ -109,7 +110,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc git awk grep find tee wc tr nvidia-smi; do
+  for tool in uv cargo rustc rustup git awk grep find tee wc tr nvidia-smi; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -222,7 +223,9 @@ run_self_test() {
     "moss_audio_tokenizer_prepare_checkpoint.py" \
     "moss_audio_tokenizer_dump_reference.py" \
     "--shard-dir" "--gguf" "--model moss-audio-tokenizer-v2" \
-    "--variant v2" "--num-quantizers 12" "--frozen --python 3.12"; do
+    "--variant v2" "--num-quantizers 12" "--frozen --python 3.12" \
+    "measure_v2_real_cpu_and_optional_metal_against_official" \
+    "numeric_bounds=UNSET" "aarch64-apple-darwin"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
@@ -251,6 +254,7 @@ run_self_test() {
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir snapshot stage logs reference
   local merged gguf audit_before audit_after reference_csv run_log env_log summary_file
+  local compile_log cpu_log cross_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -290,6 +294,9 @@ main() {
   run_log="$logs/run.log"
   env_log="$logs/environment.txt"
   summary_file="$logs/summary.txt"
+  compile_log="$logs/compile.log"
+  cpu_log="$logs/cpu-measurement.log"
+  cross_log="$logs/apple-metal-cross-check.log"
   exec > >(tee -a "$run_log") 2>&1
   trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
 
@@ -346,11 +353,31 @@ main() {
   grep -F "contract,2,12,1024,48000,2,3840" "$reference_csv" >/dev/null \
     || die "reference lost its v2 decode contract"
 
+  step "Compile the native mapped decoder test target on VAST"
+  cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    -p vokra-models --lib --no-run 2>&1 | tee "$compile_log"
+
+  step "Measure native CPU decode against the independent official reference"
+  VOKRA_MOSS_AUDIO_TOKENIZER_V2_GGUF="$gguf" \
+  VOKRA_MOSS_AUDIO_TOKENIZER_V2_REFERENCE="$reference_csv" \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+      -p vokra-models --lib \
+      moss_audio_tokenizer::full_decoder::tests::measure_v2_real_cpu_and_optional_metal_against_official \
+      -- --ignored --exact --nocapture 2>&1 | tee "$cpu_log"
+  grep -F "MOSS_AUDIO_TOKENIZER_V2_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET" \
+    "$cpu_log" >/dev/null || die "CPU measurement sentinel is missing"
+
+  step "Cross-check the Apple Metal feature route"
+  rustup target add aarch64-apple-darwin
+  cargo check --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+    -p vokra-models --features metal --target aarch64-apple-darwin \
+    2>&1 | tee "$cross_log"
+
   step "Write evidence summary and checksums"
   {
     echo "execution_status=PASS"
-    echo "scope=AUTHENTICATED_ARTIFACT_AND_OFFICIAL_REFERENCE"
-    echo "numeric_verdict=NOT_RUN_RUNTIME_BINDER_PENDING_CONFIRMED_MANIFEST_REVIEW"
+    echo "scope=AUTHENTICATED_ARTIFACT_REFERENCE_AND_CPU_MEASUREMENT"
+    echo "numeric_verdict=MEASURED_NOT_GATED"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "upstream_repo=$UPSTREAM_REPO"
     echo "upstream_revision=$UPSTREAM_REVISION"
@@ -358,6 +385,8 @@ main() {
     echo "gguf_sha256=$(sha256_file "$gguf")"
     echo "reference_sha256=$(sha256_file "$reference_csv")"
     echo "metal_runtime=NOT_RUN_LINUX_VAST"
+    echo "metal_cross_compile=PASS"
+    grep -F "MOSS_AUDIO_TOKENIZER_V2_MEASUREMENT_ONLY backend=cpu" "$cpu_log"
   } | tee "$summary_file"
   (
     cd "$work_dir"

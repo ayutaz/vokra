@@ -2684,9 +2684,10 @@ worker: it checks the exact sizes and SHA-256 values of all three shards,
 compares every real safetensors header entry with the pinned index/shape
 contract, converts the authenticated checkpoint, rechecks the complete GGUF
 header and metadata, and generates the independent official CUDA reference.
-The worker has no publish/upload path and reports
-`numeric_verdict=NOT_RUN_RUNTIME_BINDER_PENDING_CONFIRMED_MANIFEST_REVIEW`
-until that evidence has been pulled and reviewed.
+It then runs the mapped native v2 decoder as a measurement-only CPU comparison
+and cross-checks the Apple Metal feature build. The worker has no
+publish/upload path and reports `numeric_verdict=MEASURED_NOT_GATED` until the
+observed error has been reviewed and a justified parity bound is landed.
 
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config,
