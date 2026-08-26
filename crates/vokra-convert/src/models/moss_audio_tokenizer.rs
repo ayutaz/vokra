@@ -17,8 +17,9 @@
 //! # Family coverage — variant selectors
 //!
 //! Both variants share `model_type = "moss-audio-tokenizer"` and a
-//! single `MossAudioTokenizerModel` class per upstream `config.json.
-//! architectures`; they differ only in scale
+//! single `MossAudioTokenizerModel` class per upstream
+//! `config.json.architectures`; they are distinct codec topologies, not
+//! merely two parameter scales
 //! ([`MossAudioTokenizerVariant`] discriminator stamped under
 //! `vokra.moss_audio_tokenizer.variant`). Values transcribed 2026-08-01
 //! via the HF `api/models/<id>` (CLAUDE.md「ハルシネーション厳禁」):
@@ -146,9 +147,11 @@ use crate::safetensors::SafetensorsFile;
 /// `vokra.model.arch` for MOSS-Audio-Tokenizer GGUFs. Shared across
 /// both [`MossAudioTokenizerVariant`] entries — upstream's
 /// `MossAudioTokenizerModel` class (per `config.json.architectures`)
-/// is identical for both `Full` and `Nano`; the topology (encoder /
-/// decoder body + RVQ / FSQ head) is structurally identical, only the
-/// per-variant scale differs.
+/// is shared by `Full` and `Nano`, but the topology is not. Full is a
+/// 24 kHz mono, 32-quantizer codec; Nano is a 48 kHz
+/// stereo/interleaved, 16-quantizer codec with a different staged
+/// Transformer stack. Runtime dispatch therefore uses this arch together
+/// with a strict complete tensor manifest and the variant tag.
 ///
 /// Intentionally distinct from every sibling codec (`mimi`, `dac`,
 /// `wavtokenizer`, `neucodec`, `xcodec2`, `focalcodec`,
@@ -199,10 +202,9 @@ pub const KEY_VARIANT: &str = "vokra.moss_audio_tokenizer.variant";
 /// Selects the model name / upstream HF slug / variant tag written
 /// into the GGUF.
 ///
-/// Both variants share [`ARCH`] `moss_audio_tokenizer` (see the
-/// [`ARCH`] docstring for why: upstream's `MossAudioTokenizerModel`
-/// class routes both to the same forward; the topology is structurally
-/// identical, only per-variant scale differs).
+/// Both variants share [`ARCH`] `moss_audio_tokenizer` because upstream uses
+/// the same `MossAudioTokenizerModel` class, while their runtime topology is
+/// selected independently from the variant tag and complete tensor manifest.
 ///
 /// # Per-variant primary-source axes
 ///
@@ -213,7 +215,7 @@ pub const KEY_VARIANT: &str = "vokra.moss_audio_tokenizer.variant";
 /// | params (F32) | 1,774,566,400 | 21,969,664 |
 /// | `usedStorage` | 7.10 GB | 87.9 MB |
 /// | shards | 2 | 1 |
-/// | vast.ai required | no (M1 iMac tight) | no (trivial local) |
+/// | vast.ai required | yes (>=2 GB artifact) | no (trivial local) |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MossAudioTokenizerVariant {
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer`: the full-scale (~1.77B
@@ -227,7 +229,9 @@ pub enum MossAudioTokenizerVariant {
     Full,
     /// `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`: the compact (~22M
     /// params, F32) distilled variant per arXiv:2603.18090 encoder
-    /// distillation reference. Ships as 1 sharded safetensors +
+    /// distillation reference. This is a distinct 48 kHz
+    /// stereo/interleaved topology, not a width-reduced Full checkpoint.
+    /// Ships as 1 sharded safetensors +
     /// `model.safetensors.index.json` weight-map (~88 MB — trivial to
     /// convert locally on the M1 iMac dev machine).
     /// `vokra.moss_audio_tokenizer.variant = "nano"`.
@@ -379,14 +383,11 @@ pub fn convert_moss_audio_tokenizer_variant_file(
     variant: MossAudioTokenizerVariant,
     license: Option<&str>,
 ) -> Result<MossAudioTokenizerReport, ConvertError> {
-    // Full variant merged safetensors is ~6.6 GB (F32) — under the
-    // memory [[feedback-large-models-on-vast-ai]] ≥8 GB vast.ai
-    // threshold and under the empirically-safe csm-1b 6.21 GB M1 iMac
-    // 16 GB tight-fit ceiling, so the simple `std::fs::read` posture
-    // the sibling non-streaming BF16 pass-through converters use
-    // applies. Nano is ~88 MB — trivial. A streaming path (mmap in /
-    // GgufStreamWriter out — the Voxtral posture) is a follow-up only
-    // if a future variant reshapes over the 8 GB threshold.
+    // Full's merged safetensors is ~6.6 GB (F32), so repository policy
+    // requires this converter to run on vast.ai (all model artifacts >=2 GB
+    // are remote work). This non-streaming reader remains valid there. Nano
+    // is ~88 MB and is safe for a focused local conversion, although parity
+    // generation still follows the model-family verification runbook.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
