@@ -101,7 +101,7 @@ USAGE:
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model ultravox-llama-companion --input <model.safetensors> \
-                      --config <config.json> --revision <40-hex-commit> \
+                      --config <config.json> --revision <audited-revision> \
                       --output <companion.gguf>
 
 OPTIONS:
@@ -462,7 +462,7 @@ OPTIONS:
                               committed parity fixture; the loader classifies
                               the absent key as v5 for backward compatibility).
                               Unknown tags are a fail-closed error (FR-EX-08).
-    --revision <commit>       ultravox-llama-companion only: immutable 40-hex
+    --revision <commit>       ultravox-llama-companion only: exact audited
                               Meta Llama-3.2-1B-Instruct snapshot revision.
                               The gated base remains a separate
                               ConditionalCommercial artifact and is never
@@ -1873,7 +1873,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                         .to_owned()
                 })?;
                 let revision = p.revision.as_deref().ok_or_else(|| {
-                    "--model ultravox-llama-companion requires --revision <immutable 40-hex commit>"
+                    "--model ultravox-llama-companion requires --revision <audited snapshot>"
                         .to_owned()
                 })?;
                 let report =

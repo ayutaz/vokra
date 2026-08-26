@@ -710,13 +710,16 @@ Rust gate は staged だが、実行結果は未取得であり real-weight nume
 audio tower/projectorだけであり、Meta weightを含めない。ユーザーがgated
 `meta-llama/Llama-3.2-1B-Instruct`を別途取得した場合に限り、
 `vokra-cli convert --model ultravox-llama-companion --config config.json
---revision <40-hex>` が exact 146-BF16-tensor / tied-embedding manifestを
+--revision 9213176726f574b556790deb65791e0c5aa438b6` が exact
+146-BF16-tensor / tied-embedding manifestを
 一個ずつstreaming変換する。出力archは `ultravox_llama_companion`、HF cardの
 exact raw license IDは `llama3.2`、classは `ConditionalCommercial` とし、Metaの
 7億MAU超別許諾条件を `Permissive` や `Unknown/research-only` に誤分類しない。
 このcompanionにはpublish経路を設けず、公開MIT artifactへの合成・自動取得・
 代替decoder fallbackも行わない。2 GB超の実変換とvalidationはVAST限定で、
-runtime binder/tokenizer/chat routeおよび実weight parityは後続gateである。
+runtime strict mmap binderは同じ固定revision、完全manifest、dense dtype、license
+classと全decoder hot-opをfail-closed検証する。tokenizer/chat/interleave/generation
+および実weight parityは後続gateである。
 
 ### 3.2 Corpus / dataset owner sign-off（依頼者記入）
 

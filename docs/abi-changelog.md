@@ -250,6 +250,25 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox gated Llama companion boundary)
+
+The separately licensed Meta Llama-3.2-1B-Instruct companion now has a strict,
+bounded-memory conversion and mmap binding boundary distinct from the public
+MIT Ultravox audio tower. Both sides admit only upstream revision
+`9213176726f574b556790deb65791e0c5aa438b6`, the exact official 146-BF16-tensor
+tied-embedding manifest and the raw `llama3.2` license classified as
+`ConditionalCommercial`. The runtime authenticates the full topology and
+descriptor types before preflighting one complete CPU or Metal decoder hot-op
+set. It does not download, publish or merge the gated weights into the MIT
+artifact. Tokenizer/chat composition, audio-embedding interleave and generation
+remain explicit unsupported boundaries in this slice. No C symbol, ownership
+rule or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.ultravox.companion.*` | 22 source/config/manifest/topology/activation/RoPE/tied-embedding/bias keys | Added | exact fixed-revision 146-tensor BF16 Llama-3.2-1B-Instruct companion | Converter rejects every other revision, config, tensor name/shape/dtype and license; the companion remains a user-acquired gated artifact separate from the public MIT audio GGUF | no | (TBD) |
+| `vokra-models::ultravox` | `UltravoxLlamaCompanion`, `UltravoxLlamaConfig`, companion identity constants, `ULTRAVOX_LLAMA_HOT_OPS` | Added | strict mmap descriptor bind for the exact tied-embedding checkpoint on an explicit CPU or Metal backend | Validates provenance, conditional-commercial policy, complete manifest, all topology fields and dense descriptors before backend preflight. Generation is intentionally not exposed by this binding-only slice | no | (TBD) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Bark and Bark Small native CPU/Metal runtime)
 
 The two public Suno Bark GGUFs now bind through their exact complete manifests

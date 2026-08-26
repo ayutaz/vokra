@@ -47,7 +47,7 @@ USAGE:
     vokra-convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> --tokenizer <tokenizer.vocab> --output <out.gguf>
     vokra-convert --model speecht5-tts --input <model.safetensors> --tokenizer <spm_char.model> --output <out.gguf>
     vokra-convert --model ultravox-llama-companion --input <model.safetensors> \
-                  --config <config.json> --revision <40-hex-commit> --output <companion.gguf>
+                  --config <config.json> --revision <audited-revision> --output <companion.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -163,7 +163,7 @@ OPTIONS:
                        tokenizer file (moshi; optional — without it the
                        monologue decode fails loudly)
     --output <path>    GGUF file to write
-    --revision <hash>  ultravox-llama-companion only: immutable 40-hex
+    --revision <hash>  ultravox-llama-companion only: exact audited
                        Meta Llama-3.2-1B-Instruct snapshot revision
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
                        (whisper only; biases/norms stay F32)
@@ -212,7 +212,7 @@ fn main() -> ExitCode {
     }
     if ultravox_companion && revision.is_none() {
         eprintln!(
-            "error: --model ultravox-llama-companion requires --revision <immutable 40-hex commit>\n\n{USAGE}"
+            "error: --model ultravox-llama-companion requires --revision <audited snapshot>\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }

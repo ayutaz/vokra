@@ -102,6 +102,8 @@ pub const COMPANION_ARCH: &str = "ultravox_llama_companion";
 pub const COMPANION_NAME: &str = "meta-llama-3.2-1b-instruct-ultravox-companion";
 /// Exact gated upstream repository required by Ultravox v0.5.
 pub const COMPANION_UPSTREAM_HF: &str = "meta-llama/Llama-3.2-1B-Instruct";
+/// Immutable admitted upstream snapshot (HF API `sha`, audited 2026-08-27).
+pub const COMPANION_SOURCE_REVISION: &str = "9213176726f574b556790deb65791e0c5aa438b6";
 /// Exact Hugging Face `license` identifier carried by the gated Meta release.
 pub const COMPANION_LICENSE: &str = "llama3.2";
 /// Shape/name manifest of the official tied-embedding 146-tensor checkpoint.
@@ -114,6 +116,7 @@ const KEY_COMPANION_SOURCE_REVISION: &str = "vokra.ultravox.companion.source_rev
 const KEY_COMPANION_CONFIG_SHA256: &str = "vokra.ultravox.companion.config_sha256";
 const KEY_COMPANION_MANIFEST_SHA256: &str = "vokra.ultravox.companion.tensor_manifest_sha256";
 const KEY_COMPANION_HIDDEN_SIZE: &str = "vokra.ultravox.companion.hidden_size";
+const KEY_COMPANION_HIDDEN_ACT: &str = "vokra.ultravox.companion.hidden_act";
 const KEY_COMPANION_N_LAYER: &str = "vokra.ultravox.companion.n_layer";
 const KEY_COMPANION_N_HEAD: &str = "vokra.ultravox.companion.n_head";
 const KEY_COMPANION_N_KV_HEAD: &str = "vokra.ultravox.companion.n_kv_head";
@@ -124,6 +127,7 @@ const KEY_COMPANION_MAX_POSITIONS: &str = "vokra.ultravox.companion.max_position
 const KEY_COMPANION_RMS_NORM_EPS: &str = "vokra.ultravox.companion.rms_norm_eps";
 const KEY_COMPANION_ROPE_THETA: &str = "vokra.ultravox.companion.rope_theta";
 const KEY_COMPANION_ROPE_FACTOR: &str = "vokra.ultravox.companion.rope.factor";
+const KEY_COMPANION_ROPE_TYPE: &str = "vokra.ultravox.companion.rope.type";
 const KEY_COMPANION_ROPE_LOW_FACTOR: &str = "vokra.ultravox.companion.rope.low_freq_factor";
 const KEY_COMPANION_ROPE_HIGH_FACTOR: &str = "vokra.ultravox.companion.rope.high_freq_factor";
 const KEY_COMPANION_ROPE_ORIGINAL_MAX: &str =
@@ -218,10 +222,11 @@ pub fn convert_ultravox_v0_5_llama_3_2_1b_file(
 /// into an mmap-friendly Ultravox companion GGUF.
 ///
 /// `input` must be the official single-file BF16 `model.safetensors` and
-/// `config` the matching upstream `config.json`.  The source revision is an
-/// explicit immutable 40-hex commit because raw Hugging Face config files do
-/// not reliably embed the snapshot revision.  Tensor data is streamed one
-/// tensor at a time; the whole >2 GB checkpoint is never materialized.
+/// `config` the matching upstream `config.json`.  The source revision must be
+/// the exact audited [`COMPANION_SOURCE_REVISION`] because raw Hugging Face
+/// config files do not reliably embed the snapshot revision. Tensor data is
+/// streamed one tensor at a time; the whole >2 GB checkpoint is never
+/// materialized.
 ///
 /// This function does not download or publish anything.  The input is gated
 /// and remains a user-acquired artifact under the Llama 3.2 Community License.
@@ -290,6 +295,7 @@ fn companion_metadata(source_revision: &str, config_bytes: &[u8]) -> GgufBuilder
     );
     builder.add_string(KEY_COMPANION_MANIFEST_SHA256, COMPANION_MANIFEST_SHA256);
     builder.add_u32(KEY_COMPANION_HIDDEN_SIZE, COMPANION_HIDDEN_SIZE);
+    builder.add_string(KEY_COMPANION_HIDDEN_ACT, "silu");
     builder.add_u32(KEY_COMPANION_N_LAYER, COMPANION_N_LAYER);
     builder.add_u32(KEY_COMPANION_N_HEAD, COMPANION_N_HEAD);
     builder.add_u32(KEY_COMPANION_N_KV_HEAD, COMPANION_N_KV_HEAD);
@@ -300,6 +306,7 @@ fn companion_metadata(source_revision: &str, config_bytes: &[u8]) -> GgufBuilder
     builder.add_f32(KEY_COMPANION_RMS_NORM_EPS, COMPANION_RMS_NORM_EPS);
     builder.add_f32(KEY_COMPANION_ROPE_THETA, COMPANION_ROPE_THETA);
     builder.add_f32(KEY_COMPANION_ROPE_FACTOR, COMPANION_ROPE_FACTOR);
+    builder.add_string(KEY_COMPANION_ROPE_TYPE, "llama3");
     builder.add_f32(KEY_COMPANION_ROPE_LOW_FACTOR, COMPANION_ROPE_LOW_FACTOR);
     builder.add_f32(KEY_COMPANION_ROPE_HIGH_FACTOR, COMPANION_ROPE_HIGH_FACTOR);
     builder.add_u32(KEY_COMPANION_ROPE_ORIGINAL_MAX, COMPANION_ROPE_ORIGINAL_MAX);
@@ -415,7 +422,13 @@ fn validate_source_revision(source_revision: &str) -> Result<String, ConvertErro
             "ultravox Llama companion --revision must be an immutable 40-hex commit, got {source_revision:?}"
         )));
     }
-    Ok(revision.to_ascii_lowercase())
+    let revision = revision.to_ascii_lowercase();
+    if revision != COMPANION_SOURCE_REVISION {
+        return Err(ConvertError::Usage(format!(
+            "ultravox Llama companion --revision {revision:?} is not the audited Meta Llama-3.2-1B-Instruct snapshot {COMPANION_SOURCE_REVISION:?}"
+        )));
+    }
+    Ok(revision)
 }
 
 fn validate_companion_config(bytes: &[u8]) -> Result<(), ConvertError> {
@@ -690,10 +703,11 @@ mod tests {
         let config = official_companion_config();
         validate_companion_config(&config).expect("official config");
         assert_eq!(
-            validate_source_revision("0123456789ABCDEF0123456789ABCDEF01234567").expect("revision"),
-            "0123456789abcdef0123456789abcdef01234567"
+            validate_source_revision("9213176726F574B556790DEB65791E0C5AA438B6").expect("revision"),
+            COMPANION_SOURCE_REVISION
         );
         assert!(validate_source_revision("main").is_err());
+        assert!(validate_source_revision("0123456789abcdef0123456789abcdef01234567").is_err());
 
         let drifted = String::from_utf8(config).expect("utf8").replacen(
             "\"num_key_value_heads\":8",
@@ -706,7 +720,7 @@ mod tests {
 
     #[test]
     fn companion_metadata_separates_mit_audio_and_meta_license() {
-        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let revision = COMPANION_SOURCE_REVISION;
         let config = official_companion_config();
         let builder = companion_metadata(revision, &config);
         assert_eq!(builder.tensor_count(), 0);
@@ -726,6 +740,16 @@ mod tests {
             file.get(KEY_COMPANION_SOURCE_REVISION)
                 .and_then(|value| value.as_str()),
             Some(revision)
+        );
+        assert_eq!(
+            file.get(KEY_COMPANION_HIDDEN_ACT)
+                .and_then(|value| value.as_str()),
+            Some("silu")
+        );
+        assert_eq!(
+            file.get(KEY_COMPANION_ROPE_TYPE)
+                .and_then(|value| value.as_str()),
+            Some("llama3")
         );
     }
 }

@@ -5,8 +5,9 @@
 //! large-v3-turbo encoder and the Ultravox frame-stacking projector, but the
 //! `meta-llama/Llama-3.2-1B-Instruct` language model is intentionally not
 //! bundled.  This module therefore exposes the complete learned audio path and
-//! keeps text generation as an explicit unsupported boundary until a
-//! separately licensed companion is supplied by a complete engine route.
+//! keeps text generation separate from the user-acquired Llama companion.
+//! [`UltravoxLlamaCompanion`] now strictly binds that exact gated checkpoint;
+//! the generation/interleave module is the next explicit composition step.
 //!
 //! Weight binding is mmap-backed and layer-at-a-time.  Selecting Metal sends
 //! every learned operation through the same preflighted [`crate::compute::Compute`]
@@ -23,10 +24,17 @@ use vokra_core::{LicenseClass, Result, VokraError};
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+mod companion;
+mod companion_weights;
 mod encoder;
 mod projector;
 mod weights;
 
+pub use companion::{
+    COMPANION_ARCH, COMPANION_LICENSE, COMPANION_MANIFEST_SHA256, COMPANION_MODEL_NAME,
+    COMPANION_SOURCE_REVISION, COMPANION_UPSTREAM_HF, ULTRAVOX_LLAMA_HOT_OPS,
+    UltravoxLlamaCompanion, UltravoxLlamaConfig,
+};
 use encoder::UltravoxAudioRuntime;
 pub use projector::UltravoxAudioEmbeddings;
 use weights::UltravoxMappedDescriptors;

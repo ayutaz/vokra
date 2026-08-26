@@ -2252,6 +2252,16 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "UltravoxAudioTower::open_mapped → encode_log_mel / require_text_companion",
         probe: None,
     },
+    // User-acquired, separately licensed Llama base. Header-only strict bind
+    // and CPU/Metal hot-op preflight are complete; multimodal embedding
+    // interleave and generation remain an explicit next step, so this is not
+    // routed as a complete standalone CLI model.
+    BoundArch {
+        arch: "ultravox_llama_companion",
+        module: "vokra_models::ultravox",
+        entry: "UltravoxLlamaCompanion::open_mapped (strict gated companion bind)",
+        probe: None,
+    },
     // --- Music / audio generation ----------------------------------------
     BoundArch {
         arch: "audiogen",
