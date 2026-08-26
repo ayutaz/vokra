@@ -1,5 +1,5 @@
 //! Metal numerical parity for the Phase-4 kernels (M2-01 T09-T13): the FP32 GPU
-//! `gemv` / `softmax` / `layer_norm` / `gelu` / `conv1d` vs the `vokra-backend-cpu`
+//! `gemv` / `softmax` / `layer_norm` / `gelu` / `relu` / `conv1d` vs the `vokra-backend-cpu`
 //! kernels (M0-08) that are the same differential oracle the scalar⇔SIMD harness
 //! uses. Ceiling is the NFR-QL-01 FP32 bound `atol = 0.01` (the observed error is
 //! far smaller and logged per shape).
@@ -248,6 +248,26 @@ fn gelu_metal_matches_cpu() {
 }
 
 #[test]
+fn relu_metal_matches_cpu_bit_exactly() {
+    let ctx = ctx_or_skip!("relu");
+    for &n in &[1usize, 7, 63, 1000, 4 * 3072] {
+        let mut x = rand_vec(0x5E1A ^ n as u64, n);
+        if n >= 3 {
+            x[0] = -0.0;
+            x[1] = 0.0;
+            x[2] = -3.5;
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.relu_f32(&x, &mut gpu).expect("metal relu");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::relu_f32(&x, &mut cpu_out).expect("cpu relu");
+        let gpu_bits: Vec<u32> = gpu.iter().map(|value| value.to_bits()).collect();
+        let cpu_bits: Vec<u32> = cpu_out.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(gpu_bits, cpu_bits, "relu n={n} must be bit exact");
+    }
+}
+
+#[test]
 fn conv1d_metal_matches_cpu() {
     let ctx = ctx_or_skip!("conv1d");
     // (in_ch, in_len, out_ch, kernel, stride, padding, bias). The last two are
@@ -383,6 +403,8 @@ fn kernels_reject_bad_shapes_explicitly() {
     );
     // gelu: out length must equal x length.
     assert!(ctx.gelu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // relu: out length must equal x length.
+    assert!(ctx.relu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // conv1d: zero stride is rejected before any GPU work.
     assert!(
         ctx.conv1d_f32(&[1.0, 2.0], 1, 2, &[1.0], 1, 1, None, 0, 0, &mut [0.0; 1])

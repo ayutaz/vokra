@@ -343,6 +343,24 @@ kernel void vokra_gelu_f32(
     out[i] = 0.5f * v * (1.0f + vokra_erf(v * 0.70710678118654752440f));
 }
 
+// ---- relu: exact element-wise max(x, 0) ------------------------------------
+struct ReluDims {
+    uint n;
+};
+
+kernel void vokra_relu_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant ReluDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    out[i] = max(x[i], 0.0f);
+}
+
 // ---- conv1d: direct convolution (im2col + GEMM equivalent) -------------------
 // `kernel` is an MSL reserved word, so the tap count is `kernel_size`. The (c
 // outer, kk inner) accumulation order equals the im2col+GEMM reduction the CPU
@@ -1711,6 +1729,13 @@ struct GeluDims {
     n: u32,
 }
 
+/// ReLU dims (`setBytes:` index 2). Mirrors the MSL `struct ReluDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReluDims {
+    n: u32,
+}
+
 /// M3-04 fused dequant + GEMV dims (`setBytes:` index 3). Mirrors the MSL
 /// `struct DequantGemvDims`; `n_blocks_per_row * 32` sizes the FP32 `x`
 /// vector and the format-specific block byte count (18 / 22 / 34) sizes each
@@ -2283,6 +2308,7 @@ pub struct MetalContext {
     layer_norm_pipeline: Id,
     group_norm_pipeline: Id,
     gelu_pipeline: Id,
+    relu_pipeline: Id,
     conv1d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
@@ -2511,6 +2537,8 @@ impl MetalContext {
         // SAFETY: as above.
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
         // SAFETY: as above.
+        let relu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_relu_f32") }?;
+        // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
         // The three Phase-5 attention column-mover kernels share the same library.
         // SAFETY: as above.
@@ -2625,6 +2653,7 @@ impl MetalContext {
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             group_norm_pipeline: group_norm_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
+            relu_pipeline: relu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
@@ -3323,6 +3352,45 @@ impl MetalContext {
             grid,
             tg,
             "gelu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise ReLU (`out = max(x, 0)`). This is the Metal half of the
+    /// T5-base feed-forward activation used by MusicGen-family text encoders.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn relu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_relu(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_relu(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = ReluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.relu_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const ReluDims).cast::<c_void>(),
+            size_of::<ReluDims>(),
+            grid,
+            tg,
+            "relu",
         )?;
         read_back(&out_buf, out)
     }
@@ -7351,6 +7419,7 @@ impl Drop for MetalContext {
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
             release(self.conv1d_pipeline);
+            release(self.relu_pipeline);
             release(self.gelu_pipeline);
             release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);

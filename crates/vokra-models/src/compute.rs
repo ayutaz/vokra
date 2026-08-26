@@ -92,6 +92,11 @@ pub enum HotOp {
     GroupNorm,
     /// Exact (erf) GELU (`gelu_f32`) — Whisper MLP / conv stem.
     Gelu,
+    /// Element-wise ReLU (`max(x, 0)`). T5-base uses this between its two
+    /// feed-forward projections. CPU dispatches the existing SIMD kernel and
+    /// Metal has a dedicated MSL kernel; other backends remain explicit
+    /// unsupported operations.
+    Relu,
     /// Element-wise SiLU / Swish (`x * sigmoid(x)`). WavTokenizer's
     /// positional ResNet applies this after every GroupNorm. The CPU arm is
     /// the scalar mathematical reference; Metal dispatches the existing
@@ -433,6 +438,7 @@ impl HotOp {
                 | HotOp::RmsNorm
                 | HotOp::GroupNorm
                 | HotOp::Gelu
+                | HotOp::Relu
                 | HotOp::Silu
                 | HotOp::Conv1d
                 | HotOp::GroupedConv1d
@@ -1188,6 +1194,29 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gelu_f32(x, out),
+        }
+    }
+
+    /// Element-wise ReLU (`out = max(x, 0)`).
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Relu`] cannot
+    /// silently execute this activation on the host.
+    pub fn relu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::relu_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.relu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "relu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "relu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -4087,6 +4116,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4161,6 +4191,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4356,6 +4387,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Silu,
+            HotOp::Relu,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -4438,6 +4470,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4502,6 +4535,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4553,6 +4587,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
@@ -4621,6 +4656,7 @@ mod tests {
             HotOp::RmsNorm,
             HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
             HotOp::Silu,
             HotOp::Conv1d,
             HotOp::GroupedConv1d,
