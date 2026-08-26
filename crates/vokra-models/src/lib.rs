@@ -577,6 +577,11 @@ pub mod snac;
 // compressor/decompressor time-scale factors are selected from a pinned
 // release manifest rather than inferred from filenames.
 pub mod focalcodec;
+/// Alibaba DAMO FunCodec 16 kHz / 32-codebook native RVQ + SEANet decoder.
+/// The exact public 230-tensor checkpoint supports frame-major token-to-PCM
+/// decode on CPU and Metal; waveform encode remains an explicit unsupported
+/// operation at the CLI boundary.
+pub mod funcodec;
 /// Strict Full/Nano MOSS Audio Tokenizer binder plus native CPU/Metal decode.
 /// Full keeps its 7 GB artifact mapped and materialises one layer at a time to
 /// 24 kHz mono; Nano owns its compact weights and emits 48 kHz stereo. The

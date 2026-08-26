@@ -300,6 +300,11 @@ pub(crate) enum ModelTask {
     /// public Research-only checkpoint uses the shared strict Vocos decoder;
     /// waveform-to-code encode remains an explicit unsupported operation.
     XCodec2,
+    /// Alibaba DAMO FunCodec 16 kHz residual-VQ token-to-waveform decode.
+    /// The exact public 32-codebook checkpoint routes RVQ, SEANet convolution,
+    /// GroupNorm and LSTM projections through one CPU/Metal backend. PCM encode
+    /// remains an explicit unsupported operation.
+    FunCodec,
     /// Aratako MioCodec 25 Hz FSQ token + 128-d global embedding to 44.1 kHz
     /// waveform decode. Input uses the versioned VKRMIO01 container; PCM
     /// encode remains an explicit unsupported operation.
@@ -550,6 +555,8 @@ const ARCH_WAVTOKENIZER: &str = "wavtokenizer";
 const ARCH_NEUCODEC: &str = "neucodec";
 /// HKUST X-Codec2 50 Hz FSQ codec.
 const ARCH_XCODEC2: &str = "xcodec2";
+/// Alibaba DAMO FunCodec 16 kHz / 32-codebook codec.
+const ARCH_FUNCODEC: &str = "funcodec";
 /// Aratako MioCodec 25 Hz / 44.1 kHz v2 codec.
 const ARCH_MIOCODEC: &str = "miocodec";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
@@ -1362,6 +1369,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::XCodec2))
         }
+        ARCH_FUNCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FUNCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::FunCodec))
+        }
         ARCH_MIOCODEC => {
             if hint.is_some() {
                 return Err(format!(
@@ -1654,7 +1669,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -3481,6 +3496,20 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_funcodec_to_the_residual_vq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FUNCODEC, "funcodec-routed", |path| {
+            load_session(path).expect("FunCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::FunCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FUNCODEC),
+            "the routed FunCodec must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_miocodec_to_the_versioned_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_MIOCODEC, "miocodec-routed", |path| {
             load_session(path).expect("MioCodec session builds (bare)")
@@ -3637,6 +3666,7 @@ mod tests {
             ARCH_WAVTOKENIZER,
             ARCH_NEUCODEC,
             ARCH_XCODEC2,
+            ARCH_FUNCODEC,
             ARCH_MIOCODEC,
             ARCH_SNAC,
             ARCH_FOCALCODEC,

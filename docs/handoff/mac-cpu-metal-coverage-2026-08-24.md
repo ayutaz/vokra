@@ -1,5 +1,13 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 FunCodec source wave:** `vokra/funcodec` now has an exact
+> 230-tensor binder and a native 16 kHz / 32-codebook residual-VQ + non-causal
+> SEANet token-to-waveform route for CPU and Metal. The CLI consumes an
+> explicit frame-major code matrix; PCM encode remains an explicit unsupported
+> operation. The independent official-source oracle and VAST worker contract
+> are staged, but VAST CPU and Apple-device Metal parity have not run, so this
+> is code reachability rather than a numerical-pass claim.
+
 > **2026-08-26 MusicGen composite source wave:** the public
 > `musicgen-small` and `musicgen-melody` GGUFs now have mapping-owned native
 > token-id-to-waveform CPU/Metal routes. They bind embedded T5-base, the
@@ -138,13 +146,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 114 |
+| Complete CPU route for the live public artifact | 115 |
 | Route/binder present, released-artifact CPU forward incomplete | 43 |
-| No complete runtime binder | 36 |
+| No complete runtime binder | 35 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 114 |
+| Complete Metal code route among the CPU-complete set | 115 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 79 |
+| Metal blocked by missing/partial CPU forward | 78 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -157,7 +165,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 114 repositories with a complete Metal code route are the Audiobox
+The 115 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -186,6 +194,7 @@ They also include the decode-only 25 Hz / 44.1 kHz codec
 `vokra/miocodec-25hz-44khz-v2`.
 They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
+They also include the decode-only Alibaba DAMO codec `vokra/funcodec`.
 They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
 They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
@@ -202,7 +211,7 @@ public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 79 Metal-blocked repositories first need a complete released-
+remaining 78 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
@@ -2663,9 +2672,36 @@ not pinned as an authenticated runtime release.
 No weight payload, model inference or `vokra-models` Cargo command was run on
 the maintainer Mac for this audit. Only public GGUF prefixes, official config,
 shard index and source text, and the package-scoped serial converter test were
-used. The corrected live Hub inventory is CPU `full=114`, `partial=43`,
-`no-runtime-binder=36`, `not-artifact=1` and Metal `full=114`,
-`blocked-by-cpu=79`, `not-artifact=1`.
+used. After the FunCodec route, the live Hub inventory is CPU `full=115`,
+`partial=43`, `no-runtime-binder=35`, `not-artifact=1` and Metal `full=115`,
+`blocked-by-cpu=78`, `not-artifact=1`.
+
+### FunCodec 16 kHz residual-VQ decoder
+
+The public `vokra/funcodec@ea8be2e051ede0365496e8cd3b24d732c8bc6ffb`
+artifact is 95,072,832 bytes with SHA-256
+`b6fa6c903e23b1785f517f4e6c33c5d323a227a94ea757442e5d177d48d5781d`.
+Its complete sorted 230-tensor name/shape manifest hashes to
+`0d6fc111e5b45edbdca3e74b4d3b95019d4ed6324d8614590122d0e71dd81652`.
+The runtime pins that identity, MIT/permissive provenance and the immutable
+upstream model/source revisions before decoding inference tensors.
+
+The native route sums a caller-declared prefix of the 32×1024×128 residual
+codebooks, then executes the official non-causal SEANet decoder: initial
+Conv1D + one-group time GroupNorm, two residual LSTM layers, four
+ConvTranspose/learned-residual stages at ratios `[8,5,4,2]`, and the final
+16 kHz mono projection. RVQ, Conv1D, GroupNorm, GEMM and GEMV all preflight one
+selected CPU/Metal backend; reflect padding, activation, scatter/trim and
+residual additions are deterministic host layout glue, not a CPU model
+fallback. CUDA/WebGPU fail explicitly at the uncovered GroupNorm/backend gate.
+
+`tools/parity/funcodec/dump_reference.py` verifies the official FunCodec source
+commit `b467b73e4025a123a68e64de9ba445d6a57d1984`, source-file hashes, upstream
+checkpoint/config hashes, and directly calls the official
+`CostumeQuantizer.decode` plus `SEANetDecoder.forward`. The Rust comparison is
+`crates/vokra-models/tests/parity_funcodec_real.rs`. Neither has executed a
+model on the maintainer Mac; the first VAST CPU run and Apple Metal run remain
+pending evidence.
 
 ## Remaining execution order
 

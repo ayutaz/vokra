@@ -80,6 +80,8 @@ USAGE:
                   --output <out.wav>
     vokra-cli run --model <xcodec2.gguf> --codec-mode decode --input <codes.u32le> \
                   --output <out.wav>
+    vokra-cli run --model <funcodec.gguf> --codec-mode decode --num-quantizers <1..32> \
+                  --input <codes.u32le> --output <out.wav>
     vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
                   --output <out.wav>
     vokra-cli run --model <yue-upsampler.gguf> --input <1024ch-features.f32> \
@@ -139,6 +141,10 @@ OPTIONS:
                                 little-endian u32 code per 50 Hz frame.
                                 For X-Codec2 decode it is one raw little-endian
                                 u32 code per 50 Hz frame.
+                                For FunCodec decode it is raw frame-major
+                                `[frames,num_quantizers]` u32le at 50 Hz;
+                                `--num-quantizers` declares the residual-VQ
+                                prefix width.
                                 For MOSS Audio Tokenizer decode it is raw
                                 frame-major `[frames,num_quantizers]` u32le;
                                 `--num-quantizers` declares the row width.
@@ -273,6 +279,10 @@ OPTIONS:
                                 per frame. CPU and Metal cover the complete
                                 token-to-waveform decoder; encode remains an
                                 explicit error.
+                                funcodec: `decode` only, from a frame-major
+                                residual-VQ u32le matrix. CPU and Metal cover
+                                the complete token-to-waveform graph; encode
+                                remains an explicit error.
                                 miocodec: `decode` only, from a VKRMIO01
                                 container carrying FSQ codes, target samples,
                                 and the required 128-d global embedding. CPU
@@ -288,13 +298,13 @@ OPTIONS:
                                 16 kHz WAV). CPU and Metal both run the complete
                                 learned-op set; uncovered backends fail before
                                 inference and never fall back to CPU.
-                                moss_audio_tokenizer: `decode` only. Nano runs
-                                its complete 48 kHz stereo decoder on CPU or
-                                Metal; Full and encode fail explicitly.
-    --num-quantizers <N>       MOSS Audio Tokenizer only: positive row width
-                                of the raw frame-major code matrix. Defaults to
-                                the authenticated release maximum (Nano 16,
-                                Full 32).
+                                moss_audio_tokenizer: `decode` only. Nano and
+                                Full run their distinct complete decoders on
+                                CPU or Metal; encode fails explicitly.
+    --num-quantizers <N>       FunCodec or MOSS Audio Tokenizer: positive row
+                                width of the raw frame-major code matrix.
+                                Defaults to the authenticated release maximum
+                                (FunCodec/Full 32, Nano 16).
     --bandwidth-id <0..3>       vocos-encodec-24khz or WavTokenizer only:
                                 AdaLayerNorm condition. WavTokenizer defaults
                                 to upstream's documented inference id 0.
@@ -1033,6 +1043,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::WavTokenizerCodec
         | ModelTask::NeuCodec
         | ModelTask::XCodec2
+        | ModelTask::FunCodec
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
@@ -1153,19 +1164,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::WavTokenizerCodec
         && task != ModelTask::NeuCodec
         && task != ModelTask::XCodec2
+        && task != ModelTask::FunCodec
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
-    if a.num_quantizers.is_some() && task != ModelTask::MossAudioTokenizerCodec {
+    if a.num_quantizers.is_some()
+        && task != ModelTask::FunCodec
+        && task != ModelTask::MossAudioTokenizerCodec
+    {
         return Err(
-            "run: --num-quantizers is only supported for the moss_audio_tokenizer arch".to_owned(),
+            "run: --num-quantizers is only supported for funcodec or moss_audio_tokenizer arches"
+                .to_owned(),
         );
     }
     if a.bandwidth_id.is_some()
@@ -1534,6 +1550,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::XCodec2 => {
             run_xcodec2_codec(&session, &a)?;
+        }
+        ModelTask::FunCodec => {
+            run_funcodec_codec(&session, &a)?;
         }
         ModelTask::MioCodec => {
             run_miocodec(&session, &a)?;
@@ -3489,6 +3508,76 @@ fn run_xcodec2_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
     println!(
         "xcodec2 decode: {} codes -> {} samples @ {} Hz -> {output_path}",
         codes.len(),
+        pcm.len(),
+        model.sample_rate()
+    );
+    Ok(())
+}
+
+/// Alibaba DAMO FunCodec frame-major residual-VQ token-to-PCM path.
+fn run_funcodec_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (funcodec): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (funcodec): PCM-to-token encode is not implemented for the audited release; no substitute encoder or CPU fallback is used"
+                    .to_owned(),
+            );
+        }
+        None => return Err("run (funcodec): --codec-mode decode is required".to_owned()),
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (funcodec): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (funcodec): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let model = vokra_models::funcodec::FunCodec::from_gguf_with_backend(session.gguf(), a.backend)
+        .map_err(|error| error.to_string())?;
+    let num_quantizers = a.num_quantizers.unwrap_or(model.max_quantizers());
+    if !(1..=model.max_quantizers()).contains(&num_quantizers) {
+        return Err(format!(
+            "run (funcodec): --num-quantizers {num_quantizers} is outside release range 1..={}",
+            model.max_quantizers()
+        ));
+    }
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (funcodec decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (funcodec decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    if !codes.len().is_multiple_of(num_quantizers) {
+        return Err(format!(
+            "run (funcodec decode): {} codes are not divisible by --num-quantizers {num_quantizers}; input must be frame-major [frames,num_quantizers]",
+            codes.len()
+        ));
+    }
+    let frames = codes.len() / num_quantizers;
+    let pcm = model
+        .decode_frame_major(&codes, frames, num_quantizers)
+        .map_err(|error| error.to_string())?;
+    wav::write_wav(output_path, &pcm, model.sample_rate())
+        .map_err(|error| format!("run (funcodec decode): --output {output_path}: {error}"))?;
+    println!(
+        "funcodec decode: {frames} frames x {num_quantizers} quantizers -> {} samples @ {} Hz -> {output_path}",
         pcm.len(),
         model.sample_rate()
     );
@@ -7121,6 +7210,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::WavTokenizerCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::NeuCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::XCodec2), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::FunCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);

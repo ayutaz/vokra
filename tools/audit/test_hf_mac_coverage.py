@@ -55,6 +55,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "fsmn-vad",
             "firered_vad",
             "focalcodec",
+            "funcodec",
             "ten_vad",
             "rnnoise",
             "snac",
@@ -97,6 +98,9 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("miocodec-25hz-44khz-v2.gguf",),
             "miocodec",
+        )
+        funcodec = audit.RepoRecord(
+            "vokra/funcodec", "abc", ("model.gguf",), "funcodec"
         )
         musicgen_small = audit.RepoRecord(
             "vokra/musicgen-small", "abc", ("model.gguf",), "musicgen"
@@ -247,6 +251,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(audioseal, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(funcodec, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(funcodec, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(musicgen_small, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(moss_full, routed, bound).cpu_code, "full")
