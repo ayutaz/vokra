@@ -1439,8 +1439,7 @@ impl CanaryAsr {
         }
         let bound = self.bound.as_ref().ok_or_else(|| {
             VokraError::NotImplemented(
-                "canary-1b-v2: no released checkpoint is bound; synthesized fixtures cannot transcribe"
-                    .to_owned(),
+                "canary-1b-v2: no released checkpoint is bound; synthesized fixtures cannot transcribe",
             )
         })?;
         let compute = Compute::for_backend(self.backend, CANARY_HOT_OPS)?;
@@ -1466,9 +1465,7 @@ impl CanaryAsr {
         self.tokenizer
             .as_ref()
             .ok_or_else(|| {
-                VokraError::NotImplemented(
-                    "canary-1b-v2: no released tokenizer is bound".to_owned(),
-                )
+                VokraError::NotImplemented("canary-1b-v2: no released tokenizer is bound")
             })?
             .decode(&tokens)
     }

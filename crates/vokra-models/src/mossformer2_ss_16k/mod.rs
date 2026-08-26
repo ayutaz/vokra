@@ -99,7 +99,7 @@ impl Mossformer2Ss16k {
         )?;
         if checkpoint.weight_license() != LicenseClass::Permissive {
             return Err(VokraError::ModelLoad(format!(
-                "mossformer2-ss-16k: public Apache-2.0 checkpoint resolved to {}",
+                "mossformer2-ss-16k: public Apache-2.0 checkpoint resolved to {:?}",
                 checkpoint.weight_license()
             )));
         }

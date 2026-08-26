@@ -354,7 +354,6 @@ impl QuantizerDescriptors {
                 file,
                 &format!("{prefix}.codebook.weight"),
                 CODEBOOK_SIZE * CODEBOOK_DIM,
-                MAPPED,
             )?);
             projections.push(WeightNormLinearDescriptor::bind(
                 file,

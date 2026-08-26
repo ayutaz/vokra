@@ -768,6 +768,16 @@ impl DecoderState {
     }
 }
 
+#[inline]
+fn sigmoid(value: f32) -> f32 {
+    if value >= 0.0 {
+        1.0 / (1.0 + (-value).exp())
+    } else {
+        let exponential = value.exp();
+        exponential / (1.0 + exponential)
+    }
+}
+
 fn decoder_step(
     compute: &Compute,
     token: u32,

@@ -1008,8 +1008,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
                 p.license.as_deref(),
                 Some(tokenizer),
-            )?;
-            let output_bytes = std::fs::metadata(&p.output)?.len();
+            )
+            .map_err(|error| error.to_string())?;
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| error.to_string())?
+                .len();
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
@@ -1049,12 +1052,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
                 p.license.as_deref(),
                 tokenizer,
-            )?;
+            )
+            .map_err(|error| error.to_string())?;
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
                 metadata_count: 0,
-                output_bytes: std::fs::metadata(&p.output)?.len(),
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
                 notes: vec![format!(
                     "reazonspeech-nemo-v2: complete {}-tensor F32 manifest and exact 3,000-piece tokenizer.vocab embedded",
                     report.written
@@ -1086,12 +1092,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
                 p.license.as_deref(),
                 tokenizer,
-            )?;
+            )
+            .map_err(|error| error.to_string())?;
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
                 metadata_count: 0,
-                output_bytes: std::fs::metadata(&p.output)?.len(),
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
                 notes: vec![format!(
                     "canary-1b-v2: complete {}-tensor F32 main manifest and exact 16,384-piece aggregate tokenizer embedded",
                     report.written
@@ -1123,12 +1132,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
                 p.license.as_deref(),
                 tokenizer,
-            )?;
+            )
+            .map_err(|error| error.to_string())?;
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
                 metadata_count: 0,
-                output_bytes: std::fs::metadata(&p.output)?.len(),
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
                 notes: vec![format!(
                     "canary-1b-flash: complete {}-tensor F32 release manifest and exact 5,248-piece aggregate tokenizer embedded",
                     report.written
@@ -1375,12 +1387,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
                 p.license.as_deref(),
                 tokenizer,
-            )?;
+            )
+            .map_err(|error| error.to_string())?;
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,
                 metadata_count: 0,
-                output_bytes: std::fs::metadata(&p.output)?.len(),
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
                 notes: vec![format!(
                     "speecht5-tts: complete {}-tensor F32 inference manifest and exact 81-piece spm_char.model embedded; the pinned prepare step excludes five named integer BatchNorm counters",
                     report.written
@@ -1839,8 +1854,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 Some(tokenizer),
                 &p.output,
                 p.license.as_deref(),
-            )?;
-            let output_bytes = std::fs::metadata(&p.output)?.len();
+            )
+            .map_err(|error| error.to_string())?;
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| error.to_string())?
+                .len();
             Ok(ConvertSummary {
                 model,
                 tensor_count: report.written,

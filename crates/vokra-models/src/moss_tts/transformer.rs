@@ -153,7 +153,7 @@ fn apply_adjacent_rope(
     }
     for position in 0..rows {
         for pair in 0..dimensions / 2 {
-            let frequency = ROPE_BASE.powf(-(2 * pair) as f32 / dimensions as f32);
+            let frequency = ROPE_BASE.powf(-((2 * pair) as f32) / dimensions as f32);
             let angle = (position_offset + position) as f32 * frequency;
             let (sin, cos) = angle.sin_cos();
             let index = position * dimensions + 2 * pair;

@@ -78,7 +78,7 @@
 //! re-implemented natively in `vokra-models/src/parakeet/`. This module never
 //! touches ONNX.
 
-mod tokenizer;
+pub(crate) mod tokenizer;
 
 pub use tokenizer::ParakeetTokenizer;
 

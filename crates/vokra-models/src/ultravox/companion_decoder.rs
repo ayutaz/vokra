@@ -547,7 +547,9 @@ fn llama3_inv_freqs(config: UltravoxLlamaConfig) -> Result<Vec<f32>> {
     let high_wavelength = old_context / config.rope_high_freq_factor;
     let mut frequencies = Vec::with_capacity(head_dim / 2);
     for pair in 0..head_dim / 2 {
-        let frequency = config.rope_theta.powf(-(2 * pair) as f32 / head_dim as f32);
+        let frequency = config
+            .rope_theta
+            .powf(-((2 * pair) as f32) / head_dim as f32);
         let wavelength = std::f32::consts::TAU / frequency;
         let scaled = if wavelength < high_wavelength {
             frequency

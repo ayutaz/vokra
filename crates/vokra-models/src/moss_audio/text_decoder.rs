@@ -699,7 +699,7 @@ fn apply_half_split_rope(
         for head in 0..heads {
             let base = (row * heads + head) * head_dim;
             for pair in 0..half {
-                let frequency = rope_base.powf(-(2 * pair) as f32 / head_dim as f32);
+                let frequency = rope_base.powf(-((2 * pair) as f32) / head_dim as f32);
                 let angle = position * frequency;
                 let (sin, cos) = angle.sin_cos();
                 let first = values[base + pair];

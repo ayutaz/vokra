@@ -451,7 +451,7 @@ fn read_config(file: &GgufFile) -> Result<UltravoxLlamaConfig> {
     })
 }
 
-fn required_string<'a>(file: &'a GgufFile, key: &str, expected: &str) -> Result<&'a str> {
+fn require_string<'a>(file: &'a GgufFile, key: &str, expected: &str) -> Result<&'a str> {
     let actual = file.get(key).and_then(GgufMetadataValue::as_str);
     if actual != Some(expected) {
         return Err(VokraError::ModelLoad(format!(

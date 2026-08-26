@@ -710,7 +710,7 @@ fn apply_adjacent_rope(
     for head in 0..heads {
         let base = head * head_dim;
         for pair in 0..head_dim / 2 {
-            let frequency = rope_base.powf(-(2 * pair) as f32 / head_dim as f32);
+            let frequency = rope_base.powf(-((2 * pair) as f32) / head_dim as f32);
             let angle = position as f32 * frequency;
             let (sin, cos) = angle.sin_cos();
             let even_index = base + 2 * pair;

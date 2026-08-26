@@ -384,11 +384,7 @@ impl ReazonSpeechNemoV2 {
 
 impl AsrEngine for ReazonSpeechNemoV2 {
     fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
-        Ok(Transcription {
-            text: self.transcribe_text(pcm)?,
-            segments: Vec::new(),
-            language: Some("ja".to_owned()),
-        })
+        Ok(Transcription::new(self.transcribe_text(pcm)?))
     }
 
     fn backend(&self) -> BackendKind {
