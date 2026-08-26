@@ -12,7 +12,8 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertSummary, LlamaOmni2Variant, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant,
-    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
+    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_chatterbox_file,
     convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
     convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
     convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
@@ -51,6 +52,8 @@ USAGE:
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model parakeet-tdt-1.1b --input <prepared.safetensors> \
                       --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model canary-1b-flash --input <prepared.safetensors> \
+                      --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
@@ -686,12 +689,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::Parakeet
             | ModelKind::ParakeetCtc
             | ModelKind::ParakeetTdt11b
+            | ModelKind::Canary1bFlash
             | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary-1b-flash / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -967,6 +971,43 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                     report.written,
                     report.written.saturating_sub(report.bf16_passthrough),
                     report.bf16_passthrough,
+                )],
+            })
+        }
+        ModelKind::Canary1bFlash => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model canary-1b-flash; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model canary-1b-flash; the immutable `.nemo` config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model canary-1b-flash requires --tokenizer <canary-1b-flash.aggregate.vocab> for executable ASR/AST"
+                    .to_owned()
+            })?;
+            let report = convert_canary_1b_flash_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)?.len(),
+                notes: vec![format!(
+                    "canary-1b-flash: complete {}-tensor F32 release manifest and exact 5,248-piece aggregate tokenizer embedded",
+                    report.written
                 )],
             })
         }

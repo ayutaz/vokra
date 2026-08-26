@@ -19,12 +19,12 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
-    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
-    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_sbv2_file,
-    convert_utmos_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
+    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
+    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
+    convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
 };
 use vokra_core::gguf::{FrontendSpec, GgmlType};
 
@@ -41,6 +41,7 @@ USAGE:
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-convert --model canary-1b-flash --input <prepared.safetensors> --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -195,11 +196,14 @@ fn main() -> ExitCode {
 
     if !matches!(
         model,
-        ModelKind::Parakeet | ModelKind::ParakeetCtc | ModelKind::ParakeetTdt11b
+        ModelKind::Parakeet
+            | ModelKind::ParakeetCtc
+            | ModelKind::ParakeetTdt11b
+            | ModelKind::Canary1bFlash
     ) && tokenizer.is_some()
     {
         eprintln!(
-            "error: --tokenizer is only supported for Parakeet models in the standalone converter\n\n{USAGE}"
+            "error: --tokenizer is only supported for Parakeet and Canary-1B-Flash models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -411,6 +415,45 @@ fn main() -> ExitCode {
                         "complete Parakeet-TDT-1.1B runtime metadata and tokenizer.vocab embedded"
                             .to_owned(),
                     ],
+                })
+            })
+        }
+        ModelKind::Canary1bFlash => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for canary-1b-flash; preserve F32 for initial CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: canary-1b-flash uses the pinned `.nemo` config and --tokenizer <canary-1b-flash.aggregate.vocab>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model canary-1b-flash requires --tokenizer <canary-1b-flash.aggregate.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_canary_1b_flash_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete Canary-1B-Flash {}-tensor manifest and aggregate tokenizer embedded",
+                        report.written
+                    )],
                 })
             })
         }

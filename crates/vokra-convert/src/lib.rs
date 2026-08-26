@@ -6901,6 +6901,12 @@ pub fn convert_file_licensed(
                 .into(),
         ));
     }
+    if matches!(model, ModelKind::Canary1bFlash) {
+        return Err(ConvertError::Usage(
+            "canary-1b-flash requires the exact five-tokenizer aggregate vocabulary; use convert_canary_1b_flash_file_with_tokenizer (CLI: --tokenizer canary-1b-flash.aggregate.vocab)"
+                .into(),
+        ));
+    }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
     // through `convert_moshi_file` BEFORE the whole-file read below.
@@ -12984,7 +12990,9 @@ pub use models::dnsmos::{DnsmosReport, convert_dnsmos_file};
 // `ModelKind::Frcrn` dispatch arm above enforce the same exact manifest.
 pub use models::frcrn::{FrcrnReport, convert_frcrn_file};
 // ---- coverage-audit 2026-08-03 Wave B fast-track (13 variants) ----
-pub use models::canary_1b_flash::{Canary1bFlashReport, convert_canary_1b_flash_file};
+pub use models::canary_1b_flash::{
+    Canary1bFlashReport, convert_canary_1b_flash_file, convert_canary_1b_flash_file_with_tokenizer,
+};
 pub use models::firered_asr_aed_l::{FireredAsrAedLReport, convert_firered_asr_aed_l_file};
 // coverage-audit-2026-08-03 Wave B fast-track (post-audit 2026-08-13):
 // FireRedTeam/FireRedASR-LLM-L — public re-export for downstream callers
