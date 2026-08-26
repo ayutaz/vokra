@@ -60,9 +60,11 @@
 //! # No ONNX (permanent)
 //!
 //! Nemotron ships safetensors; this converter **never** touches ONNX
-//! (FR-LD-05); the pipeline is re-implemented natively in a future
-//! `crates/vokra-models/src/nemotron_asr/` module when the runtime lands
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! (FR-LD-05). The pipeline is re-implemented natively in
+//! `crates/vokra-models/src/nemotron_asr_streaming/` (whisper.cpp 型 self
+//! re-implementation). The native runtime exposes complete offline causal
+//! inference; stateful cache streaming remains an explicit unsupported
+//! boundary until its convolution and attention caches are represented.
 
 use std::path::Path;
 

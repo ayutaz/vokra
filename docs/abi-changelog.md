@@ -250,6 +250,25 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (Nemotron 3.5 ASR offline CPU/Metal runtime)
+
+The exact 655-tensor Nemotron-3.5-ASR-Streaming-0.6B release now has a strict
+native offline PCM-to-text route. The released causal/chunk-limited
+FastConformer, prompt projector and RNN-T prediction/joint networks execute
+through one selected CPU or Metal backend. Stateful cache streaming remains
+an explicit unsupported boundary and is never replaced with whole-utterance
+or CPU fallback. The public legacy GGUF remains token-decodable with an
+authenticated tokenizer sidecar; new conversions may embed the official
+`tokenizer.json`. Real-weight VAST and Apple-device numerical parity remain
+pending and are not implied by this source-reachability entry. No C ABI symbol
+is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::nemotron_asr_streaming` | `NemotronAsr`, `NemotronAsrConfig`, identity/config constants, `NEMOTRON_HOT_OPS`, `prompt_id_for_language` | Added | strict `from_gguf*`, backend/license/config accessors, token/text transcription with prompt selection, explicit stateful-streaming error | Authenticates the exact public manifest and executes causal FastConformer + prompt-conditioned greedy RNN-T through one CPU/Metal backend; unsupported backends fail before inference | no | `e751995b` |
+| `gguf:vokra.nemotron_asr.*` | frontend, encoder, decoder, joint and prompt configuration group; optional `tokenizer.json` | Added | `u32`, `f32`, `string` values covering the audited release and byte-exact tokenizer JSON | New artifacts are self-describing. The exact historical public manifest may omit the group and use an authenticated tokenizer sidecar; a partial group fails closed | no | `0705e39c` |
+| `vokra-cli run`, `vokra-cli bench` | `nemotron_asr_streaming` ASR dispatch | Added | 16 kHz mono input, optional `--language` prompt and `--tokenizer` sidecar; greedy decode only | Stateful streaming and unsupported decode modes return explicit errors; no alternate ASR model or CPU fallback is selected | no | `393ad24b` |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MossFormer2-SS-16K CPU/Metal separator)
 
 The exact public ClearerVoice-Studio checkpoint now has a strict native
