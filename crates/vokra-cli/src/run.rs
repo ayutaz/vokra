@@ -57,6 +57,10 @@ USAGE:
     vokra-cli run --model <separator.gguf> --input <mixture.wav> [--output <separated.wav>]
     vokra-cli run --model <conv-tasnet.gguf> --input <noisy.wav> [--output <enhanced.wav>]
     vokra-cli run --model <pyannote-segmentation.gguf> --input <in.wav>
+    vokra-cli run --model <pyannote-diarization.gguf> \
+                  --segmentation-model <pyannote-segmentation.gguf> \
+                  --embedding-model <pyannote-wespeaker.gguf> --input <16k-mono.wav> \
+                  [--output <turns.rttm>]
     vokra-cli run --model <rmvpe.gguf> --input <in.wav>
     vokra-cli run --model <fcpe.gguf> --input <in.wav>
     vokra-cli run --model <crepe.gguf> --input <in.wav>
@@ -92,11 +96,19 @@ USAGE:
 OPTIONS:
     --model <path>              GGUF model file (arch selects VAD / ASR / TTS / S2S /
                                 speaker / language ID / denoise / separation /
-                                segmentation / F0).
+                                segmentation / diarization / F0).
                                 An arch vokra-models binds but this CLI has no
                                 task for is refused with the binding module and
                                 the library entry point to call — never a bare
                                 `unsupported model arch` (FR-EX-08).
+    --segmentation-model <path> pyannote-speaker-diarization only, REQUIRED:
+                                exact pyannote/segmentation-3.0 PyanNet GGUF.
+                                The weightless pipeline GGUF cannot infer or
+                                download this dependency.
+    --embedding-model <path>    pyannote-speaker-diarization only, REQUIRED:
+                                exact pyannote WeSpeaker ResNet34-LM GGUF.
+                                It keeps its independent CC-BY attribution and
+                                strict manifest gate.
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
@@ -329,6 +341,10 @@ OPTIONS:
 /// Parsed `run` arguments.
 struct RunArgs {
     model: String,
+    /// pyannote-diarization-only PyanNet dependency GGUF.
+    segmentation_model: Option<String>,
+    /// pyannote-diarization-only WeSpeaker dependency GGUF.
+    embedding_model: Option<String>,
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
@@ -477,6 +493,8 @@ fn parse_watermark_message(value: &str) -> Result<[u8; vokra_models::audioseal::
 
 fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut model: Option<String> = None;
+    let mut segmentation_model: Option<String> = None;
+    let mut embedding_model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
@@ -519,6 +537,22 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         match args[i].as_str() {
             "--model" => {
                 model = Some(args.get(i + 1).ok_or("--model requires a value")?.clone());
+                i += 2;
+            }
+            "--segmentation-model" => {
+                segmentation_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--segmentation-model requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--embedding-model" => {
+                embedding_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--embedding-model requires a GGUF path")?
+                        .clone(),
+                );
                 i += 2;
             }
             "--input" => {
@@ -755,6 +789,8 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
 
     Ok(RunArgs {
         model: model.ok_or("--model is required")?,
+        segmentation_model,
+        embedding_model,
         input,
         text,
         output,
@@ -854,6 +890,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Dnsmos
         | ModelTask::Nisqa
         | ModelTask::Segment
+        | ModelTask::DiarizationPyannote
         | ModelTask::Separation
         | ModelTask::Tts
         | ModelTask::TtsKokoro
@@ -895,6 +932,26 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
+
+    if (a.segmentation_model.is_some() || a.embedding_model.is_some())
+        && task != ModelTask::DiarizationPyannote
+    {
+        return Err(
+            "run: --segmentation-model / --embedding-model are only supported for the \
+             pyannote-speaker-diarization arch"
+                .to_owned(),
+        );
+    }
+    if task == ModelTask::DiarizationPyannote {
+        if a.segmentation_model.is_none() || a.embedding_model.is_none() {
+            return Err(
+                "run (pyannote diarization): both --segmentation-model <pyannote-segmentation.gguf> \
+                 and --embedding-model <pyannote-wespeaker.gguf> are required; the weightless \
+                 pipeline GGUF never downloads or guesses dependencies"
+                    .to_owned(),
+            );
+        }
+    }
 
     // `--compare` belongs to the speaker task only. Reject it on
     // every other arch rather than silently ignoring the flag (FR-EX-08).
@@ -1234,6 +1291,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::Segment => {
             run_segment(&a)?;
+        }
+        ModelTask::DiarizationPyannote => {
+            run_pyannote_diarization(&a)?;
         }
         ModelTask::F0Rmvpe => {
             run_f0_rmvpe(&a)?;
@@ -2332,6 +2392,59 @@ fn separation_stream_path(base: &str, source: usize) -> std::path::PathBuf {
         .and_then(|value| value.to_str())
         .unwrap_or("wav");
     path.with_file_name(format!("{stem}.source{source}.{extension}"))
+}
+
+/// Exact pyannote speaker-diarization 3.1 three-GGUF route.
+fn run_pyannote_diarization(a: &RunArgs) -> Result<(), String> {
+    use vokra_models::pyannote::diarization::{PyannoteSpeakerDiarization31, SAMPLE_RATE};
+
+    let input = a
+        .input
+        .as_deref()
+        .ok_or("run (pyannote diarization): --input <16k-mono.wav> is required")?;
+    let segmentation = a.segmentation_model.as_deref().ok_or(
+        "run (pyannote diarization): --segmentation-model <pyannote-segmentation.gguf> is required",
+    )?;
+    let embedding = a.embedding_model.as_deref().ok_or(
+        "run (pyannote diarization): --embedding-model <pyannote-wespeaker.gguf> is required",
+    )?;
+    let clip = wav::read_wav(input)?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (pyannote diarization): {input} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    let file_id = std::path::Path::new(input)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!("run (pyannote diarization): cannot derive a UTF-8 RTTM file id from `{input}`")
+        })?;
+    if file_id.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "run (pyannote diarization): input stem `{file_id}` contains whitespace and cannot be an RTTM file id; rename the WAV explicitly"
+        ));
+    }
+    let model = PyannoteSpeakerDiarization31::open(&a.model, segmentation, embedding, a.backend)
+        .map_err(|error| error.to_string())?;
+    let segments = model
+        .diarize(&clip.samples, clip.sample_rate)
+        .map_err(|error| error.to_string())?;
+    let rttm = vokra_models::pyannote::rttm::write_rttm(file_id, &segments);
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, rttm.as_bytes())
+            .map_err(|error| format!("run (pyannote diarization): --output {output}: {error}"))?;
+        println!(
+            "pyannote-diarization: {} turn(s), backend={:?} -> {output}",
+            segments.len(),
+            model.backend()
+        );
+    } else {
+        print!("{rttm}");
+    }
+    Ok(())
 }
 
 /// The pyannote `segmentation-3.0` speaker-segmentation path (Wave G).
@@ -4667,6 +4780,34 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_pyannote_dependency_models() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "pipeline.gguf",
+            "--segmentation-model",
+            "segmentation.gguf",
+            "--embedding-model",
+            "wespeaker.gguf",
+            "--input",
+            "meeting.wav",
+            "--output",
+            "meeting.rttm",
+        ]))
+        .expect("pyannote dependency flags parse");
+        assert_eq!(
+            parsed.segmentation_model.as_deref(),
+            Some("segmentation.gguf")
+        );
+        assert_eq!(parsed.embedding_model.as_deref(), Some("wespeaker.gguf"));
+
+        let error = match parse_args(&args(&["--model", "pipeline.gguf", "--embedding-model"])) {
+            Err(error) => error,
+            Ok(_) => panic!("missing dependency path must be explicit"),
+        };
+        assert!(error.contains("--embedding-model requires a GGUF path"));
+    }
+
+    #[test]
     fn parses_wave2_ct_punc_and_mimi_contract_flags() {
         let ct = parse_args(&args(&[
             "--model",
@@ -6310,6 +6451,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::F0Fcpe), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SmartTurn), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Segment), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::DiarizationPyannote), None);
         // Bench-only tasks — unreachable from `run`; defer to their own error.
         assert_eq!(cpu_only_engine_label(ModelTask::MelFrontend), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Cosyvoice2Synthetic), None);

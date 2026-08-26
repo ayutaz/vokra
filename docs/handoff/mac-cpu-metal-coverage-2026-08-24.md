@@ -1,5 +1,13 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-26 pyannote diarization source wave:** the public weightless
+> `pyannote-speaker-diarization-3.1` GGUF now has an exact native three-artifact
+> route over PyanNet segmentation and masked WeSpeaker embeddings, including
+> speaker counting, centroid clustering, reconstruction, RTTM, CLI and bench.
+> CPU and Metal are explicit end-to-end selections with no fallback. VAST
+> typecheck/official-reference CPU parity and Apple-device Metal parity remain
+> pending, so this is code reachability rather than a numerical-pass claim.
+>
 > **2026-08-26 RMVPE correction:** the working tree now implements the exact
 > fixed E2E0 skip U-Net and removes `rmvpe` from the generic code-partial set.
 > The live `vokra/rmvpe` repository remains artifact-partial because its GGUF
@@ -82,7 +90,8 @@ Piper, FCPE, standalone BERT-family, WavTokenizer, NeuCodec, X-Codec2, AST and
 Audiobox Aesthetics CPU/Metal waves plus AudioSeal's standalone watermark route,
 MioCodec's decode-only route, both TIGER separator routes, MP-SENet DNS,
 Facebook Denoiser DNS48, NISQA v2, FRCRN-SE-16K, YuE-upsampler and
-emotion2vec+ Large,
+emotion2vec+ Large, deepfake detection, pyannote segmentation 3.0 and the
+speaker-diarization 3.1 pipeline,
 and the DeepFilterNet3, UTMOS22-strong and MetricGAN+ routes,
 it reported:
 
@@ -91,13 +100,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 104 |
-| Route/binder present, released-artifact CPU forward incomplete | 44 |
-| No complete runtime binder | 45 |
+| Complete CPU route for the live public artifact | 107 |
+| Route/binder present, released-artifact CPU forward incomplete | 43 |
+| No complete runtime binder | 43 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 104 |
+| Complete Metal code route among the CPU-complete set | 107 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 89 |
+| Metal blocked by missing/partial CPU forward | 86 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -110,7 +119,7 @@ revision, GGUF count, architecture and classification:
 uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py --format tsv
 ```
 
-The 104 repositories with a complete Metal code route are the Audiobox
+The 107 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -141,24 +150,23 @@ They also include `vokra/utmos22-strong` and
 `vokra/metricgan-plus-voicebank`.
 They also include `vokra/tiger-dnr` and `vokra/tiger-speech`.
 They also include `vokra/mp-senet-dns` and `vokra/facebook-denoiser`.
-They also include `vokra/yue-upsampler` and `vokra/emotion2vec`.
-Pyannote Segmentation 3.0 and RMVPE are deliberately omitted from the
-live-artifact-complete list (see below). RMVPE now has a complete code route,
+They also include `vokra/yue-upsampler`, `vokra/emotion2vec`,
+`vokra/deepfake-audio-detection-v2`, `vokra/pyannote-segmentation-3.0` and
+`vokra/pyannote-speaker-diarization-3.1`. RMVPE is deliberately omitted from
+the live-artifact-complete list (see below). RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
-remaining 89 Metal-blocked repositories first need a complete released-
+remaining 86 Metal-blocked repositories first need a complete released-
 artifact CPU runtime; they are not counted as Metal implementations merely
 because a converter or partial binder exists.
 
-The generic routed-partial set deliberately includes `csm`,
-`pyannote-segmentation` and `sbv2`. CSM still constructs synthesized
-model weights in its public GGUF loader, and SBV2's public conversion does not
-satisfy the strict runtime tensor-name contract. Pyannote's
-real forward is disabled by default pending independent parity. These three
-have substantial code, but none is a
+The generic routed-partial set deliberately includes `csm` and `sbv2`. CSM
+still constructs synthesized model weights in its public GGUF loader, and
+SBV2's public conversion does not satisfy the strict runtime tensor-name
+contract. These two have substantial code, but neither is a
 released-artifact-complete CPU runtime; counting them as complete would hide
 the actual blocker.
 

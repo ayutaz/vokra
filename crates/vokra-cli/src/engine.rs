@@ -223,6 +223,14 @@ pub(crate) enum ModelTask {
     /// selected CPU or Metal backend before executing the default-on SincNet +
     /// four-layer BiLSTM + projection + powerset-classifier forward.
     Segment,
+    /// Complete pyannote speaker-diarization 3.1 pipeline.
+    ///
+    /// The main `--model` GGUF is the weightless orchestration contract. Run
+    /// and bench require the exact PyanNet and WeSpeaker dependency GGUFs as
+    /// explicit sidecars so provenance and licensing remain independently
+    /// auditable. All three bind before audio processing; CPU and Metal are
+    /// preflighted without a per-operation CPU fallback.
+    DiarizationPyannote,
     /// F0 (pitch) extraction through RMVPE.
     ///
     /// Real forward: [`vokra_models::f0::rmvpe::RMVPE::extract_real`] runs
@@ -484,6 +492,8 @@ const ARCH_TIGER: &str = "tiger_separator";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
+/// pyannote `speaker-diarization-3.1` weightless orchestration contract.
+const ARCH_PYANNOTE_DIARIZATION: &str = "pyannote-speaker-diarization";
 /// RMVPE pitch extractor — mirror of `vokra-convert`'s `models::rmvpe::ARCH`.
 /// The binder itself does not read `vokra.model.arch` (the whole `f0` family
 /// keys off `vokra.f0.*` instead), so this dispatch is the only place the
@@ -1201,6 +1211,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // while preflighting the selected CPU or Metal backend.
             Ok((session, ModelTask::Segment))
         }
+        ARCH_PYANNOTE_DIARIZATION => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch \
+                     `{ARCH_PYANNOTE_DIARIZATION}`"
+                ));
+            }
+            // Bare session: run/bench bind the weightless pipeline plus both
+            // required dependency GGUFs from their explicit paths. The shared
+            // one-path dispatch cannot construct this three-artifact model.
+            Ok((session, ModelTask::DiarizationPyannote))
+        }
         ARCH_RMVPE => {
             if hint.is_some() {
                 return Err(format!(
@@ -1509,7 +1531,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
                  `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_PYANNOTE_SEGMENTATION}` / `{ARCH_PYANNOTE_DIARIZATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
@@ -2660,6 +2682,18 @@ mod tests {
         assert_eq!(task, ModelTask::Segment);
     }
 
+    /// The weightless 3.1 orchestration GGUF dispatches to the distinct
+    /// three-artifact diarization task rather than the raw segmentation task.
+    #[test]
+    fn load_session_detects_pyannote_diarization_task() {
+        let (_session, task) = with_arch_only_gguf(
+            ARCH_PYANNOTE_DIARIZATION,
+            "pyannote-diarization-arch",
+            |path| load_session(path).expect("pyannote diarization session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::DiarizationPyannote);
+    }
+
     /// An `rmvpe` GGUF dispatches to [`ModelTask::F0Rmvpe`].
     #[test]
     fn load_session_detects_rmvpe_as_f0_task() {
@@ -3352,6 +3386,7 @@ mod tests {
             ARCH_MP_SENET,
             ARCH_FACEBOOK_DENOISER,
             ARCH_PYANNOTE_SEGMENTATION,
+            ARCH_PYANNOTE_DIARIZATION,
             ARCH_RMVPE,
             ARCH_FCPE,
             ARCH_CREPE,

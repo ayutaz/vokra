@@ -155,6 +155,7 @@ METAL_CODE_ARCHES = {
     "parakeet-tdt",
     "piper-plus-mb-istft-vits2",
     "pyannote-segmentation",
+    "pyannote-speaker-diarization",
     "rnnoise",
     "rmvpe",
     "silero-vad",

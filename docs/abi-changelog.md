@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (exact pyannote diarization execution)
+
+The public speaker-diarization 3.1 contract now executes the exact pinned
+PyanNet + masked WeSpeaker + centroid-clustering pipeline on CPU or Metal and
+is routed by `vokra-cli run` and `bench` using explicit dependency paths. The
+former generic diarization scaffold is removed because its invented thresholds,
+whole-region embeddings and average linkage did not describe the released
+pyannote pipeline. Unsupported backends fail explicitly; no dependency model
+falls back to CPU. No C symbol, allocation rule or ownership ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::pyannote::diarization` | `SpeakerEncoder`, `DiarizationPipeline` | Removed | former generic encoder trait and threshold-driven pipeline | Intentional prerelease correction: the removed scaffold used an algorithm and defaults that are not present in the exact released model; callers must use the strict three-GGUF handle | yes (Rust source) | (TBD) |
+| `vokra-models::pyannote::diarization` | `PyannoteSpeakerDiarization31`, `ARCH`, `SAMPLE_RATE`, `SEGMENTATION_{WINDOW_SAMPLES,STEP_SAMPLES,FRAMES}`, `LOCAL_SPEAKERS` | Added | `open(pipeline, segmentation, embedding, BackendKind)`, `diarize(&[f32], u32)`, `diarize_to_rttm(&[f32], u32, &str)` plus exact geometry constants | Binds all three audited artifacts, executes the pinned 5 s / 0.5 s / 293-frame algorithm, and keeps CPU/Metal selection observable with fail-closed backend preflight | no | (TBD) |
+| `vokra-models::wespeaker` | `WeSpeaker::from_path_with_backend` | Added | `(path, BackendKind) -> Result<WeSpeaker>` | Performs eager hot-op availability checks for a composed pipeline before audio execution; no fallback | no | (TBD) |
+| `vokra-cli run` / `bench` | `arch=pyannote-speaker-diarization`, `--segmentation-model`, `--embedding-model` | Added (behavior only) | weightless pipeline GGUF plus two required dependency GGUF paths and 16 kHz mono WAV | The CLI never downloads or guesses dependency artifacts; missing sidecars, wrong sample rate and unsupported backends are explicit errors | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (pyannote masked WeSpeaker pooling)
 
 The native WeSpeaker handle now accepts one PyanNet local-speaker activity

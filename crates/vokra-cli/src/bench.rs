@@ -130,6 +130,10 @@ struct BenchArgs {
     /// large-v3 all use 80). Keeping the CLI self-contained lets the CI
     /// `bench-regression` job run without shipping a Whisper GGUF fixture.
     model: Option<String>,
+    /// pyannote-diarization-only PyanNet dependency GGUF.
+    segmentation_model: Option<String>,
+    /// pyannote-diarization-only WeSpeaker dependency GGUF.
+    embedding_model: Option<String>,
     input: Option<String>,
     text: Option<String>,
     /// `--style <path>` — kokoro only (X-06-T24): a raw little-endian f32 style
@@ -294,6 +298,10 @@ USAGE:
 
 IN-PROCESS OPTIONS:
     --model <path>       GGUF model file (arch selects VAD / ASR / TTS)
+    --segmentation-model <path>
+                         pyannote-speaker-diarization only, REQUIRED PyanNet GGUF
+    --embedding-model <path>
+                         pyannote-speaker-diarization only, REQUIRED WeSpeaker GGUF
     --input <path>       mono WAV input (required for VAD and ASR)
     --text <string>      text to synthesize (TTS; defaults to a fixed phrase).
                          For kokoro this is misaki IPA phonemes (or a raw-id
@@ -339,6 +347,8 @@ HTTP-BOUNDARY OPTIONS (M3-15-T11):
 
 fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut model: Option<String> = None;
+    let mut segmentation_model: Option<String> = None;
+    let mut embedding_model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut style: Option<String> = None;
@@ -361,6 +371,22 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         match args[i].as_str() {
             "--model" => {
                 model = Some(args.get(i + 1).ok_or("--model requires a value")?.clone());
+                i += 2;
+            }
+            "--segmentation-model" => {
+                segmentation_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--segmentation-model requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--embedding-model" => {
+                embedding_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--embedding-model requires a GGUF path")?
+                        .clone(),
+                );
                 i += 2;
             }
             "--input" => {
@@ -498,6 +524,13 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 .to_owned(),
         );
     }
+    if server.is_some() && (segmentation_model.is_some() || embedding_model.is_some()) {
+        return Err(
+            "--segmentation-model / --embedding-model belong to the in-process pyannote \
+             diarization bench and cannot be combined with --server"
+                .to_owned(),
+        );
+    }
 
     // `--model` is required for every task except the self-contained bench
     // tasks (`mel-frontend`, `cosyvoice2-synthetic`) OR when `--server`
@@ -512,6 +545,8 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     }
     Ok(BenchArgs {
         model,
+        segmentation_model,
+        embedding_model,
         input,
         text,
         style,
@@ -582,6 +617,16 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     let model_path = args.model.as_deref().expect("model is Some here");
     let (session, task) =
         engine::load_session_with_backend(model_path, args.backend, args.task_hint)?;
+
+    if (args.segmentation_model.is_some() || args.embedding_model.is_some())
+        && task != ModelTask::DiarizationPyannote
+    {
+        return Err(
+            "bench: --segmentation-model / --embedding-model are only supported for the \
+             pyannote-speaker-diarization arch"
+                .to_owned(),
+        );
+    }
 
     // M2-08-T12: HiFi-GAN INT8 opt-in verify gate. `None` policy short-circuits
     // (the `vokra.quant.*` chunk reader is a T05 landing pad — see
@@ -1062,6 +1107,43 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("pyannote-segmentation", audio_seconds, samples)
+        }
+        ModelTask::DiarizationPyannote => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (pyannote diarization): --input <16k-mono.wav> is required")?;
+            let segmentation = args.segmentation_model.as_deref().ok_or(
+                "bench (pyannote diarization): --segmentation-model <pyannote-segmentation.gguf> is required",
+            )?;
+            let embedding = args.embedding_model.as_deref().ok_or(
+                "bench (pyannote diarization): --embedding-model <pyannote-wespeaker.gguf> is required",
+            )?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::pyannote::diarization::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (pyannote diarization): {path} is {} Hz, expected {rate} Hz — resample offline first (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let model = vokra_models::pyannote::diarization::PyannoteSpeakerDiarization31::open(
+                model_path,
+                segmentation,
+                embedding,
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let turns = model
+                    .diarize(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(turns);
+                Ok(())
+            })?;
+            ("pyannote-diarization-3.1", audio_seconds, samples)
         }
         // RMVPE runs for real through `run`, but a pitch-track RTF needs a
         // settled window definition (hop vs. centered-STFT frame count) before
@@ -1705,6 +1787,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_pyannote_dependency_models() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "pipeline.gguf",
+            "--segmentation-model",
+            "segmentation.gguf",
+            "--embedding-model",
+            "wespeaker.gguf",
+            "--input",
+            "meeting.wav",
+        ]))
+        .expect("pyannote bench flags parse");
+        assert_eq!(
+            parsed.segmentation_model.as_deref(),
+            Some("segmentation.gguf")
+        );
+        assert_eq!(parsed.embedding_model.as_deref(), Some("wespeaker.gguf"));
+    }
+
     // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------
 
     fn opt_in_policy() -> QuantPolicy {
@@ -2073,6 +2175,8 @@ mod tests {
         // report well-formed RTF / latency stats.
         let a = BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -2125,6 +2229,8 @@ mod tests {
         wav::write_wav(&wav_path, &vec![0.5f32; 24_000], 24_000).expect("write wav");
         let a = BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,
@@ -2155,6 +2261,8 @@ mod tests {
         // differ (CPU scheduling), but the audio window is fixed.
         let mk = || BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -2224,6 +2332,8 @@ mod tests {
 
         let a = BenchArgs {
             model: Some(gguf_path.to_string_lossy().into_owned()),
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,
@@ -2258,6 +2368,8 @@ mod tests {
         // (FR-EX-08: no silent fallback to VAD).
         let a = BenchArgs {
             model: Some(silero_fixture()),
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -2293,6 +2405,8 @@ mod tests {
 
         let a = BenchArgs {
             model: Some(silero_fixture()),
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,

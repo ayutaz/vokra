@@ -1310,12 +1310,10 @@ mod linear_stack;
 /// contract (verbatim from primary source, MIT Copyright (c) 2020 CNRS).
 pub mod rttm;
 
-/// Vokra-native diarization pipeline orchestrator composing PyanNet +
-/// [`crate::speaker`]-family [`diarization::SpeakerEncoder`] +
-/// [`vokra_ops::clustering::AgglomerativeClustering`] + [`rttm`]. Real
-/// default-on segment_powerset → per-frame powerset
-/// decode → per-speaker regions → speaker embeddings → AHC clustering →
-/// merged RTTM segments.
+/// Exact native speaker-diarization 3.1 pipeline composing PyanNet,
+/// WeSpeaker, centroid agglomerative clustering, discrete speaker-count
+/// reconstruction and [`rttm`] output. CPU and Metal selections cover both
+/// learned models without a silent per-operation fallback.
 pub mod diarization;
 
 #[cfg(test)]

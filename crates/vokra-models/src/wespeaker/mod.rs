@@ -513,6 +513,21 @@ impl WeSpeaker {
         Self::from_gguf(&GgufFile::open(path)?)
     }
 
+    /// Opens, strictly binds and eagerly preflights one backend.
+    ///
+    /// This is the constructor for composed pipelines that must reject an
+    /// unavailable or incomplete GPU backend before any audio is processed.
+    /// [`Self::with_backend`] remains available for callers that deliberately
+    /// prefer lazy validation on their first forward call.
+    pub fn from_path_with_backend(
+        path: impl AsRef<std::path::Path>,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let model = Self::from_path(path)?.with_backend(backend);
+        Compute::for_backend(backend, WESPEAKER_HOT_OPS)?;
+        Ok(model)
+    }
+
     /// Selects one backend for all learned convolutions and projection GEMMs.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
