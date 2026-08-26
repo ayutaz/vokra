@@ -305,6 +305,11 @@ pub(crate) enum ModelTask {
     /// GroupNorm and LSTM projections through one CPU/Metal backend. PCM encode
     /// remains an explicit unsupported operation.
     FunCodec,
+    /// Fudan/OpenMOSS SpeechTokenizer 16 kHz residual-VQ token-to-waveform
+    /// decode. The exact public eight-codebook checkpoint routes RVQ,
+    /// weight-normalized SEANet convolution and LSTM projections through one
+    /// CPU/Metal backend. PCM encode remains explicitly unsupported.
+    SpeechTokenizer,
     /// Aratako MioCodec 25 Hz FSQ token + 128-d global embedding to 44.1 kHz
     /// waveform decode. Input uses the versioned VKRMIO01 container; PCM
     /// encode remains an explicit unsupported operation.
@@ -557,6 +562,8 @@ const ARCH_NEUCODEC: &str = "neucodec";
 const ARCH_XCODEC2: &str = "xcodec2";
 /// Alibaba DAMO FunCodec 16 kHz / 32-codebook codec.
 const ARCH_FUNCODEC: &str = "funcodec";
+/// Fudan/OpenMOSS SpeechTokenizer 16 kHz / eight-codebook codec.
+const ARCH_SPEECHTOKENIZER: &str = "speechtokenizer";
 /// Aratako MioCodec 25 Hz / 44.1 kHz v2 codec.
 const ARCH_MIOCODEC: &str = "miocodec";
 /// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
@@ -1377,6 +1384,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::FunCodec))
         }
+        ARCH_SPEECHTOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHTOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::SpeechTokenizer))
+        }
         ARCH_MIOCODEC => {
             if hint.is_some() {
                 return Err(format!(
@@ -1669,7 +1684,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_SPEECHTOKENIZER}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
                  `{ARCH_FOCALCODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
@@ -3510,6 +3525,21 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_speechtokenizer_to_the_residual_vq_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_SPEECHTOKENIZER, "speechtokenizer-routed", |path| {
+                load_session(path).expect("SpeechTokenizer session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::SpeechTokenizer);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_SPEECHTOKENIZER),
+            "the routed SpeechTokenizer must not retain a registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_miocodec_to_the_versioned_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_MIOCODEC, "miocodec-routed", |path| {
             load_session(path).expect("MioCodec session builds (bare)")
@@ -3667,6 +3697,7 @@ mod tests {
             ARCH_NEUCODEC,
             ARCH_XCODEC2,
             ARCH_FUNCODEC,
+            ARCH_SPEECHTOKENIZER,
             ARCH_MIOCODEC,
             ARCH_SNAC,
             ARCH_FOCALCODEC,

@@ -178,6 +178,7 @@ METAL_CODE_ARCHES = {
     "focalcodec",
     "frcrn",
     "funcodec",
+    "speechtokenizer",
     "fsmn-vad",
     "hifigan_vocoder",
     "hubert",

@@ -593,6 +593,11 @@ pub mod moss_audio_tokenizer;
 /// codec companion; Base/v1.5 additionally have a strict 463-tensor
 /// mmap-backed Delay checkpoint binder while their generation graph lands.
 pub mod moss_tts;
+/// Fudan/OpenMOSS SpeechTokenizer 16 kHz / eight-codebook native RVQ +
+/// weight-normalized SEANet decoder. The exact public 166-tensor checkpoint
+/// supports frame-major token-to-PCM decode on CPU and Metal; waveform encode
+/// remains an explicit unsupported operation at the CLI boundary.
+pub mod speechtokenizer;
 // Wave 2 2026-08-14 audit follow-up (vocoder recovery + music-und):
 // vocos = standalone Vocos runtime binder with complete ConvNeXt-1D + iSTFT
 // forward. CPU preserves the independent scalar reference; Metal dispatches

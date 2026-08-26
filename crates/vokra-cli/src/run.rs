@@ -82,6 +82,8 @@ USAGE:
                   --output <out.wav>
     vokra-cli run --model <funcodec.gguf> --codec-mode decode --num-quantizers <1..32> \
                   --input <codes.u32le> --output <out.wav>
+    vokra-cli run --model <speechtokenizer.gguf> --codec-mode decode \
+                  --num-quantizers <1..8> --input <codes.u32le> --output <out.wav>
     vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
                   --output <out.wav>
     vokra-cli run --model <yue-upsampler.gguf> --input <1024ch-features.f32> \
@@ -145,6 +147,9 @@ OPTIONS:
                                 `[frames,num_quantizers]` u32le at 50 Hz;
                                 `--num-quantizers` declares the residual-VQ
                                 prefix width.
+                                For SpeechTokenizer decode it is the same raw
+                                frame-major residual-VQ matrix at 50 Hz with
+                                a release maximum of eight codebooks.
                                 For MOSS Audio Tokenizer decode it is raw
                                 frame-major `[frames,num_quantizers]` u32le;
                                 `--num-quantizers` declares the row width.
@@ -283,6 +288,10 @@ OPTIONS:
                                 residual-VQ u32le matrix. CPU and Metal cover
                                 the complete token-to-waveform graph; encode
                                 remains an explicit error.
+                                speechtokenizer: `decode` only, from a
+                                frame-major residual-VQ u32le matrix. CPU and
+                                Metal cover the complete token-to-waveform
+                                graph; encode remains an explicit error.
                                 miocodec: `decode` only, from a VKRMIO01
                                 container carrying FSQ codes, target samples,
                                 and the required 128-d global embedding. CPU
@@ -301,10 +310,11 @@ OPTIONS:
                                 moss_audio_tokenizer: `decode` only. Nano and
                                 Full run their distinct complete decoders on
                                 CPU or Metal; encode fails explicitly.
-    --num-quantizers <N>       FunCodec or MOSS Audio Tokenizer: positive row
-                                width of the raw frame-major code matrix.
-                                Defaults to the authenticated release maximum
-                                (FunCodec/Full 32, Nano 16).
+    --num-quantizers <N>       FunCodec, SpeechTokenizer or MOSS Audio
+                                Tokenizer: positive row width of the raw
+                                frame-major code matrix. Defaults to the
+                                authenticated release maximum (FunCodec/Full
+                                32, Nano 16, SpeechTokenizer 8).
     --bandwidth-id <0..3>       vocos-encodec-24khz or WavTokenizer only:
                                 AdaLayerNorm condition. WavTokenizer defaults
                                 to upstream's documented inference id 0.
@@ -1044,6 +1054,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::NeuCodec
         | ModelTask::XCodec2
         | ModelTask::FunCodec
+        | ModelTask::SpeechTokenizer
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
@@ -1165,22 +1176,24 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::NeuCodec
         && task != ModelTask::XCodec2
         && task != ModelTask::FunCodec
+        && task != ModelTask::SpeechTokenizer
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
     if a.num_quantizers.is_some()
         && task != ModelTask::FunCodec
+        && task != ModelTask::SpeechTokenizer
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --num-quantizers is only supported for funcodec or moss_audio_tokenizer arches"
+            "run: --num-quantizers is only supported for funcodec, speechtokenizer or moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
@@ -1553,6 +1566,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::FunCodec => {
             run_funcodec_codec(&session, &a)?;
+        }
+        ModelTask::SpeechTokenizer => {
+            run_speechtokenizer_codec(&session, &a)?;
         }
         ModelTask::MioCodec => {
             run_miocodec(&session, &a)?;
@@ -3578,6 +3594,82 @@ fn run_funcodec_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
         .map_err(|error| format!("run (funcodec decode): --output {output_path}: {error}"))?;
     println!(
         "funcodec decode: {frames} frames x {num_quantizers} quantizers -> {} samples @ {} Hz -> {output_path}",
+        pcm.len(),
+        model.sample_rate()
+    );
+    Ok(())
+}
+
+/// Fudan/OpenMOSS SpeechTokenizer frame-major residual-VQ token-to-PCM path.
+fn run_speechtokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (speechtokenizer): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (speechtokenizer): PCM-to-token encode is not implemented for the audited release; no substitute encoder or CPU fallback is used"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err("run (speechtokenizer): --codec-mode decode is required".to_owned());
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (speechtokenizer): --input <codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (speechtokenizer): --output <out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    let model = vokra_models::speechtokenizer::SpeechTokenizer::from_gguf_with_backend(
+        session.gguf(),
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    let num_quantizers = a.num_quantizers.unwrap_or(model.max_quantizers());
+    if !(1..=model.max_quantizers()).contains(&num_quantizers) {
+        return Err(format!(
+            "run (speechtokenizer): --num-quantizers {num_quantizers} is outside release range 1..={}",
+            model.max_quantizers()
+        ));
+    }
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (speechtokenizer decode): {input_path}: {error}"))?;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return Err(format!(
+            "run (speechtokenizer decode): {input_path} has {} bytes; expected a positive multiple of four for u32le codes",
+            bytes.len()
+        ));
+    }
+    let codes: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    if !codes.len().is_multiple_of(num_quantizers) {
+        return Err(format!(
+            "run (speechtokenizer decode): {} codes are not divisible by --num-quantizers {num_quantizers}; input must be frame-major [frames,num_quantizers]",
+            codes.len()
+        ));
+    }
+    let frames = codes.len() / num_quantizers;
+    let pcm = model
+        .decode_frame_major(&codes, frames, num_quantizers)
+        .map_err(|error| error.to_string())?;
+    wav::write_wav(output_path, &pcm, model.sample_rate()).map_err(|error| {
+        format!("run (speechtokenizer decode): --output {output_path}: {error}")
+    })?;
+    println!(
+        "speechtokenizer decode: {frames} frames x {num_quantizers} quantizers -> {} samples @ {} Hz -> {output_path}",
         pcm.len(),
         model.sample_rate()
     );
@@ -7211,6 +7303,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::NeuCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::XCodec2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FunCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::SpeechTokenizer), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);

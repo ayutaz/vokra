@@ -1241,6 +1241,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::SpeechTokenizer => {
+            return Err(
+                "bench: arch `speechtokenizer` consumes a caller-sized 50 Hz residual-VQ code matrix rather than timed PCM; use `vokra-cli run --model <speechtokenizer.gguf> --codec-mode decode --num-quantizers <N> --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::MioCodec => {
             return Err(
                 "bench: arch `miocodec` consumes a VKRMIO01 token/global-embedding container rather than timed PCM; use `vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> --output <out.wav>`"

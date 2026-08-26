@@ -34,12 +34,17 @@
 //! first quantizer is distilled against HuBERT features so it carries
 //! semantic content (the release's namesake trick).
 //!
-//! # Real-weight parity
+//! # Native runtime and real-weight parity
 //!
-//! Deferred to owner (`docs/license-audit.md` §3.1 sign-off). This
-//! converter guarantees byte-preserving pass-through only; a
-//! `SpeechTokenizerWeights::from_gguf` native runtime binding is a
-//! follow-up wave gated on the upstream tensor-name manifest fetch.
+//! `vokra-models::speechtokenizer` authenticates the exact released
+//! 166-tensor manifest and executes a caller-selected residual-codebook prefix
+//! plus the official weight-normalized SEANet decoder on CPU or Metal. This
+//! converter continues to preserve every F32 / F16 / BF16 tensor under its
+//! upstream name; the runtime manifest and individual inference-shape checks
+//! are the authoritative **FR-EX-08** bind gate. Independent official-reference
+//! generation lives in `tools/parity/speechtokenizer/dump_reference.py`; its
+//! first real VAST CPU and Apple Metal measurements remain required before
+//! recording a numerical parity pass.
 
 use std::path::Path;
 

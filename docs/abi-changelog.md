@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (SpeechTokenizer CPU/Metal decoder)
+
+The exact public Fudan/OpenMOSS SpeechTokenizer checkpoint now exposes native
+frame-major residual-VQ token-to-waveform decode. CPU and Metal select the same
+whole-model hot-op inventory; uncovered backends return explicit errors and
+PCM encode remains unavailable rather than substituting another model. No C
+ABI symbol or GGUF key is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::speechtokenizer` | `SpeechTokenizer`, identity/topology constants, `SPEECHTOKENIZER_DECODE_HOT_OPS` | Added | strict `from_gguf*` / `open`, backend/license/rate accessors, `decode_frame_major(&[u32], frames, num_quantizers)` | Authenticates the exact 166-tensor public artifact and runs 16 kHz RVQ + weight-normalized SEANet on CPU/Metal without fallback | no | (TBD) |
+| `vokra-cli run` | `speechtokenizer` dispatch and decode mode | Added | `--codec-mode decode --num-quantizers <1..8> --input <codes.u32le> --output <out.wav>` | Encode and malformed matrices fail explicitly; bench points to the discrete-code run contract | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (FunCodec CPU/Metal decoder)
 
 The exact public Alibaba DAMO FunCodec checkpoint now exposes native
