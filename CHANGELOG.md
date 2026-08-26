@@ -14,6 +14,15 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- The strict canonical SpeechT5 TTS artifact now has a complete native
+  text-to-mel runtime: 12-layer relative-position text encoder, cached
+  six-layer autoregressive speech decoder with always-on seeded prenet
+  dropout, stop-token generation, five-layer convolutional postnet, and an
+  optional strict SpeechT5 HiFi-GAN waveform bridge. CPU and Metal share one
+  whole-model hot-op registry; uncovered backends and missing speaker/vocoder
+  inputs fail explicitly. The historical tokenizer-less public GGUF remains
+  rejected, and VAST CPU plus Apple-device real-weight parity are still
+  pending rather than claimed.
 - The imperative model compute seam now exposes element-wise `Tanh` on CPU
   and Metal for SpeechT5's activated postnet blocks. Metal uses a dedicated
   MSL kernel; unsupported GPU backends fail whole-model coverage explicitly

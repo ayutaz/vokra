@@ -1,14 +1,18 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
-> **2026-08-26 SpeechT5 contract wave:** the strict converter and runtime now
+> **2026-08-26 SpeechT5 runtime wave:** the strict converter and runtime now
 > agree on the official 79-piece SentencePiece CHAR model plus Hugging Face
 > added-token ids 79/80, rather than the earlier incorrect assumption that the
 > raw `spm_char.model` itself contained 81 pieces. The cheap runtime binder
 > validates all 393 tensor names/shapes, 50 model-specific metadata keys, raw
 > tokenizer SHA, expanded vocabulary manifest and MIT provenance before text
-> tokenization. The numerical encoder/decoder/postnet forward and real CPU /
-> Apple Metal parity remain pending, so the public tokenizer-less GGUF stays
-> in the explicit `no-runtime-binder` artifact class.
+> tokenization. The canonical artifact now has a complete native
+> relative-position encoder, cached autoregressive decoder, seeded always-on
+> prenet dropout, stop rule, postnet and optional strict SpeechT5 HiFi-GAN
+> bridge through explicit CPU/Metal hot-op coverage. VAST real CPU and Apple
+> Metal parity remain pending, and the live tokenizer-less GGUF still fails the
+> strict contract, so the public repository stays in the explicit
+> `no-runtime-binder` artifact class until a corrected artifact is published.
 
 > **2026-08-26 Canary-1B-v2 artifact correction:** fixed-revision Range
 > auditing transferred only tar/GGUF headers and proved that the two live

@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 CPU/Metal TTS runtime)
+
+The canonical strict SpeechT5 artifact now executes its complete
+text-to-spectrogram graph through one selected CPU or Metal backend and can
+attach the already strict 16 kHz SpeechT5 HiFi-GAN companion. The historical
+tokenizer-less public GGUF still fails the checkpoint contract before tensor
+decode. Independent VAST CPU and Apple-device real-weight parity remain
+pending, so this records code reachability rather than a numerical-pass claim.
+No C symbol, ownership rule or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::speecht5` | `SpeechT5Tts`, `SpeechT5Mel`, `SpeechT5GenerationOptions`, `SPEECHT5_HOT_OPS` | Added | strict GGUF load; text/token ids + 512-value x-vector → frame-major 80-bin mel; optional mel → 16 kHz PCM | Complete relative-position encoder, cached decoder, seeded always-on prenet dropout, stop rule and postnet use one CPU/Metal selection. Missing x-vector/vocoder and unsupported request fields/backends fail explicitly | no | (TBD) |
+| `vokra-models::speecht5::SpeechT5Tts` | `from_gguf_with_vocoder`, `with_vocoder`, `generate_text_mel`, `generate_tokens_mel`; `TtsEngine` impl | Added | canonical 393-tensor text-to-mel GGUF plus canonical 158-tensor SpeechT5 HiFi-GAN GGUF | Vocoder must be 80-bin/16 kHz; backend selection propagates to both components; legacy tokenizer-less artifact remains incompatible by design | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 postnet Tanh CPU/Metal seam)
 
 SpeechT5's first four postnet convolution blocks use an element-wise
@@ -276,7 +291,7 @@ No C symbol, ownership rule or allocation ABI changes.
 |---|---|---|---|---|---:|---|
 | `vokra-convert::models::speecht5` | `convert_speecht5_file_with_tokenizer`, `SpeechT5Report`; existing `convert_speecht5_file` | Added/tightened | `(input, output, license, spm_char_model) -> Result<SpeechT5Report, ConvertError>`; compatibility entry point now returns an explicit tokenizer-required error | Requires the fixed upstream revision, exact 393 F32 tensor names/shapes, exact 79-piece SentencePiece CHAR model plus fixed `<mask>`/`<ctc_blank>` IDs 79/80, and MIT provenance metadata. The preparation wrapper removes only five exact scalar integer BatchNorm training counters. Arbitrary/partial checkpoints and tokenizer-less conversion fail before output | yes for the formerly loose offline conversion input contract | (TBD) |
 | `gguf:vokra.speecht5.*` | 50-key identity/topology/tokenizer group | Added/tightened | immutable hashes and source revision; typed topology/generation scalars; exact raw SentencePiece model, tokenizer strings/scores/IDs and normalizer contract | The original 13 topology keys keep their meanings. New artifacts carry 37 additive keys. A historical tokenizer-less public file is not promoted to executable compatibility | no for canonical new conversion; legacy output remains explicitly unsupported | (TBD) |
-| `vokra-models::speecht5` | `SpeechT5Checkpoint`, `SpeechT5Config`, `SpeechT5Tokenizer` | Added | cheap strict 393-tensor checkpoint identity/topology bind plus exact expanded CHAR vocabulary validation and `encode_text` | Raw tokenizer SHA, expanded piece/score manifest, all 50 model-specific keys and MIT class must match before the handle is returned. Ordinary already-normalized English text is encoded with EOS; unsupported NMT-NFKC rewrites and training-only added tokens return explicit errors. Numerical encoder/decoder/postnet forward remains a separate follow-up and this row does not classify the public legacy GGUF as executable | no | (TBD) |
+| `vokra-models::speecht5` | `SpeechT5Checkpoint`, `SpeechT5Config`, `SpeechT5Tokenizer` | Added | cheap strict 393-tensor checkpoint identity/topology bind plus exact expanded CHAR vocabulary validation and `encode_text` | Raw tokenizer SHA, expanded piece/score manifest, all 50 model-specific keys and MIT class must match before the handle is returned. Ordinary already-normalized English text is encoded with EOS; unsupported NMT-NFKC rewrites and training-only added tokens return explicit errors. The complete numerical runtime is recorded in the later SpeechT5 CPU/Metal entry above; this cheap handle remains available without decoding weights | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (Canary-1B-v2 CPU/Metal ASR and AST)
 

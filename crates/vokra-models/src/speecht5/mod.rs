@@ -6,9 +6,10 @@
 //! added tokens. Historical tokenizer-less public artifacts fail before any
 //! tensor payload is decoded.
 //!
-//! The numerical encoder/decoder/postnet forward is implemented separately
-//! from this cheap checkpoint handle so callers can audit identity and text
-//! tokenization without widening all ~585 MB of F32 payload.
+//! The cheap checkpoint handle lets callers audit identity and text
+//! tokenization without widening all ~585 MB of F32 payload. [`SpeechT5Tts`]
+//! is the separate complete CPU/Metal text-to-mel runtime and can attach the
+//! strict SpeechT5 HiFi-GAN companion for waveform synthesis.
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
@@ -17,7 +18,9 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 mod tokenizer;
 pub use tokenizer::SpeechT5Tokenizer;
+mod forward;
 mod weights;
+pub use forward::{SPEECHT5_HOT_OPS, SpeechT5GenerationOptions, SpeechT5Mel, SpeechT5Tts};
 
 /// Architecture tag written by the strict converter.
 pub const EXPECTED_ARCH: &str = "speecht5";
