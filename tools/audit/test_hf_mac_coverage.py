@@ -36,6 +36,44 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(routed, {"whisper", "moonshine"})
         self.assertEqual(bound, {"snac"})
 
+    def test_public_artifact_blockers_preserve_live_file_failures(self):
+        cases = (
+            (
+                audit.RepoRecord(
+                    "vokra/sbv2-v2-jp-extra-base",
+                    "abc",
+                    ("model.gguf",),
+                    "sbv2",
+                ),
+                "partial",
+                "1,264-tensor",
+            ),
+            (
+                audit.RepoRecord(
+                    "vokra/bicodec", "abc", ("model.gguf",), "bicodec"
+                ),
+                "no-runtime-binder",
+                "CC-BY-NC-SA-4.0",
+            ),
+            (
+                audit.RepoRecord(
+                    "vokra/xy-tokenizer",
+                    "abc",
+                    ("model.gguf",),
+                    "xy_tokenizer",
+                ),
+                "no-runtime-binder",
+                "empty tensor manifest",
+            ),
+        )
+
+        for record, cpu_code, reason_fragment in cases:
+            with self.subTest(repo=record.repo):
+                coverage = audit.classify(record, set(), set())
+                self.assertEqual(coverage.cpu_code, cpu_code)
+                self.assertEqual(coverage.metal_code, "blocked-by-cpu")
+                self.assertIn(reason_fragment, coverage.reason)
+
     def test_classification_never_turns_partial_into_metal(self):
         routed = {
             "audiobox-aesthetics",

@@ -34,8 +34,9 @@ USER_AGENT = "vokra-hf-mac-coverage/1.0"
 
 # These arches have an ARCH_* route but not a public-artifact-complete CPU
 # runtime. MAGNeT/MelodyFlow are loud partial diagnostics; CSM still binds a
-# synthesized model bridge instead of released weights; SBV2's public
-# conversion does not yet satisfy the strict runtime tensor-name contract.
+# synthesized model bridge instead of released weights; SBV2 has a current
+# strict converter/runtime, but its live artifact and production G2P remain
+# incomplete as recorded below.
 # RMVPE now has an exact code route, but its live artifact remains blocked
 # below by invalid provenance. Pyannote is complete: its exact historical
 # 54-F32-tensor artifact receives a narrowly scoped metadata repair and then
@@ -53,6 +54,26 @@ ROUTED_PARTIAL_ARCHES = {
 # Keep these fail-closed even when sibling checkpoints sharing the arch have a
 # complete runtime. The value is the actionable public-file verdict.
 PUBLIC_ARTIFACT_CPU_BLOCKERS = {
+    "vokra/sbv2-v2-jp-extra-base": (
+        "partial",
+        "the live 1,264-tensor GGUF predates the strict SBV2 converter and keeps "
+        "raw dec/dp/enc_p/enc_q/flow/sdp upstream names without the required "
+        "runtime metadata. Native CPU parity exists for a corrected conversion, "
+        "but the public artifact and production Japanese G2P remain explicit "
+        "boundaries",
+    ),
+    "vokra/bicodec": (
+        "no-runtime-binder",
+        "the live 840-tensor GGUF has no runtime binder and stamps Apache-2.0/"
+        "permissive provenance, while the pinned SparkAudio weight audit classifies "
+        "the released weights as CC-BY-NC-SA-4.0 research-only. Refuse the public "
+        "artifact pending a gated provenance-correct replacement",
+    ),
+    "vokra/xy-tokenizer": (
+        "no-runtime-binder",
+        "the live GGUF has an empty tensor manifest and contains metadata only, so "
+        "there is no checkpoint payload for a CPU or Metal runtime to bind",
+    ),
     "vokra/canary-1b-v2": (
         "partial",
         "the two live GGUF filenames are identical 688-tensor copies of the "
