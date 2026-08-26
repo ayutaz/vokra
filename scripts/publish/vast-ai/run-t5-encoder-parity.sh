@@ -10,6 +10,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/t5_encoder"
 PARITY_DUMPER="$VOKRA_ROOT/tools/parity/t5_encoder_dump_reference.py"
+DELAY_DUMPER="$VOKRA_ROOT/tools/parity/musicgen_delay_pattern_dump_reference.py"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 PUBLIC_REPO="vokra/musicgen-small"
@@ -39,8 +40,10 @@ usage: run-t5-encoder-parity.sh [--work-dir <empty-dir>]
 VAST-only official parity worker. It downloads the immutable public
 vokra/musicgen-small GGUF and canonical google-t5/t5-base snapshot, verifies
 their exact identities, calls the official Transformers T5EncoderModel
-forward, and compares Vokra's native CPU result. It also runs focused unit
-tests and an aarch64-apple-darwin Metal-feature cross-check.
+forward, and compares Vokra's native CPU result. It also compares Vokra's
+MusicGen delay scheduling against the official Transformers implementation,
+runs focused unit tests, and performs an aarch64-apple-darwin Metal-feature
+cross-check.
 
 Actual runs require Linux, VOKRA_PUBLISH_ON_VAST=1 from provision.sh, a
 64-GB-class host (at least 60,000,000 KiB RAM) and 100,000,000 KiB free disk.
@@ -104,6 +107,29 @@ print(f"reference manifest OK: {repo}@{revision}")' \
     "$reference" "$checkpoint" "$T5_REPO" "$T5_REVISION"
 }
 
+verify_delay_reference_manifest() {
+  local reference="$1"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python -c \
+    'import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]); manifest=json.loads((root/"manifest.json").read_text(encoding="utf-8"))
+def file_identity(path):
+    digest=hashlib.sha256(); size=0
+    with path.open("rb") as handle:
+        while block := handle.read(1024*1024):
+            size += len(block); digest.update(block)
+    return size, digest.hexdigest()
+assert manifest["format"] == "vokra-musicgen-delay-pattern-reference-v1"
+assert manifest["oracle"] == "transformers.MusicgenForCausalLM.build_delay_pattern_mask+apply_delay_pattern_mask"
+assert manifest["transformers_version"] == "4.45.2"
+assert len(manifest["cases"]) == 4
+for name, expected in manifest["fixtures"].items():
+    size, sha256=file_identity(root/name)
+    assert size == expected["bytes"], (name, "bytes")
+    assert sha256 == expected["sha256"], (name, "sha256")
+print("MusicGen delay reference manifest OK")' \
+    "$reference"
+}
+
 download_hf_file() {
   local repository="$1" revision="$2" filename="$3" output="$4"
   mkdir -p "$output"
@@ -151,6 +177,7 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "dedicated T5 parity uv.lock is missing"
   [[ -f "$PARITY_DUMPER" ]] || die "official T5 parity dumper is missing"
+  [[ -f "$DELAY_DUMPER" ]] || die "official MusicGen delay parity dumper is missing"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names an exact commit"
   fi
@@ -178,7 +205,7 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0
+  local tmp payload actual script_path dumper cases=0 fail=0
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -200,9 +227,11 @@ run_self_test() {
   script_path="${BASH_SOURCE[0]}"
   for required in "$PUBLIC_REVISION" "$PUBLIC_SHA256" "$T5_REVISION" \
     "$T5_WEIGHT_SHA256" "t5_encoder_dump_reference.py" \
+    "musicgen_delay_pattern_dump_reference.py" \
     "parity_t5_base_official_hidden_states_cpu_and_metal" \
+    "musicgen_delay_pattern_matches_official_transformers" \
     "T5_BASE_OFFICIAL_PARITY backend=cpu" \
-    "verify_reference_manifest" \
+    "verify_reference_manifest" "verify_delay_reference_manifest" \
     "--frozen --python 3.12" "--ignored --exact --nocapture"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
@@ -217,11 +246,13 @@ run_self_test() {
   fi
 
   cases=$((cases + 1))
-  UV_CACHE_DIR="${UV_CACHE_DIR:-$tmp/uv-cache}" \
-    uv run --no-project --python 3.12 python -c \
-      'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' \
-      "$PARITY_DUMPER" >/dev/null 2>&1 \
-    || { log "self-test FAIL: dumper syntax parse failed"; fail=1; }
+  for dumper in "$PARITY_DUMPER" "$DELAY_DUMPER"; do
+    UV_CACHE_DIR="${UV_CACHE_DIR:-$tmp/uv-cache}" \
+      uv run --no-project --python 3.12 python -c \
+        'import ast, pathlib, sys; ast.parse(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))' \
+        "$dumper" >/dev/null 2>&1 \
+      || { log "self-test FAIL: dumper syntax parse failed: $dumper"; fail=1; }
+  done
 
   rm -rf "$tmp"
   trap - EXIT
@@ -234,8 +265,8 @@ run_self_test() {
 
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir inputs_dir logs_dir
-  local public_dir t5_dir reference gguf
-  local run_log env_log ops_log models_log cross_log cpu_log summary_file
+  local public_dir t5_dir reference delay_reference gguf
+  local run_log env_log ops_log delay_log models_log cross_log cpu_log summary_file
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -265,11 +296,13 @@ main() {
   public_dir="$inputs_dir/musicgen-small"
   t5_dir="$inputs_dir/t5-base"
   reference="$work_dir/reference"
+  delay_reference="$work_dir/musicgen-delay-reference"
   mkdir -p "$logs_dir" "$public_dir" "$t5_dir"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-t5-encoder"
   run_log="$logs_dir/run.log"
   env_log="$logs_dir/environment.txt"
   ops_log="$logs_dir/ops-tests.log"
+  delay_log="$logs_dir/musicgen-delay-parity.log"
   models_log="$logs_dir/models-tests.log"
   cross_log="$logs_dir/apple-metal-cross-check.log"
   cpu_log="$logs_dir/official-cpu.log"
@@ -303,9 +336,21 @@ main() {
   verify_reference_manifest "$reference" "$t5_dir"
   cp "$reference/manifest.json" "$logs_dir/reference-manifest.json"
 
+  step "Generate independent official MusicGen delay-pattern reference"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+    "$DELAY_DUMPER" \
+    --output-dir "$delay_reference"
+  verify_delay_reference_manifest "$delay_reference"
+  cp "$delay_reference/manifest.json" "$logs_dir/musicgen-delay-reference-manifest.json"
+
   step "Run focused T5 relative-position and native encoder tests on VAST"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
     -p vokra-ops t5_relative_position 2>&1 | tee "$ops_log"
+  VOKRA_MUSICGEN_DELAY_REFERENCE_DIR="$delay_reference" \
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
+      -p vokra-ops --test parity_musicgen_delay_pattern \
+      musicgen_delay_pattern_matches_official_transformers \
+      -- --ignored --exact --nocapture 2>&1 | tee "$delay_log"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
     -p vokra-models --lib t5_encoder::tests 2>&1 | tee "$models_log"
 
@@ -339,12 +384,13 @@ main() {
     echo "t5_revision=$T5_REVISION"
     echo "t5_weight_bytes=$T5_WEIGHT_BYTES"
     echo "t5_weight_sha256=$T5_WEIGHT_SHA256"
+    echo "musicgen_delay_pattern_parity=PASS"
     echo "metal_runtime=NOT_RUN_LINUX_VAST"
     echo "metal_cross_compile=PASS"
   } | tee "$summary_file"
   (
     cd "$work_dir"
-    find logs reference -type f ! -name SHA256SUMS -print0 \
+    find logs reference musicgen-delay-reference -type f ! -name SHA256SUMS -print0 \
       | sort -z \
       | xargs -0 sha256sum > logs/SHA256SUMS
   )

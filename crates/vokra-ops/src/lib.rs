@@ -160,6 +160,11 @@ pub mod flow_sampler;
 pub mod firered_vad;
 // -----------------------------------------------------------------------
 pub mod frontend;
+// ---- MusicGen / AudioGen delay-pattern scheduling ------------------------
+// Deterministic host-side codebook interleave shared by the two AudioCraft
+// AR families. Learned decoder math remains backend-dispatched; this runtime
+// function only builds/applies prompt, prediction and padding positions.
+pub mod musicgen_delay_pattern;
 // ---- Shared T5 relative-position indexing -------------------------------
 // Deterministic host-side bucket/gather glue shared by MusicGen, AudioGen,
 // JASCO, AudioLDM2 and MT3. Learned attention reductions remain backend
