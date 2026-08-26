@@ -1015,6 +1015,46 @@ impl AudioCraftLmDecoder {
         })
     }
 
+    /// Creates a state and causally prefills arbitrary decoder embeddings
+    /// before the first codebook-token step.
+    ///
+    /// Parler-TTS uses this for `embed_prompts(prompt_input_ids)`: prompt rows
+    /// occupy positions `0..prompt_len`, populate every self-attention cache,
+    /// and the first delayed BOS tuple starts at `prompt_len`. The prefix is
+    /// not projected through the codebook embedding tables and never emits LM
+    /// logits. `max_decode_steps` counts only subsequent codebook-token steps.
+    pub(crate) fn new_state_with_prefix_embeddings(
+        &self,
+        condition: &AudioCraftCondition,
+        prefix_embeddings: &[f32],
+        max_decode_steps: usize,
+    ) -> Result<AudioCraftLmState> {
+        let d = self.weights.config.d_model;
+        if prefix_embeddings.len() % d != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft LM prefix len {} is not divisible by d_model {d}",
+                prefix_embeddings.len()
+            )));
+        }
+        if prefix_embeddings.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "audiocraft LM prefix contains a non-finite value".to_owned(),
+            ));
+        }
+        let prefix_frames = prefix_embeddings.len() / d;
+        let total_steps = prefix_frames.checked_add(max_decode_steps).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "audiocraft LM prefix + decode steps overflow usize".to_owned(),
+            )
+        })?;
+        let mut state = self.new_state(condition, total_steps)?;
+        for row in prefix_embeddings.chunks_exact(d) {
+            state.h.copy_from_slice(row);
+            self.advance_hidden(&mut state, None)?;
+        }
+        Ok(state)
+    }
+
     /// Advances one delayed-sequence position and writes codebook-major logits
     /// `[num_codebooks, vocab_size]` into `logits`.
     pub fn step_into(
@@ -1040,13 +1080,6 @@ impl AudioCraftLmDecoder {
                 expected_logits
             )));
         }
-        let start = state.self_kv.positions();
-        if start >= state.max_steps {
-            return Err(VokraError::InvalidArgument(format!(
-                "audiocraft LM step: position {start} reached max_steps {} (no silent wrap)",
-                state.max_steps
-            )));
-        }
         for (codebook, &token) in tokens.iter().enumerate() {
             if token as usize > cfg.vocab_size {
                 return Err(VokraError::InvalidArgument(format!(
@@ -1058,6 +1091,23 @@ impl AudioCraftLmDecoder {
 
         state.h.fill(0.0);
         self.embed_tokens_into(tokens, &mut state.h)?;
+        self.advance_hidden(state, Some(logits))
+    }
+
+    fn advance_hidden(
+        &self,
+        state: &mut AudioCraftLmState,
+        logits: Option<&mut [f32]>,
+    ) -> Result<()> {
+        let cfg = self.weights.config;
+        state.validate_for(cfg, &self.identity)?;
+        let start = state.self_kv.positions();
+        if start >= state.max_steps {
+            return Err(VokraError::InvalidArgument(format!(
+                "audiocraft LM step: position {start} reached max_steps {} (no silent wrap)",
+                state.max_steps
+            )));
+        }
         match &self.weights.position {
             MappedPosition::AudioCraftSinusoidal => {
                 add_sinusoidal_position(&mut state.h, start)?;
@@ -1142,14 +1192,16 @@ impl AudioCraftLmDecoder {
             )?;
             add_assign(&mut state.h, &state.block.block_out)?;
         }
-        layer_norm_into(
-            &compute,
-            &mut state.block.ln,
-            &state.h,
-            1,
-            &self.weights.out_norm,
-        )?;
-        self.logits_into(&compute, &state.block.ln, logits)?;
+        if let Some(logits) = logits {
+            layer_norm_into(
+                &compute,
+                &mut state.block.ln,
+                &state.h,
+                1,
+                &self.weights.out_norm,
+            )?;
+            self.logits_into(&compute, &state.block.ln, logits)?;
+        }
         state.self_kv.advance(1);
         state.poisoned = false;
         Ok(())
@@ -2122,6 +2174,42 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("decoder.lm_heads.0.weight")
+        );
+    }
+
+    #[test]
+    fn parler_prompt_embeddings_prefill_self_attention_positions() {
+        let (file, config) = parler_fixture(true);
+        let decoder =
+            AudioCraftLmDecoder::bind_transformers_parler(file, config, BackendKind::Cpu, true)
+                .unwrap();
+        let condition = decoder.prepare_condition(&[0.5; 4], 1, None).unwrap();
+        let mut state = decoder
+            .new_state_with_prefix_embeddings(&condition, &[0.125; 8], 1)
+            .unwrap();
+        assert_eq!(state.position(), 2);
+        assert_eq!(state.max_steps(), 3);
+
+        let mut logits = vec![0.0; config.num_codebooks * config.vocab_size];
+        decoder
+            .step_into(&mut state, &[config.special_token_id(); 2], &mut logits)
+            .unwrap();
+        assert_eq!(state.position(), 3);
+        assert!(logits.iter().all(|value| value.is_finite()));
+
+        assert!(
+            decoder
+                .new_state_with_prefix_embeddings(&condition, &[0.0; 5], 1)
+                .unwrap_err()
+                .to_string()
+                .contains("not divisible")
+        );
+        assert!(
+            decoder
+                .new_state_with_prefix_embeddings(&condition, &[f32::NAN; 4], 1)
+                .unwrap_err()
+                .to_string()
+                .contains("non-finite")
         );
     }
 
