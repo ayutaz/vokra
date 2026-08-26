@@ -86,6 +86,15 @@ pub(crate) enum ModelTask {
     AsrParakeetTdt11b,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// Microsoft SpeechT5 text-to-speech with an explicit 512-value x-vector
+    /// and the strict 16 kHz SpeechT5 HiFi-GAN companion.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the text model
+    /// and `--vocoder` sidecar exactly once, then thread the same selected
+    /// backend through both stages.  The generic session TTS slot cannot be
+    /// populated here because the sidecar path is a CLI input rather than
+    /// model metadata.
+    TtsSpeechT5,
     /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
     ///
     /// The dispatch returns a bare session because the concrete mapping-owned
@@ -604,6 +613,8 @@ const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
 const ARCH_MOSS_TTS: &str = "moss_tts";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
+/// Microsoft SpeechT5 text-to-mel TTS model.
+const ARCH_SPEECHT5: &str = "speecht5";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
 const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
 /// SpeechBrain LibriTTS 22.05 kHz HiFi-GAN vocoder.
@@ -1038,6 +1049,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 .map_err(|e| e.to_string())?
                 .with_backend(backend);
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
+        }
+        ARCH_SPEECHT5 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHT5}`"
+                ));
+            }
+            // Bare session: run owns the `--vocoder` sidecar and binds both
+            // strict GGUFs once (see `ModelTask::TtsSpeechT5`).
+            Ok((session, ModelTask::TtsSpeechT5))
         }
         ARCH_KOKORO => {
             if hint.is_some() {
@@ -3509,6 +3530,18 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_speecht5_to_native_tts_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SPEECHT5, "speecht5-routed", |path| {
+            load_session(path).expect("SpeechT5 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::TtsSpeechT5);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_SPEECHT5),
+            "SpeechT5 has a strict real-weight loader, complete CPU/Metal forward, and CLI route"
+        );
+    }
+
+    #[test]
     fn load_session_routes_speechbrain_hifigan_to_vocoder_task() {
         let (_session, task) =
             with_arch_only_gguf(ARCH_HIFIGAN_VOCODER, "hifigan-vocoder-routed", |path| {
@@ -3873,6 +3906,7 @@ mod tests {
             ARCH_MOSS_AUDIO_TOKENIZER,
             ARCH_MOSS_TTS,
             ARCH_BIGVGAN,
+            ARCH_SPEECHT5,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
             ARCH_VOCOS,

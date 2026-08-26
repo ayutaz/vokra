@@ -48,6 +48,8 @@ USAGE:
     vokra-cli run --model <kokoro.gguf> --text <phonemes> --style <s.f32> [--output <out.wav>]
     vokra-cli run --model <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> \
                   --text <string> [--language ja|en] [--output <out.wav>]
+    vokra-cli run --model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> \
+                  --speaker-embedding <xvector-512.f32> --text <string> [--output <out.wav>]
     vokra-cli run --model <melotts.gguf> --input <features.vmf> [--length-scale <s>] \
                   [--output <out.wav>]
     vokra-cli run --model <fsmn-vad.gguf> --input <in.wav>
@@ -132,6 +134,10 @@ OPTIONS:
                                 Nano requires Audio Tokenizer Nano; Base/v1.5
                                 require Audio Tokenizer Full. Both stages must
                                 support the same selected backend.
+    --vocoder <path>            SpeechT5 only, REQUIRED: strict
+                                microsoft/speecht5_hifigan companion GGUF
+                                (80 mel bins, 16 kHz). Both stages use the
+                                same selected backend.
     --tokenizer <path>          Authenticated ASR tokenizer sidecar: Nemotron
                                 uses tokenizer.json; Parakeet-TDT-1.1B uses
                                 tokenizer.vocab. Published legacy GGUFs need
@@ -376,8 +382,9 @@ OPTIONS:
     --interrupt-after <N>       S2S only: stream frames and barge-in
                                 (M3-14 semantics) after N frames — the T19
                                 interrupt demo path
-    --deterministic             S2S only: temperature-0 sampling
-                                (reproducible smoke / parity anchor)
+    --deterministic             S2S: temperature-0 sampling. SpeechT5:
+                                fixed decoder-prenet dropout seed
+                                (reproducible smoke / parity anchor).
     --duplex                    Moshi only: continuous full-duplex demo —
                                 push mic frames from --input, pull model
                                 frames, print the inner monologue (M4-06)
@@ -400,18 +407,18 @@ OPTIONS:
     --bert-en <path>            sbv2 only, REQUIRED: the EN-path DeBERTa v3
                                 BERT GGUF (`vokra-cli convert --model
                                 deberta-v3`). See --bert-ja.
-    --speaker-embedding <path>  sbv2 only, OPTIONAL: raw little-endian f32
-                                external zero-shot speaker embedding
-                                (Blocker 3). Length must equal the loaded
-                                model's projection d_in (real ckpt: 512);
+    --speaker-embedding <path>  SpeechT5 REQUIRED / sbv2 OPTIONAL: raw
+                                little-endian f32 external speaker embedding.
+                                Length must equal the loaded model's
+                                projection d_in (both real ckpts: 512);
                                 a wrong length is a loud error (FR-EX-08),
                                 never a silent zero-pad/truncate. When
-                                absent, the model's projection (if any)
+                                For SBV2 when absent, the model's projection (if any)
                                 is fed the deterministic all-zero
                                 `[d_speaker]` default; on a legacy model
                                 with no projection loaded, `speaker_id 0`
                                 is used instead. Rejected loudly on every
-                                non-sbv2 arch (FR-EX-08 — other archs
+                                non-SpeechT5/non-sbv2 arch (FR-EX-08 — other archs
                                 have their own speaker paths, e.g.
                                 kokoro `--voice` / `--style`).
     -h, --help                  print this help
@@ -426,6 +433,8 @@ struct RunArgs {
     embedding_model: Option<String>,
     /// MOSS-TTS-Nano-only codec sidecar.
     audio_tokenizer: Option<String>,
+    /// SpeechT5-only strict 16 kHz HiFi-GAN companion GGUF.
+    vocoder: Option<String>,
     /// Nemotron-ASR-only official tokenizer.json sidecar.
     tokenizer: Option<String>,
     input: Option<String>,
@@ -486,7 +495,7 @@ struct RunArgs {
     fixture_tokenizer: bool,
     /// S2S: barge-in after N streamed frames (T19 demo).
     interrupt_after: Option<usize>,
-    /// S2S: deterministic (temperature-0) sampling.
+    /// S2S temperature-0 sampling or SpeechT5 fixed prenet-dropout seed.
     deterministic: bool,
     /// Moshi (M4-06): continuous full-duplex push/pull demo (T26).
     duplex: bool,
@@ -515,10 +524,10 @@ struct RunArgs {
     /// SBV2 only (Task 38), REQUIRED for that arch: path to the EN-path
     /// DeBERTa v3 BERT GGUF. See `bert_ja`.
     bert_en: Option<String>,
-    /// SBV2 only (Blocker 3), OPTIONAL: path to a raw little-endian f32
-    /// external zero-shot speaker embedding, forwarded to
+    /// SpeechT5 (required) or SBV2 (optional): path to a raw little-endian
+    /// f32 external speaker embedding, forwarded to
     /// `SynthesisRequest::speaker_embedding` (its `Option<Vec<f32>>` shape).
-    /// Rejected loudly on every non-sbv2 arch (FR-EX-08 — other archs
+    /// Rejected loudly on every other arch (FR-EX-08 — other archs
     /// have their own speaker paths, e.g. Kokoro's `--voice`/`--style`).
     speaker_embedding: Option<String>,
     /// AudioSeal task direction. Absent means detect on that arch; any
@@ -590,6 +599,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut segmentation_model: Option<String> = None;
     let mut embedding_model: Option<String> = None;
     let mut audio_tokenizer: Option<String> = None;
+    let mut vocoder: Option<String> = None;
     let mut tokenizer: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
@@ -661,6 +671,14 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 audio_tokenizer = Some(
                     args.get(i + 1)
                         .ok_or("--audio-tokenizer requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--vocoder" => {
+                vocoder = Some(
+                    args.get(i + 1)
+                        .ok_or("--vocoder requires a GGUF path")?
                         .clone(),
                 );
                 i += 2;
@@ -974,6 +992,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         segmentation_model,
         embedding_model,
         audio_tokenizer,
+        vocoder,
         tokenizer,
         input,
         text,
@@ -1087,6 +1106,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::DiarizationPyannote
         | ModelTask::Separation
         | ModelTask::Tts
+        | ModelTask::TtsSpeechT5
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
@@ -1171,6 +1191,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     {
         return Err(
             "run: --audio-tokenizer is only supported for authenticated MOSS-TTS releases"
+                .to_owned(),
+        );
+    }
+    if a.vocoder.is_some() && task != ModelTask::TtsSpeechT5 {
+        return Err(
+            "run: --vocoder is only supported for the speecht5 arch — it must be the strict microsoft/speecht5_hifigan companion GGUF"
                 .to_owned(),
         );
     }
@@ -1330,18 +1356,18 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    // `--speaker-embedding` is Blocker 3's SBV2-only external zero-shot
-    // speaker path. Rejected off every other arch rather than silently
-    // ignored — other archs have their own speaker paths
+    // `--speaker-embedding` is SpeechT5's required x-vector or Blocker 3's
+    // optional SBV2 external zero-shot speaker path. Rejected off every other
+    // arch rather than silently ignored — other archs have their own paths
     // (Kokoro `--voice`/`--style`, CAM++ single-input embedding, ...),
     // and silently dropping caller-supplied data on the floor here would
     // produce plausible-looking-but-wrong-speaker audio (FR-EX-08).
-    if a.speaker_embedding.is_some() && task != ModelTask::Sbv2 {
+    if a.speaker_embedding.is_some() && task != ModelTask::Sbv2 && task != ModelTask::TtsSpeechT5 {
         return Err(
-            "run: --speaker-embedding is only supported for the sbv2 arch — it is Blocker 3's \
-             external zero-shot speaker input (SBV2's `enc_p.encoder.spk_emb_linear` projects \
-             the caller-supplied 512-d vector into the text-encoder hidden width). Other \
-             archs use their own speaker paths (e.g. kokoro --voice / --style)"
+            "run: --speaker-embedding is only supported for speecht5 or sbv2 — SpeechT5 \
+             requires its caller-supplied 512-d x-vector; SBV2 projects the same external \
+             width through `enc_p.encoder.spk_emb_linear`. Other archs use their own \
+             speaker paths (e.g. kokoro --voice / --style)"
                 .to_owned(),
         );
     }
@@ -1541,6 +1567,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 audio.sample_rate,
                 a.output.as_deref(),
             )?;
+        }
+        ModelTask::TtsSpeechT5 => {
+            run_speecht5(&session, &a)?;
         }
         ModelTask::MusicGeneration => {
             run_musicgen(&a)?;
@@ -5047,6 +5076,65 @@ fn run_melotts(session: &Session, a: &RunArgs) -> Result<(), String> {
 ///
 /// # Honest scope (Task 38 does not paper over Task 24 / Task 30)
 ///
+/// Complete Microsoft SpeechT5 text → mel → HiFi-GAN CLI path.
+///
+/// Neither companion is inferred or downloaded. The caller supplies the
+/// strict 16 kHz vocoder plus one exact 512-value little-endian x-vector; the
+/// model binder authenticates both GGUF contracts before any synthesis. The
+/// selected backend reaches both stages through one `with_backend` call.
+fn run_speecht5(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_core::{SynthesisRequest, TtsEngine};
+    use vokra_models::speecht5::{SPEAKER_EMBEDDING_DIM, SpeechT5Tts};
+
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (speecht5): --text <string> is required")?;
+    let vocoder_path = a.vocoder.as_deref().ok_or(
+        "run (speecht5): --vocoder <speecht5-hifigan.gguf> is required — the text model emits mel frames, not PCM",
+    )?;
+    let speaker_path = a.speaker_embedding.as_deref().ok_or(
+        "run (speecht5): --speaker-embedding <xvector-512.f32> is required — no speaker is inferred or substituted",
+    )?;
+
+    let bytes = std::fs::read(speaker_path)
+        .map_err(|error| format!("--speaker-embedding {speaker_path}: {error}"))?;
+    let expected_bytes = SPEAKER_EMBEDDING_DIM * std::mem::size_of::<f32>();
+    if bytes.len() != expected_bytes {
+        return Err(format!(
+            "--speaker-embedding {speaker_path}: {} bytes ({} whole f32 values) — SpeechT5 requires exactly {SPEAKER_EMBEDDING_DIM} little-endian f32 values ({expected_bytes} bytes)",
+            bytes.len(),
+            bytes.len() / std::mem::size_of::<f32>()
+        ));
+    }
+    let speaker: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+    if !speaker.iter().all(|value| value.is_finite()) {
+        return Err(format!(
+            "--speaker-embedding {speaker_path}: all {SPEAKER_EMBEDDING_DIM} values must be finite"
+        ));
+    }
+
+    let vocoder = vokra_mmap::open_gguf(vocoder_path)
+        .map_err(|error| format!("--vocoder {vocoder_path}: {error}"))?;
+    let model = SpeechT5Tts::from_gguf_with_vocoder(session.gguf(), &vocoder)
+        .map_err(|error| error.to_string())?
+        .with_backend(a.backend);
+    let mut request = SynthesisRequest::new(text).with_speaker_embedding(speaker);
+    if a.deterministic {
+        request = request.deterministic();
+    }
+    let audio = TtsEngine::synthesize(&model, &request).map_err(|error| error.to_string())?;
+    emit_audio(
+        "speecht5",
+        &audio.samples,
+        audio.sample_rate,
+        a.output.as_deref(),
+    )
+}
+
 /// `SbV2Model::from_gguf`'s loaded phonemizer is its own documented
 /// `UnwiredPhonemizer` placeholder (no G2P GGUF in that loader's 3-file
 /// signature) — every synthesize call therefore fails with an explicit
@@ -6389,6 +6477,34 @@ mod tests {
     }
 
     // ---- P2 cc-10 / cc-19: voxtral route + whisper word timestamps -------
+
+    #[test]
+    fn parses_speecht5_companion_paths() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "speecht5.gguf",
+            "--vocoder",
+            "speecht5-hifigan.gguf",
+            "--speaker-embedding",
+            "xvector-512.f32",
+            "--text",
+            "Hello.",
+            "--deterministic",
+        ]))
+        .expect("SpeechT5 sidecars parse");
+        assert_eq!(parsed.vocoder.as_deref(), Some("speecht5-hifigan.gguf"));
+        assert_eq!(parsed.speaker_embedding.as_deref(), Some("xvector-512.f32"));
+        assert_eq!(parsed.text.as_deref(), Some("Hello."));
+        assert!(parsed.deterministic);
+    }
+
+    #[test]
+    fn vocoder_requires_a_path() {
+        let error = parse_args(&args(&["--model", "speecht5.gguf", "--vocoder"]))
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(error, "--vocoder requires a GGUF path");
+    }
 
     #[test]
     fn parses_word_timestamps_language_and_bare_prompt_flags() {

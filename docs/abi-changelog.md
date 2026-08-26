@@ -264,6 +264,7 @@ No C symbol, ownership rule or allocation ABI changes.
 |---|---|---|---|---|---:|---|
 | `vokra-models::speecht5` | `SpeechT5Tts`, `SpeechT5Mel`, `SpeechT5GenerationOptions`, `SPEECHT5_HOT_OPS` | Added | strict GGUF load; text/token ids + 512-value x-vector → frame-major 80-bin mel; optional mel → 16 kHz PCM | Complete relative-position encoder, cached decoder, seeded always-on prenet dropout, stop rule and postnet use one CPU/Metal selection. Missing x-vector/vocoder and unsupported request fields/backends fail explicitly | no | (TBD) |
 | `vokra-models::speecht5::SpeechT5Tts` | `from_gguf_with_vocoder`, `with_vocoder`, `generate_text_mel`, `generate_tokens_mel`; `TtsEngine` impl | Added | canonical 393-tensor text-to-mel GGUF plus canonical 158-tensor SpeechT5 HiFi-GAN GGUF | Vocoder must be 80-bin/16 kHz; backend selection propagates to both components; legacy tokenizer-less artifact remains incompatible by design | no | (TBD) |
+| `vokra-cli run` | `speecht5` arch; `--vocoder`, shared `--speaker-embedding` | Added | `--model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> --speaker-embedding <512-f32> --text <string> [--backend cpu\|metal]` | Both strict artifacts bind once; the x-vector is exact-width finite little-endian f32; missing/misrouted companions and unsupported backends fail explicitly. `bench` refuses to fabricate these sidecars and points to the complete run route | no | (TBD) |
 
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechT5 postnet Tanh CPU/Metal seam)
 

@@ -20,9 +20,11 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   dropout, stop-token generation, five-layer convolutional postnet, and an
   optional strict SpeechT5 HiFi-GAN waveform bridge. CPU and Metal share one
   whole-model hot-op registry; uncovered backends and missing speaker/vocoder
-  inputs fail explicitly. The historical tokenizer-less public GGUF remains
-  rejected, and VAST CPU plus Apple-device real-weight parity are still
-  pending rather than claimed.
+  inputs fail explicitly. `vokra-cli run` now routes the `speecht5` arch and
+  requires explicit `--vocoder` plus `--speaker-embedding` sidecars, passing
+  the selected CPU/Metal backend through both stages. The historical
+  tokenizer-less public GGUF remains rejected, and VAST CPU plus Apple-device
+  real-weight parity are still pending rather than claimed.
 - The imperative model compute seam now exposes element-wise `Tanh` on CPU
   and Metal for SpeechT5's activated postnet blocks. Metal uses a dedicated
   MSL kernel; unsupported GPU backends fail whole-model coverage explicitly

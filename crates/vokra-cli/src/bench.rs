@@ -1450,6 +1450,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("tts", audio_seconds, samples)
         }
+        ModelTask::TtsSpeechT5 => {
+            return Err(
+                "bench: arch `speecht5` requires both a strict SpeechT5 HiFi-GAN GGUF and a caller-supplied 512-value x-vector; the generic bench surface has neither sidecar input. Use `vokra-cli run --model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> --speaker-embedding <xvector-512.f32> --text <string> [--backend cpu|metal]` (FR-EX-08: refusing to fabricate a speaker or vocoder)"
+                    .to_owned(),
+            );
+        }
         ModelTask::MelFrontend => {
             // M2-04-T11: bench the Whisper log-mel front-end alone. Running
             // `whisper::mel::log_mel` directly against the input WAV keeps the
