@@ -43,6 +43,8 @@ const POSITION_MAX_PERIOD: f32 = 10_000.0;
 const HEAD_CHUNK_ROWS: usize = 128;
 /// Checkpointed sinusoidal position-table rows in public Transformers MusicGen.
 const TRANSFORMERS_MAX_POSITIONS: usize = 2_048;
+/// Checkpointed sinusoidal position-table rows in public Parler-TTS Mini.
+const PARLER_MAX_POSITIONS: usize = 4_096;
 
 /// AudioCraft's released generation default.
 pub const AUDIOCRAFT_DEFAULT_CFG_COEF: f32 = 3.0;
@@ -263,7 +265,7 @@ impl AudioCraftLmConfig {
     }
 }
 
-/// T5 condition after AudioCraft's learned `description.output_proj` and mask.
+/// T5 condition after the layout's projection (or Parler identity) and mask.
 #[derive(Debug, Clone)]
 pub struct AudioCraftCondition {
     projected: Vec<f32>,
@@ -317,8 +319,16 @@ struct MappedLayerLocs {
 
 struct MappedHeads {
     embeddings: Vec<GgufTensorInfo>,
-    linears: Vec<GgufTensorInfo>,
+    linears: MappedHeadLocs,
     chunk: Mutex<Vec<f32>>,
+}
+
+enum MappedHeadLocs {
+    Separate(Vec<GgufTensorInfo>),
+    /// One row-major `[num_codebooks * vocab_size, d_model]` tensor. Parler's
+    /// multilingual checkpoint fuses the otherwise independent codebook
+    /// heads without changing their row order.
+    Fused(GgufTensorInfo),
 }
 
 enum MappedPosition {
@@ -335,6 +345,13 @@ enum ConditionMaskMode {
     CompactRows,
 }
 
+enum ConditionProjection {
+    Linear(Linear),
+    /// Parler's embedded FLAN-T5 width already equals the decoder width, so
+    /// Transformers does not construct `enc_to_dec_proj` at all.
+    Identity,
+}
+
 struct MappedWeights {
     file: Arc<GgufFile>,
     layers: Vec<MappedLayerLocs>,
@@ -342,7 +359,7 @@ struct MappedWeights {
     heads: MappedHeads,
     position: MappedPosition,
     condition_mask_mode: ConditionMaskMode,
-    condition_proj: Linear,
+    condition_proj: ConditionProjection,
     out_norm: LayerNorm,
     condition_dim: usize,
     config: AudioCraftLmConfig,
@@ -495,12 +512,17 @@ impl AudioCraftLmDecoder {
                 layer_scratch: Mutex::new(empty_layer(d, ffn)),
                 heads: MappedHeads {
                     embeddings,
-                    linears,
+                    linears: MappedHeadLocs::Separate(linears),
                     chunk: Mutex::new(Vec::new()),
                 },
                 position: MappedPosition::AudioCraftSinusoidal,
                 condition_mask_mode: ConditionMaskMode::ZeroRows,
-                condition_proj: Linear::dense(condition_w_t, condition_dim, d, Some(condition_b)),
+                condition_proj: ConditionProjection::Linear(Linear::dense(
+                    condition_w_t,
+                    condition_dim,
+                    d,
+                    Some(condition_b),
+                )),
                 out_norm: LayerNorm {
                     gamma: out_gamma,
                     beta: out_beta,
@@ -648,17 +670,163 @@ impl AudioCraftLmDecoder {
                 layer_scratch: Mutex::new(empty_layer(d, ffn)),
                 heads: MappedHeads {
                     embeddings,
-                    linears,
+                    linears: MappedHeadLocs::Separate(linears),
                     chunk: Mutex::new(Vec::new()),
                 },
                 position: MappedPosition::TransformersTable(position),
                 condition_mask_mode: ConditionMaskMode::CompactRows,
-                condition_proj: Linear::dense(condition_w_t, condition_dim, d, Some(condition_b)),
+                condition_proj: ConditionProjection::Linear(Linear::dense(
+                    condition_w_t,
+                    condition_dim,
+                    d,
+                    Some(condition_b),
+                )),
                 out_norm: LayerNorm {
                     gamma: out_gamma,
                     beta: out_beta,
                 },
                 condition_dim,
+                config,
+            },
+            backend,
+            identity: Arc::new(()),
+        })
+    }
+
+    /// Binds the Transformers decoder layout embedded in public Parler-TTS
+    /// Mini checkpoints.
+    ///
+    /// Parler shares MusicGen's split-QKV decoder math but has no
+    /// `enc_to_dec_proj` because FLAN-T5-large and the decoder are both width
+    /// 1024. Its position table has 4096 rows, and multilingual v1.1 stores
+    /// the nine output heads as one row-concatenated tensor. The caller
+    /// authenticates the complete model manifest before entering this
+    /// layout-specific binder.
+    pub(crate) fn bind_transformers_parler(
+        file: Arc<GgufFile>,
+        config: AudioCraftLmConfig,
+        backend: BackendKind,
+        fused_lm_heads: bool,
+    ) -> Result<Self> {
+        config.validate()?;
+        Compute::for_backend(backend, AUDIOCRAFT_LM_HOT_OPS)?;
+        let d = config.d_model;
+        let ffn = config.ffn_dim;
+        let rows = config.vocab_size + 1;
+        let decoder = "decoder.model.decoder";
+
+        let out_norm_w = exact_info(&file, &format!("{decoder}.layer_norm.weight"), &[d])?;
+        let out_norm_b = exact_info(&file, &format!("{decoder}.layer_norm.bias"), &[d])?;
+        let mut out_gamma = Vec::new();
+        let mut out_beta = Vec::new();
+        widen_into(
+            file.tensor_bytes(&out_norm_w),
+            out_norm_w.dtype,
+            &mut out_gamma,
+            AUDIOCRAFT_MAPPED,
+        )?;
+        widen_into(
+            file.tensor_bytes(&out_norm_b),
+            out_norm_b.dtype,
+            &mut out_beta,
+            AUDIOCRAFT_MAPPED,
+        )?;
+
+        let mut embeddings = Vec::with_capacity(config.num_codebooks);
+        for codebook in 0..config.num_codebooks {
+            embeddings.push(exact_info(
+                &file,
+                &format!("{decoder}.embed_tokens.{codebook}.weight"),
+                &[rows, d],
+            )?);
+        }
+        let linears = if fused_lm_heads {
+            let fused_rows = config
+                .num_codebooks
+                .checked_mul(config.vocab_size)
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(
+                        "audiocraft-lm: Parler fused LM-head rows overflow usize".to_owned(),
+                    )
+                })?;
+            MappedHeadLocs::Fused(exact_info(
+                &file,
+                "decoder.lm_heads.weight",
+                &[fused_rows, d],
+            )?)
+        } else {
+            let mut linears = Vec::with_capacity(config.num_codebooks);
+            for codebook in 0..config.num_codebooks {
+                linears.push(exact_info(
+                    &file,
+                    &format!("decoder.lm_heads.{codebook}.weight"),
+                    &[config.vocab_size, d],
+                )?);
+            }
+            MappedHeadLocs::Separate(linears)
+        };
+        let position = exact_info(
+            &file,
+            &format!("{decoder}.embed_positions.weights"),
+            &[PARLER_MAX_POSITIONS, d],
+        )?;
+
+        let mut layers = Vec::with_capacity(config.num_layers);
+        for layer in 0..config.num_layers {
+            let p = format!("{decoder}.layers.{layer}");
+            let split = |name: &str| -> Result<MappedAttentionLocs> {
+                Ok(MappedAttentionLocs::Split {
+                    q: exact_info(&file, &format!("{name}.q_proj.weight"), &[d, d])?,
+                    k: exact_info(&file, &format!("{name}.k_proj.weight"), &[d, d])?,
+                    v: exact_info(&file, &format!("{name}.v_proj.weight"), &[d, d])?,
+                })
+            };
+            layers.push(MappedLayerLocs {
+                self_attn: split(&format!("{p}.self_attn"))?,
+                self_out: exact_info(&file, &format!("{p}.self_attn.out_proj.weight"), &[d, d])?,
+                cross_attn: split(&format!("{p}.encoder_attn"))?,
+                cross_out: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn.out_proj.weight"),
+                    &[d, d],
+                )?,
+                norm1_w: exact_info(&file, &format!("{p}.self_attn_layer_norm.weight"), &[d])?,
+                norm1_b: exact_info(&file, &format!("{p}.self_attn_layer_norm.bias"), &[d])?,
+                norm_cross_w: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn_layer_norm.weight"),
+                    &[d],
+                )?,
+                norm_cross_b: exact_info(
+                    &file,
+                    &format!("{p}.encoder_attn_layer_norm.bias"),
+                    &[d],
+                )?,
+                norm2_w: exact_info(&file, &format!("{p}.final_layer_norm.weight"), &[d])?,
+                norm2_b: exact_info(&file, &format!("{p}.final_layer_norm.bias"), &[d])?,
+                fc1: exact_info(&file, &format!("{p}.fc1.weight"), &[ffn, d])?,
+                fc2: exact_info(&file, &format!("{p}.fc2.weight"), &[d, ffn])?,
+            });
+        }
+
+        Ok(Self {
+            weights: MappedWeights {
+                file,
+                layers,
+                layer_scratch: Mutex::new(empty_layer(d, ffn)),
+                heads: MappedHeads {
+                    embeddings,
+                    linears,
+                    chunk: Mutex::new(Vec::new()),
+                },
+                position: MappedPosition::TransformersTable(position),
+                condition_mask_mode: ConditionMaskMode::CompactRows,
+                condition_proj: ConditionProjection::Identity,
+                out_norm: LayerNorm {
+                    gamma: out_gamma,
+                    beta: out_beta,
+                },
+                condition_dim: d,
                 config,
             },
             backend,
@@ -681,14 +849,14 @@ impl AudioCraftLmDecoder {
         self.backend
     }
 
-    /// Applies the checkpoint's learned T5 output projection and upstream mask.
+    /// Applies the layout's T5 output projection and upstream mask.
     ///
     /// `hidden` is `[frames, condition_dim]`. `mask`, when provided, contains
     /// exactly `frames` values in `{0,1}`. AudioCraft applies the linear first
     /// and then zeros masked rows. Transformers passes an attention mask; this
-    /// batch-one route preserves that math by compacting projected visible rows
-    /// before cross-attention K/V projection. Projection precedes either mask
-    /// operation because it has a bias.
+    /// batch-one route preserves that math by compacting visible rows before
+    /// cross-attention K/V projection. MusicGen's biased projection precedes
+    /// compaction; Parler selects the strict width-preserving identity path.
     pub fn prepare_condition(
         &self,
         hidden: &[f32],
@@ -718,15 +886,21 @@ impl AudioCraftLmDecoder {
         }
 
         let d = self.weights.config.d_model;
-        let mut projected = vec![0.0; frames * d];
-        let compute = self.compute()?;
-        crate::whisper::nn::linear_apply(
-            &compute,
-            &mut projected,
-            hidden,
-            frames,
-            &self.weights.condition_proj,
-        )?;
+        let mut projected = match &self.weights.condition_proj {
+            ConditionProjection::Linear(projection) => {
+                let mut projected = vec![0.0; frames * d];
+                let compute = self.compute()?;
+                crate::whisper::nn::linear_apply(
+                    &compute,
+                    &mut projected,
+                    hidden,
+                    frames,
+                    projection,
+                )?;
+                projected
+            }
+            ConditionProjection::Identity => hidden.to_vec(),
+        };
         let frames = match (self.weights.condition_mask_mode, mask) {
             (ConditionMaskMode::ZeroRows, Some(mask)) => {
                 for (frame, &visible) in mask.iter().enumerate() {
@@ -1222,7 +1396,32 @@ impl AudioCraftLmDecoder {
         let d = cfg.d_model;
         let vocab = cfg.vocab_size;
         let mut chunk = lock_scratch(&self.weights.heads.chunk, AUDIOCRAFT_MAPPED)?;
-        for (codebook, info) in self.weights.heads.linears.iter().enumerate() {
+        for codebook in 0..cfg.num_codebooks {
+            let (info, head_base) = match &self.weights.heads.linears {
+                MappedHeadLocs::Separate(linears) => (&linears[codebook], 0),
+                MappedHeadLocs::Fused(info) => {
+                    let head_elements = vocab.checked_mul(d).ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "audiocraft LM fused head shape overflows usize".to_owned(),
+                        )
+                    })?;
+                    let head_bytes = head_elements
+                        .checked_mul(info.dtype.type_size())
+                        .ok_or_else(|| {
+                            VokraError::InvalidArgument(
+                                "audiocraft LM fused head byte offset overflows usize".to_owned(),
+                            )
+                        })?;
+                    (
+                        info,
+                        codebook.checked_mul(head_bytes).ok_or_else(|| {
+                            VokraError::InvalidArgument(
+                                "audiocraft LM fused codebook offset overflows usize".to_owned(),
+                            )
+                        })?,
+                    )
+                }
+            };
             let bytes = self.weights.file.tensor_bytes(info);
             let esz = info.dtype.type_size();
             let codebook_out = &mut out[codebook * vocab..(codebook + 1) * vocab];
@@ -1230,7 +1429,7 @@ impl AudioCraftLmDecoder {
             while row < vocab {
                 let rows = HEAD_CHUNK_ROWS.min(vocab - row);
                 let n = rows * d;
-                let start = row * d * esz;
+                let start = head_base + row * d * esz;
                 let end = start + n * esz;
                 widen_into(
                     &bytes[start..end],
@@ -1648,7 +1847,10 @@ mod tests {
         (Arc::new(file), config)
     }
 
-    fn transformers_fixture() -> (Arc<GgufFile>, AudioCraftLmConfig) {
+    fn transformers_fixture_for(
+        parler: bool,
+        fused_lm_heads: bool,
+    ) -> (Arc<GgufFile>, AudioCraftLmConfig) {
         let config = AudioCraftLmConfig {
             d_model: 4,
             num_layers: 1,
@@ -1657,21 +1859,24 @@ mod tests {
             vocab_size: 3,
             num_codebooks: 2,
         };
-        let (d, ffn, condition_dim) = (config.d_model, config.ffn_dim, 3usize);
+        let (d, ffn) = (config.d_model, config.ffn_dim);
+        let condition_dim = if parler { d } else { 3usize };
         let decoder = "decoder.model.decoder";
         let mut builder = GgufBuilder::new();
-        add_f32(
-            &mut builder,
-            "enc_to_dec_proj.weight",
-            &[d as u64, condition_dim as u64],
-            vec![0.0; d * condition_dim],
-        );
-        add_f32(
-            &mut builder,
-            "enc_to_dec_proj.bias",
-            &[d as u64],
-            vec![1.0; d],
-        );
+        if !parler {
+            add_f32(
+                &mut builder,
+                "enc_to_dec_proj.weight",
+                &[d as u64, condition_dim as u64],
+                vec![0.0; d * condition_dim],
+            );
+            add_f32(
+                &mut builder,
+                "enc_to_dec_proj.bias",
+                &[d as u64],
+                vec![1.0; d],
+            );
+        }
         add_f32(
             &mut builder,
             &format!("{decoder}.layer_norm.weight"),
@@ -1692,20 +1897,35 @@ mod tests {
                 &[rows as u64, d as u64],
                 vec![0.125; rows * d],
             );
+            if !fused_lm_heads {
+                add_f32(
+                    &mut builder,
+                    &format!("decoder.lm_heads.{codebook}.weight"),
+                    &[config.vocab_size as u64, d as u64],
+                    vec![0.25; config.vocab_size * d],
+                );
+            }
+        }
+        if fused_lm_heads {
             add_f32(
                 &mut builder,
-                &format!("decoder.lm_heads.{codebook}.weight"),
-                &[config.vocab_size as u64, d as u64],
-                vec![0.25; config.vocab_size * d],
+                "decoder.lm_heads.weight",
+                &[(config.num_codebooks * config.vocab_size) as u64, d as u64],
+                vec![0.25; config.num_codebooks * config.vocab_size * d],
             );
         }
-        let mut positions = vec![0.0; TRANSFORMERS_MAX_POSITIONS * d];
+        let position_rows = if parler {
+            PARLER_MAX_POSITIONS
+        } else {
+            TRANSFORMERS_MAX_POSITIONS
+        };
+        let mut positions = vec![0.0; position_rows * d];
         add_sinusoidal_position(&mut positions[..d], 0).unwrap();
         add_sinusoidal_position(&mut positions[d..2 * d], 1).unwrap();
         add_f32(
             &mut builder,
             &format!("{decoder}.embed_positions.weights"),
-            &[TRANSFORMERS_MAX_POSITIONS as u64, d as u64],
+            &[position_rows as u64, d as u64],
             positions,
         );
 
@@ -1759,6 +1979,14 @@ mod tests {
 
         let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         (Arc::new(file), config)
+    }
+
+    fn transformers_fixture() -> (Arc<GgufFile>, AudioCraftLmConfig) {
+        transformers_fixture_for(false, false)
+    }
+
+    fn parler_fixture(fused_lm_heads: bool) -> (Arc<GgufFile>, AudioCraftLmConfig) {
+        transformers_fixture_for(true, fused_lm_heads)
     }
 
     #[test]
@@ -1835,6 +2063,66 @@ mod tests {
             .step_into(&mut state, &[config.special_token_id(); 2], &mut logits)
             .unwrap();
         assert!(logits.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn parler_layout_uses_identity_condition_and_supports_both_head_layouts() {
+        let mut outputs = Vec::new();
+        for fused in [false, true] {
+            let (file, config) = parler_fixture(fused);
+            let decoder = AudioCraftLmDecoder::bind_transformers_parler(
+                file,
+                config,
+                BackendKind::Cpu,
+                fused,
+            )
+            .unwrap();
+            let condition = decoder
+                .prepare_condition(&[0.5; 8], 2, Some(&[1, 0]))
+                .unwrap();
+            assert_eq!(condition.frames(), 1);
+            assert_eq!(condition.as_slice(), [0.5; 4]);
+            assert!(
+                decoder
+                    .new_state(&condition, PARLER_MAX_POSITIONS + 1)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("position table rows")
+            );
+
+            let mut state = decoder.new_state(&condition, 1).unwrap();
+            let mut logits = vec![0.0; config.num_codebooks * config.vocab_size];
+            decoder
+                .step_into(&mut state, &[config.special_token_id(); 2], &mut logits)
+                .unwrap();
+            assert!(logits.iter().all(|value| value.is_finite()));
+            outputs.push(logits);
+        }
+        assert_eq!(outputs[0], outputs[1]);
+    }
+
+    #[test]
+    fn parler_head_layout_mismatch_is_an_explicit_bind_error() {
+        let (separate, config) = parler_fixture(false);
+        assert!(
+            AudioCraftLmDecoder::bind_transformers_parler(
+                separate,
+                config,
+                BackendKind::Cpu,
+                true,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("decoder.lm_heads.weight")
+        );
+
+        let (fused, config) = parler_fixture(true);
+        assert!(
+            AudioCraftLmDecoder::bind_transformers_parler(fused, config, BackendKind::Cpu, false,)
+                .unwrap_err()
+                .to_string()
+                .contains("decoder.lm_heads.0.weight")
+        );
     }
 
     #[test]
