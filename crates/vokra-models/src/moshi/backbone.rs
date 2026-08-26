@@ -316,9 +316,8 @@ struct MappedBlockScratch {
 ///   widen formula as `gguf::quant::dequantize`, same transpose index
 ///   math — pinned by `mapped_blocks_match_resident_bitwise`). The
 ///   trade is recurring per-step decode bandwidth for bounded memory.
-/// - Supported payload dtypes: `F32` and `BF16` (the two the Moshi
-///   converter emits). Anything else is a loud bind-time error naming
-///   the resident loader as the alternative.
+/// - Supported dense payload dtypes: `F32`, `F16`, and `BF16`. Anything else
+///   is a loud bind-time error naming the resident loader as the alternative.
 ///
 /// Holds the mapping alive via `Arc<GgufFile>`; the scratch sits behind a
 /// `Mutex` so the owning engine stays `Send + Sync` (concurrent sessions
@@ -352,7 +351,7 @@ impl MappedTemporalBlocks {
     ///
     /// [`VokraError::ModelLoad`] naming any missing tensor, any element
     /// count that disagrees with the config shapes, or any payload dtype
-    /// outside `{F32, BF16}`.
+    /// outside `{F32, F16, BF16}`.
     pub fn bind(file: Arc<GgufFile>, config: &MoshiConfig) -> Result<Self> {
         config.validate_for_forward()?;
         let d = config.temporal.d_model;
@@ -601,7 +600,7 @@ impl MappedHeadWeights {
     ///
     /// [`VokraError::ModelLoad`] naming any missing tensor, any element
     /// count that disagrees with the config shapes, or any payload dtype
-    /// outside `{F32, BF16}` — mirrors [`MappedTemporalBlocks::bind`].
+    /// outside `{F32, F16, BF16}` — mirrors [`MappedTemporalBlocks::bind`].
     pub fn bind(file: Arc<GgufFile>, config: &MoshiConfig) -> Result<Self> {
         config.validate_for_forward()?;
         let d = config.temporal.d_model;
@@ -799,7 +798,8 @@ impl MappedHeadWeights {
 /// Widen row `tok` of a `[rows, d]` mapped tensor and add it into
 /// `dst[..d]` — the fused equivalent of `widen_into(row_bytes) + acc[i] +=
 /// row[i]` without the intermediate Vec. Byte-formula-identical to the
-/// resident path (same F32 / BF16 widen), so tests can compare bytewise.
+/// resident path (same F32 / F16 / BF16 widen), so tests can compare
+/// bytewise.
 fn add_widened_row(
     file: &GgufFile,
     info: &GgufTensorInfo,
@@ -819,6 +819,12 @@ fn add_widened_row(
             }
             Ok(())
         }
+        GgmlType::F16 => {
+            for (i, c) in src.chunks_exact(2).enumerate() {
+                dst[i] += vokra_core::gguf::quant::f16_to_f32(u16::from_le_bytes([c[0], c[1]]));
+            }
+            Ok(())
+        }
         GgmlType::BF16 => {
             for (i, c) in src.chunks_exact(2).enumerate() {
                 dst[i] += f32::from_bits(u32::from(u16::from_le_bytes([c[0], c[1]])) << 16);
@@ -827,7 +833,7 @@ fn add_widened_row(
         }
         other => Err(VokraError::ModelLoad(format!(
             "moshi mapped head row: unsupported dtype {other:?}; \
-             the bounded-memory mapped path serves F32 and BF16 payloads \
+             the bounded-memory mapped path serves dense F32, F16, and BF16 payloads \
              only — load through MoshiEngine::from_gguf_with_policy \
              (resident) for this GGUF (FR-EX-08)"
         ))),
@@ -2065,9 +2071,10 @@ mod tests {
     /// Serializes a synthesized backbone into a GGUF carrying
     /// upstream-verbatim tensor names in the *packed* layouts
     /// (in_proj_weight `[3d, d]`, gating.linear_in `[2h, d]`), with every
-    /// float payload encoded as `dtype` (`F32` verbatim; `BF16` by bit
-    /// truncation — the resident and mapped loaders then decode the SAME
-    /// stored bits, which is what the bitwise-equality tests compare).
+    /// float payload encoded as `dtype` (`F32` verbatim, IEEE-754 `F16`
+    /// round-to-nearest-even, or `BF16` by bit truncation — the resident and
+    /// mapped loaders then decode the SAME stored bits, which is what the
+    /// bitwise-equality tests compare).
     fn packed_backbone_gguf(
         cfg: &MoshiConfig,
         w: &MoshiBackboneWeights,
@@ -2079,11 +2086,15 @@ mod tests {
         let enc = |v: &[f32]| -> Vec<u8> {
             match dtype {
                 GgmlType::F32 => v.iter().flat_map(|x| x.to_le_bytes()).collect(),
+                GgmlType::F16 => v
+                    .iter()
+                    .flat_map(|&x| vokra_core::kv_quant::f32_to_f16_bits(x).to_le_bytes())
+                    .collect(),
                 GgmlType::BF16 => v
                     .iter()
                     .flat_map(|x| ((x.to_bits() >> 16) as u16).to_le_bytes())
                     .collect(),
-                other => panic!("test encoder supports F32/BF16 only, got {other:?}"),
+                other => panic!("test encoder supports F32/F16/BF16 only, got {other:?}"),
             }
         };
 
@@ -2285,48 +2296,9 @@ mod tests {
     }
 
     #[test]
-    fn mapped_bind_rejects_unsupported_dtype_and_missing_tensors() {
+    fn mapped_bind_rejects_missing_tensors() {
         use vokra_core::gguf::GgufBuilder;
         let cfg = MoshiConfig::tiny_for_tests();
-        let src = MoshiBackbone::synthesized(cfg.clone(), 9).unwrap();
-
-        // An F16 layer tensor: bind must refuse loudly, naming the dtype
-        // and the resident alternative (FR-EX-08 — never a silent widen).
-        let bytes = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
-        let base = GgufFile::parse(bytes).unwrap();
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "moshi");
-        for t in base.tensors() {
-            let name = t.name.clone();
-            if name == "transformer.layers.0.self_attn.in_proj_weight" {
-                // Re-encode this one tensor as F16 (payload content is
-                // irrelevant — bind rejects on dtype before reading it).
-                let n = t.element_count().unwrap();
-                b.add_tensor(
-                    &name,
-                    GgmlType::F16,
-                    t.dimensions.clone(),
-                    vec![0u8; (n * 2) as usize],
-                )
-                .unwrap();
-            } else {
-                b.add_tensor(
-                    &name,
-                    t.dtype,
-                    t.dimensions.clone(),
-                    base.tensor_bytes(t).to_vec(),
-                )
-                .unwrap();
-            }
-        }
-        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
-        let err = MappedTemporalBlocks::bind(Arc::clone(&file), &cfg).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("F16"), "names the dtype: {msg}");
-        assert!(
-            msg.contains("from_gguf_with_policy"),
-            "points at the resident loader: {msg}"
-        );
 
         // A missing layer tensor is a loud ModelLoad naming it.
         let mut b = GgufBuilder::new();
@@ -2443,14 +2415,14 @@ mod tests {
     // Voxtral MappedHeads precedent — 12e574e). Tests verify that per-row
     // lookups and the chunked GEMV are BIT-identical to the resident head
     // (`MoshiBackboneWeights::from_gguf` → `text_emb / audio_emb /
-    // text_linear`) over both F32 and BF16 stored payloads.
+    // text_linear`) over F32, F16, and BF16 stored payloads.
     // ---------------------------------------------------------------------
 
     #[test]
     fn mapped_head_weights_bind_validates_shapes_and_dtype() {
-        // Bind succeeds on F32 and BF16 payloads, exposing the widened
+        // Bind succeeds on F32, F16, and BF16 payloads, exposing the widened
         // out_norm_gamma (small, cached) and every head tensor descriptor.
-        for dtype in [GgmlType::F32, GgmlType::BF16] {
+        for dtype in [GgmlType::F32, GgmlType::F16, GgmlType::BF16] {
             let cfg = MoshiConfig::tiny_for_tests();
             let src = MoshiBackbone::synthesized(cfg.clone(), 91).unwrap();
             let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
@@ -2466,8 +2438,8 @@ mod tests {
     #[test]
     fn mapped_head_weights_text_row_matches_resident_bitwise() {
         // Per-token widen+accumulate must reproduce the resident text_emb
-        // row-sum contract byte-for-byte, on both F32 and BF16 storage.
-        for dtype in [GgmlType::F32, GgmlType::BF16] {
+        // row-sum contract byte-for-byte on F32, F16, and BF16 storage.
+        for dtype in [GgmlType::F32, GgmlType::F16, GgmlType::BF16] {
             let cfg = MoshiConfig::tiny_for_tests();
             let src = MoshiBackbone::synthesized(cfg.clone(), 123).unwrap();
             let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
@@ -2503,7 +2475,7 @@ mod tests {
     #[test]
     fn mapped_head_weights_audio_row_matches_resident_bitwise() {
         // Per-channel audio row widen+accumulate matches resident audio_emb.
-        for dtype in [GgmlType::F32, GgmlType::BF16] {
+        for dtype in [GgmlType::F32, GgmlType::F16, GgmlType::BF16] {
             let cfg = MoshiConfig::tiny_for_tests();
             let src = MoshiBackbone::synthesized(cfg.clone(), 456).unwrap();
             let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
@@ -2543,7 +2515,7 @@ mod tests {
         // Chunked GEMV over text_linear must be BIT-identical to the
         // resident head's gemv_f32 call: each row's inner accumulation
         // order is untouched, so the chunked walk is byte-equal.
-        for dtype in [GgmlType::F32, GgmlType::BF16] {
+        for dtype in [GgmlType::F32, GgmlType::F16, GgmlType::BF16] {
             let cfg = MoshiConfig::tiny_for_tests();
             let src = MoshiBackbone::synthesized(cfg.clone(), 789).unwrap();
             let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);
@@ -2590,50 +2562,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mapped_head_weights_bind_rejects_unsupported_dtype() {
-        // An F16 head tensor: bind must refuse loudly (mapped path serves
-        // F32 / BF16 only, mirrors MappedTemporalBlocks::bind).
-        use vokra_core::gguf::GgufBuilder;
-        let cfg = MoshiConfig::tiny_for_tests();
-        let src = MoshiBackbone::synthesized(cfg.clone(), 3).unwrap();
-        let d = cfg.temporal.d_model;
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "moshi");
-        // Poison text_emb as F16 (payload len must match F16 byte width).
-        let n = (cfg.text_card + 1) * d;
-        b.add_tensor(
-            "text_emb.weight",
-            GgmlType::F16,
-            vec![(cfg.text_card + 1) as u64, d as u64],
-            vec![0u8; n * 2],
-        )
-        .unwrap();
-        // Rest as F32 (irrelevant — bind rejects on dtype before proceeding).
-        let full = packed_backbone_gguf(&cfg, src.weights(), GgmlType::F32);
-        let full_file = GgufFile::parse(full).unwrap();
-        for t in full_file.tensors() {
-            if t.name == "text_emb.weight" {
-                continue;
-            }
-            b.add_tensor(
-                &t.name,
-                t.dtype,
-                t.dimensions.clone(),
-                full_file.tensor_bytes(t).to_vec(),
-            )
-            .unwrap();
-        }
-        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
-        let err = MappedHeadWeights::bind(file, &cfg).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("F16"), "names the dtype: {msg}");
-        assert!(
-            msg.contains("from_gguf_with_policy"),
-            "points at the resident loader: {msg}"
-        );
-    }
-
     // ---------------------------------------------------------------------
     // MoshiBackbone::new_mapped_full — the fully mapped-lazy load
     // (head + blocks). The forward on this backbone must reproduce the
@@ -2646,9 +2574,9 @@ mod tests {
         // Full end-to-end contract: a MoshiBackbone built through the
         // fully mapped-lazy path (mapped_heads + mapped_blocks) must
         // return the exact same hidden state AND text logits as the
-        // resident MoshiBackbone::new for every step, over both F32 and
-        // BF16 stored payloads.
-        for dtype in [GgmlType::F32, GgmlType::BF16] {
+        // resident MoshiBackbone::new for every step over F32, F16, and BF16
+        // stored payloads.
+        for dtype in [GgmlType::F32, GgmlType::F16, GgmlType::BF16] {
             let cfg = MoshiConfig::tiny_for_tests();
             let src = MoshiBackbone::synthesized(cfg.clone(), 214).unwrap();
             let bytes = packed_backbone_gguf(&cfg, src.weights(), dtype);

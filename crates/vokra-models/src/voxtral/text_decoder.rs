@@ -183,7 +183,8 @@ impl MappedTextBlocks {
     ///
     /// [`VokraError::ModelLoad`] naming any missing tensor, any element count
     /// that disagrees with the config shapes, or any payload dtype outside
-    /// `{F32, BF16}` (a quantized GGUF must use the resident loader).
+    /// `{F32, F16, BF16}` (a block-quantized GGUF must use the resident
+    /// loader).
     pub fn bind(file: Arc<GgufFile>, cfg: &VoxtralConfig, prefix: &str) -> Result<Self> {
         let d = cfg.text.hidden_dim;
         let head_dim = cfg.text.head_dim();
@@ -1530,11 +1531,11 @@ mod tests {
     /// Builds a GGUF carrying a full text decoder (heads + `n_layer` blocks)
     /// with deterministic non-trivial weights, in the requested payload dtype.
     ///
-    /// `dtype` drives the mapped store's two supported widen paths: BF16 is
-    /// the real-checkpoint hot path (761 of 762 Voxtral tensors), F32 the
-    /// other. Values are generated as BF16-representable patterns so the two
-    /// dtypes describe the *same* numbers — the resident/mapped comparison is
-    /// then about residency, not about dtype rounding.
+    /// `dtype` drives the mapped store's three supported dense widen paths:
+    /// BF16 is the real-checkpoint hot path (761 of 762 Voxtral tensors), and
+    /// F16/F32 cover the other public dense layouts. Each assertion compares
+    /// resident and mapped decoding of the same stored payload, so it is about
+    /// residency rather than cross-dtype rounding.
     fn decoder_gguf(cfg: &VoxtralConfig, dtype: vokra_core::gguf::GgmlType) -> GgufFile {
         use vokra_core::gguf::{GgmlType, GgufBuilder};
         let d = cfg.text.hidden_dim;
@@ -1558,11 +1559,15 @@ mod tests {
         let bytes = |vals: &[f32]| -> Vec<u8> {
             match dtype {
                 GgmlType::F32 => vals.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                GgmlType::F16 => vals
+                    .iter()
+                    .flat_map(|&v| vokra_core::kv_quant::f32_to_f16_bits(v).to_le_bytes())
+                    .collect(),
                 GgmlType::BF16 => vals
                     .iter()
                     .flat_map(|v| (((v.to_bits()) >> 16) as u16).to_le_bytes())
                     .collect(),
-                other => panic!("fixture covers F32/BF16 only, got {other:?}"),
+                other => panic!("fixture covers F32/F16/BF16 only, got {other:?}"),
             }
         };
         let mut b = GgufBuilder::new();
@@ -1668,12 +1673,12 @@ mod tests {
     /// index math. Anything less would make the mapped path a different model,
     /// not a cheaper loader.
     ///
-    /// Both payload dtypes are covered because the mapped store widens them
-    /// through different arms.
+    /// All three dense payload dtypes are covered because the mapped store
+    /// widens them through different arms.
     #[test]
     fn mapped_blocks_match_resident_bitwise() {
         use vokra_core::gguf::GgmlType;
-        for dtype in [GgmlType::BF16, GgmlType::F32] {
+        for dtype in [GgmlType::BF16, GgmlType::F16, GgmlType::F32] {
             let cfg = crate::voxtral::test_support::gqa_config();
             let file = decoder_gguf(&cfg, dtype);
             let resident = TextDecoder::load(&file, &cfg).unwrap();
@@ -1719,7 +1724,7 @@ mod tests {
     #[test]
     fn mapped_heads_match_resident_bitwise() {
         use vokra_core::gguf::GgmlType;
-        for dtype in [GgmlType::BF16, GgmlType::F32] {
+        for dtype in [GgmlType::BF16, GgmlType::F16, GgmlType::F32] {
             for vocab in [
                 crate::voxtral::test_support::gqa_config().text.vocab_size,
                 HEAD_CHUNK_ROWS + 7,
@@ -1779,45 +1784,6 @@ mod tests {
                 "{label}: out-of-range token must be explicit, got: {err}"
             );
         }
-    }
-
-    /// A payload dtype the mapped path cannot widen in place must be refused
-    /// loudly, naming the resident constructor — never widened wrong, never a
-    /// silent fallback (FR-EX-08).
-    #[test]
-    fn mapped_bind_refuses_unsupported_dtype_and_points_at_the_resident_loader() {
-        use vokra_core::gguf::{GgmlType, GgufBuilder};
-        let cfg = crate::voxtral::test_support::gqa_config();
-        let d = cfg.text.hidden_dim;
-        let mut b = GgufBuilder::new();
-        b.add_tensor(
-            "model.embed_tokens.weight",
-            GgmlType::F32,
-            vec![cfg.text.vocab_size as u64, d as u64],
-            vec![0u8; cfg.text.vocab_size * d * 4],
-        )
-        .unwrap();
-        // F16 is correctly sized for any element count, so this reaches the
-        // dtype arm rather than tripping the element-count check first. The
-        // mapped path serves F32/BF16 only — F16 has no in-place widen here.
-        b.add_tensor(
-            "model.layers.0.input_layernorm.weight",
-            GgmlType::F16,
-            vec![d as u64],
-            vec![0u8; d * GgmlType::F16.type_size()],
-        )
-        .unwrap();
-        let file = Arc::new(GgufFile::parse(b.to_bytes().unwrap()).unwrap());
-        let err = MappedTextBlocks::bind(Arc::clone(&file), &cfg, "model.").unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("voxtral"),
-            "names the model that refused: {msg}"
-        );
-        assert!(
-            msg.contains("TextDecoder::load"),
-            "points at the resident loader so the refusal is actionable: {msg}"
-        );
     }
 
     /// A missing layer tensor is a loud bind-time error naming the tensor —

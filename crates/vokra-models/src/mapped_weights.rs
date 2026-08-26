@@ -22,21 +22,23 @@
 //! # Bit-identity contract
 //!
 //! The widening formulas here are byte-for-byte the ones
-//! `gguf::quant::dequantize` uses (BF16: the stored `u16` is the *top half* of
-//! the f32 bit pattern, so `bits << 16` is exact and lossless; F32:
-//! `from_le_bytes`). A mapped store must therefore produce **bit-identical**
-//! values to the corresponding resident loader — pinned per model by a
-//! `mapped_*_match_resident_bitwise*` test.
+//! `gguf::quant::dequantize` uses (F16: the canonical IEEE-754 half decoder;
+//! BF16: the stored `u16` is the *top half* of the f32 bit pattern, so
+//! `bits << 16` is exact and lossless; F32: `from_le_bytes`). A mapped store
+//! must therefore produce **bit-identical** values to the corresponding
+//! resident loader — pinned per model by a `mapped_*_match_resident_bitwise*`
+//! test.
 
 use std::sync::{Mutex, MutexGuard};
 
+use vokra_core::gguf::quant::f16_to_f32;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufTensorInfo};
 use vokra_core::{Result, VokraError};
 
 /// Identifies the model a mapped store belongs to, for error messages only.
 ///
 /// `resident_entry` is the constructor a caller should reach for when the
-/// mapped path genuinely cannot serve a payload (a quantized or F16 GGUF).
+/// mapped path genuinely cannot serve a payload (a block-quantized GGUF).
 /// Naming it is what makes the refusal actionable rather than a dead end —
 /// the mapped path is an optimization, and there is always a resident route.
 #[derive(Debug, Clone, Copy)]
@@ -64,9 +66,10 @@ pub(crate) struct MappedModel {
 /// writes at tile boundaries for aligned starts.
 pub(crate) const TRANSPOSE_TILE: usize = 32;
 
-/// Widens + transposes a `[rows, cols]` row-major `F32`/`BF16` payload into
-/// `dst` as `[cols, rows]` — the fused equivalent of `quant::dequantize`
-/// followed by a transpose, and byte-formula-identical to both.
+/// Widens + transposes a `[rows, cols]` row-major `F32`/`F16`/`BF16` payload
+/// into `dst` as `[cols, rows]` — the fused equivalent of
+/// `quant::dequantize` followed by a transpose, and byte-formula-identical to
+/// both.
 ///
 /// The traversal is **tiled** ([`TRANSPOSE_TILE`]) purely for locality: every
 /// destination element is written exactly once, from the same source element,
@@ -78,8 +81,9 @@ pub(crate) const TRANSPOSE_TILE: usize = 32;
 /// # Errors
 ///
 /// [`VokraError::ModelLoad`] if `src` is not exactly `rows * cols` elements
-/// wide for `dtype`, or if `dtype` is outside `{F32, BF16}` (checked *before*
-/// `dst` is touched, so a rejected call leaves the destination untouched).
+/// wide for `dtype`, or if `dtype` is outside `{F32, F16, BF16}` (checked
+/// *before* `dst` is touched, so a rejected call leaves the destination
+/// untouched).
 pub(crate) fn transpose_widen(
     src: &[u8],
     dtype: GgmlType,
@@ -98,12 +102,11 @@ pub(crate) fn transpose_widen(
             dtype
         )));
     }
-    if !matches!(dtype, GgmlType::F32 | GgmlType::BF16) {
+    if !matches!(dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
         return Err(unsupported_dtype(model, dtype));
     }
     dst.clear();
     dst.resize(n, 0.0);
-    let is_f32 = dtype == GgmlType::F32;
     let esz = dtype.type_size();
     for r0 in (0..rows).step_by(TRANSPOSE_TILE) {
         let r_end = (r0 + TRANSPOSE_TILE).min(rows);
@@ -113,10 +116,15 @@ pub(crate) fn transpose_widen(
                 let row_base = r * cols;
                 for c in c0..c_end {
                     let i = (row_base + c) * esz;
-                    dst[c * rows + r] = if is_f32 {
-                        f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
-                    } else {
-                        f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
+                    dst[c * rows + r] = match dtype {
+                        GgmlType::F32 => {
+                            f32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]])
+                        }
+                        GgmlType::F16 => f16_to_f32(u16::from_le_bytes([src[i], src[i + 1]])),
+                        GgmlType::BF16 => f32::from_bits(
+                            u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16,
+                        ),
+                        _ => unreachable!("dense dtype checked before destination allocation"),
                     };
                 }
             }
@@ -125,12 +133,12 @@ pub(crate) fn transpose_widen(
     Ok(())
 }
 
-/// Widens a dense `F32`/`BF16` payload into `dst` in storage order (the γ
-/// vectors — no transpose).
+/// Widens a dense `F32`/`F16`/`BF16` payload into `dst` in storage order (the
+/// gamma/bias vectors — no transpose).
 ///
 /// # Errors
 ///
-/// [`VokraError::ModelLoad`] if `dtype` is outside `{F32, BF16}`.
+/// [`VokraError::ModelLoad`] if `dtype` is outside `{F32, F16, BF16}`.
 pub(crate) fn widen_into(
     src: &[u8],
     dtype: GgmlType,
@@ -144,6 +152,14 @@ pub(crate) fn widen_into(
             dst.reserve(src.len() / esz);
             for c in src.chunks_exact(4) {
                 dst.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+            }
+            Ok(())
+        }
+        GgmlType::F16 => {
+            dst.clear();
+            dst.reserve(src.len() / esz);
+            for c in src.chunks_exact(2) {
+                dst.push(f16_to_f32(u16::from_le_bytes([c[0], c[1]])));
             }
             Ok(())
         }
@@ -172,14 +188,14 @@ fn unsupported_dtype(model: MappedModel, dtype: GgmlType) -> VokraError {
     } = model;
     VokraError::ModelLoad(format!(
         "{name} mapped blocks: unsupported dtype {dtype:?}; the bounded-memory \
-         mapped path serves F32 and BF16 payloads only — load through \
+         mapped path serves dense F32, F16, and BF16 payloads only — load through \
          {resident_entry} (resident) for this GGUF (FR-EX-08: explicit, not \
          silent)"
     ))
 }
 
 /// Resolves a tensor descriptor for a mapped store: present, exact element
-/// count, dtype in `{F32, BF16}` (loud otherwise — FR-EX-08).
+/// count, dtype in `{F32, F16, BF16}` (loud otherwise — FR-EX-08).
 ///
 /// Doing this for **every** layer at bind time is what keeps a malformed GGUF
 /// from failing halfway through a stream: the load fails, not the forward.
@@ -207,7 +223,7 @@ pub(crate) fn mapped_info(
         )));
     }
     match info.dtype {
-        GgmlType::F32 | GgmlType::BF16 => Ok(info.clone()),
+        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => Ok(info.clone()),
         other => Err(unsupported_dtype(model, other)),
     }
 }
@@ -258,7 +274,11 @@ mod tests {
                         let i = (r * cols + c) * 2;
                         f32::from_bits(u32::from(u16::from_le_bytes([src[i], src[i + 1]])) << 16)
                     }
-                    other => panic!("oracle covers F32/BF16 only, got {other:?}"),
+                    GgmlType::F16 => {
+                        let i = (r * cols + c) * 2;
+                        f16_to_f32(u16::from_le_bytes([src[i], src[i + 1]]))
+                    }
+                    other => panic!("oracle covers F32/F16/BF16 only, got {other:?}"),
                 };
             }
         }
@@ -308,6 +328,19 @@ mod tests {
                 "BF16 {rows}x{cols}: tiled transpose must be bit-identical"
             );
 
+            let mut f16 = Vec::with_capacity(n * 2);
+            for k in 0..n {
+                f16.extend_from_slice(&word(k).to_le_bytes());
+            }
+            let (mut got, mut want) = (Vec::new(), Vec::new());
+            transpose_widen(&f16, GgmlType::F16, rows, cols, &mut got, TEST_MODEL).unwrap();
+            transpose_widen_naive(&f16, GgmlType::F16, rows, cols, &mut want);
+            assert_eq!(
+                got.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                want.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "F16 {rows}x{cols}: tiled transpose must be bit-identical"
+            );
+
             let mut f32b = Vec::with_capacity(n * 4);
             for k in 0..n {
                 let bits = (u32::from(word(k)) << 16) | u32::from(word(k + 1));
@@ -354,8 +387,8 @@ mod tests {
         );
     }
 
-    /// `widen_into` is the no-transpose sibling; it must use the identical
-    /// BF16 formula (top-half shift) and reject the same dtypes.
+    /// `widen_into` is the no-transpose sibling; it must use the canonical
+    /// F16 decoder, the exact BF16 top-half shift, and reject block quants.
     #[test]
     fn widen_into_is_exact_and_rejects_quantized() {
         let mut src = Vec::new();
@@ -370,6 +403,15 @@ mod tests {
                 v.to_bits(),
                 u32::from(word(k)) << 16,
                 "BF16 widening is the exact top-half shift"
+            );
+        }
+        widen_into(&src, GgmlType::F16, &mut dst, TEST_MODEL).unwrap();
+        assert_eq!(dst.len(), 64);
+        for (k, value) in dst.iter().enumerate() {
+            assert_eq!(
+                value.to_bits(),
+                f16_to_f32(word(k)).to_bits(),
+                "F16 widening must match gguf::quant::f16_to_f32"
             );
         }
         let err = widen_into(&[0u8; 144], GgmlType::Q4K, &mut dst, TEST_MODEL).unwrap_err();
