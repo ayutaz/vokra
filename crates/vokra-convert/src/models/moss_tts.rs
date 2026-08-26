@@ -29,7 +29,8 @@
 //!   1024`; `audio_tokenizer_sample_rate = 48_000`; language backbone
 //!   = a GPT-2 flavour with `hidden_size = 768` /
 //!   `gpt2_config.n_layer = 12` / `gpt2_config.n_head = 12` /
-//!   `gpt2_config.n_positions = 32_768` / vocab = 16_384;
+//!   `gpt2_config.n_positions = 32_768` / vocab = 16_384 / rotary
+//!   positions with base 10_000 / LayerNorm epsilon 1e-5;
 //!   `local_transformer_layers = 1`). Ships as a torch pickle
 //!   `pytorch_model.bin`, not safetensors — callers pre-bridge with
 //!   `tools/parity/bin_to_safetensors.py` (the OpenBMB VoxCPM
@@ -235,10 +236,9 @@ const KEY_MOSS_LLM_HEAD_DIM: &str = "vokra.moss_tts.llm.head_dim";
 const KEY_MOSS_LLM_VOCAB_SIZE: &str = "vokra.moss_tts.llm.vocab_size";
 
 /// Language backbone RoPE base θ (`rope_theta`). 1_000_000 for
-/// Delay + Local. GPT-2 (Nano) uses **learned** positional embeddings
-/// and therefore has no RoPE base; the Nano key is written as `0`
-/// sentinel so a runtime binder can tell "not applicable" apart from
-/// "silently defaulted" (FR-EX-08).
+/// Delay + Local. The custom GPT-2 implementation used by Nano also
+/// uses RoPE, with `gpt2_config.position_embedding_type = "rope"` and
+/// `gpt2_config.rope_base = 10_000`.
 const KEY_MOSS_LLM_ROPE_BASE: &str = "vokra.moss_tts.llm.rope_base";
 
 /// Language backbone RMSNorm ε (`rms_norm_eps`). 1e-6 for Delay +
@@ -252,6 +252,32 @@ const KEY_MOSS_LLM_RMS_NORM_EPS: &str = "vokra.moss_tts.llm.rms_norm_eps";
 /// without inspecting the arch label. `"qwen3"` for Delay + Local,
 /// `"gpt2"` for Nano.
 const KEY_MOSS_LLM_FAMILY: &str = "vokra.moss_tts.llm.family";
+
+/// Exact upstream revision used for the corrected Nano contract.
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+/// SHA-256 of the released Nano `pytorch_model.bin` LFS object.
+const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+/// SHA-256 of the pinned Nano `config.json`.
+const KEY_MOSS_CONFIG_SHA256: &str = "vokra.moss_tts.config_sha256";
+/// Positional encoding selected by the custom GPT-2 implementation.
+const KEY_MOSS_POSITION_EMBEDDING_TYPE: &str = "vokra.moss_tts.llm.position_embedding_type";
+/// GPT-2 LayerNorm epsilon. Distinct from the legacy RMSNorm-only key.
+const KEY_MOSS_LAYER_NORM_EPS: &str = "vokra.moss_tts.llm.layer_norm_eps";
+/// Maximum global sequence length.
+const KEY_MOSS_MAX_POSITION_EMBEDDINGS: &str = "vokra.moss_tts.llm.max_position_embeddings";
+/// Number of autoregressive per-frame local-transformer blocks.
+const KEY_MOSS_LOCAL_TRANSFORMER_LAYERS: &str = "vokra.moss_tts.local_transformer_layers";
+/// Text/prompt and audio framing token IDs required by Nano generation.
+const KEY_MOSS_PAD_TOKEN_ID: &str = "vokra.moss_tts.pad_token_id";
+const KEY_MOSS_IM_START_TOKEN_ID: &str = "vokra.moss_tts.im_start_token_id";
+const KEY_MOSS_IM_END_TOKEN_ID: &str = "vokra.moss_tts.im_end_token_id";
+const KEY_MOSS_AUDIO_START_TOKEN_ID: &str = "vokra.moss_tts.audio_start_token_id";
+const KEY_MOSS_AUDIO_END_TOKEN_ID: &str = "vokra.moss_tts.audio_end_token_id";
+const KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_user_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_assistant_slot_token_id";
+const KEY_MOSS_AUDIO_PAD_TOKEN_ID: &str = "vokra.moss_tts.audio_pad_token_id";
+/// Exact decoder companion selected by the Nano config.
+const KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM: &str = "vokra.moss_tts.audio_tokenizer_upstream_hf";
 
 // ─── Per-variant transcribed constants ───────────────────────────────
 
@@ -300,12 +326,27 @@ const NANO_LLM_N_HEAD_KV: u32 = 12;
 /// `hidden_size / n_head = 768 / 12 = 64`.
 const NANO_LLM_HEAD_DIM: u32 = 64;
 const NANO_LLM_VOCAB: u32 = 16_384;
-/// GPT-2 uses learned positional embeddings — no RoPE base. Sentinel
-/// `0.0` so the runtime binder can tell "N/A" apart from "silently
-/// defaulted" (FR-EX-08).
-const NANO_LLM_ROPE_BASE: f32 = 0.0;
+/// Custom GPT-2 RoPE base from the pinned `config.json`.
+const NANO_LLM_ROPE_BASE: f32 = 10_000.0;
 /// GPT-2 uses LayerNorm — no RMSNorm ε. Sentinel `0.0`.
 const NANO_LLM_RMS_NORM_EPS: f32 = 0.0;
+const NANO_UPSTREAM_REVISION: &str = "44502f80dbf9743528fa921cc544d662c685ebec";
+const NANO_CHECKPOINT_SHA256: &str =
+    "24003f2f11ac8a2cbf70514db2d8f1c02fb451aa6b3c0bffc9da09f31cd7caa5";
+const NANO_CONFIG_SHA256: &str = "ba36b08c80d4ae0805a2bab32b6ac90ec0d1815d01d3854ba42811db1d5bde99";
+const NANO_POSITION_EMBEDDING_TYPE: &str = "rope";
+const NANO_LAYER_NORM_EPS: f32 = 1e-5;
+const NANO_MAX_POSITION_EMBEDDINGS: u32 = 32_768;
+const NANO_LOCAL_TRANSFORMER_LAYERS: u32 = 1;
+const NANO_PAD_TOKEN_ID: u32 = 3;
+const NANO_IM_START_TOKEN_ID: u32 = 4;
+const NANO_IM_END_TOKEN_ID: u32 = 5;
+const NANO_AUDIO_START_TOKEN_ID: u32 = 6;
+const NANO_AUDIO_END_TOKEN_ID: u32 = 7;
+const NANO_AUDIO_USER_SLOT_TOKEN_ID: u32 = 8;
+const NANO_AUDIO_ASSISTANT_SLOT_TOKEN_ID: u32 = 9;
+const NANO_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const NANO_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano";
 
 /// Local axes. Qwen3-flavour backbone at 2.5 B scale.
 ///
@@ -718,6 +759,42 @@ fn write_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
     b.add_u32(KEY_MOSS_LLM_VOCAB_SIZE, variant.llm_vocab_size());
     b.add_f32(KEY_MOSS_LLM_ROPE_BASE, variant.llm_rope_base());
     b.add_f32(KEY_MOSS_LLM_RMS_NORM_EPS, variant.llm_rms_norm_eps());
+    if variant == MossTtsVariant::Nano {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, NANO_UPSTREAM_REVISION);
+        b.add_string(KEY_PROVENANCE_CHECKPOINT_SHA256, NANO_CHECKPOINT_SHA256);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, NANO_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            NANO_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_f32(KEY_MOSS_LAYER_NORM_EPS, NANO_LAYER_NORM_EPS);
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            NANO_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(
+            KEY_MOSS_LOCAL_TRANSFORMER_LAYERS,
+            NANO_LOCAL_TRANSFORMER_LAYERS,
+        );
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, NANO_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, NANO_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, NANO_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, NANO_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, NANO_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            NANO_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            NANO_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, NANO_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            NANO_AUDIO_TOKENIZER_UPSTREAM,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -827,9 +904,13 @@ mod tests {
         assert_eq!(NANO_LLM_N_HEAD_KV, 12); // MHA (== n_head)
         assert_eq!(NANO_LLM_HEAD_DIM, 64); // 768 / 12
         assert_eq!(NANO_LLM_VOCAB, 16_384);
-        // GPT-2 sentinels for RoPE + RMSNorm (learned pos + LayerNorm).
-        assert_eq!(NANO_LLM_ROPE_BASE, 0.0);
+        // The custom GPT-2 uses RoPE but retains LayerNorm.
+        assert_eq!(NANO_LLM_ROPE_BASE, 10_000.0);
         assert_eq!(NANO_LLM_RMS_NORM_EPS, 0.0);
+        assert_eq!(NANO_POSITION_EMBEDDING_TYPE, "rope");
+        assert!((NANO_LAYER_NORM_EPS - 1e-5).abs() < 1e-12);
+        assert_eq!(NANO_MAX_POSITION_EMBEDDINGS, 32_768);
+        assert_eq!(NANO_LOCAL_TRANSFORMER_LAYERS, 1);
     }
 
     #[test]
@@ -1018,9 +1099,28 @@ mod tests {
         assert_eq!(get_u32(&file, KEY_MOSS_N_VQ), NANO_N_VQ);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), NANO_LLM_HIDDEN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_N_LAYER), NANO_LLM_N_LAYER);
-        // GPT-2 sentinels for RoPE + RMSNorm.
-        assert_eq!(get_f32(&file, KEY_MOSS_LLM_ROPE_BASE), 0.0);
+        // Custom GPT-2 RoPE plus LayerNorm (not RMSNorm).
+        assert_eq!(get_f32(&file, KEY_MOSS_LLM_ROPE_BASE), 10_000.0);
         assert_eq!(get_f32(&file, KEY_MOSS_LLM_RMS_NORM_EPS), 0.0);
+        assert_eq!(
+            file.get(KEY_MOSS_POSITION_EMBEDDING_TYPE)
+                .and_then(|v| v.as_str()),
+            Some("rope")
+        );
+        assert!((get_f32(&file, KEY_MOSS_LAYER_NORM_EPS) - 1e-5).abs() < 1e-12);
+        assert_eq!(get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS), 32_768);
+        assert_eq!(get_u32(&file, KEY_MOSS_LOCAL_TRANSFORMER_LAYERS), 1);
+        assert_eq!(get_u32(&file, KEY_MOSS_AUDIO_PAD_TOKEN_ID), 1_024);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|v| v.as_str()),
+            Some(NANO_UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(|v| v.as_str()),
+            Some(NANO_AUDIO_TOKENIZER_UPSTREAM)
+        );
         // MHA — n_head == n_head_kv.
         assert_eq!(
             get_u32(&file, KEY_MOSS_LLM_N_HEAD),
@@ -1272,6 +1372,20 @@ mod tests {
             KEY_MOSS_LLM_VOCAB_SIZE,
             KEY_MOSS_LLM_ROPE_BASE,
             KEY_MOSS_LLM_RMS_NORM_EPS,
+            KEY_MOSS_CONFIG_SHA256,
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            KEY_MOSS_LAYER_NORM_EPS,
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            KEY_MOSS_LOCAL_TRANSFORMER_LAYERS,
+            KEY_MOSS_PAD_TOKEN_ID,
+            KEY_MOSS_IM_START_TOKEN_ID,
+            KEY_MOSS_IM_END_TOKEN_ID,
+            KEY_MOSS_AUDIO_START_TOKEN_ID,
+            KEY_MOSS_AUDIO_END_TOKEN_ID,
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            KEY_MOSS_AUDIO_PAD_TOKEN_ID,
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
         ] {
             assert!(
                 key.starts_with("vokra.moss_tts."),

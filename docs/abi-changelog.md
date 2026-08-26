@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MOSS-TTS Nano contract correction)
+
+The MOSS-TTS Nano converter now follows the pinned custom GPT-2 source rather
+than the former generic-GPT-2 assumption. Nano uses rotary positions with base
+10,000, not learned absolute positions. New conversions also stamp the exact
+upstream revision/checkpoint/config identity, LayerNorm and local-transformer
+axes, framing token IDs and required MOSS Audio Tokenizer Nano companion. The
+already-public 194-tensor GGUF keeps its old `rope_base = 0` header and must be
+treated as a manifest-scoped legacy artifact requiring metadata replacement;
+this entry does not authorize an upload.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.moss_tts.llm.rope_base` | Nano value | Corrected | `f32`: `0` → `10000` | Fixes a pre-runtime converter bug against pinned upstream revision `44502f80…`; old public GGUF is never accepted by metadata alone | yes for code that depended on the incorrect Nano value | (TBD) |
+| `gguf:vokra.moss_tts.*` | `config_sha256`, `llm.position_embedding_type`, `llm.layer_norm_eps`, `llm.max_position_embeddings`, `local_transformer_layers`, eight framing token IDs, `audio_tokenizer_upstream_hf` | Added | strings, `f32`, `u32` | Nano-only additive contract; other MOSS variants do not receive guessed values | no | (TBD) |
+| `gguf:vokra.provenance.*` | `upstream_revision`, `checkpoint_sha256` | Added | pinned 40-hex revision and 64-hex checkpoint digest | Nano-only provenance identity; exact historical artifact may omit only behind its complete manifest | no | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (MOSS Audio Tokenizer strict runtime)
 
 The two public OpenMOSS codec artifacts now have a fail-closed native runtime
