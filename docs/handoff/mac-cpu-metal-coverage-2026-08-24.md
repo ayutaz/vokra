@@ -2863,6 +2863,47 @@ upstream checkpoint/config hashes, and directly calls the official
 executed a model on the maintainer Mac; the first VAST CPU run and Apple Metal
 run remain pending evidence.
 
+### NaturalSpeech 3 FACodec V2 factorized codec
+
+The public
+`vokra/naturalspeech3-facodec-v2@da6263e2c1a203641a5d4346a8a04d4eab4c738f`
+artifact is 449,251,040 bytes with SHA-256
+`ee1d1e23266d6d2a898152d18bde156a2de008b8fe1eae9eeb392feca24c3084`.
+Its complete sorted 806-tensor name/shape manifest hashes to
+`c818982c3466601fcd57613a8ac759aca61c6ed3362acb68f874d631810379fa`.
+The strict binder also pins the V2 identity, 16 kHz / 200-sample-hop contract,
+the 1/2/3 prosody/content/detail quantizer split and Apache-2.0/permissive
+provenance before materialising tensor payloads.
+
+The native batch-one analysis/synthesis route implements the official
+weight-normalized encoder and decoder, exact reflected STFT/mel frontend,
+four-layer prosody/content/detail/timbre transformers, six parallel 1024 by 8
+factorized codebooks, timbre conditioning and alias-free up/downsampling.
+GEMM, softmax, LayerNorm, ReLU, tanh, Conv1D, grouped Conv1D, SnakeBeta and
+factorized-VQ operations preflight and execute through one selected CPU or
+Metal `Compute` backend. Unsupported device operations fail explicitly; there
+is no silent CPU model fallback. The CLI can encode or decode the versioned
+`VKRFA2V1` portable container, which retains the frame-major six-codebook
+matrix, 256-value speaker embedding, original sample count and exact GGUF
+identity.
+
+`tools/parity/facodec/dump_reference.py` verifies official Amphion source
+commit `26f6883110181f1dbfe95c70a7c7dbaf4de5f42a`, upstream checkpoint revision
+`314afc3ea1455ba881a0e484ef9408b6cb996736` and both official V2 weight hashes,
+then directly invokes `FACodecEncoderV2` and `FACodecDecoderV2` to generate an
+independent oracle. `crates/vokra-models/tests/parity_facodec_real.rs` compares
+all six discrete streams exactly and speaker/decode outputs at FP32
+`atol = 0.01`. `run-facodec-parity.sh` performs the downloads, hash checks,
+locked Python 3.12 reference generation, workspace build, CPU parity, CLI
+route and Apple-target Metal feature cross-check on VAST; it has no upload or
+publish path.
+
+No checkpoint payload, model inference or `vokra-models`/workspace Cargo
+command ran on the maintainer Mac. Source-level implementation and static
+gates are staged, but the live inventory remains unchanged until the VAST CPU
+run and real Apple Silicon CPU/Metal parity produce recorded evidence. No
+Hugging Face upload or artifact replacement was performed or authorized.
+
 ## Remaining execution order
 
 1. Make all remaining no-binder repositories CPU-runnable, family by family, with a

@@ -704,6 +704,220 @@ impl FocalCodecCodesV1 {
     }
 }
 
+/// NaturalSpeech 3 FACodec V2 container magic (`VKRFA2V1`) and version.
+const FACODEC_MAGIC: &[u8; 8] = b"VKRFA2V1";
+const FACODEC_VERSION: u16 = 1;
+const FACODEC_HEADER_LEN: usize = 112;
+
+/// Portable NaturalSpeech 3 FACodec V2 packet, version 1.
+///
+/// The payload first stores the decoder-required speaker embedding as
+/// little-endian f32 values, followed by frame-major little-endian u32 codes.
+/// The exact GGUF tensor fingerprint prevents decoding with a sibling or
+/// modified checkpoint that merely has compatible axes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FacodecCodesV1 {
+    pub(crate) sample_rate: u32,
+    pub(crate) frame_hop: u32,
+    pub(crate) n_codebooks: u32,
+    pub(crate) codebook_size: u32,
+    pub(crate) embedding_dim: u32,
+    pub(crate) frames: u64,
+    pub(crate) pcm_samples: u64,
+    pub(crate) model_sha256: [u8; 32],
+    pub(crate) speaker_embedding: Vec<f32>,
+    pub(crate) codes: Vec<u32>,
+}
+
+impl FacodecCodesV1 {
+    pub(crate) fn to_bytes(&self) -> Result<Vec<u8>, String> {
+        self.validate()?;
+        let embedding_values = u64::try_from(self.speaker_embedding.len())
+            .map_err(|_| "FACodec speaker embedding length exceeds u64")?;
+        let code_count =
+            u64::try_from(self.codes.len()).map_err(|_| "FACodec code count exceeds u64")?;
+        let payload_values = self
+            .speaker_embedding
+            .len()
+            .checked_add(self.codes.len())
+            .ok_or("FACodec payload value count overflow")?;
+        let payload_len = payload_values
+            .checked_mul(4)
+            .ok_or("FACodec payload size overflow")?;
+        let mut out = Vec::with_capacity(FACODEC_HEADER_LEN + payload_len);
+        out.extend_from_slice(FACODEC_MAGIC);
+        out.extend_from_slice(&FACODEC_VERSION.to_le_bytes());
+        out.extend_from_slice(&(FACODEC_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // flags, reserved
+        out.extend_from_slice(&self.sample_rate.to_le_bytes());
+        out.extend_from_slice(&self.frame_hop.to_le_bytes());
+        out.extend_from_slice(&self.n_codebooks.to_le_bytes());
+        out.extend_from_slice(&self.codebook_size.to_le_bytes());
+        out.extend_from_slice(&self.embedding_dim.to_le_bytes());
+        out.extend_from_slice(&self.frames.to_le_bytes());
+        out.extend_from_slice(&self.pcm_samples.to_le_bytes());
+        out.extend_from_slice(&self.model_sha256);
+        out.extend_from_slice(&code_count.to_le_bytes());
+        out.extend_from_slice(&embedding_values.to_le_bytes());
+        out.extend_from_slice(&[0u8; 12]); // reserved for additive v1 fields
+        debug_assert_eq!(out.len(), FACODEC_HEADER_LEN);
+        for &value in &self.speaker_embedding {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        for &code in &self.codes {
+            out.extend_from_slice(&code.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < FACODEC_HEADER_LEN {
+            return Err(format!(
+                "FACodec code container is truncated: {} bytes, need at least {FACODEC_HEADER_LEN}",
+                bytes.len()
+            ));
+        }
+        if &bytes[..8] != FACODEC_MAGIC {
+            return Err("FACodec code container has wrong magic; expected `VKRFA2V1`".to_owned());
+        }
+        let version = read_u16(bytes, 8)?;
+        if version != FACODEC_VERSION {
+            return Err(format!(
+                "FACodec code container version {version} is unsupported; this build reads version {FACODEC_VERSION}"
+            ));
+        }
+        let header_len = read_u16(bytes, 10)? as usize;
+        if header_len != FACODEC_HEADER_LEN {
+            return Err(format!(
+                "FACodec code container v1 header length {header_len} != {FACODEC_HEADER_LEN}"
+            ));
+        }
+        if read_u32(bytes, 12)? != 0 || bytes[100..112].iter().any(|&byte| byte != 0) {
+            return Err("FACodec code container v1 has non-zero reserved fields".to_owned());
+        }
+
+        let code_count = read_u64(bytes, 84)?;
+        let embedding_values = read_u64(bytes, 92)?;
+        let code_count_host = usize::try_from(code_count)
+            .map_err(|_| "FACodec code count does not fit this host".to_owned())?;
+        let embedding_values_host = usize::try_from(embedding_values)
+            .map_err(|_| "FACodec embedding length does not fit this host".to_owned())?;
+        let payload_values = embedding_values_host
+            .checked_add(code_count_host)
+            .ok_or("FACodec payload value count overflow")?;
+        let expected = FACODEC_HEADER_LEN
+            .checked_add(
+                payload_values
+                    .checked_mul(4)
+                    .ok_or("FACodec payload size overflow")?,
+            )
+            .ok_or("FACodec container size overflow")?;
+        if bytes.len() != expected {
+            return Err(format!(
+                "FACodec code container length {} != header {FACODEC_HEADER_LEN} + {embedding_values_host} f32 embedding values + {code_count_host} u32 codes ({expected})",
+                bytes.len()
+            ));
+        }
+
+        let mut model_sha256 = [0u8; 32];
+        model_sha256.copy_from_slice(&bytes[52..84]);
+        let embedding_end = FACODEC_HEADER_LEN + embedding_values_host * 4;
+        let speaker_embedding = bytes[FACODEC_HEADER_LEN..embedding_end]
+            .chunks_exact(4)
+            .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        let codes = bytes[embedding_end..]
+            .chunks_exact(4)
+            .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+            .collect();
+        let parsed = Self {
+            sample_rate: read_u32(bytes, 16)?,
+            frame_hop: read_u32(bytes, 20)?,
+            n_codebooks: read_u32(bytes, 24)?,
+            codebook_size: read_u32(bytes, 28)?,
+            embedding_dim: read_u32(bytes, 32)?,
+            frames: read_u64(bytes, 36)?,
+            pcm_samples: read_u64(bytes, 44)?,
+            model_sha256,
+            speaker_embedding,
+            codes,
+        };
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.sample_rate == 0
+            || self.frame_hop == 0
+            || self.n_codebooks == 0
+            || self.codebook_size == 0
+            || self.embedding_dim == 0
+            || self.frames == 0
+            || self.pcm_samples == 0
+        {
+            return Err(
+                "FACodec code container v1 has a zero rate, axis, frame, or PCM length".to_owned(),
+            );
+        }
+        let expected_embedding = usize::try_from(self.embedding_dim)
+            .map_err(|_| "FACodec embedding dimension does not fit this host")?;
+        if self.speaker_embedding.len() != expected_embedding {
+            return Err(format!(
+                "FACodec speaker embedding has {} values, expected embedding_dim = {expected_embedding}",
+                self.speaker_embedding.len()
+            ));
+        }
+        if let Some((index, value)) = self
+            .speaker_embedding
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, value)| !value.is_finite())
+        {
+            return Err(format!(
+                "FACodec speaker embedding value {index} is non-finite ({value})"
+            ));
+        }
+        let expected_codes = self
+            .frames
+            .checked_mul(u64::from(self.n_codebooks))
+            .ok_or("FACodec code count overflow")?;
+        let expected_codes = usize::try_from(expected_codes)
+            .map_err(|_| "FACodec code count does not fit this host")?;
+        if self.codes.len() != expected_codes {
+            return Err(format!(
+                "FACodec code vector has {} entries, expected frames * n_codebooks = {expected_codes}",
+                self.codes.len()
+            ));
+        }
+        let decoded_extent = self
+            .frames
+            .checked_mul(u64::from(self.frame_hop))
+            .ok_or("FACodec decoded PCM extent overflow")?;
+        if self.pcm_samples < decoded_extent
+            || self.pcm_samples - decoded_extent >= u64::from(self.frame_hop)
+        {
+            return Err(format!(
+                "FACodec original PCM length {} is inconsistent with {} frames at hop {} (decoded extent {decoded_extent})",
+                self.pcm_samples, self.frames, self.frame_hop
+            ));
+        }
+        if let Some((index, code)) = self
+            .codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|(_, code)| *code >= self.codebook_size)
+        {
+            return Err(format!(
+                "FACodec code {code} at payload index {index} is outside codebook_size {}",
+                self.codebook_size
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// SNAC hierarchical-code container magic (`VKRSNAC1`) and current version.
 const SNAC_MAGIC: &[u8; 8] = b"VKRSNAC1";
 const SNAC_VERSION: u16 = 1;
@@ -1305,6 +1519,67 @@ mod tests {
                 .unwrap_err()
                 .contains("outside codebook_size")
         );
+    }
+
+    fn sample_facodec_codes() -> FacodecCodesV1 {
+        FacodecCodesV1 {
+            sample_rate: 16_000,
+            frame_hop: 200,
+            n_codebooks: 6,
+            codebook_size: 1_024,
+            embedding_dim: 3,
+            frames: 2,
+            pcm_samples: 437,
+            model_sha256: sha256(b"facodec-v2-model"),
+            speaker_embedding: vec![0.25, -0.5, 1.0],
+            codes: vec![0, 1, 2, 3, 4, 5, 1_023, 11, 12, 13, 14, 15],
+        }
+    }
+
+    #[test]
+    fn facodec_v1_round_trips_embedding_then_frame_major_codes() {
+        let value = sample_facodec_codes();
+        let bytes = value.to_bytes().unwrap();
+        assert_eq!(&bytes[..8], b"VKRFA2V1");
+        assert_eq!(&bytes[112..116], &0.25f32.to_le_bytes());
+        assert_eq!(&bytes[124..128], &0u32.to_le_bytes());
+        assert_eq!(FacodecCodesV1::from_bytes(&bytes).unwrap(), value);
+    }
+
+    #[test]
+    fn facodec_v1_rejects_truncation_reserved_range_and_non_finite_style() {
+        let mut bytes = sample_facodec_codes().to_bytes().unwrap();
+        bytes.pop();
+        assert!(
+            FacodecCodesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("length")
+        );
+
+        let mut bytes = sample_facodec_codes().to_bytes().unwrap();
+        bytes[100] = 1;
+        assert!(
+            FacodecCodesV1::from_bytes(&bytes)
+                .unwrap_err()
+                .contains("reserved")
+        );
+
+        let mut value = sample_facodec_codes();
+        value.codes[7] = value.codebook_size;
+        assert!(
+            value
+                .to_bytes()
+                .unwrap_err()
+                .contains("outside codebook_size")
+        );
+
+        let mut value = sample_facodec_codes();
+        value.speaker_embedding[1] = f32::NAN;
+        assert!(value.to_bytes().unwrap_err().contains("non-finite"));
+
+        let mut value = sample_facodec_codes();
+        value.pcm_samples = 600;
+        assert!(value.to_bytes().unwrap_err().contains("inconsistent"));
     }
 
     fn sample_snac_codes() -> SnacCodesV1 {

@@ -621,6 +621,34 @@ the existing Apache-2.0 rows; it
 does not authorize upload. Raw source-file SHA verification, real conversion
 and CPU parity remain VAST-only gates.
 
+#### NaturalSpeech 3 FACodec V2 runtime follow-up（2026-08-27）
+
+§3.1 の既存 NaturalSpeech 3 FACodec 行にある Apache-2.0 / Commercial の
+owner sign-off とライセンス判定は変更しない。本節は、その行の「local safe / vast.ai
+不要」「future runtime binder」という古い運用記述を置き換える。公開済み
+`vokra/naturalspeech3-facodec-v2@da6263e2c1a203641a5d4346a8a04d4eab4c738f`
+の `model.gguf` は 449,251,040 bytes、SHA-256
+`ee1d1e23266d6d2a898152d18bde156a2de008b8fe1eae9eeb392feca24c3084`、
+806 tensor、tensor-manifest SHA-256
+`c818982c3466601fcd57613a8ac759aca61c6ed3362acb68f874d631810379fa`
+として identity を固定する。
+
+runtime はこの全 manifest と provenance を strict に認証し、CPU / Metal 共通の
+`Compute` 経路で公式 V2 の encoder、factorized VQ、speaker embedding、timbre
+conditioned decoder を実行する。CLI の encode/decode と、6 codebook + 256-value
+speaker embedding を保持する versioned portable container も追加した。未対応 backend
+または演算は明示エラーであり、silent CPU fallback は行わない。
+
+独立 parity は Amphion source commit
+`26f6883110181f1dbfe95c70a7c7dbaf4de5f42a` と upstream weight revision
+`314afc3ea1455ba881a0e484ef9408b6cb996736` を固定し、公式
+`FACodecEncoderV2` / `FACodecDecoderV2` を直接呼ぶ。公開 GGUF 自体は 2 GB 未満
+だが、依頼者の Mac をモデル処理に使わない方針と本リポジトリの安全運用に従い、
+checkpoint download、reference 生成、workspace build、CPU parity は VAST 専用、
+real Metal parity は remote Apple Silicon 専用とする。worker と `atol = 0.01` の
+Rust gate は staged だが、実行結果は未取得であり対応件数にはまだ加算しない。
+この作業は再 upload / publish を含まず、upload authorization も意味しない。
+
 #### emotion2vec provenance backfill（2026-08-26）
 
 §3.1 の既存 `emotion2vec` owner sign-off と MIT 判定は変更しない。今回の Mac CPU / Metal 対応監査では、公式配布元を `emotion2vec/emotion2vec_plus_large@6c303ba987b86b93193de93e34bb2b077a6bedc4`、checkpoint を `model.pt`（1,945,790,254 bytes、SHA-256 `be501a01f26fcdc7663a062dff86af839afbaef7c4de32f5e42d7e1ad2784da4`）に固定した。公式 HF card の `license: other` と FunASR への license link、およびリンク先 FunASR の MIT LICENSE を再照合し、2026-07-28 の判定と矛盾がないことを確認した。

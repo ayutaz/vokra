@@ -28,8 +28,8 @@ consumes **single-file safetensors only** (no pickle in the runtime tree, no
 multi-file reader). This script bridges the two: for a caller-selected
 ``--variant`` it loads the corresponding subset of ``.bin`` files via
 ``torch.load(..., weights_only=True)``, prefixes every key with its role
-(``encoder.`` / ``decoder.`` / ``redecoder.``) so a future
-``Facodec::from_gguf`` can locate sub-modules, and writes a single
+(``encoder.`` / ``decoder.`` / ``redecoder.``) so the native
+``FacodecV2::from_gguf`` binder can locate sub-modules, and writes a single
 ``.safetensors`` the caller feeds to
 ``vokra-cli convert --model naturalspeech3-facodec``.
 
@@ -57,8 +57,10 @@ same fail-loud posture) + ``kokoro_prepare_checkpoint.py`` (nested .pth
 - ``redecoder-v1`` = encoder + decoder + redecoder    (~566 MB, zero-shot VC)
 - ``redecoder-v2`` = encoder_v2 + decoder_v2 + redecoder (~601 MB, zero-shot VC)
 
-All variants comfortably fit on an M1 iMac 16 GB — vast.ai is NOT required
-even for the largest (``redecoder-v2`` = ~601 MB peak resident).
+Run every real checkpoint merge on vast.ai. The sizes above explain why the
+script can use a straightforward in-memory merge, but they are not permission
+to process model artifacts on the maintainer Mac; local runs are limited to
+tiny synthetic fixtures and metadata-only checks by the repository runbook.
 
 # Determinism
 
@@ -98,7 +100,7 @@ from typing import Any
 # Variant → ordered list of (stem, role_prefix) tuples the merger walks.
 # The stems match the upstream .bin filenames minus the ``ns3_facodec_``
 # prefix and ``.bin`` extension; the role prefix is what every state_dict
-# key gets namespaced under so a future ``Facodec::from_gguf`` can locate
+# key gets namespaced under so ``FacodecV2::from_gguf`` can locate
 # the sub-module.
 VARIANT_SUBSETS: dict[str, list[tuple[str, str]]] = {
     "v1": [("encoder", "encoder"), ("decoder", "decoder")],
@@ -187,7 +189,7 @@ def _load_bin(path: Path, role: str) -> dict:
             f"FACodec state_dict (see "
             f"github.com/open-mmlab/Amphion/tree/main/models/codec/ns3_codec)."
         )
-    # Namespace under the role prefix so a future ``Facodec::from_gguf`` can
+    # Namespace under the role prefix so ``FacodecV2::from_gguf`` can
     # locate the sub-module a tensor belongs to (``encoder.conv.weight`` vs.
     # ``decoder.quantizer.codebook.weight`` etc.). Without this prefix an
     # encoder ``weight`` key and a decoder inner ``weight`` key would collide

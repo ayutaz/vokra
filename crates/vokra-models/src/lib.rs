@@ -586,6 +586,8 @@ pub mod snac;
 // share one WavLM + focal-modulation + BSQ + Vocos implementation; their
 // compressor/decompressor time-scale factors are selected from a pinned
 // release manifest rather than inferred from filenames.
+/// Native NaturalSpeech 3 FACodec V2 codec (CPU / Metal).
+pub mod facodec;
 pub mod focalcodec;
 /// Alibaba DAMO FunCodec 16 kHz / 32-codebook native RVQ + SEANet decoder.
 /// The exact public 230-tensor checkpoint supports frame-major token-to-PCM

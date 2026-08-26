@@ -367,6 +367,11 @@ pub(crate) enum ModelTask {
     /// and decode route every learned hot op through the selected backend and
     /// exchange a versioned, exact-checkpoint-pinned BSQ token container.
     FocalCodec,
+    /// NaturalSpeech 3 FACodec V2 16 kHz factorized codec. Encode emits six
+    /// frame-major code streams plus the required timbre embedding; decode
+    /// routes the complete learned graph through the selected CPU/Metal
+    /// backend and rejects any unsupported backend operation explicitly.
+    Facodec,
     /// OpenMOSS Audio Tokenizer Full/Nano family. Both decode variable-width
     /// frame-major LFQ codes through CPU/Metal using their distinct topology.
     MossAudioTokenizerCodec,
@@ -617,6 +622,8 @@ const ARCH_MIOCODEC: &str = "miocodec";
 const ARCH_SNAC: &str = "snac";
 /// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
 const ARCH_FOCALCODEC: &str = "focalcodec";
+/// OpenMMLab Amphion NaturalSpeech 3 FACodec V2.
+const ARCH_FACODEC: &str = "facodec";
 /// OpenMOSS Full/Nano codec family.
 const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
 /// OpenMOSS TTS family; exact Nano and Base/v1.5 releases route separately.
@@ -1553,6 +1560,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::FocalCodec))
         }
+        ARCH_FACODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FACODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::Facodec))
+        }
         ARCH_MOSS_AUDIO_TOKENIZER => {
             if hint.is_some() {
                 return Err(format!(
@@ -1824,7 +1839,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
                  `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_SPEECHTOKENIZER}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / \
-                 `{ARCH_FOCALCODEC}` / \
+                 `{ARCH_FOCALCODEC}` / `{ARCH_FACODEC}` / \
                  `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
@@ -3810,6 +3825,20 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_facodec_to_the_factorized_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FACODEC, "facodec-routed", |path| {
+            load_session(path).expect("facodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Facodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FACODEC),
+            "the routed FACodec must not retain an unreachable registry row"
+        );
+    }
+
+    #[test]
     fn load_session_routes_moss_audio_tokenizer_to_its_codec_task() {
         let (_session, task) = with_arch_only_gguf(
             ARCH_MOSS_AUDIO_TOKENIZER,
@@ -3939,6 +3968,7 @@ mod tests {
             ARCH_MIOCODEC,
             ARCH_SNAC,
             ARCH_FOCALCODEC,
+            ARCH_FACODEC,
             ARCH_MOSS_AUDIO_TOKENIZER,
             ARCH_MOSS_TTS,
             ARCH_BIGVGAN,

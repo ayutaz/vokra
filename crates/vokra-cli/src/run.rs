@@ -17,7 +17,8 @@ use vokra_core::{AecEngine, Session};
 
 use crate::engine::{self, ModelTask};
 use crate::runtime_contracts::{
-    FocalCodecCodesV1, MeloTextFeaturesV1, MimiCodesV1, SnacCodesV1, parse_ct_punc_tsv, sha256,
+    FacodecCodesV1, FocalCodecCodesV1, MeloTextFeaturesV1, MimiCodesV1, SnacCodesV1,
+    parse_ct_punc_tsv, sha256,
 };
 use crate::wav;
 
@@ -98,6 +99,10 @@ USAGE:
     vokra-cli run --model <snac.gguf> --codec-mode decode --input <codes.vsc> --output <out.wav>
     vokra-cli run --model <focalcodec.gguf> --codec-mode encode --input <16k.wav> --output <codes.vfc>
     vokra-cli run --model <focalcodec.gguf> --codec-mode decode --input <codes.vfc> --output <out.wav>
+    vokra-cli run --model <naturalspeech3-facodec-v2.gguf> --codec-mode encode \
+                  --input <16k.wav> --output <codes.vf2>
+    vokra-cli run --model <naturalspeech3-facodec-v2.gguf> --codec-mode decode \
+                  --input <codes.vf2> --output <out.wav>
     vokra-cli run --model <moss-audio-tokenizer-nano.gguf> --codec-mode decode \
                   --num-quantizers <1..16> --input <codes.u32le> --output <stereo.wav>
     vokra-cli run --model <moss-tts-nano.gguf> \
@@ -178,6 +183,10 @@ OPTIONS:
                                 For FocalCodec encode it is a 16 kHz mono WAV;
                                 for decode it is a `VKRFOC01` v1 BSQ token
                                 container pinned to the exact checkpoint.
+                                For FACodec V2 encode it is a 16 kHz mono WAV;
+                                for decode it is a `VKRFA2V1` v1 container with
+                                six codebooks, the required speaker embedding,
+                                and the exact checkpoint fingerprint.
                                 For MeloTTS it is a `VKRMELO1` v1 bundle of
                                 release-pinned phoneme/tone/language ids and
                                 position-major BERT/JA-BERT features; raw text
@@ -253,7 +262,8 @@ OPTIONS:
                                 output. SNAC requires a `.vsc` code container
                                 for encode and a WAV for decode. FocalCodec
                                 requires a `.vfc` token container for encode and
-                                a WAV for decode. Vocoders write
+                                a WAV for decode. FACodec V2 requires a `.vf2`
+                                packet for encode and a WAV for decode. Vocoders write
                                 waveform WAV.
                                 Multi-speaker SepFormer models derive
                                 `<stem>.sourceN.wav` paths from this value.
@@ -321,6 +331,11 @@ OPTIONS:
                                 16 kHz WAV). CPU and Metal both run the complete
                                 learned-op set; uncovered backends fail before
                                 inference and never fall back to CPU.
+                                facodec: `encode` (16 kHz mono WAV ->
+                                versioned six-codebook + speaker-embedding
+                                packet) or `decode` (packet -> 16 kHz WAV).
+                                CPU and Metal both run the complete learned-op
+                                set; uncovered backends fail before inference.
                                 moss_audio_tokenizer: `decode` only. Nano and
                                 Full run their distinct complete decoders on
                                 CPU or Metal; encode fails explicitly.
@@ -1129,6 +1144,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
+        | ModelTask::Facodec
         | ModelTask::MossAudioTokenizerCodec
         | ModelTask::TtsMossNano
         | ModelTask::TtsMossDelay
@@ -1267,10 +1283,11 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
+        && task != ModelTask::Facodec
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
@@ -1706,6 +1723,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::FocalCodec => {
             run_focalcodec(&session, &a)?;
+        }
+        ModelTask::Facodec => {
+            run_facodec(&session, &a)?;
         }
         ModelTask::MossAudioTokenizerCodec => {
             run_moss_audio_tokenizer_codec(&session, &a)?;
@@ -4286,6 +4306,14 @@ fn focalcodec_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8
     )
 }
 
+fn facodec_model_fingerprint(file: &vokra_core::gguf::GgufFile) -> Result<[u8; 32], String> {
+    codec_model_fingerprint(
+        file,
+        b"vokra-naturalspeech3-facodec-v2-gguf-tensor-fingerprint-v1",
+        "facodec",
+    )
+}
+
 fn validate_snac_codes_for_model(
     codes: &SnacCodesV1,
     model: &vokra_models::snac::Snac,
@@ -4631,6 +4659,162 @@ fn run_focalcodec(session: &Session, a: &RunArgs) -> Result<(), String> {
                 "focalcodec {} decode: {} BSQ tokens / {raw_samples} raw samples -> {} samples @ {} Hz -> {output_path}",
                 model.variant().tag(),
                 container.token_count,
+                pcm.len(),
+                model.sample_rate()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_facodec_codes_for_model(
+    codes: &FacodecCodesV1,
+    model: &vokra_models::facodec::FacodecV2,
+    model_sha256: [u8; 32],
+) -> Result<(), String> {
+    let frame_hop = u32::try_from(model.frame_hop())
+        .map_err(|_| "run (facodec decode): frame hop exceeds u32")?;
+    let n_codebooks = u32::try_from(model.num_codebooks())
+        .map_err(|_| "run (facodec decode): codebook count exceeds u32")?;
+    let codebook_size = u32::try_from(model.codebook_size())
+        .map_err(|_| "run (facodec decode): codebook size exceeds u32")?;
+    let embedding_dim = u32::try_from(model.speaker_embedding_dim())
+        .map_err(|_| "run (facodec decode): speaker embedding dimension exceeds u32")?;
+    if codes.sample_rate != model.sample_rate()
+        || codes.frame_hop != frame_hop
+        || codes.n_codebooks != n_codebooks
+        || codes.codebook_size != codebook_size
+        || codes.embedding_dim != embedding_dim
+    {
+        return Err(format!(
+            "run (facodec decode): container/model contract mismatch: container \
+             rate={} hop={} codebooks={} bins={} embedding={}, model \
+             rate={} hop={} codebooks={} bins={} embedding={}",
+            codes.sample_rate,
+            codes.frame_hop,
+            codes.n_codebooks,
+            codes.codebook_size,
+            codes.embedding_dim,
+            model.sample_rate(),
+            frame_hop,
+            n_codebooks,
+            codebook_size,
+            embedding_dim
+        ));
+    }
+    if codes.model_sha256 != model_sha256 {
+        return Err(format!(
+            "run (facodec decode): model SHA-256 mismatch (container {}, model {}); \
+             factorized codes and speaker embedding must be decoded by the exact GGUF tensors that encoded them",
+            hex_digest(&codes.model_sha256),
+            hex_digest(&model_sha256)
+        ));
+    }
+    Ok(())
+}
+
+/// NaturalSpeech 3 FACodec V2 waveform encode/decode.
+///
+/// The versioned packet carries all six factorized code streams and the
+/// decoder-required timbre embedding. The selected backend is preflighted for
+/// the complete learned graph before any tensor is materialized; no CPU
+/// fallback is permitted when Metal was requested.
+fn run_facodec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.text.is_some() || a.tokens.is_some() || a.token_ids.is_some() {
+        return Err(
+            "run (facodec): --text/--tokens/--token-ids are not codec inputs; use --input plus \
+             --codec-mode encode|decode"
+                .to_owned(),
+        );
+    }
+    let mode = a
+        .codec_mode
+        .ok_or("run (facodec): --codec-mode encode|decode is required")?;
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (facodec): --input <16k-mono.wav|codes.vf2> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (facodec): --output <codes.vf2|out.wav> is required")?;
+
+    vokra_core::check_weight_license(session.gguf(), &vokra_core::CompliancePolicy::from_env())
+        .map_err(|error| error.to_string())?;
+    if let Some(info) = vokra_core::resolve_attribution(session.gguf()) {
+        eprintln!("vokra: ATTRIBUTION ({}) {}", info.license, info.text);
+    }
+    let model = vokra_models::facodec::FacodecV2::from_gguf_with_backend(session.gguf(), a.backend)
+        .map_err(|error| error.to_string())?;
+    let model_sha256 = facodec_model_fingerprint(session.gguf())?;
+
+    match mode {
+        CodecMode::Encode => {
+            let clip = wav::read_wav(input_path)
+                .map_err(|error| format!("run (facodec encode): {input_path}: {error}"))?;
+            if clip.sample_rate != model.sample_rate() {
+                return Err(format!(
+                    "run (facodec encode): {input_path} is {} Hz, model requires {} Hz — \
+                     resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate,
+                    model.sample_rate()
+                ));
+            }
+            let encoded = model
+                .encode(&clip.samples)
+                .map_err(|error| error.to_string())?;
+            let container = FacodecCodesV1 {
+                sample_rate: model.sample_rate(),
+                frame_hop: u32::try_from(model.frame_hop())
+                    .map_err(|_| "run (facodec encode): frame hop exceeds u32")?,
+                n_codebooks: u32::try_from(model.num_codebooks())
+                    .map_err(|_| "run (facodec encode): codebook count exceeds u32")?,
+                codebook_size: u32::try_from(model.codebook_size())
+                    .map_err(|_| "run (facodec encode): codebook size exceeds u32")?,
+                embedding_dim: u32::try_from(model.speaker_embedding_dim())
+                    .map_err(|_| "run (facodec encode): speaker embedding dimension exceeds u32")?,
+                frames: u64::try_from(encoded.frames)
+                    .map_err(|_| "run (facodec encode): frame count exceeds u64")?,
+                pcm_samples: u64::try_from(encoded.input_samples)
+                    .map_err(|_| "run (facodec encode): PCM sample count exceeds u64")?,
+                model_sha256,
+                speaker_embedding: encoded.speaker_embedding,
+                codes: encoded.codes,
+            };
+            let frames = container.frames;
+            std::fs::write(output_path, container.to_bytes()?).map_err(|error| {
+                format!("run (facodec encode): --output {output_path}: {error}")
+            })?;
+            println!(
+                "facodec v2 encode: {} samples -> {frames} frames x {} codebooks + {}-value speaker embedding -> {output_path}",
+                clip.samples.len(),
+                model.num_codebooks(),
+                model.speaker_embedding_dim()
+            );
+        }
+        CodecMode::Decode => {
+            let bytes = std::fs::read(input_path)
+                .map_err(|error| format!("run (facodec decode): {input_path}: {error}"))?;
+            let container = FacodecCodesV1::from_bytes(&bytes)?;
+            validate_facodec_codes_for_model(&container, &model, model_sha256)?;
+            let encoded = vokra_models::facodec::FacodecEncoded {
+                frames: usize::try_from(container.frames)
+                    .map_err(|_| "run (facodec decode): frame count does not fit this host")?,
+                codes: container.codes,
+                speaker_embedding: container.speaker_embedding,
+                input_samples: usize::try_from(container.pcm_samples).map_err(
+                    |_| "run (facodec decode): original PCM sample count does not fit this host",
+                )?,
+            };
+            let pcm = model.decode(&encoded).map_err(|error| error.to_string())?;
+            wav::write_wav(output_path, &pcm, model.sample_rate()).map_err(|error| {
+                format!("run (facodec decode): --output {output_path}: {error}")
+            })?;
+            println!(
+                "facodec v2 decode: {} frames x {} codebooks / original {} samples -> {} decoded samples @ {} Hz -> {output_path}",
+                encoded.frames,
+                model.num_codebooks(),
+                encoded.input_samples,
                 pcm.len(),
                 model.sample_rate()
             );
@@ -7017,6 +7201,8 @@ mod tests {
         assert!(USAGE.contains("VKRMCODE"));
         assert!(USAGE.contains("snac.gguf"));
         assert!(USAGE.contains("VKRSNAC1"));
+        assert!(USAGE.contains("naturalspeech3-facodec-v2.gguf"));
+        assert!(USAGE.contains("VKRFA2V1"));
         assert!(USAGE.contains("miocodec.gguf"));
         assert!(USAGE.contains("VKRMIO01"));
     }
@@ -7095,7 +7281,7 @@ mod tests {
         let err = main(&args(&["--model", &model, "--codec-mode", "encode"])).unwrap_err();
         assert!(err.contains(
             "--codec-mode is only supported for standalone \
-             mimi/dac/wavtokenizer/neucodec/xcodec2/miocodec/snac/focalcodec arches"
+             mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
         ));
     }
 
@@ -7841,6 +8027,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::MioCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::SnacCodec), None);
         assert_eq!(cpu_only_engine_label(ModelTask::FocalCodec), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::Facodec), None);
         assert_eq!(
             cpu_only_engine_label(ModelTask::MossAudioTokenizerCodec),
             None

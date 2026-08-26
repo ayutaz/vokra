@@ -37,7 +37,7 @@
 //! `redecoder.*` — the prep script decides these prefixes since the
 //! upstream `.bin` files ship un-prefixed flat state dicts), plus the
 //! `vokra.provenance.*` / `vokra.model.*` / `vokra.facodec.*` metadata
-//! chunks a future native FACodec loader will read.
+//! chunks the native `vokra-models::facodec::FacodecV2` loader reads.
 //!
 //! # Provenance
 //!
@@ -101,10 +101,10 @@
 //! `redecoder.` prefix since the upstream `.bin` files ship un-prefixed
 //! flat state dicts (contrast the CSM / Kokoro / SNAC / neucodec /
 //! MOSS-Audio-Tokenizer contract where upstream tensor names already
-//! carry sub-module paths). Real-weight parity vs the upstream Amphion
-//! Python reference is deferred to owner (`docs/license-audit.md` §3.1
-//! sign-off queue); the runtime consumer will walk the emitted tensor
-//! names and either succeed or fail loudly per FR-EX-08.
+//! carry sub-module paths). The V2 runtime binder authenticates the exact
+//! public 806-tensor manifest and maps the complete official inference
+//! graph. Independent real-weight parity remains a required release gate;
+//! missing or mismatched tensors fail loudly before inference (FR-EX-08).
 //!
 //! # Voice-conversion policy note (redecoder variants)
 //!
@@ -127,12 +127,10 @@
 //!
 //! FACodec ships PyTorch pickle `.bin` files; this converter **never**
 //! touches ONNX (FR-LD-05) and **never** touches pickle (NFR-DS-02
-//! zero-dep). The pipeline will be re-implemented natively in a future
-//! `crates/vokra-models/src/facodec/` module (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4). Between now and that
-//! landing, the runtime consumer walks the emitted tensor names and
-//! either succeeds or fails loudly per FR-EX-08 — today's converter
-//! surface is byte-exact provenance + tensor-name preservation only.
+//! zero-dep). The V2 pipeline is re-implemented natively in
+//! `crates/vokra-models/src/facodec/` (whisper.cpp 型 self
+//! re-implementation, CLAUDE.md 設計判断 4); no PyTorch, ONNX, protobuf,
+//! or source-framework runtime enters the shipping graph.
 
 use std::path::Path;
 
@@ -245,10 +243,10 @@ const _: () = assert!(N_Q_PROSODY + N_Q_CONTENT + N_Q_DETAIL == 6);
 /// | zero-shot VC capable | no | no | yes | yes |
 /// | approx. peak resident | ~415 MB | ~450 MB | ~566 MB | ~601 MB |
 ///
-/// All four variants comfortably fit on the M1 iMac 16 GB dev
-/// machine — vast.ai is NOT required even for `RedecoderV2`
-/// (~601 MB peak resident, well under the memory
-/// [[feedback-large-models-on-vast-ai]] ≥8 GB threshold).
+/// Real checkpoint preparation/conversion is performed on vast.ai even
+/// though the historical files are below 1 GB; the maintainer Mac only runs
+/// the tiny synthetic fixtures in this module. `RedecoderV1/V2` remain outside
+/// the main-runtime route pending the recorded voice-conversion policy choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FacodecVariant {
     /// v1 = `encoder` + `decoder` (base pair, no zero-shot VC).
@@ -436,14 +434,12 @@ pub fn convert_naturalspeech3_facodec_variant_file(
     variant: FacodecVariant,
     license: Option<&str>,
 ) -> Result<FacodecReport, ConvertError> {
-    // Largest variant (redecoder-v2) is ~601 MB peak resident after
-    // the prep-script merge — 1 order of magnitude smaller than the
-    // streaming-mandated Moshi 14 GiB tier, so the simple
-    // `std::fs::read` posture the sibling non-streaming BF16
-    // pass-through converters use applies. Every variant fits
-    // comfortably on M1 iMac 16 GB per the memory
-    // [[feedback-large-models-on-vast-ai]] threshold matrix (vast.ai
-    // is required only for >8 GB checkpoints).
+    // The largest historical variant is ~601 MB after the prep-script
+    // merge, so this converter can retain the established single-buffer
+    // implementation. Operationally, real model conversion/validation is
+    // still run on vast.ai: the maintainer Mac is reserved for tiny synthetic
+    // fixtures and metadata-only checks, per AGENTS.md. This implementation
+    // detail is not permission to process the released artifact locally.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -590,8 +586,8 @@ mod tests {
 
     #[test]
     fn arch_string_is_distinct_from_every_sibling_codec() {
-        // ARCH is the sole cross-crate handshake with the future
-        // `vokra-models::facodec::EXPECTED_ARCH` — pinning it here
+        // ARCH is the sole cross-crate handshake with
+        // `vokra_models::facodec::ARCH` — pinning it here
         // catches an accidental rename that would silently mis-route
         // runtime dispatch. Also assert that ARCH does NOT collide
         // with any sibling codec (FACodec is FVQ, not RVQ / FSQ /

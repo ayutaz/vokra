@@ -1304,6 +1304,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::Facodec => {
+            return Err(
+                "bench: arch `facodec` uses explicit encode/decode modes and a versioned six-codebook plus speaker-embedding container; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <facodec.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
         ModelTask::MossAudioTokenizerCodec => {
             return Err(
                 "bench: arch `moss_audio_tokenizer` consumes a caller-sized residual-LFQ code matrix rather than timed PCM; use `vokra-cli run --model <moss-audio-tokenizer.gguf> --codec-mode decode --num-quantizers <N> --input <codes.u32le> --output <out.wav>`"

@@ -1600,21 +1600,22 @@ impl Compute {
     /// same heterogeneous-signature reason as `mimi_rvq_f32` (chunk
     /// granularity, not per-token hot path).
     ///
-    /// # CPU-only through this seam today
+    /// # CPU + Metal through this seam
     ///
-    /// The CPU arm delegates verbatim to [`vokra_ops::dac_rvq_decode`]
-    /// (bit-for-bit vs a direct kernel call); the **Metal** / **CUDA** arms
-    /// return an explicit [`VokraError::UnsupportedOp`] — the M4-04 GPU
-    /// kernels are deferred, and Vokra never silently substitutes the CPU
-    /// (FR-EX-08). The [`Compute::for_backend`] coverage gate additionally
-    /// rejects any model listing [`HotOp::DacRvq`] against Metal / CUDA /
-    /// Vulkan.
+    /// The CPU arm delegates verbatim to [`vokra_ops::dac_rvq_decode`]. The
+    /// Metal arm validates every shape and index on the host, then dispatches
+    /// `vokra_dac_rvq_gather_project_fold_f32`; it never substitutes the CPU.
+    /// CUDA and every other uncovered backend return an explicit
+    /// [`VokraError::UnsupportedOp`] through the coverage gate (FR-EX-08).
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates [`vokra_ops::dac_rvq_decode`]'s
     ///   [`VokraError::InvalidArgument`] (shape mismatch, out-of-range index).
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    /// - Metal arm: mirrors the CPU shape/index checks before GPU dispatch and
+    ///   propagates backend failures.
+    /// - CUDA and other uncovered backends: explicit
+    ///   [`VokraError::UnsupportedOp`].
     pub fn dac_rvq_f32(
         &self,
         codes: &[u32],

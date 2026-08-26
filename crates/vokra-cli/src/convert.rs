@@ -120,6 +120,7 @@ OPTIONS:
                               indic-parler-tts | vieneu-tts | bark | bark-small |
                               hifigan-vocoder | speecht5-hifigan | bigvgan |
                               vocos-mel-24khz | vocos-encodec-24khz | focalcodec |
+                              naturalspeech3-facodec-v2 |
                               snac | snac-24khz | snac-44khz |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
