@@ -98,13 +98,18 @@
 //! Qwen3-ASR is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05). The strict binder lives in
 //! `crates/vokra-models/src/qwen3_asr/`; its log-mel frontend, audio encoder,
-//! projector, Qwen3 decode loop and BPE execution remain the next native
-//! implementation stage (whisper.cpp-style self re-implementation).
+//! projector and fixed-revision Qwen2 BPE/chat contract are native there. The
+//! 28-layer Qwen3 decode loop remains the next implementation stage.
+//! Conversion authenticates and embeds all five tokenizer/chat/generation
+//! sidecars; no mutable runtime download is permitted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use vokra_core::gguf::{GgmlType, GgufBuilder, GgufStreamWriter, GgufTensorDecl, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufStreamWriter, GgufTensorDecl,
+    GgufValueType, chunks,
+};
 use vokra_core::json::{self, JsonValue};
 use vokra_core::{FrontendSpec, LicenseClass};
 
@@ -126,6 +131,42 @@ pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_h
 pub(crate) const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 pub(crate) const KEY_SOURCE_REVISION: &str = "vokra.qwen3_asr.source_revision";
 pub(crate) const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.qwen3_asr.tensor_manifest_sha256";
+
+// -- Fixed-revision tokenizer / generation sidecars --------------------
+// Both released sizes carry byte-identical files at the revisions pinned by
+// `VariantAxes`. They are required together so an executable GGUF is
+// self-contained and cannot silently pick up a mutable tokenizer from disk.
+pub(crate) const KEY_TOKENIZER_VOCAB: &str = "vokra.qwen3_asr.tokenizer.vocab_json";
+pub(crate) const KEY_TOKENIZER_MERGES: &str = "vokra.qwen3_asr.tokenizer.merges_txt";
+pub(crate) const KEY_TOKENIZER_CONFIG: &str = "vokra.qwen3_asr.tokenizer.config_json";
+pub(crate) const KEY_CHAT_TEMPLATE: &str = "vokra.qwen3_asr.tokenizer.chat_template_json";
+pub(crate) const KEY_GENERATION_CONFIG: &str = "vokra.qwen3_asr.generation.config_json";
+
+const VOCAB_FILE: ExactSidecar = ExactSidecar {
+    name: "vocab.json",
+    bytes: 2_776_833,
+    sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+};
+const MERGES_FILE: ExactSidecar = ExactSidecar {
+    name: "merges.txt",
+    bytes: 1_671_853,
+    sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+};
+const TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 12_487,
+    sha256: "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c",
+};
+const CHAT_TEMPLATE_FILE: ExactSidecar = ExactSidecar {
+    name: "chat_template.json",
+    bytes: 1_161,
+    sha256: "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff",
+};
+const GENERATION_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "generation_config.json",
+    bytes: 142,
+    sha256: "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c",
+};
 
 // -- `vokra.qwen3_asr.*` audio-encoder hparam keys ----------------------
 pub(crate) const KEY_AUDIO_D_MODEL: &str = "vokra.qwen3_asr.audio.d_model";
@@ -320,9 +361,12 @@ pub struct Qwen3AsrReport {
 /// (`qwen3-asr-0.6b` / `qwen3-asr-1.7b`).
 ///
 /// Reads `input` as either the upstream single `model.safetensors` or a
-/// `model.safetensors.index.json` plus its referenced shards, then streams a
-/// Vokra GGUF to `output`. `license` may repeat the audited `apache-2.0`
-/// license but cannot override it with a conflicting value.
+/// `model.safetensors.index.json` plus its referenced shards. The exact
+/// `vocab.json`, `merges.txt`, `tokenizer_config.json`, `chat_template.json`
+/// and `generation_config.json` from the same pinned release directory are
+/// mandatory and embedded verbatim. The converter then streams a Vokra GGUF
+/// to `output`. `license` may repeat the audited `apache-2.0` license but
+/// cannot override it with a conflicting value.
 ///
 /// # Errors
 ///
@@ -350,7 +394,9 @@ pub fn convert_qwen3_asr_file_with_variant(
     let axes = variant.axes();
     let mut checkpoint = CheckpointReader::open(input)?;
     checkpoint.validate(variant)?;
-    let b = metadata_builder(&axes);
+    let tokenizer = TokenizerAssets::load(input, &axes)?;
+    let mut b = metadata_builder(&axes);
+    tokenizer.embed(&mut b);
     let metadata_count = b.metadata_count();
     let expected = expected_manifest(variant);
     let decls = expected
@@ -410,6 +456,91 @@ fn metadata_builder(axes: &VariantAxes) -> GgufBuilder {
     frontend_spec().write_into(&mut builder);
     write_hparams(&mut builder, axes);
     builder
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExactSidecar {
+    name: &'static str,
+    bytes: usize,
+    sha256: &'static str,
+}
+
+#[derive(Debug)]
+struct TokenizerAssets {
+    vocab: Vec<u8>,
+    merges: Vec<u8>,
+    tokenizer_config: Vec<u8>,
+    chat_template: Vec<u8>,
+    generation_config: Vec<u8>,
+}
+
+impl TokenizerAssets {
+    fn load(input: &Path, axes: &VariantAxes) -> Result<Self, ConvertError> {
+        let directory = input.parent().unwrap_or_else(|| Path::new("."));
+        Ok(Self {
+            vocab: read_exact_sidecar(directory, VOCAB_FILE, axes)?,
+            merges: read_exact_sidecar(directory, MERGES_FILE, axes)?,
+            tokenizer_config: read_exact_sidecar(directory, TOKENIZER_CONFIG_FILE, axes)?,
+            chat_template: read_exact_sidecar(directory, CHAT_TEMPLATE_FILE, axes)?,
+            generation_config: read_exact_sidecar(directory, GENERATION_CONFIG_FILE, axes)?,
+        })
+    }
+
+    fn embed(&self, builder: &mut GgufBuilder) {
+        add_u8_array(builder, KEY_TOKENIZER_VOCAB, &self.vocab);
+        add_u8_array(builder, KEY_TOKENIZER_MERGES, &self.merges);
+        add_u8_array(builder, KEY_TOKENIZER_CONFIG, &self.tokenizer_config);
+        add_u8_array(builder, KEY_CHAT_TEMPLATE, &self.chat_template);
+        add_u8_array(builder, KEY_GENERATION_CONFIG, &self.generation_config);
+    }
+}
+
+fn read_exact_sidecar(
+    directory: &Path,
+    spec: ExactSidecar,
+    axes: &VariantAxes,
+) -> Result<Vec<u8>, ConvertError> {
+    let path = directory.join(spec.name);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        ConvertError::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "qwen3-asr: reading required {}@{} sidecar {}: {error}",
+                axes.upstream_hf,
+                axes.source_revision,
+                path.display()
+            ),
+        ))
+    })?;
+    if bytes.len() != spec.bytes {
+        return Err(parse_error(format!(
+            "{}@{} sidecar {} is {} bytes, expected exactly {}",
+            axes.upstream_hf,
+            axes.source_revision,
+            spec.name,
+            bytes.len(),
+            spec.bytes
+        )));
+    }
+    let actual =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&bytes));
+    if actual != spec.sha256 {
+        return Err(parse_error(format!(
+            "{}@{} sidecar {} SHA-256 {actual}, expected {}",
+            axes.upstream_hf, axes.source_revision, spec.name, spec.sha256
+        )));
+    }
+    Ok(bytes)
+}
+
+fn add_u8_array(builder: &mut GgufBuilder, key: &str, bytes: &[u8]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: bytes.iter().copied().map(GgufMetadataValue::U8).collect(),
+        }),
+    );
 }
 
 /// Exact `WhisperFeatureExtractor` parameters pinned by both Qwen3-ASR
@@ -1009,6 +1140,76 @@ mod tests {
                 Some(false)
             );
         }
+    }
+
+    #[test]
+    fn tokenizer_assets_are_embedded_as_one_complete_group() {
+        let axes = Variant::B06.axes();
+        let mut builder = metadata_builder(&axes);
+        let assets = TokenizerAssets {
+            vocab: b"vocab".to_vec(),
+            merges: b"merges".to_vec(),
+            tokenizer_config: b"tokenizer".to_vec(),
+            chat_template: b"chat".to_vec(),
+            generation_config: b"generation".to_vec(),
+        };
+        assets.embed(&mut builder);
+        assert_eq!(builder.metadata_count(), 60);
+        let file =
+            GgufFile::parse(builder.to_bytes().expect("serialize assets")).expect("parse assets");
+        for (key, expected) in [
+            (KEY_TOKENIZER_VOCAB, b"vocab".as_slice()),
+            (KEY_TOKENIZER_MERGES, b"merges".as_slice()),
+            (KEY_TOKENIZER_CONFIG, b"tokenizer".as_slice()),
+            (KEY_CHAT_TEMPLATE, b"chat".as_slice()),
+            (KEY_GENERATION_CONFIG, b"generation".as_slice()),
+        ] {
+            let GgufMetadataValue::Array(array) = file.get(key).expect("embedded key") else {
+                panic!("{key} must be an array");
+            };
+            let actual = array
+                .values
+                .iter()
+                .map(|value| match value {
+                    GgufMetadataValue::U8(byte) => *byte,
+                    other => panic!("{key} contains non-U8 {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn sidecar_reader_rejects_size_and_hash_drift() {
+        let directory = scratch_directory("sidecars");
+        let path = directory.join("tiny.txt");
+        let axes = Variant::B17.axes();
+        let spec = ExactSidecar {
+            name: "tiny.txt",
+            bytes: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        std::fs::write(&path, b"abc").expect("write exact sidecar");
+        assert_eq!(
+            read_exact_sidecar(&directory, spec, &axes).expect("exact sidecar"),
+            b"abc"
+        );
+
+        std::fs::write(&path, b"ab").expect("write short sidecar");
+        assert!(
+            read_exact_sidecar(&directory, spec, &axes)
+                .expect_err("size drift")
+                .to_string()
+                .contains("expected exactly 3")
+        );
+        std::fs::write(&path, b"abd").expect("write hash-drift sidecar");
+        assert!(
+            read_exact_sidecar(&directory, spec, &axes)
+                .expect_err("hash drift")
+                .to_string()
+                .contains("SHA-256")
+        );
+        std::fs::remove_dir_all(directory).ok();
     }
 
     #[test]

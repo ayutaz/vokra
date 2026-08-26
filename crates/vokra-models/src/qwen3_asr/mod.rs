@@ -7,12 +7,11 @@
 //! were audited with bounded HTTP Range reads of the public GGUF headers on
 //! 2026-08-27; tensor payloads were not downloaded for that audit.
 //!
-//! Full ASR remains deliberately loud-partial. Binding a checkpoint is not a
-//! claim that the three-convolution audio stem, 18/24-layer audio Transformer,
-//! Qwen3 decoder loop and Qwen2 BPE tokenizer are already wired. The exact
-//! variable-length log-mel stage is present, but is not presented as an
-//! executable model until every learned stage uses the selected backend.
-//! [`Qwen3AsrCheckpoint::transcribe`] names those missing pieces instead of
+//! The exact variable-length frontend, three-convolution audio stem,
+//! 18/24-layer audio Transformer, projector and fixed-revision Qwen2 BPE/chat
+//! contract are executable without runtime downloads. Full ASR remains
+//! deliberately loud-partial only at the 28-layer Qwen3 decoder boundary;
+//! [`Qwen3AsrCheckpoint::transcribe`] names that missing stage instead of
 //! returning fabricated text or silently selecting the CPU backend.
 
 use std::path::Path;
@@ -26,10 +25,16 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 mod audio_encoder;
 mod frontend;
+mod tokenizer;
 mod weights;
 
 use audio_encoder::Qwen3AsrAudioRuntime;
 pub use audio_encoder::{QWEN3_ASR_AUDIO_HOT_OPS, Qwen3AsrAudioEmbeddings};
+pub use tokenizer::{
+    ASR_TEXT_TOKEN_ID, AUDIO_END_TOKEN_ID, AUDIO_PAD_TOKEN_ID, AUDIO_START_TOKEN_ID,
+    END_OF_TEXT_TOKEN_ID, IM_END_TOKEN_ID, IM_START_TOKEN_ID, Qwen3AsrTokenizer,
+    Qwen3AsrTranscription, SUPPORTED_LANGUAGES,
+};
 use weights::Qwen3AsrMappedDescriptors;
 
 /// `vokra.model.arch` shared by the two Qwen3-ASR release sizes.
@@ -379,6 +384,7 @@ pub struct Qwen3AsrCheckpoint {
     variant: Qwen3AsrVariant,
     config: Qwen3AsrConfig,
     mapped: Option<Arc<Qwen3AsrMappedDescriptors>>,
+    tokenizer: Option<Arc<Qwen3AsrTokenizer>>,
 }
 
 impl std::fmt::Debug for Qwen3AsrCheckpoint {
@@ -388,13 +394,15 @@ impl std::fmt::Debug for Qwen3AsrCheckpoint {
             .field("tensor_count", &self.tensor_count())
             .field("weight_license", &self.weight_license())
             .field("mapped", &self.mapped.is_some())
+            .field("tokenizer", &self.tokenizer.is_some())
             .finish()
     }
 }
 
 impl Qwen3AsrCheckpoint {
-    /// Opens the GGUF through the true mmap loader and strictly binds all
-    /// descriptors without decoding tensor payloads.
+    /// Opens the GGUF through the true mmap loader, strictly binds every
+    /// descriptor and authenticates the embedded tokenizer contract without
+    /// decoding tensor payloads.
     pub fn open_mapped(path: impl AsRef<Path>) -> Result<Self> {
         let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
         Self::from_gguf_mapped(Arc::new(file))
@@ -412,8 +420,10 @@ impl Qwen3AsrCheckpoint {
         require_string_value(&file, KEY_AUDIO_ACTIVATION_FUNCTION, "gelu")?;
         require_f32_value(&file, KEY_AUDIO_LAYER_NORM_EPS, 1.0e-5)?;
         require_bool_value(&file, KEY_AUDIO_SCALE_EMBEDDING, false)?;
+        let tokenizer = Arc::new(Qwen3AsrTokenizer::from_gguf(&file)?);
         let mapped = Qwen3AsrMappedDescriptors::bind(file, checkpoint.config)?;
         checkpoint.mapped = Some(Arc::new(mapped));
+        checkpoint.tokenizer = Some(tokenizer);
         Ok(checkpoint)
     }
 
@@ -450,6 +460,7 @@ impl Qwen3AsrCheckpoint {
             variant,
             config,
             mapped: None,
+            tokenizer: None,
         })
     }
 
@@ -498,6 +509,15 @@ impl Qwen3AsrCheckpoint {
         })
     }
 
+    fn tokenizer(&self) -> Result<&Arc<Qwen3AsrTokenizer>> {
+        self.tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_asr: executable inference requires the five exact embedded tokenizer/chat/generation sidecars; re-convert the pinned release"
+                    .to_owned(),
+            )
+        })
+    }
+
     /// Descriptor-only diagnostic entry point. Use [`Qwen3Asr::encode_audio`]
     /// for the executable CPU/Metal audio tower.
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
@@ -512,7 +532,7 @@ impl Qwen3AsrCheckpoint {
             )));
         }
         Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint is descriptor-bound; construct Qwen3Asr::open_mapped to run its complete {}-layer CPU/Metal audio tower. End-to-end transcription still requires the 28-layer Qwen3 autoregressive decoder and embedded Qwen2 BPE/chat assets; no backend is silently substituted.",
+            "qwen3_asr transcribe (loud-partial): the exact {} {}-tensor checkpoint is descriptor-bound; construct Qwen3Asr::open_mapped to authenticate the embedded tokenizer contract and run its complete {}-layer CPU/Metal audio tower. End-to-end transcription still requires the 28-layer Qwen3 autoregressive decoder; no backend is silently substituted.",
             self.variant.model_name(),
             self.tensor_count(),
             self.config.audio.n_layer
@@ -526,6 +546,7 @@ pub struct Qwen3Asr {
     checkpoint: Qwen3AsrCheckpoint,
     backend: BackendKind,
     audio: Arc<Qwen3AsrAudioRuntime>,
+    tokenizer: Arc<Qwen3AsrTokenizer>,
 }
 
 impl std::fmt::Debug for Qwen3Asr {
@@ -538,8 +559,8 @@ impl std::fmt::Debug for Qwen3Asr {
 }
 
 impl Qwen3Asr {
-    /// Opens an exact dense GGUF through mmap and preflights the complete audio
-    /// tower on `backend`.
+    /// Opens an exact dense GGUF through mmap, authenticates the tokenizer and
+    /// preflights the complete audio tower on `backend`.
     pub fn open_mapped(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
         Self::from_checkpoint(Qwen3AsrCheckpoint::open_mapped(path)?, backend)
     }
@@ -547,11 +568,13 @@ impl Qwen3Asr {
     /// Builds an executable model from a mapped strict checkpoint.
     pub fn from_checkpoint(checkpoint: Qwen3AsrCheckpoint, backend: BackendKind) -> Result<Self> {
         checkpoint.mapped()?;
+        let tokenizer = Arc::clone(checkpoint.tokenizer()?);
         let _ = crate::compute::Compute::for_backend(backend, QWEN3_ASR_AUDIO_HOT_OPS)?;
         Ok(Self {
             checkpoint,
             backend,
             audio: Arc::new(Qwen3AsrAudioRuntime::default()),
+            tokenizer,
         })
     }
 
@@ -567,6 +590,12 @@ impl Qwen3Asr {
         &self.checkpoint
     }
 
+    /// Fixed-revision Qwen2 byte-BPE and Qwen3-ASR prompt contract.
+    #[must_use]
+    pub fn tokenizer(&self) -> &Qwen3AsrTokenizer {
+        &self.tokenizer
+    }
+
     /// Runs the exact variable-length frontend, convolutional stem,
     /// 18/24-layer audio Transformer and text-width projector.
     pub fn encode_audio(&self, pcm: &[f32], sample_rate: u32) -> Result<Qwen3AsrAudioEmbeddings> {
@@ -574,13 +603,13 @@ impl Qwen3Asr {
         audio_encoder::encode(&self.checkpoint, self.backend, &self.audio, pcm)
     }
 
-    /// End-to-end ASR remains explicit until the tokenizer and Qwen3 decode
-    /// loop land; the complete audio tower is independently executable through
-    /// [`Self::encode_audio`].
+    /// End-to-end ASR remains explicit until the Qwen3 decode loop lands; the
+    /// complete audio tower and tokenizer contract are independently
+    /// executable through [`Self::encode_audio`] and [`Self::tokenizer`].
     pub fn transcribe(&self, pcm: &[f32], sample_rate: u32) -> Result<String> {
         validate_audio_input(pcm, sample_rate)?;
         Err(VokraError::UnsupportedOp(format!(
-            "qwen3_asr transcribe (loud-partial): {} has a complete {:?} audio tower, but end-to-end decoding still requires embedded Qwen2 BPE/chat assets and the 28-layer Qwen3 autoregressive loop; no CPU fallback or fabricated transcript is returned",
+            "qwen3_asr transcribe (loud-partial): {} has a complete {:?} audio tower and authenticated embedded Qwen2 BPE/chat assets, but end-to-end decoding still requires the 28-layer Qwen3 autoregressive loop; no CPU fallback or fabricated transcript is returned",
             self.checkpoint.model_name(),
             self.backend
         )))
