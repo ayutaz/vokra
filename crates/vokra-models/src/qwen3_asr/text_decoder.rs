@@ -172,10 +172,10 @@ pub(super) fn transcribe(
     let mut generated = Vec::with_capacity(options.max_new_tokens);
     let mut next = last_argmax(&compute, mapped, runtime, &scratch)?;
     for step in 0..options.max_new_tokens {
+        generated.push(next);
         if is_eos(next) {
             break;
         }
-        generated.push(next);
         if step + 1 == options.max_new_tokens {
             break;
         }

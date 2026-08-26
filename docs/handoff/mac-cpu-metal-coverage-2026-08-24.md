@@ -31,7 +31,10 @@
 > K/V caching, SwiGLU and a chunked vocabulary head through a whole-model
 > CPU/Metal hot-op preflight with no silent CPU fallback. CLI run/bench now
 > route the architecture to this concrete mmap runtime instead of the stale
-> bound-only diagnostic. The live public GGUFs
+> bound-only diagnostic. Binding additionally authenticates both exact
+> upstream revision fields. A locked official `qwen-asr==0.0.6` CPU-FP32
+> reference dumper, exact projected-audio/prompt/greedy-token/text Rust gate
+> for both releases and a no-upload VAST worker are staged. The live public GGUFs
 > predate the embedded assets and therefore remain artifact-partial until a
 > separately authorized replacement; source-level end-to-end execution is
 > complete. VAST real-weight CPU parity and Apple-device Metal parity remain

@@ -123,6 +123,12 @@ pub struct Qwen3AsrTranscription {
     pub language: String,
     /// Transcript with the model's metadata prefix removed.
     pub text: String,
+    /// Exact greedy ids emitted by the decoder, including the first EOS when
+    /// generation terminated naturally.
+    ///
+    /// The vector is empty only for values produced by parser-only helpers
+    /// that did not originate from decoder ids.
+    pub token_ids: Vec<u32>,
 }
 
 /// Exact Qwen3-ASR byte-BPE, ChatML prompt and output parser.
@@ -236,7 +242,15 @@ impl Qwen3AsrTokenizer {
         forced_language: Option<&str>,
     ) -> Result<Qwen3AsrTranscription> {
         let raw = self.decode_generated_ids(ids)?;
-        parse_asr_output(&raw, forced_language)
+        let mut transcription = parse_asr_output(&raw, forced_language)?;
+        let recorded_len = ids
+            .iter()
+            .position(|&id| is_eos(id))
+            .map_or(ids.len(), |index| index + 1);
+        transcription
+            .token_ids
+            .extend_from_slice(&ids[..recorded_len]);
+        Ok(transcription)
     }
 
     fn push_text(&self, ids: &mut Vec<u32>, text: &str) -> Result<()> {
@@ -302,6 +316,7 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
         return Ok(Qwen3AsrTranscription {
             language: String::new(),
             text: String::new(),
+            token_ids: Vec::new(),
         });
     }
     let value = detect_and_fix_repetitions(value, 20);
@@ -309,18 +324,21 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
         return Ok(Qwen3AsrTranscription {
             language: normalize_language(language)?,
             text: value,
+            token_ids: Vec::new(),
         });
     }
     let Some((metadata, text)) = value.split_once(ASR_TEXT_TAG) else {
         return Ok(Qwen3AsrTranscription {
             language: String::new(),
             text: value,
+            token_ids: Vec::new(),
         });
     };
     if metadata.to_ascii_lowercase().contains("language none") {
         return Ok(Qwen3AsrTranscription {
             language: String::new(),
             text: text.trim().to_owned(),
+            token_ids: Vec::new(),
         });
     }
     let mut language = String::new();
@@ -346,6 +364,7 @@ fn parse_asr_output(raw: &str, forced_language: Option<&str>) -> Result<Qwen3Asr
     Ok(Qwen3AsrTranscription {
         language,
         text: text.trim().to_owned(),
+        token_ids: Vec::new(),
     })
 }
 
@@ -561,6 +580,11 @@ mod tests {
                 .expect("decode"),
             "hi<asr_text>h"
         );
+        let parsed = tokenizer
+            .parse_generated_ids(&[3, IM_END_TOKEN_ID, 4], Some("English"))
+            .expect("parse generated ids");
+        assert_eq!(parsed.text, "h");
+        assert_eq!(parsed.token_ids, vec![3, IM_END_TOKEN_ID]);
         assert!(
             tokenizer
                 .decode_generated_ids(&[IM_START_TOKEN_ID])
@@ -577,6 +601,7 @@ mod tests {
             Qwen3AsrTranscription {
                 language: "Chinese".to_owned(),
                 text: "你好".to_owned(),
+                token_ids: Vec::new(),
             }
         );
         assert_eq!(
@@ -584,6 +609,7 @@ mod tests {
             Qwen3AsrTranscription {
                 language: String::new(),
                 text: String::new(),
+                token_ids: Vec::new(),
             }
         );
         assert_eq!(
@@ -591,6 +617,7 @@ mod tests {
             Qwen3AsrTranscription {
                 language: String::new(),
                 text: "plain transcript".to_owned(),
+                token_ids: Vec::new(),
             }
         );
         assert_eq!(
@@ -599,6 +626,7 @@ mod tests {
             Qwen3AsrTranscription {
                 language: "Klingon".to_owned(),
                 text: "Qapla'".to_owned(),
+                token_ids: Vec::new(),
             }
         );
         assert_eq!(
@@ -606,6 +634,7 @@ mod tests {
             Qwen3AsrTranscription {
                 language: "Japanese".to_owned(),
                 text: "forced text".to_owned(),
+                token_ids: Vec::new(),
             }
         );
         let twenty = "x".repeat(20);

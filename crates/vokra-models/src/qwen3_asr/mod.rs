@@ -49,6 +49,8 @@ const LABEL: &str = "qwen3_asr";
 const CATEGORY: &str = "asr";
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_SOURCE_REVISION: &str = "vokra.qwen3_asr.source_revision";
 
 const KEY_AUDIO_D_MODEL: &str = "vokra.qwen3_asr.audio.d_model";
 const KEY_AUDIO_N_LAYER: &str = "vokra.qwen3_asr.audio.n_layer";
@@ -133,6 +135,15 @@ impl Qwen3AsrVariant {
         match self {
             Self::B06 => "Qwen/Qwen3-ASR-0.6B",
             Self::B17 => "Qwen/Qwen3-ASR-1.7B",
+        }
+    }
+
+    /// Immutable upstream snapshot revision admitted for this size.
+    #[must_use]
+    pub const fn source_revision(self) -> &'static str {
+        match self {
+            Self::B06 => "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+            Self::B17 => "7278e1e70fe206f11671096ffdd38061171dd6e5a",
         }
     }
 
@@ -448,6 +459,8 @@ impl Qwen3AsrCheckpoint {
         };
         require_string_value(file, KEY_MODEL_CATEGORY, CATEGORY)?;
         require_string_value(file, KEY_UPSTREAM_HF, variant.upstream_hf())?;
+        require_string_value(file, KEY_UPSTREAM_REVISION, variant.source_revision())?;
+        require_string_value(file, KEY_SOURCE_REVISION, variant.source_revision())?;
         let checkpoint = StrictCheckpoint::bind(file, variant.spec())?;
         if checkpoint.weight_license() != LicenseClass::Permissive {
             return Err(VokraError::ModelLoad(format!(
@@ -803,6 +816,18 @@ mod tests {
         b17.validate_for_variant(Qwen3AsrVariant::B17)
             .expect("1.7B config");
         assert!(b06.validate_for_variant(Qwen3AsrVariant::B17).is_err());
+        assert_ne!(b06, b17);
+    }
+
+    #[test]
+    fn source_revisions_are_full_lowercase_commits_and_distinct() {
+        let b06 = Qwen3AsrVariant::B06.source_revision();
+        let b17 = Qwen3AsrVariant::B17.source_revision();
+        for revision in [b06, b17] {
+            assert_eq!(revision.len(), 40);
+            assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert_eq!(revision, revision.to_ascii_lowercase());
+        }
         assert_ne!(b06, b17);
     }
 }
