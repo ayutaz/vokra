@@ -31,6 +31,8 @@ USAGE:
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <nemotron-asr.gguf> --input <16k-mono.wav> \
+                  [--tokenizer <tokenizer.json>] [--language <code|auto>]
     vokra-cli run --model <wav2vec2.gguf> --input <16k-mono.wav> [--output <features.f32>]
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
@@ -128,6 +130,10 @@ OPTIONS:
                                 Nano requires Audio Tokenizer Nano; Base/v1.5
                                 require Audio Tokenizer Full. Both stages must
                                 support the same selected backend.
+    --tokenizer <path>          Nemotron 3.5 ASR only: authenticated official
+                                tokenizer.json sidecar. Required for the
+                                published legacy GGUF; newly converted files
+                                embed the same bytes and do not need this flag.
     --input <path>              mono WAV input (required for VAD, ASR, speaker,
                                 language ID, denoise, separation, segmentation and F0; optional recorded
                                 context audio for S2S — the explicit AEC bypass
@@ -408,6 +414,8 @@ struct RunArgs {
     embedding_model: Option<String>,
     /// MOSS-TTS-Nano-only codec sidecar.
     audio_tokenizer: Option<String>,
+    /// Nemotron-ASR-only official tokenizer.json sidecar.
+    tokenizer: Option<String>,
     input: Option<String>,
     text: Option<String>,
     output: Option<String>,
@@ -569,6 +577,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut segmentation_model: Option<String> = None;
     let mut embedding_model: Option<String> = None;
     let mut audio_tokenizer: Option<String> = None;
+    let mut tokenizer: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut output: Option<String> = None;
@@ -638,6 +647,14 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                 audio_tokenizer = Some(
                     args.get(i + 1)
                         .ok_or("--audio-tokenizer requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--tokenizer" => {
+                tokenizer = Some(
+                    args.get(i + 1)
+                        .ok_or("--tokenizer requires a tokenizer.json path")?
                         .clone(),
                 );
                 i += 2;
@@ -933,6 +950,7 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         segmentation_model,
         embedding_model,
         audio_tokenizer,
+        tokenizer,
         input,
         text,
         output,
@@ -1025,6 +1043,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         // NOT fire for these.
         ModelTask::Asr
         | ModelTask::AsrVoxtral
+        | ModelTask::AsrNemotron
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
         | ModelTask::VadFirered
@@ -1086,6 +1105,13 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         .then_some(engine::TaskHint::CsmFixtureTokenizer);
     let (session, task) =
         engine::load_session_with_backend_and_mimi(&a.model, a.backend, hint, a.mimi.as_deref())?;
+
+    if a.tokenizer.is_some() && task != ModelTask::AsrNemotron {
+        return Err(
+            "run: --tokenizer is only supported for the nemotron_asr_streaming arch; other model tokenizers must be embedded by their audited converter"
+                .to_owned(),
+        );
+    }
 
     if (a.segmentation_model.is_some() || a.embedding_model.is_some())
         && task != ModelTask::DiarizationPyannote
@@ -1241,11 +1267,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     // transcription-prompt `lang:` segment, and SBV2's JA/EN phonemizer +
     // BERT-encoder routing (Task 38). Rejected off every other arch rather
     // than silently ignored (FR-EX-08).
-    if a.language.is_some() && task != ModelTask::AsrVoxtral && task != ModelTask::Sbv2 {
+    if a.language.is_some()
+        && task != ModelTask::AsrVoxtral
+        && task != ModelTask::AsrNemotron
+        && task != ModelTask::Sbv2
+    {
         return Err(
             "run: --language is only supported for the voxtral arch (the trained \
-             transcription prompt's `lang:` segment) or the sbv2 arch (JA/EN phonemizer + \
-             BERT-encoder routing)"
+             transcription prompt's `lang:` segment), nemotron_asr_streaming (the released \
+             prompt-id map), or the sbv2 arch (JA/EN phonemizer + BERT-encoder routing)"
                 .to_owned(),
         );
     }
@@ -1389,6 +1419,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             }
             let text = run_asr(&session, &clip.samples)?;
             println!("asr: {text}");
+        }
+        ModelTask::AsrNemotron => {
+            run_nemotron_asr(&session, &a)?;
         }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = a
@@ -5119,6 +5152,61 @@ fn run_asr(session: &Session, pcm: &[f32]) -> Result<String, String> {
         .text)
 }
 
+/// Runs the released Nemotron 3.5 offline causal path with an explicit
+/// language prompt. The public July GGUF predates tokenizer embedding, so an
+/// authenticated sidecar is accepted without requiring an irreversible model
+/// re-upload; newly converted GGUFs carry the same bytes internally.
+fn run_nemotron_asr(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::nemotron_asr_streaming::{NemotronAsr, SAMPLE_RATE, prompt_id_for_language};
+
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (Nemotron ASR): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (Nemotron ASR): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (Nemotron ASR): only the released greedy RNN-T generation contract is implemented; --beam-size / --no-repeat-ngram / --length-penalty are not accepted"
+                .to_owned(),
+        );
+    }
+
+    let model = match a.tokenizer.as_deref() {
+        Some(tokenizer_path) => {
+            let bytes = std::fs::read(tokenizer_path)
+                .map_err(|error| format!("--tokenizer {tokenizer_path}: {error}"))?;
+            NemotronAsr::from_gguf_with_tokenizer_bytes(session.gguf(), &bytes)
+        }
+        None => NemotronAsr::from_gguf(session.gguf()),
+    }
+    .map_err(|error| error.to_string())?
+    .with_backend(a.backend);
+    if !model.has_tokenizer() {
+        return Err(
+            "run (Nemotron ASR): this legacy GGUF has no embedded official tokenizer.json; pass --tokenizer <authenticated tokenizer.json>, or reconvert with `vokra-cli convert --model nemotron-asr-streaming --tokenizer tokenizer.json`"
+                .to_owned(),
+        );
+    }
+    let language = a.language.as_deref().unwrap_or("auto");
+    let prompt_id = prompt_id_for_language(language).ok_or_else(|| {
+        format!(
+            "run (Nemotron ASR): unsupported --language {language:?}; use a released processor language tag such as en-US, ja-JP, fr-FR, or auto"
+        )
+    })?;
+    let transcription = model
+        .transcribe_with_prompt(&clip.samples, prompt_id)
+        .map_err(|error| error.to_string())?;
+    println!("asr: {}", transcription.text);
+    Ok(())
+}
+
 /// The Voxtral ASR path (P2 cc-10). Binds the concrete
 /// [`vokra_models::voxtral::VoxtralAsr`] from the session's (mmap-backed)
 /// GGUF exactly once — see [`ModelTask::AsrVoxtral`] for why the engine is
@@ -5565,6 +5653,28 @@ mod tests {
             Ok(_) => panic!("bare --mimi must be rejected"),
         };
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_accepts_nemotron_tokenizer_and_language() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "nemotron.gguf",
+            "--input",
+            "speech.wav",
+            "--tokenizer",
+            "tokenizer.json",
+            "--language",
+            "ja-JP",
+        ]))
+        .expect("Nemotron sidecar flags parse");
+        assert_eq!(parsed.tokenizer.as_deref(), Some("tokenizer.json"));
+        assert_eq!(parsed.language.as_deref(), Some("ja-JP"));
+        let error = match parse_args(&args(&["--model", "nemotron.gguf", "--tokenizer"])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --tokenizer must be rejected"),
+        };
+        assert_eq!(error, "--tokenizer requires a tokenizer.json path");
     }
 
     #[test]

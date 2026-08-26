@@ -57,6 +57,14 @@ pub(crate) enum ModelTask {
     /// decodes to ~12 GB of f32 weights, so two live copies do not fit on a
     /// 16 GB machine. One load, both surfaces.
     AsrVoxtral,
+    /// Prompt-conditioned Nemotron 3.5 ASR.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the concrete
+    /// model exactly once with either the embedded tokenizer or the explicit
+    /// `--tokenizer` sidecar required by the already-published legacy GGUF.
+    /// That concrete surface also exposes the released language-prompt map;
+    /// neither facility exists on the generic `AsrEngine` trait.
+    AsrNemotron,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
     /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
@@ -610,6 +618,8 @@ const ARCH_MOONSHINE: &str = "moonshine";
 const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
 /// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
+/// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
+const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
 /// Meta Wav2Vec2 raw-waveform encoder with an optional CTC head.
 const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
 /// Corrected Data2Vec Audio arch tag.
@@ -846,6 +856,15 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 .map_err(|error| error.to_string())?
                 .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_NEMOTRON_ASR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_NEMOTRON_ASR}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrNemotron))
         }
         ARCH_WAV2VEC2_CTC => {
             if hint.is_some() {
@@ -2478,6 +2497,24 @@ mod tests {
         assert_eq!(task, ModelTask::AsrVoxtral);
     }
 
+    #[test]
+    fn load_session_detects_nemotron_as_bare_prompted_asr_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_NEMOTRON_ASR);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-nemotron-asr-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("Nemotron session builds bare");
+        assert_eq!(task, ModelTask::AsrNemotron);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_NEMOTRON_ASR));
+    }
+
     /// Task hints are rejected on the voxtral arch (FR-EX-08 — no silent
     /// hint drop).
     #[test]
@@ -3254,6 +3291,7 @@ mod tests {
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
             ARCH_PARAKEET_CTC,
+            ARCH_NEMOTRON_ASR,
             ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(

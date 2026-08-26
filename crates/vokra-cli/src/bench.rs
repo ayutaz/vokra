@@ -1331,6 +1331,36 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr", audio_seconds, samples)
         }
+        ModelTask::AsrNemotron => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Nemotron ASR): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::nemotron_asr_streaming::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Nemotron ASR): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::nemotron_asr_streaming::SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::nemotron_asr_streaming::NemotronAsr::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(args.backend);
+            // Text detokenization is outside the timed learned-op path and
+            // the published legacy GGUF has no embedded tokenizer. Benchmark
+            // the complete PCM -> RNN-T token route directly.
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe_tokens(&pcm)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-nemotron", audio_seconds, samples)
+        }
         ModelTask::Tts => {
             let text = args.text.as_deref().unwrap_or(DEFAULT_BENCH_TEXT);
             // One synth up front to learn the output length (RTF denominator).
