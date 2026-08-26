@@ -73,6 +73,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "metricgan_plus",
             "frcrn",
             "miocodec",
+            "mossformer2_ss_16k",
             "moss_audio_tokenizer",
             "moss_tts",
             "musicgen",
@@ -235,6 +236,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
             ("tiger-dnr.gguf",),
             "tiger_separator",
         )
+        mossformer2 = audit.RepoRecord(
+            "vokra/mossformer2-ss-16k",
+            "abc",
+            ("mossformer2-ss-16k.gguf",),
+            "mossformer2_ss_16k",
+        )
         missing = audit.RepoRecord("vokra/other", "abc", ("model.gguf",), "other")
         bad_ecapa = audit.RepoRecord(
             "vokra/voice-gender-classifier", "abc", ("model.gguf",), "ecapa_tdnn"
@@ -342,6 +349,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(deepfake, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(tiger, routed, bound).metal_code, "full")
+        self.assertEqual(audit.classify(mossformer2, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(mossformer2, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(bad_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(corrupt_ecapa, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(missing, routed, bound).cpu_code, "no-runtime-binder")

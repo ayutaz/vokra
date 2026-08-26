@@ -250,6 +250,23 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (MossFormer2-SS-16K CPU/Metal separator)
+
+The exact public ClearerVoice-Studio checkpoint now has a strict native
+two-speaker separation runtime. CPU and Metal share one complete learned-op
+registry; the released ScaleNorm equation has dedicated kernels rather than a
+host reduction, while unwired backends fail before execution. The independent
+official full-model numerical comparison remains a recorded VAST gate and is
+not implied by the landed code path. No C ABI symbol or new GGUF key is added.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-backend-cpu::kernels` | `scale_norm_f32` | Added | `(&[f32], &mut [f32], rows, cols, gain, eps) -> Result<()>` | Portable reference for `x / max(||x||₂·cols⁻¹ᐟ², eps)·gain`; distinct from RMSNorm | no | `35ae7689` |
+| `vokra-backend-metal::MetalContext` | `scale_norm_f32` | Added | matching row-wise MSL dispatch | Apple-silicon differential test observed max absolute CPU/Metal error `4.768e-7` against the unchanged FP32 `0.01` bound | no | `35ae7689` |
+| `vokra-models::compute` | `HotOp::ScaleNorm`, `Compute::scale_norm_f32` | Added | whole-model coverage plus typed imperative dispatch | CPU and Metal are covered; CUDA/WebGPU and other unwired backends remain explicit unsupported operations | no | `35ae7689` |
+| `vokra-models::mossformer2_ss_16k` | `Mossformer2Ss16k`, identity/topology constants, `MOSSFORMER2_HOT_OPS` | Added | strict `from_gguf*`, backend/license/rate accessors, `separate(&[f32]) -> Result<Vec<Vec<f32>>>` and `SeparationEngine` | Authenticates the exact 1,076-tensor public artifact and executes encoder, FLASH, gated FSMN, mask and decoder on one CPU/Metal route; full-model VAST measurement remains pending | no | `64fc24d4` |
+| `vokra-cli run`, `vokra-cli bench` | `mossformer2_ss_16k` separation dispatch | Added | 16 kHz mono input to two separated PCM streams | Foreign/partial manifests and unavailable backends fail explicitly; no alternate separator is substituted | no | `64fc24d4` |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (SpeechTokenizer CPU/Metal decoder)
 
 The exact public Fudan/OpenMOSS SpeechTokenizer checkpoint now exposes native

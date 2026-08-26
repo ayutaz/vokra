@@ -189,6 +189,7 @@ METAL_CODE_ARCHES = {
     "metricgan_plus",
     "mimi",
     "miocodec",
+    "mossformer2_ss_16k",
     "moss_tts",
     "moss_audio_tokenizer",
     "musicgen",
