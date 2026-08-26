@@ -48,6 +48,45 @@ struct StageSpec {
     patch_after: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayerTensorLayout {
+    /// Original Full release names after its load-state-dict compatibility
+    /// hook: plural per-stream projections plus `linear{1,2}` FFN names.
+    FullLegacy,
+    /// v2 release names as stored in the pinned safetensors index/header.
+    V2Current,
+}
+
+impl LayerTensorLayout {
+    const fn attention_in_suffix(self) -> &'static str {
+        match self {
+            Self::FullLegacy => "self_attn.in_projs.0.weight",
+            Self::V2Current => "self_attn.in_proj.weight",
+        }
+    }
+
+    const fn attention_out_suffix(self) -> &'static str {
+        match self {
+            Self::FullLegacy => "self_attn.out_projs.0.weight",
+            Self::V2Current => "self_attn.out_proj.weight",
+        }
+    }
+
+    const fn ffn_in_suffix(self) -> &'static str {
+        match self {
+            Self::FullLegacy => "linear1.weight",
+            Self::V2Current => "ffn.0.weight",
+        }
+    }
+
+    const fn ffn_out_suffix(self) -> &'static str {
+        match self {
+            Self::FullLegacy => "linear2.weight",
+            Self::V2Current => "ffn.2.weight",
+        }
+    }
+}
+
 const FULL_STAGE_SPECS: [StageSpec; 4] = [
     StageSpec {
         module_index: 0,
@@ -184,16 +223,24 @@ impl std::fmt::Debug for MappedDecoder {
 
 impl MappedDecoder {
     pub(super) fn bind_full(file: Arc<GgufFile>) -> Result<Self> {
-        Self::bind(file, &FULL_STAGE_SPECS)
+        Self::bind(file, &FULL_STAGE_SPECS, LayerTensorLayout::FullLegacy)
     }
 
     pub(super) fn bind_v2(file: Arc<GgufFile>) -> Result<Self> {
-        Self::bind(file, &V2_STAGE_SPECS)
+        Self::bind(file, &V2_STAGE_SPECS, LayerTensorLayout::V2Current)
     }
 
-    fn bind(file: Arc<GgufFile>, stage_specs: &'static [StageSpec]) -> Result<Self> {
+    fn bind(
+        file: Arc<GgufFile>,
+        stage_specs: &'static [StageSpec],
+        layer_layout: LayerTensorLayout,
+    ) -> Result<Self> {
         Ok(Self {
-            mapped: Arc::new(FullMappedDescriptors::bind(file, stage_specs)?),
+            mapped: Arc::new(FullMappedDescriptors::bind(
+                file,
+                stage_specs,
+                layer_layout,
+            )?),
         })
     }
 
@@ -265,12 +312,16 @@ struct FullMappedDescriptors {
 }
 
 impl FullMappedDescriptors {
-    fn bind(file: Arc<GgufFile>, stage_specs: &'static [StageSpec]) -> Result<Self> {
+    fn bind(
+        file: Arc<GgufFile>,
+        stage_specs: &'static [StageSpec],
+        layer_layout: LayerTensorLayout,
+    ) -> Result<Self> {
         let quantizer = QuantizerDescriptors::bind(&file)?;
         let stages = stage_specs
             .iter()
             .copied()
-            .map(|spec| StageDescriptors::bind(&file, spec))
+            .map(|spec| StageDescriptors::bind(&file, spec, layer_layout))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
             file,
@@ -332,7 +383,7 @@ struct StageDescriptors {
 }
 
 impl StageDescriptors {
-    fn bind(file: &GgufFile, spec: StageSpec) -> Result<Self> {
+    fn bind(file: &GgufFile, spec: StageSpec, layer_layout: LayerTensorLayout) -> Result<Self> {
         let prefix = format!("decoder.{}", spec.module_index);
         let input_projection = DenseLinearDescriptor::bind(
             file,
@@ -343,7 +394,12 @@ impl StageDescriptors {
         )?;
         let layers = (0..spec.layers)
             .map(|index| {
-                LayerDescriptors::bind(file, &format!("{prefix}.transformer.layers.{index}"), spec)
+                LayerDescriptors::bind(
+                    file,
+                    &format!("{prefix}.transformer.layers.{index}"),
+                    spec,
+                    layer_layout,
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         let output_projection = (spec.output_dim != spec.model_dim)
@@ -381,7 +437,12 @@ struct LayerDescriptors {
 }
 
 impl LayerDescriptors {
-    fn bind(file: &GgufFile, prefix: &str, spec: StageSpec) -> Result<Self> {
+    fn bind(
+        file: &GgufFile,
+        prefix: &str,
+        spec: StageSpec,
+        layout: LayerTensorLayout,
+    ) -> Result<Self> {
         let vector =
             |suffix: &str| full_mapped_info(file, &format!("{prefix}.{suffix}"), spec.model_dim);
         Ok(Self {
@@ -389,14 +450,14 @@ impl LayerDescriptors {
             norm1_bias: vector("norm1.bias")?,
             attention_in: DenseLinearDescriptor::bind(
                 file,
-                &format!("{prefix}.self_attn.in_projs.0.weight"),
+                &format!("{prefix}.{}", layout.attention_in_suffix()),
                 spec.model_dim,
                 spec.model_dim * 3,
                 None,
             )?,
             attention_out: DenseLinearDescriptor::bind(
                 file,
-                &format!("{prefix}.self_attn.out_projs.0.weight"),
+                &format!("{prefix}.{}", layout.attention_out_suffix()),
                 spec.model_dim,
                 spec.model_dim,
                 None,
@@ -406,14 +467,14 @@ impl LayerDescriptors {
             norm2_bias: vector("norm2.bias")?,
             ffn_in: DenseLinearDescriptor::bind(
                 file,
-                &format!("{prefix}.linear1.weight"),
+                &format!("{prefix}.{}", layout.ffn_in_suffix()),
                 spec.model_dim,
                 spec.ffn_dim,
                 None,
             )?,
             ffn_out: DenseLinearDescriptor::bind(
                 file,
-                &format!("{prefix}.linear2.weight"),
+                &format!("{prefix}.{}", layout.ffn_out_suffix()),
                 spec.ffn_dim,
                 spec.model_dim,
                 None,
@@ -1048,6 +1109,39 @@ mod tests {
                 .map(|stage| stage.context)
                 .collect::<Vec<_>>(),
             vec![250, 500, 800, 800, 800, 800]
+        );
+    }
+
+    #[test]
+    fn full_and_v2_layer_tensor_layouts_are_not_conflated() {
+        assert_eq!(
+            LayerTensorLayout::FullLegacy.attention_in_suffix(),
+            "self_attn.in_projs.0.weight"
+        );
+        assert_eq!(
+            LayerTensorLayout::FullLegacy.attention_out_suffix(),
+            "self_attn.out_projs.0.weight"
+        );
+        assert_eq!(
+            LayerTensorLayout::FullLegacy.ffn_in_suffix(),
+            "linear1.weight"
+        );
+        assert_eq!(
+            LayerTensorLayout::FullLegacy.ffn_out_suffix(),
+            "linear2.weight"
+        );
+        assert_eq!(
+            LayerTensorLayout::V2Current.attention_in_suffix(),
+            "self_attn.in_proj.weight"
+        );
+        assert_eq!(
+            LayerTensorLayout::V2Current.attention_out_suffix(),
+            "self_attn.out_proj.weight"
+        );
+        assert_eq!(LayerTensorLayout::V2Current.ffn_in_suffix(), "ffn.0.weight");
+        assert_eq!(
+            LayerTensorLayout::V2Current.ffn_out_suffix(),
+            "ffn.2.weight"
         );
     }
 
