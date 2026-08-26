@@ -786,6 +786,7 @@ FN vokra-ops::bigvgan_generator::num_kernels|pub fn num_kernels(&self) -> usize 
 FN vokra-ops::bigvgan_generator::num_upsamples|pub fn num_upsamples(&self) -> usize {
 FN vokra-ops::bigvgan_generator::output_channels_at|pub fn output_channels_at(&self, stage: usize) -> u32 {
 FN vokra-ops::bigvgan_generator::total_upsample_factor|pub fn total_upsample_factor(&self) -> u32 {
+FN vokra-ops::clustering::cluster_with_min_cluster_size|pub fn cluster_with_min_cluster_size(
 FN vokra-ops::clustering::cluster|pub fn cluster(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
 FN vokra-ops::conformer::config|pub fn config(&self) -> &ConformerConfig {
 FN vokra-ops::conformer::factor|pub fn factor(&self) -> usize {

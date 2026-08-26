@@ -19,23 +19,27 @@
 //!
 //! # Upstream reference
 //!
-//! Primary source (as directed):
+//! Primary source (pinned):
 //! [`pyannote/audio/pipelines/clustering.py`][pyannote-clustering]
-//! (`develop` branch, MIT, `Copyright (c) 2020 CNRS`).
+//! (pyannote.audio 3.1.1 source revision
+//! `6a972c0c4e95de04637d7221208736c64c8b972a`, MIT,
+//! `Copyright (c) 2021- CNRS`).
 //! `AgglomerativeClustering.cluster_embeddings` delegates the linkage
 //! recurrence and the distance-threshold cut to
 //! [`scipy.cluster.hierarchy.linkage`][scipy-linkage] +
 //! [`scipy.cluster.hierarchy.fcluster`][scipy-fcluster], parametrised by
-//! `metric` (`"cosine"` / `"euclidean"`) and `method` (`"single"` /
-//! `"complete"` / `"average"`) — the three linkage variants and two metrics
-//! this module exposes.
+//! `metric` (`"cosine"` / `"euclidean"`) and `method`. This module exposes
+//! `single`, `complete`, `average`, and `centroid`. The shipped
+//! speaker-diarization-3.1 config pins `centroid`; with a cosine speaker
+//! metric pyannote first L2-normalises every embedding and then performs
+//! Euclidean centroid linkage.
 //!
 //! The algorithm implemented here is the textbook agglomerative
-//! hierarchical clustering (bottom-up single/complete/average linkage with
-//! a distance-threshold cut) — Sokal & Michener 1958 (UPGMA); the linkage
+//! hierarchical clustering (bottom-up single / complete / average / centroid
+//! linkage with a distance-threshold cut) — Sokal & Michener 1958 (UPGMA); the linkage
 //! recurrence lives in Lance & Williams 1967, ["A General Theory of
 //! Classificatory Sorting Strategies"][lance-williams]. `scipy`'s docs give
-//! the standard reference for the same three method aliases pyannote passes
+//! the standard reference for the same four method aliases pyannote passes
 //! through.
 //!
 //! ## Distance metric definitions
@@ -65,14 +69,18 @@
 //!   pairwise mean is used here because `O(n²)` overall time keeps the
 //!   Lance-Williams shortcut from mattering for the target working set
 //!   (< 500 segment-level embeddings per typical audio file).
+//! - **Centroid** (UPGMC): Euclidean distance between the arithmetic
+//!   centroids of both clusters. With a cosine point metric, input rows are
+//!   first L2-normalised, matching pyannote.audio 3.1.1 at source revision
+//!   `6a972c0c4e95de04637d7221208736c64c8b972a`.
 //!
 //! ## Threshold semantics
 //!
-//! Two clusters merge iff their linkage distance is **strictly less than**
-//! `threshold`. A pair at distance exactly equal to `threshold` does not
-//! merge (this matches `scipy.cluster.hierarchy.fcluster(..., t=threshold,
-//! criterion="distance")` when read as "cut at height `threshold`" — the
-//! cut removes edges of length ≥ `threshold`).
+//! Two clusters merge iff their linkage distance is **less than or equal to**
+//! `threshold`. This is the exact boundary used by
+//! `scipy.cluster.hierarchy.fcluster(..., t=threshold,
+//! criterion="distance")`: observations in one flat cluster have no greater
+//! a cophenetic distance than the threshold.
 //!
 //! # Zero-dependency posture (NFR-DS-02)
 //!
@@ -88,7 +96,7 @@
 //! `vokra-voiceclone-experimental` separation (`docs/legal-compliance.md`
 //! §voice-clone).
 //!
-//! [pyannote-clustering]: https://github.com/pyannote/pyannote-audio/blob/develop/pyannote/audio/pipelines/clustering.py
+//! [pyannote-clustering]: https://github.com/pyannote/pyannote-audio/blob/6a972c0c4e95de04637d7221208736c64c8b972a/pyannote/audio/pipelines/clustering.py
 //! [scipy-linkage]: https://docs.scipy.org/doc/scipy/reference/generated/scipy.cluster.hierarchy.linkage.html
 //! [scipy-fcluster]: https://docs.scipy.org/doc/scipy/reference/generated/scipy.cluster.hierarchy.fcluster.html
 //! [lance-williams]: https://academic.oup.com/comjnl/article-abstract/9/4/373/480290
@@ -121,7 +129,7 @@ pub enum DistanceMetric {
 /// point-level pairwise distances.
 ///
 /// pyannote passes the linkage to `scipy.cluster.hierarchy.linkage` via
-/// the `method=` keyword; the three variants below are the three the
+/// the `method=` keyword; the four variants below are the four the
 /// pyannote pipeline configures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkageMethod {
@@ -137,18 +145,22 @@ pub enum LinkageMethod {
     /// `d(A, B) = (1 / (|A|·|B|)) · Σ_{a∈A, b∈B} d(a, b)`. `scipy`'s
     /// `method="average"`.
     Average,
+    /// Euclidean distance between cluster centroids (UPGMC). With a cosine
+    /// point metric, rows are L2-normalised before linkage construction.
+    Centroid,
 }
 
 /// Agglomerative hierarchical clustering (bottom-up single / complete /
-/// average linkage with a distance-threshold cut).
+/// average / centroid linkage with a distance-threshold cut).
 ///
 /// See the module-level docs for the algorithm reference and the
 /// zero-dep + no-silent-fallback posture.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AgglomerativeClustering {
     /// Distance cutoff. Two clusters merge iff their linkage distance is
-    /// **strictly less than** `threshold`. Typical pyannote speaker-
-    /// diarization value: `0.7` (cosine metric).
+    /// **less than or equal to** `threshold`. The pyannote 3.1 public
+    /// diarization pipeline pins `0.7045654963945799` with cosine speaker
+    /// distance and centroid linkage.
     pub threshold: f32,
     /// Distance metric on the point (embedding) level.
     pub metric: DistanceMetric,
@@ -173,7 +185,7 @@ impl AgglomerativeClustering {
     ///   cluster containing embedding `0` is always id `0`, the cluster
     ///   containing the next unassigned index gets id `1`, and so on.
     /// - **Threshold**: two clusters merge iff their linkage distance is
-    ///   **strictly less than** `self.threshold`.
+    ///   **less than or equal to** `self.threshold`.
     ///
     /// # Panics
     ///
@@ -200,25 +212,99 @@ impl AgglomerativeClustering {
             return vec![0];
         }
 
-        // Row-shape invariant: every embedding must carry the same
-        // dimension. A speaker encoder emits fixed-dim rows by construction,
-        // so a mismatch is a caller-side wiring bug — panic like `dct` /
-        // `mel_filterbank` do on the same class of contract violation.
-        let dim = embeddings[0].len();
-        for (i, e) in embeddings.iter().enumerate() {
-            assert_eq!(
-                e.len(),
-                dim,
-                "AgglomerativeClustering::cluster: embedding {i} has dim {} \
-                 but embedding 0 has dim {dim} (speaker-encoder outputs must \
-                 share a fixed dimension)",
-                e.len()
-            );
+        validate_embedding_rows(embeddings, "cluster");
+        let effective = self.effective_embeddings(embeddings);
+        self.cluster_effective(effective.as_ref())
+    }
+
+    /// Applies the threshold cut and pyannote's minimum-cluster-size
+    /// post-processing.
+    ///
+    /// The configured minimum is reduced for short inputs to
+    /// `min(configured, max(1, round(0.1 * n)))`, where `round` follows
+    /// Python's ties-to-even rule. Clusters below that effective minimum are
+    /// assigned to the nearest large-cluster centroid using [`Self::metric`].
+    /// When no cluster is large enough, every row is assigned to cluster 0.
+    /// This matches the default (no caller-supplied speaker-count override)
+    /// path of pyannote.audio 3.1.1 `AgglomerativeClustering.cluster`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `min_cluster_size` is zero or when embedding dimensions
+    /// differ. The public pyannote configuration constrains the former to
+    /// `1..=20`; either violation is a caller wiring error.
+    pub fn cluster_with_min_cluster_size(
+        &self,
+        embeddings: &[Vec<f32>],
+        min_cluster_size: usize,
+    ) -> Vec<usize> {
+        assert!(
+            min_cluster_size > 0,
+            "AgglomerativeClustering::cluster_with_min_cluster_size: \
+             min_cluster_size must be at least 1"
+        );
+
+        let n = embeddings.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        if n == 1 {
+            return vec![0];
         }
 
+        validate_embedding_rows(embeddings, "cluster_with_min_cluster_size");
+        let effective = self.effective_embeddings(embeddings);
+        let assignments = self.cluster_effective(effective.as_ref());
+        let effective_min = min_cluster_size.min(round_tenth_ties_even(n).max(1));
+        reassign_small_clusters(assignments, effective.as_ref(), effective_min, self.metric)
+    }
+
+    /// Returns the rows on which linkage is computed. SciPy's centroid
+    /// method only accepts Euclidean geometry; pyannote therefore
+    /// L2-normalises rows when its configured speaker metric is cosine and
+    /// then asks SciPy for Euclidean centroid linkage.
+    fn effective_embeddings<'a>(
+        &self,
+        embeddings: &'a [Vec<f32>],
+    ) -> std::borrow::Cow<'a, [Vec<f32>]> {
+        if self.linkage != LinkageMethod::Centroid || self.metric != DistanceMetric::Cosine {
+            return std::borrow::Cow::Borrowed(embeddings);
+        }
+
+        let mut normalized = Vec::with_capacity(embeddings.len());
+        for (row_index, row) in embeddings.iter().enumerate() {
+            let norm_squared = row.iter().fold(0.0f64, |sum, value| {
+                let value = f64::from(*value);
+                sum + value * value
+            });
+            assert!(
+                norm_squared.is_finite() && norm_squared > 0.0,
+                "AgglomerativeClustering::cluster: centroid/cosine embedding \
+                 {row_index} must have a finite non-zero L2 norm"
+            );
+            let inverse_norm = norm_squared.sqrt().recip();
+            normalized.push(
+                row.iter()
+                    .map(|value| (f64::from(*value) * inverse_norm) as f32)
+                    .collect(),
+            );
+        }
+        std::borrow::Cow::Owned(normalized)
+    }
+
+    /// Threshold-only clustering on rows already transformed into the
+    /// geometry required by the selected linkage method.
+    fn cluster_effective(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
+        let n = embeddings.len();
+
         // Precompute the symmetric point-level pairwise-distance matrix
-        // (row-major `n × n`, zeros on the diagonal).
-        let point_dist = pairwise_distances(embeddings, self.metric, n);
+        // (row-major `n × n`, zeros on the diagonal). Centroid linkage reads
+        // cluster centroids directly and does not need this matrix.
+        let point_dist = if self.linkage == LinkageMethod::Centroid {
+            Vec::new()
+        } else {
+            pairwise_distances(embeddings, self.metric, n)
+        };
 
         // Each row starts in its own singleton cluster; `clusters[i]` is the
         // list of embedding indices grouped together so far.
@@ -226,11 +312,13 @@ impl AgglomerativeClustering {
 
         // Greedy merge loop: find the closest pair of clusters (under the
         // configured linkage rule) and merge them iff their distance is
-        // strictly less than `threshold`. Exits either when fewer than two
+        // less than or equal to `threshold`. Exits either when fewer than two
         // clusters remain (`find_closest_pair` → `None`) or when the
-        // closest pair is at or above the threshold cut.
-        while let Some((i, j, dist)) = find_closest_pair(&clusters, &point_dist, n, self.linkage) {
-            if dist >= self.threshold {
+        // closest pair is above the threshold cut.
+        while let Some((i, j, dist)) =
+            find_closest_pair(&clusters, &point_dist, embeddings, n, self.linkage)
+        {
+            if dist > self.threshold {
                 // Closest pair is already farther than the cut — done.
                 break;
             }
@@ -249,6 +337,24 @@ impl AgglomerativeClustering {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Validates the fixed-width speaker-embedding row contract.
+fn validate_embedding_rows(embeddings: &[Vec<f32>], operation: &str) {
+    let Some(first) = embeddings.first() else {
+        return;
+    };
+    let dim = first.len();
+    for (i, embedding) in embeddings.iter().enumerate() {
+        assert_eq!(
+            embedding.len(),
+            dim,
+            "AgglomerativeClustering::{operation}: embedding {i} has dim {} \
+             but embedding 0 has dim {dim} (speaker-encoder outputs must \
+             share a fixed dimension)",
+            embedding.len()
+        );
+    }
+}
 
 /// Row-major `n × n` pairwise-distance matrix (symmetric, zero diagonal).
 fn pairwise_distances(embeddings: &[Vec<f32>], metric: DistanceMetric, n: usize) -> Vec<f32> {
@@ -336,6 +442,7 @@ fn euclidean_distance(a: &[f32], b: &[f32]) -> f32 {
 fn find_closest_pair(
     clusters: &[Vec<usize>],
     point_dist: &[f32],
+    embeddings: &[Vec<f32>],
     n: usize,
     method: LinkageMethod,
 ) -> Option<(usize, usize, f32)> {
@@ -345,7 +452,14 @@ fn find_closest_pair(
     let mut best: Option<(usize, usize, f32)> = None;
     for i in 0..clusters.len() {
         for j in (i + 1)..clusters.len() {
-            let d = linkage_distance(&clusters[i], &clusters[j], point_dist, n, method);
+            let d = linkage_distance(
+                &clusters[i],
+                &clusters[j],
+                point_dist,
+                embeddings,
+                n,
+                method,
+            );
             let take = match best {
                 None => true,
                 // Strict `<` keeps the earliest (i, j) on a tie —
@@ -362,8 +476,8 @@ fn find_closest_pair(
 }
 
 /// Lifts a point-level pairwise-distance matrix to a cluster-level
-/// distance under the requested linkage rule (see module docs for the
-/// three formulas). The direct pairwise summation is `O(|A|·|B|)`; keeping
+/// distance under the requested linkage rule (see module docs for the four
+/// formulas). The direct pairwise summation is `O(|A|·|B|)`; keeping
 /// the overall algorithm at `O(n³)` in the worst case is acceptable for
 /// the target working set (< 500 embeddings; see
 /// [`AgglomerativeClustering::cluster`] complexity note).
@@ -371,6 +485,7 @@ fn linkage_distance(
     a: &[usize],
     b: &[usize],
     point_dist: &[f32],
+    embeddings: &[Vec<f32>],
     n: usize,
     method: LinkageMethod,
 ) -> f32 {
@@ -413,7 +528,165 @@ fn linkage_distance(
             let denom = (a.len() * b.len()) as f64;
             (sum / denom) as f32
         }
+        LinkageMethod::Centroid => centroid_distance(a, b, embeddings),
     }
+}
+
+/// Euclidean distance between the arithmetic centroids of two clusters.
+///
+/// SciPy promotes observations to double precision for hierarchy
+/// construction. Accumulating both centroids in `f64` therefore avoids a
+/// different merge decision near the public pyannote threshold merely from
+/// `f32` summation order.
+fn centroid_distance(a: &[usize], b: &[usize], embeddings: &[Vec<f32>]) -> f32 {
+    debug_assert!(
+        !a.is_empty() && !b.is_empty(),
+        "empty cluster in centroid linkage"
+    );
+    let dim = embeddings[0].len();
+    let mut a_centroid = vec![0.0f64; dim];
+    let mut b_centroid = vec![0.0f64; dim];
+    for &row in a {
+        for (sum, value) in a_centroid.iter_mut().zip(embeddings[row].iter()) {
+            *sum += f64::from(*value);
+        }
+    }
+    for &row in b {
+        for (sum, value) in b_centroid.iter_mut().zip(embeddings[row].iter()) {
+            *sum += f64::from(*value);
+        }
+    }
+
+    let a_scale = (a.len() as f64).recip();
+    let b_scale = (b.len() as f64).recip();
+    let squared =
+        a_centroid
+            .iter()
+            .zip(b_centroid.iter())
+            .fold(0.0f64, |sum, (a_value, b_value)| {
+                let delta = a_value * a_scale - b_value * b_scale;
+                sum + delta * delta
+            });
+    squared.sqrt() as f32
+}
+
+/// Python-compatible `round(0.1 * n)` for integer `n`.
+///
+/// Python rounds exact half-way cases to the nearest even integer. Computing
+/// the quotient and remainder directly avoids a platform-dependent binary
+/// floating-point approximation at `x.5`.
+fn round_tenth_ties_even(n: usize) -> usize {
+    let quotient = n / 10;
+    match n % 10 {
+        0..=4 => quotient,
+        6..=9 => quotient + 1,
+        5 if quotient % 2 == 0 => quotient,
+        5 => quotient + 1,
+        _ => unreachable!("remainder modulo ten is in 0..=9"),
+    }
+}
+
+/// Reassigns undersized threshold clusters to their closest large cluster.
+fn reassign_small_clusters(
+    mut assignments: Vec<usize>,
+    embeddings: &[Vec<f32>],
+    min_cluster_size: usize,
+    metric: DistanceMetric,
+) -> Vec<usize> {
+    if assignments.len() < 2 || min_cluster_size <= 1 {
+        return assignments;
+    }
+
+    let cluster_count = assignments.iter().copied().max().unwrap_or(0) + 1;
+    let mut counts = vec![0usize; cluster_count];
+    for &cluster in &assignments {
+        counts[cluster] += 1;
+    }
+
+    let large: Vec<usize> = (0..cluster_count)
+        .filter(|cluster| counts[*cluster] >= min_cluster_size)
+        .collect();
+    if large.is_empty() {
+        return vec![0; assignments.len()];
+    }
+
+    let small: Vec<usize> = (0..cluster_count)
+        .filter(|cluster| counts[*cluster] < min_cluster_size)
+        .collect();
+    if small.is_empty() {
+        return assignments;
+    }
+
+    let large_centroids: Vec<Vec<f32>> = large
+        .iter()
+        .map(|cluster| cluster_centroid(&assignments, embeddings, *cluster, counts[*cluster]))
+        .collect();
+
+    for small_cluster in small {
+        let small_centroid = cluster_centroid(
+            &assignments,
+            embeddings,
+            small_cluster,
+            counts[small_cluster],
+        );
+        let mut best_large = 0usize;
+        let mut best_distance = f32::INFINITY;
+        for (large_index, large_centroid) in large_centroids.iter().enumerate() {
+            let distance = point_distance(large_centroid, &small_centroid, metric);
+            if distance < best_distance {
+                best_distance = distance;
+                best_large = large_index;
+            }
+        }
+        let replacement = large[best_large];
+        for assignment in &mut assignments {
+            if *assignment == small_cluster {
+                *assignment = replacement;
+            }
+        }
+    }
+
+    dense_assignments(assignments)
+}
+
+/// Arithmetic centroid of all rows currently carrying `cluster`.
+fn cluster_centroid(
+    assignments: &[usize],
+    embeddings: &[Vec<f32>],
+    cluster: usize,
+    cluster_size: usize,
+) -> Vec<f32> {
+    debug_assert!(cluster_size > 0, "centroid of an empty cluster");
+    let mut centroid = vec![0.0f64; embeddings[0].len()];
+    for (&assignment, embedding) in assignments.iter().zip(embeddings.iter()) {
+        if assignment != cluster {
+            continue;
+        }
+        for (sum, value) in centroid.iter_mut().zip(embedding.iter()) {
+            *sum += f64::from(*value);
+        }
+    }
+    let scale = (cluster_size as f64).recip();
+    centroid
+        .into_iter()
+        .map(|value| (value * scale) as f32)
+        .collect()
+}
+
+/// Renumbers labels by first appearance so ids remain dense and stable after
+/// small-cluster reassignment removes one or more ids.
+fn dense_assignments(mut assignments: Vec<usize>) -> Vec<usize> {
+    let label_count = assignments.iter().copied().max().unwrap_or(0) + 1;
+    let mut remap = vec![usize::MAX; label_count];
+    let mut next = 0usize;
+    for assignment in &mut assignments {
+        if remap[*assignment] == usize::MAX {
+            remap[*assignment] = next;
+            next += 1;
+        }
+        *assignment = remap[*assignment];
+    }
+    assignments
 }
 
 /// Turns the final list of clusters into a dense per-row assignment
@@ -499,6 +772,7 @@ mod tests {
             LinkageMethod::Single,
             LinkageMethod::Complete,
             LinkageMethod::Average,
+            LinkageMethod::Centroid,
         ] {
             let a = ahc(0.5, DistanceMetric::Cosine, linkage);
             let out = a.cluster(&[e.clone(), e.clone(), e.clone()]);
@@ -513,21 +787,18 @@ mod tests {
     #[test]
     fn cluster_orthogonal_embeddings_stay_separate_at_low_threshold() {
         // Two orthogonal unit vectors have cosine distance = 1.0 exactly.
-        // The strict-less-than merge rule + threshold=0.5 keeps them
-        // apart; if the code drifted to `<=` a threshold of 1.0 would
-        // silently fold orthogonal segments (that's the bug this pins).
+        // Threshold=0.5 keeps them apart.
         let a = ahc(0.5, DistanceMetric::Cosine, LinkageMethod::Complete);
         let out = a.cluster(&[vec![1.0, 0.0], vec![0.0, 1.0]]);
         assert_eq!(out, vec![0, 1]);
-        // Also verify the strict-less-than boundary at threshold = 1.0:
-        // orthogonal embeddings sit *at* the cut, so they still stay
-        // separate.
+        // Also verify SciPy's inclusive boundary at threshold = 1.0:
+        // orthogonal embeddings sit exactly at the cut and therefore merge.
         let boundary = ahc(1.0, DistanceMetric::Cosine, LinkageMethod::Complete);
         let out = boundary.cluster(&[vec![1.0, 0.0], vec![0.0, 1.0]]);
         assert_eq!(
             out,
-            vec![0, 1],
-            "distance == threshold must not merge (strict-less-than rule)"
+            vec![0, 0],
+            "distance == threshold must merge (SciPy fcluster boundary)"
         );
     }
 
@@ -549,6 +820,7 @@ mod tests {
             LinkageMethod::Single,
             LinkageMethod::Complete,
             LinkageMethod::Average,
+            LinkageMethod::Centroid,
         ] {
             let a = ahc(0.5, DistanceMetric::Cosine, linkage);
             let out = a.cluster(&e);
@@ -662,15 +934,65 @@ mod tests {
     }
 
     #[test]
-    fn cluster_zero_threshold_keeps_every_embedding_separate() {
-        // Threshold = 0.0 with the strict-less-than merge rule keeps every
-        // embedding in its own cluster (even byte-identical ones — their
-        // distance is 0.0, and 0.0 is not strictly < 0.0). This is the
-        // documented "no merge at threshold 0" contract.
+    fn cluster_zero_threshold_merges_only_identical_embeddings() {
+        // The inclusive SciPy boundary merges zero-distance duplicates even
+        // at threshold 0.0 while retaining a directionally distinct row.
         let e = vec![vec![1.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
         let a = ahc(0.0, DistanceMetric::Cosine, LinkageMethod::Complete);
         let out = a.cluster(&e);
-        assert_eq!(out, vec![0, 1, 2]);
+        assert_eq!(out, vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn centroid_cosine_normalizes_rows_before_euclidean_linkage() {
+        // These rows point in the same direction but have different scale.
+        // Direct Euclidean centroid linkage would leave them one unit apart;
+        // pyannote's cosine+centroid preparation normalizes both to [1, 0].
+        let a = ahc(0.0, DistanceMetric::Cosine, LinkageMethod::Centroid);
+        assert_eq!(a.cluster(&[vec![2.0, 0.0], vec![1.0, 0.0]]), vec![0, 0]);
+    }
+
+    #[test]
+    fn centroid_linkage_uses_arithmetic_cluster_centers() {
+        // First 0 and 2 merge at the inclusive distance-2 boundary. Their
+        // centroid is 1, which lies four units from 5 and therefore stays
+        // separate. A stale point-pair minimum would incorrectly merge 2
+        // and 5 at distance 3 under this threshold.
+        let a = ahc(3.5, DistanceMetric::Euclidean, LinkageMethod::Centroid);
+        let out = a.cluster(&[vec![0.0], vec![2.0], vec![5.0]]);
+        assert_eq!(out, vec![0, 0, 1]);
+    }
+
+    #[test]
+    fn min_cluster_size_reassigns_singleton_to_nearest_large_centroid() {
+        // n=20 reduces configured 12 to effective min 2. Threshold 0.1
+        // forms two duplicate groups plus a singleton at 10.3. The singleton
+        // is reassigned to the large cluster centered at 10, not the one at 0.
+        let mut e = vec![vec![0.0]; 9];
+        e.extend(vec![vec![10.0]; 10]);
+        e.push(vec![10.3]);
+        let a = ahc(0.1, DistanceMetric::Euclidean, LinkageMethod::Centroid);
+        let out = a.cluster_with_min_cluster_size(&e, 12);
+        assert_eq!(out, [vec![0; 9], vec![1; 11]].concat());
+    }
+
+    #[test]
+    fn min_cluster_size_folds_to_one_when_no_large_cluster_exists() {
+        // n=20 makes the effective minimum 2. A zero threshold and unique
+        // Euclidean points leave every raw cluster as a singleton, so the
+        // explicit pyannote no-large-cluster branch returns one cluster.
+        let e: Vec<Vec<f32>> = (0..20).map(|i| vec![i as f32]).collect();
+        let a = ahc(0.0, DistanceMetric::Euclidean, LinkageMethod::Centroid);
+        assert_eq!(a.cluster_with_min_cluster_size(&e, 12), vec![0; 20]);
+    }
+
+    #[test]
+    fn tenth_rounding_matches_python_ties_to_even() {
+        assert_eq!(round_tenth_ties_even(5), 0);
+        assert_eq!(round_tenth_ties_even(15), 2);
+        assert_eq!(round_tenth_ties_even(25), 2);
+        assert_eq!(round_tenth_ties_even(35), 4);
+        assert_eq!(round_tenth_ties_even(36), 4);
     }
 
     // ---- shape validation ------------------------------------------------

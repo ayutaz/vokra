@@ -250,6 +250,19 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-26 — 1.0.0-rc.1-dev (pyannote centroid speaker clustering)
+
+The host-side speaker clustering primitive now implements the exact centroid
+geometry, inclusive SciPy distance cut and minimum-cluster-size post-processing
+required by the public pyannote speaker-diarization 3.1 configuration. No C
+symbol, allocation rule or ownership ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-ops::clustering` | `AgglomerativeClustering::cluster` | Fixed | `cluster(&self, &[Vec<f32>]) -> Vec<usize>` | Distance exactly equal to `threshold` now merges, matching SciPy `fcluster(..., criterion="distance")`; the former strict-less-than boundary was incompatible with the pinned upstream | yes (intentional pre-1.0 behavior correction) | (TBD) |
+| `vokra-ops::clustering` | `AgglomerativeClustering::cluster_with_min_cluster_size` | Added | `(&self, &[Vec<f32>], usize) -> Vec<usize>` | Applies Python ties-to-even short-input heuristic, nearest-large-centroid reassignment and the explicit no-large-cluster fold used by pyannote.audio 3.1.1 | no | (TBD) |
+| `vokra-ops::clustering` | `LinkageMethod::Centroid` | Added | public enum variant | Cosine rows are L2-normalized before Euclidean arithmetic-centroid linkage, matching the exact public pipeline contract; adding a variant can break an exhaustive downstream match | yes (intentional pre-1.0 enum extension) | (TBD) |
+
 ### 2026-08-26 — 1.0.0-rc.1-dev (pyannote diarization pipeline contract)
 
 The public zero-tensor `pyannote-speaker-diarization-3.1` GGUF now has a
