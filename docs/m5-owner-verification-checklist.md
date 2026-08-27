@@ -488,30 +488,45 @@ Rejected in §3.1. Owner action: choose the destination.
 
 ---
 
-## 8. Parity-oracle torch advisory backlog (2026-08-27)
+## 8. Parity-oracle dependency upgrade (2026-08-28)
 
-**Status**: `dependency-review` reports four PyTorch advisories — `GHSA-53q9-r3pm-6pq6`
-(critical, `torch.load` remote code execution), `GHSA-887c-mr87-cxwp`,
-`GHSA-f4hp-rmr7-r7v8`, and `GHSA-vgrw-7cvw-pwgx` — against the pinned reference
-toolchains under `tools/parity/**`. All four are allow-listed by exact GHSA id in
-`.github/workflows/ci-security.yml` because torch appears nowhere else in the
-repository: the Rust runtime carries no dependencies and the published Python
-wheel declares `dependencies = []`, so no shipped artefact is exposed. The
-allow-list is scoped to these four ids, so a new torch advisory still fails the
-gate.
+**Status**: every pinned reference toolchain under `tools/parity/**` was audited
+against the GitHub Advisory Database — 401 unique package/version pairs across
+27 trees, of which 16 carried a moderate-or-higher advisory. Fourteen of the
+seventeen affected trees were upgraded and now resolve clean: `bark`, `dac`,
+`deepfake_detection`, `facodec`, `funcodec`, `moss_audio`, `nanocodec`,
+`neutts_air`, `pyannote_diarization`, `pyannote_segmentation`, `speecht5_tts`,
+`speechtokenizer`, `t5_encoder`, and `ultravox`. Transformers moved to `5.5.0`,
+torch to `2.13.0`, `sentencepiece` to `0.2.2`, `setuptools` to `84.0.0`, and
+`hydra-core` to `1.3.5`. Each dumper's fail-closed `TRANSFORMERS_VERSION` guard
+and Bark's pinned Transformers source revision were updated with them.
 
-Clearing them at the source requires moving every affected oracle to
-torch >= 2.9.1. Eleven trees are below that floor: `pyannote_diarization` and
-`pyannote_segmentation` (2.2.2), `deepfake_detection` (2.3.1), `bark` and
-`speecht5_tts` (2.4.1), `xcodec2` (2.5.0), and `facodec`, `funcodec`,
-`parler_tts`, `speechtokenizer`, and `ultravox` (2.5.1). Each bump rewrites the
-independent reference implementation, so every committed fixture it generated
-must be regenerated on VAST and every recorded parity measurement re-derived.
-`bark` pins `transformers==4.31.0`, which is not expected to run on torch 2.6 or
-newer, so that tree needs an oracle replacement rather than a version bump.
+`dac` moved only `protobuf` (3.19.6 to 7.36.0) through a `tool.uv` override:
+its numeric path is unchanged, verified by diffing the lockfiles, so the
+committed 16/24/44.1 kHz fixtures stay valid.
 
-- [ ] Decide whether the eleven oracles move to torch >= 2.9.1 or stay pinned
-      with the advisories allow-listed.
-- [ ] If they move: regenerate each affected fixture on VAST, re-derive the
-      recorded parity measurements, and confirm each bound still holds before
-      removing the corresponding GHSA from the allow-list.
+Three trees cannot be upgraded because their newest upstream release still
+hard-pins a vulnerable dependency:
+
+| Tree | Upstream pin | Residual |
+| --- | --- | --- |
+| `qwen3_asr` | `qwen-asr==0.0.6` (latest) requires `transformers==4.57.6` | 3 advisories |
+| `parler_tts` | `parler-tts==0.2.2` requires `transformers==4.46.1` | 16 advisories |
+| `xcodec2` | `xcodec2==0.1.5` (latest) requires `torch==2.5.0` | 4 advisories |
+
+`xcodec2` would accept Transformers 5.5.0, but its torch pin keeps the tree
+flagged either way and the bump would void five committed fixtures, so it was
+left alone. The union of the three residues — 20 exact GHSA ids — is
+allow-listed in `.github/workflows/ci-security.yml`. torch and Transformers
+appear nowhere outside `tools/parity/**`: the Rust runtime carries no
+dependencies (enforced by `scripts/check-zero-deps.sh`) and the published
+Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
+
+- [ ] **VAST verification of the upgraded oracles**: Transformers 4.x to 5.x is
+      a breaking API change. Each upgraded dumper must be run once on VAST to
+      confirm it still produces its reference, and any parity gate that consumes
+      that reference must still hold. Until this runs, the upgraded trees are
+      resolved but unexercised.
+- [ ] Re-check the three blocked trees when `qwen-asr`, `parler-tts`, or
+      `xcodec2` publish a release that relaxes its pin, and drop the
+      corresponding ids from the allow-list.

@@ -88,22 +88,42 @@ jobs:
           allow-dependencies-licenses: >-
             pkg:cargo/r-efi@6.0.0,
             pkg:githubactions/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-          # Exact, reviewed exceptions only. Every entry is a PyTorch advisory
-          # against the pinned parity-oracle toolchains under tools/parity/**.
-          # Those trees exist solely to dump independent reference tensors on
-          # VAST; torch appears nowhere else in the repository, the Rust runtime
-          # carries no dependencies, and the published Python wheel declares
-          # `dependencies = []`, so none of these advisories can reach a shipped
-          # artefact. Clearing them at the source means moving eleven oracles to
-          # torch >= 2.9.1, which rewrites the references themselves and voids
-          # the committed fixtures they generated; that campaign is tracked in
-          # docs/m5-owner-verification-checklist.md section 8. Listing exact
-          # GHSA ids keeps any future torch advisory failing this gate.
+          # Exact, reviewed exceptions only. These are the residue of the
+          # 2026-08-28 parity-oracle upgrade: fourteen of the seventeen
+          # affected trees under tools/parity/** now resolve clean, and the
+          # three below cannot move because their newest upstream release
+          # still hard-pins a vulnerable dependency —
+          #   qwen3_asr : qwen-asr==0.0.6   requires transformers==4.57.6
+          #   parler_tts: parler-tts==0.2.2 requires transformers==4.46.1
+          #   xcodec2   : xcodec2==0.1.5    requires torch==2.5.0
+          # Those trees only dump independent reference tensors on VAST.
+          # torch and Transformers appear nowhere else in the repository:
+          # the Rust runtime carries no dependencies (check-zero-deps.sh)
+          # and the published Python wheel declares `dependencies = []`, so
+          # none of these can reach a shipped artefact. Listing exact GHSA
+          # ids keeps every other advisory failing this gate. Tracked in
+          # docs/m5-owner-verification-checklist.md section 8.
           allow-ghsas: >-
+            GHSA-29pf-2h5f-8g72,
+            GHSA-37mw-44qp-f5jm,
+            GHSA-4w7r-h757-3r74,
             GHSA-53q9-r3pm-6pq6,
+            GHSA-59p9-h35m-wg4g,
+            GHSA-69w3-r845-3855,
+            GHSA-6rvg-6v2m-4j46,
             GHSA-887c-mr87-cxwp,
+            GHSA-9356-575x-2w9m,
             GHSA-f4hp-rmr7-r7v8,
-            GHSA-vgrw-7cvw-pwgx
+            GHSA-fgcw-684q-jj6r,
+            GHSA-fpwr-67px-3qhx,
+            GHSA-hxxf-235m-72v3,
+            GHSA-jjph-296x-mrcr,
+            GHSA-q2wp-rjmx-x6x9,
+            GHSA-qq3j-4f4f-9583,
+            GHSA-qxrp-vhvm-j765,
+            GHSA-rcv9-qm8p-9p6j,
+            GHSA-vgrw-7cvw-pwgx,
+            GHSA-wrfc-pvp9-mr9g
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true
