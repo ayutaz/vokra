@@ -43,7 +43,14 @@ titanet = [
 # extra declares an incompatible ceiling, so override rather than constrain; the
 # sidecar
 # tools only read each checkpoint's own config, so raising the floor is inert.
-override-dependencies = ["hydra-core>=1.3.4"]
+# NeMo also declares text-unidecode unconditionally for text normalization,
+# but nothing under tools/ imports that path and its license offers only
+# Artistic-1.0-Perl or GPL. Fail closed and omit it, matching the exclusion
+# already carried by tools/parity/nanocodec.
+override-dependencies = [
+    "hydra-core>=1.3.4",
+    "text-unidecode ; python_version < '0'",
+]
 
 [tool.uv.workspace]
 members = [
