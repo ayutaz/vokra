@@ -152,6 +152,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "musicgen",
             "parler_tts",
             "qwen3_asr",
+            "qwen3_tts",
             "tiger_separator",
             "deepfake_detection",
             "yue_xcodec_mini",
@@ -218,6 +219,18 @@ const BOUND_ARCHES: &[BoundArch] = &[
             "abc",
             ("qwen3-asr-0.6b.gguf",),
             "qwen3_asr",
+        )
+        qwen3_tts_live = audit.RepoRecord(
+            "vokra/qwen3-tts-12hz-0.6b-base",
+            "abc",
+            ("qwen3-tts-main.gguf",),
+            "qwen3_tts",
+        )
+        qwen3_tts_corrected = audit.RepoRecord(
+            "vokra/qwen3-tts-12hz-0.6b-base-corrected",
+            "abc",
+            ("qwen3-tts-main.gguf",),
+            "qwen3_tts",
         )
         miocodec = audit.RepoRecord(
             "vokra/miocodec-25hz-44khz-v2",
@@ -433,6 +446,23 @@ const BOUND_ARCHES: &[BoundArch] = &[
         )
         self.assertEqual(
             audit.classify(qwen3_corrected, routed, bound).metal_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(qwen3_tts_live, routed, bound).cpu_code, "partial"
+        )
+        self.assertEqual(
+            audit.classify(qwen3_tts_live, routed, bound).metal_code,
+            "blocked-by-cpu",
+        )
+        self.assertIn(
+            "complete on CPU/Metal",
+            audit.classify(qwen3_tts_live, routed, bound).reason,
+        )
+        self.assertEqual(
+            audit.classify(qwen3_tts_corrected, routed, bound).cpu_code, "full"
+        )
+        self.assertEqual(
+            audit.classify(qwen3_tts_corrected, routed, bound).metal_code, "full"
         )
         self.assertEqual(audit.classify(miocodec, routed, bound).cpu_code, "full")
         self.assertEqual(audit.classify(miocodec, routed, bound).metal_code, "full")

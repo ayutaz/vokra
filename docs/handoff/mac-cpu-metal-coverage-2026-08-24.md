@@ -1,5 +1,21 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-27 Qwen3-TTS mapped-generation wave:** all five official Base,
+> CustomVoice and VoiceDesign main checkpoints now have strict fixed-revision
+> conversion contracts with authenticated Qwen2 BPE/prompt assets and exact
+> 402/404/478/480-tensor manifests. The mapping-owned native runtime executes
+> bounded talker prefill/decode with KV cache, the complete fifteen-row code
+> predictor and frame-major sixteen-codebook generation through one preflighted
+> CPU or Metal backend. A public Rust API and CLI route join those codes to an
+> explicitly supplied authenticated 271-tensor Qwen3-TTS-Tokenizer-12Hz
+> waveform decoder on the same backend and emit 24-kHz PCM; backend mismatch or
+> an unsupported operation is an error with no CPU fallback. The four live main
+> GGUF repositories remain artifact-partial because their metadata/model names
+> and embedded sidecars predate this strict contract, and no gated public
+> companion artifact has been authorized. VAST real-weight CPU parity and
+> external Apple-silicon Metal parity remain pending; no upload, model
+> conversion or inference ran on the maintainer Mac.
+
 > **2026-08-27 Ultravox companion-conversion wave:** the separately gated
 > `meta-llama/Llama-3.2-1B-Instruct` base now has a bounded-memory conversion
 > contract distinct from the public MIT audio GGUF. The converter requires an
@@ -377,13 +393,13 @@ it reported:
 | Public model repositories | 194 |
 | Repositories carrying at least one GGUF | 193 |
 | GGUF files | 198 |
-| Complete CPU route for the live public artifact | 127 |
-| Route/binder present, released-artifact CPU forward incomplete | 44 |
-| No complete runtime binder | 22 |
+| Complete CPU route for the live public artifact | 128 |
+| Route/binder present, released-artifact CPU forward incomplete | 45 |
+| No complete runtime binder | 20 |
 | Empty non-artifact repository (`seamless-m4t-v2-large`) | 1 |
-| Complete Metal code route among the CPU-complete set | 127 |
+| Complete Metal code route among the CPU-complete set | 128 |
 | CPU-complete but Metal-unsupported | 0 |
-| Metal blocked by missing/partial CPU forward | 66 |
+| Metal blocked by missing/partial CPU forward | 65 |
 
 These are deliberately **live-public-artifact reachability** counts. They are
 not a claim that real-weight CPU/Metal parity has passed. The audit keeps code
@@ -401,7 +417,7 @@ CPU-complete but lacks a complete Metal code path. Artifact-partial rows stay
 blocked by CPU and cannot satisfy that gate merely by naming a Metal-capable
 sibling architecture.
 
-The 127 repositories with a complete Metal code route are the Audiobox
+The 128 repositories with a complete Metal code route are the Audiobox
 Aesthetics scorer, AudioSeal's four-checkpoint watermark bundle, four BigVGAN
 checkpoints, CAM++, CrisperWhisper,
 DeepFilterNet3, both Distil-Whisper
@@ -461,6 +477,12 @@ RMVPE now has a complete code route,
 but the exact public bytes fail provenance before execution. Each listed repository still needs its own
 public-artifact load and real-weight parity verdict; sharing an architecture
 does not turn one checkpoint's pass into a sibling pass.
+
+Qwen3-TTS now also has a complete source-level CPU/Metal main-plus-companion
+route, but none of its four historical public main files satisfies the strict
+new main contract and the required 12-Hz companion is not a gated public
+artifact. Those repositories therefore remain in the artifact-partial count
+instead of inflating the live-artifact-complete total.
 
 There is no longer a CPU-complete, Metal-unsupported public repository. The
 remaining 66 Metal-blocked repositories first need a complete released-
