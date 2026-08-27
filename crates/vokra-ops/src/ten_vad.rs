@@ -1001,8 +1001,8 @@ fn dct_inverse(table: &[[f32; 18]; 18], input: &[f32; 18]) -> [f32; 18] {
     let mut output = [0.0f32; 18];
     let scale = (2.0f32 / 18.0).sqrt();
     for (row, value) in output.iter_mut().enumerate() {
-        for column in 0..18 {
-            *value += input[column] * table[row][column];
+        for (column, input_value) in input.iter().copied().enumerate() {
+            *value += input_value * table[row][column];
         }
         *value *= scale;
     }

@@ -35,8 +35,6 @@
 //! within FP32 rounding. Choosing AVX2 here is a within-CPU-backend
 //! optimization, orthogonal to the cross-backend explicit-op-error rule.
 
-#![cfg(target_arch = "x86_64")]
-
 use core::arch::x86_64::*;
 
 #[cfg(feature = "simd-transcendental")]
