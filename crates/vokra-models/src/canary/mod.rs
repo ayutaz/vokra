@@ -36,7 +36,7 @@
 //!   `87bc52657add533cd0156b3fc1aef027280754bf` supplies the exact
 //!   `model_config.yaml`, aggregate `tokenizer.vocab`, and main
 //!   `model_weights.ckpt` contract. The strict converter accepts only the
-//!   authenticated 1,478-F32-tensor main checkpoint and explicitly rejects
+//!   main checkpoint with exactly 1,478 F32 tensors and explicitly rejects
 //!   the 688-tensor timestamp auxiliary checkpoint in the same archive.
 //! - The committed structural fixture
 //!   `tests/parity/canary_1b_v2/state_dict_manifest.json` pins every tensor
@@ -1526,7 +1526,7 @@ impl CanaryAsr {
     /// decoded.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         verify_arch(file)?;
-        drop(Compute::for_backend(backend, CANARY_HOT_OPS)?);
+        let _backend_preflight = Compute::for_backend(backend, CANARY_HOT_OPS)?;
         CanaryBoundWeights::verify_manifest(file, RELEASE_SPEC)?;
 
         let cfg = CanaryConfig::from_gguf(file)?;

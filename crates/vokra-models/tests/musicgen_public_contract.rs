@@ -120,11 +120,12 @@ fn public_musicgen_lm_only_companion_generates_finite_pcm() {
     let backend = match backend_name.as_str() {
         "cpu" => BackendKind::Cpu,
         "metal" => {
-            assert!(
-                cfg!(feature = "metal"),
-                "VOKRA_MUSICGEN_ROUTE_BACKEND=metal requires --features metal"
-            );
-            BackendKind::Metal
+            #[cfg(not(feature = "metal"))]
+            panic!("VOKRA_MUSICGEN_ROUTE_BACKEND=metal requires --features metal");
+            #[cfg(feature = "metal")]
+            {
+                BackendKind::Metal
+            }
         }
         other => panic!("VOKRA_MUSICGEN_ROUTE_BACKEND must be cpu or metal, got {other:?}"),
     };

@@ -232,6 +232,10 @@ PROTOTYPES = {
         ctypes.c_int,
         (ctypes.c_void_p, ctypes.POINTER(ctypes.c_char), ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t),),
     ),
+    'vokra_separate': (
+        ctypes.c_int,
+        (ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(ctypes.POINTER(ctypes.c_float)), ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_int32),),
+    ),
     'vokra_session_create_from_file': (
         ctypes.c_int,
         (ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p),),

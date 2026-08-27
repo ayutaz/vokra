@@ -921,7 +921,7 @@ impl Canary1bFlashAsr {
         // must not spend gigabytes loading weights before reporting that Metal
         // is unavailable. Inference constructs its own dispatcher again so a
         // device loss between bind and execution is still surfaced.
-        drop(Compute::for_backend(backend, CANARY_1B_FLASH_HOT_OPS)?);
+        let _backend_preflight = Compute::for_backend(backend, CANARY_1B_FLASH_HOT_OPS)?;
 
         // Authenticate the manifest before decoding any large tensor. This
         // makes the historical encoder-only public artifact fail cheaply and

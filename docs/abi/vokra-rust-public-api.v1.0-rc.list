@@ -680,6 +680,7 @@ FN vokra-core::session::backend_kind|pub fn backend_kind(&self) -> BackendKind {
 FN vokra-core::session::build|pub fn build(self) -> Result<Session> {
 FN vokra-core::session::from_file|pub fn from_file(path: impl AsRef<Path>) -> SessionBuilder {
 FN vokra-core::session::from_gguf|pub fn from_gguf(gguf: GgufFile) -> SessionBuilder {
+FN vokra-core::session::gguf_arc|pub fn gguf_arc(&self) -> Arc<GgufFile> {
 FN vokra-core::session::gguf|pub fn gguf(&self) -> &GgufFile {
 FN vokra-core::session::kv_quant|pub fn kv_quant(&self) -> KvQuant {
 FN vokra-core::session::model_path|pub fn model_path(&self) -> &Path {

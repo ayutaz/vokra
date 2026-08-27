@@ -53,7 +53,7 @@
 > or heavy Cargo command ran on the maintainer Mac.
 
 > **2026-08-27 YuE xcodec-mini source wave:** bounded reads of only the
-> public GGUF header authenticated revision
+> public GGUF header with authenticated `hf_revision:`
 > `83c14a67ed792a0d5b3b61fff8ae35a04c6da8fa`, 1,810,001,760 bytes,
 > SHA-256 `60e21aa5335646080102196454d7ffad5e012467d6f5eb9b776bf07d666b02bc`,
 > 2,145 F32 tensors and name/shape manifest

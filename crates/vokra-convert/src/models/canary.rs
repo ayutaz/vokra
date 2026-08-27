@@ -3,7 +3,7 @@
 //! The upstream `.nemo` contains both a timestamp auxiliary CTC checkpoint
 //! and the actual eight-layer Transformer-AED model. Preparation must select
 //! `./model_weights.ckpt` explicitly. This converter then accepts only the
-//! authenticated 1,478-F32-tensor main manifest and the immutable 16,384-line
+//! main checkpoint manifest with exactly 1,478 F32 tensors and the immutable 16,384-line
 //! aggregate `tokenizer.vocab`; it never emits a plausible partial GGUF.
 
 use std::collections::BTreeSet;

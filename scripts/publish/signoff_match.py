@@ -1281,6 +1281,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         # matches `docs/license-audit.md` §3.1 byte-for-byte.
         "Qwen3-TTS-12Hz-1.7B-Base (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`)",
     ],
+    "qwen3_tts_tokenizer_12hz": ["Qwen/Qwen3-TTS-Tokenizer-12Hz"],
     "voxcpm2": ["openbmb/VoxCPM2", "openbmb/VoxCPM-0.5B"],
     "vibevoice": ["microsoft/VibeVoice-1.5B", "microsoft/VibeVoice-Large"],
     "irodori": ["Aratako/Irodori-TTS-500M-v3"],
@@ -1288,7 +1289,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "kimi_audio": ["kimi_audio (`moonshotai/Kimi-Audio-7B-Instruct`)"],
     "step_audio2_mini": ["step_audio2_mini (`stepfun-ai/Step-Audio-2-mini`)"],
     "baichuan_audio": ["baichuan_audio (`baichuan-inc/Baichuan-Audio-Instruct`)"],
-    "speechtokenizer": ["speechtokenizer (`fnlp/SpeechTokenizer`)"],
+    "speechtokenizer": [
+        "speechtokenizer (`fnlp/SpeechTokenizer`、現 canonical `OpenMOSS-Team/SpeechTokenizer`)"
+    ],
     "funcodec": [
         "funcodec (`alibaba-damo/audio_codec-encodec-zh_en-general-16k-nq32ds320-pytorch`)"
     ],
@@ -1356,7 +1359,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     # audit drift without making `vokra/rmvpe` publishable: no repo-side
     # mapping exists above, so publication remains fail-closed.
     "rmvpe": [
-        "rmvpe (`yxlllc/RMVPE` architecture derived from `Dream-High/RMVPE`)"
+        "rmvpe (`yxlllc/RMVPE`, fixed commit `0aabafba18289ca938a73af0b0297686abf4922d`)"
     ],
     "crepe": ["CREPE (`marl/crepe`)"],
     "styletts2": ["StyleTTS 2 (yl4579)"],  # Rejected row, still needs coverage.
@@ -1566,6 +1569,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
         # demonstrably wrong axes. See `docs/license-audit.md` §3.1.
         "wav2vec2-xlsr-53-espeak-cv-ft (`facebook/wav2vec2-xlsr-53-espeak-cv-ft`)",
     ],
+    "data2vec_audio": [
+        "data2vec-audio-base-960h (`facebook/data2vec-audio-base-960h`)"
+    ],
     "xvector": ["X-vector VoxCeleb (`speechbrain/spkrec-xvect-voxceleb`)"],
     # 2026-08-01 Wave 5 music-separation add: BS-Roformer / Mel-Band Roformer
     # (`chenmozhijin/BSRoformer-GGUF` third-party mirror, **weight provenance
@@ -1687,7 +1693,7 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "nsnet2": ["NSNet2 (`microsoft/DNS-Challenge NSNet2-baseline`)"],
     "nkf_aec": ["NKF-AEC (`fjiang9/NKF-AEC`)"],
     "rnnoise": ["RNNoise v0.2 (`xiph/rnnoise`)"],
-    "frcrn": ["FRCRN (`alibabasglab/FRCRN`)"],
+    "frcrn": ["FRCRN-SE-16K (`alibabasglab/FRCRN_SE_16K`)"],
     "conv_tasnet_libri1mix": [
         "ConvTasNet Libri1Mix Enhancement (`JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k`)"
     ],

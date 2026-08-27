@@ -7,8 +7,8 @@ dependencies = [
     "huggingface-hub==0.29.3",
     "numpy==2.0.2",
     "safetensors==0.4.5",
-    "torch==2.5.0",
-    "torchaudio==2.5.0",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
     "transformers==4.45.2",
 ]
 
