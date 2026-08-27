@@ -86,6 +86,13 @@ USAGE:
                   --token-ids <official-prompt-u32,...> [--neutts-max-new-tokens <N>] \
                   [--neutts-min-new-tokens <N>] [--neutts-seed <u64>] [--neutts-greedy] \
                   [--output <out.wav>]
+    vokra-cli run --model <qwen3-tts-main.gguf> \
+                  --qwen3-tts-decoder <qwen3-tts-tokenizer-12hz.gguf> \
+                  --text <text> [--language <Auto|language>] \
+                  [--qwen3-tts-speaker <name> | --speaker-embedding <xvector.f32>] \
+                  [--qwen3-tts-instruction <description>] \
+                  [--qwen3-tts-max-new-tokens <N>] [--qwen3-tts-greedy] \
+                  [--output <out.wav>]
     vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> \
                   --input <16k-mono.wav> --token-ids <expanded-prompt-u32,...> \
                   --ultravox-audio-start <N> --ultravox-stop-token-ids <u32,u32,...> \
@@ -166,6 +173,22 @@ OPTIONS:
                                 microsoft/speecht5_hifigan companion GGUF
                                 (80 mel bins, 16 kHz). Both stages use the
                                 same selected backend.
+    --qwen3-tts-decoder <path>  Qwen3-TTS only, REQUIRED: exact official
+                                decode-only 12-Hz companion GGUF. Main and
+                                decoder execute on the same --backend.
+    --qwen3-tts-speaker <name>  Qwen3-TTS CustomVoice only: fixed released
+                                speaker name. Base instead requires
+                                --speaker-embedding; VoiceDesign rejects both.
+    --qwen3-tts-instruction <text>
+                                Qwen3-TTS VoiceDesign or 1.7B CustomVoice
+                                style instruction. 0.6B CustomVoice and Base
+                                reject it explicitly.
+    --qwen3-tts-max-new-tokens <N>
+                                Qwen3-TTS positive first-codebook cap,
+                                including terminal EOS [default 8192].
+    --qwen3-tts-greedy          Qwen3-TTS deterministic talker and predictor
+                                argmax mode; stochastic release defaults are
+                                used when absent.
     --tokenizer <path>          Authenticated ASR tokenizer sidecar: Nemotron
                                 uses tokenizer.json; Parakeet-TDT-1.1B uses
                                 tokenizer.vocab. Published legacy GGUFs need
@@ -528,10 +551,11 @@ OPTIONS:
     --bert-en <path>            sbv2 only, REQUIRED: the EN-path DeBERTa v3
                                 BERT GGUF (`vokra-cli convert --model
                                 deberta-v3`). See --bert-ja.
-    --speaker-embedding <path>  SpeechT5 REQUIRED / sbv2 OPTIONAL: raw
-                                little-endian f32 external speaker embedding.
-                                Length must equal the loaded model's
-                                projection d_in (both real ckpts: 512);
+    --speaker-embedding <path>  SpeechT5 / Qwen3-TTS Base REQUIRED, sbv2
+                                OPTIONAL: raw little-endian f32 external
+                                speaker embedding. Length must equal the
+                                loaded model's declared input width
+                                (SpeechT5/SBV2: 512; Qwen3-TTS: variant-specific);
                                 a wrong length is a loud error (FR-EX-08),
                                 never a silent zero-pad/truncate. When
                                 For SBV2 when absent, the model's projection (if any)
@@ -556,6 +580,16 @@ struct RunArgs {
     audio_tokenizer: Option<String>,
     /// SpeechT5-only strict 16 kHz HiFi-GAN companion GGUF.
     vocoder: Option<String>,
+    /// Qwen3-TTS-only official 12-Hz waveform-decoder companion GGUF.
+    qwen3_tts_decoder: Option<String>,
+    /// Qwen3-TTS CustomVoice fixed released speaker name.
+    qwen3_tts_speaker: Option<String>,
+    /// Qwen3-TTS VoiceDesign/1.7B-CustomVoice style instruction.
+    qwen3_tts_instruction: Option<String>,
+    /// Qwen3-TTS first-codebook generation cap.
+    qwen3_tts_max_new_tokens: Option<usize>,
+    /// Qwen3-TTS deterministic talker and predictor sampling.
+    qwen3_tts_greedy: bool,
     /// Nemotron-ASR-only official tokenizer.json sidecar.
     tokenizer: Option<String>,
     input: Option<String>,
@@ -679,11 +713,9 @@ struct RunArgs {
     /// SBV2 only (Task 38), REQUIRED for that arch: path to the EN-path
     /// DeBERTa v3 BERT GGUF. See `bert_ja`.
     bert_en: Option<String>,
-    /// SpeechT5 (required) or SBV2 (optional): path to a raw little-endian
-    /// f32 external speaker embedding, forwarded to
-    /// `SynthesisRequest::speaker_embedding` (its `Option<Vec<f32>>` shape).
-    /// Rejected loudly on every other arch (FR-EX-08 — other archs
-    /// have their own speaker paths, e.g. Kokoro's `--voice`/`--style`).
+    /// SpeechT5/Qwen3-TTS Base (required) or SBV2 (optional): path to a raw
+    /// little-endian f32 external speaker embedding. Each concrete model
+    /// validates its exact released width; every other arch rejects the flag.
     speaker_embedding: Option<String>,
     /// AudioSeal task direction. Absent means detect on that arch; any
     /// presence is rejected on non-AudioSeal models.
@@ -755,6 +787,11 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
     let mut embedding_model: Option<String> = None;
     let mut audio_tokenizer: Option<String> = None;
     let mut vocoder: Option<String> = None;
+    let mut qwen3_tts_decoder: Option<String> = None;
+    let mut qwen3_tts_speaker: Option<String> = None;
+    let mut qwen3_tts_instruction: Option<String> = None;
+    let mut qwen3_tts_max_new_tokens: Option<usize> = None;
+    let mut qwen3_tts_greedy = false;
     let mut tokenizer: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
@@ -854,6 +891,47 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
                         .clone(),
                 );
                 i += 2;
+            }
+            "--qwen3-tts-decoder" => {
+                qwen3_tts_decoder = Some(
+                    args.get(i + 1)
+                        .ok_or("--qwen3-tts-decoder requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--qwen3-tts-speaker" => {
+                qwen3_tts_speaker = Some(
+                    args.get(i + 1)
+                        .ok_or("--qwen3-tts-speaker requires a speaker name")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--qwen3-tts-instruction" => {
+                qwen3_tts_instruction = Some(
+                    args.get(i + 1)
+                        .ok_or("--qwen3-tts-instruction requires text")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--qwen3-tts-max-new-tokens" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or("--qwen3-tts-max-new-tokens requires a positive integer")?;
+                let tokens = value.parse::<usize>().map_err(|error| {
+                    format!("--qwen3-tts-max-new-tokens must be an integer: {error}")
+                })?;
+                if tokens == 0 {
+                    return Err("--qwen3-tts-max-new-tokens must be positive".to_owned());
+                }
+                qwen3_tts_max_new_tokens = Some(tokens);
+                i += 2;
+            }
+            "--qwen3-tts-greedy" => {
+                qwen3_tts_greedy = true;
+                i += 1;
             }
             "--tokenizer" => {
                 tokenizer = Some(
@@ -1331,6 +1409,11 @@ fn parse_args(args: &[String]) -> Result<RunArgs, String> {
         embedding_model,
         audio_tokenizer,
         vocoder,
+        qwen3_tts_decoder,
+        qwen3_tts_speaker,
+        qwen3_tts_instruction,
+        qwen3_tts_max_new_tokens,
+        qwen3_tts_greedy,
         tokenizer,
         input,
         text,
@@ -1463,6 +1546,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Separation
         | ModelTask::Tts
         | ModelTask::TtsSpeechT5
+        | ModelTask::TtsQwen3
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
@@ -1561,6 +1645,19 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.vocoder.is_some() && task != ModelTask::TtsSpeechT5 {
         return Err(
             "run: --vocoder is only supported for the speecht5 arch — it must be the strict microsoft/speecht5_hifigan companion GGUF"
+                .to_owned(),
+        );
+    }
+    if (a.qwen3_tts_decoder.is_some()
+        || a.qwen3_tts_speaker.is_some()
+        || a.qwen3_tts_instruction.is_some()
+        || a.qwen3_tts_max_new_tokens.is_some()
+        || a.qwen3_tts_greedy)
+        && task != ModelTask::TtsQwen3
+    {
+        return Err(
+            "run: --qwen3-tts-decoder / --qwen3-tts-speaker / --qwen3-tts-instruction / \
+             --qwen3-tts-max-new-tokens / --qwen3-tts-greedy are only supported for the qwen3_tts arch"
                 .to_owned(),
         );
     }
@@ -1749,11 +1846,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::AsrCanary1bFlash
         && task != ModelTask::AsrCanary1bV2
         && task != ModelTask::Sbv2
+        && task != ModelTask::TtsQwen3
     {
-        return Err("run: --language is only supported for voxtral, qwen3_asr, \
+        return Err(
+            "run: --language is only supported for voxtral, qwen3_asr, qwen3_tts, \
              nemotron_asr_streaming, canary, canary-1b-flash, or sbv2; each architecture \
              validates its own released prompt/front-end language inventory"
-            .to_owned());
+                .to_owned(),
+        );
     }
     if a.target_language.is_some()
         && task != ModelTask::AsrCanary1bFlash
@@ -1775,17 +1875,22 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    // `--speaker-embedding` is SpeechT5's required x-vector or Blocker 3's
-    // optional SBV2 external zero-shot speaker path. Rejected off every other
+    // `--speaker-embedding` is SpeechT5/Qwen3-TTS Base's required x-vector or
+    // Blocker 3's optional SBV2 external zero-shot speaker path. Rejected off every other
     // arch rather than silently ignored — other archs have their own paths
     // (Kokoro `--voice`/`--style`, CAM++ single-input embedding, ...),
     // and silently dropping caller-supplied data on the floor here would
     // produce plausible-looking-but-wrong-speaker audio (FR-EX-08).
-    if a.speaker_embedding.is_some() && task != ModelTask::Sbv2 && task != ModelTask::TtsSpeechT5 {
+    if a.speaker_embedding.is_some()
+        && task != ModelTask::Sbv2
+        && task != ModelTask::TtsSpeechT5
+        && task != ModelTask::TtsQwen3
+    {
         return Err(
-            "run: --speaker-embedding is only supported for speecht5 or sbv2 — SpeechT5 \
+            "run: --speaker-embedding is only supported for speecht5, sbv2, or qwen3_tts — SpeechT5 \
              requires its caller-supplied 512-d x-vector; SBV2 projects the same external \
-             width through `enc_p.encoder.spk_emb_linear`. Other archs use their own \
+             width through `enc_p.encoder.spk_emb_linear`; Qwen3-TTS Base requires its \
+             variant-width official speaker x-vector. Other archs use their own \
              speaker paths (e.g. kokoro --voice / --style)"
                 .to_owned(),
         );
@@ -1992,6 +2097,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::TtsSpeechT5 => {
             run_speecht5(&session, &a)?;
+        }
+        ModelTask::TtsQwen3 => {
+            run_qwen3_tts(&session, &a)?;
         }
         ModelTask::MusicGeneration => {
             run_musicgen(&a)?;
@@ -3840,6 +3948,93 @@ fn run_neutts_air(a: &RunArgs) -> Result<(), String> {
     }
     emit_audio(
         "neutts-air",
+        &synthesis.pcm,
+        synthesis.sample_rate,
+        a.output.as_deref(),
+    )
+}
+
+/// Qwen3-TTS raw text to 24 kHz PCM through an explicit official 12-Hz
+/// waveform-decoder companion.
+///
+/// The main GGUF embeds and authenticates its exact tokenizer/prompt sidecars.
+/// Base variants take a raw little-endian speaker x-vector, CustomVoice takes
+/// a fixed released speaker name, and VoiceDesign takes an optional natural-
+/// language instruction. Variant mismatches are rejected by the model layer.
+fn run_qwen3_tts(session: &Session, a: &RunArgs) -> Result<(), String> {
+    if a.input.is_some() || a.token_ids.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (Qwen3-TTS): use --text with the embedded authenticated tokenizer; --input/--token-ids/--tokens are not accepted"
+                .to_owned(),
+        );
+    }
+    let text = a
+        .text
+        .as_deref()
+        .ok_or("run (Qwen3-TTS): --text <string> is required")?;
+    let decoder_path = a.qwen3_tts_decoder.as_deref().ok_or(
+        "run (Qwen3-TTS): --qwen3-tts-decoder <qwen3-tts-tokenizer-12hz.gguf> is required; the main checkpoint emits codes, not PCM",
+    )?;
+    let max_new_tokens = a.qwen3_tts_max_new_tokens.unwrap_or(8_192);
+    let checkpoint =
+        vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf_mapped(session.gguf_arc())
+            .map_err(|error| format!("run (Qwen3-TTS main bind): {error}"))?;
+    let model = vokra_models::qwen3_tts::Qwen3TtsMain::from_checkpoint(checkpoint, a.backend)
+        .map_err(|error| format!("run (Qwen3-TTS main backend): {error}"))?;
+    let mut options = if a.qwen3_tts_greedy {
+        vokra_models::qwen3_tts::Qwen3TtsGenerationOptions::greedy(max_new_tokens)
+    } else {
+        let mut options = vokra_models::qwen3_tts::Qwen3TtsGenerationOptions::default();
+        options.max_new_tokens = max_new_tokens;
+        options
+    };
+    options.language = a.language.clone().unwrap_or_else(|| "Auto".to_owned());
+    options.speaker = a.qwen3_tts_speaker.clone();
+    options.instruction = a.qwen3_tts_instruction.clone();
+    if let Some(path) = a.speaker_embedding.as_deref() {
+        let expected = model.checkpoint().config().speaker_embed_dim as usize;
+        let bytes =
+            std::fs::read(path).map_err(|error| format!("--speaker-embedding {path}: {error}"))?;
+        let expected_bytes = expected.checked_mul(4).ok_or_else(|| {
+            "run (Qwen3-TTS): speaker embedding byte extent overflows usize".to_owned()
+        })?;
+        if bytes.len() != expected_bytes {
+            return Err(format!(
+                "--speaker-embedding {path}: {} bytes ({} whole f32 values) — {:?} requires exactly {expected} little-endian f32 values ({expected_bytes} bytes)",
+                bytes.len(),
+                bytes.len() / 4,
+                model.checkpoint().variant()
+            ));
+        }
+        let embedding = bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect::<Vec<_>>();
+        if !embedding.iter().all(|value| value.is_finite()) {
+            return Err(format!(
+                "--speaker-embedding {path}: all {expected} values must be finite"
+            ));
+        }
+        options.speaker_embedding = Some(embedding);
+    }
+
+    let decoder = vokra_models::qwen3_tts::Qwen3TtsTokenizer12HzDecoder::open_mapped_with_backend(
+        decoder_path,
+        a.backend,
+    )
+    .map_err(|error| format!("run (Qwen3-TTS decoder bind): {error}"))?;
+    let synthesis = model
+        .synthesize_with_decoder(&decoder, text, &options)
+        .map_err(|error| format!("run (Qwen3-TTS generate): {error}"))?;
+    if !synthesis.generation.ended() {
+        eprintln!(
+            "vokra: Qwen3-TTS reached the {}-token cap without EOS; decoding {} complete frame(s)",
+            options.max_new_tokens,
+            synthesis.generation.frames()
+        );
+    }
+    emit_audio(
+        "qwen3-tts",
         &synthesis.pcm,
         synthesis.sample_rate,
         a.output.as_deref(),
@@ -7297,6 +7492,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_qwen3_tts_main_and_decoder_contract() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "qwen3-tts-main.gguf",
+            "--qwen3-tts-decoder",
+            "qwen3-tts-tokenizer-12hz.gguf",
+            "--text",
+            "こんにちは",
+            "--language",
+            "Japanese",
+            "--qwen3-tts-speaker",
+            "Ono_Anna",
+            "--qwen3-tts-instruction",
+            "calm",
+            "--qwen3-tts-max-new-tokens",
+            "128",
+            "--qwen3-tts-greedy",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("Qwen3-TTS explicit companion flags parse");
+        assert_eq!(
+            parsed.qwen3_tts_decoder.as_deref(),
+            Some("qwen3-tts-tokenizer-12hz.gguf")
+        );
+        assert_eq!(parsed.qwen3_tts_speaker.as_deref(), Some("Ono_Anna"));
+        assert_eq!(parsed.qwen3_tts_instruction.as_deref(), Some("calm"));
+        assert_eq!(parsed.qwen3_tts_max_new_tokens, Some(128));
+        assert!(parsed.qwen3_tts_greedy);
+        assert!(
+            parse_args(&args(&[
+                "--model",
+                "qwen3-tts-main.gguf",
+                "--qwen3-tts-max-new-tokens",
+                "0",
+            ]))
+            .is_err()
+        );
+        let error = match parse_args(&args(&[
+            "--model",
+            "qwen3-tts-main.gguf",
+            "--qwen3-tts-decoder",
+        ])) {
+            Err(error) => error,
+            Ok(_) => panic!("bare --qwen3-tts-decoder must be rejected"),
+        };
+        assert_eq!(error, "--qwen3-tts-decoder requires a GGUF path");
+    }
+
+    #[test]
     fn parse_accepts_explicit_ultravox_prompt_and_companion_contract() {
         let parsed = parse_args(&args(&[
             "--model",
@@ -9149,6 +9394,7 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Tts), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::TtsQwen3), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsKokoro), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsMelo), None);
         assert_eq!(cpu_only_engine_label(ModelTask::TtsParler), None);

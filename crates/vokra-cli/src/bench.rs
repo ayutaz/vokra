@@ -1533,6 +1533,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsQwen3 => {
+            return Err(
+                "bench: arch `qwen3_tts` requires an explicit official 12-Hz decoder companion plus variant-specific voice input; the generic bench surface does not accept that complete contract. Use `vokra-cli run --model <qwen3-tts-main.gguf> --qwen3-tts-decoder <qwen3-tts-tokenizer-12hz.gguf> --text <string> [--speaker-embedding <xvector.f32> | --qwen3-tts-speaker <name>] [--backend cpu|metal]` (FR-EX-08: refusing to fabricate a decoder or voice)"
+                    .to_owned(),
+            );
+        }
         ModelTask::MelFrontend => {
             // M2-04-T11: bench the Whisper log-mel front-end alone. Running
             // `whisper::mel::log_mel` directly against the input WAV keeps the

@@ -20,8 +20,8 @@ use super::{
     CODEC_BOS_TOKEN_ID, CODEC_EOS_TOKEN_ID, CODEC_NOTHINK_TOKEN_ID, CODEC_PAD_TOKEN_ID,
     CODEC_THINK_BOS_TOKEN_ID, CODEC_THINK_EOS_TOKEN_ID, CODEC_THINK_TOKEN_ID,
     QWEN3_TTS_NUM_CODE_GROUPS, Qwen3TtsCheckpoint, Qwen3TtsCheckpointVariant,
-    Qwen3TtsCodePredictorConfig, Qwen3TtsTalkerConfig, Qwen3TtsTokenizer, TTS_BOS_TOKEN_ID,
-    TTS_EOS_TOKEN_ID, TTS_PAD_TOKEN_ID,
+    Qwen3TtsCodePredictorConfig, Qwen3TtsTalkerConfig, Qwen3TtsTokenizer,
+    Qwen3TtsTokenizer12HzDecoder, TTS_BOS_TOKEN_ID, TTS_EOS_TOKEN_ID, TTS_PAD_TOKEN_ID,
 };
 
 const LABEL: &str = "qwen3_tts";
@@ -142,6 +142,17 @@ pub struct Qwen3TtsGeneratedCodes {
     frame_major: Vec<u32>,
     frames: usize,
     ended: bool,
+}
+
+/// Complete explicit-companion Qwen3-TTS synthesis result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Qwen3TtsSynthesis {
+    /// Generated sixteen-row codec frames and EOS status.
+    pub generation: Qwen3TtsGeneratedCodes,
+    /// Mono 24 kHz waveform decoded by the authenticated 12-Hz companion.
+    pub pcm: Vec<f32>,
+    /// Companion-declared output sample rate.
+    pub sample_rate: u32,
 }
 
 impl Qwen3TtsGeneratedCodes {
@@ -269,6 +280,36 @@ impl Qwen3TtsMain {
         options: &Qwen3TtsGenerationOptions,
     ) -> Result<Qwen3TtsGeneratedCodes> {
         generate_codes(self, text, options)
+    }
+
+    /// Generates sixteen-row codes and decodes them with an explicitly
+    /// supplied official 12-Hz waveform companion on the same backend.
+    pub fn synthesize_with_decoder(
+        &self,
+        decoder: &Qwen3TtsTokenizer12HzDecoder,
+        text: &str,
+        options: &Qwen3TtsGenerationOptions,
+    ) -> Result<Qwen3TtsSynthesis> {
+        if decoder.backend() != self.backend {
+            return Err(VokraError::InvalidArgument(format!(
+                "{LABEL}: main backend {:?} and 12-Hz decoder backend {:?} differ; every learned stage must use one backend",
+                self.backend,
+                decoder.backend()
+            )));
+        }
+        let generation = self.generate_codes(text, options)?;
+        if generation.frames() == 0 {
+            return Err(VokraError::InvalidArgument(
+                "qwen3_tts: generation produced no complete audio-code frame before EOS".to_owned(),
+            ));
+        }
+        let rows = generation.to_codebook_rows();
+        let pcm = decoder.decode_codes(&rows)?;
+        Ok(Qwen3TtsSynthesis {
+            generation,
+            pcm,
+            sample_rate: decoder.config().output_sample_rate,
+        })
     }
 
     /// Generates the fifteen code-predictor rows for one sampled first-codebook
@@ -612,10 +653,10 @@ fn validate_generation_options(
                         .to_owned(),
                 )
             })?;
-            let expected = mapped.config().talker.hidden_dim as usize;
+            let expected = mapped.config().speaker_embed_dim as usize;
             if embedding.len() != expected {
                 return Err(VokraError::InvalidArgument(format!(
-                    "qwen3_tts: Base speaker_embedding has {} values, expected talker hidden width {expected}",
+                    "qwen3_tts: Base speaker_embedding has {} values, expected released speaker-encoder width {expected}",
                     embedding.len()
                 )));
             }

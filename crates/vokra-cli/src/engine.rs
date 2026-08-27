@@ -103,6 +103,10 @@ pub(crate) enum ModelTask {
     /// populated here because the sidecar path is a CLI input rather than
     /// model metadata.
     TtsSpeechT5,
+    /// Alibaba Qwen3-TTS main LM plus an explicitly supplied official 12-Hz
+    /// waveform-decoder companion. The run arm owns both mmap mappings and
+    /// threads one selected CPU/Metal backend through the complete graph.
+    TtsQwen3,
     /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
     ///
     /// The dispatch returns a bare session because the concrete mapping-owned
@@ -543,6 +547,8 @@ const ARCH_TITANET: &str = "titanet-large";
 const ARCH_VOXTRAL: &str = "voxtral";
 /// Alibaba Qwen3-ASR 0.6B / 1.7B shared runtime architecture.
 const ARCH_QWEN3_ASR: &str = "qwen3_asr";
+/// Alibaba Qwen3-TTS Base/CustomVoice/VoiceDesign main generation family.
+const ARCH_QWEN3_TTS: &str = "qwen3_tts";
 /// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
 /// what `vokra-convert --model kokoro` writes.
 const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
@@ -1154,6 +1160,16 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: run owns the `--vocoder` sidecar and binds both
             // strict GGUFs once (see `ModelTask::TtsSpeechT5`).
             Ok((session, ModelTask::TtsSpeechT5))
+        }
+        ARCH_QWEN3_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_QWEN3_TTS}`"
+                ));
+            }
+            // Bare session: the run arm owns the explicit 12-Hz companion and
+            // opens both mmap-backed artifacts once on the requested backend.
+            Ok((session, ModelTask::TtsQwen3))
         }
         ARCH_KOKORO => {
             if hint.is_some() {
@@ -2238,14 +2254,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "IrodoriCheckpoint::from_gguf → IrodoriCheckpoint::synthesize",
         probe: Some(|g: &GgufFile| {
             vokra_models::irodori::IrodoriCheckpoint::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "qwen3_tts",
-        module: "vokra_models::qwen3_tts",
-        entry: "Qwen3TtsCheckpoint::from_gguf → Qwen3TtsCheckpoint::synthesize",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
@@ -4213,6 +4221,21 @@ mod tests {
                 .iter()
                 .all(|binding| binding.arch != ARCH_QWEN3_TTS_TOKENIZER_12HZ),
             "the routed Qwen3-TTS tokenizer must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_qwen3_tts_main_to_explicit_companion_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_QWEN3_TTS, "qwen3-tts-main-routed", |path| {
+                load_session(path).expect("Qwen3-TTS main session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::TtsQwen3);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_QWEN3_TTS),
+            "the routed Qwen3-TTS main must not retain a stale partial registry row"
         );
     }
 

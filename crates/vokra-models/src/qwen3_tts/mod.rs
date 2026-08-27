@@ -155,7 +155,7 @@ pub use bound::{
 };
 pub use generation::{
     QWEN3_TTS_MAIN_HOT_OPS, Qwen3TtsGeneratedCodes, Qwen3TtsGenerationOptions, Qwen3TtsMain,
-    Qwen3TtsTalkerOutput, Qwen3TtsTalkerSession,
+    Qwen3TtsSynthesis, Qwen3TtsTalkerOutput, Qwen3TtsTalkerSession,
 };
 pub use tokenizer::{
     CODEC_BOS_TOKEN_ID, CODEC_EOS_TOKEN_ID, CODEC_NOTHINK_TOKEN_ID, CODEC_PAD_TOKEN_ID,

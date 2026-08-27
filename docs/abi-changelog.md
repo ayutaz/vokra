@@ -250,6 +250,21 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS explicit companion synthesis)
+
+The mapped Qwen3-TTS main now joins its generated sixteen-codebook frames to
+an explicitly supplied authenticated 12-Hz waveform decoder on one selected
+CPU or Metal backend. The CLI exposes the full text, variant-specific voice,
+generation-cap and companion contract and writes the resulting 24-kHz PCM as
+WAV. Missing companions, incompatible variant controls, backend mismatches and
+unsupported operations remain explicit errors; there is no CPU fallback. No C
+symbol or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `vokra-models::qwen3_tts` | `Qwen3TtsSynthesis`, `Qwen3TtsMain::synthesize_with_decoder` | Added | generated codes + mono `Vec<f32>` + companion sample rate | Additive Rust model API; main and decoder must use the same explicit backend | no | (this commit) |
+| `vokra-cli run` | `--qwen3-tts-decoder`, `--qwen3-tts-speaker`, `--qwen3-tts-instruction`, `--qwen3-tts-max-new-tokens`, `--qwen3-tts-greedy` | Added | explicit main + decoder TTS route | Additive CLI surface; Base uses `--speaker-embedding`, CustomVoice uses a fixed speaker, and VoiceDesign uses an instruction | no | (this commit) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS mapped main generation)
 
 All five authenticated main checkpoints now expose a bounded-memory native
