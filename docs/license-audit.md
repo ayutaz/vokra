@@ -658,7 +658,7 @@ Transformers Qwen2 forward を直接呼ぶ。VAST / Apple worker のいずれに
 
 The 0.6B converter is bound to upstream revision
 `5eb144179a02acc5e5ba31e748d22b0cf3e303b0` and the 1.7B converter to
-`7278e1e70fe206f11671096ffdd38061171dd6e5a`. Both accept only the exact
+`7278e1e70fe206f11671096ffdd38061171dd6e5`. Both accept only the exact
 audited BF16 name/shape manifest, reject conflicting license overrides, and
 stream the official single file or local HF shard index without merging the
 whole checkpoint in memory. New conversions also stamp the exact 13-field

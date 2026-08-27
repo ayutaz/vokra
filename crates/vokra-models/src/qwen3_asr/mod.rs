@@ -143,7 +143,7 @@ impl Qwen3AsrVariant {
     pub const fn source_revision(self) -> &'static str {
         match self {
             Self::B06 => "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
-            Self::B17 => "7278e1e70fe206f11671096ffdd38061171dd6e5a",
+            Self::B17 => "7278e1e70fe206f11671096ffdd38061171dd6e5",
         }
     }
 

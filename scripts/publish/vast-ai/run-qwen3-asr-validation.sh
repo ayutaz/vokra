@@ -49,7 +49,7 @@ variant_repo() {
 variant_revision() {
   case "$1" in
     0.6b) printf '%s\n' '5eb144179a02acc5e5ba31e748d22b0cf3e303b0' ;;
-    1.7b) printf '%s\n' '7278e1e70fe206f11671096ffdd38061171dd6e5a' ;;
+    1.7b) printf '%s\n' '7278e1e70fe206f11671096ffdd38061171dd6e5' ;;
     *) die "unknown variant $1" ;;
   esac
 }

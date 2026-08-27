@@ -306,7 +306,7 @@ impl Variant {
             Self::B17 => VariantAxes {
                 name: "qwen3-asr-1.7b",
                 upstream_hf: "Qwen/Qwen3-ASR-1.7B",
-                source_revision: "7278e1e70fe206f11671096ffdd38061171dd6e5a",
+                source_revision: "7278e1e70fe206f11671096ffdd38061171dd6e5",
                 tensor_count: 708,
                 tensor_manifest_sha256: "9136bf1de42a3248fb1ea55877dced6113a8b1e5a98fcae08b01b67f10a523ee",
                 audio_d_model: 1024,

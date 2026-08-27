@@ -20,7 +20,7 @@ class DumperContractTests(unittest.TestCase):
         self.assertEqual(MODULE.VARIANTS["0.6b"].revision, "5eb144179a02acc5e5ba31e748d22b0cf3e303b0")
         self.assertEqual(MODULE.VARIANTS["0.6b"].hidden_size, 1024)
         self.assertEqual(MODULE.VARIANTS["0.6b"].tensor_count, 612)
-        self.assertEqual(MODULE.VARIANTS["1.7b"].revision, "7278e1e70fe206f11671096ffdd38061171dd6e5a")
+        self.assertEqual(MODULE.VARIANTS["1.7b"].revision, "7278e1e70fe206f11671096ffdd38061171dd6e5")
         self.assertEqual(MODULE.VARIANTS["1.7b"].hidden_size, 2048)
         self.assertEqual(MODULE.VARIANTS["1.7b"].tensor_count, 708)
 

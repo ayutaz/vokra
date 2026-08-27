@@ -52,7 +52,7 @@ VARIANTS = {
     "1.7b": Variant(
         slug="1.7b",
         repo="Qwen/Qwen3-ASR-1.7B",
-        revision="7278e1e70fe206f11671096ffdd38061171dd6e5a",
+        revision="7278e1e70fe206f11671096ffdd38061171dd6e5",
         model_name="qwen3-asr-1.7b",
         hidden_size=2048,
         tensor_count=708,
