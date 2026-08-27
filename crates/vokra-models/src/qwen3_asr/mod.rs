@@ -516,7 +516,7 @@ impl Qwen3AsrCheckpoint {
         self.mapped.is_some()
     }
 
-    pub(super) fn mapped(&self) -> Result<&Qwen3AsrMappedDescriptors> {
+    pub(in crate::qwen3_asr) fn mapped(&self) -> Result<&Qwen3AsrMappedDescriptors> {
         self.mapped.as_deref().ok_or_else(|| {
             VokraError::ModelLoad(
                 "qwen3_asr: executable inference requires Qwen3AsrCheckpoint::open_mapped or from_gguf_mapped; from_gguf performs descriptor-only validation"

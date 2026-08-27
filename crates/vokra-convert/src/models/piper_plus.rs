@@ -436,15 +436,15 @@ impl Config {
         let inference = root.get("inference");
         let noise_scale = inference
             .and_then(|i| i.get("noise_scale"))
-            .and_then(&get_f32)
+            .and_then(get_f32)
             .unwrap_or(0.667);
         let length_scale = inference
             .and_then(|i| i.get("length_scale"))
-            .and_then(&get_f32)
+            .and_then(get_f32)
             .unwrap_or(1.0);
         let noise_w = inference
             .and_then(|i| i.get("noise_w").or_else(|| i.get("noise_scale_w")))
-            .and_then(&get_f32)
+            .and_then(get_f32)
             .unwrap_or(0.8);
 
         let name = root

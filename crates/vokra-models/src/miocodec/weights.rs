@@ -181,6 +181,8 @@ impl MioCodecWeights {
     }
 }
 
+// These fields describe one fixed upstream transformer topology at bind time.
+#[allow(clippy::too_many_arguments)]
 fn load_affine_transformer(
     file: &GgufFile,
     root: &str,
@@ -410,17 +412,17 @@ fn fold_weight_norm(
     }
     let mut weight = vec![0.0f32; v.len()];
     let per_input = output * kernel;
-    for channel in 0..input {
+    for (channel, &gain) in g.iter().enumerate().take(input) {
         let start = channel * per_input;
         let source = &v[start..start + per_input];
         let norm = source.iter().map(|value| value * value).sum::<f32>().sqrt();
-        if !norm.is_finite() || norm == 0.0 || !g[channel].is_finite() {
+        if !norm.is_finite() || norm == 0.0 || !gain.is_finite() {
             return Err(VokraError::ModelLoad(format!(
                 "miocodec: invalid weight norm at input channel {channel}: g={} norm={norm}",
-                g[channel]
+                gain
             )));
         }
-        let scale = g[channel] / norm;
+        let scale = gain / norm;
         for (target, &value) in weight[start..start + per_input].iter_mut().zip(source) {
             *target = value * scale;
         }

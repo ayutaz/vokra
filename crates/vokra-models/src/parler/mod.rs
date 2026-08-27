@@ -369,7 +369,7 @@ impl ParlerModel {
         &self.decoder
     }
 
-    pub(super) const fn codec(&self) -> &EmbeddedDac {
+    pub(in crate::parler) const fn codec(&self) -> &EmbeddedDac {
         &self.codec
     }
 }

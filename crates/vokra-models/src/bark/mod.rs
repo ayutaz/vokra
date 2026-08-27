@@ -355,7 +355,7 @@ impl BarkModel {
         self.mapped.is_some()
     }
 
-    pub(super) fn mapped(&self) -> Result<&BarkMappedWeights> {
+    pub(in crate::bark) fn mapped(&self) -> Result<&BarkMappedWeights> {
         self.mapped.as_ref().ok_or_else(|| {
             VokraError::ModelLoad(
                 "bark: executable inference requires open_mapped or from_gguf_mapped; the borrowed from_gguf constructor authenticates descriptors only"

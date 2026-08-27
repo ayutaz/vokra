@@ -154,7 +154,7 @@ pub(super) fn next_token_logits(
 ) -> Result<Vec<f32>> {
     let config = mapped.config();
     let compute = Compute::for_backend(backend, NEUTTS_AIR_LM_HOT_OPS)?;
-    let reserve = prompt.len().min(512).max(1);
+    let reserve = prompt.len().clamp(1, 512);
     let mut kv_cache = KvCache::with_reserve(config.n_layer as usize, kv_dim(config), reserve);
     let mut scratch = StepScratch::default();
     for row_start in (0..prompt.len()).step_by(PREFILL_CHUNK_ROWS) {

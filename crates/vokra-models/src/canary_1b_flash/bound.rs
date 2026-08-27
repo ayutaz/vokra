@@ -660,8 +660,8 @@ impl DecoderState {
         let token_offset = token as usize * width;
         let position_offset = self.position * width;
         let mut hidden = vec![0.0; width];
-        for index in 0..width {
-            hidden[index] = weights.token_embedding[token_offset + index]
+        for (index, value) in hidden.iter_mut().enumerate() {
+            *value = weights.token_embedding[token_offset + index]
                 + weights.position_embedding[position_offset + index];
         }
         hidden = layer_norm(compute, &hidden, &weights.embedding_norm)?;

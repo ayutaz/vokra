@@ -221,12 +221,12 @@ impl MetricGanPlus {
             re: vec![0.0; spectrum.re.len()],
             im: vec![0.0; spectrum.im.len()],
         };
-        for index in 0..enhanced_magnitude.len() {
+        for (index, &magnitude) in enhanced_magnitude.iter().enumerate() {
             // SpeechBrain explicitly obtains atan2 phase, then cos/sin.  Keep
             // that contract, including atan2(0, 0) = 0 for silent bins.
             let phase = spectrum.im[index].atan2(spectrum.re[index]);
-            prediction.re[index] = enhanced_magnitude[index] * phase.cos();
-            prediction.im[index] = enhanced_magnitude[index] * phase.sin();
+            prediction.re[index] = magnitude * phase.cos();
+            prediction.im[index] = magnitude * phase.sin();
         }
 
         let mut inverse = IstftAttrs::new(N_FFT, HOP_LENGTH);
@@ -592,7 +592,7 @@ impl BiLstmLayer {
         gates: &mut [f32],
     ) {
         let weights = &self.direction[direction];
-        for row in 0..4 * HIDDEN_SIZE {
+        for (row, gate) in gates.iter_mut().enumerate().take(4 * HIDDEN_SIZE) {
             let mut sum = weights.bias_ih[row] + weights.bias_hh[row];
             let input_weights =
                 &weights.weight_ih[row * self.input_dim..(row + 1) * self.input_dim];
@@ -603,7 +603,7 @@ impl BiLstmLayer {
             for index in 0..HIDDEN_SIZE {
                 sum += recurrent[index] * hidden[index];
             }
-            gates[row] = sum;
+            *gate = sum;
         }
         update_lstm_state(gates, hidden, cell);
     }

@@ -155,7 +155,7 @@ pub(super) fn run_forward(
     compute.softmax_f32(&logits, &mut scores, 1, NUM_CLASSES)?;
     reject_non_finite("emotion2vec logits", &logits)?;
     reject_non_finite("emotion2vec scores", &scores)?;
-    if let Some(taps) = taps.as_deref_mut() {
+    if let Some(taps) = taps {
         taps.logits.clone_from(&logits);
         taps.scores.clone_from(&scores);
     }

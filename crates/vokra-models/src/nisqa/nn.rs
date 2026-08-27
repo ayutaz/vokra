@@ -201,7 +201,7 @@ fn frontend(pcm: &[f32], sample_rate: u32, spec: &NisqaFrontEndSpec) -> Result<T
     }
     let available = spectrogram.frames - (seg_length - 1);
     let seg_hop = spec.seg_hop_length as usize;
-    let segments = (available + seg_hop - 1) / seg_hop;
+    let segments = available.div_ceil(seg_hop);
     if segments > spec.max_segments as usize {
         return Err(VokraError::InvalidArgument(format!(
             "nisqa: clip produces {segments} segments, exceeding checkpoint maximum {}",

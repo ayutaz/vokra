@@ -187,6 +187,7 @@ fn exact_info(file: &GgufFile, name: &str, shape: &[usize]) -> Result<GgufTensor
     Ok(info)
 }
 
+#[cfg(test)]
 pub(super) fn tensor_contract(config: UltravoxAudioConfig) -> Vec<(String, Vec<u64>)> {
     let d = config.hidden_size as u64;
     let ff = config.ffn_dim as u64;

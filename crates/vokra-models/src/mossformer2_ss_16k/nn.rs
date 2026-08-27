@@ -971,12 +971,9 @@ fn prelu_channels(input: &mut Channels, slopes: &[f32]) -> Result<()> {
             "mossformer2-ss-16k: channel PReLU shape mismatch".to_owned(),
         ));
     }
-    for channel in 0..input.channels {
+    for (channel, &slope) in slopes.iter().enumerate().take(input.channels) {
         let start = channel * input.length;
-        prelu_scalar(
-            &mut input.data[start..start + input.length],
-            slopes[channel],
-        );
+        prelu_scalar(&mut input.data[start..start + input.length], slope);
     }
     Ok(())
 }

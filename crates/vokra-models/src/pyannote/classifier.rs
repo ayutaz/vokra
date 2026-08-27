@@ -72,6 +72,7 @@ impl Classifier {
     /// Numerically stable softmax: `p_i = exp(x_i - max_j x_j) /
     /// sum_k exp(x_k - max_j x_j)`. The max-subtract avoids overflow
     /// when the pre-activation logits are large positive.
+    #[cfg(test)]
     pub fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
         debug_assert_eq!(input.len(), seq_len * self.in_dim);
         let mut out = vec![0.0f32; seq_len * self.num_classes];

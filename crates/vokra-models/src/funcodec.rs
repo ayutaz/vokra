@@ -710,7 +710,7 @@ fn extra_padding(
             "funcodec: padded length {padded} is smaller than kernel {kernel}"
         )));
     }
-    let frames = (padded - kernel + stride - 1) / stride + 1;
+    let frames = (padded - kernel).div_ceil(stride) + 1;
     let ideal = (frames - 1)
         .checked_mul(stride)
         .and_then(|value| value.checked_add(kernel))

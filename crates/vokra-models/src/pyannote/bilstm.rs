@@ -147,6 +147,7 @@ impl BiLstmLayer {
     /// Forward direction's `h_t` occupies columns `[0, hidden_dim)`;
     /// reverse direction's `h_t` occupies `[hidden_dim, 2·hidden_dim)`
     /// — matching `nn.LSTM(batch_first=True, bidirectional=True)`.
+    #[cfg(test)]
     fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
         debug_assert_eq!(input.len(), seq_len * self.input_dim);
         let h = self.hidden_dim;
@@ -215,6 +216,7 @@ impl BiLstmLayer {
     /// c' = f·c + i·g
     /// h' = o·tanh(c')
     /// ```
+    #[cfg(test)]
     fn step(&self, dir: usize, x: &[f32], h: &mut [f32], c: &mut [f32], gates: &mut [f32]) {
         let hd = self.hidden_dim;
         let idim = self.input_dim;
@@ -391,6 +393,7 @@ impl MonoLithicBiLstmStack {
     /// Sequential forward through every layer. `input` is
     /// `[seq_len · input_dim]` row-major (batch_first=True); output is
     /// `[seq_len · (2·hidden_dim)]` row-major.
+    #[cfg(test)]
     pub fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
         let mut buf = input.to_vec();
         for layer in &self.layers {

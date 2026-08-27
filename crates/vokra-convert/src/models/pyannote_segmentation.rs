@@ -589,6 +589,7 @@ mod tests {
     /// Release constants must not silently drift from the pinned source,
     /// config, and public state-dict manifest.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // Compile-time drift guards are intentional.
     fn primary_source_constants_do_not_drift() {
         // From SINCNET_DEFAULTS in PyanNet.py (verified 2026-07-30):
         assert_eq!(DEFAULT_SINCNET_STRIDE, 10);

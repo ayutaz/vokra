@@ -221,7 +221,7 @@ impl NeuTtsAirGenerationOptions {
         }
         if self
             .top_p
-            .is_some_and(|top_p| !top_p.is_finite() || !(0.0 < top_p && top_p <= 1.0))
+            .is_some_and(|top_p| !(top_p.is_finite() && 0.0 < top_p && top_p <= 1.0))
         {
             return Err(VokraError::InvalidArgument(
                 "neutts_air: top_p must be finite and in (0,1] when present".to_owned(),

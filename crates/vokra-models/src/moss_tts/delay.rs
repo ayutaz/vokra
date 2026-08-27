@@ -24,8 +24,6 @@ pub(super) const NUM_LAYERS: usize = 36;
 pub(super) const NUM_Q_HEADS: usize = 32;
 pub(super) const NUM_KV_HEADS: usize = 8;
 pub(super) const HEAD_DIM: usize = 128;
-pub(super) const Q_DIM: usize = NUM_Q_HEADS * HEAD_DIM;
-pub(super) const KV_DIM: usize = NUM_KV_HEADS * HEAD_DIM;
 pub(super) const TEXT_VOCAB_SIZE: usize = 155_648;
 pub(super) const NUM_AUDIO_CODEBOOKS: usize = 32;
 pub(super) const AUDIO_VOCAB_WITH_PAD: usize = 1_025;
@@ -411,6 +409,7 @@ fn delay_mapped_info(
     mapped_info(file, name, elements, mapped)
 }
 
+#[cfg(test)]
 pub(super) fn tensor_contract(topology: DelayTopology) -> Vec<(String, usize)> {
     tensor_contract_with_layout(topology, QwenTensorLayout::Delay)
 }

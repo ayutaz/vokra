@@ -722,6 +722,7 @@ params:
     /// row in `docs/license-audit.md` (or the CC-verified date),
     /// not sneak past a stale check.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // Compile-time drift guards are intentional.
     fn primary_source_constants_do_not_drift() {
         // Upstream pipeline metadata (from `pipeline:` block of the
         // config.yaml).

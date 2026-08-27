@@ -266,7 +266,7 @@ fn decode_chunk_activity(probabilities: &[Vec<f32>]) -> Result<Vec<[f32; LOCAL_S
             }
         }
         let mapping = POWERSET_MAPPING_3SPK_2OVERLAP[class];
-        activity.push(mapping.map(|value| f32::from(value)));
+        activity.push(mapping.map(f32::from));
     }
     Ok(activity)
 }

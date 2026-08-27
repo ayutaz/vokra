@@ -877,8 +877,8 @@ fn gru_relative_gate(raw_query: &[f32], frame: usize, head: usize, block: &WavLm
     let mut sums = [0.0f32; 2];
     for output in 0..8 {
         let mut value = block.grep_b[output];
-        for dim in 0..HEAD_DIM {
-            value += input[dim] * block.grep_w[output * HEAD_DIM + dim];
+        for (dim, input_value) in input.iter().copied().enumerate() {
+            value += input_value * block.grep_w[output * HEAD_DIM + dim];
         }
         sums[output / 4] += value;
     }

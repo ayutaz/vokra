@@ -1437,7 +1437,7 @@ impl CanaryAsr {
                 "canary-1b-v2 transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        let bound = self.bound.as_ref().ok_or_else(|| {
+        let bound = self.bound.as_ref().ok_or({
             VokraError::NotImplemented(
                 "canary-1b-v2: no released checkpoint is bound; synthesized fixtures cannot transcribe",
             )
@@ -1464,9 +1464,7 @@ impl CanaryAsr {
         let tokens = self.transcribe_with_options(pcm, options)?;
         self.tokenizer
             .as_ref()
-            .ok_or_else(|| {
-                VokraError::NotImplemented("canary-1b-v2: no released tokenizer is bound")
-            })?
+            .ok_or({ VokraError::NotImplemented("canary-1b-v2: no released tokenizer is bound") })?
             .decode(&tokens)
     }
 

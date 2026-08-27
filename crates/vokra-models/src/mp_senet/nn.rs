@@ -823,21 +823,21 @@ fn instance_norm(compute: &Compute, tensor: &mut Tensor4, weights: &Norm) -> Res
     Ok(())
 }
 
-fn prelu(tensor: &mut Tensor4, slope: &[f32]) -> Result<()> {
-    if slope.len() != tensor.channels {
+fn prelu(tensor: &mut Tensor4, slopes: &[f32]) -> Result<()> {
+    if slopes.len() != tensor.channels {
         return Err(VokraError::ModelLoad(format!(
             "mp_senet: PReLU has {} slopes for {} channels",
-            slope.len(),
+            slopes.len(),
             tensor.channels
         )));
     }
     let positions = tensor.height * tensor.width;
     for batch in 0..tensor.batch {
-        for channel in 0..tensor.channels {
+        for (channel, &slope) in slopes.iter().enumerate().take(tensor.channels) {
             let start = (batch * tensor.channels + channel) * positions;
             for value in &mut tensor.data[start..start + positions] {
                 if *value < 0.0 {
-                    *value *= slope[channel];
+                    *value *= slope;
                 }
             }
         }

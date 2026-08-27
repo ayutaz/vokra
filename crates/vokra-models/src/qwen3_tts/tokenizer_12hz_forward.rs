@@ -322,8 +322,8 @@ impl MappedDecoder {
                 let usage = self.tensor(&format!("{prefix}.cluster_usage"))?;
                 let sums = self.tensor(&format!("{prefix}.embedding_sum"))?;
                 let mut normalized = Vec::with_capacity(sums.len());
-                for row in 0..config.codebook_size {
-                    let denominator = usage[row].max(CODEBOOK_EPSILON);
+                for (row, &usage) in usage.iter().enumerate().take(config.codebook_size) {
+                    let denominator = usage.max(CODEBOOK_EPSILON);
                     let start = row * config.quantizer_dim;
                     normalized.extend(
                         sums[start..start + config.quantizer_dim]
@@ -411,9 +411,9 @@ impl MappedDecoder {
         let attention_scale = self.tensor(&format!("{prefix}.self_attn_layer_scale.scale"))?;
         let mut hidden = input.to_vec();
         for frame in 0..frames {
-            for channel in 0..config.hidden_size {
+            for (channel, &scale) in attention_scale.iter().enumerate().take(config.hidden_size) {
                 let offset = frame * config.hidden_size + channel;
-                hidden[offset] += attention[offset] * attention_scale[channel];
+                hidden[offset] += attention[offset] * scale;
             }
         }
 
@@ -459,9 +459,9 @@ impl MappedDecoder {
         )?;
         let mlp_scale = self.tensor(&format!("{prefix}.mlp_layer_scale.scale"))?;
         for frame in 0..frames {
-            for channel in 0..config.hidden_size {
+            for (channel, &scale) in mlp_scale.iter().enumerate().take(config.hidden_size) {
                 let offset = frame * config.hidden_size + channel;
-                hidden[offset] += mlp[offset] * mlp_scale[channel];
+                hidden[offset] += mlp[offset] * scale;
             }
         }
         Ok(hidden)

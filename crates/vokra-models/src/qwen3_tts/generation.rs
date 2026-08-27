@@ -381,7 +381,7 @@ impl<'a> Qwen3TtsTalkerSession<'a> {
             )));
         }
         let compute = Compute::for_backend(model.backend, QWEN3_TTS_MAIN_HOT_OPS)?;
-        let reserve = rows.saturating_add(64).min(512).max(1);
+        let reserve = rows.saturating_add(64).clamp(1, 512);
         let mut kv_cache =
             KvCache::with_reserve(config.n_layer as usize, kv_width(config), reserve);
         let mut scratch = DecoderStepScratch::default();
@@ -719,7 +719,7 @@ fn validate_sampler_options(
             "{LABEL}: {kind} top_k must be in 1..={vocab} when present"
         )));
     }
-    if top_p.is_some_and(|top_p| !top_p.is_finite() || !(0.0 < top_p && top_p <= 1.0)) {
+    if top_p.is_some_and(|top_p| !(top_p.is_finite() && 0.0 < top_p && top_p <= 1.0)) {
         return Err(VokraError::InvalidArgument(format!(
             "{LABEL}: {kind} top_p must be finite and in (0,1] when present"
         )));
@@ -819,8 +819,7 @@ fn build_prompt_embeddings(
         model.checkpoint.variant(),
         Qwen3TtsCheckpointVariant::Base0_6B | Qwen3TtsCheckpointVariant::Base1_7B
     ));
-    let trailing_text;
-    if non_streaming {
+    let trailing_text = if non_streaming {
         let mut text_rows = project_text_ids(model, &input_ids[3..text_end])?;
         text_rows.extend_from_slice(&tts_eos);
         for row in text_rows.chunks_exact_mut(hidden) {
@@ -833,17 +832,17 @@ fn build_prompt_embeddings(
             &codec_embedding_id(model, CODEC_BOS_TOKEN_ID)?,
         );
         prompt.extend(final_row);
-        trailing_text = tts_pad.clone();
+        tts_pad.clone()
     } else {
         let mut first_text = project_text_ids(model, &input_ids[3..4])?;
         add_in_place(&mut first_text, &codec[(codec_rows - 1) * hidden..]);
         prompt.extend(first_text);
-        trailing_text = {
+        {
             let mut rows = project_text_ids(model, &input_ids[4..text_end])?;
             rows.extend_from_slice(&tts_eos);
             rows
-        };
-    }
+        }
+    };
     reject_non_finite(LABEL, "official prompt embeddings", &prompt)?;
     Ok(PromptEmbeddings {
         prompt,

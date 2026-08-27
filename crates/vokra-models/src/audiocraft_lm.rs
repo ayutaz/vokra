@@ -148,7 +148,7 @@ impl AudioCraftGenerationConfig {
             }
         }
         if let Some(top_p) = self.top_p {
-            if !top_p.is_finite() || !(0.0 < top_p && top_p <= 1.0) {
+            if !(top_p.is_finite() && 0.0 < top_p && top_p <= 1.0) {
                 return Err(VokraError::InvalidArgument(format!(
                     "audiocraft generation: top_p must be finite and in (0, 1], got {top_p}"
                 )));

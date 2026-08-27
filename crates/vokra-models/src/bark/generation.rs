@@ -257,8 +257,7 @@ fn generate_semantic(
     let hidden = config.hidden_size;
     let mut embeddings = Vec::with_capacity((MAX_TEXT_TOKENS + 1) * hidden);
     for position in 0..MAX_TEXT_TOKENS {
-        let active =
-            position < text_ids.len() && attention_mask.map_or(true, |mask| mask[position]);
+        let active = position < text_ids.len() && attention_mask.is_none_or(|mask| mask[position]);
         let text_token = if active {
             text_ids[position] + TEXT_ENCODING_OFFSET
         } else {

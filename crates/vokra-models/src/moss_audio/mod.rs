@@ -457,7 +457,7 @@ impl MossAudioCheckpoint {
         )))
     }
 
-    pub(super) fn mapped(&self) -> Result<&MossAudioMappedDescriptors> {
+    pub(in crate::moss_audio) fn mapped(&self) -> Result<&MossAudioMappedDescriptors> {
         self.mapped.as_deref().ok_or_else(|| {
             VokraError::ModelLoad(
                 "moss_audio: executable inference requires MossAudioCheckpoint::open_mapped or from_gguf_mapped; from_gguf performs descriptor-only validation"

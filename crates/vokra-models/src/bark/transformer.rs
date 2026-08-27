@@ -75,6 +75,7 @@ impl CausalCache {
         }
     }
 
+    #[cfg(test)]
     pub(super) const fn len(&self) -> usize {
         self.next_position
     }

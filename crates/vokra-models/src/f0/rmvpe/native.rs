@@ -474,6 +474,8 @@ fn relu_inplace(x: &mut [f32]) {
     }
 }
 
+// The convolution shape is kept explicit to authenticate every residual block.
+#[allow(clippy::too_many_arguments)]
 fn conv_block_res(
     compute: &Compute,
     weights: &RmvpeWeights,

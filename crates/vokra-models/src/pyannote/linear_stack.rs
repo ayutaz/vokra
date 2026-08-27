@@ -102,6 +102,7 @@ impl LinearStack {
     /// hoisted outside for cache friendliness). The row-major
     /// `[out_dim, in_dim]` weight layout matches PyTorch's
     /// `nn.Linear.weight` shape.
+    #[cfg(test)]
     pub fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
         let mut buf = input.to_vec();
         for layer in &self.layers {

@@ -341,7 +341,7 @@ fn forward_prompt_last_logits(
     }
 
     let compute = Compute::for_backend(model.backend(), MOSS_TTS_DELAY_HOT_OPS)?;
-    let reserve = rows.min(256).max(1);
+    let reserve = rows.clamp(1, 256);
     let mut kv_cache = KvCache::with_reserve(topology.num_layers, topology.kv_dim(), reserve);
     let mut scratch = DelayStepScratch::default();
     for row_start in (0..rows).step_by(PREFILL_CHUNK_ROWS) {
@@ -736,6 +736,8 @@ fn embed_prompt(
     reject_non_finite(label, "prompt embedding", &scratch.hidden)
 }
 
+// Cache geometry and authenticated topology stay explicit at this hot-kernel boundary.
+#[allow(clippy::too_many_arguments)]
 fn attention(
     compute: &Compute,
     scratch: &mut DelayStepScratch,

@@ -366,7 +366,7 @@ fn prefill_global(
     let mut kv_cache = KvCache::with_reserve(
         LOCAL_TOPOLOGY.num_layers,
         LOCAL_TOPOLOGY.kv_dim(),
-        rows.min(256).max(1),
+        rows.clamp(1, 256),
     );
     let mut scratch = DelayStepScratch::default();
     for row_start in (0..rows).step_by(PREFILL_CHUNK_ROWS) {

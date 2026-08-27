@@ -157,7 +157,7 @@ pub(super) fn next_token_logits(
     let config = mapped.config();
     let compute = Compute::for_backend(backend, ULTRAVOX_LLAMA_HOT_OPS)?;
     let inv_freqs = llama3_inv_freqs(config)?;
-    let reserve = prompt.len().min(512).max(1);
+    let reserve = prompt.len().clamp(1, 512);
     let mut kv_cache = KvCache::with_reserve(config.n_layer as usize, kv_dim(config), reserve);
     let mut scratch = StepScratch::default();
     let placement = AudioPlacement {

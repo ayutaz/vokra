@@ -228,7 +228,7 @@ fn p835_forward(compute: &Compute, weights: &P835Weights, pcm: &[f32]) -> Result
     for (index, conv) in weights.conv.iter().enumerate() {
         value = conv2d(compute, &value, conv)?;
         relu(&mut value.data);
-        if matches!(index, 3 | 4 | 5) {
+        if matches!(index, 3..=5) {
             value = max_pool_2x2(&value)?;
         }
     }

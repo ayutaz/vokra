@@ -1514,7 +1514,7 @@ fn load_tdt_1_1b_bound_weights(
 
     let mut lstm = Vec::with_capacity(dec.n_layer);
     for layer in 0..dec.n_layer {
-        let prefix = format!("decoder.prediction.dec_rnn.lstm");
+        let prefix = "decoder.prediction.dec_rnn.lstm".to_owned();
         lstm.push(ParakeetBoundLstmLayer {
             w_ih: tensor(
                 &format!("{prefix}.weight_ih_l{layer}"),
@@ -2711,6 +2711,8 @@ impl FastConformerAttentionContext {
     }
 }
 
+// The Longformer kernel keeps its authenticated mask dimensions explicit.
+#[allow(clippy::too_many_arguments)]
 fn attention_forward_longformer(
     compute: &Compute,
     input: &[f32],
