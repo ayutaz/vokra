@@ -1,7 +1,7 @@
 # AST official parity oracle
 
 This isolated Python 3.12 uv project generates a small, independent reference
-fixture from Hugging Face Transformers `4.45.2` and the immutable upstream AST
+fixture from Hugging Face Transformers `5.5.0` and the immutable upstream AST
 revision `f826b80d28226b62986cc218e5cec390b1096902`. The dumper verifies the
 installed official AST source files and upstream safetensors by SHA-256. It
 does not import Vokra or reproduce the Rust equations.
@@ -30,9 +30,9 @@ The logit acceptance bounds were registered before observing Vokra output:
 
 The frontend initially used a pre-registered max-only bound of `2e-5`. The
 first real run stopped at `3.23415e-4`. Investigation located the maximum in a
-near-f32-floor high-frequency mel bin; more importantly, the official
-TorchAudio float32 frontend differs from the independent NumPy float64
-Kaldi-equation cross-check by max `2.40257e-4` (RMSE `5.54365e-6`). The
+near-f32-floor high-frequency mel bin; more importantly, the Transformers
+5.5.0 TorchAudio float32 frontend differs from the independent NumPy float64
+Kaldi-equation cross-check by max `3.33128e-4` (RMSE `5.99753e-6`). The
 evidence-backed frontend gate is therefore max `5e-4`, RMSE `1e-5`, and p99
 `2e-5`. This preserves strict distribution checks instead of hiding broad
 drift behind a max-only tolerance.

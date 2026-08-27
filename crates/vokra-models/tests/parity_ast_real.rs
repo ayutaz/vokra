@@ -15,8 +15,8 @@ const NUM_MELS: usize = 128;
 
 // The initial 2e-5 max-only gate was intentionally registered before the first
 // Vokra run. The official TorchAudio float32 frontend itself differs from the
-// independent NumPy float64 Kaldi-equation cross-check by max 2.40257e-4 at a
-// near-floor mel bin (RMSE 5.54365e-6). Keep a strict distribution gate while
+// independent NumPy float64 Kaldi-equation cross-check by max 3.33128e-4 at a
+// near-floor mel bin (RMSE 5.99753e-6). Keep a strict distribution gate while
 // allowing that measured, numerically unavoidable tail.
 const FEATURE_MAX_ABS: f32 = 5.0e-4;
 const FEATURE_RMSE: f64 = 1.0e-5;
@@ -79,10 +79,13 @@ fn official_reference_fixture_is_pinned() {
     let manifest = include_str!("../../../tests/fixtures/ast/manifest.json");
     for required in [
         "vokra.ast.official-parity.v1",
+        "5.5.0",
         "f826b80d28226b62986cc218e5cec390b1096902",
         "ae0c1e2ad4e1381d851fa9bf298ba13ebc9c5a914cdee2dbe427a6583869924d",
-        "e951795c5c1787b0552ad7dd67f0dcee5bc73219cb585dad61e5a0e380f96602",
-        "dd03ffc605ee8d9230eeaa7fc30b4db5bee555dd385cbc9bd373496f7a6a4eed",
+        "ab4957749b5113067413dcd662dc212952b9a610d297e8b4515e2cab1ff1fce4",
+        "7e0e7b1766999fe0dc4e7b730d676b3d4a7bc26d216b20c38e8163516191d5b4",
+        "0e7aa90773b8d35c9feed17d047053df3b96ffe27bf754de2375c695f2a11c58",
+        "f6f22b06ee6e9cf919d27299dca3cd24a740e6050e4cde3664368cda9a119d47",
     ] {
         assert!(
             manifest.contains(required),

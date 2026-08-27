@@ -1,10 +1,10 @@
 {
   "environment": {
     "numpy": "2.0.2",
-    "platform": "Linux-6.8.0-136-generic-x86_64-with-glibc2.35",
+    "platform": "Linux-5.15.0-164-generic-x86_64-with-glibc2.35",
     "threads": 1,
-    "torch": "2.5.0+cu124",
-    "torchaudio": "2.5.0"
+    "torch": "2.9.1+cu128",
+    "torchaudio": "2.9.1"
   },
   "input": {
     "audio": "jfk-30s.wav",
@@ -14,16 +14,16 @@
   },
   "oracle": {
     "feature_source": "/root/vokra/tools/parity/ast/.venv/lib/python3.12/site-packages/transformers/models/audio_spectrogram_transformer/feature_extraction_audio_spectrogram_transformer.py",
-    "feature_source_sha256": "08b31c754524f1e840d8f0bdc04070bd677af2d20c16d66cc0d8556d5c1759cf",
+    "feature_source_sha256": "ab4957749b5113067413dcd662dc212952b9a610d297e8b4515e2cab1ff1fce4",
     "library": "transformers",
     "modeling_source": "/root/vokra/tools/parity/ast/.venv/lib/python3.12/site-packages/transformers/models/audio_spectrogram_transformer/modeling_audio_spectrogram_transformer.py",
-    "modeling_source_sha256": "9ce5e09eb5e8bedbebd718729f76580cccff047b234bf7bfa05771717e9e5aac",
-    "version": "4.45.2"
+    "modeling_source_sha256": "7e0e7b1766999fe0dc4e7b730d676b3d4a7bc26d216b20c38e8163516191d5b4",
+    "version": "5.5.0"
   },
   "outputs": {
     "input_values.f32le": {
       "dtype": "f32le",
-      "sha256": "e951795c5c1787b0552ad7dd67f0dcee5bc73219cb585dad61e5a0e380f96602",
+      "sha256": "0e7aa90773b8d35c9feed17d047053df3b96ffe27bf754de2375c695f2a11c58",
       "shape": [
         1,
         1024,
@@ -32,7 +32,7 @@
     },
     "logits.f32le": {
       "dtype": "f32le",
-      "sha256": "dd03ffc605ee8d9230eeaa7fc30b4db5bee555dd385cbc9bd373496f7a6a4eed",
+      "sha256": "f6f22b06ee6e9cf919d27299dca3cd24a740e6050e4cde3664368cda9a119d47",
       "shape": [
         1,
         527
@@ -41,49 +41,49 @@
   },
   "schema": "vokra.ast.official-parity.v1",
   "secondary_numpy_f64_frontend_cross_check": {
-    "max_abs": 0.00024025666490468112,
-    "max_frame": 655,
-    "max_index": 83953,
-    "max_mel": 113,
-    "p99": 1.4249432631157541e-05,
-    "p999": 8.351596391704605e-05,
-    "rmse": 5.5436502816544815e-06
+    "max_abs": 0.0003331282255591983,
+    "max_frame": 839,
+    "max_index": 107509,
+    "max_mel": 117,
+    "p99": 1.4806085098923797e-05,
+    "p999": 9.020669820518355e-05,
+    "rmse": 5.997530987731681e-06
   },
   "top10": [
     {
       "index": 0,
       "label": "Speech",
-      "logit": 2.6769838333129883
+      "logit": 2.6769816875457764
     },
     {
       "index": 1,
       "label": "Male speech, man speaking",
-      "logit": 1.8134605884552002
+      "logit": 1.8134608268737793
     },
     {
       "index": 5,
       "label": "Narration, monologue",
-      "logit": 1.6950360536575317
+      "logit": 1.6950374841690063
     },
     {
       "index": 7,
       "label": "Speech synthesizer",
-      "logit": -2.2252774238586426
+      "logit": -2.225278615951538
     },
     {
       "index": 4,
       "label": "Conversation",
-      "logit": -3.0589542388916016
+      "logit": -3.0589499473571777
     },
     {
       "index": 2,
       "label": "Female speech, woman speaking",
-      "logit": -3.900106906890869
+      "logit": -3.900103807449341
     },
     {
       "index": 507,
       "label": "Inside, large room or hall",
-      "logit": -4.424998760223389
+      "logit": -4.424997806549072
     },
     {
       "index": 509,
@@ -93,12 +93,12 @@
     {
       "index": 524,
       "label": "Television",
-      "logit": -5.141231536865234
+      "logit": -5.141231060028076
     },
     {
       "index": 72,
       "label": "Animal",
-      "logit": -5.373746871948242
+      "logit": -5.373746395111084
     }
   ],
   "upstream": {
