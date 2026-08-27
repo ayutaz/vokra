@@ -37,6 +37,14 @@ titanet = [
     "nemo-toolkit[asr]==3.0.0",
 ]
 
+[tool.uv]
+# hydra-core 1.3.2 arrives transitively through the SpeechBrain / pyannote
+# config plumbing and carries GHSA-2cp2-2r3c-7p7r, fixed in 1.3.4. NeMo's asr
+# extra declares an incompatible ceiling, so override rather than constrain; the
+# sidecar
+# tools only read each checkpoint's own config, so raising the floor is inert.
+override-dependencies = ["hydra-core>=1.3.4"]
+
 [tool.uv.workspace]
 members = [
     "microwakeword",
