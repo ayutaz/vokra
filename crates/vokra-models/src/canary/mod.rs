@@ -1464,7 +1464,9 @@ impl CanaryAsr {
         let tokens = self.transcribe_with_options(pcm, options)?;
         self.tokenizer
             .as_ref()
-            .ok_or({ VokraError::NotImplemented("canary-1b-v2: no released tokenizer is bound") })?
+            .ok_or(VokraError::NotImplemented(
+                "canary-1b-v2: no released tokenizer is bound",
+            ))?
             .decode(&tokens)
     }
 

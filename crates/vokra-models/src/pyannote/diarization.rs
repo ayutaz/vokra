@@ -253,7 +253,6 @@ mod tests {
             LicenseClass::Permissive,
             "mit",
             Some(PIPELINE_NAME),
-            Some(PIPELINE_NAME),
             Some("pyannote/speaker-diarization-3.1 test pipeline"),
         );
         builder.add_string(KEY_UPSTREAM_HF, PIPELINE_UPSTREAM_HF);

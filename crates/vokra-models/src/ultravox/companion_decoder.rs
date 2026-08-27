@@ -834,7 +834,7 @@ mod tests {
         let pair = frequencies.len() - 1;
         let base_last = config
             .rope_theta
-            .powf(-(2 * pair) as f32 / config.head_dim as f32);
+            .powf(-((2 * pair) as f32) / config.head_dim as f32);
         assert!((frequencies[pair] - base_last / 32.0).abs() <= f32::EPSILON * base_last);
     }
 

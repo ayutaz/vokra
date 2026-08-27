@@ -642,7 +642,11 @@ mod tests {
         let cache = CausalCache::new(CausalStage::Semantic, 3);
         assert_eq!(cache.len(), 0);
         assert_eq!(cache.layers.len(), 3);
-        assert!(cache.visible.is_empty());
-        assert!(cache.layers.iter().all(|layer| layer.key.is_empty()));
+        assert!(
+            cache
+                .layers
+                .iter()
+                .all(|layer| layer.key.is_empty() && layer.value.is_empty())
+        );
     }
 }

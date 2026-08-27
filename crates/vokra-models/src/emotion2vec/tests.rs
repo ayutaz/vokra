@@ -276,8 +276,8 @@ fn measure_taps(
         ("context_features", taps.context_features.as_slice()),
         ("final_features", taps.final_features.as_slice()),
         ("pooled_embedding", taps.pooled_embedding.as_slice()),
-        ("logits", logits.as_slice()),
-        ("scores", scores.as_slice()),
+        ("logits", logits),
+        ("scores", scores),
     ] {
         measure_pair(
             &format!("{prefix}/{name}"),

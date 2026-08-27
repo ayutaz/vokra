@@ -14,6 +14,8 @@ use vokra_core::{LicenseClass, Result, VokraError};
 use crate::mapped_weights::{MappedModel, mapped_info};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
+#[cfg(test)]
+use super::delay::tensor_contract_with_layout;
 use super::delay::{DelayMappedDescriptors, DelayTopology, QwenTensorLayout};
 use super::{ARCH, CATEGORY};
 
