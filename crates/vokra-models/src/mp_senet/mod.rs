@@ -24,45 +24,77 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::weights::MpSenetWeights;
 
+/// GGUF architecture tag for MP-SENet checkpoints.
 pub const ARCH: &str = "mp_senet";
+/// Canonical Vokra model name.
 pub const NAME: &str = "mp-senet-dns";
+/// Model-zoo task category.
 pub const CATEGORY: &str = "denoise";
+/// Upstream Hugging Face repository containing the converted checkpoint.
 pub const UPSTREAM_HF: &str = "JacobLinCool/MP-SENet-DNS";
+/// Pinned upstream checkpoint revision.
 pub const UPSTREAM_REVISION: &str = "8b78493f536df1aa53bd3bcbb2f620f705e8589c";
+/// Repository used to authenticate the reference implementation.
 pub const REFERENCE_SOURCE: &str = "JacobLinCool/MPSENet";
+/// Pinned reference-implementation revision.
 pub const REFERENCE_REVISION: &str = "958141ca51703c5b1e0c30362ab5b1c8b0e49957";
+/// Revision used when the source checkpoint was published.
 pub const PUBLICATION_REVISION: &str = "a65c76f340a0c8a885fbbf1893d5ec0ea009d718";
+/// Canonical upstream source repository.
 pub const OFFICIAL_SOURCE: &str = "yxlu-0102/MP-SENet";
+/// Pinned canonical source revision.
 pub const OFFICIAL_SOURCE_REVISION: &str = "89932cfe90d1dacb8e170e4a331d762462c21792";
+/// SHA-256 of the authenticated upstream checkpoint.
 pub const MODEL_SHA256: &str = "74912046c8b352d78ca4056c9624d7256ac4d7eac45ce015822a7f2282749cdc";
+/// SHA-256 of the authenticated upstream configuration.
 pub const CONFIG_SHA256: &str = "0c5973617000142390726f8dad98a5b6b1429b4ef1a94da25f3bc009f86a3365";
+/// SHA-256 of the reference repository's model file.
 pub const REFERENCE_MODEL_SHA256: &str =
     "e629e2858836489a598f9b325aa3abfc2a2360c72fc676d45c458c17efcaa7e8";
+/// SHA-256 of the publication checkpoint file.
 pub const PUBLICATION_MODEL_SHA256: &str =
     "63d0ddc067e87b5ebe556e60a89fa4384f5fba51fed37b6cb477abfaa19cb208";
+/// SHA-256 of the authenticated reference transformer source.
 pub const REFERENCE_TRANSFORMER_SHA256: &str =
     "44fb17b9a604f861304fd72517bfea73508393ca0ef00b58aaab6083c012ef0b";
+/// SHA-256 of the reference repository license.
 pub const REFERENCE_LICENSE_SHA256: &str =
     "df6322ce3ca3c70a0845c4a384432a9af50e7d70886d316741e2f47b5ae01f34";
+/// SHA-256 of the canonical source license.
 pub const OFFICIAL_LICENSE_SHA256: &str =
     "858f31052a5df6bcec94b015607bfade5a7cc6e950f7a9822aa4da3cc6f62fca";
+/// Immutable revision of the public Vokra GGUF artifact.
 pub const PUBLIC_REVISION: &str = "6017b7d70cf779c03f2fe061b56aa475e870d739";
+/// SHA-256 of the public Vokra GGUF artifact.
 pub const PUBLIC_MODEL_SHA256: &str =
     "26eec4a59c0eb8d31ea5115b3cb7d890f5b3745703ef0f0974b4e08c58e8da95";
+/// SHA-256 of the canonical tensor name/shape manifest.
 pub const MANIFEST_SHA256: &str =
     "84f05f3ca25e7c8f56e217d57458ea63dd7a0516cad0aeae3e6a1880c3bfd8fe";
 
+/// Required waveform sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// STFT transform size.
 pub const N_FFT: usize = 400;
+/// STFT hop length in samples.
 pub const HOP_LENGTH: usize = 100;
+/// STFT analysis-window length in samples.
 pub const WIN_LENGTH: usize = 400;
+/// Number of one-sided complex frequency bins.
 pub const N_BINS: usize = N_FFT / 2 + 1;
+/// Channel width of the dense encoder and decoder blocks.
 pub const DENSE_CHANNELS: usize = 64;
+/// Number of time-frequency separation blocks.
 pub const TS_BLOCKS: usize = 4;
+/// Number of attention heads in each separation block.
 pub const ATTENTION_HEADS: usize = 4;
+/// Hidden width of each recurrent direction.
 pub const GRU_HIDDEN: usize = 128;
+/// Canonical inference segment length in waveform samples.
 pub const SEGMENT_SIZE: usize = 32_000;
+/// Power-law magnitude compression exponent.
 pub const COMPRESS_FACTOR: f32 = 0.3;
+/// Phase-mask compression exponent used by the decoder.
 pub const MASK_BETA: f32 = 2.0;
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
@@ -123,6 +155,7 @@ const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
 pub const MP_SENET_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::Softmax, HotOp::LayerNorm];
 
 #[derive(Debug, Clone)]
+/// Strictly authenticated native MP-SENet speech enhancer.
 pub struct MpSenet {
     weights: MpSenetWeights,
     weight_license: LicenseClass,
@@ -155,31 +188,37 @@ impl MpSenet {
         })
     }
 
+    /// Opens and mmap-binds an MP-SENet GGUF checkpoint.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::from_gguf(&GgufFile::open(path)?)
     }
 
+    /// Selects the execution backend without changing the checkpoint.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Authenticates a checkpoint and preflights the requested backend.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         Compute::for_backend(backend, MP_SENET_HOT_OPS)?;
         Ok(Self::from_gguf(file)?.with_backend(backend))
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the required waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license

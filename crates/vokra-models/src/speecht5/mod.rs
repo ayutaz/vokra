@@ -47,26 +47,47 @@ pub const LEGACY_PUBLIC_GGUF_BYTES: u64 = 585_382_432;
 pub const LEGACY_PUBLIC_GGUF_SHA256: &str =
     "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0";
 
+/// Hidden width of the released SpeechT5 transformer.
 pub const HIDDEN_SIZE: usize = 768;
+/// Number of text-encoder transformer layers.
 pub const ENCODER_LAYERS: usize = 12;
+/// Number of speech-decoder transformer layers.
 pub const DECODER_LAYERS: usize = 6;
+/// Number of attention heads in each encoder layer.
 pub const ENCODER_ATTENTION_HEADS: usize = 12;
+/// Number of attention heads in each decoder layer.
 pub const DECODER_ATTENTION_HEADS: usize = 12;
+/// Intermediate width of each encoder feed-forward network.
 pub const ENCODER_FFN_DIM: usize = 3_072;
+/// Intermediate width of each decoder feed-forward network.
 pub const DECODER_FFN_DIM: usize = 3_072;
+/// Size of the authenticated text-token vocabulary.
 pub const VOCAB_SIZE: usize = 81;
+/// Number of mel-frequency bins emitted per spectrogram frame.
 pub const NUM_MEL_BINS: usize = 80;
+/// Number of mel frames predicted by one decoder step.
 pub const REDUCTION_FACTOR: usize = 2;
+/// Hidden width of each speech-decoder prenet layer.
 pub const SPEECH_DECODER_PRENET_UNITS: usize = 256;
+/// Number of speech-decoder prenet layers.
 pub const SPEECH_DECODER_PRENET_LAYERS: usize = 2;
+/// Channel width of the convolutional speech postnet.
 pub const SPEECH_DECODER_POSTNET_UNITS: usize = 256;
+/// Number of convolutional speech-postnet layers.
 pub const SPEECH_DECODER_POSTNET_LAYERS: usize = 5;
+/// Kernel width used by every speech-postnet convolution.
 pub const SPEECH_DECODER_POSTNET_KERNEL: usize = 5;
+/// Width of the external speaker embedding expected by the model.
 pub const SPEAKER_EMBEDDING_DIM: usize = 512;
+/// Maximum supported input-token sequence length.
 pub const MAX_TEXT_POSITIONS: usize = 600;
+/// Maximum supported speech-decoder position count.
 pub const MAX_SPEECH_POSITIONS: usize = 1_876;
+/// Encoder relative-position bucket limit.
 pub const ENCODER_MAX_RELATIVE_POSITION: usize = 160;
+/// Padding token identifier in the released tokenizer.
 pub const PAD_TOKEN_ID: u32 = 1;
+/// End-of-sequence token identifier in the released tokenizer.
 pub const EOS_TOKEN_ID: u32 = 2;
 
 const LABEL: &str = "SpeechT5-TTS";
@@ -95,35 +116,62 @@ const LEGACY_PUBLIC_METADATA_COUNT: usize = 23;
 /// Immutable topology/generation snapshot consumed by the native forward.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpeechT5Config {
+    /// Transformer hidden width.
     pub hidden_size: usize,
+    /// Number of encoder layers.
     pub encoder_layers: usize,
+    /// Number of decoder layers.
     pub decoder_layers: usize,
+    /// Attention heads per encoder layer.
     pub encoder_attention_heads: usize,
+    /// Attention heads per decoder layer.
     pub decoder_attention_heads: usize,
+    /// Encoder feed-forward intermediate width.
     pub encoder_ffn_dim: usize,
+    /// Decoder feed-forward intermediate width.
     pub decoder_ffn_dim: usize,
+    /// Text-token vocabulary size.
     pub vocab_size: usize,
+    /// Mel bins per output frame.
     pub num_mel_bins: usize,
+    /// Mel frames predicted per decoder step.
     pub reduction_factor: usize,
+    /// Speech-prenet hidden width.
     pub speech_decoder_prenet_units: usize,
+    /// Number of speech-prenet layers.
     pub speech_decoder_prenet_layers: usize,
+    /// Dropout probability authenticated for the speech prenet.
     pub speech_decoder_prenet_dropout: f32,
+    /// Speech-postnet channel width.
     pub speech_decoder_postnet_units: usize,
+    /// Number of speech-postnet layers.
     pub speech_decoder_postnet_layers: usize,
+    /// Speech-postnet convolution kernel width.
     pub speech_decoder_postnet_kernel: usize,
+    /// Dropout probability authenticated for the speech postnet.
     pub speech_decoder_postnet_dropout: f32,
+    /// Required speaker-embedding width.
     pub speaker_embedding_dim: usize,
+    /// Maximum text-token positions.
     pub max_text_positions: usize,
+    /// Maximum decoder speech positions.
     pub max_speech_positions: usize,
+    /// Maximum relative position represented by the encoder bias.
     pub encoder_max_relative_position: usize,
+    /// Layer-normalization epsilon.
     pub layer_norm_eps: f32,
+    /// Padding token identifier.
     pub pad_token_id: u32,
+    /// End-of-sequence token identifier.
     pub eos_token_id: u32,
+    /// Multiplier used to cap generated decoder steps from input length.
     pub generation_maxlen_ratio: f32,
+    /// Stop-probability threshold used during autoregressive decoding.
     pub generation_stop_threshold: f32,
 }
 
 impl SpeechT5Config {
+    /// Returns the exact configuration of the pinned public release.
     #[must_use]
     pub fn official() -> Self {
         Self {
@@ -285,6 +333,7 @@ pub struct SpeechT5Checkpoint {
 }
 
 impl SpeechT5Checkpoint {
+    /// Authenticates and binds a SpeechT5 GGUF checkpoint and tokenizer.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let strict = StrictCheckpoint::bind(file, SPEC)?;
         if strict.weight_license() != LicenseClass::Permissive {
@@ -313,26 +362,31 @@ impl SpeechT5Checkpoint {
         })
     }
 
+    /// Returns the authenticated model configuration.
     #[must_use]
     pub const fn config(&self) -> &SpeechT5Config {
         &self.config
     }
 
+    /// Returns the embedded text tokenizer.
     #[must_use]
     pub const fn tokenizer(&self) -> &SpeechT5Tokenizer {
         &self.tokenizer
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the exact number of tensors required by the release contract.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         TENSOR_COUNT
     }
 
+    /// Encodes normalized input text with the authenticated tokenizer.
     pub fn encode_text(&self, text: &str) -> Result<Vec<u32>> {
         self.tokenizer.encode(text)
     }

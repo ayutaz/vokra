@@ -34,19 +34,29 @@ use crate::parakeet::{
 };
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, load_tensor};
 
+/// GGUF architecture tag for the streaming Nemotron release.
 pub const EXPECTED_ARCH: &str = "nemotron_asr_streaming";
+/// Canonical Vokra model name.
 pub const MODEL_NAME: &str = "nemotron-3.5-asr-streaming-0.6b";
+/// Required waveform sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// RNN-T blank token identifier.
 pub const BLANK_TOKEN_ID: u32 = 13_087;
+/// Padding token identifier.
 pub const PAD_TOKEN_ID: u32 = 0;
+/// Size of the authenticated tokenizer vocabulary.
 pub const VOCAB_SIZE: usize = 13_088;
+/// Default prompt identifier used without a language override.
 pub const DEFAULT_PROMPT_ID: u32 = 101;
+/// Default number of encoder lookahead tokens.
 pub const DEFAULT_LOOKAHEAD_TOKENS: usize = 3;
+/// Lookahead values authenticated by the released configuration.
 pub const SUPPORTED_LOOKAHEAD_TOKENS: &[usize] = &[3, 0, 6, 13];
 
 /// Converter/runtime key for the byte-exact official Hugging Face tokenizer.
 pub const KEY_TOKENIZER_JSON: &str = "vokra.nemotron_asr.tokenizer.json";
 
+/// Backend operations required by the streaming encoder and RNN-T decoder.
 pub const NEMOTRON_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Gemv,
@@ -139,23 +149,38 @@ const CONFIG_U32: &[(&str, u32)] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq)]
+/// Immutable topology and decoding contract for Nemotron streaming ASR.
 pub struct NemotronAsrConfig {
+    /// FastConformer encoder configuration.
     pub encoder: ParakeetEncoderConfig,
+    /// Hidden width of the prediction and joint networks.
     pub decoder_hidden_size: usize,
+    /// Number of recurrent prediction-network layers.
     pub num_decoder_layers: usize,
+    /// Tokenizer and joint-output vocabulary size.
     pub vocab_size: usize,
+    /// RNN-T blank token identifier.
     pub blank_token_id: u32,
+    /// Padding token identifier.
     pub pad_token_id: u32,
+    /// Maximum non-blank symbols emitted for one encoder step.
     pub max_symbols_per_step: usize,
+    /// Number of authenticated language/domain prompts.
     pub num_prompts: usize,
+    /// Intermediate width of the prompt projection.
     pub prompt_intermediate_size: usize,
+    /// Prompt identifier selected by default.
     pub default_prompt_id: u32,
+    /// Streaming encoder cache window in frames.
     pub sliding_window: usize,
+    /// Default encoder lookahead in tokens.
     pub default_lookahead_tokens: usize,
+    /// Required waveform sample rate in hertz.
     pub sample_rate: u32,
 }
 
 impl NemotronAsrConfig {
+    /// Returns the exact configuration of the pinned public release.
     #[must_use]
     pub fn canonical() -> Self {
         Self {
@@ -243,6 +268,7 @@ struct NemotronBoundWeights {
 }
 
 #[derive(Debug, Clone)]
+/// Strictly authenticated native Nemotron streaming ASR runtime.
 pub struct NemotronAsr {
     config: NemotronAsrConfig,
     weights: Box<NemotronBoundWeights>,
@@ -254,10 +280,12 @@ pub struct NemotronAsr {
 }
 
 impl NemotronAsr {
+    /// Authenticates a GGUF checkpoint without attaching tokenizer bytes.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         Self::bind(file, None)
     }
 
+    /// Authenticates a checkpoint and attaches its serialized tokenizer.
     pub fn from_gguf_with_tokenizer_bytes(file: &GgufFile, tokenizer: &[u8]) -> Result<Self> {
         Self::bind(file, Some(tokenizer))
     }
@@ -283,46 +311,55 @@ impl NemotronAsr {
         })
     }
 
+    /// Selects the execution backend after preflighting required operations.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated model configuration.
     #[must_use]
     pub fn config(&self) -> &NemotronAsrConfig {
         &self.config
     }
 
+    /// Returns the canonical model name stamped in the checkpoint.
     #[must_use]
     pub fn model_name(&self) -> &str {
         &self.model_name
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the number of authenticated tensor descriptors.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         self.tensor_count
     }
 
+    /// Reports whether a tokenizer is attached for text decoding.
     #[must_use]
     pub fn has_tokenizer(&self) -> bool {
         self.tokenizer.is_some()
     }
 
+    /// Transcribes PCM into token identifiers with the default prompt.
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
         self.transcribe_tokens_with_prompt(pcm, self.config.default_prompt_id)
     }
 
+    /// Transcribes PCM into token identifiers with an explicit prompt.
     pub fn transcribe_tokens_with_prompt(&self, pcm: &[f32], prompt_id: u32) -> Result<Vec<u32>> {
         if prompt_id as usize >= self.config.num_prompts {
             return Err(VokraError::InvalidArgument(format!(
@@ -335,6 +372,7 @@ impl NemotronAsr {
         greedy_rnnt_decode(&compute, &encoded, frames, &self.weights, &self.config)
     }
 
+    /// Transcribes PCM into text with an explicit language/domain prompt.
     pub fn transcribe_with_prompt(&self, pcm: &[f32], prompt_id: u32) -> Result<Transcription> {
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             VokraError::ModelLoad(format!(
@@ -973,6 +1011,7 @@ fn nemotron_logmel(pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
 }
 
 #[must_use]
+/// Maps a supported language name or code to its authenticated prompt identifier.
 pub fn prompt_id_for_language(language: &str) -> Option<u32> {
     Some(match language {
         "en-US" | "en" => 0,

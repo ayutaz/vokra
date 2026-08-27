@@ -223,56 +223,92 @@ impl MossAudioVariant {
 /// Whisper-style audio encoder topology.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MossAudioEncoderConfig {
+    /// Hidden width of the Whisper-style audio tower.
     pub d_model: u32,
+    /// Output width presented to the multimodal adapter.
     pub output_dim: u32,
+    /// Number of input log-mel bins.
     pub n_mels: u32,
+    /// Number of audio-transformer layers.
     pub n_layer: u32,
+    /// Attention heads per audio-transformer layer.
     pub n_head: u32,
+    /// Audio feed-forward intermediate width.
     pub ffn_dim: u32,
+    /// Temporal reduction factor applied by the convolutional adapter.
     pub downsample_rate: u32,
+    /// Hidden width of the downsampling adapter.
     pub downsample_hidden_size: u32,
+    /// Local attention window used by the audio tower.
     pub attention_window_size: u32,
+    /// Maximum number of source positions accepted by the audio tower.
     pub max_source_positions: u32,
+    /// Number of local windows represented by the release configuration.
     pub n_window: u32,
+    /// Convolution chunk size authenticated from the upstream config.
     pub conv_chunksize: u32,
+    /// Layer-normalization epsilon.
     pub layer_norm_eps: f32,
+    /// Audio-layer indexes injected into the text decoder through DeepStack.
     pub deepstack_layer_indexes: [u32; 3],
 }
 
 /// Qwen3 decoder topology.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MossAudioTextConfig {
+    /// Qwen3 decoder hidden width.
     pub hidden_size: u32,
+    /// Decoder feed-forward intermediate width.
     pub ffn_dim: u32,
+    /// Number of decoder transformer layers.
     pub n_layer: u32,
+    /// Query-attention heads per decoder layer.
     pub n_head: u32,
+    /// Key/value heads per decoder layer.
     pub n_kv_head: u32,
+    /// Width of each attention head.
     pub head_dim: u32,
+    /// Maximum rotary-position sequence length.
     pub max_position_embeddings: u32,
+    /// Size of the text and multimodal token vocabulary.
     pub vocab_size: u32,
+    /// Rotary-position base frequency.
     pub rope_theta: f32,
+    /// RMS-normalization epsilon.
     pub rms_norm_eps: f32,
+    /// Whether the input embedding and language-model head share weights.
     pub tie_word_embeddings: bool,
+    /// Whether attention projections include learned bias vectors.
     pub attention_bias: bool,
 }
 
 /// Special token IDs consumed by the official processor/model pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MossAudioTokenConfig {
+    /// Generic audio-placeholder token identifier.
     pub audio: u32,
+    /// Audio-span start token identifier.
     pub audio_start: u32,
+    /// Audio-span end token identifier.
     pub audio_end: u32,
+    /// Beginning-of-sequence token identifier.
     pub bos: u32,
+    /// End-of-sequence token identifier.
     pub eos: u32,
 }
 
 /// Full immutable model topology.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MossAudioConfig {
+    /// Audio-encoder topology.
     pub audio: MossAudioEncoderConfig,
+    /// Hidden width of the multimodal adapter.
     pub adapter_hidden_size: u32,
+    /// Number of decoder layers receiving DeepStack audio injections.
     pub deepstack_num_inject_layers: u32,
+    /// Text-decoder topology.
     pub text: MossAudioTextConfig,
+    /// Processor special-token identifiers.
     pub tokens: MossAudioTokenConfig,
 }
 
@@ -392,26 +428,31 @@ impl MossAudioCheckpoint {
         })
     }
 
+    /// Returns the authenticated release variant.
     #[must_use]
     pub const fn variant(&self) -> MossAudioVariant {
         self.variant
     }
 
+    /// Returns the immutable model topology.
     #[must_use]
     pub const fn config(&self) -> &MossAudioConfig {
         &self.config
     }
 
+    /// Returns the authenticated upstream model identifier.
     #[must_use]
     pub fn model_name(&self) -> &str {
         &self.model_name
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the exact tensor count required by the release manifest.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         901
@@ -423,6 +464,7 @@ impl MossAudioCheckpoint {
         self.legacy_public_metadata
     }
 
+    /// Reports whether the checkpoint owns an mmap-backed executable payload.
     #[must_use]
     pub const fn is_mapped(&self) -> bool {
         self.mapped.is_some()
@@ -497,16 +539,19 @@ pub struct MossAudioResponse {
 }
 
 impl MossAudioResponse {
+    /// Returns the decoded response text.
     #[must_use]
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Returns the exact generated token identifiers.
     #[must_use]
     pub fn token_ids(&self) -> &[u32] {
         &self.token_ids
     }
 
+    /// Consumes the response and returns its decoded text.
     #[must_use]
     pub fn into_text(self) -> String {
         self.text
@@ -541,11 +586,13 @@ impl MossAudio {
         })
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated checkpoint descriptor.
     #[must_use]
     pub const fn checkpoint(&self) -> &MossAudioCheckpoint {
         &self.checkpoint

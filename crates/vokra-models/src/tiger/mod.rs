@@ -18,16 +18,26 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::weights::TigerWeights;
 
+/// GGUF architecture tag shared by the authenticated TIGER releases.
 pub const ARCH: &str = "tiger_separator";
+/// Frequency-band feature channels used by TIGER-DnR.
 pub const FEATURE_DNR: usize = 132;
+/// Frequency-band feature channels used by TIGER-speech.
 pub const FEATURE_SPEECH: usize = 128;
+/// Internal separator channel width.
 pub const INTERNAL_CHANNELS: usize = 256;
+/// Number of iterative separation blocks.
 pub const ITERATIONS: usize = 8;
+/// Depth of the learned upsampling path.
 pub const UPSAMPLING_DEPTH: usize = 5;
+/// Number of attention heads in each TIGER block.
 pub const ATTENTION_HEADS: usize = 4;
+/// Hidden channels assigned to each attention head.
 pub const ATTENTION_HIDDEN: usize = 4;
 
+/// Immutable upstream source-code revision used for the native port.
 pub const SOURCE_REVISION: &str = "9f18d4a10a7137e1ce8052cfb62215179f1287b6";
+/// SHA-256 of the upstream source license at [`SOURCE_REVISION`].
 pub const SOURCE_LICENSE_SHA256: &str =
     "edc64d62aa021be7612337d2ced140375f52e4fd064b2f9cf6e656913d01bfa6";
 
@@ -87,6 +97,7 @@ const SPEECH_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
     ],
 };
 
+/// Backend operations required by the executable separator.
 pub const TIGER_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Softmax,
@@ -95,12 +106,16 @@ pub const TIGER_HOT_OPS: &[HotOp] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Authenticated TIGER release family.
 pub enum TigerVariant {
+    /// Three-stream denoise, dereverberation, and target-speech separation.
     Dnr,
+    /// Two-speaker speech separation.
     Speech,
 }
 
 impl TigerVariant {
+    /// Returns the canonical Vokra model name.
     pub const fn model_name(self) -> &'static str {
         match self {
             Self::Dnr => "tiger-dnr",
@@ -108,6 +123,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the short metadata tag for this variant.
     pub const fn tag(self) -> &'static str {
         match self {
             Self::Dnr => "dnr",
@@ -115,6 +131,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the immutable upstream Hugging Face repository identifier.
     pub const fn upstream_hf(self) -> &'static str {
         match self {
             Self::Dnr => "JusperLee/TIGER-DnR",
@@ -122,6 +139,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the pinned upstream weight revision.
     pub const fn upstream_revision(self) -> &'static str {
         match self {
             Self::Dnr => "b7a59560bbca10febbcd46fb01600f868e587f57",
@@ -129,6 +147,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the SHA-256 of the authenticated upstream source file.
     pub const fn source_file_sha256(self) -> &'static str {
         match self {
             Self::Dnr => "89605593bdfc05669e70f2b8647514077197f9870d32b5dd745913f6e03b50e0",
@@ -136,6 +155,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the SHA-256 of the original model checkpoint.
     pub const fn model_sha256(self) -> &'static str {
         match self {
             Self::Dnr => "dd1c696e72f6adea0085ef1af640882a8260519ad666422835e387a5b4abdd2a",
@@ -143,6 +163,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the SHA-256 of the upstream configuration file.
     pub const fn config_sha256(self) -> &'static str {
         match self {
             Self::Dnr => "ba9d2f833bf2f3a5855a35d0ccd11c786f6b92f1a482d84404bc4673edb29b54",
@@ -150,6 +171,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the immutable revision of the historical public GGUF.
     pub const fn public_revision(self) -> &'static str {
         match self {
             Self::Dnr => "8c8c78888684ecc8eef6beca3434c7ec9247bb70",
@@ -157,6 +179,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the SHA-256 of the historical public GGUF artifact.
     pub const fn public_model_sha256(self) -> &'static str {
         match self {
             Self::Dnr => "8737e4993efefbfec57ed7a0924503d626d07e410f456ff5693402852784017f",
@@ -164,6 +187,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the canonical tensor name/shape manifest SHA-256.
     pub const fn manifest_sha256(self) -> &'static str {
         match self {
             Self::Dnr => "f1daf2c510ef2c272711963a940e1dad74b795a1f04b2b1a524e00c61d307c02",
@@ -171,6 +195,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the required waveform sample rate in hertz.
     pub const fn sample_rate(self) -> u32 {
         match self {
             Self::Dnr => 44_100,
@@ -178,6 +203,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the STFT transform size.
     pub const fn n_fft(self) -> usize {
         match self {
             Self::Dnr => 2_048,
@@ -185,6 +211,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the STFT hop length in samples.
     pub const fn hop_length(self) -> usize {
         match self {
             Self::Dnr => 512,
@@ -192,6 +219,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the variant-specific band-feature width.
     pub const fn feature_channels(self) -> usize {
         match self {
             Self::Dnr => FEATURE_DNR,
@@ -199,6 +227,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the number of separated waveform streams.
     pub const fn output_streams(self) -> usize {
         match self {
             Self::Dnr => 3,
@@ -206,6 +235,7 @@ impl TigerVariant {
         }
     }
 
+    /// Returns the authenticated frequency-band widths in model order.
     pub fn band_widths(self) -> Vec<usize> {
         let mut widths = Vec::new();
         match self {
@@ -238,6 +268,7 @@ impl TigerVariant {
 }
 
 #[derive(Debug, Clone)]
+/// Strictly bound native TIGER source separator.
 pub struct TigerSeparator {
     variant: TigerVariant,
     weights: TigerWeights,
@@ -246,6 +277,7 @@ pub struct TigerSeparator {
 }
 
 impl TigerSeparator {
+    /// Authenticates a TIGER GGUF and selects its release variant.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let variant = select_variant(file)?;
         let checkpoint = StrictCheckpoint::bind(file, variant.strict_spec())?;
@@ -272,42 +304,50 @@ impl TigerSeparator {
         })
     }
 
+    /// Selects the execution backend without changing the bound checkpoint.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Authenticates a checkpoint and preflights the requested backend.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         Compute::for_backend(backend, TIGER_HOT_OPS)?;
         Ok(Self::from_gguf(file)?.with_backend(backend))
     }
 
+    /// Returns the authenticated release variant.
     #[must_use]
     pub const fn variant(&self) -> TigerVariant {
         self.variant
     }
 
+    /// Returns the required waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         self.variant.sample_rate()
     }
 
+    /// Returns the number of output waveform streams.
     #[must_use]
     pub const fn output_streams(&self) -> usize {
         self.variant.output_streams()
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Separates a finite mono waveform into the variant's output streams.
     pub fn separate(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
