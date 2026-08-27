@@ -108,16 +108,19 @@ impl SpeechT5Mel {
         &self.before_postnet
     }
 
+    /// Returns the number of generated mel frames.
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Returns the fixed number of mel-frequency bins per frame.
     #[must_use]
     pub const fn bins(&self) -> usize {
         NUM_MEL_BINS
     }
 
+    /// Returns the number of autoregressive decoder iterations.
     #[must_use]
     pub const fn decoder_steps(&self) -> usize {
         self.decoder_steps
@@ -189,26 +192,31 @@ impl SpeechT5Tts {
         Ok(self)
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated SpeechT5 topology.
     #[must_use]
     pub const fn config(&self) -> &SpeechT5Config {
         &self.config
     }
 
+    /// Returns the tokenizer embedded in the model checkpoint.
     #[must_use]
     pub const fn tokenizer(&self) -> &SpeechT5Tokenizer {
         &self.tokenizer
     }
 
+    /// Returns the checkpoint weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Reports whether a compatible HiFi-GAN vocoder is attached.
     #[must_use]
     pub const fn has_vocoder(&self) -> bool {
         self.vocoder.is_some()

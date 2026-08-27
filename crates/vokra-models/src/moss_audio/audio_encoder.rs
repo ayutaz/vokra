@@ -50,11 +50,13 @@ impl MossAudioEmbeddings {
         [&self.deepstack[0], &self.deepstack[1], &self.deepstack[2]]
     }
 
+    /// Returns the number of encoded audio frames.
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Returns the hidden width of every encoded frame.
     #[must_use]
     pub const fn hidden_size(&self) -> usize {
         self.hidden_size

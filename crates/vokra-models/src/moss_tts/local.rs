@@ -159,14 +159,17 @@ impl MossTtsLocalCheckpoint {
         })
     }
 
+    /// Returns the checkpoint weight-license class.
     pub const fn weight_license(&self) -> LicenseClass {
         self.checkpoint.weight_license()
     }
 
+    /// Returns the authenticated checkpoint tensor count.
     pub const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
     }
 
+    /// Reports whether legacy public metadata was repaired during binding.
     pub const fn requires_metadata_repair(&self) -> bool {
         self.requires_metadata_repair
     }

@@ -120,6 +120,7 @@ impl DnsmosWeights {
         })
     }
 
+    /// Returns the authenticated checkpoint tensor count.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         TENSOR_COUNT

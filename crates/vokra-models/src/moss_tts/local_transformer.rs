@@ -104,14 +104,17 @@ pub struct MossTtsLocalGeneration {
 }
 
 impl MossTtsLocalGeneration {
+    /// Returns the fixed number of token columns in each generation row.
     pub const fn column_count(&self) -> usize {
         1 + LOCAL_TOPOLOGY.num_audio_codebooks
     }
 
+    /// Returns the number of complete generation rows.
     pub fn row_count(&self) -> usize {
         self.rows_from_audio_start.len() / self.column_count()
     }
 
+    /// Returns one generation row by index.
     pub fn row(&self, index: usize) -> Result<&[u32]> {
         if index >= self.row_count() {
             return Err(VokraError::InvalidArgument(format!(
@@ -152,6 +155,7 @@ impl MossTtsLocal {
         Self::from_checkpoint(MossTtsLocalCheckpoint::open_mapped(path)?, backend)
     }
 
+    /// Binds a mapped checkpoint and preflights the selected backend.
     pub fn from_checkpoint(
         checkpoint: MossTtsLocalCheckpoint,
         backend: BackendKind,
@@ -165,14 +169,17 @@ impl MossTtsLocal {
         })
     }
 
+    /// Returns the selected execution backend.
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the strictly bound mapped checkpoint.
     pub const fn checkpoint(&self) -> &MossTtsLocalCheckpoint {
         &self.checkpoint
     }
 
+    /// Returns the official default generation controls.
     pub fn default_generation_options(&self) -> MossTtsLocalGenerationOptions {
         MossTtsLocalGenerationOptions::default()
     }

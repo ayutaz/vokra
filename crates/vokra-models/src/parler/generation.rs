@@ -146,11 +146,13 @@ impl ParlerGeneratedCodes {
         Ok(Self { codes, frames })
     }
 
+    /// Returns the number of generated codec frames.
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Returns the fixed number of codec codebooks per frame.
     #[must_use]
     pub const fn num_codebooks(&self) -> usize {
         NUM_CODEBOOKS
@@ -162,11 +164,13 @@ impl ParlerGeneratedCodes {
         &self.codes
     }
 
+    /// Consumes the result and returns frame-major codec indices.
     #[must_use]
     pub fn into_frame_major(self) -> Vec<u32> {
         self.codes
     }
 
+    /// Returns one frame's contiguous codec indices.
     pub fn frame(&self, frame: usize) -> Result<&[u32]> {
         if frame >= self.frames {
             return Err(VokraError::InvalidArgument(format!(

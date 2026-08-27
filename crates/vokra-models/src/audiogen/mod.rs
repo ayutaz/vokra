@@ -802,12 +802,14 @@ impl AudioGen {
         self.weights.tensor_count()
     }
 
+    /// Returns the authenticated AudioCraft LM artifact layout.
     #[inline]
     #[must_use]
     pub const fn artifact_layout(&self) -> AudioGenArtifactLayout {
         AudioGenArtifactLayout::AudioCraftLm
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend

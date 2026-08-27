@@ -59,11 +59,13 @@ pub struct MossAudioTokenOutput {
 }
 
 impl MossAudioTokenOutput {
+    /// Returns generated Qwen3 token ids.
     #[must_use]
     pub fn token_ids(&self) -> &[u32] {
         &self.token_ids
     }
 
+    /// Consumes the result and returns generated Qwen3 token ids.
     #[must_use]
     pub fn into_token_ids(self) -> Vec<u32> {
         self.token_ids

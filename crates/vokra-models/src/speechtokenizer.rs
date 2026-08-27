@@ -148,26 +148,31 @@ impl SpeechTokenizer {
         self
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the checkpoint weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the decoder waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
 
+    /// Returns the waveform samples represented by one codec frame.
     #[must_use]
     pub const fn frame_hop(&self) -> usize {
         FRAME_HOP
     }
 
+    /// Returns the maximum supported residual quantizer count.
     #[must_use]
     pub const fn max_quantizers(&self) -> usize {
         NUM_CODEBOOKS
