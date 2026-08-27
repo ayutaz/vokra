@@ -3727,7 +3727,7 @@ mod tests {
     /// later because its ordered-label result is not a generic Session trait.
     #[test]
     fn load_session_routes_lang_id_ecapa_task() {
-        let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", |path| load_session(path));
+        let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", load_session);
         let (_session, task) = result.expect("Lang-ID session builds (bare)");
         assert_eq!(task, ModelTask::LangId);
     }
@@ -3739,7 +3739,7 @@ mod tests {
         let result = with_arch_only_gguf(
             ARCH_AUDIOBOX_AESTHETICS,
             "audiobox-aesthetics-arch",
-            |path| load_session(path),
+            load_session,
         );
         let (_session, task) = result.expect("Audiobox session builds (bare)");
         assert_eq!(task, ModelTask::AudioQualityAudiobox);
@@ -3749,8 +3749,7 @@ mod tests {
     /// the strict 310-tensor bundle after validating its WAV input contract.
     #[test]
     fn load_session_routes_audioseal_task() {
-        let result =
-            with_arch_only_gguf(ARCH_AUDIOSEAL, "audioseal-arch", |path| load_session(path));
+        let result = with_arch_only_gguf(ARCH_AUDIOSEAL, "audioseal-arch", load_session);
         let (_session, task) = result.expect("AudioSeal session builds (bare)");
         assert_eq!(task, ModelTask::WatermarkAudioseal);
     }
