@@ -52,6 +52,14 @@ impl Default for MossAudioGenerationOptions {
     }
 }
 
+impl MossAudioGenerationOptions {
+    /// Creates deterministic greedy-generation controls with an explicit cap.
+    #[must_use]
+    pub const fn new(max_new_tokens: usize) -> Self {
+        Self { max_new_tokens }
+    }
+}
+
 /// Raw Qwen3 token output from the tokenizer-independent API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MossAudioTokenOutput {

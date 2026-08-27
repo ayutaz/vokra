@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(logits[3 * 4 + 3], 0.5);
         assert_eq!(logits[3 * 4 + 2], 0.5);
         assert_eq!(logits[3 * 4 + 1], f32::NEG_INFINITY);
-        assert_eq!(logits[1 * 4 + 2], f32::NEG_INFINITY);
+        assert_eq!(logits[6], f32::NEG_INFINITY);
     }
 
     #[test]

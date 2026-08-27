@@ -390,20 +390,8 @@ impl MonoLithicBiLstmStack {
         Ok(Self { layers })
     }
 
-    /// Sequential forward through every layer. `input` is
-    /// `[seq_len · input_dim]` row-major (batch_first=True); output is
-    /// `[seq_len · (2·hidden_dim)]` row-major.
-    #[cfg(test)]
-    pub fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
-        let mut buf = input.to_vec();
-        for layer in &self.layers {
-            buf = layer.forward(&buf, seq_len);
-        }
-        buf
-    }
-
-    /// Backend-dispatched sibling of [`Self::forward`]. Every learned input
-    /// and recurrent projection uses GEMV on the selected backend.
+    /// Runs every layer with backend-dispatched learned input and recurrent
+    /// GEMV projections.
     pub fn forward_with_compute(
         &self,
         input: &[f32],

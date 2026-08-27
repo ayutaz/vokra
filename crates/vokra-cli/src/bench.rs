@@ -41,7 +41,7 @@ enum DenoiseBenchModel {
     Rnnoise(vokra_models::rnnoise::RnnoiseV02),
     DeepFilterNet3(Box<vokra_models::deepfilternet3::DeepFilterNet3>),
     MetricGanPlus(vokra_models::metricgan_plus::MetricGanPlus),
-    MpSenet(vokra_models::mp_senet::MpSenet),
+    MpSenet(Box<vokra_models::mp_senet::MpSenet>),
     FacebookDenoiser(vokra_models::facebook_denoiser::FbDenoiser),
     Frcrn(vokra_models::frcrn::Frcrn),
 }
@@ -72,6 +72,7 @@ impl DenoiseBenchModel {
                 .map_err(|error| error.to_string()),
             "mp_senet" => vokra_models::mp_senet::MpSenet::from_gguf(gguf)
                 .map(|model| model.with_backend(backend))
+                .map(Box::new)
                 .map(Self::MpSenet)
                 .map_err(|error| error.to_string()),
             "facebook_denoiser" => vokra_models::facebook_denoiser::FbDenoiser::from_gguf(gguf)

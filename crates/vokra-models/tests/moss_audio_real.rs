@@ -274,9 +274,7 @@ fn execute(
         .expect("authenticated MOSS-Audio tokenizer")
         .prompt_ids(audio.frames(), &reference.prompt)
         .expect("build official MOSS-Audio prompt");
-    let options = MossAudioGenerationOptions {
-        max_new_tokens: reference.max_new_tokens,
-    };
+    let options = MossAudioGenerationOptions::new(reference.max_new_tokens);
     let generated_ids = model
         .generate_tokens(&reference.pcm, SAMPLE_RATE, &prompt_ids, &options)
         .unwrap_or_else(|error| panic!("generate MOSS-Audio on {backend:?}: {error}"))

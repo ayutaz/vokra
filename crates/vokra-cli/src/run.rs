@@ -1621,15 +1621,15 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 .to_owned(),
         );
     }
-    if task == ModelTask::DiarizationPyannote {
-        if a.segmentation_model.is_none() || a.embedding_model.is_none() {
-            return Err(
-                "run (pyannote diarization): both --segmentation-model <pyannote-segmentation.gguf> \
+    if task == ModelTask::DiarizationPyannote
+        && (a.segmentation_model.is_none() || a.embedding_model.is_none())
+    {
+        return Err(
+            "run (pyannote diarization): both --segmentation-model <pyannote-segmentation.gguf> \
                  and --embedding-model <pyannote-wespeaker.gguf> are required; the weightless \
                  pipeline GGUF never downloads or guesses dependencies"
-                    .to_owned(),
-            );
-        }
+                .to_owned(),
+        );
     }
     if a.audio_tokenizer.is_some()
         && !matches!(
@@ -3815,9 +3815,11 @@ fn run_bark(a: &RunArgs) -> Result<(), String> {
         "Bark",
         "--token-ids",
     )?;
-    let mut generation = vokra_models::bark::BarkGenerationConfig::default();
-    generation.max_semantic_tokens = a.bark_max_semantic_tokens.unwrap_or(768);
-    generation.seed = a.bark_seed.unwrap_or(0);
+    let generation = vokra_models::bark::BarkGenerationConfig {
+        max_semantic_tokens: a.bark_max_semantic_tokens.unwrap_or(768),
+        seed: a.bark_seed.unwrap_or(0),
+        ..Default::default()
+    };
     let model = vokra_models::bark::BarkModel::open_mapped_with_backend(&a.model, a.backend)
         .map_err(|error| format!("run (Bark bind): {error}"))?;
     let synthesis = model
