@@ -65,19 +65,33 @@ pub const ULTRAVOX_LLAMA_HOT_OPS: &[HotOp] = &[
 /// Runtime axes read from and authenticated against the converter metadata.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UltravoxLlamaConfig {
+    /// Hidden width of the Llama decoder.
     pub hidden_size: u32,
+    /// Number of decoder layers.
     pub n_layer: u32,
+    /// Number of query-attention heads.
     pub n_head: u32,
+    /// Number of key/value attention heads.
     pub n_kv_head: u32,
+    /// Width of one attention head.
     pub head_dim: u32,
+    /// Feed-forward width of each decoder layer.
     pub ffn_dim: u32,
+    /// Size of the tokenizer and output vocabulary.
     pub vocab_size: u32,
+    /// Maximum scaled rotary-position context.
     pub max_positions: u32,
+    /// Epsilon used by RMS normalization.
     pub rms_norm_eps: f32,
+    /// Base frequency used by rotary position embeddings.
     pub rope_theta: f32,
+    /// Llama 3 rotary context scaling factor.
     pub rope_factor: f32,
+    /// Low-frequency boundary used by Llama 3 rotary scaling.
     pub rope_low_freq_factor: f32,
+    /// High-frequency boundary used by Llama 3 rotary scaling.
     pub rope_high_freq_factor: f32,
+    /// Original unscaled rotary context length.
     pub rope_original_max_positions: u32,
 }
 

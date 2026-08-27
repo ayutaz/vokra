@@ -185,11 +185,13 @@ pub struct AudioCraftGeneratedCodes {
 }
 
 impl AudioCraftGeneratedCodes {
+    /// Returns the number of generated codec frames.
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Returns the number of codec codebooks per frame.
     #[must_use]
     pub const fn num_codebooks(&self) -> usize {
         self.num_codebooks
@@ -223,11 +225,17 @@ impl AudioCraftGeneratedCodes {
 /// Shape contract for one AudioCraft LM-only checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioCraftLmConfig {
+    /// Transformer hidden width.
     pub d_model: usize,
+    /// Number of transformer decoder layers.
     pub num_layers: usize,
+    /// Number of attention heads per layer.
     pub n_heads: usize,
+    /// Feed-forward width per layer.
     pub ffn_dim: usize,
+    /// Codec-token vocabulary size, excluding the special token.
     pub vocab_size: usize,
+    /// Number of independently predicted codec codebooks.
     pub num_codebooks: usize,
 }
 
@@ -259,6 +267,7 @@ impl AudioCraftLmConfig {
         Ok(())
     }
 
+    /// Returns the reserved delay-padding and terminal token id.
     #[must_use]
     pub const fn special_token_id(self) -> u32 {
         self.vocab_size as u32
@@ -275,16 +284,19 @@ pub struct AudioCraftCondition {
 }
 
 impl AudioCraftCondition {
+    /// Returns the number of visible text-condition frames.
     #[must_use]
     pub const fn frames(&self) -> usize {
         self.frames
     }
 
+    /// Returns the projected condition width.
     #[must_use]
     pub const fn d_model(&self) -> usize {
         self.d_model
     }
 
+    /// Returns the row-major projected condition values.
     #[must_use]
     pub fn as_slice(&self) -> &[f32] {
         &self.projected
@@ -834,16 +846,19 @@ impl AudioCraftLmDecoder {
         })
     }
 
+    /// Returns the authenticated language-model topology.
     #[must_use]
     pub const fn config(&self) -> AudioCraftLmConfig {
         self.weights.config
     }
 
+    /// Returns the text-condition width expected by this checkpoint layout.
     #[must_use]
     pub const fn condition_dim(&self) -> usize {
         self.weights.condition_dim
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
@@ -1530,11 +1545,13 @@ impl std::fmt::Debug for AudioCraftLmState {
 }
 
 impl AudioCraftLmState {
+    /// Returns the number of autoregressive positions already evaluated.
     #[must_use]
     pub fn position(&self) -> usize {
         self.self_kv.positions()
     }
 
+    /// Returns the maximum number of autoregressive steps allocated.
     #[must_use]
     pub const fn max_steps(&self) -> usize {
         self.max_steps

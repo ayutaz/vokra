@@ -114,21 +114,32 @@ pub const HOT_OPS: &[HotOp] = &[
 /// Immutable architecture snapshot from the official `model_config.yaml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReazonSpeechConfig {
+    /// FastConformer encoder topology.
     pub encoder: ParakeetEncoderConfig,
+    /// Number of local-attention frames visible to the left.
     pub left_context: usize,
+    /// Number of local-attention frames visible to the right.
     pub right_context: usize,
+    /// Number of global tokens used by Longformer attention.
     pub global_tokens: usize,
+    /// Frame spacing between global tokens.
     pub global_tokens_spacing: usize,
+    /// Number of recurrent layers in the RNN-T prediction network.
     pub decoder_layers: usize,
+    /// Hidden width of the RNN-T prediction and joint networks.
     pub decoder_dim: usize,
     /// Includes the tail blank: 3,000 SentencePiece entries + blank.
     pub vocab_size: usize,
+    /// Vocabulary id of the terminal RNN-T blank symbol.
     pub blank_id: u32,
+    /// Maximum non-blank symbols emitted for one encoder frame.
     pub max_symbols_per_step: usize,
+    /// Required input waveform sample rate.
     pub sample_rate: u32,
 }
 
 impl ReazonSpeechConfig {
+    /// Returns the topology pinned by the official model configuration.
     #[must_use]
     pub fn official() -> Self {
         Self {
@@ -203,6 +214,7 @@ struct ReazonSpeechWeights {
     joint_head_b: Vec<f32>,
 }
 
+/// Native ReazonSpeech NeMo v2 FastConformer and RNN-T runtime.
 #[derive(Debug, Clone)]
 pub struct ReazonSpeechNemoV2 {
     config: ReazonSpeechConfig,
@@ -233,32 +245,38 @@ impl ReazonSpeechNemoV2 {
         })
     }
 
+    /// Selects the execution backend used by encoder and decoder kernels.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated runtime topology.
     #[must_use]
     pub const fn config(&self) -> &ReazonSpeechConfig {
         &self.config
     }
 
+    /// Reports whether the GGUF contains the tokenizer vocabulary.
     #[must_use]
     pub const fn has_tokenizer(&self) -> bool {
         self.tokenizer.is_some()
     }
 
+    /// Returns the authenticated checkpoint tensor count.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         TENSOR_COUNT
     }
 
+    /// Returns the checkpoint weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
@@ -371,6 +389,7 @@ impl ReazonSpeechNemoV2 {
         Ok(tokens)
     }
 
+    /// Transcribes mono PCM and decodes emitted tokens to text.
     pub fn transcribe_text(&self, pcm: &[f32]) -> Result<String> {
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             VokraError::ModelLoad(format!(

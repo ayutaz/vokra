@@ -76,15 +76,25 @@ pub const FLAN_T5_LARGE_CONFIG: T5EncoderConfig = T5EncoderConfig {
 /// tensor set during execution.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct T5EncoderConfig {
+    /// Input token vocabulary size.
     pub vocab_size: usize,
+    /// Encoder hidden width.
     pub d_model: usize,
+    /// Width of each attention key and value head.
     pub d_kv: usize,
+    /// Feed-forward intermediate width.
     pub d_ff: usize,
+    /// Number of encoder layers.
     pub num_layers: usize,
+    /// Number of attention heads per layer.
     pub num_heads: usize,
+    /// Number of relative-position bias buckets.
     pub relative_attention_num_buckets: usize,
+    /// Maximum exact distance represented by relative-position bias.
     pub relative_attention_max_distance: usize,
+    /// Epsilon used by T5 RMS normalization.
     pub layer_norm_epsilon: f32,
+    /// Feed-forward activation and gating variant.
     pub feed_forward_kind: T5FeedForwardKind,
 }
 
@@ -308,11 +318,13 @@ impl T5Encoder {
         self
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated encoder topology.
     #[must_use]
     pub fn config(&self) -> T5EncoderConfig {
         self.config

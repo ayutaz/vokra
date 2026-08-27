@@ -55,10 +55,15 @@ pub const RELEASE_MAX_SEQUENCE: usize = 2_048;
 /// Official tokenizer control IDs.  These are independently visible in the
 /// ungated `neuphonic/neutts-air-onnx` tokenizer distribution.
 pub const TEXT_REPLACE_TOKEN_ID: u32 = 151_665;
+/// Token that begins the text prompt section.
 pub const TEXT_PROMPT_START_TOKEN_ID: u32 = 151_666;
+/// Token that ends the text prompt section.
 pub const TEXT_PROMPT_END_TOKEN_ID: u32 = 151_667;
+/// Placeholder token replaced by generated speech tokens.
 pub const SPEECH_REPLACE_TOKEN_ID: u32 = 151_668;
+/// Token that begins autoregressive speech generation.
 pub const SPEECH_GENERATION_START_TOKEN_ID: u32 = 151_669;
+/// Token that terminates autoregressive speech generation.
 pub const SPEECH_GENERATION_END_TOKEN_ID: u32 = 151_670;
 /// Vocabulary ID representing NeuCodec code zero.
 pub const SPEECH_TOKEN_BASE: u32 = 151_671;
@@ -96,15 +101,25 @@ pub const NEUTTS_AIR_LM_HOT_OPS: &[HotOp] = &[
 /// Exact immutable Qwen2 axes of the public checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NeuTtsAirConfig {
+    /// Hidden width of the Qwen2 decoder.
     pub hidden_size: u32,
+    /// Number of Qwen2 decoder layers.
     pub n_layer: u32,
+    /// Number of query-attention heads.
     pub n_head: u32,
+    /// Number of key/value attention heads.
     pub n_kv_head: u32,
+    /// Width of one attention head.
     pub head_dim: u32,
+    /// Feed-forward width of each decoder layer.
     pub ffn_dim: u32,
+    /// Maximum rotary-position context supported by the checkpoint.
     pub max_position_embeddings: u32,
+    /// Base frequency used by rotary position embeddings.
     pub rope_theta: f32,
+    /// Epsilon used by RMS normalization.
     pub rms_norm_eps: f32,
+    /// Size of the language-model vocabulary.
     pub vocab_size: u32,
 }
 
@@ -272,8 +287,11 @@ pub struct NeuTtsAirGeneration {
 /// Complete explicit-companion synthesis result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NeuTtsAirSynthesis {
+    /// Language-model generation result used by the codec stage.
     pub generation: NeuTtsAirGeneration,
+    /// Decoded mono waveform samples.
     pub pcm: Vec<f32>,
+    /// Waveform sample rate in hertz.
     pub sample_rate: u32,
 }
 
@@ -345,16 +363,19 @@ impl NeuTtsAir {
         })
     }
 
+    /// Returns the immutable official language-model topology.
     #[must_use]
     pub const fn config(&self) -> NeuTtsAirConfig {
         NeuTtsAirConfig::OFFICIAL
     }
 
+    /// Returns the selected language-model execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the language-model checkpoint weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.checkpoint.weight_license()
@@ -440,11 +461,13 @@ impl NeuTtsAirCompanion {
         Ok(Self { codec })
     }
 
+    /// Returns the selected NeuCodec execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.codec.backend()
     }
 
+    /// Returns the bound official NeuCodec checkpoint variant.
     #[must_use]
     pub const fn variant(&self) -> NeuCodecVariant {
         self.codec.variant()

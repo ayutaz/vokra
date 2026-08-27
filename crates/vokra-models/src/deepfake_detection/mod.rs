@@ -131,13 +131,21 @@ pub const DEEPFAKE_HOT_OPS: &[HotOp] = WAV2VEC2_CTC_HOT_OPS;
 /// Fixed topology resolved from the immutable upstream configuration.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeepfakeDetectionConfig {
+    /// Input waveform sample rate expected by the detector.
     pub sample_rate: u32,
+    /// Hidden width of the Wav2Vec2 encoder.
     pub hidden_size: usize,
+    /// Number of Wav2Vec2 transformer blocks.
     pub num_hidden_layers: usize,
+    /// Number of attention heads in each encoder block.
     pub num_attention_heads: usize,
+    /// Feed-forward width of each encoder block.
     pub intermediate_size: usize,
+    /// Width of the classifier projection layer.
     pub classifier_proj_size: usize,
+    /// Number of output classes.
     pub num_classes: usize,
+    /// Epsilon used by encoder layer normalization.
     pub layer_norm_eps: f32,
 }
 
@@ -166,11 +174,13 @@ pub struct DeepfakeScore {
 }
 
 impl DeepfakeScore {
+    /// Constructs a score from logits in [`CLASS_LABELS`] order.
     #[must_use]
     pub const fn from_logits(logits: [f32; 2]) -> Self {
         Self { logits }
     }
 
+    /// Returns the raw logits in [`CLASS_LABELS`] order.
     #[must_use]
     pub const fn logits(&self) -> [f32; 2] {
         self.logits
@@ -186,6 +196,7 @@ impl DeepfakeScore {
         [first / sum, second / sum]
     }
 
+    /// Returns the softmax probability for one class index.
     pub fn probability_of(&self, index: usize) -> Result<f32> {
         if index >= N_CLASSES as usize {
             return Err(VokraError::InvalidArgument(format!(
@@ -195,6 +206,7 @@ impl DeepfakeScore {
         Ok(self.probabilities()[index])
     }
 
+    /// Reports whether one class probability is greater than `threshold`.
     pub fn exceeds(&self, index: usize, threshold: f32) -> Result<bool> {
         if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
             return Err(VokraError::InvalidArgument(format!(
@@ -269,16 +281,19 @@ impl DeepfakeDetectionWeights {
         })
     }
 
+    /// Returns the number of tensors in the authenticated manifest.
     #[must_use]
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
     }
 
+    /// Returns the canonical classifier weight tensor name.
     #[must_use]
     pub fn classifier_weight_name(&self) -> &str {
         &self.classifier_weight
     }
 
+    /// Returns the canonical classifier bias tensor name, when present.
     #[must_use]
     pub fn classifier_bias_name(&self) -> Option<&str> {
         self.classifier_bias.as_deref()
@@ -290,6 +305,7 @@ impl DeepfakeDetectionWeights {
         self.hidden_size
     }
 
+    /// Returns the dimensions recorded for a named manifest tensor.
     #[must_use]
     pub fn tensor_dims(&self, name: &str) -> Option<&[usize]> {
         self.tensors
@@ -375,16 +391,19 @@ impl DeepfakeDetection {
         self
     }
 
+    /// Returns the selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated detector topology.
     #[must_use]
     pub const fn config(&self) -> &DeepfakeDetectionConfig {
         &self.config
     }
 
+    /// Returns the checkpoint weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.checkpoint.weight_license()
@@ -408,11 +427,13 @@ impl DeepfakeDetection {
         Some(&self.upstream_hf)
     }
 
+    /// Returns the strictly bound task-head weights.
     #[must_use]
     pub const fn weights(&self) -> &DeepfakeDetectionWeights {
         &self.weights
     }
 
+    /// Returns the authenticated checkpoint tensor count.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         self.checkpoint.tensor_count()
@@ -424,11 +445,13 @@ impl DeepfakeDetection {
         CLASSIFIER_PROJ_SIZE
     }
 
+    /// Returns the number of classifier output classes.
     #[must_use]
     pub const fn num_classes() -> u32 {
         N_CLASSES
     }
 
+    /// Returns class labels in the classifier's logit order.
     #[must_use]
     pub const fn class_labels() -> &'static [&'static str; 2] {
         &CLASS_LABELS
@@ -439,6 +462,7 @@ impl DeepfakeDetection {
         Ok(0)
     }
 
+    /// Reports whether legacy public metadata was repaired during binding.
     #[must_use]
     pub const fn legacy_metadata_repaired(&self) -> bool {
         self.legacy_metadata_repaired
