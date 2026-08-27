@@ -88,6 +88,22 @@ jobs:
           allow-dependencies-licenses: >-
             pkg:cargo/r-efi@6.0.0,
             pkg:githubactions/Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+          # Exact, reviewed exceptions only. Every entry is a PyTorch advisory
+          # against the pinned parity-oracle toolchains under tools/parity/**.
+          # Those trees exist solely to dump independent reference tensors on
+          # VAST; torch appears nowhere else in the repository, the Rust runtime
+          # carries no dependencies, and the published Python wheel declares
+          # `dependencies = []`, so none of these advisories can reach a shipped
+          # artefact. Clearing them at the source means moving eleven oracles to
+          # torch >= 2.9.1, which rewrites the references themselves and voids
+          # the committed fixtures they generated; that campaign is tracked in
+          # docs/m5-owner-verification-checklist.md section 8. Listing exact
+          # GHSA ids keeps any future torch advisory failing this gate.
+          allow-ghsas: >-
+            GHSA-53q9-r3pm-6pq6,
+            GHSA-887c-mr87-cxwp,
+            GHSA-f4hp-rmr7-r7v8,
+            GHSA-vgrw-7cvw-pwgx
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true

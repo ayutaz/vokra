@@ -485,3 +485,33 @@ Rejected in §3.1. Owner action: choose the destination.
 
 - [x] **Register the FA v3 vs FA v2 dashboard row**: `tools/bench/build_dashboard.py` now renders `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median` from `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` as `1.0573x` in the GPU table; its test pins the value. This satisfies the code/artifact part of M4-07 T18 without inventing a benchmark result.
 - [ ] **Owner deployment gate**: enable GitHub Pages and set `VOKRA_PAGES_ENABLED=true` if the dashboard must be publicly deployed. Until then `dashboard.yml` still produces the downloadable dashboard artifact, and no public-deployment claim is made.
+
+---
+
+## 8. Parity-oracle torch advisory backlog (2026-08-27)
+
+**Status**: `dependency-review` reports four PyTorch advisories — `GHSA-53q9-r3pm-6pq6`
+(critical, `torch.load` remote code execution), `GHSA-887c-mr87-cxwp`,
+`GHSA-f4hp-rmr7-r7v8`, and `GHSA-vgrw-7cvw-pwgx` — against the pinned reference
+toolchains under `tools/parity/**`. All four are allow-listed by exact GHSA id in
+`.github/workflows/ci-security.yml` because torch appears nowhere else in the
+repository: the Rust runtime carries no dependencies and the published Python
+wheel declares `dependencies = []`, so no shipped artefact is exposed. The
+allow-list is scoped to these four ids, so a new torch advisory still fails the
+gate.
+
+Clearing them at the source requires moving every affected oracle to
+torch >= 2.9.1. Eleven trees are below that floor: `pyannote_diarization` and
+`pyannote_segmentation` (2.2.2), `deepfake_detection` (2.3.1), `bark` and
+`speecht5_tts` (2.4.1), `xcodec2` (2.5.0), and `facodec`, `funcodec`,
+`parler_tts`, `speechtokenizer`, and `ultravox` (2.5.1). Each bump rewrites the
+independent reference implementation, so every committed fixture it generated
+must be regenerated on VAST and every recorded parity measurement re-derived.
+`bark` pins `transformers==4.31.0`, which is not expected to run on torch 2.6 or
+newer, so that tree needs an oracle replacement rather than a version bump.
+
+- [ ] Decide whether the eleven oracles move to torch >= 2.9.1 or stay pinned
+      with the advisories allow-listed.
+- [ ] If they move: regenerate each affected fixture on VAST, re-derive the
+      recorded parity measurements, and confirm each bound still holds before
+      removing the corresponding GHSA from the allow-list.
