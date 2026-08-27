@@ -25,27 +25,46 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::weights::Mossformer2Weights;
 
+/// GGUF architecture tag for MossFormer2 speech separation.
 pub const ARCH: &str = "mossformer2_ss_16k";
+/// Canonical Vokra model name.
 pub const NAME: &str = "mossformer2_ss_16k";
+/// Official upstream Hugging Face repository.
 pub const UPSTREAM_HF: &str = "alibabasglab/MossFormer2_SS_16K";
+/// Public Vokra GGUF repository.
 pub const PUBLIC_HF: &str = "vokra/mossformer2-ss-16k";
+/// Pinned upstream checkpoint revision.
 pub const UPSTREAM_REVISION: &str = "407cb030cd66340918ebb6c8cc63b18f8592cdbe";
+/// Pinned source-code revision used for the native port.
 pub const SOURCE_REVISION: &str = "6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61";
+/// Immutable revision of the public Vokra GGUF.
 pub const PUBLIC_REVISION: &str = "0e9ba9258cead4252f8e5279598af296ada08bf7";
+/// SHA-256 of the public Vokra GGUF.
 pub const PUBLIC_MODEL_SHA256: &str =
     "822516b75873dbeb814dac72f7ca0b5fb75254dd051dfdfdda54987347330f0c";
+/// SHA-256 of the canonical tensor name/shape manifest.
 pub const MANIFEST_SHA256: &str =
     "eb4b366872789b95228a172846259f6aa205a75c678f90941d5e8a3e9a47fb8b";
 
+/// Required waveform sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// Number of separated speaker streams.
 pub const OUTPUT_STREAMS: usize = 2;
+/// Channel width of the analysis encoder.
 pub const ENCODER_CHANNELS: usize = 512;
+/// Analysis-encoder convolution kernel width.
 pub const ENCODER_KERNEL: usize = 16;
+/// Analysis-encoder convolution stride.
 pub const ENCODER_STRIDE: usize = 8;
+/// Number of MossFormer2 separation blocks.
 pub const BLOCKS: usize = 24;
+/// Group width used by the gated sequence blocks.
 pub const GROUP_SIZE: usize = 256;
+/// Query/key projection width.
 pub const QUERY_KEY_DIM: usize = 128;
+/// Hidden width of the attention feed-forward path.
 pub const ATTENTION_HIDDEN: usize = 2_048;
+/// Channel width of the FSMN memory path.
 pub const FSMN_CHANNELS: usize = 256;
 
 const KEY_CATEGORY: &str = "vokra.model.category";
@@ -116,27 +135,32 @@ impl Mossformer2Ss16k {
         Ok(Self::from_gguf(file)?.with_backend(backend))
     }
 
+    /// Selects the execution backend without changing the checkpoint.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the required waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
 
+    /// Returns the number of separated output streams.
     #[must_use]
     pub const fn output_streams(&self) -> usize {
         OUTPUT_STREAMS
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license

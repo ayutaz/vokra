@@ -45,7 +45,9 @@ pub const TRUNK_PREFIX: &str = "embedding_model.";
 /// Representative exact ECAPA tensor name used by diagnostics.
 pub const TRUNK_EXAMPLE_TENSOR: &str = "embedding_model.blocks.0.conv.conv.weight";
 
+/// GGUF metadata key carrying the model-zoo task category.
 pub const GGUF_KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+/// GGUF metadata key carrying the upstream Hugging Face repository.
 pub const GGUF_KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 const KEY_UPSTREAM_REVISION: &str = "vokra.lang_id.upstream_revision";
@@ -84,11 +86,14 @@ const LANG_ID_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::Softmax, HotOp::Gemv];
 /// Which official SpeechBrain Lang-ID release the GGUF carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LangIdVariant {
+    /// SpeechBrain VoxLingua107 ECAPA language classifier.
     VoxLingua107,
+    /// SpeechBrain CommonLanguage ECAPA language classifier.
     CommonLanguage,
 }
 
 impl LangIdVariant {
+    /// Resolves a canonical Vokra model name to its release variant.
     #[must_use]
     pub fn from_model_name(name: &str) -> Option<Self> {
         match name {
@@ -98,6 +103,7 @@ impl LangIdVariant {
         }
     }
 
+    /// Returns the canonical Vokra model name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -106,6 +112,7 @@ impl LangIdVariant {
         }
     }
 
+    /// Returns the official upstream Hugging Face repository.
     #[must_use]
     pub const fn upstream_hf(self) -> &'static str {
         match self {
@@ -286,6 +293,7 @@ pub struct LangIdWeights {
 }
 
 impl LangIdWeights {
+    /// Captures and validates the complete GGUF tensor manifest.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let tensors = file
             .tensors()
@@ -315,16 +323,19 @@ impl LangIdWeights {
         Ok(Self { tensors })
     }
 
+    /// Returns the number of tensors in the retained disk manifest.
     #[must_use]
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
     }
 
+    /// Returns tensor names in GGUF manifest order.
     #[must_use]
     pub fn tensor_names(&self) -> Vec<&str> {
         self.tensors.iter().map(|(name, _)| name.as_str()).collect()
     }
 
+    /// Returns dimensions for one exact tensor name.
     #[must_use]
     pub fn tensor_dims(&self, name: &str) -> Option<&[usize]> {
         self.tensors
@@ -333,6 +344,7 @@ impl LangIdWeights {
             .map(|(_, dimensions)| dimensions.as_slice())
     }
 
+    /// Counts tensors whose names begin with `prefix`.
     #[must_use]
     pub fn count_with_prefix(&self, prefix: &str) -> usize {
         self.tensors
@@ -341,6 +353,7 @@ impl LangIdWeights {
             .count()
     }
 
+    /// Returns all authenticated ECAPA trunk tensors and dimensions.
     #[must_use]
     pub fn trunk_tensors(&self) -> Vec<(&str, &[usize])> {
         self.tensors
@@ -350,6 +363,7 @@ impl LangIdWeights {
             .collect()
     }
 
+    /// Returns all authenticated language-classifier tensors and dimensions.
     #[must_use]
     pub fn language_head_tensors(&self) -> Vec<(&str, &[usize])> {
         self.tensors
@@ -359,6 +373,7 @@ impl LangIdWeights {
             .collect()
     }
 
+    /// Derives the classifier language count from the disk head shape.
     #[must_use]
     pub fn language_count_from_disk(&self) -> Option<usize> {
         self.tensor_dims("classifier.output.weight")
@@ -621,56 +636,67 @@ impl LangIdEcapa {
         self
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the authenticated release variant.
     #[must_use]
     pub const fn variant(&self) -> Option<LangIdVariant> {
         Some(self.contract.variant)
     }
 
+    /// Returns the canonical model name.
     #[must_use]
     pub fn model_name(&self) -> Option<&str> {
         Some(self.contract.variant.name())
     }
 
+    /// Returns the official upstream Hugging Face repository.
     #[must_use]
     pub fn upstream_hf(&self) -> Option<&str> {
         Some(self.contract.variant.upstream_hf())
     }
 
+    /// Returns the pinned upstream checkpoint revision.
     #[must_use]
     pub fn upstream_revision(&self) -> &str {
         &self.contract.upstream_revision
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns classifier labels in output-index order.
     #[must_use]
     pub fn labels(&self) -> &[String] {
         &self.contract.labels
     }
 
+    /// Returns the authenticated number of language classes.
     #[must_use]
     pub fn language_count(&self) -> Option<usize> {
         Some(self.contract.labels.len())
     }
 
+    /// Reports whether the complete language-classifier head is bound.
     #[must_use]
     pub const fn has_language_head(&self) -> bool {
         true
     }
 
+    /// Returns the number of authenticated tensor descriptors.
     #[must_use]
     pub fn tensor_count(&self) -> usize {
         self.weights.tensor_count()
     }
 
+    /// Returns the retained diagnostic tensor manifest.
     #[must_use]
     pub const fn weights(&self) -> &LangIdWeights {
         &self.weights

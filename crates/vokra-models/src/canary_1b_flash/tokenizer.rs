@@ -5,8 +5,11 @@ use vokra_core::{Result, VokraError};
 
 use crate::strict_checkpoint::sha256_bytes;
 
+/// GGUF metadata key containing the aggregate decode vocabulary bytes.
 pub const KEY_TOKENIZER_VOCAB: &str = "vokra.canary_1b_flash.tokenizer.vocab";
+/// GGUF metadata key containing the aggregate vocabulary SHA-256.
 pub const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.canary_1b_flash.tokenizer.vocab_sha256";
+/// Expected SHA-256 of the released aggregate vocabulary.
 pub const TOKENIZER_VOCAB_SHA256: &str =
     "08cb29d15437dbd3f45c26046c2f5994b3b92c86a3aa4a6e27d253d40837db79";
 
@@ -15,12 +18,17 @@ const TOKENIZER_VOCAB_SHA256_BYTES: [u8; 32] = [
     0xb3, 0xb9, 0x2c, 0x86, 0xa3, 0xaa, 0x4a, 0x6e, 0x27, 0xd2, 0x53, 0xd4, 0x08, 0x37, 0xdb, 0x79,
 ];
 
+/// Total size of the aggregate decode vocabulary.
 pub const VOCAB_SIZE: usize = 5_248;
+/// Number of shared special-token entries before language vocabularies.
 pub const SPECIAL_VOCAB_SIZE: usize = 1_152;
 const LANGUAGE_VOCAB_SIZE: usize = 1_024;
 
+/// Padding token identifier.
 pub const PAD_ID: u32 = 2;
+/// End-of-sequence token identifier.
 pub const EOS_ID: u32 = 3;
+/// Beginning-of-sequence token identifier.
 pub const BOS_ID: u32 = 4;
 const START_OF_CONTEXT_ID: u32 = 7;
 const PNC_ID: u32 = 5;
@@ -35,13 +43,18 @@ const NO_DIARIZE_ID: u32 = 13;
 /// Four released Canary-1B-Flash languages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CanaryLanguage {
+    /// English source or target language.
     English,
+    /// German source or target language.
     German,
+    /// Spanish source or target language.
     Spanish,
+    /// French source or target language.
     French,
 }
 
 impl CanaryLanguage {
+    /// Returns the two-letter language code used by the processor.
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
@@ -52,6 +65,7 @@ impl CanaryLanguage {
         }
     }
 
+    /// Returns the released prompt token for this language.
     #[must_use]
     pub const fn prompt_token_id(self) -> u32 {
         match self {
@@ -66,10 +80,15 @@ impl CanaryLanguage {
 /// Emotion slot supported by the released Canary2 prompt formatter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CanaryEmotion {
+    /// No emotion label is requested.
     Undefined,
+    /// Neutral speech emotion.
     Neutral,
+    /// Happy speech emotion.
     Happy,
+    /// Sad speech emotion.
     Sad,
+    /// Angry speech emotion.
     Angry,
 }
 
@@ -90,13 +109,21 @@ impl CanaryEmotion {
 /// translation uses a different target language.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Canary1bFlashOptions {
+    /// Language spoken in the input audio.
     pub source_language: CanaryLanguage,
+    /// Language requested in the decoded output.
     pub target_language: CanaryLanguage,
+    /// Whether punctuation and capitalization are requested.
     pub punctuation: bool,
+    /// Whether inverse text normalization is requested.
     pub inverse_text_normalization: bool,
+    /// Whether timestamp tokens are requested.
     pub timestamps: bool,
+    /// Whether speaker-diarization tokens are requested.
     pub diarize: bool,
+    /// Emotion prompt slot.
     pub emotion: CanaryEmotion,
+    /// Optional hard cap on newly decoded tokens.
     pub max_new_tokens: Option<usize>,
 }
 
@@ -154,6 +181,7 @@ pub struct CanaryTokenizer {
 }
 
 impl CanaryTokenizer {
+    /// Authenticates and loads the vocabulary embedded in a GGUF checkpoint.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let bytes = required_u8_array(file, KEY_TOKENIZER_VOCAB)?;
         let actual_hash = sha256_bytes(&bytes);
@@ -178,6 +206,7 @@ impl CanaryTokenizer {
         Self::from_vocab_bytes(&bytes)
     }
 
+    /// Authenticates and parses released aggregate vocabulary bytes.
     pub fn from_vocab_bytes(bytes: &[u8]) -> Result<Self> {
         if sha256_bytes(bytes) != TOKENIZER_VOCAB_SHA256_BYTES {
             return Err(VokraError::ModelLoad(format!(
@@ -270,11 +299,13 @@ impl CanaryTokenizer {
         Ok(Self { pieces })
     }
 
+    /// Returns the number of entries in the aggregate vocabulary.
     #[must_use]
     pub fn vocab_size(&self) -> usize {
         self.pieces.len()
     }
 
+    /// Decodes aggregate token identifiers into normalized UTF-8 text.
     pub fn decode(&self, token_ids: &[u32]) -> Result<String> {
         let mut encoded = String::new();
         let component_unknown_ids = [

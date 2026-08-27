@@ -33,33 +33,58 @@ use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
 use self::weights::MioCodecWeights;
 
+/// GGUF architecture tag for MioCodec checkpoints.
 pub const ARCH: &str = "miocodec";
+/// Canonical Vokra model name.
 pub const MODEL_NAME: &str = "miocodec-25hz-44khz-v2";
+/// Output waveform sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 44_100;
+/// Codec token rate in frames per second.
 pub const TOKEN_RATE: usize = 25;
+/// Inverse-STFT transform size.
 pub const N_FFT: usize = 392;
+/// Inverse-STFT hop length in samples.
 pub const HOP_LENGTH: usize = 98;
+/// Number of one-sided inverse-STFT bins.
 pub const ISTFT_BINS: usize = N_FFT / 2 + 1;
+/// Content-code embedding width.
 pub const CONTENT_DIM: usize = 768;
+/// Global conditioning embedding width.
 pub const GLOBAL_DIM: usize = 128;
+/// Waveform decoder hidden width.
 pub const WAVE_DIM: usize = 512;
+/// Number of finite-scalar-quantizer dimensions.
 pub const CODE_DIM: usize = 5;
+/// Number of representable FSQ code indices.
 pub const CODEBOOK_SIZE: usize = 12_800;
+/// Quantization levels for each FSQ dimension.
 pub const FSQ_LEVELS: [u32; CODE_DIM] = [8, 8, 8, 5, 5];
+/// Number of content-prenet transformer layers.
 pub const PRENET_LAYERS: usize = 6;
+/// Attention heads per content-prenet layer.
 pub const PRENET_HEADS: usize = 12;
+/// Content-prenet feed-forward width.
 pub const PRENET_HIDDEN: usize = 2_048;
+/// Number of adaptive waveform-decoder transformer layers.
 pub const WAVE_DECODER_LAYERS: usize = 8;
+/// Attention heads per waveform-decoder layer.
 pub const WAVE_DECODER_HEADS: usize = 8;
+/// Waveform-decoder feed-forward width.
 pub const WAVE_DECODER_HIDDEN: usize = 1_536;
+/// Total temporal upsampling factor before inverse STFT.
 pub const UPSAMPLE_TOTAL: usize = 9;
+/// Rotary-position base used by the transformer blocks.
 pub const ROPE_THETA: f32 = 10_000.0;
 /// Versioned standalone decode-input container magic.
 pub const DECODE_INPUT_MAGIC: &[u8; 8] = b"VKRMIO01";
 
+/// Pinned upstream checkpoint revision.
 pub const UPSTREAM_REVISION: &str = "67faba34153fe74e6665991c432a7327e23c5c1c";
+/// Pinned native-reference source revision.
 pub const SOURCE_REVISION: &str = "77473544375d57e96cbdfd5d7d257e8f280fa8e3";
+/// SHA-256 of the authenticated upstream checkpoint.
 pub const MODEL_SHA256: &str = "8e319ef2231bad184f17cb73fd5a21b685c25c6c1622ef33ed9271187e81cd4a";
+/// SHA-256 of the authenticated upstream configuration.
 pub const CONFIG_SHA256: &str = "bfabffffaaa5709b8dc69585111ee3d53c1b0609c23d293cd1b4903eafa5bec1";
 
 const KEY_UPSTREAM_REVISION: &str = "vokra.miocodec.upstream_revision";
@@ -109,14 +134,18 @@ pub const MIOCODEC_DECODE_HOT_OPS: &[HotOp] = &[
 /// count is checked; trailing data is rejected.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MioCodecDecodeInput {
+    /// Requested upstream waveform length before deterministic frame flooring.
     pub target_samples: usize,
+    /// Global conditioning vector supplied by the upstream encoder.
     pub global_embedding: [f32; GLOBAL_DIM],
+    /// FSQ code indices in temporal order.
     pub codes: Vec<u32>,
 }
 
 impl MioCodecDecodeInput {
     const FIXED_BYTES: usize = 8 + 8 + 4 + 4 + GLOBAL_DIM * 4;
 
+    /// Parses and validates the versioned standalone decode-input container.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() < Self::FIXED_BYTES || &bytes[..8] != DECODE_INPUT_MAGIC {
             return Err(VokraError::InvalidArgument(
@@ -185,6 +214,7 @@ impl MioCodecDecodeInput {
         })
     }
 
+    /// Serializes the decode input into the canonical little-endian container.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         if self.codes.is_empty() || self.codes.len() > u32::MAX as usize {
             return Err(VokraError::InvalidArgument(format!(
@@ -299,16 +329,19 @@ impl MioCodec {
         self
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Returns the output waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE

@@ -19,32 +19,55 @@ use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, load_tensor};
 use crate::vocos::decode_weights_with_compute;
 
+/// GGUF architecture tag for the YuE upsampler.
 pub const ARCH: &str = "yue_upsampler";
+/// Canonical Vokra model name.
 pub const NAME: &str = "yue-upsampler";
+/// Model-zoo task category.
 pub const CATEGORY: &str = "vocoder";
+/// Model-family variant tag.
 pub const VARIANT: &str = "upsampler";
+/// Immutable upstream Hugging Face repository identifier.
 pub const UPSTREAM_HF: &str = "m-a-p/YuE-upsampler";
+/// Pinned upstream checkpoint revision.
 pub const UPSTREAM_REVISION: &str = "c6d7494a60555672be09ca809a40be400d682a53";
+/// Upstream checkpoint filename.
 pub const CHECKPOINT_FILE: &str = "decoder_151000.pth";
+/// SHA-256 of the authenticated upstream checkpoint.
 pub const CHECKPOINT_SHA256: &str =
     "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998";
+/// Exact byte length of the authenticated upstream checkpoint.
 pub const CHECKPOINT_BYTES: u64 = 72_610_550;
+/// Upstream Python package used to authenticate Vocos semantics.
 pub const SOURCE_PACKAGE: &str = "vocos==0.1.0";
+/// SHA-256 of the pinned source-package artifact.
 pub const SOURCE_PACKAGE_SHA256: &str =
     "0ac13eaef68596074301e912d781399b3defa4b4ca60b6bc52c8a4b9209ca235";
+/// SHA-256 of the canonical tensor name/shape manifest.
 pub const MANIFEST_SHA256: &str =
     "c8b3f2a4de49f9d4ed1819a57e8850439b66578112de5fd94595c3e53c58956e";
+/// Immutable revision of the public Vokra GGUF.
 pub const PUBLIC_REVISION: &str = "6eea19bd301c5214123ee69217a61a989ffe80d0";
+/// SHA-256 of the public Vokra GGUF.
 pub const PUBLIC_GGUF_SHA256: &str =
     "17df9c667c931544cf84545266d07e3598a9528d751ca6f281fffd305f4409ff";
+/// Exact byte length of the public Vokra GGUF.
 pub const PUBLIC_GGUF_BYTES: u64 = 72_531_456;
+/// Number of tensors in the strict checkpoint contract.
 pub const TENSOR_COUNT: usize = 81;
+/// Output waveform sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 44_100;
+/// Number of input YuE codec feature channels.
 pub const INPUT_CHANNELS: usize = 1_024;
+/// Hidden width of the Vocos backbone.
 pub const DIM: usize = 512;
+/// Feed-forward intermediate width.
 pub const INTERMEDIATE_DIM: usize = 1_536;
+/// Number of Vocos transformer blocks.
 pub const NUM_LAYERS: usize = 8;
+/// Inverse-STFT transform size.
 pub const N_FFT: usize = 3_528;
+/// Inverse-STFT hop length in samples.
 pub const HOP_LENGTH: usize = 882;
 
 const LABEL: &str = "yue-upsampler";
@@ -182,26 +205,31 @@ impl YueUpsampler {
         self
     }
 
+    /// Returns the explicitly selected execution backend.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Returns the output waveform sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
 
+    /// Returns the expected number of input feature channels.
     #[must_use]
     pub const fn input_channels(&self) -> usize {
         INPUT_CHANNELS
     }
 
+    /// Returns the strict checkpoint tensor count.
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         TENSOR_COUNT
     }
 
+    /// Returns the stamped weight-license class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
