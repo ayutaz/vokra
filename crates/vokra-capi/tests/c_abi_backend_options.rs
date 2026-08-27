@@ -771,7 +771,7 @@ fn t3_unavailable_backend_never_falls_back_to_cpu() {
     println!(
         "t3: {checked_unavailable}/{} GPU backends were unavailable in this build \
          and took the no-fallback branch; {checked_available} were available and \
-         took the CPU-only-arch refusal branch",
+         were driven through the accept-or-refuse branch",
         GPU_BACKENDS.len()
     );
 }
