@@ -250,6 +250,27 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS fixed text-generation assets)
+
+All five released Qwen3-TTS main checkpoints now convert only with the exact
+fixed-revision `config.json`, Qwen2 byte-BPE vocabulary/merges, tokenizer
+configuration and generation configuration beside the source safetensors.
+Conversion verifies each sidecar by byte length and SHA-256, embeds the raw
+bytes in GGUF and stamps both the official repository and immutable revision.
+The runtime re-authenticates those blobs before exposing the official
+assistant, instruction and Base-reference prompt wrappers, language ids and
+CustomVoice speaker ids. Base and VoiceDesign reject fixed-speaker requests;
+unsupported languages, speakers and reserved control spellings fail
+explicitly. This is the text/prompt boundary only: the mapped autoregressive
+talker and 15-row code-predictor loop remains unavailable and end-to-end
+synthesis still returns an explicit error. No C symbol or allocation ABI
+changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.qwen3_tts.*` | `config_json`, `source_revision`, `tokenizer.{vocab_json,merges_txt,config_json}`, `generation.config_json` plus upstream provenance keys | Added | authenticated raw sidecars are stored as `u8[]`; revision/repository values are strings | Newly converted main GGUFs are immutable-release-specific; legacy descriptor GGUFs remain bindable but cannot tokenize or synthesize | no | (this commit) |
+| `vokra-models::qwen3_tts` | `Qwen3TtsTokenizer`, official text/codec token constants and supported-language list | Added | fail-closed `from_gguf`, prompt encoders and language/speaker resolvers | Additive Rust API; no mutable runtime sidecar or download path | no | (this commit) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS 12 Hz waveform-decoder contract)
 
 The official 682 MB tokenizer checkpoint now has a distinct decode-only GGUF

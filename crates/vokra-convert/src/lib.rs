@@ -6271,6 +6271,48 @@ pub fn convert_file(
     convert_file_licensed(model, input, output, None)
 }
 
+fn convert_qwen3_tts_file_summary(
+    model: ModelKind,
+    input: &Path,
+    output: &Path,
+    variant: Option<models::qwen3_tts::Qwen3TtsVariant>,
+    license: Option<&str>,
+) -> Result<ConvertSummary, ConvertError> {
+    let report = match variant {
+        Some(variant) => {
+            models::qwen3_tts::convert_file_with_variant(input, output, variant, license)?
+        }
+        None => models::qwen3_tts::convert_file(input, output, license)?,
+    };
+    Ok(ConvertSummary {
+        model,
+        tensor_count: report.written,
+        metadata_count: report.metadata_count,
+        output_bytes: std::fs::metadata(output)?.len(),
+        notes: vec![format!(
+            "qwen3-tts: authenticated exact fixed-revision config/tokenizer/generation sidecars; {} float tensors written verbatim ({} BF16 passthrough), {} non-float skipped",
+            report.written, report.bf16_passthrough, report.skipped_non_float
+        )],
+    })
+}
+
+fn qwen3_tts_0_6b_variant_from_slug(slug: &str) -> models::qwen3_tts::Qwen3TtsVariant {
+    let normalized = slug.to_ascii_lowercase();
+    match normalized.as_str() {
+        "qwen3-tts-0.6b-customvoice"
+        | "qwen3-tts-0_6b-customvoice"
+        | "qwen3-tts-0.6b-custom-voice"
+        | "qwen3_tts_0_6b_customvoice"
+        | "qwen3-tts-12hz-0.6b-customvoice"
+        | "qwen3-tts-12hz-0_6b-customvoice"
+        | "qwen3-tts-12hz-0.6b-custom-voice"
+        | "qwen/qwen3-tts-12hz-0.6b-customvoice" => {
+            models::qwen3_tts::Qwen3TtsVariant::_0_6B_CustomVoice
+        }
+        _ => models::qwen3_tts::Qwen3TtsVariant::_0_6B_Base,
+    }
+}
+
 /// [`convert_file`] with per-variant slug dispatch (2026-07-30 Task 3 add).
 ///
 /// Some `ModelKind` variants ([`ModelKind::BigVGan`] / [`ModelKind::Qwen3Asr`]
@@ -6293,6 +6335,34 @@ pub fn convert_file_with_slug(
     license: Option<&str>,
 ) -> Result<ConvertSummary, ConvertError> {
     match model {
+        ModelKind::Qwen3Tts => convert_qwen3_tts_file_summary(
+            model,
+            input,
+            output,
+            Some(qwen3_tts_0_6b_variant_from_slug(slug)),
+            license,
+        ),
+        ModelKind::Qwen3TtsBase17B => convert_qwen3_tts_file_summary(
+            model,
+            input,
+            output,
+            Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_Base),
+            license,
+        ),
+        ModelKind::Qwen3TtsCustomVoice17B => convert_qwen3_tts_file_summary(
+            model,
+            input,
+            output,
+            Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_CustomVoice),
+            license,
+        ),
+        ModelKind::Qwen3TtsVoiceDesign17B => convert_qwen3_tts_file_summary(
+            model,
+            input,
+            output,
+            Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_VoiceDesign),
+            license,
+        ),
         ModelKind::BigVGan => {
             let variant = match slug.to_lowercase().as_str() {
                 "bigvgan-v2-22khz-80band-256x"
@@ -6896,6 +6966,39 @@ pub fn convert_file_licensed(
              convert_canary_file_with_tokenizer (CLI: --tokenizer tokenizer.vocab)"
                 .into(),
         ));
+    }
+    match model {
+        ModelKind::Qwen3Tts => {
+            return convert_qwen3_tts_file_summary(model, input, output, None, license);
+        }
+        ModelKind::Qwen3TtsBase17B => {
+            return convert_qwen3_tts_file_summary(
+                model,
+                input,
+                output,
+                Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_Base),
+                license,
+            );
+        }
+        ModelKind::Qwen3TtsCustomVoice17B => {
+            return convert_qwen3_tts_file_summary(
+                model,
+                input,
+                output,
+                Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_CustomVoice),
+                license,
+            );
+        }
+        ModelKind::Qwen3TtsVoiceDesign17B => {
+            return convert_qwen3_tts_file_summary(
+                model,
+                input,
+                output,
+                Some(models::qwen3_tts::Qwen3TtsVariant::_1_7B_VoiceDesign),
+                license,
+            );
+        }
+        _ => {}
     }
     // Moshi streams tensor-by-tensor (the 14 GiB full-7B checkpoint must
     // never be materialized whole — bounded-memory contract); it routes
@@ -16073,6 +16176,39 @@ mod modelkind_alias_and_roundtrip_tests {
                     "--model {a} routed to {parsed:?} but the alias table says {kind:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn qwen3_tts_0_6b_customvoice_aliases_keep_release_identity() {
+        for slug in [
+            "qwen3-tts-0.6b-customvoice",
+            "qwen3-tts-0_6b-customvoice",
+            "qwen3-tts-0.6b-custom-voice",
+            "qwen3_tts_0_6b_customvoice",
+            "qwen3-tts-12hz-0.6b-customvoice",
+            "qwen3-tts-12hz-0_6b-customvoice",
+            "qwen3-tts-12hz-0.6b-custom-voice",
+            "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        ] {
+            assert_eq!(
+                super::qwen3_tts_0_6b_variant_from_slug(slug),
+                super::models::qwen3_tts::Qwen3TtsVariant::_0_6B_CustomVoice,
+                "accepted CustomVoice slug {slug:?} must not stamp Base provenance"
+            );
+        }
+
+        for slug in [
+            "qwen3-tts",
+            "qwen3_tts",
+            "qwen3-tts-0.6b",
+            "qwen3-tts-12hz-0.6b-base",
+        ] {
+            assert_eq!(
+                super::qwen3_tts_0_6b_variant_from_slug(slug),
+                super::models::qwen3_tts::Qwen3TtsVariant::_0_6B_Base,
+                "Base slug {slug:?} must retain Base provenance"
+            );
         }
     }
 

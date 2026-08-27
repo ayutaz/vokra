@@ -143,12 +143,19 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+mod tokenizer;
 mod tokenizer_12hz;
 mod tokenizer_12hz_forward;
 
 pub use bound::{
     Qwen3TtsBoundBlockWeights, Qwen3TtsCheckpoint, Qwen3TtsCheckpointVariant,
     qwen3_tts_code_predictor_block_forward, qwen3_tts_talker_block_forward,
+};
+pub use tokenizer::{
+    CODEC_BOS_TOKEN_ID, CODEC_EOS_TOKEN_ID, CODEC_NOTHINK_TOKEN_ID, CODEC_PAD_TOKEN_ID,
+    CODEC_THINK_BOS_TOKEN_ID, CODEC_THINK_EOS_TOKEN_ID, CODEC_THINK_TOKEN_ID, Qwen3TtsTokenizer,
+    SUPPORTED_LANGUAGES as QWEN3_TTS_SUPPORTED_LANGUAGES, TTS_BOS_TOKEN_ID, TTS_EOS_TOKEN_ID,
+    TTS_PAD_TOKEN_ID,
 };
 pub use tokenizer_12hz::{Qwen3TtsTokenizer12HzConfig, Qwen3TtsTokenizer12HzDecoder};
 

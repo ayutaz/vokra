@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use super::tokenizer::Qwen3TtsTokenizer;
 use super::{Qwen3TtsCodePredictorConfig, Qwen3TtsConfig, Qwen3TtsTalkerConfig};
 
 const KEY_SAMPLE_RATE: &str = "vokra.qwen3_tts.sample_rate";
@@ -223,12 +224,18 @@ impl Qwen3TtsCheckpoint {
         self.tensor_count
     }
 
+    /// Authenticates the fixed-revision embedded config/tokenizer/generation
+    /// sidecars and returns the exact Qwen2 byte-BPE prompt builder.
+    pub fn tokenizer(&self, file: &GgufFile) -> Result<Qwen3TtsTokenizer> {
+        Qwen3TtsTokenizer::from_gguf(file, self.variant)
+    }
+
     /// Primary text-to-PCM entry point for a bound real checkpoint.
     ///
     /// Loading and individual talker/code-predictor blocks are real.  Full
-    /// synthesis remains loud until the Qwen2 BPE sidecars, autoregressive
-    /// generation loop, and separate 12-Hz neural speech-tokenizer decoder
-    /// are bound.  The RVQ table fold alone is not a waveform decoder.
+    /// synthesis remains loud until the mapped autoregressive generation loop
+    /// and separately supplied 12-Hz neural speech-tokenizer decoder are
+    /// joined. The Qwen2 BPE sidecars are authenticated by [`Self::tokenizer`].
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -236,7 +243,7 @@ impl Qwen3TtsCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "qwen3_tts synthesize: the exact main checkpoint is bound and the native talker/code-predictor decoder block is available, but end-to-end PCM still requires three independently gated pieces: embedded Qwen2 BPE vocab+merges, the multi-codebook autoregressive generation loop, and the separate Qwen3-TTS-Tokenizer-12Hz neural decoder (682 MB sibling artifact). vokra_ops::qwen3_tts_codec only folds RVQ tables to codec features and is not substituted for that neural waveform decoder.",
+            "qwen3_tts synthesize: the exact main checkpoint and fixed-revision Qwen2 BPE sidecars are bindable, and the separate Qwen3-TTS-Tokenizer-12Hz decoder has a native CPU/Metal path; end-to-end PCM still requires the mapped multi-codebook autoregressive talker/code-predictor generation loop and an API that joins the two authenticated GGUF artifacts. No CPU fallback or RVQ-only waveform substitute is used.",
         ))
     }
 

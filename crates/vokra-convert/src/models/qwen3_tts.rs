@@ -110,9 +110,12 @@
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -145,6 +148,36 @@ pub(crate) const NAME_1_7B_CUSTOM_VOICE: &str = "qwen3-tts-12hz-1.7b-customvoice
 /// `vokra.model.name` value written for the
 /// `Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` variant.
 pub(crate) const NAME_1_7B_VOICE_DESIGN: &str = "qwen3-tts-12hz-1.7b-voicedesign";
+
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_SOURCE_REVISION: &str = "vokra.qwen3_tts.source_revision";
+pub(crate) const KEY_CONFIG_JSON: &str = "vokra.qwen3_tts.config_json";
+pub(crate) const KEY_TOKENIZER_VOCAB: &str = "vokra.qwen3_tts.tokenizer.vocab_json";
+pub(crate) const KEY_TOKENIZER_MERGES: &str = "vokra.qwen3_tts.tokenizer.merges_txt";
+pub(crate) const KEY_TOKENIZER_CONFIG: &str = "vokra.qwen3_tts.tokenizer.config_json";
+pub(crate) const KEY_GENERATION_CONFIG: &str = "vokra.qwen3_tts.generation.config_json";
+
+const VOCAB_FILE: ExactSidecar = ExactSidecar {
+    name: "vocab.json",
+    bytes: 2_776_833,
+    sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+};
+const MERGES_FILE: ExactSidecar = ExactSidecar {
+    name: "merges.txt",
+    bytes: 1_671_839,
+    sha256: "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+};
+const TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 7_344,
+    sha256: "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+};
+const GENERATION_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "generation_config.json",
+    bytes: 245,
+    sha256: "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa",
+};
 
 // --- vokra.qwen3_tts.* metadata keys (kept as constants in the converter;
 // the runtime side lives in `crates/vokra-models/src/qwen3_tts/mod.rs` —
@@ -391,6 +424,56 @@ impl Qwen3TtsVariant {
         }
     }
 
+    pub(crate) const fn upstream_hf(self) -> &'static str {
+        match self {
+            Self::_0_6B_Base => "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            Self::_0_6B_CustomVoice => "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            Self::_1_7B_Base => "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            Self::_1_7B_CustomVoice => "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+            Self::_1_7B_VoiceDesign => "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+        }
+    }
+
+    pub(crate) const fn source_revision(self) -> &'static str {
+        match self {
+            Self::_0_6B_Base => "5d83992436eae1d760afd27aff78a71d676296fc",
+            Self::_0_6B_CustomVoice => "85e237c12c027371202489a0ec509ded67b5e4b5",
+            Self::_1_7B_Base => "fd4b254389122332181a7c3db7f27e918eec64e3",
+            Self::_1_7B_CustomVoice => "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+            Self::_1_7B_VoiceDesign => "5ecdb67327fd37bb2e042aab12ff7391903235d3",
+        }
+    }
+
+    const fn config_file(self) -> ExactSidecar {
+        match self {
+            Self::_0_6B_Base => ExactSidecar {
+                name: "config.json",
+                bytes: 4_494,
+                sha256: "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011",
+            },
+            Self::_0_6B_CustomVoice => ExactSidecar {
+                name: "config.json",
+                bytes: 4_908,
+                sha256: "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455",
+            },
+            Self::_1_7B_Base => ExactSidecar {
+                name: "config.json",
+                bytes: 4_494,
+                sha256: "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9",
+            },
+            Self::_1_7B_CustomVoice => ExactSidecar {
+                name: "config.json",
+                bytes: 4_908,
+                sha256: "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9",
+            },
+            Self::_1_7B_VoiceDesign => ExactSidecar {
+                name: "config.json",
+                bytes: 4_421,
+                sha256: "aecd2cc4c1fe9edef1cb7ca7c401685a43879ad43f3f9e883f1c6760b61731e0",
+            },
+        }
+    }
+
     /// Talker hidden dimension for this variant. Every 1.7B variant
     /// (Base / CustomVoice / VoiceDesign) shares the widened axis
     /// `TALKER_1_7B_HIDDEN_DIM = 2048`.
@@ -489,6 +572,9 @@ pub(crate) struct Qwen3TtsReport {
     /// posture pin so a latent silent-widen cannot slip in
     /// undetected. Mirrors `moshi::MoshiReport::bf16_passthrough`.
     pub(crate) bf16_passthrough: usize,
+    /// Metadata entries written after fixed-revision release assets are
+    /// embedded. Builder-only fixture conversion leaves this at zero.
+    pub(crate) metadata_count: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).
     pub(crate) notes: Vec<String>,
@@ -529,6 +615,150 @@ pub(crate) fn convert_variant(
     convert_parsed(st, variant)
 }
 
+pub(crate) fn convert_file(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<Qwen3TtsReport, ConvertError> {
+    validate_license(license, None)?;
+    let bytes = std::fs::read(input)?;
+    let st = SafetensorsFile::parse(bytes)?;
+    let variant = detect_0_6b_variant(&st)?;
+    convert_parsed_file(st, input, output, variant)
+}
+
+pub(crate) fn convert_file_with_variant(
+    input: &Path,
+    output: &Path,
+    variant: Qwen3TtsVariant,
+    license: Option<&str>,
+) -> Result<Qwen3TtsReport, ConvertError> {
+    validate_license(license, Some(variant))?;
+    let st = SafetensorsFile::parse(std::fs::read(input)?)?;
+    validate_checkpoint(&st, variant)?;
+    convert_parsed_file(st, input, output, variant)
+}
+
+fn validate_license(
+    license: Option<&str>,
+    variant: Option<Qwen3TtsVariant>,
+) -> Result<(), ConvertError> {
+    if let Some(value) = license
+        && !value.is_empty()
+        && !value.eq_ignore_ascii_case("apache-2.0")
+    {
+        let release = variant
+            .map(Qwen3TtsVariant::upstream_hf)
+            .unwrap_or("the exact detected Qwen3-TTS 0.6B release");
+        return Err(ConvertError::Usage(format!(
+            "qwen3-tts: {release} has pinned Apache-2.0 weights and sidecars; refusing conflicting --license {value:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn convert_parsed_file(
+    st: SafetensorsFile,
+    input: &Path,
+    output: &Path,
+    variant: Qwen3TtsVariant,
+) -> Result<Qwen3TtsReport, ConvertError> {
+    let (mut builder, mut report) = convert_parsed(st, variant)?;
+    ReleaseAssets::load(input, variant)?.embed(&mut builder);
+    report.metadata_count = builder.metadata_count();
+    let bytes = builder.to_bytes()?;
+    std::fs::write(output, bytes)?;
+    Ok(report)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExactSidecar {
+    name: &'static str,
+    bytes: usize,
+    sha256: &'static str,
+}
+
+#[derive(Debug)]
+struct ReleaseAssets {
+    config: Vec<u8>,
+    vocab: Vec<u8>,
+    merges: Vec<u8>,
+    tokenizer_config: Vec<u8>,
+    generation_config: Vec<u8>,
+}
+
+impl ReleaseAssets {
+    fn load(input: &Path, variant: Qwen3TtsVariant) -> Result<Self, ConvertError> {
+        let directory = input.parent().unwrap_or_else(|| Path::new("."));
+        Ok(Self {
+            config: read_exact_sidecar(directory, variant.config_file(), variant)?,
+            vocab: read_exact_sidecar(directory, VOCAB_FILE, variant)?,
+            merges: read_exact_sidecar(directory, MERGES_FILE, variant)?,
+            tokenizer_config: read_exact_sidecar(directory, TOKENIZER_CONFIG_FILE, variant)?,
+            generation_config: read_exact_sidecar(directory, GENERATION_CONFIG_FILE, variant)?,
+        })
+    }
+
+    fn embed(&self, builder: &mut GgufBuilder) {
+        add_u8_array(builder, KEY_CONFIG_JSON, &self.config);
+        add_u8_array(builder, KEY_TOKENIZER_VOCAB, &self.vocab);
+        add_u8_array(builder, KEY_TOKENIZER_MERGES, &self.merges);
+        add_u8_array(builder, KEY_TOKENIZER_CONFIG, &self.tokenizer_config);
+        add_u8_array(builder, KEY_GENERATION_CONFIG, &self.generation_config);
+    }
+}
+
+fn read_exact_sidecar(
+    directory: &Path,
+    spec: ExactSidecar,
+    variant: Qwen3TtsVariant,
+) -> Result<Vec<u8>, ConvertError> {
+    let path = directory.join(spec.name);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        ConvertError::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "qwen3-tts: reading required {}@{} sidecar {}: {error}",
+                variant.upstream_hf(),
+                variant.source_revision(),
+                path.display()
+            ),
+        ))
+    })?;
+    if bytes.len() != spec.bytes {
+        return Err(ConvertError::Parse(format!(
+            "qwen3-tts: {}@{} sidecar {} is {} bytes, expected exactly {}",
+            variant.upstream_hf(),
+            variant.source_revision(),
+            spec.name,
+            bytes.len(),
+            spec.bytes
+        )));
+    }
+    let actual =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&bytes));
+    if actual != spec.sha256 {
+        return Err(ConvertError::Parse(format!(
+            "qwen3-tts: {}@{} sidecar {} SHA-256 {actual}, expected {}",
+            variant.upstream_hf(),
+            variant.source_revision(),
+            spec.name,
+            spec.sha256
+        )));
+    }
+    Ok(bytes)
+}
+
+fn add_u8_array(builder: &mut GgufBuilder, key: &str, bytes: &[u8]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: bytes.iter().copied().map(GgufMetadataValue::U8).collect(),
+        }),
+    );
+}
+
 fn convert_parsed(
     st: SafetensorsFile,
     variant: Qwen3TtsVariant,
@@ -536,6 +766,9 @@ fn convert_parsed(
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
+    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, variant.source_revision());
+    b.add_string(KEY_SOURCE_REVISION, variant.source_revision());
     write_hparams(&mut b, variant);
     // Self-describing redistribution: the artifact carries its own licence.
     // Every Qwen3-TTS release ships `apache-2.0` end-to-end
@@ -545,25 +778,17 @@ fn convert_parsed(
     // — CLAUDE.md「ハルシネーション厳禁」). The whole release — LM +
     // codec + tokenizer + speaker encoder — carries a single apache-2.0
     // grant.
-    let source = match variant {
-        Qwen3TtsVariant::_0_6B_Base => "Qwen/Qwen3-TTS-12Hz-0.6B-Base (apache-2.0 end-to-end)",
-        Qwen3TtsVariant::_0_6B_CustomVoice => {
-            "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice (apache-2.0 end-to-end)"
-        }
-        Qwen3TtsVariant::_1_7B_Base => "Qwen/Qwen3-TTS-12Hz-1.7B-Base (apache-2.0 end-to-end)",
-        Qwen3TtsVariant::_1_7B_CustomVoice => {
-            "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (apache-2.0 end-to-end)"
-        }
-        Qwen3TtsVariant::_1_7B_VoiceDesign => {
-            "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign (apache-2.0 end-to-end)"
-        }
-    };
+    let source = format!(
+        "{}@{} (apache-2.0 end-to-end)",
+        variant.upstream_hf(),
+        variant.source_revision()
+    );
     vokra_core::stamp_provenance(
         &mut b,
         LicenseClass::Permissive,
         "apache-2.0",
         Some(variant.name()),
-        Some(source),
+        Some(&source),
     );
 
     let mut report = Qwen3TtsReport::default();
@@ -923,6 +1148,20 @@ mod tests {
         out
     }
 
+    fn scratch_directory(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-qwen3-tts-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("create scratch directory");
+        path
+    }
+
     fn get_u32(file: &GgufFile, key: &str) -> u32 {
         match file.get(key) {
             Some(GgufMetadataValue::U32(v)) => *v,
@@ -1047,6 +1286,16 @@ mod tests {
             file.get(KEY_MODEL_FAMILY).and_then(|v| v.as_str()),
             Some(MODEL_FAMILY)
         );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|value| value.as_str()),
+            Some(Qwen3TtsVariant::_0_6B_Base.upstream_hf())
+        );
+        assert_eq!(
+            file.get(KEY_SOURCE_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(Qwen3TtsVariant::_0_6B_Base.source_revision())
+        );
 
         // Every transcribed U32 hparam round-trips verbatim under the
         // `vokra.qwen3_tts.*` prefix.
@@ -1099,6 +1348,78 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str())
         );
+    }
+
+    #[test]
+    fn release_assets_are_embedded_as_one_complete_group() {
+        let (mut builder, _) =
+            convert_variant_fixture(minimal_safetensors_one_f32(), Qwen3TtsVariant::_0_6B_Base)
+                .expect("convert fixture");
+        let before = builder.metadata_count();
+        let assets = ReleaseAssets {
+            config: b"config".to_vec(),
+            vocab: b"vocab".to_vec(),
+            merges: b"merges".to_vec(),
+            tokenizer_config: b"tokenizer".to_vec(),
+            generation_config: b"generation".to_vec(),
+        };
+        assets.embed(&mut builder);
+        assert_eq!(builder.metadata_count(), before + 5);
+        let file =
+            GgufFile::parse(builder.to_bytes().expect("serialize assets")).expect("parse assets");
+        for (key, expected) in [
+            (KEY_CONFIG_JSON, b"config".as_slice()),
+            (KEY_TOKENIZER_VOCAB, b"vocab".as_slice()),
+            (KEY_TOKENIZER_MERGES, b"merges".as_slice()),
+            (KEY_TOKENIZER_CONFIG, b"tokenizer".as_slice()),
+            (KEY_GENERATION_CONFIG, b"generation".as_slice()),
+        ] {
+            let GgufMetadataValue::Array(array) = file.get(key).expect("embedded asset") else {
+                panic!("{key} must be an array");
+            };
+            let actual = array
+                .values
+                .iter()
+                .map(|value| match value {
+                    GgufMetadataValue::U8(byte) => *byte,
+                    other => panic!("{key} contains non-U8 {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn sidecar_reader_rejects_size_and_hash_drift() {
+        let directory = scratch_directory("sidecars");
+        let path = directory.join("tiny.txt");
+        let variant = Qwen3TtsVariant::_1_7B_VoiceDesign;
+        let spec = ExactSidecar {
+            name: "tiny.txt",
+            bytes: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        std::fs::write(&path, b"abc").expect("write exact sidecar");
+        assert_eq!(
+            read_exact_sidecar(&directory, spec, variant).expect("exact sidecar"),
+            b"abc"
+        );
+
+        std::fs::write(&path, b"ab").expect("write short sidecar");
+        assert!(
+            read_exact_sidecar(&directory, spec, variant)
+                .expect_err("size drift")
+                .to_string()
+                .contains("expected exactly 3")
+        );
+        std::fs::write(&path, b"abd").expect("write hash drift sidecar");
+        assert!(
+            read_exact_sidecar(&directory, spec, variant)
+                .expect_err("hash drift")
+                .to_string()
+                .contains("SHA-256")
+        );
+        std::fs::remove_dir_all(directory).ok();
     }
 
     #[test]
