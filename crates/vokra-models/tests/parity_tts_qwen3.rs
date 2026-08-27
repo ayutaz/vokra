@@ -1078,6 +1078,7 @@ fn synthesize_fr_ex_08_refusal_pins() {
             head_dim: 8,
             ffn_dim: 32,
             vocab_size: 24,
+            max_position_embeddings: 128,
             rope_base: 1_000_000.0,
             rms_norm_eps: 1e-6,
             num_code_groups: 16,

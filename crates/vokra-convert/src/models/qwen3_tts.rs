@@ -216,6 +216,7 @@ const KEY_CP_N_HEAD_KV: &str = "vokra.qwen3_tts.code_predictor.n_head_kv";
 const KEY_CP_HEAD_DIM: &str = "vokra.qwen3_tts.code_predictor.head_dim";
 const KEY_CP_FFN_DIM: &str = "vokra.qwen3_tts.code_predictor.ffn_dim";
 const KEY_CP_VOCAB_SIZE: &str = "vokra.qwen3_tts.code_predictor.vocab_size";
+const KEY_CP_MAX_POSITIONS: &str = "vokra.qwen3_tts.code_predictor.max_position_embeddings";
 const KEY_CP_ROPE_BASE: &str = "vokra.qwen3_tts.code_predictor.rope_base";
 const KEY_CP_RMS_NORM_EPS: &str = "vokra.qwen3_tts.code_predictor.rms_norm_eps";
 const KEY_CP_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.code_predictor.num_code_groups";
@@ -265,6 +266,7 @@ const CP_N_HEAD_KV: u32 = 8;
 const CP_HEAD_DIM: u32 = 128;
 const CP_FFN_DIM: u32 = 3072;
 const CP_VOCAB_SIZE: u32 = 2048;
+const CP_MAX_POSITIONS: u32 = 65_536;
 const CP_ROPE_BASE: f32 = 1_000_000.0;
 const CP_RMS_NORM_EPS: f32 = 1e-6;
 const CP_NUM_CODE_GROUPS: u32 = 16;
@@ -357,14 +359,8 @@ const TALKER_1_7B_NUM_CODE_GROUPS: u32 = 16;
 /// identity-sized).
 const TALKER_1_7B_TEXT_HIDDEN_SIZE: u32 = 2048;
 
-// Code predictor axes for the 1.7B variants — IDENTICAL to 0.6B EXCEPT
-// `max_position_embeddings` (0.6B not tracked, 1.7B raised to 65 536 —
-// but the current metadata schema does not carry the CP max positions,
-// so no new key today). All other CP axes match the 0.6B constants
-// declared above. If a future runtime binder needs the CP max
-// positions, a `KEY_CP_MAX_POSITIONS` chunk should be added
-// symmetrically to both 0.6B and 1.7B constants and populated with
-// `32_768` / `65_536` respectively.
+// Code predictor axes for every released variant are identical, including
+// `max_position_embeddings = 65_536` in all five pinned official configs.
 
 /// Which Qwen3-TTS release variant to stamp into the emitted GGUF.
 ///
@@ -869,6 +865,7 @@ fn write_hparams(b: &mut GgufBuilder, variant: Qwen3TtsVariant) {
     b.add_u32(KEY_CP_HEAD_DIM, CP_HEAD_DIM);
     b.add_u32(KEY_CP_FFN_DIM, CP_FFN_DIM);
     b.add_u32(KEY_CP_VOCAB_SIZE, CP_VOCAB_SIZE);
+    b.add_u32(KEY_CP_MAX_POSITIONS, CP_MAX_POSITIONS);
     b.add_f32(KEY_CP_ROPE_BASE, CP_ROPE_BASE);
     b.add_f32(KEY_CP_RMS_NORM_EPS, CP_RMS_NORM_EPS);
     b.add_u32(KEY_CP_NUM_CODE_GROUPS, CP_NUM_CODE_GROUPS);
@@ -1321,6 +1318,7 @@ mod tests {
             (KEY_CP_HEAD_DIM, CP_HEAD_DIM),
             (KEY_CP_FFN_DIM, CP_FFN_DIM),
             (KEY_CP_VOCAB_SIZE, CP_VOCAB_SIZE),
+            (KEY_CP_MAX_POSITIONS, CP_MAX_POSITIONS),
             (KEY_CP_NUM_CODE_GROUPS, CP_NUM_CODE_GROUPS),
         ] {
             assert_eq!(get_u32(&file, key), want, "{key}");

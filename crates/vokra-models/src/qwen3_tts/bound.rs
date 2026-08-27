@@ -9,11 +9,14 @@
 //! the complete checkpoint, and decodes one transformer block on demand.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use super::tokenizer::Qwen3TtsTokenizer;
+use super::weights::Qwen3TtsMappedDescriptors;
 use super::{Qwen3TtsCodePredictorConfig, Qwen3TtsConfig, Qwen3TtsTalkerConfig};
 
 const KEY_SAMPLE_RATE: &str = "vokra.qwen3_tts.sample_rate";
@@ -42,6 +45,7 @@ const KEY_CP_N_HEAD_KV: &str = "vokra.qwen3_tts.code_predictor.n_head_kv";
 const KEY_CP_HEAD_DIM: &str = "vokra.qwen3_tts.code_predictor.head_dim";
 const KEY_CP_FFN_DIM: &str = "vokra.qwen3_tts.code_predictor.ffn_dim";
 const KEY_CP_VOCAB_SIZE: &str = "vokra.qwen3_tts.code_predictor.vocab_size";
+const KEY_CP_MAX_POSITIONS: &str = "vokra.qwen3_tts.code_predictor.max_position_embeddings";
 const KEY_CP_ROPE_BASE: &str = "vokra.qwen3_tts.code_predictor.rope_base";
 const KEY_CP_RMS_NORM_EPS: &str = "vokra.qwen3_tts.code_predictor.rms_norm_eps";
 const KEY_CP_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.code_predictor.num_code_groups";
@@ -129,9 +133,38 @@ pub struct Qwen3TtsCheckpoint {
     model_name: String,
     weight_license: LicenseClass,
     tensor_count: usize,
+    mapped: Option<Arc<Qwen3TtsMappedDescriptors>>,
+    embedded_tokenizer: Option<Arc<Qwen3TtsTokenizer>>,
 }
 
 impl Qwen3TtsCheckpoint {
+    /// Opens the exact main GGUF through mmap and binds every generation
+    /// descriptor without widening tensor payloads.
+    pub fn open_mapped(path: impl AsRef<Path>) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_mapped(Arc::new(file))
+    }
+
+    /// Strictly binds an already mmap-backed GGUF for bounded-memory
+    /// execution. Normal callers should prefer [`Self::open_mapped`].
+    pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
+        let mut checkpoint = Self::from_gguf(&file)?;
+        if checkpoint.weight_license != LicenseClass::Permissive {
+            return Err(VokraError::ModelLoad(format!(
+                "qwen3_tts: mapped execution requires the pinned Apache-2.0 release to classify as permissive, got {:?}",
+                checkpoint.weight_license
+            )));
+        }
+        let tokenizer = Arc::new(Qwen3TtsTokenizer::from_gguf(&file, checkpoint.variant)?);
+        let mapped = Arc::new(Qwen3TtsMappedDescriptors::bind(
+            file,
+            checkpoint.config.clone(),
+        )?);
+        checkpoint.mapped = Some(mapped);
+        checkpoint.embedded_tokenizer = Some(tokenizer);
+        Ok(checkpoint)
+    }
+
     /// Validates the arch, every variant/topology metadata key, and the exact
     /// released name/shape manifest.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
@@ -191,6 +224,8 @@ impl Qwen3TtsCheckpoint {
             model_name,
             weight_license,
             tensor_count: file.tensors().len(),
+            mapped: None,
+            embedded_tokenizer: None,
         })
     }
 
@@ -222,6 +257,30 @@ impl Qwen3TtsCheckpoint {
     /// Returns the number of tensors validated against the strict manifest.
     pub const fn tensor_count(&self) -> usize {
         self.tensor_count
+    }
+
+    /// Whether this checkpoint retains a mapped payload for execution.
+    #[must_use]
+    pub const fn is_mapped(&self) -> bool {
+        self.mapped.is_some()
+    }
+
+    pub(super) fn mapped(&self) -> Result<&Qwen3TtsMappedDescriptors> {
+        self.mapped.as_deref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_tts: executable generation requires Qwen3TtsCheckpoint::open_mapped or from_gguf_mapped; from_gguf is descriptor-only"
+                    .to_owned(),
+            )
+        })
+    }
+
+    pub(super) fn embedded_tokenizer(&self) -> Result<&Arc<Qwen3TtsTokenizer>> {
+        self.embedded_tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_tts: executable generation requires the exact embedded fixed-revision tokenizer assets"
+                    .to_owned(),
+            )
+        })
     }
 
     /// Authenticates the fixed-revision embedded config/tokenizer/generation
@@ -710,6 +769,7 @@ fn config_from_gguf(file: &GgufFile) -> Result<Qwen3TtsConfig> {
             head_dim: required_u32(file, KEY_CP_HEAD_DIM)?,
             ffn_dim: required_u32(file, KEY_CP_FFN_DIM)?,
             vocab_size: required_u32(file, KEY_CP_VOCAB_SIZE)?,
+            max_position_embeddings: required_u32(file, KEY_CP_MAX_POSITIONS)?,
             rope_base: required_f32(file, KEY_CP_ROPE_BASE)?,
             rms_norm_eps: required_f32(file, KEY_CP_RMS_NORM_EPS)?,
             num_code_groups: required_u32(file, KEY_CP_NUM_CODE_GROUPS)?,

@@ -250,6 +250,24 @@ still legal, and still requires a dated entry in `## Entries` below. The freeze
 
 ## Entries
 
+### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS mapped main generation)
+
+All five authenticated main checkpoints now expose a bounded-memory native
+talker and fifteen-row code predictor. Dense tensors stay mmap-backed, one
+Transformer layer or embedding/head slice is widened at a time, and every
+learned operation uses one preflighted CPU or Metal `Compute` backend. The
+embedded fixed-revision tokenizer builds the official Base, CustomVoice and
+VoiceDesign prompts; unsupported variant controls fail explicitly. Generation
+returns frame-major sixteen-codebook packets with terminal EOS removed for the
+separately authenticated 12-Hz waveform decoder. This records code reachability
+and static backend coverage only; real-weight CPU/Metal numerical parity remains
+a VAST gate. No C symbol or allocation ABI changes.
+
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.qwen3_tts.code_predictor.*` | `max_position_embeddings` | Added | `u32`, exactly `65536` for all five pinned releases | Newly converted main GGUFs carry the previously omitted predictor position ceiling; older descriptor artifacts must be reconverted before mapped generation | no | (this commit) |
+| `vokra-models::qwen3_tts` | `Qwen3TtsMain`, `Qwen3TtsGenerationOptions`, `Qwen3TtsGeneratedCodes`, `Qwen3TtsTalkerSession` | Added | mmap constructors, raw cached-talker boundary and `generate_codes(&str, &options)` | Additive Rust model API; unsupported backend operations return an error and never fall back to CPU | no | (this commit) |
+
 ### 2026-08-27 — 1.0.0-rc.1-dev (Qwen3-TTS fixed text-generation assets)
 
 All five released Qwen3-TTS main checkpoints now convert only with the exact

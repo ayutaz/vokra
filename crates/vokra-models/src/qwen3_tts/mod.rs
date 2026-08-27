@@ -143,13 +143,19 @@ use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+mod generation;
 mod tokenizer;
 mod tokenizer_12hz;
 mod tokenizer_12hz_forward;
+mod weights;
 
 pub use bound::{
     Qwen3TtsBoundBlockWeights, Qwen3TtsCheckpoint, Qwen3TtsCheckpointVariant,
     qwen3_tts_code_predictor_block_forward, qwen3_tts_talker_block_forward,
+};
+pub use generation::{
+    QWEN3_TTS_MAIN_HOT_OPS, Qwen3TtsGeneratedCodes, Qwen3TtsGenerationOptions, Qwen3TtsMain,
+    Qwen3TtsTalkerOutput, Qwen3TtsTalkerSession,
 };
 pub use tokenizer::{
     CODEC_BOS_TOKEN_ID, CODEC_EOS_TOKEN_ID, CODEC_NOTHINK_TOKEN_ID, CODEC_PAD_TOKEN_ID,
@@ -444,6 +450,9 @@ pub struct Qwen3TtsCodePredictorConfig {
     /// `codebook_size` and `semantic_codebook_size` (see the primary
     /// source docstring on the codec seam).
     pub vocab_size: u32,
+    /// Maximum code-predictor positions. Every pinned release carries
+    /// `max_position_embeddings = 65_536`.
+    pub max_position_embeddings: u32,
     /// RoPE base θ (`rope_theta`). `1_000_000` — same as the talker.
     pub rope_base: f32,
     /// RMSNorm epsilon (`rms_norm_eps`). `1e-6`.
@@ -467,6 +476,7 @@ impl Qwen3TtsCodePredictorConfig {
             head_dim: 128,
             ffn_dim: 3072,
             vocab_size: 2048,
+            max_position_embeddings: 65_536,
             rope_base: 1_000_000.0,
             rms_norm_eps: 1e-6,
             num_code_groups: QWEN3_TTS_NUM_CODE_GROUPS,
@@ -485,6 +495,7 @@ impl Qwen3TtsCodePredictorConfig {
             head_dim: 8,
             ffn_dim: 32,
             vocab_size: 24,
+            max_position_embeddings: 128,
             rope_base: 1_000_000.0,
             rms_norm_eps: 1e-6,
             num_code_groups: 3,
@@ -705,6 +716,7 @@ impl Qwen3TtsConfig {
             || cp.head_dim == 0
             || cp.ffn_dim == 0
             || cp.vocab_size == 0
+            || cp.max_position_embeddings == 0
             || cp.num_code_groups == 0
         {
             return Err(VokraError::InvalidArgument(
@@ -1453,6 +1465,7 @@ mod tests {
                 head_dim: 0,
                 ffn_dim: 0,
                 vocab_size: 0,
+                max_position_embeddings: 0,
                 rope_base: 1_000_000.0,
                 rms_norm_eps: 1e-6,
                 num_code_groups: 0,
@@ -1666,6 +1679,7 @@ mod tests {
                 head_dim: 8,
                 ffn_dim: 32,
                 vocab_size: 24,
+                max_position_embeddings: 128,
                 rope_base: 1_000_000.0,
                 rms_norm_eps: 1e-6,
                 num_code_groups: 16,
@@ -1785,6 +1799,7 @@ mod tests {
                 head_dim: 8,
                 ffn_dim: 32,
                 vocab_size: 24,
+                max_position_embeddings: 128,
                 rope_base: 1_000_000.0,
                 rms_norm_eps: 1e-6,
                 num_code_groups: 16,
