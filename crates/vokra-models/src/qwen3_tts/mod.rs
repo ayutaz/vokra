@@ -117,8 +117,9 @@
 //! - [`Qwen3TtsTts`] — engine handle carrying config + weights.
 //!   [`Qwen3TtsTts::synthesize`] returns [`VokraError::NotImplemented`]
 //!   until real weights are bound and the talker → code-predictor →
-//!   [`Qwen3TtsTokenizer12HzDecoder`] chain is wired
-//!   end-to-end (T29-equivalent follow-up wave).
+//!   [`Qwen3TtsTokenizer12HzDecoder`] chain is wired end-to-end. The companion
+//!   decoder itself is native CPU/Metal; the remaining gap is the main
+//!   talker/code-predictor generation path (T29-equivalent follow-up wave).
 //!
 //! # Code-layout seam and waveform companion
 //!
@@ -126,8 +127,9 @@
 //! feature-fold contract. The official waveform checkpoint has its own
 //! learned Euclidean codebooks, sliding Transformer, ConvNeXt upsamplers and
 //! causal transposed-convolution decoder, bound separately by
-//! [`Qwen3TtsTokenizer12HzDecoder`]. Neither surface silently substitutes for
-//! the other.
+//! [`Qwen3TtsTokenizer12HzDecoder`]. Its mapping-owning constructors execute
+//! that complete code-to-PCM graph on CPU or Metal. Neither surface silently
+//! substitutes for the other.
 //!
 //! # No ONNX (permanent)
 //!
@@ -142,6 +144,7 @@ use vokra_core::{Result, VokraError};
 
 mod bound;
 mod tokenizer_12hz;
+mod tokenizer_12hz_forward;
 
 pub use bound::{
     Qwen3TtsBoundBlockWeights, Qwen3TtsCheckpoint, Qwen3TtsCheckpointVariant,

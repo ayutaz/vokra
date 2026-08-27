@@ -257,16 +257,20 @@ contract. Conversion authenticates the whole pinned 496-tensor F32 source by
 SHA-256, validates the exact source manifest, strips 225 encoder tensors and
 emits only the 271 `decoder.*` tensors. The runtime binder rechecks the exact
 architecture, provenance, topology, names, shapes and dtypes under the strict
-license policy. It also validates the sixteen-row code matrix and explicitly
-refuses waveform execution until the native RVQ/Transformer/ConvNeXt/causal
-transposed-convolution graph is connected. This is not a PCM claim and never
-falls back to the smaller `qwen3_tts_codec` feature-fold helper. No C symbol or
-allocation ABI changes.
+license policy. The mapping-owning constructor now executes the complete
+sixteen-row learned Euclidean RVQ, sliding causal Transformer, ConvNeXt and
+causal transposed-convolution graph, using the official 300-frame chunks and
+25-frame left context. CPU and Metal select one complete `Compute` backend;
+an unavailable operation fails preflight and never falls back to CPU. The
+borrowed constructor remains validation-only so it cannot accidentally copy or
+outlive the 682 MB artifact. This entry records the native graph and static
+CPU/Metal coverage; independent real-weight PCM parity remains a separate VAST
+gate and is not claimed here. No C symbol or allocation ABI changes.
 
 | Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
 |---|---|---|---|---|---:|---|
 | `gguf:vokra.qwen3_tts_tokenizer_12hz.*` | authenticated decoder metadata group | Added | fixed sample-rate/upsample, RVQ, Transformer, waveform-decoder, chunk-context and source-hash keys; array keys are `u32[]`, floating axes are `f32`, all other topology axes are `u32`, hashes/revisions are strings | Distinct `vokra.model.arch=qwen3_tts_tokenizer_12hz`; only the exact pinned decode-only artifact is admitted | no | (this commit) |
-| `vokra-models::qwen3_tts` | `Qwen3TtsTokenizer12HzConfig`, `Qwen3TtsTokenizer12HzDecoder` | Added | strict `from_gguf` / `from_gguf_with_policy`, code-matrix validation, and loud `decode_codes` boundary | Additive Rust model API; Apache-2.0 provenance is fail-closed and terminal PCM remains explicitly unimplemented in this slice | no | (this commit) |
+| `vokra-models::qwen3_tts` | `Qwen3TtsTokenizer12HzConfig`, `Qwen3TtsTokenizer12HzDecoder` | Extended | adds mapping-owning CPU/Metal constructors plus complete `decode_codes(&[Vec<u32>]) -> Result<Vec<f32>>`; borrowed bind stays validation-only | Additive Rust model API; Apache-2.0 provenance remains fail-closed, output is mono 24 kHz with exactly 1,920 samples per input frame | no | (this commit) |
 
 ### 2026-08-27 — 1.0.0-rc.1-dev (Ultravox native multimodal companion decode)
 

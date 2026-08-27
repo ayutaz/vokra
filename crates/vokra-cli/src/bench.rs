@@ -1322,6 +1322,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::Qwen3TtsTokenizer12HzCodec => {
+            return Err(
+                "bench: arch `qwen3_tts_tokenizer_12hz` consumes a fixed [frames,16] code matrix rather than timed PCM; use `vokra-cli run --model <qwen3-tts-tokenizer-12hz.gguf> --codec-mode decode --input <16cb-codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::MioCodec => {
             return Err(
                 "bench: arch `miocodec` consumes a VKRMIO01 token/global-embedding container rather than timed PCM; use `vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> --output <out.wav>`"

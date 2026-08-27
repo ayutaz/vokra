@@ -7,9 +7,16 @@
 //! authenticated converter.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
+
+use crate::compute::Compute;
+
+use super::tokenizer_12hz_forward::{MappedDecoder, QWEN3_TTS_TOKENIZER_12HZ_HOT_OPS};
 
 /// Runtime architecture written by the decode-only converter.
 pub const EXPECTED_ARCH: &str = "qwen3_tts_tokenizer_12hz";
@@ -184,6 +191,8 @@ pub struct Qwen3TtsTokenizer12HzDecoder {
     config: Qwen3TtsTokenizer12HzConfig,
     weight_license: LicenseClass,
     tensor_count: usize,
+    backend: BackendKind,
+    mapped: Option<MappedDecoder>,
 }
 
 impl Qwen3TtsTokenizer12HzDecoder {
@@ -254,7 +263,69 @@ impl Qwen3TtsTokenizer12HzDecoder {
             config,
             weight_license: license.class,
             tensor_count: file.tensors().len(),
+            backend: BackendKind::Cpu,
+            mapped: None,
         })
+    }
+
+    /// Validates a borrowed artifact and preflights one backend. This form is
+    /// intentionally validation-only because the borrow cannot keep a 682 MB
+    /// checkpoint alive for decode; use [`Self::open_mapped_with_backend`] for
+    /// executable weights.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        let mut decoder = Self::from_gguf(file)?;
+        Compute::for_backend(backend, QWEN3_TTS_TOKENIZER_12HZ_HOT_OPS)?;
+        decoder.backend = backend;
+        Ok(decoder)
+    }
+
+    /// Memory-maps and strictly binds the official decoder for CPU execution.
+    /// No tensor payload is copied at bind time.
+    pub fn open_mapped(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_mapped_with_policy_and_backend(
+            path,
+            &CompliancePolicy::strict(),
+            BackendKind::Cpu,
+        )
+    }
+
+    /// Memory-maps and strictly binds the official decoder for one selected
+    /// backend. Backend coverage is checked before any tensor page is read.
+    pub fn open_mapped_with_backend(path: impl AsRef<Path>, backend: BackendKind) -> Result<Self> {
+        Self::open_mapped_with_policy_and_backend(path, &CompliancePolicy::strict(), backend)
+    }
+
+    /// Policy-explicit mapping-owning constructor.
+    pub fn open_mapped_with_policy_and_backend(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_mapped_with_policy_and_backend(Arc::new(file), policy, backend)
+    }
+
+    /// Binds an existing mapping under the strict policy for one backend.
+    pub fn from_gguf_mapped_with_backend(
+        file: Arc<GgufFile>,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        Self::from_gguf_mapped_with_policy_and_backend(file, &CompliancePolicy::strict(), backend)
+    }
+
+    /// Binds an existing mapping under an explicit compliance policy. The
+    /// authenticated release remains required to resolve to Apache-2.0 /
+    /// permissive even when a looser research policy is supplied.
+    pub fn from_gguf_mapped_with_policy_and_backend(
+        file: Arc<GgufFile>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let mut decoder = Self::from_gguf_with_policy(&file, policy)?;
+        Compute::for_backend(backend, QWEN3_TTS_TOKENIZER_12HZ_HOT_OPS)?;
+        decoder.mapped = Some(MappedDecoder::bind(file)?);
+        decoder.backend = backend;
+        Ok(decoder)
     }
 
     /// Returns the authenticated topology.
@@ -273,6 +344,18 @@ impl Qwen3TtsTokenizer12HzDecoder {
     #[must_use]
     pub const fn tensor_count(&self) -> usize {
         self.tensor_count
+    }
+
+    /// Returns the selected whole-model execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Returns the decoder's complete learned hot-op inventory.
+    #[must_use]
+    pub const fn required_hot_ops(&self) -> &'static [crate::compute::HotOp] {
+        QWEN3_TTS_TOKENIZER_12HZ_HOT_OPS
     }
 
     /// Validates a sixteen-row code matrix before neural decoding.
@@ -312,13 +395,17 @@ impl Qwen3TtsTokenizer12HzDecoder {
         Ok(frames)
     }
 
-    /// Code-to-wave entry point. The strict checkpoint and input contract are
-    /// real; the native CPU graph lands in the next implementation slice.
+    /// Decodes sixteen codebook rows to 24 kHz mono PCM using the official
+    /// bounded-memory 300-frame / 25-frame-left-context schedule.
     pub fn decode_codes(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
         let _frames = self.validate_codes(codes)?;
-        Err(VokraError::NotImplemented(
-            "qwen3_tts_tokenizer_12hz: exact 271-tensor decoder and 16-row code contract are bound, but the native RVQ -> sliding Transformer -> ConvNeXt/transposed-convolution waveform forward is not wired yet; refusing a silent placeholder or CPU fallback",
-        ))
+        let mapped = self.mapped.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "qwen3_tts_tokenizer_12hz: decode requires the mapping-owning `open_mapped_with_backend` or `from_gguf_mapped_with_backend` constructor; a borrowed bind cannot retain the 682 MB artifact and Vokra will not create a resident copy or silently fall back to CPU"
+                    .to_owned(),
+            )
+        })?;
+        mapped.decode_codes(self.backend, codes, &self.config)
     }
 }
 
@@ -734,6 +821,8 @@ mod tests {
             config: Qwen3TtsTokenizer12HzConfig::canonical(),
             weight_license: LicenseClass::Permissive,
             tensor_count: DECODER_TENSOR_COUNT,
+            backend: BackendKind::Cpu,
+            mapped: None,
         };
         let mut codes = vec![vec![0_u32; 2]; 16];
         codes[0][1] = 2_048;

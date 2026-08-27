@@ -112,6 +112,8 @@ USAGE:
                   --input <12cb-codes.u32le> --output <44.1k-out.wav>
     vokra-cli run --model <speechtokenizer.gguf> --codec-mode decode \
                   --num-quantizers <1..8> --input <codes.u32le> --output <out.wav>
+    vokra-cli run --model <qwen3-tts-tokenizer-12hz.gguf> --codec-mode decode \
+                  --input <16cb-codes.u32le> --output <24k-out.wav>
     vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> \
                   --output <out.wav>
     vokra-cli run --model <yue-upsampler.gguf> --input <1024ch-features.f32> \
@@ -192,6 +194,9 @@ OPTIONS:
                                 For SpeechTokenizer decode it is the same raw
                                 frame-major residual-VQ matrix at 50 Hz with
                                 a release maximum of eight codebooks.
+                                For Qwen3-TTS Tokenizer 12Hz decode it is a
+                                fixed frame-major `[frames,16]` u32le matrix;
+                                every id must be in `0..2048`.
                                 For MOSS Audio Tokenizer decode it is raw
                                 frame-major `[frames,num_quantizers]` u32le;
                                 `--num-quantizers` declares the row width.
@@ -409,6 +414,11 @@ OPTIONS:
                                 frame-major residual-VQ u32le matrix. CPU and
                                 Metal cover the complete token-to-waveform
                                 graph; encode remains an explicit error.
+                                qwen3_tts_tokenizer_12hz: `decode` only, from
+                                fixed frame-major `[frames,16]` u32le codes.
+                                CPU and Metal cover the complete official
+                                24 kHz waveform decoder; encode is explicit
+                                unsupported.
                                 miocodec: `decode` only, from a VKRMIO01
                                 container carrying FSQ codes, target samples,
                                 and the required 128-d global embedding. CPU
@@ -1469,6 +1479,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::FunCodec
         | ModelTask::YueXcodecMini
         | ModelTask::SpeechTokenizer
+        | ModelTask::Qwen3TtsTokenizer12HzCodec
         | ModelTask::MioCodec
         | ModelTask::SnacCodec
         | ModelTask::FocalCodec
@@ -1667,6 +1678,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::FunCodec
         && task != ModelTask::YueXcodecMini
         && task != ModelTask::SpeechTokenizer
+        && task != ModelTask::Qwen3TtsTokenizer12HzCodec
         && task != ModelTask::MioCodec
         && task != ModelTask::SnacCodec
         && task != ModelTask::FocalCodec
@@ -1674,7 +1686,7 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         && task != ModelTask::MossAudioTokenizerCodec
     {
         return Err(
-            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
+            "run: --codec-mode is only supported for standalone mimi/dac/wavtokenizer/neucodec/xcodec2/funcodec/yue_xcodec_mini/speechtokenizer/qwen3_tts_tokenizer_12hz/miocodec/snac/focalcodec/facodec/moss_audio_tokenizer arches"
                 .to_owned(),
         );
     }
@@ -2119,6 +2131,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::SpeechTokenizer => {
             run_speechtokenizer_codec(&session, &a)?;
+        }
+        ModelTask::Qwen3TtsTokenizer12HzCodec => {
+            run_qwen3_tts_tokenizer_12hz_codec(&session, &a)?;
         }
         ModelTask::MioCodec => {
             run_miocodec(&session, &a)?;
@@ -4659,6 +4674,78 @@ fn run_speechtokenizer_codec(session: &Session, a: &RunArgs) -> Result<(), Strin
         "speechtokenizer decode: {frames} frames x {num_quantizers} quantizers -> {} samples @ {} Hz -> {output_path}",
         pcm.len(),
         model.sample_rate()
+    );
+    Ok(())
+}
+
+/// Official Qwen3-TTS 12 Hz fixed-width code-matrix to 24 kHz PCM path.
+fn run_qwen3_tts_tokenizer_12hz_codec(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const QUANTIZERS: usize = 16;
+    if a.text.is_some() || a.tokens.is_some() {
+        return Err(
+            "run (qwen3_tts_tokenizer_12hz): --text/--tokens are not codec inputs; use --input plus --codec-mode decode"
+                .to_owned(),
+        );
+    }
+    match a.codec_mode {
+        Some(CodecMode::Decode) => {}
+        Some(CodecMode::Encode) => {
+            return Err(
+                "run (qwen3_tts_tokenizer_12hz): PCM-to-code encode is not present in the decode-only authenticated artifact; no substitute encoder or CPU fallback is used"
+                    .to_owned(),
+            );
+        }
+        None => {
+            return Err(
+                "run (qwen3_tts_tokenizer_12hz): --codec-mode decode is required".to_owned(),
+            );
+        }
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or("run (qwen3_tts_tokenizer_12hz): --input <16cb-codes.u32le> is required")?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or("run (qwen3_tts_tokenizer_12hz): --output <out.wav> is required")?;
+    let policy = vokra_core::CompliancePolicy::from_env();
+    let model = vokra_models::qwen3_tts::Qwen3TtsTokenizer12HzDecoder::from_gguf_mapped_with_policy_and_backend(
+        session.gguf_arc(),
+        &policy,
+        a.backend,
+    )
+    .map_err(|error| error.to_string())?;
+    let bytes = std::fs::read(input_path)
+        .map_err(|error| format!("run (qwen3_tts_tokenizer_12hz decode): {input_path}: {error}"))?;
+    let row_bytes = QUANTIZERS * size_of::<u32>();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(row_bytes) {
+        return Err(format!(
+            "run (qwen3_tts_tokenizer_12hz decode): {input_path} has {} bytes; expected a positive multiple of {row_bytes} for frame-major [frames,{QUANTIZERS}] u32le codes",
+            bytes.len()
+        ));
+    }
+    let frame_major = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect::<Vec<_>>();
+    let frames = frame_major.len() / QUANTIZERS;
+    let mut codes = vec![vec![0_u32; frames]; QUANTIZERS];
+    for frame in 0..frames {
+        for quantizer in 0..QUANTIZERS {
+            codes[quantizer][frame] = frame_major[frame * QUANTIZERS + quantizer];
+        }
+    }
+    let pcm = model
+        .decode_codes(&codes)
+        .map_err(|error| error.to_string())?;
+    let sample_rate = model.config().output_sample_rate;
+    wav::write_wav(output_path, &pcm, sample_rate).map_err(|error| {
+        format!("run (qwen3_tts_tokenizer_12hz decode): --output {output_path}: {error}")
+    })?;
+    println!(
+        "qwen3_tts_tokenizer_12hz decode: {frames} frames x {QUANTIZERS} quantizers -> {} samples @ {sample_rate} Hz -> {output_path}",
+        pcm.len()
     );
     Ok(())
 }
