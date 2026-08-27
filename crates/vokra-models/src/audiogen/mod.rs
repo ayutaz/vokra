@@ -1408,11 +1408,11 @@ mod tests {
                     "message must cite FR-EX-08 no-silent-fabrication clause, got `{m}`"
                 );
                 // Sibling mention — the follow-up wave anchor
-                // ("SHARED with the MusicGen sibling") is required so a
+                // ("shared with MusicGen") is required so a
                 // reader knows the fix unblocks both binders in one
                 // pass.
                 assert!(
-                    m.contains("SHARED with the MusicGen"),
+                    m.contains("shared with MusicGen"),
                     "message must anchor the reader on the shared MusicGen composition wave, \
                      got `{m}`"
                 );

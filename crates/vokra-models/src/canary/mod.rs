@@ -2379,6 +2379,7 @@ mod tests {
         if let Some(a) = arch {
             b.add_string(chunks::KEY_MODEL_ARCH, a);
         }
+        b.add_string(chunks::KEY_MODEL_NAME, NAME);
         b.add_u32(KEY_SAMPLE_RATE, cfg.sample_rate);
         // Encoder
         b.add_u32(KEY_ENC_N_LAYER, cfg.encoder.n_layer as u32);
@@ -2493,7 +2494,7 @@ mod tests {
         match err {
             VokraError::ModelLoad(msg) => {
                 assert!(
-                    msg.contains("`whisper`"),
+                    msg.contains("GGUF arch is \"whisper\""),
                     "message must name the offending arch tag `whisper`: {msg}"
                 );
                 assert!(

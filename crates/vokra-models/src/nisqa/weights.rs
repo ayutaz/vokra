@@ -98,7 +98,7 @@ impl NisqaWeights {
         for layer in 0..2 {
             let prefix = format!("time_dependency.model.layers.{layer}");
             attention.push(AttentionLayer {
-                in_proj: load_linear(file, &format!("{prefix}.self_attn.in_proj"), 64, 192)?,
+                in_proj: load_packed_attention(file, &format!("{prefix}.self_attn.in_proj"))?,
                 out_proj: load_linear(file, &format!("{prefix}.self_attn.out_proj"), 64, 64)?,
                 linear1: load_linear(file, &format!("{prefix}.linear1"), 64, 64)?,
                 linear2: load_linear(file, &format!("{prefix}.linear2"), 64, 64)?,
@@ -154,10 +154,36 @@ fn load_batch_norm(file: &GgufFile, prefix: &str, channels: usize) -> Result<Bat
 }
 
 fn load_linear(file: &GgufFile, prefix: &str, input: usize, output: usize) -> Result<Linear> {
-    let weight = load_finite(file, &format!("{prefix}.weight"), &[output, input])?;
+    load_linear_tensors(
+        file,
+        &format!("{prefix}.weight"),
+        &format!("{prefix}.bias"),
+        input,
+        output,
+    )
+}
+
+fn load_packed_attention(file: &GgufFile, prefix: &str) -> Result<Linear> {
+    load_linear_tensors(
+        file,
+        &format!("{prefix}_weight"),
+        &format!("{prefix}_bias"),
+        64,
+        192,
+    )
+}
+
+fn load_linear_tensors(
+    file: &GgufFile,
+    weight_name: &str,
+    bias_name: &str,
+    input: usize,
+    output: usize,
+) -> Result<Linear> {
+    let weight = load_finite(file, weight_name, &[output, input])?;
     Ok(Linear {
         weight_io: transpose_out_in(&weight, output, input),
-        bias: load_finite(file, &format!("{prefix}.bias"), &[output])?,
+        bias: load_finite(file, bias_name, &[output])?,
         input,
         output,
     })

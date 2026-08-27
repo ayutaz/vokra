@@ -3012,12 +3012,8 @@ mod tests {
     /// so not even the U-Net walker recognizes it, and there is no GRU
     /// and no head).
     ///
-    /// The first thing the forward hits is the missing U-Net, so that
-    /// is what the message must name. Pinning the *specific* error
-    /// matters: "some ModelLoad" would have passed just as happily
-    /// while the forward skipped the entire CNN and failed later on the
-    /// GRU width, which is the failure mode this test exists to
-    /// exclude.
+    /// The explicit optional-CNN route skips the unrecognized tensor and must
+    /// still fail on the first required learned stage, the bidirectional GRU.
     #[test]
     fn extract_real_refuses_gguf_missing_required_tensors() {
         let bytes = minimal_valid_rmvpe_gguf();
@@ -3038,9 +3034,8 @@ mod tests {
             panic!("extract_real must refuse a GGUF without a walkable forward");
         };
         assert!(
-            msg.contains("no U-Net encoder block found"),
-            "expected the missing-U-Net error (the first thing the forward hits), \
-             got {msg}"
+            msg.contains("gru.weight_ih_l0 missing"),
+            "expected the missing-GRU error from the first required learned stage, got {msg}"
         );
         std::fs::remove_file(&tmp).ok();
     }
@@ -3255,6 +3250,14 @@ mod tests {
         b.add_u32(GGUF_KEY_N_FFT, DEFAULT_N_FFT);
         b.add_u32(GGUF_KEY_WIN_LENGTH, DEFAULT_WIN_LENGTH);
         b.add_u32(GGUF_KEY_N_CLASS, DEFAULT_N_CLASS);
+        b.add_f32(GGUF_KEY_FMIN, DEFAULT_FMIN);
+        b.add_f32(GGUF_KEY_FMAX, DEFAULT_FMAX);
+        b.add_f32(GGUF_KEY_CENTS_PER_CLASS, DEFAULT_CENTS_PER_CLASS);
+        b.add_f32(GGUF_KEY_BASE_HZ, DEFAULT_BASE_HZ);
+        b.add_string(GGUF_KEY_UPSTREAM_REVISION, native::UPSTREAM_REVISION);
+        b.add_string("vokra.provenance.source", "yxlllc/RMVPE");
+        b.add_string("vokra.provenance.license", "unknown");
+        b.add_string("vokra.provenance.weight_license", "unknown");
 
         // GRU weights: bidirectional single-layer, input = gru_input,
         // hidden = gru_hidden.

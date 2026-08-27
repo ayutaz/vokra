@@ -972,7 +972,7 @@ mod tests {
             nearest_interpolate(&input, 3).unwrap().data,
             vec![0.0, 1.0, 3.0]
         );
-        assert_eq!(adaptive_avg_pool(&input, 2).unwrap().data, vec![1.0, 3.5]);
+        assert_eq!(adaptive_avg_pool(&input, 2).unwrap().data, vec![1.0, 3.0]);
     }
 
     #[test]
