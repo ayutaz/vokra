@@ -8,8 +8,8 @@ dependencies = [
     "huggingface-hub==0.23.4",
     "numpy==1.26.4",
     "pyannote-audio==3.0.0",
-    "torch==2.2.2",
-    "torchaudio==2.2.2",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
 ]
 
 [tool.uv]

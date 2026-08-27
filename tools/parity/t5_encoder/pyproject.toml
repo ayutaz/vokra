@@ -4,15 +4,15 @@ version = "0.1.0"
 description = "Pinned official Transformers T5EncoderModel parity oracle for Vokra"
 requires-python = "==3.12.*"
 dependencies = [
-    # VAST stock images require the repository's pre-0.30 mitigation; newer
-    # hub clients can enter the broken xet-token/mirror route even after the
-    # provisioning shim is removed. Transformers 4.45.2 is the established
-    # in-tree pairing for this exact pin and contains the official T5 forward.
-    "huggingface-hub==0.29.3",
+    # The pre-0.30 hub pin was the VAST xet-token/mirror mitigation. The AST
+    # oracle moved past it on 2026-08-27 and `provision.sh` removes the stock
+    # image's shim, so this tree now tracks the same current hub as the other
+    # Transformers 5.5.0 oracles.
+    "huggingface-hub==1.27.0",
     "numpy==2.5.2",
     "safetensors==0.8.0",
     "torch==2.13.0",
-    "transformers==4.45.2",
+    "transformers==5.5.0",
 ]
 
 [tool.uv]

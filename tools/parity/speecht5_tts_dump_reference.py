@@ -253,7 +253,7 @@ def main() -> int:
             f"{error}"
         ) from error
 
-    if transformers.__version__ != "4.45.2":
+    if transformers.__version__ != "5.5.0":
         raise RuntimeError(
             f"transformers {transformers.__version__} != pinned 4.45.2"
         )

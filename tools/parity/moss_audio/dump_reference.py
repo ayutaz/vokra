@@ -44,7 +44,7 @@ REFERENCE_AUDIO_SHA256 = (
 SAMPLE_RATE = 16_000
 SCHEMA = "vokra-moss-audio-reference-v1"
 DEFAULT_PROMPT = "Describe this audio."
-TRANSFORMERS_VERSION = "4.57.1"
+TRANSFORMERS_VERSION = "5.5.0"
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dump a pinned independent official Transformers Bark reference.
 
-The oracle imports ``BarkModel`` from locked Transformers 4.31.0 and loads the
+The oracle imports ``BarkModel`` from locked Transformers 5.5.0 and loads the
 exact immutable Suno checkpoint supplied by the VAST worker. Vokra is never
 imported and no Vokra forward is mirrored here.
 """
@@ -26,8 +26,8 @@ from transformers.models.bark.generation_configuration_bark import (
 )
 
 
-TRANSFORMERS_VERSION = "4.31.0"
-TRANSFORMERS_SOURCE_REVISION = "e42587f596181396e1c4b63660abf0c736b10dae"
+TRANSFORMERS_VERSION = "5.5.0"
+TRANSFORMERS_SOURCE_REVISION = "c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
 GENERATION_CONFIG_BYTES = 4_908
 GENERATION_CONFIG_SHA256 = (
     "ab2969fcd40e085bc924ad99ad419c27f62f5acb61afac5de7490ab0c796b5b9"

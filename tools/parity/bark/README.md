@@ -2,7 +2,7 @@
 
 This directory is a VAST-only independent oracle for the public `vokra/bark`
 and `vokra/bark-small` GGUFs. It imports the released `BarkModel` directly from
-locked Transformers 4.31.0 and loads the exact immutable Suno checkpoint. It
+locked Transformers 5.5.0 and loads the exact immutable Suno checkpoint. It
 does not import Vokra or reproduce Vokra's Rust graph in Python.
 
 The no-upload worker is:

@@ -6,11 +6,16 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy>=1.26,<3",
     "qwen-asr==0.0.6",
-    "torch==2.11.0",
+    "torch==2.13.0",
 ]
 
 [tool.uv]
 package = false
+# torch declares an unbounded `setuptools` runtime requirement and the resolver
+# settles on 81.0.0, which carries GHSA-h35f-9h28-mq5c (fixed in 83.0.0). Nothing in this oracle
+# imports setuptools at run time; raise the transitive floor rather than adding
+# it as a direct dependency.
+constraint-dependencies = ["setuptools>=83.0.0"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

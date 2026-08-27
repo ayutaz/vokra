@@ -4,11 +4,11 @@ version = "0.1.0"
 description = "Pinned independent Transformers 4.31.0 Bark reference; VAST only"
 requires-python = "==3.12.*"
 dependencies = [
-    "huggingface-hub==0.24.7",
+    "huggingface-hub==1.27.0",
     "numpy==1.26.4",
     "safetensors==0.4.5",
-    "torch==2.4.1",
-    "transformers==4.31.0",
+    "torch==2.13.0",
+    "transformers==5.5.0",
 ]
 
 [tool.uv]
