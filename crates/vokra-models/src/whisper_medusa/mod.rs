@@ -298,7 +298,9 @@ impl WhisperMedusa {
     }
 
     #[must_use]
-    /// Selects the compute backend; module-0 execution currently requires CPU.
+    /// Selects the compute backend. Module 0 uses the shared per-op Whisper
+    /// path so its residual projection reaches the same backend as the base
+    /// encoder/decoder; unsupported selections fail explicitly.
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.base = self.base.with_backend(backend);
         self

@@ -179,6 +179,146 @@ impl VocosWeights {
     }
 }
 
+/// Backend seam for Vocos' learned ConvNeXt operations.
+///
+/// The public CPU decoder below uses a scalar implementation that preserves
+/// its original arithmetic. Model binders may supply a GPU implementation;
+/// DSP-only magnitude/phase assembly and iSTFT deliberately remain outside
+/// this trait.
+pub trait VocosBackendOps {
+    /// Dense same-padded channel-major Conv1d.
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d_same(
+        &self,
+        input: &[f32],
+        input_channels: usize,
+        frames: usize,
+        output_channels: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// Depthwise same-padded channel-major Conv1d.
+    #[allow(clippy::too_many_arguments)]
+    fn depthwise_conv1d_same(
+        &self,
+        input: &[f32],
+        channels: usize,
+        frames: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// LayerNorm over channels independently for every frame.
+    fn norm_channel_major(
+        &self,
+        values: &mut [f32],
+        frames: usize,
+        dim: usize,
+        scale: &[f32],
+        shift: &[f32],
+    ) -> Result<()>;
+
+    /// A per-frame linear projection represented as a kernel-size-one Conv1d.
+    #[allow(clippy::too_many_arguments)]
+    fn pointwise(
+        &self,
+        input: &[f32],
+        input_dim: usize,
+        frames: usize,
+        output_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Vec<f32>>;
+
+    /// Exact GELU over an arbitrary flat buffer.
+    fn gelu_in_place(&self, values: &mut [f32]) -> Result<()>;
+}
+
+struct ScalarVocosOps;
+
+impl VocosBackendOps for ScalarVocosOps {
+    fn conv1d_same(
+        &self,
+        input: &[f32],
+        input_channels: usize,
+        frames: usize,
+        output_channels: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>> {
+        Ok(conv1d_same(
+            input,
+            input_channels,
+            frames,
+            output_channels,
+            weight,
+            bias,
+            kernel,
+        ))
+    }
+
+    fn depthwise_conv1d_same(
+        &self,
+        input: &[f32],
+        channels: usize,
+        frames: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>> {
+        Ok(depthwise_conv1d_same(
+            input, channels, frames, weight, bias, kernel,
+        ))
+    }
+
+    fn norm_channel_major(
+        &self,
+        values: &mut [f32],
+        frames: usize,
+        dim: usize,
+        scale: &[f32],
+        shift: &[f32],
+    ) -> Result<()> {
+        norm_channel_major_plain(values, frames, dim, scale, shift);
+        Ok(())
+    }
+
+    fn pointwise(
+        &self,
+        input: &[f32],
+        input_dim: usize,
+        frames: usize,
+        output_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0f32; output_dim * frames];
+        let mut row = vec![0.0f32; input_dim];
+        let mut projected = vec![0.0f32; output_dim];
+        for frame in 0..frames {
+            for channel in 0..input_dim {
+                row[channel] = input[channel * frames + frame];
+            }
+            linear_row(&row, weight, bias, output_dim, input_dim, &mut projected);
+            for channel in 0..output_dim {
+                output[channel * frames + frame] = projected[channel];
+            }
+        }
+        Ok(output)
+    }
+
+    fn gelu_in_place(&self, values: &mut [f32]) -> Result<()> {
+        for value in values {
+            *value = gelu_exact(*value);
+        }
+        Ok(())
+    }
+}
+
 /// Runs the released Vocos feature-to-waveform decoder.
 ///
 /// `condition_id` is required for an AdaLayerNorm model and forbidden for a
@@ -191,13 +331,67 @@ pub fn vocos_decode(
     weights: &VocosWeights,
     attrs: &VocosAttrs,
 ) -> Result<Vec<f32>> {
-    weights.validate(attrs)?;
+    vocos_decode_with_ops(
+        features,
+        frames,
+        condition_id,
+        weights,
+        attrs,
+        &ScalarVocosOps,
+    )
+}
+
+/// Runs Vocos with a caller-supplied backend for every learned operation.
+pub fn vocos_decode_with_ops<O: VocosBackendOps>(
+    features: &[f32],
+    frames: usize,
+    condition_id: Option<usize>,
+    weights: &VocosWeights,
+    attrs: &VocosAttrs,
+    ops: &O,
+) -> Result<Vec<f32>> {
     if frames == 0 {
         return Err(VokraError::InvalidArgument(
             "vocos: frames must be positive".to_owned(),
         ));
     }
     check_len("features", features, attrs.input_channels * frames)?;
+    let x = ops.conv1d_same(
+        features,
+        attrs.input_channels,
+        frames,
+        attrs.dim,
+        &weights.embed_weight,
+        &weights.embed_bias,
+        7,
+    )?;
+    vocos_decode_from_embedded_with_ops(x, frames, condition_id, weights, attrs, ops)
+}
+
+/// Runs the shared Vocos normalization, ConvNeXt and iSTFT head from an
+/// already embedded channel-major `[dim, frames]` activation.
+///
+/// WavTokenizer inserts its released positional ResNet/attention stack
+/// between `backbone.embed` and `backbone.norm`; this entry keeps the common
+/// downstream arithmetic in one implementation while allowing that exact
+/// upstream ordering. The caller must route the embedding and any inserted
+/// learned operations through the same selected backend before calling this
+/// function.
+pub fn vocos_decode_from_embedded_with_ops<O: VocosBackendOps>(
+    mut x: Vec<f32>,
+    frames: usize,
+    condition_id: Option<usize>,
+    weights: &VocosWeights,
+    attrs: &VocosAttrs,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    weights.validate(attrs)?;
+    if frames == 0 {
+        return Err(VokraError::InvalidArgument(
+            "vocos: frames must be positive".to_owned(),
+        ));
+    }
+    check_len("embedded", &x, attrs.dim * frames)?;
     let condition = match (attrs.num_conditions, condition_id) {
         (0, None) => 0,
         (0, Some(id)) => {
@@ -218,93 +412,69 @@ pub fn vocos_decode(
         }
     };
 
-    let mut x = conv1d_same(
-        features,
-        attrs.input_channels,
-        frames,
-        attrs.dim,
-        &weights.embed_weight,
-        &weights.embed_bias,
-        7,
-    );
-    norm_channel_major(&mut x, frames, attrs.dim, &weights.norm, condition);
+    norm_channel_major_with_ops(ops, &mut x, frames, attrs.dim, &weights.norm, condition)?;
 
     for block in &weights.blocks {
         let residual = x.clone();
-        x = depthwise_conv1d_same(
+        x = ops.depthwise_conv1d_same(
             &x,
             attrs.dim,
             frames,
             &block.depthwise_weight,
             &block.depthwise_bias,
             7,
-        );
-        norm_channel_major(&mut x, frames, attrs.dim, &block.norm, condition);
+        )?;
+        norm_channel_major_with_ops(ops, &mut x, frames, attrs.dim, &block.norm, condition)?;
 
-        let mut hidden = vec![0.0f32; frames * attrs.intermediate_dim];
-        let mut output = vec![0.0f32; frames * attrs.dim];
-        for frame in 0..frames {
-            let row: Vec<f32> = (0..attrs.dim)
-                .map(|channel| x[channel * frames + frame])
-                .collect();
-            linear_row(
-                &row,
-                &block.pointwise1_weight,
-                &block.pointwise1_bias,
-                attrs.intermediate_dim,
-                attrs.dim,
-                &mut hidden[frame * attrs.intermediate_dim..(frame + 1) * attrs.intermediate_dim],
-            );
-            for value in
-                &mut hidden[frame * attrs.intermediate_dim..(frame + 1) * attrs.intermediate_dim]
-            {
-                *value = gelu_exact(*value);
-            }
-            linear_row(
-                &hidden[frame * attrs.intermediate_dim..(frame + 1) * attrs.intermediate_dim],
-                &block.pointwise2_weight,
-                &block.pointwise2_bias,
-                attrs.dim,
-                attrs.intermediate_dim,
-                &mut output[frame * attrs.dim..(frame + 1) * attrs.dim],
-            );
-        }
+        let mut hidden = ops.pointwise(
+            &x,
+            attrs.dim,
+            frames,
+            attrs.intermediate_dim,
+            &block.pointwise1_weight,
+            &block.pointwise1_bias,
+        )?;
+        ops.gelu_in_place(&mut hidden)?;
+        let output = ops.pointwise(
+            &hidden,
+            attrs.intermediate_dim,
+            frames,
+            attrs.dim,
+            &block.pointwise2_weight,
+            &block.pointwise2_bias,
+        )?;
         for channel in 0..attrs.dim {
             for frame in 0..frames {
                 x[channel * frames + frame] = residual[channel * frames + frame]
-                    + block.gamma[channel] * output[frame * attrs.dim + channel];
+                    + block.gamma[channel] * output[channel * frames + frame];
             }
         }
     }
 
-    norm_channel_major_plain(
+    ops.norm_channel_major(
         &mut x,
         frames,
         attrs.dim,
         &weights.final_norm_weight,
         &weights.final_norm_bias,
-    );
+    )?;
 
     let bins = attrs.n_fft / 2 + 1;
     let head_dim = attrs.n_fft + 2;
     let mut re = vec![0.0f32; frames * bins];
     let mut im = vec![0.0f32; frames * bins];
-    let mut projected = vec![0.0f32; head_dim];
+    let projected = ops.pointwise(
+        &x,
+        attrs.dim,
+        frames,
+        head_dim,
+        &weights.head_weight,
+        &weights.head_bias,
+    )?;
     for frame in 0..frames {
-        let row: Vec<f32> = (0..attrs.dim)
-            .map(|channel| x[channel * frames + frame])
-            .collect();
-        linear_row(
-            &row,
-            &weights.head_weight,
-            &weights.head_bias,
-            head_dim,
-            attrs.dim,
-            &mut projected,
-        );
         for bin in 0..bins {
-            let magnitude = projected[bin].exp().min(100.0);
-            let phase = projected[bins + bin];
+            let magnitude = projected[bin * frames + frame].exp().min(100.0);
+            let phase = projected[(bins + bin) * frames + frame];
             re[frame * bins + bin] = magnitude * phase.cos();
             im[frame * bins + bin] = magnitude * phase.sin();
         }
@@ -403,16 +573,17 @@ fn depthwise_conv1d_same(
     output
 }
 
-fn norm_channel_major(
+fn norm_channel_major_with_ops<O: VocosBackendOps>(
+    ops: &O,
     values: &mut [f32],
     frames: usize,
     dim: usize,
     norm: &VocosNormWeights,
     row: usize,
-) {
+) -> Result<()> {
     let scale = &norm.scale[row * dim..(row + 1) * dim];
     let shift = &norm.shift[row * dim..(row + 1) * dim];
-    norm_channel_major_plain(values, frames, dim, scale, shift);
+    ops.norm_channel_major(values, frames, dim, scale, shift)
 }
 
 fn norm_channel_major_plain(

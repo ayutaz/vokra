@@ -25,6 +25,8 @@ use vokra_ops::{
     ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights,
 };
 
+use crate::compute::Compute;
+
 use super::{AlignedToken, LoadError};
 
 /// The `vokra.model.arch` value a Charsiu GGUF must carry.
@@ -992,6 +994,46 @@ pub(crate) fn feature_projection_forward(
     out
 }
 
+/// Backend-dispatched sibling of [`feature_projection_forward`].
+/// LayerNorm and the learned projection both execute on `compute`; no
+/// per-operation CPU fallback is available through this entry point.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn feature_projection_forward_with_compute(
+    features: &[f32],
+    t: usize,
+    feature_dim: usize,
+    fp: &CharsiuFeatureProjection,
+    hidden: usize,
+    has_layer_norm: bool,
+    eps: f32,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let mut normed = vec![0.0f32; features.len()];
+    let input = if has_layer_norm {
+        let gamma = fp
+            .norm_gamma
+            .as_ref()
+            .expect("has_layer_norm=true implies norm_gamma present");
+        let beta = fp
+            .norm_beta
+            .as_ref()
+            .expect("has_layer_norm=true implies norm_beta present");
+        compute.layer_norm_f32(features, &mut normed, t, feature_dim, gamma, beta, eps)?;
+        normed.as_slice()
+    } else {
+        features
+    };
+    linear_forward_with_compute(
+        input,
+        t,
+        feature_dim,
+        &fp.linear_w,
+        &fp.linear_b,
+        hidden,
+        compute,
+    )
+}
+
 /// Grouped positional Conv1D + SamePad + exact GELU. The input/output are
 /// frame-major; the backend convolution is channel-major.
 pub(crate) fn positional_conv_forward(
@@ -1037,6 +1079,58 @@ pub(crate) fn positional_conv_forward(
     for c in 0..h {
         for tt in 0..t {
             out[tt * h + c] = gelu_exact(raw[c * raw_len + tt]);
+        }
+    }
+    Ok(out)
+}
+
+/// Backend-dispatched grouped positional convolution plus exact GELU.
+pub(crate) fn positional_conv_forward_with_compute(
+    hidden: &[f32],
+    t: usize,
+    cfg: &CharsiuConfig,
+    pos: &CharsiuPosConv,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let h = cfg.hidden_size;
+    let mut channel_major = vec![0.0f32; h * t];
+    for tt in 0..t {
+        for c in 0..h {
+            channel_major[c * t + tt] = hidden[tt * h + c];
+        }
+    }
+    let padding = cfg.pos_conv_kernel / 2;
+    let raw_len = t + 2 * padding - cfg.pos_conv_kernel + 1;
+    let mut raw = vec![0.0f32; h * raw_len];
+    compute.grouped_conv1d_f32(
+        &channel_major,
+        h,
+        t,
+        &pos.weight,
+        h,
+        cfg.pos_conv_kernel,
+        Some(&pos.bias),
+        1,
+        padding,
+        cfg.pos_conv_groups,
+        &mut raw,
+    )?;
+    let keep = if cfg.pos_conv_kernel % 2 == 0 {
+        raw_len - 1
+    } else {
+        raw_len
+    };
+    if keep != t {
+        return Err(VokraError::InvalidArgument(format!(
+            "charsiu positional conv produced {keep} frame(s) for {t} input frame(s)"
+        )));
+    }
+    let mut activated = vec![0.0f32; raw.len()];
+    compute.gelu_f32(&raw, &mut activated)?;
+    let mut out = vec![0.0f32; t * h];
+    for c in 0..h {
+        for tt in 0..t {
+            out[tt * h + c] = activated[c * raw_len + tt];
         }
     }
     Ok(out)
@@ -1161,6 +1255,112 @@ pub(crate) fn transformer_block_forward_with_valid_keys(
     );
 }
 
+/// Backend-dispatched Wav2Vec2 post-LayerNorm block with an explicit valid-key
+/// prefix. Learned projections, both attention matrix products, softmax,
+/// GELU and affine normalisation all execute through one `Compute` instance.
+pub(crate) fn transformer_block_forward_with_valid_keys_and_compute(
+    hidden: &mut [f32],
+    t: usize,
+    valid_keys: usize,
+    cfg: &CharsiuConfig,
+    b: &CharsiuBlock,
+    compute: &Compute,
+) -> Result<()> {
+    debug_assert!(valid_keys > 0 && valid_keys <= t);
+    let h = cfg.hidden_size;
+    let n_head = cfg.n_head;
+    let head_dim = h / n_head;
+    let head_scale = 1.0 / (head_dim as f32).sqrt();
+
+    let q = linear_forward_with_compute(hidden, t, h, &b.q_w, &b.q_b, h, compute)?;
+    let k = linear_forward_with_compute(hidden, t, h, &b.k_w, &b.k_b, h, compute)?;
+    let v = linear_forward_with_compute(hidden, t, h, &b.v_w, &b.v_b, h, compute)?;
+
+    let mut attn_out = vec![0.0f32; t * h];
+    let mut q_head = vec![0.0f32; t * head_dim];
+    let mut k_head_t = vec![0.0f32; head_dim * valid_keys];
+    let mut v_head = vec![0.0f32; valid_keys * head_dim];
+    let mut scores = vec![0.0f32; t * valid_keys];
+    let mut probabilities = vec![0.0f32; t * valid_keys];
+    let mut head_out = vec![0.0f32; t * head_dim];
+    for head in 0..n_head {
+        for frame in 0..t {
+            let src = frame * h + head * head_dim;
+            let dst = frame * head_dim;
+            q_head[dst..dst + head_dim].copy_from_slice(&q[src..src + head_dim]);
+        }
+        for frame in 0..valid_keys {
+            let src = frame * h + head * head_dim;
+            let v_dst = frame * head_dim;
+            v_head[v_dst..v_dst + head_dim].copy_from_slice(&v[src..src + head_dim]);
+            for dim in 0..head_dim {
+                k_head_t[dim * valid_keys + frame] = k[src + dim];
+            }
+        }
+        compute.gemm_f32(
+            t,
+            valid_keys,
+            head_dim,
+            &q_head,
+            &k_head_t,
+            None,
+            &mut scores,
+        )?;
+        for score in &mut scores {
+            *score *= head_scale;
+        }
+        compute.softmax_f32(&scores, &mut probabilities, t, valid_keys)?;
+        compute.gemm_f32(
+            t,
+            head_dim,
+            valid_keys,
+            &probabilities,
+            &v_head,
+            None,
+            &mut head_out,
+        )?;
+        for frame in 0..t {
+            let src = frame * head_dim;
+            let dst = frame * h + head * head_dim;
+            attn_out[dst..dst + head_dim].copy_from_slice(&head_out[src..src + head_dim]);
+        }
+    }
+
+    let projected = linear_forward_with_compute(&attn_out, t, h, &b.o_w, &b.o_b, h, compute)?;
+    for (value, residual) in hidden.iter_mut().zip(projected) {
+        *value += residual;
+    }
+    layer_norm_with_compute_inplace(
+        hidden,
+        t,
+        h,
+        &b.attn_norm_gamma,
+        &b.attn_norm_beta,
+        cfg.layer_norm_eps,
+        compute,
+    )?;
+
+    let mut fc1 =
+        linear_forward_with_compute(hidden, t, h, &b.fc1_w, &b.fc1_b, cfg.ffn_dim, compute)?;
+    let mut activated = vec![0.0f32; fc1.len()];
+    compute.gelu_f32(&fc1, &mut activated)?;
+    fc1.clear();
+    let fc2 =
+        linear_forward_with_compute(&activated, t, cfg.ffn_dim, &b.fc2_w, &b.fc2_b, h, compute)?;
+    for (value, residual) in hidden.iter_mut().zip(fc2) {
+        *value += residual;
+    }
+    layer_norm_with_compute_inplace(
+        hidden,
+        t,
+        h,
+        &b.ffn_norm_gamma,
+        &b.ffn_norm_beta,
+        cfg.layer_norm_eps,
+        compute,
+    )
+}
+
 /// `y = x @ W^T + b` where `x` is `[t, in_dim]`, `W` is `[out_dim,
 /// in_dim]`, `b` is `[out_dim]`.
 pub(crate) fn linear_forward(
@@ -1184,6 +1384,27 @@ pub(crate) fn linear_forward(
         }
     }
     out
+}
+
+/// Backend-dispatched `y = x @ W^T + b` for output-major linear weights.
+pub(crate) fn linear_forward_with_compute(
+    x: &[f32],
+    t: usize,
+    in_dim: usize,
+    w: &[f32],
+    b: &[f32],
+    out_dim: usize,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let mut w_t = vec![0.0f32; w.len()];
+    for out in 0..out_dim {
+        for input in 0..in_dim {
+            w_t[input * out_dim + out] = w[out * in_dim + input];
+        }
+    }
+    let mut output = vec![0.0f32; t * out_dim];
+    compute.gemm_f32(t, out_dim, in_dim, x, &w_t, Some(b), &mut output)?;
+    Ok(output)
 }
 
 /// LayerNorm over the last axis in place. `x` is `[t, dim]` row-major.
@@ -1214,6 +1435,24 @@ pub(crate) fn layer_norm_inplace(
             *v = ((*v - mean) * inv_std) * gamma[i] + beta[i];
         }
     }
+}
+
+/// Backend-dispatched affine LayerNorm, copied back in place only after the
+/// selected backend completes successfully.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn layer_norm_with_compute_inplace(
+    x: &mut [f32],
+    t: usize,
+    dim: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+    compute: &Compute,
+) -> Result<()> {
+    let mut output = vec![0.0f32; x.len()];
+    compute.layer_norm_f32(x, &mut output, t, dim, gamma, beta, eps)?;
+    x.copy_from_slice(&output);
+    Ok(())
 }
 
 /// CTC head — Linear from `[t, hidden]` to `[t, vocab]`.

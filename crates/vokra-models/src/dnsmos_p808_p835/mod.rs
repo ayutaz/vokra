@@ -1,142 +1,154 @@
-//! DNSMOS P.808 / P.835 (Microsoft `DNS-Challenge/DNSMOS`, MIT) — runtime
-//! binder for the `dnsmos` converter arch (2026-08-05).
+//! Native Microsoft DNSMOS P.808 + P.835 quality scoring.
 //!
-//! # Runtime layout (loud-partial, RMVPE + openwakeword precedent)
+//! This module executes the exact two audited ONNX graphs without an ONNX
+//! runtime. P.808 uses the official librosa-compatible 321-point log-mel
+//! frontend and five-layer CNN; P.835 uses its released learned STFT kernels
+//! and seven-layer CNN. Both heads end in their exact dense stacks, and P.835
+//! applies the non-personalized polynomial calibration from
+//! `dnsmos_local.py` per 9.01-second window before averaging.
 //!
-//! ```text
-//! PCM (16 kHz mono f32)
-//!   -> chunk to 9.01 s windows (INPUT_LENGTH = 144160 samples, zero-pad
-//!      the tail)
-//!   -> mel front-end
-//!        (n_fft=321, hop=160, n_mels=120, sr=16000, Hann-centred,
-//!         power_to_db(ref=max), (db+40)/40 normalise) — REAL helper,
-//!         reuses `vokra_ops::stft` + `mel_filterbank` (deferred wiring,
-//!         gated behind the loud-partial today)
-//!   -> per-variant CNN forward             ← **loud-partial**
-//!        (transcribed from the ONNX graph's `node` list; the current
-//!         sidecar only walks `initializer` so the op sequence
-//!         `conv → BN → relu → pool` is not primary-source-derivable
-//!         and would be silent-wrong if best-guessed)
-//!   -> P.808: 1 scalar; P.835: 3 scalars (SIG, BAK, OVRL)
-//!   -> polyfit calibration (personalized-off coeffs from `dnsmos_local.py`)
-//!      → per-chunk MOS ∈ [1, 5]
-//!   -> mean across chunks
-//! ```
-//!
-//! # Loud-partial classification (design §3)
-//!
-//! - **Real**: config + mel front-end + polyfit + score-shell + variants
-//!   inventory + FR-EX-08 loud-fails.
-//! - **Loud-partial**: [`Dnsmos::score_p808`] / `Dnsmos::score_p835` /
-//!   `Dnsmos::score_all` and the [`MosScorerEngine::score`] impl all return
-//!   [`VokraError::UnsupportedOp`] naming (a) the future GGUF metadata
-//!   chunk `vokra.dnsmos.{p808,p835}.topology` that will pin the CNN
-//!   op-token sequence, and (b) the sidecar to extend
-//!   (`tools/parity/dnsmos_prepare_checkpoint.py`).
-//!
-//! Rationale: `dnsmos_local.py` (MIT) exposes only front-end + polyfit;
-//! the CNN backbone is recoverable only by walking the trained ONNX
-//! graph's `graph.node` list. The current converter walks
-//! `graph.initializer` only, so the op-order is not primary-source-
-//! transcribable. Following the RMVPE `extract_real` posture, the
-//! surrounding scaffold lands today so a follow-up wave can flip the
-//! switch by (i) extending the sidecar to emit
-//! `vokra.dnsmos.{variant}.topology` as a u32 op-token array, and (ii)
-//! wiring the future `cnn_forward` (routed through
-//! `cnn_forward_loud_partial` today) against that token stream.
-//!
-//! # `vokra.dnsmos.*` chunk group (read here)
-//!
-//! Written by `vokra-convert::models::dnsmos::convert_dnsmos_file`:
-//!
-//! - `vokra.dnsmos.bundle` (`Array<String>`): canonical order
-//!   `["p808", "p835"]` (subset for a partial bundle).
-//! - `vokra.dnsmos.sample_rate` (u32): PCM sample rate the model
-//!   expects (16 000).
-//! - `vokra.dnsmos.p808.checkpoint` (String): upstream `.onnx` filename
-//!   (auditability); present iff `p808` in bundle.
-//! - `vokra.dnsmos.p835.checkpoint` (String): same for P.835.
-//! - `vokra.dnsmos.{p808,p835}.topology` (`Array<u32>`): op-token
-//!   sequence for the CNN backbone. Not written by the current sidecar
-//!   — flipping this on lands the real forward.
+//! Every convolution is tiled into the selected backend's GEMM and every
+//! dense layer uses the same GEMM route. Mel/STFT construction, activations,
+//! pooling, chunking, and calibration are deterministic host DSP/glue. Backend
+//! coverage is preflighted before PCM is processed; Metal never falls back to
+//! CPU inference.
+
+mod nn;
+#[cfg(test)]
+mod tests;
+mod weights;
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::{MosScore, MosScorerEngine};
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType};
-use vokra_core::{Result, VokraError};
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
+use vokra_core::{LicenseClass, Result, VokraError};
 
-#[cfg(test)]
-mod tests;
+use crate::compute::{Compute, HotOp};
+use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec};
 
-// ---- arch / provenance constants (mirror of the converter's `pub const`
-// surface — same duplication convention every fsmn_vad / silero_vad /
-// openwakeword binder uses so the runtime does not add a cross-crate
-// dependency edge onto the converter). --------------------------------
+pub use self::weights::DnsmosWeights;
 
-/// Expected `vokra.model.arch` value written by
-/// `vokra-cli convert --model dnsmos-p808-p835`.
+/// GGUF architecture tag for the DNSMOS bundle.
 pub const ARCH: &str = "dnsmos";
-
-/// Expected `vokra.model.name` value written by the DNSMOS converter.
+/// Canonical public model identifier.
 pub const NAME: &str = "dnsmos-p808-p835";
-
-/// Expected `vokra.model.category` value — `"eval"` (MOS predictor
-/// tier, sibling of UTMOS in `vokra-eval::metrics::utmos`).
+/// Model catalogue category.
 pub const CATEGORY: &str = "eval";
+/// Audited Microsoft source directory.
+pub const UPSTREAM_URL: &str = "https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS";
+const SOURCE_REVISION: &str = "591184a9fcb2cbdec02520fed81a32bbbf9d73ff";
+const P808_ONNX_SHA256: &str = "9246480c58567bc6affd4200938e77eef49468c8bc7ed3776d109c07456f6e91";
+const P835_ONNX_SHA256: &str = "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd";
+const SOURCE_PY_SHA256: &str = "1ab566afe006daab32ac7073296a5d0ef99f8b82f91c7266f3ccf26113d7a28b";
+const SOURCE_LICENSE_SHA256: &str =
+    "d6239afa918961b465b07bf7411cbe34ff6685854f58553db7966f4881a0211f";
+const PUBLIC_HF: &str = "vokra/dnsmos-p808-p835";
+const PUBLIC_REVISION: &str = "39293917b4fccf66b149c0734140427f29f5ff84";
+const PUBLIC_GGUF_SHA256: &str = "b13c264f26a83b92d27f4385332e69e426f3301d2e48de7732c2aa9355650b2d";
+const MANIFEST_SHA256: &str = "d6d13fd5191d399736c8c1558d9dbbc51718a377190836a640a1992dbf404847";
 
-/// Upstream sample rate DNSMOS was trained at (Hz). Both variants share
-/// this; a differently-rated GGUF is either mis-configured or a non-
-/// canonical fork — fail loud (FR-EX-08).
-pub const EXPECTED_SAMPLE_RATE: u32 = 16_000;
-
-/// Fixed 9.01 s input window (144 160 samples at 16 kHz) — the
-/// `INPUT_LENGTH` constant transcribed verbatim from
-/// `microsoft/DNS-Challenge/DNSMOS/dnsmos_local.py`. Consumed by the
-/// (deferred) chunking + mel front-end.
+/// Number of learned tensors in the complete public bundle.
+pub const TENSOR_COUNT: usize = 38;
+/// Required input sample rate in hertz.
+pub const SAMPLE_RATE: u32 = 16_000;
+/// Backward-compatible name from the original binder.
+pub const EXPECTED_SAMPLE_RATE: u32 = SAMPLE_RATE;
+/// Samples in one 9.01-second DNSMOS window.
 pub const INPUT_LENGTH_SAMPLES: usize = 144_160;
+/// P.808 log-mel frame count per window.
+pub const P808_FRAMES: usize = 900;
+/// P.808 odd FFT size used by the official librosa frontend.
+pub const P808_N_FFT: usize = 321;
+/// P.808 frontend hop in samples.
+pub const P808_HOP: usize = 160;
+/// P.808 mel-band count.
+pub const P808_N_MELS: usize = 120;
+pub(super) const P808_CNN_CHANNELS: usize = 64;
+/// P.835 learned-STFT frame count per window.
+pub const P835_FRAMES: usize = 900;
+/// P.835 learned-STFT window in samples.
+pub const P835_WINDOW: usize = 320;
+/// P.835 learned-STFT hop in samples.
+pub const P835_HOP: usize = 160;
+/// P.835 one-sided learned-STFT bin count.
+pub const P835_BINS: usize = 161;
 
-// ---- vokra.dnsmos.* metadata keys (duplication of the converter's
-// pub-const surface for the same reason as above) ---------------------
-
-/// GGUF metadata key: model category tag.
+/// GGUF key carrying the model category.
 pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-/// GGUF metadata key: bundle inventory (`Array<String>`).
+const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
+/// GGUF key carrying the ordered P.808/P.835 bundle inventory.
 pub const KEY_DNSMOS_BUNDLE: &str = "vokra.dnsmos.bundle";
-/// GGUF metadata key: sample rate (u32 Hz).
+/// GGUF key carrying the required input sample rate.
 pub const KEY_DNSMOS_SAMPLE_RATE: &str = "vokra.dnsmos.sample_rate";
-/// GGUF metadata key: P.808 upstream checkpoint filename.
+/// GGUF key carrying the P.808 upstream checkpoint filename.
 pub const KEY_DNSMOS_P808_CKPT: &str = "vokra.dnsmos.p808.checkpoint";
-/// GGUF metadata key: P.835 upstream checkpoint filename.
+/// GGUF key carrying the P.835 upstream checkpoint filename.
 pub const KEY_DNSMOS_P835_CKPT: &str = "vokra.dnsmos.p835.checkpoint";
-/// GGUF metadata key: P.808 CNN op-token sequence (future `Array<u32>` —
-/// currently absent; presence flips the CNN forward out of loud-partial
-/// via `cnn_forward_loud_partial`).
+/// Legacy reserved key from the original loud-partial binder.
+///
+/// The native runtime audits the immutable ONNX graph directly and does not
+/// require a separately tokenized topology array, but the public constant is
+/// retained for source compatibility.
 pub const KEY_DNSMOS_P808_TOPOLOGY: &str = "vokra.dnsmos.p808.topology";
-/// GGUF metadata key: P.835 CNN op-token sequence (future `Array<u32>` —
-/// same role as [`KEY_DNSMOS_P808_TOPOLOGY`] for the P.835 variant).
+/// P.835 counterpart to [`KEY_DNSMOS_P808_TOPOLOGY`], retained for source
+/// compatibility with callers that inspected the former reserved schema.
 pub const KEY_DNSMOS_P835_TOPOLOGY: &str = "vokra.dnsmos.p835.topology";
+const KEY_SOURCE_REVISION: &str = "vokra.dnsmos.source_revision";
+const KEY_P808_ONNX_SHA256: &str = "vokra.dnsmos.p808.onnx_sha256";
+const KEY_P835_ONNX_SHA256: &str = "vokra.dnsmos.p835.onnx_sha256";
+const KEY_SOURCE_PY_SHA256: &str = "vokra.dnsmos.source_py_sha256";
+const KEY_SOURCE_LICENSE_SHA256: &str = "vokra.dnsmos.source_license_sha256";
+const KEY_PUBLIC_HF: &str = "vokra.dnsmos.public_hf";
+const KEY_PUBLIC_REVISION: &str = "vokra.dnsmos.public_revision";
+const KEY_PUBLIC_GGUF_SHA256: &str = "vokra.dnsmos.public_gguf_sha256";
+const KEY_MANIFEST_SHA256: &str = "vokra.dnsmos.manifest_sha256";
+const KEY_INPUT_LENGTH: &str = "vokra.dnsmos.input_length";
+const KEY_P808_FRAMES: &str = "vokra.dnsmos.p808.frames";
+const KEY_P808_N_FFT: &str = "vokra.dnsmos.p808.n_fft";
+const KEY_P808_HOP: &str = "vokra.dnsmos.p808.hop";
+const KEY_P808_N_MELS: &str = "vokra.dnsmos.p808.n_mels";
+const KEY_P835_FRAMES: &str = "vokra.dnsmos.p835.frames";
+const KEY_P835_WINDOW: &str = "vokra.dnsmos.p835.window";
+const KEY_P835_HOP: &str = "vokra.dnsmos.p835.hop";
+const KEY_P835_BINS: &str = "vokra.dnsmos.p835.bins";
 
-/// Sub-model tag inside a DNSMOS bundle.
+pub(super) const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
+    label: "dnsmos",
+    arch: ARCH,
+    model_name: NAME,
+    model_name_alias: None,
+    tensor_count: TENSOR_COUNT,
+    manifest_sha256: [
+        0xd6, 0xd1, 0x3f, 0xd5, 0x19, 0x1d, 0x39, 0x97, 0x36, 0xc8, 0xc1, 0x55, 0x8d, 0x9d, 0xbb,
+        0xc5, 0x17, 0x18, 0xa3, 0x77, 0x19, 0x08, 0x36, 0xa6, 0x40, 0xa1, 0x99, 0x2d, 0xbf, 0x40,
+        0x48, 0x47,
+    ],
+};
+
+/// Complete learned reduction set for CPU and Apple Metal.
+pub const DNSMOS_HOT_OPS: &[HotOp] = &[HotOp::Gemm];
+
+/// One released predictor inside the DNSMOS bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DnsmosSubmodel {
-    /// ITU-T P.808 overall quality predictor (single scalar out).
+    /// P.808 overall MOS predictor.
     P808,
-    /// ITU-T P.835 3-way predictor (SIG / BAK / OVRL).
+    /// P.835 SIG/BAK/OVRL predictor.
     P835,
 }
 
 impl DnsmosSubmodel {
-    /// Canonical short name for logs / metadata.
+    /// Returns the canonical metadata/logging name.
     pub const fn short(&self) -> &'static str {
         match self {
             Self::P808 => "p808",
             Self::P835 => "p835",
         }
     }
-    /// The GGUF tensor-name prefix each variant's weights carry
-    /// (`"p808."` / `"p835."` — the converter emits initializer names
-    /// verbatim under this prefix).
+
+    /// Returns the strict GGUF tensor prefix.
     pub const fn tensor_prefix(&self) -> &'static str {
         match self {
             Self::P808 => "p808.",
@@ -145,243 +157,188 @@ impl DnsmosSubmodel {
     }
 }
 
-/// DNSMOS runtime config (transcribed verbatim from `vokra.dnsmos.*` at
-/// load time; every field is required and validated loudly).
+/// Parsed public DNSMOS metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DnsmosConfig {
-    /// Bundle inventory in canonical order (`"p808"` before `"p835"`).
+    /// Ordered variant inventory.
     pub bundle: Vec<String>,
-    /// PCM sample rate the model expects (Hz). Must equal
-    /// [`EXPECTED_SAMPLE_RATE`].
+    /// Required PCM sample rate in hertz.
     pub sample_rate: u32,
-    /// Whether the P.808 variant is present in this GGUF (cached from
-    /// [`Self::bundle`] for fast dispatch).
+    /// Whether the inventory contains P.808.
     pub has_p808: bool,
-    /// Whether the P.835 variant is present in this GGUF.
+    /// Whether the inventory contains P.835.
     pub has_p835: bool,
 }
 
 impl DnsmosConfig {
-    /// Validates the config loudly (FR-EX-08).
+    /// Validates the public configuration surface used by the original
+    /// binder. Partial inventories remain representable here for source
+    /// compatibility; [`Dnsmos::from_gguf`] separately requires the complete
+    /// audited public bundle before executing weights.
     pub fn validate(&self) -> Result<()> {
         if self.bundle.is_empty() {
             return Err(VokraError::ModelLoad(format!(
-                "dnsmos: `{KEY_DNSMOS_BUNDLE}` is empty — the GGUF must advertise \
-                 at least one of `p808` / `p835` (a bundle with neither is a \
-                 conversion bug; the converter refuses to emit one)"
+                "dnsmos: `{KEY_DNSMOS_BUNDLE}` is empty — expected at least one of `p808` / `p835`"
             )));
         }
-        if self.sample_rate != EXPECTED_SAMPLE_RATE {
+        if self.sample_rate != SAMPLE_RATE {
             return Err(VokraError::ModelLoad(format!(
-                "dnsmos: `{KEY_DNSMOS_SAMPLE_RATE}` = {} — DNSMOS is trained at \
-                 {EXPECTED_SAMPLE_RATE} Hz only (upstream `dnsmos_local.py` pins \
-                 SAMPLING_RATE = 16000). Resample the audio upstream rather than \
-                 emitting a different-rate GGUF (FR-EX-08).",
-                self.sample_rate,
+                "dnsmos: `{KEY_DNSMOS_SAMPLE_RATE}` = {}, expected {SAMPLE_RATE}",
+                self.sample_rate
             )));
         }
-        for v in &self.bundle {
-            match v.as_str() {
-                "p808" | "p835" => {}
-                other => {
-                    return Err(VokraError::ModelLoad(format!(
-                        "dnsmos: `{KEY_DNSMOS_BUNDLE}` contains unknown variant \
-                         `{other}` — expected one of `p808`, `p835`"
-                    )));
-                }
+        for variant in &self.bundle {
+            if variant != "p808" && variant != "p835" {
+                return Err(VokraError::ModelLoad(format!(
+                    "dnsmos: `{KEY_DNSMOS_BUNDLE}` contains unknown variant `{variant}`"
+                )));
             }
         }
         Ok(())
     }
 
-    /// Reads config from a parsed GGUF's `vokra.dnsmos.*` chunk group.
-    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        let bundle = read_string_array(gguf, KEY_DNSMOS_BUNDLE)?;
-        let sample_rate = gguf
-            .get(KEY_DNSMOS_SAMPLE_RATE)
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| {
-                VokraError::ModelLoad(format!(
-                    "dnsmos GGUF missing required u32 metadata `{KEY_DNSMOS_SAMPLE_RATE}`"
-                ))
-            })?;
+    /// Reads and validates the original public `vokra.dnsmos.*` config group.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let bundle = read_string_array(file, KEY_DNSMOS_BUNDLE)?;
+        let sample_rate = required_u64(file, KEY_DNSMOS_SAMPLE_RATE)?;
         let sample_rate = u32::try_from(sample_rate).map_err(|_| {
             VokraError::ModelLoad(format!(
-                "dnsmos GGUF metadata `{KEY_DNSMOS_SAMPLE_RATE}` = {sample_rate} does not fit in u32"
+                "dnsmos: `{KEY_DNSMOS_SAMPLE_RATE}`={sample_rate} does not fit in u32"
             ))
         })?;
-        let has_p808 = bundle.iter().any(|v| v == "p808");
-        let has_p835 = bundle.iter().any(|v| v == "p835");
         let cfg = Self {
+            has_p808: bundle.iter().any(|variant| variant == "p808"),
+            has_p835: bundle.iter().any(|variant| variant == "p835"),
             bundle,
             sample_rate,
-            has_p808,
-            has_p835,
         };
         cfg.validate()?;
         Ok(cfg)
     }
 }
 
-/// Reads a required `Array<String>` metadata chunk, enforcing element-
-/// type (FR-EX-08 — refuse the load rather than silently coerce).
-fn read_string_array(gguf: &GgufFile, key: &str) -> Result<Vec<String>> {
-    let value = gguf.get(key).ok_or_else(|| {
-        VokraError::ModelLoad(format!(
-            "dnsmos GGUF missing required Array<String> metadata `{key}`"
-        ))
-    })?;
-    let arr = value.as_array().ok_or_else(|| {
-        VokraError::ModelLoad(format!(
-            "dnsmos GGUF metadata `{key}` is not an array (expected Array<String>)"
-        ))
-    })?;
-    if arr.element_type != GgufValueType::String {
-        return Err(VokraError::ModelLoad(format!(
-            "dnsmos GGUF metadata `{key}` has element_type {:?}, expected String",
-            arr.element_type
-        )));
-    }
-    let mut out = Vec::with_capacity(arr.values.len());
-    for (i, v) in arr.values.iter().enumerate() {
-        match v {
-            GgufMetadataValue::String(s) => out.push(s.clone()),
-            other => {
-                return Err(VokraError::ModelLoad(format!(
-                    "dnsmos GGUF metadata `{key}[{i}]` is not String (got {:?})",
-                    other.value_type()
-                )));
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// A single bound sub-model (weight-tensor names + counts). Weights are
-/// referenced by name only until the CNN forward wires — the current
-/// binder does not preload every tensor into RAM because the forward is
-/// loud-partial (see `cnn_forward_loud_partial`), and the follow-up
-/// wave that lights up the CNN forward will decide the caching shape
-/// based on the topology metadata.
+/// Diagnostic tensor inventory for one submodel.
 #[derive(Debug, Clone)]
 pub struct DnsmosBundle {
-    /// Which variant this bundle entry represents.
+    /// Predictor represented by this entry.
     pub variant: DnsmosSubmodel,
-    /// The GGUF tensor names carrying this variant's weights (verbatim
-    /// prefixed initializer names, e.g. `"p808.conv1/kernel"`).
+    /// Exact tensor names under the predictor prefix.
     pub tensor_names: Vec<String>,
 }
 
-/// DNSMOS session — an immutable shareable bundle plus the config it
-/// was bound against. Constructed via [`Self::from_gguf`] or (for tests)
-/// [`Self::synthesized`]; scored via [`Self::score_p808`] /
-/// [`Self::score_p835`] / [`Self::score_all`].
+/// Strict native DNSMOS P.808 + P.835 scorer.
 #[derive(Debug, Clone)]
 pub struct Dnsmos {
     cfg: DnsmosConfig,
     bundles: Arc<Vec<DnsmosBundle>>,
-    /// Variants string slice built once at bind time so
-    /// [`MosScorerEngine::variants`] can return a stable `&[&'static str]`
-    /// without allocating per call.
-    variants: &'static [&'static str],
+    weights: Arc<DnsmosWeights>,
+    weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl Dnsmos {
-    /// Binds the model from a parsed GGUF (FR-LD-01).
-    ///
-    /// Returns [`VokraError::ModelLoad`] if the arch tag is wrong, any
-    /// required `vokra.dnsmos.*` chunk is missing, the sample rate is
-    /// not `16000`, the bundle is empty, or any advertised variant
-    /// carries no tensors under its expected prefix (FR-EX-08 — no
-    /// silent partial bundle).
-    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
-        // Arch check first — a UTMOS / silero-vad / openwakeword GGUF
-        // handed to us by mistake fails with a clear message instead of
-        // a downstream "missing tensor".
-        match gguf
-            .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
-            .and_then(|v| v.as_str())
-        {
-            Some(a) if a == ARCH => {}
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "dnsmos: GGUF arch is `{other}`, expected `{ARCH}`"
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(
-                    "dnsmos: GGUF is missing `vokra.model.arch` (converter did not \
-                     stamp it)"
-                        .to_owned(),
-                ));
-            }
+    /// Strictly binds the exact public 38-tensor release.
+    pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
+        require_string(file, chunks::KEY_PROVENANCE_MODEL_ID, NAME)?;
+        require_string(file, KEY_MODEL_CATEGORY, CATEGORY)?;
+        require_string(file, KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL)?;
+        require_string(file, chunks::KEY_PROVENANCE_LICENSE, "mit")?;
+        require_string(
+            file,
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::Permissive.as_str(),
+        )?;
+        let cfg = DnsmosConfig::from_gguf(file)?;
+        if cfg.bundle != ["p808", "p835"] {
+            return Err(VokraError::ModelLoad(format!(
+                "dnsmos: `{KEY_DNSMOS_BUNDLE}`={:?}, expected the complete public bundle [\"p808\", \"p835\"]",
+                cfg.bundle
+            )));
         }
-
-        let cfg = DnsmosConfig::from_gguf(gguf)?;
-
-        // For each advertised variant, collect the tensor names carrying
-        // its prefix. A variant advertised in the bundle inventory but
-        // with zero matching tensors is a hard error — a silent partial
-        // bundle would let the loud-partial forward eventually surface
-        // as "MOS = 0" rather than a load-time refusal.
-        let mut bundles: Vec<DnsmosBundle> = Vec::with_capacity(cfg.bundle.len());
-        for v in &cfg.bundle {
-            let variant = match v.as_str() {
-                "p808" => DnsmosSubmodel::P808,
-                "p835" => DnsmosSubmodel::P835,
-                // validated in DnsmosConfig::validate — unreachable.
-                _ => unreachable!(),
-            };
-            let prefix = variant.tensor_prefix();
-            let names: Vec<String> = gguf
-                .tensors()
-                .iter()
-                .map(|t| t.name.clone())
-                .filter(|n| n.starts_with(prefix))
-                .collect();
-            if names.is_empty() {
-                return Err(VokraError::ModelLoad(format!(
-                    "dnsmos: bundle inventory advertises variant `{v}` but the GGUF \
-                     carries no tensors under the `{prefix}` prefix — the sidecar \
-                     produced a stale metadata / empty tensor pair (FR-EX-08 forbids \
-                     silent partial bundles)"
-                )));
-            }
-            bundles.push(DnsmosBundle {
+        require_string(file, KEY_DNSMOS_P808_CKPT, "model_v8.onnx")?;
+        require_string(file, KEY_DNSMOS_P835_CKPT, "sig_bak_ovr.onnx")?;
+        validate_additive_contract(file)?;
+        let bundles = [DnsmosSubmodel::P808, DnsmosSubmodel::P835]
+            .into_iter()
+            .map(|variant| DnsmosBundle {
                 variant,
-                tensor_names: names,
-            });
-        }
-
-        let variants: &'static [&'static str] = match (cfg.has_p808, cfg.has_p835) {
-            (true, true) => &["p808", "p835"],
-            (true, false) => &["p808"],
-            (false, true) => &["p835"],
-            // DnsmosConfig::validate refuses an empty bundle.
-            (false, false) => unreachable!(),
-        };
-
+                tensor_names: file
+                    .tensors()
+                    .iter()
+                    .filter(|tensor| tensor.name.starts_with(variant.tensor_prefix()))
+                    .map(|tensor| tensor.name.clone())
+                    .collect(),
+            })
+            .collect();
+        let weights = DnsmosWeights::bind(file)?;
         Ok(Self {
             cfg,
             bundles: Arc::new(bundles),
-            variants,
+            weights: Arc::new(weights),
+            weight_license: checkpoint.weight_license(),
+            backend: BackendKind::Cpu,
         })
     }
 
-    /// Opens and binds the model from a GGUF file on disk.
+    /// Opens and strictly binds a GGUF from disk on the CPU backend.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let gguf = GgufFile::open(path)?;
-        Self::from_gguf(&gguf)
+        Self::from_gguf(&GgufFile::open(path)?)
     }
 
-    /// Builds a synthesized (test-only) session advertising both P.808
-    /// and P.835. The `score_*` calls still hit the loud-partial — the
-    /// CNN forward is not fabricated (FR-EX-08).
+    /// Strictly binds a GGUF and preflights the selected backend.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
+        Compute::for_backend(backend, DNSMOS_HOT_OPS)?;
+        Ok(Self::from_gguf(file)?.with_backend(backend))
+    }
+
+    #[must_use]
+    /// Selects a backend; availability is checked before scoring begins.
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    #[must_use]
+    /// Returns the selected backend.
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    #[must_use]
+    /// Returns the required PCM sample rate.
+    pub const fn sample_rate(&self) -> u32 {
+        SAMPLE_RATE
+    }
+
+    #[must_use]
+    /// Returns the checkpoint license class.
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    #[must_use]
+    /// Returns the immutable learned-tensor count.
+    pub const fn tensor_count(&self) -> usize {
+        TENSOR_COUNT
+    }
+
+    /// Returns the parsed metadata contract.
+    pub fn config(&self) -> &DnsmosConfig {
+        &self.cfg
+    }
+
+    /// Returns the per-predictor tensor inventories.
+    pub fn bundles(&self) -> &[DnsmosBundle] {
+        &self.bundles
+    }
+
+    /// Test fixture model with the official topology and zero weights.
     pub fn synthesized() -> Self {
         Self {
             cfg: DnsmosConfig {
                 bundle: vec!["p808".to_owned(), "p835".to_owned()],
-                sample_rate: EXPECTED_SAMPLE_RATE,
+                sample_rate: SAMPLE_RATE,
                 has_p808: true,
                 has_p835: true,
             },
@@ -395,84 +352,47 @@ impl Dnsmos {
                     tensor_names: Vec::new(),
                 },
             ]),
-            variants: &["p808", "p835"],
+            weights: Arc::new(DnsmosWeights::synthesized()),
+            weight_license: LicenseClass::Unknown,
+            backend: BackendKind::Cpu,
         }
     }
 
-    /// Returns the checkpoint's config.
-    pub fn config(&self) -> &DnsmosConfig {
-        &self.cfg
-    }
-
-    /// Returns the bound sub-model bundle metadata (mostly for
-    /// diagnostics — the forward paths read weights on demand).
-    pub fn bundles(&self) -> &[DnsmosBundle] {
-        &self.bundles
-    }
-
-    /// Scores a clip against the P.808 predictor. Returns a MOS in
-    /// `[1, 5]` on the future real path; today returns
-    /// [`VokraError::UnsupportedOp`] with the topology-extension recipe.
+    /// Scores P.808 overall MOS for 16 kHz mono PCM.
     pub fn score_p808(&self, pcm16k: &[f32]) -> Result<f32> {
-        if !self.cfg.has_p808 {
-            return Err(VokraError::InvalidArgument(format!(
-                "dnsmos: cannot score variant `p808` (P.808) — the bundle \
-                 advertises only {:?}. A partial bundle must be scored on its \
-                 advertised variants only (FR-EX-08 forbids fabricating a `None` \
-                 MOS as a `0.0`)",
-                self.cfg.bundle
-            )));
-        }
-        // Loud-partial gate fires BEFORE the mel front-end runs — the
-        // caller cannot observe a partial computation that looks like a
-        // real forward. The `pcm16k` length is consumed only by the
-        // future real path; we silence the unused warning by binding.
-        let _ = pcm16k;
-        Err(cnn_forward_loud_partial(DnsmosSubmodel::P808))
+        let compute = Compute::for_backend(self.backend, DNSMOS_HOT_OPS)?;
+        nn::score(&compute, &self.weights, pcm16k, true, false)?
+            .p808
+            .ok_or_else(|| VokraError::InvalidArgument("dnsmos: missing P.808 output".to_owned()))
     }
 
-    /// Scores a clip against the P.835 predictor. Returns
-    /// `(SIG, BAK, OVRL)` MOS scalars on the future real path; today
-    /// returns [`VokraError::UnsupportedOp`] with the topology-extension
-    /// recipe.
+    /// Scores P.835 `(SIG, BAK, OVRL)` for 16 kHz mono PCM.
     pub fn score_p835(&self, pcm16k: &[f32]) -> Result<(f32, f32, f32)> {
-        if !self.cfg.has_p835 {
-            return Err(VokraError::InvalidArgument(format!(
-                "dnsmos: cannot score variant `p835` (P.835) — the bundle \
-                 advertises only {:?}. A partial bundle must be scored on its \
-                 advertised variants only (FR-EX-08 forbids fabricating a `None` \
-                 MOS as a `0.0`)",
-                self.cfg.bundle
-            )));
-        }
-        let _ = pcm16k;
-        Err(cnn_forward_loud_partial(DnsmosSubmodel::P835))
+        let compute = Compute::for_backend(self.backend, DNSMOS_HOT_OPS)?;
+        nn::score(&compute, &self.weights, pcm16k, false, true)?
+            .p835
+            .ok_or_else(|| VokraError::InvalidArgument("dnsmos: missing P.835 output".to_owned()))
     }
 
-    /// Scores a clip on every variant the bundle advertises, folding
-    /// the results into a single [`MosScore`]. Absent variants stay
-    /// `None` (never `Some(0.0)`). Any variant present in the bundle
-    /// falls into the same loud-partial as [`Self::score_p808`] /
-    /// [`Self::score_p835`], so this returns the first
-    /// [`VokraError::UnsupportedOp`] encountered.
+    /// Scores both released predictors in one chunking pass.
     pub fn score_all(&self, pcm16k: &[f32]) -> Result<MosScore> {
-        let mut out = MosScore::default();
-        if self.cfg.has_p808 {
-            out.p808 = Some(self.score_p808(pcm16k)?);
-        }
-        if self.cfg.has_p835 {
-            let (sig, bak, ovrl) = self.score_p835(pcm16k)?;
-            out.sig = Some(sig);
-            out.bak = Some(bak);
-            out.ovrl = Some(ovrl);
-        }
-        Ok(out)
+        let compute = Compute::for_backend(self.backend, DNSMOS_HOT_OPS)?;
+        let score = nn::score(&compute, &self.weights, pcm16k, true, true)?;
+        let (sig, bak, ovrl) = score.p835.ok_or_else(|| {
+            VokraError::InvalidArgument("dnsmos: missing P.835 output".to_owned())
+        })?;
+        Ok(MosScore {
+            p808: score.p808,
+            sig: Some(sig),
+            bak: Some(bak),
+            ovrl: Some(ovrl),
+        })
     }
 }
 
 impl MosScorerEngine for Dnsmos {
     fn variants(&self) -> &[&'static str] {
-        self.variants
+        &["p808", "p835"]
     }
 
     fn score(&self, pcm16k: &[f32]) -> Result<MosScore> {
@@ -480,28 +400,81 @@ impl MosScorerEngine for Dnsmos {
     }
 }
 
-/// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned
-/// by every `score_*` path until the CNN topology metadata lands.
-///
-/// The message names both (a) the future GGUF metadata chunk that will
-/// pin the op sequence and (b) the sidecar to extend. An owner (or the
-/// follow-up CC wave) reading this error knows exactly where to flip
-/// the switch — no fabricated `0.0` MOS ever appears (FR-EX-08).
-fn cnn_forward_loud_partial(variant: DnsmosSubmodel) -> VokraError {
-    let short = variant.short();
-    let topo_key = match variant {
-        DnsmosSubmodel::P808 => KEY_DNSMOS_P808_TOPOLOGY,
-        DnsmosSubmodel::P835 => KEY_DNSMOS_P835_TOPOLOGY,
-    };
-    VokraError::UnsupportedOp(format!(
-        "dnsmos {short}: CNN backbone forward is a loud-partial — the current \
-         `tools/parity/dnsmos_prepare_checkpoint.py` sidecar walks the ONNX \
-         `graph.initializer` only, so the `conv → BN → relu → pool` op sequence \
-         is not primary-source-transcribable and would be silent-wrong if \
-         best-guessed. Extend the sidecar to emit `{topo_key}` (u32 op-token \
-         array from the ONNX `graph.node` list), re-run \
-         `vokra-cli convert --model dnsmos-p808-p835`, then this call flips to \
-         a real MOS ∈ [1, 5]. Until then this is a loud pending — no silent \
-         fabricated 0.0 MOS (FR-EX-08)."
-    ))
+fn validate_additive_contract(file: &GgufFile) -> Result<()> {
+    // The historical public artifact predates the richer pins. Its exact
+    // complete manifest plus generic provenance is the compatibility proof.
+    if file.get(KEY_SOURCE_REVISION).is_none() {
+        return Ok(());
+    }
+    for (key, expected) in [
+        (KEY_SOURCE_REVISION, SOURCE_REVISION),
+        (KEY_P808_ONNX_SHA256, P808_ONNX_SHA256),
+        (KEY_P835_ONNX_SHA256, P835_ONNX_SHA256),
+        (KEY_SOURCE_PY_SHA256, SOURCE_PY_SHA256),
+        (KEY_SOURCE_LICENSE_SHA256, SOURCE_LICENSE_SHA256),
+        (KEY_PUBLIC_HF, PUBLIC_HF),
+        (KEY_PUBLIC_REVISION, PUBLIC_REVISION),
+        (KEY_PUBLIC_GGUF_SHA256, PUBLIC_GGUF_SHA256),
+        (KEY_MANIFEST_SHA256, MANIFEST_SHA256),
+    ] {
+        require_string(file, key, expected)?;
+    }
+    for (key, expected) in [
+        (KEY_INPUT_LENGTH, INPUT_LENGTH_SAMPLES as u64),
+        (KEY_P808_FRAMES, P808_FRAMES as u64),
+        (KEY_P808_N_FFT, P808_N_FFT as u64),
+        (KEY_P808_HOP, P808_HOP as u64),
+        (KEY_P808_N_MELS, P808_N_MELS as u64),
+        (KEY_P835_FRAMES, P835_FRAMES as u64),
+        (KEY_P835_WINDOW, P835_WINDOW as u64),
+        (KEY_P835_HOP, P835_HOP as u64),
+        (KEY_P835_BINS, P835_BINS as u64),
+    ] {
+        if required_u64(file, key)? != expected {
+            return Err(VokraError::ModelLoad(format!(
+                "dnsmos: metadata `{key}` does not match the audited topology value {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn read_string_array(file: &GgufFile, key: &str) -> Result<Vec<String>> {
+    let value = file
+        .get(key)
+        .ok_or_else(|| VokraError::ModelLoad(format!("dnsmos: missing `{key}`")))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| VokraError::ModelLoad(format!("dnsmos: `{key}` is not an array")))?;
+    if array.element_type != GgufValueType::String {
+        return Err(VokraError::ModelLoad(format!(
+            "dnsmos: `{key}` is not Array<String>"
+        )));
+    }
+    array
+        .values
+        .iter()
+        .map(|value| match value {
+            GgufMetadataValue::String(value) => Ok(value.clone()),
+            _ => Err(VokraError::ModelLoad(format!(
+                "dnsmos: `{key}` contains a non-string value"
+            ))),
+        })
+        .collect()
+}
+
+fn require_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    let actual = file.get(key).and_then(GgufMetadataValue::as_str);
+    if actual != Some(expected) {
+        return Err(VokraError::ModelLoad(format!(
+            "dnsmos: metadata `{key}`={actual:?}, expected {expected:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn required_u64(file: &GgufFile, key: &str) -> Result<u64> {
+    file.get(key)
+        .and_then(GgufMetadataValue::as_u64)
+        .ok_or_else(|| VokraError::ModelLoad(format!("dnsmos: missing/non-integer `{key}`")))
 }

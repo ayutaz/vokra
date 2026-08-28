@@ -38,9 +38,10 @@
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //! - Any AGPL derivative of the above.
 
+use crate::backend::{gather_head, linear_with_backend, transpose_rows, BertBackendOps};
 use crate::deberta_v2::LayerNorm;
 use vokra_core::gguf::GgufFile;
-use vokra_core::VokraError;
+use vokra_core::{Result as VokraResult, VokraError};
 
 /// Static hyper-parameters for a plain BERT encoder.
 ///
@@ -245,6 +246,36 @@ impl BertEmbeddings {
         }
         self.layer_norm.forward(&hidden, seq_len, d)
     }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        token_ids: &[u32],
+        token_type_ids: Option<&[u32]>,
+    ) -> VokraResult<Vec<f32>> {
+        let seq_len = token_ids.len();
+        assert!(seq_len <= self.max_position_embeddings);
+        if let Some(types) = token_type_ids {
+            assert_eq!(types.len(), seq_len);
+        }
+        let d = self.hidden_size;
+        let mut hidden = vec![0.0; seq_len * d];
+        for (position, &token_id) in token_ids.iter().enumerate() {
+            let token = token_id as usize;
+            assert!(token < self.vocab_size);
+            let token_type = token_type_ids
+                .map(|types| types[position] as usize)
+                .unwrap_or(0);
+            assert!(token_type < self.type_vocab_size);
+            for channel in 0..d {
+                hidden[position * d + channel] = self.token_embed[token * d + channel]
+                    + self.position_embed[position * d + channel]
+                    + self.token_type_embed[token_type * d + channel];
+            }
+        }
+        self.layer_norm
+            .forward_with_backend(backend, &hidden, seq_len, d)
+    }
 }
 
 /// Standard multi-head self-attention.
@@ -385,6 +416,59 @@ impl BertSelfAttention {
 
         out
     }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        hidden: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let d = self.hidden_size;
+        assert_eq!(hidden.len(), seq_len * d);
+        let q = linear_with_backend(backend, hidden, &self.wq, Some(&self.bq), seq_len, d, d)?;
+        let k = linear_with_backend(backend, hidden, &self.wk, Some(&self.bk), seq_len, d, d)?;
+        let v = linear_with_backend(backend, hidden, &self.wv, Some(&self.bv), seq_len, d, d)?;
+        let scale = 1.0 / vokra_math::sqrt(self.head_dim as f32);
+        let mut output = vec![0.0; seq_len * d];
+
+        for head in 0..self.num_heads {
+            let head_offset = head * self.head_dim;
+            let q_head = gather_head(&q, seq_len, d, head_offset, self.head_dim);
+            let k_head = gather_head(&k, seq_len, d, head_offset, self.head_dim);
+            let v_head = gather_head(&v, seq_len, d, head_offset, self.head_dim);
+            let mut scores = linear_with_backend(
+                backend,
+                &q_head,
+                &k_head,
+                None,
+                seq_len,
+                self.head_dim,
+                seq_len,
+            )?;
+            for score in &mut scores {
+                *score *= scale;
+            }
+            let mut probabilities = vec![0.0; scores.len()];
+            backend.softmax_f32(&scores, &mut probabilities, seq_len, seq_len)?;
+            let value_out_in = transpose_rows(&v_head, seq_len, self.head_dim);
+            let context = linear_with_backend(
+                backend,
+                &probabilities,
+                &value_out_in,
+                None,
+                seq_len,
+                seq_len,
+                self.head_dim,
+            )?;
+            for position in 0..seq_len {
+                output[position * d + head_offset..position * d + head_offset + self.head_dim]
+                    .copy_from_slice(
+                        &context[position * self.head_dim..(position + 1) * self.head_dim],
+                    );
+            }
+        }
+        Ok(output)
+    }
 }
 
 /// Attention output projection + post-norm residual, matching HF
@@ -433,6 +517,32 @@ impl BertSelfOutput {
             added[i] = dense_out[i] + residual[i];
         }
         self.layer_norm.forward(&added, seq_len, d)
+    }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        attn_out: &[f32],
+        residual: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let d = self.hidden_size;
+        let dense = linear_with_backend(
+            backend,
+            attn_out,
+            &self.dense,
+            Some(&self.bias),
+            seq_len,
+            d,
+            d,
+        )?;
+        let added: Vec<f32> = dense
+            .iter()
+            .zip(residual)
+            .map(|(value, skip)| value + skip)
+            .collect();
+        self.layer_norm
+            .forward_with_backend(backend, &added, seq_len, d)
     }
 }
 
@@ -489,6 +599,26 @@ impl BertIntermediate {
             }
         }
         y
+    }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        hidden: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let projected = linear_with_backend(
+            backend,
+            hidden,
+            &self.dense,
+            Some(&self.bias),
+            seq_len,
+            self.hidden_size,
+            self.intermediate_size,
+        )?;
+        let mut activated = vec![0.0; projected.len()];
+        backend.gelu_f32(&projected, &mut activated)?;
+        Ok(activated)
     }
 }
 
@@ -548,6 +678,31 @@ impl BertOutput {
         }
         self.layer_norm.forward(&added, seq_len, d_out)
     }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        ffn_out: &[f32],
+        residual: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let projected = linear_with_backend(
+            backend,
+            ffn_out,
+            &self.dense,
+            Some(&self.bias),
+            seq_len,
+            self.intermediate_size,
+            self.hidden_size,
+        )?;
+        let added: Vec<f32> = projected
+            .iter()
+            .zip(residual)
+            .map(|(value, skip)| value + skip)
+            .collect();
+        self.layer_norm
+            .forward_with_backend(backend, &added, seq_len, self.hidden_size)
+    }
 }
 
 /// One transformer block: attention + FFN with post-norm residuals.
@@ -574,6 +729,25 @@ impl BertLayer {
         let h_attn = self.self_output.forward(&attn, hidden, seq_len);
         let ff = self.intermediate.forward(&h_attn, seq_len);
         self.output.forward(&ff, &h_attn, seq_len)
+    }
+
+    fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        hidden: &[f32],
+        seq_len: usize,
+    ) -> VokraResult<Vec<f32>> {
+        let attention = self
+            .attention
+            .forward_with_backend(backend, hidden, seq_len)?;
+        let attention_hidden = self
+            .self_output
+            .forward_with_backend(backend, &attention, hidden, seq_len)?;
+        let intermediate =
+            self.intermediate
+                .forward_with_backend(backend, &attention_hidden, seq_len)?;
+        self.output
+            .forward_with_backend(backend, &intermediate, &attention_hidden, seq_len)
     }
 
     /// Deterministic synthetic-weight layer for structure tests only.
@@ -685,6 +859,27 @@ impl BertBaseEncoder {
             hidden = layer.forward(&hidden, seq_len);
         }
         hidden
+    }
+
+    /// Backend-dispatched sibling of [`Self::forward`].
+    ///
+    /// Embedding lookup and residual additions remain host layout/control
+    /// work. Every learned projection, attention reduction, softmax, GELU and
+    /// LayerNorm is delegated to the supplied single-backend implementation.
+    pub fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        token_ids: &[u32],
+        token_type_ids: Option<&[u32]>,
+    ) -> VokraResult<Vec<f32>> {
+        let seq_len = token_ids.len();
+        let mut hidden =
+            self.embeddings
+                .forward_with_backend(backend, token_ids, token_type_ids)?;
+        for layer in &self.layers {
+            hidden = layer.forward_with_backend(backend, &hidden, seq_len)?;
+        }
+        Ok(hidden)
     }
 
     /// Model dimension (`hidden_size` in the config).

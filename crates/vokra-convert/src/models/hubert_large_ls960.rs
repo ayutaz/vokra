@@ -13,12 +13,12 @@
 //! quantised negatives. The two topologies share the same 7-layer
 //! Conv1D feature-extractor front-end + Transformer encoder body but
 //! differ in the pretraining loss and the position of the CTC head —
-//! `HubertForCTC` on top of `HubertModel`, not `Wav2Vec2ForCTC`. A
-//! future native forward is expected to share ops with wav2vec2_ctc
-//! (feature-extractor Conv1D, Transformer encoder, CTC greedy / beam
-//! decode) but the arch tag stays distinct so runtime dispatch cannot
-//! misroute a HuBERT checkpoint into a wav2vec2 loader (or vice
-//! versa) silently (FR-EX-08).
+//! `HubertForCTC` on top of `HubertModel`, not `Wav2Vec2ForCTC`.
+//! The native forward shares its learned-op implementation with
+//! wav2vec2_ctc (feature-extractor Conv1D, Transformer encoder and CTC
+//! greedy decode), while its arch tag and strict tensor namespace stay
+//! distinct so runtime dispatch cannot silently misroute a checkpoint
+//! (FR-EX-08).
 //!
 //! # License posture — apache-2.0 (**Permissive**)
 //!
@@ -48,7 +48,9 @@
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -64,6 +66,10 @@ const UPSTREAM_SOURCE: &str =
 
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const PREFIX: &str = "vokra.hubert";
+const CONV_DIM: [u32; 7] = [512; 7];
+const CONV_KERNEL: [u32; 7] = [10, 3, 3, 3, 3, 2, 2];
+const CONV_STRIDE: [u32; 7] = [5, 2, 2, 2, 2, 2, 2];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HubertLargeLs960Report {
@@ -92,6 +98,7 @@ pub fn convert_hubert_large_ls960_file(
     };
     vokra_core::stamp_provenance(&mut b, class, &spdx, Some(NAME), Some(UPSTREAM_SOURCE));
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    write_hparams(&mut b);
 
     let mut report = HubertLargeLs960Report::default();
     for t in st.tensors() {
@@ -121,6 +128,35 @@ pub fn convert_hubert_large_ls960_file(
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
     std::fs::write(output, out_bytes)?;
     Ok(report)
+}
+
+fn write_hparams(builder: &mut GgufBuilder) {
+    builder.add_u32(&format!("{PREFIX}.hidden_size"), 1024);
+    builder.add_u32(&format!("{PREFIX}.n_layer"), 24);
+    builder.add_u32(&format!("{PREFIX}.n_head"), 16);
+    builder.add_u32(&format!("{PREFIX}.intermediate_size"), 4096);
+    builder.add_u32(&format!("{PREFIX}.vocab_size"), 32);
+    builder.add_f32(&format!("{PREFIX}.layer_norm_eps"), 1e-5);
+    builder.add_string(&format!("{PREFIX}.feat_extract_norm"), "layer");
+    builder.add_bool(&format!("{PREFIX}.do_stable_layer_norm"), true);
+    builder.add_string(&format!("{PREFIX}.hidden_act"), "gelu");
+    builder.add_u32(&format!("{PREFIX}.num_conv_pos_embeddings"), 128);
+    builder.add_u32(&format!("{PREFIX}.num_conv_pos_embedding_groups"), 16);
+    builder.add_bool(&format!("{PREFIX}.has_ctc_head"), true);
+    builder.add_u32(&format!("{PREFIX}.num_feat_extract_layers"), 7);
+    write_u32_array(builder, &format!("{PREFIX}.conv_dim"), &CONV_DIM);
+    write_u32_array(builder, &format!("{PREFIX}.conv_kernel"), &CONV_KERNEL);
+    write_u32_array(builder, &format!("{PREFIX}.conv_stride"), &CONV_STRIDE);
+}
+
+fn write_u32_array(builder: &mut GgufBuilder, key: &str, values: &[u32]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: values.iter().copied().map(GgufMetadataValue::U32).collect(),
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -189,6 +225,21 @@ mod tests {
         assert_eq!(read_str(chunks::KEY_MODEL_NAME), NAME);
         assert_eq!(read_str(KEY_MODEL_CATEGORY), CATEGORY);
         assert_eq!(read_str(KEY_PROVENANCE_UPSTREAM_HF), UPSTREAM_HF);
+        assert_eq!(
+            g.get("vokra.hubert.hidden_size")
+                .and_then(|value| value.as_u64()),
+            Some(1024)
+        );
+        assert_eq!(
+            g.get("vokra.hubert.n_layer")
+                .and_then(|value| value.as_u64()),
+            Some(24)
+        );
+        assert_eq!(
+            g.get("vokra.hubert.do_stable_layer_norm")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
         // Default license is apache-2.0 (Permissive) — distinct from
         // sibling MusicGen-Small (cc-by-nc-4.0 NonCommercial).
         assert_eq!(read_str("vokra.provenance.license"), DEFAULT_LICENSE_SPDX);

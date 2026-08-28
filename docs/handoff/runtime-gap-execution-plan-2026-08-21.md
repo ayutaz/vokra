@@ -156,6 +156,9 @@ notices are preserved for the native frontend.
 
 `moonshine` is no longer a partial-forward row. The canonical repositories are
 `moonshine-ai/moonshine-{tiny,base}`; the former UsefulSensors ids redirect.
+The public Vokra GGUFs predate that move and retain the two UsefulSensors ids
+in provenance metadata, so the strict loader accepts those exact historical
+aliases as well as the canonical ids; it does not accept arbitrary sources.
 The pinned Tiny revision `390624ed33d594443aa4aa221f5b9f283b545b5a`
 contains 160 F32 tensors, while Base revision
 `7a73d8d55ac0ba2ef3ae761593f6784b51f96dcf` contains 210. Strict conversion
@@ -164,11 +167,14 @@ rejects any missing, extra, retyped, or reshaped tensor and embeds the pinned
 
 The primary implementation corrected two stale scaffold claims: both releases
 use eight attention heads, not six for Tiny; and only the decoder is SwiGLU,
-while the encoder MLP is exact GELU. The native CPU path implements the valid
+while the encoder MLP is exact GELU. The native path implements the valid
 raw-waveform Conv1D stem, GroupNorm, partial RoPE, encoder self-attention,
 causal decoder self-attention, encoder cross-attention, tied logits, greedy EOS
-termination, and byte-fallback BPE decoding. Non-CPU backends return an
-explicit unsupported error until composed attention is routed there.
+termination, and byte-fallback BPE decoding. The 2026-08-24 Mac backend wave
+routed Q/K and attention/value products through the shared GEMM seam; together
+with the already-dispatched projections, softmax, normalization, GELU and
+Conv1D, this makes the complete Moonshine hot-op set reachable on Metal.
+Backends missing any member of that set still fail explicitly.
 
 Tiny and Base official checkpoints converted on VAST to 160- and 210-tensor
 GGUFs respectively; no artifact was uploaded or published. The independent
@@ -561,6 +567,14 @@ work testable and self-describing.
   runtime strictly reads and validates them, including the 50% overlap and
   causal flag contracts. Metadata-free artifacts fail with the exact missing
   key instead of silently taking constructor defaults.
+
+2026-08-24 follow-up: this prerequisite is now a complete native runtime, not
+a loud-partial binder. The official topology is corrected from the old 16/8
+assumption to kernel=32/stride=16; the strict 345-tensor encoder, 24-block TCN
+masker and decoder pass an independent Asteroid 0.7.0 fixture. CLI, Rust
+`SeparationEngine` and C ABI routing are wired. The public artifact remains an
+explicit blocker because it carries the obsolete topology and unresolved
+license provenance; no upload is authorized.
 - `jasco_400m_chords_drums`: placeholder values were replaced from official
   AudioCraft revision `896ec7c47f5e5d1e5aa1e4b260c4405328bf009d`.
   The chord conditioner has card 194 plus one null row (vocabulary 195), the
@@ -712,7 +726,15 @@ completed successfully (`asr:` with the intentionally non-speech tone input).
 On the same synced VAST tree, `cargo test --workspace`, workspace/all-target
 clippy with `-D warnings`, `cargo fmt --all -- --check`, `git diff --check`, the
 ABI/zero-dependency/residual/citation gates, and the parity uv-lock check all
-passed. This runtime row is closed. Accelerated module 1–10 tree decoding
+passed. The 2026-08-24 Mac wave additionally routes module 0's dense projection
+through the selected `Compute` backend and keeps the official residual-SiLU
+transform on the same backend-dispatched Whisper decoder. Metal uses the
+per-op decoder route because the resident session currently fuses the vanilla
+tied projection; the feature-gated real-weight test compares CPU/Metal prefix
+logits at `atol = 0.01` and requires exact argmax agreement. Beam, sampled and
+word-alignment Whisper paths also preserve the selected decoder backend rather
+than constructing an implicit CPU scorer. This runtime row is closed.
+Accelerated module 1–10 tree decoding
 remains a separate explicit unsupported API; model publication remains
 unauthorized.
 The historical `vokra/whisper-medusa-v1` repository still returned HTTP 200 on
@@ -741,3 +763,45 @@ For every row moved out of `BOUND_ARCHES`:
 
 Model publication remains outside this execution branch. In particular, the
 RNNoise public-repository audit does not authorize replacement or upload.
+
+## Mac CPU/Metal continuation — 2026-08-24
+
+The Qualcomm/QNN track is intentionally out of scope for this continuation.
+The live `huggingface.co/vokra` audit reports 194 public repositories, 193
+GGUF-bearing repositories and 198 GGUF files. Source reachability is now 45
+CPU-complete repositories, all 45 with a complete Metal code route and zero
+remaining CPU-only; 54 remain routed-partial, 94 have no complete binder, and
+one repository has no GGUF. RMVPE is partial because its decoder omits the
+upstream skip-concat, and Pyannote is partial because real forward remains
+disabled by default pending independent parity. These counts are code
+reachability, not artifact-parity claims.
+
+The Mac wave completed backend wiring for Piper Plus, Moonshine, Whisper
+search/alignment paths, Whisper-Medusa module 0, Moshi, NSNet2, Vocos,
+FSMN-VAD, Silero VAD, FireRedVAD, TEN-VAD, RNNoise, NKF-AEC, HiFi-GAN,
+BigVGAN, FCPE, SmartTurn and both executable Parakeet variants. RMVPE and
+Pyannote also gained backend-dispatched learned primitives but remain
+CPU-partial for the reasons above. Unsupported backends still fail explicitly.
+Public Moonshine, FSMN-VAD, Vocos Encodec, RNNoise and SmartTurn
+artifacts are known to predate or contradict their strict runtime contracts.
+The current Parakeet TDT artifact also lacks its tokenizer, while the current
+Parakeet CTC artifact stamps `convolution_bias=false` against the pinned
+official `true` contract. All require separately authorized gated replacement.
+
+2026-08-26 correction: NSNet2 no longer needs tensor/topology reconversion. A
+payload-free audit of public revision `983e1cc1397810201f93a121a9daf60cf247813b`
+proved that its fourteen F32 tensors are the correct official 161-bin ONNX
+initializers; only metadata and layout normalization were missing. The runtime
+now accepts that exact closed legacy header contract and normalizes it to the
+already validated canonical forward. However, the same public object
+mis-stamps the model as MIT/permissive: Microsoft's fixed revision separates
+MIT code from CC-BY-4.0 released content. The live repo therefore still needs
+a separately authorized gated provenance/attribution replacement before it is
+counted complete; runtime layout compatibility is not publication sign-off.
+
+Disposable VAST instances `48524614` and `48525871` ran the combined workspace
+test and all-target Clippy suites successfully after the source corrections
+recorded in the Mac coverage ledger. Both instances were destroyed. Real
+Apple Metal parity remains an Apple-runner gate for models whose strict
+artifact is unavailable locally or whose package scope is prohibited on the
+maintainer machine.

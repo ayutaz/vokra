@@ -271,15 +271,16 @@ pub mod nkf_aec;
 // converter (same "prep to safetensors" contract as DAC / DFN3 / CSM —
 // no C / Python enters the runtime, NFR-DS-02).
 pub mod rnnoise;
-// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (MIT
-// Permissive) — the DNS Challenge NR baseline (2-layer GRU + 3-Linear mask
-// predictor over 257-bin STFT log-magnitude, 20 ms frame @ 16 kHz). Distinct
+// coverage-audit-2026-08-03 Wave A ticket: Microsoft **NSNet2** (code MIT,
+// released model content CC-BY-4.0 / AttributionRequired) — the DNS Challenge
+// NR baseline (2-layer GRU + 3-Linear mask predictor over 161-bin STFT
+// log-power, 20 ms frame @ 16 kHz). Distinct
 // arch tag from `denoise` (DeepFilterNet3) because the two topologies share
 // only the `enhancement` category, not their internal layout. Upstream is
 // ONNX-only; `tools/parity/nsnet2_prepare_checkpoint.py` bridges ONNX →
 // safetensors so this converter's zero-dep posture (no ONNX / protobuf in the
-// runtime, FR-LD-05, NFR-DS-02) is preserved. F32 / F16 / BF16 pass through
-// verbatim following the `emotion2vec` / `ecapa_tdnn` contract.
+// runtime, FR-LD-05, NFR-DS-02) is preserved. The fixed official manifest is
+// F32; semantic renaming and MatMul transposition are strict.
 pub mod nsnet2;
 // coverage-audit Wave A ticket `dnsmos-p808-p835` (2026-08-03): Microsoft
 // DNSMOS P.808 + P.835 MOS predictors (MIT weight, category `eval`) —
@@ -424,9 +425,11 @@ pub mod pyannote_speaker_diarization_3_1;
 // `huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base/raw/main/config.json`
 // (talker.* + code_predictor.*) plus README.md (speaker encoder
 // 24 kHz / 1024-dim). Distinct arch tag from CosyVoice2/3 because
-// Qwen3-TTS is codec-LM not vocoder-LM — the terminal step is
-// qwen3_tts_codec, NOT HiFTChain.
+// Qwen3-TTS is codec-LM not vocoder-LM: the LM emits sixteen code rows and
+// the separately authenticated tokenizer decoder produces PCM. HiFTChain is
+// not compatible, and qwen3_tts_codec alone is only the code-layout seam.
 pub(crate) mod qwen3_tts;
+pub(crate) mod qwen3_tts_tokenizer_12hz;
 // SBV2 v2 plan Task 25 (2026-07-26): Style-Bert-VITS2 v2
 // (`litagin02/style_bert_vits2` family, AGPL-3.0 -> LicenseClass::Copyleft
 // default) safetensors -> GGUF, category `tts`. BF16 pass-through mirror of
@@ -441,11 +444,13 @@ pub(crate) mod qwen3_tts;
 // `vokra-models <-> vokra-convert` dependency cycle the design doc's
 // original task split would have created -- see `sbv2`'s module doc (same
 // rationale as Task 11's `deberta_v2` / `deberta_v3`).
-// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE` fork of
-// `Dream-High/RMVPE`; primary code Apache-2.0, fork weight licence
-// unstated — fail-closed Unknown). Safetensors →
-// GGUF with the `vokra.rmvpe.*` hparam chunk group; every F32 / F16 /
-// BF16 tensor passes through verbatim under upstream state_dict names.
+// F0 pitch-extractor tier (2026-07-30): **RMVPE** (`yxlllc/RMVPE`, fixed
+// source revision; it is not a GitHub fork of the separately licensed
+// `Dream-High/RMVPE`). The source and checkpoint terms are unstated, so the
+// converter is fail-closed Unknown. Safetensors → GGUF with the
+// `vokra.rmvpe.*` hparam chunk group; the exact 623 runnable tensors and
+// optional 118 BatchNorm counters retain upstream state_dict names. A complete
+// inference-inert `unet.tf` TimbreFilter is validated and omitted.
 // Distinct arch tag (`rmvpe`) — the first `category = "f0"` binder in
 // the converter tree. Consumed by a native `vokra-models::f0::rmvpe`
 // runtime (U-Net + GRU CNN over a 128-mel spectrogram at 16 kHz →
@@ -780,6 +785,9 @@ pub mod ace_step;
 // HuBERT checkpoint into a wav2vec2 loader silently (FR-EX-08).
 // Scale ~1.26 GB = local convert safe on M1 iMac 16 GB.
 pub mod hubert_large_ls960;
+// 2026-08-24 Mac coverage correction: Data2Vec Audio has distinct
+// tensor names and a five-layer positional-convolution stack.
+pub mod data2vec_audio;
 // 2026-08-04 hf-audio-gap SSL residual: Meta w2v-BERT 2.0
 // (`facebook/w2v-bert-2.0`, MIT). ~580M-parameter self-supervised
 // speech encoder = Conformer body + dual (wav2vec2-style contrastive +
@@ -971,8 +979,9 @@ pub mod conv_tasnet_libri1mix;
 pub mod seamless_m4t_v2_large;
 // ---------------------------------------------------------------------------
 // coverage-audit-2026-08-03 Wave D (T4 non-commercial batch, 2026-08-04):
-// 5 BF16 pass-through skeletons on the same shared verify surface as the
-// Wave B fast-track fleet. All T4 tier (Research-only) per X-Codec-2
+// 5 original T4 converters. Facebook Denoiser now enforces its exact DNS48
+// 48-F32-tensor contract; the other entries retain their original pass-through
+// posture. All T4 tier (Research-only) per X-Codec-2
 // (2026-07-28) / Sortformer diar 4spk / MusicGen family precedent —
 // publish requires `--allow-noncommercial`, runtime M2-13 gate refuses
 // commercial-mode load. Two flavors: HF-hosted (chattts /

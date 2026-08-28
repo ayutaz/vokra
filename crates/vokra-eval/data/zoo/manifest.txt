@@ -278,6 +278,14 @@ notes = engine op exists (fsq_codec xcodec2_fsq); weight distribution blocked un
 # CC-BY-NC-SA-4.0 and the audit rejects them from the official zoo. The
 # Apache-2.0 user-supplied/custom-weight runtime path remains documented in
 # docs/license-audit.md, but is not an official-zoo artifact.
+name = ast-finetuned-audioset
+family = ast
+audit_name = Audio Spectrogram Transformer / AudioSet (`MIT/ast-finetuned-audioset-10-10-0.4593`)
+license = BSD-3-Clause
+excluded_reason = audio-classification-not-an-asr-tts-s2s-vad-codec-quality-gated-model
+since_version = v1.0-rc
+notes = 527-class AudioSet classifier; gated by official AST frontend/logits/top-k parity, not mel/UTMOS or speech error rates.
+
 name = campplus
 family = campplus
 audit_name = CAM++ Speaker Embedding

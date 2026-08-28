@@ -29,7 +29,7 @@
 use alloc::{vec, vec::Vec};
 
 use crate::SampleRate;
-use crate::math::{conv1d_wt, reflect_pad_right};
+use crate::math::{ScalarSileroOps, SileroBackendOps, reflect_pad_right};
 use crate::scalar;
 use crate::weights::RateWeights;
 
@@ -50,23 +50,32 @@ pub struct Magnitude {
 ///
 /// Exposed for the `vokra-models::silero_vad::parity` stage harness (T04).
 pub fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Vec<f32>, usize) {
+    stft_conv_with_ops(rate, w, frame, &mut ScalarSileroOps)
+        .expect("the scalar Silero backend is infallible")
+}
+
+pub(crate) fn stft_conv_with_ops<O: SileroBackendOps>(
+    rate: SampleRate,
+    w: &RateWeights,
+    frame: &[f32],
+    ops: &mut O,
+) -> vokra_core::Result<(Vec<f32>, usize)> {
     let padded = reflect_pad_right(frame, rate.pad());
     // Conv1d(1, 2*bins, k=n_fft, stride=n_fft/2): a single input channel.
-    // M5-14 Wave-2 (T21): transposed-weight formulation, bit-identical per
-    // element to the original scalar conv (see `math::conv1d_wt`).
-    let conv = conv1d_wt(
+    let conv = ops.conv1d(
         &padded,
         1,
         padded.len(),
+        &w.stft.weight,
         &w.stft.weight_t,
-        None,
         w.stft.c_out, // 2*bins
         w.stft.k,
+        None,
         rate.stft_stride(),
         0,
-    );
+    )?;
     let frames = conv.len() / w.stft.c_out;
-    (conv, frames)
+    Ok((conv, frames))
 }
 
 /// Runs the pseudo-STFT on one graph input — a bare fixed frame (512 @ 16 kHz
@@ -74,8 +83,18 @@ pub fn stft_conv(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> (Vec<f32>,
 /// the official interface) — and returns the magnitude spectrogram. Length is
 /// dynamic exactly as in the ONNX graph.
 pub fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> Magnitude {
+    pseudo_stft_with_ops(rate, w, frame, &mut ScalarSileroOps)
+        .expect("the scalar Silero backend is infallible")
+}
+
+pub(crate) fn pseudo_stft_with_ops<O: SileroBackendOps>(
+    rate: SampleRate,
+    w: &RateWeights,
+    frame: &[f32],
+    ops: &mut O,
+) -> vokra_core::Result<Magnitude> {
     let bins = rate.bins();
-    let (conv, frames) = stft_conv(rate, w, frame);
+    let (conv, frames) = stft_conv_with_ops(rate, w, frame, ops)?;
     // real = channels [0, bins), imag = channels [bins, 2*bins); both [bins, frames].
     let mut data = vec![0.0f32; bins * frames];
     for b in 0..bins {
@@ -85,7 +104,7 @@ pub fn pseudo_stft(rate: SampleRate, w: &RateWeights, frame: &[f32]) -> Magnitud
             data[b * frames + t] = scalar::sqrt(re * re + im * im);
         }
     }
-    Magnitude { data, bins, frames }
+    Ok(Magnitude { data, bins, frames })
 }
 
 #[cfg(test)]

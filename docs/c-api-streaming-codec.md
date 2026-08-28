@@ -40,7 +40,10 @@ hot-path guarantee.
 ## Family support
 
 The C layer is codec-family neutral: a model opts in through Vokra's streaming
-codec engine trait only when it has a complete, real token-to-PCM decoder.
-Standalone Mimi is currently connected. SNAC remains a loud unsupported open
-until its terminal PCM decoder lands; exposing its existing codes-to-features
-partial path as audio would violate the no-silent-fallback rule.
+codec engine trait only when it has a complete, real **causal frame** decoder.
+Standalone Mimi is currently connected. DAC and SNAC now have complete offline
+token-to-PCM decoders, but their released convolutional graphs are non-causal
+whole-sequence models; presenting either one-frame push as causal streaming
+would fabricate context/state semantics. They therefore remain explicit
+unsupported families on this streaming handle and are exposed through offline
+model APIs instead.

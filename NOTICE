@@ -436,7 +436,120 @@ substitute the later text without re-auditing the checkpoint's governing
 terms.
 
 --------------------------------------------------------------------------
-17. Maintaining this file
+17. Meta Audiobox Aesthetics — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal scorer target the immutable
+`facebook/audiobox-aesthetics` release. The model weights are distributed
+under the Creative Commons Attribution 4.0 International license. Commercial
+use is permitted; attribution is required.
+
+  Meta Audiobox Aesthetics
+  Copyright (c) Meta Platforms, Inc. and affiliates
+  Licensed under CC-BY 4.0
+  Source: https://github.com/facebookresearch/audiobox-aesthetics
+          https://huggingface.co/facebook/audiobox-aesthetics
+
+The native Rust runtime reimplements the WavLM backbone and the four learned
+CE / CU / PC / PQ quality heads without linking PyTorch, ONNX Runtime or any
+upstream runtime dependency. The converter embeds the attribution text and
+canonical `attribution-required` weight class into the GGUF. No upstream
+weight is bundled in this source repository.
+
+--------------------------------------------------------------------------
+17a. Meta AudioSeal — MIT
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal watermark runtime target the
+four official `facebook/audioseal` generator/detector checkpoints at immutable
+Hugging Face revision 3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba and source
+revision e63a8a0e5cdf7bb797159c92ba15961557fe9bd2. The source code and model
+weights are distributed under the MIT License.
+
+  Meta AudioSeal
+  Copyright (c) Meta Platforms, Inc. and affiliates
+  Licensed under the MIT License
+  Source: https://github.com/facebookresearch/audioseal
+          https://huggingface.co/facebook/audioseal
+
+The native Rust runtime independently implements the complete-buffer base and
+streaming-trained SEANet generator/detector forwards without linking PyTorch,
+ONNX Runtime or another upstream runtime dependency. No upstream weight is
+bundled in this source repository.
+
+--------------------------------------------------------------------------
+17b. Microsoft DNS-Challenge NSNet2 — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's NSNet2 converter and native CPU/Metal runtime target the 20 ms
+baseline model at Microsoft DNS-Challenge commit
+8b87a33b2892f147b5c7ad39ea978453730db269. That revision licenses source code
+under MIT in `LICENSE-CODE`, while the root `LICENSE` and README Legal Notices
+place documentation and other released content under the Creative Commons
+Attribution 4.0 International license. Vokra therefore treats the released
+ONNX model and converted weights as CC-BY-4.0 content. Commercial use is
+permitted; attribution is required.
+
+  NSNet2 20 ms baseline model content
+  Creator: Microsoft DNS-Challenge project
+  Licensed under CC-BY 4.0
+  Source: https://github.com/microsoft/DNS-Challenge/tree/8b87a33b2892f147b5c7ad39ea978453730db269/NSNet2-baseline
+  License: https://github.com/microsoft/DNS-Challenge/blob/8b87a33b2892f147b5c7ad39ea978453730db269/LICENSE
+
+Changes by Vokra: the ONNX initializer payload is converted to GGUF; numeric
+initializer names and matrix axes may be normalized to the native runtime
+schema. The native Rust signal-processing and inference implementation does
+not link or bundle Microsoft code, ONNX Runtime, or protobuf. No upstream
+weight is bundled in this source repository.
+
+--------------------------------------------------------------------------
+17c. Meta Facebook Denoiser DNS48 — CC-BY-NC-4.0 research-only
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal speech-enhancement runtime
+target the causal DNS48 release from `facebookresearch/denoiser` at source
+revision 8afd7c166699bb3c8b2d95b6dd706f71e1075df0. The source and released
+weights are distributed under the Creative Commons Attribution-
+NonCommercial 4.0 International license. Commercial use is not authorized.
+
+  Meta Facebook Denoiser DNS48
+  Copyright (c) Facebook, Inc. and its affiliates
+  Licensed under CC-BY-NC 4.0
+  Source: https://github.com/facebookresearch/denoiser
+  Paper: https://arxiv.org/abs/2006.12847
+
+The native Rust runtime reimplements the official waveform U-Net, causal
+LSTM and fixed sinc resampling forward without linking PyTorch, ONNX Runtime
+or upstream code. No upstream checkpoint is bundled in this source
+repository. Converted weights remain `non-commercial`; default loading and
+Hugging Face publication require the explicit research/non-commercial opt-in
+documented by Vokra's compliance gate.
+
+--------------------------------------------------------------------------
+17d. NVIDIA Canary-1B-Flash — CC-BY-4.0 attribution
+--------------------------------------------------------------------------
+
+Vokra's strict converter and native CPU/Metal ASR/AST runtime target the
+immutable `nvidia/canary-1b-flash` release at Hugging Face revision
+2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e. NVIDIA distributes the model
+weights under the Creative Commons Attribution 4.0 International license.
+Commercial use is permitted; attribution is required.
+
+  NVIDIA Canary-1B-Flash
+  Copyright (c) NVIDIA CORPORATION
+  Licensed under CC-BY 4.0
+  Source: https://huggingface.co/nvidia/canary-1b-flash
+
+The native Rust runtime independently implements the released FastConformer
+encoder, Transformer AED decoder, Canary2 prompt and aggregate tokenizer. It
+does not link PyTorch, NVIDIA NeMo, ONNX Runtime or another upstream runtime
+dependency. The converter stamps this attribution and the
+`attribution-required` weight class into each complete GGUF. No upstream
+checkpoint is bundled in this source repository, and this source change does
+not upload or replace a model artifact.
+
+--------------------------------------------------------------------------
+18. Maintaining this file
 --------------------------------------------------------------------------
 
 Any pull request that adds support for a new model or introduces a new

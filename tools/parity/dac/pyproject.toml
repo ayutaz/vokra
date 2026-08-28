@@ -1,0 +1,19 @@
+[project]
+name = "vokra-parity-dac"
+version = "0.1.0"
+description = "Independent Descript DAC fixture environment for 16/24/44.1 kHz public artifacts"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "descript-audio-codec==1.0.0",
+    "numpy==2.5.2",
+    "torch==2.13.0",
+]
+
+[tool.uv]
+# protobuf 3.19.6 arrives transitively through `descript-audio-codec`'s
+# tensorboard logging path and carries GHSA-7gcm-g887-7qv7 plus
+# GHSA-8qvm-5x2c-j2w7. descript-audiotools hard-pins protobuf<3.20, so a
+# constraint is unsatisfiable; override it instead. Nothing on the DAC numeric
+# path imports protobuf (it reaches this tree only through descript-audiotools'
+# tensorboard logging), so the committed 16/24/44.1 kHz fixtures stay valid.
+override-dependencies = ["protobuf>=7.35.1"]

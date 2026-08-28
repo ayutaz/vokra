@@ -103,6 +103,7 @@ fn stream_from(model: &FsmnVadV1) -> FsmnVadStream {
         Arc::clone(&model.weights),
         Arc::clone(&model.cmvn_add_shift),
         Arc::clone(&model.cmvn_rescale),
+        model.backend,
     )
 }
 
@@ -122,6 +123,13 @@ fn loader_binds_exact_tensor_schema() {
     let model = tiny_model();
     assert_eq!(model.config().encoder.output_dim, 3);
     assert_eq!(model.config().encoder.left_history_frames(), 1);
+    assert_eq!(model.backend(), vokra_core::backend::BackendKind::Cpu);
+    assert_eq!(
+        tiny_model()
+            .with_backend(vokra_core::backend::BackendKind::Metal)
+            .backend(),
+        vokra_core::backend::BackendKind::Metal
+    );
 }
 
 #[test]

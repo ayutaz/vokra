@@ -156,7 +156,7 @@
 //! [`ARCH`] / [`NAME`] / [`CATEGORY`] / [`UPSTREAM_URL`] /
 //! [`DEFAULT_LICENSE_SPDX`] and every `GGUF_KEY_*` are mirrors of the
 //! converter's constants — the same rule the sibling binders (`wavlm` /
-//! `emotion2vec` / `panns` / `redimnet` / `canary_1b_flash`) follow so
+//! `emotion2vec` / `panns` / `redimnet` / `canary_qwen`) follow so
 //! `vokra-models` does not gain a dependency edge onto `vokra-convert`,
 //! preserving the layered convention `vokra-ops → nothing GGUF-aware`,
 //! `vokra-core → GGUF reader`, `vokra-models → GGUF binder`,
@@ -1139,7 +1139,7 @@ const EMBED_OUTPUT: &str = "an utterance-level pooled embedding, whose POOLING R
 /// which blockers are **resolved** (so a reader does not re-report them),
 /// echoes the axes this artifact actually carries and how its manifest is
 /// actually prefixed, and cites all three primary sources — the `wavlm` /
-/// `emotion2vec` / `panns` / `canary_1b_flash` loud-partial-message precedent
+/// `emotion2vec` / `panns` / `canary_qwen` loud-partial-message precedent
 /// (CLAUDE.md 教訓 (a)).
 fn forward_loud_partial(
     cfg: &M2dConfig,

@@ -1,7 +1,7 @@
 //! Analysis / synthesis window functions (M0-04-T09; FR-OP-01).
 //!
-//! Implements the four windows FR-OP-01 enumerates — Hann, Hamming, 4-term
-//! Blackman-Harris and Kaiser. STFT front-ends use the **periodic**
+//! Implements Hann, square-root Hann, Hamming, 4-term Blackman-Harris and
+//! Kaiser. STFT front-ends use the **periodic**
 //! ([`WindowSymmetry::Periodic`]) form (matches `torch.*_window(...,
 //! periodic=True)` / librosa `sym=False`); the **symmetric** form matches
 //! `numpy.hanning` / `numpy.hamming` / `numpy.kaiser` and is the parity
@@ -29,6 +29,10 @@ pub fn window(kind: Window, length: usize, symmetry: WindowSymmetry) -> Vec<f32>
     };
     match kind {
         Window::Hann => cosine_sum(length, denom, &[0.5, 0.5]),
+        Window::SqrtHann => cosine_sum(length, denom, &[0.5, 0.5])
+            .into_iter()
+            .map(f32::sqrt)
+            .collect(),
         Window::Hamming => cosine_sum(length, denom, &[0.54, 0.46]),
         Window::BlackmanHarris => cosine_sum(length, denom, &[0.35875, 0.48829, 0.14128, 0.01168]),
         Window::Kaiser { beta } => kaiser(length, denom, beta as f64),
@@ -156,6 +160,21 @@ mod tests {
     }
 
     #[test]
+    fn sqrt_hann_squared_matches_hann() {
+        for symmetry in [WindowSymmetry::Periodic, WindowSymmetry::Symmetric] {
+            let hann = window(Window::Hann, 320, symmetry);
+            let sqrt = window(Window::SqrtHann, 320, symmetry);
+            for (index, (actual, expected)) in sqrt.iter().zip(hann).enumerate() {
+                assert!(
+                    (actual * actual - expected).abs() <= 2.0e-7,
+                    "sqrt-Hann square mismatch at {index}: {} vs {expected}",
+                    actual * actual,
+                );
+            }
+        }
+    }
+
+    #[test]
     fn hamming_endpoints_match_alpha_minus_beta() {
         // Symmetric Hamming endpoints equal 0.54 - 0.46 = 0.08.
         let w = window(Window::Hamming, 16, WindowSymmetry::Symmetric);
@@ -242,6 +261,7 @@ mod tests {
         for sym in [WindowSymmetry::Periodic, WindowSymmetry::Symmetric] {
             for kind in [
                 Window::Hann,
+                Window::SqrtHann,
                 Window::Hamming,
                 Window::BlackmanHarris,
                 Window::Kaiser { beta: 8.0 },

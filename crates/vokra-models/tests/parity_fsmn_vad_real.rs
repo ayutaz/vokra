@@ -136,7 +136,7 @@ fn fsmn_vad_official_network_and_pcm_parity() {
         ),
         (96, 400, 248)
     );
-    let model = FsmnVadV1::open(gguf).expect("bind canonical FSMN-VAD GGUF");
+    let model = FsmnVadV1::open(&gguf).expect("bind canonical FSMN-VAD GGUF");
 
     let probabilities = model
         .forward_features(&reference.features)
@@ -175,4 +175,50 @@ fn fsmn_vad_official_network_and_pcm_parity() {
         stream_max <= PCM_ATOL,
         "stream max {stream_max:.9e} exceeds {PCM_ATOL:.9e} at {stream_index}"
     );
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    {
+        let metal = FsmnVadV1::open(&gguf)
+            .expect("bind canonical FSMN-VAD GGUF for Metal")
+            .with_backend(vokra_core::backend::BackendKind::Metal);
+        let metal_probabilities = metal
+            .forward_features(&reference.features)
+            .expect("Metal official-feature forward");
+        let (metal_network_index, metal_network_max) =
+            max_abs(&metal_probabilities, &reference.probabilities);
+        let (_, cpu_metal_network_max) = max_abs(&metal_probabilities, &probabilities);
+
+        let mut metal_one_shot = metal.open_stream();
+        let metal_scores = metal_one_shot
+            .push_pcm(&reference.pcm, reference.sample_rate)
+            .expect("Metal one-shot PCM forward");
+        let (metal_pcm_index, metal_pcm_max) = max_abs(&metal_scores, &reference.scores);
+        let (_, cpu_metal_pcm_max) = max_abs(&metal_scores, &scores);
+
+        let mut metal_stream = metal.open_stream();
+        let mut metal_streamed = Vec::new();
+        for chunk in reference.pcm.chunks(173) {
+            metal_streamed.extend(
+                metal_stream
+                    .push_pcm(chunk, reference.sample_rate)
+                    .expect("Metal streamed PCM forward"),
+            );
+        }
+        let (metal_stream_index, metal_stream_max) = max_abs(&metal_streamed, &reference.scores);
+        let (_, cpu_metal_stream_max) = max_abs(&metal_streamed, &streamed);
+        eprintln!(
+            "FSMN-VAD Metal parity: network_ref={metal_network_max:.9e}@{metal_network_index}, \
+             pcm_ref={metal_pcm_max:.9e}@{metal_pcm_index}, \
+             stream_ref={metal_stream_max:.9e}@{metal_stream_index}, \
+             cpu_metal_network={cpu_metal_network_max:.9e}, \
+             cpu_metal_pcm={cpu_metal_pcm_max:.9e}, \
+             cpu_metal_stream={cpu_metal_stream_max:.9e}"
+        );
+        assert!(metal_network_max <= NETWORK_ATOL);
+        assert!(metal_pcm_max <= PCM_ATOL);
+        assert!(metal_stream_max <= PCM_ATOL);
+        assert!(cpu_metal_network_max <= NETWORK_ATOL);
+        assert!(cpu_metal_pcm_max <= PCM_ATOL);
+        assert!(cpu_metal_stream_max <= PCM_ATOL);
+    }
 }

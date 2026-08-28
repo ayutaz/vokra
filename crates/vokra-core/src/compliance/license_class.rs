@@ -308,6 +308,19 @@ impl LicenseClass {
         if norm.contains("openrail") || norm.contains("rail-m") {
             return Self::InheritedRestriction;
         }
+        // Meta Llama 3.2 Community License: commercial use is generally
+        // permitted, but an organisation above 700 million monthly active
+        // users must request a separate licence from Meta.  This is the exact
+        // threshold-shaped obligation `ConditionalCommercial` represents;
+        // treating it as Unknown would incorrectly label every permitted load
+        // as research-only, while Permissive would erase the threshold.
+        if norm.contains("llama-3-2-community-license")
+            || norm.contains("llama-3.2-community-license")
+            || norm == "llama3-2-community-license"
+            || norm == "llama3-2"
+        {
+            return Self::ConditionalCommercial;
+        }
         // Share-alike and strong copyleft, BEFORE the plain `cc-by` arm.
         //
         // Order matters and the previous ordering was wrong: `cc-by-sa-4.0`
@@ -1276,24 +1289,22 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "ultravox-v0_5-llama-3_2-1b"
         | "fixie-ai/ultravox-v0_5-llama-3_2-1b"
         | "vokra/ultravox-v0-5-llama-3-2-1b" => LicenseClass::Permissive,
-        // --- Copyleft (share-alike, redistributable with LICENSE preserved) --
+        // The companion is never bundled into Vokra's public MIT artifact.
+        // A user who accepted Meta's gated terms may convert it locally; the
+        // 700M-MAU threshold remains visible through this distinct class.
+        "ultravox_llama_companion"
+        | "meta-llama-3.2-1b-instruct-ultravox-companion"
+        | "meta-llama/llama-3.2-1b-instruct" => LicenseClass::ConditionalCommercial,
+        // --- unresolved upstream terms (fail closed) -------------------------
         //
-        // 2026-08-02 Wave residual — JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k
-        // (Asteroid ConvTasNet single-speaker enhancement, cc-by-sa-4.0 per
-        // HF cardData primary source). **First entry on the
-        // `LicenseClass::Copyleft` arm.** The SA cascade propagates to
-        // derivatives — a GGUF built from a CC-BY-SA weight is itself
-        // CC-BY-SA, so downstream re-labelling as Apache-2.0 is a
-        // misrepresentation, not a mere attribution drop.
-        // `from_license_str("cc-by-sa-4.0")` already lands the same
-        // Copyleft class (share-alike arm is tested before plain cc-by
-        // per the ordering pin in `Self::from_license_str`), but this
-        // registry override anchors the family on Copyleft so a
-        // `vokra/conv-tasnet-libri1mix` publish gate can look up the class
-        // without re-parsing the SPDX id. Publish is **redistributable
-        // with the original licence preserved** (T3 tier) — no
-        // `--allow-noncommercial` required (Copyleft ≠ NonCommercial),
-        // but the SA cascade must carry forward on every derivative.
+        // JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k has three conflicting
+        // primary-source signals at revision bb8a876b…: HF cardData says
+        // CC-BY-SA-4.0, the model-card weight notice says CC-BY-SA-3.0, and
+        // the same card identifies WHAM-derived training material as
+        // CC-BY-NC-4.0 (Research only).  Selecting the least restrictive one
+        // would invent rights the project has not established.  Keep the
+        // whole family Unknown until the owner/upstream resolves the conflict;
+        // runtime work and redistribution approval are intentionally separate.
         "conv-tasnet"
         | "conv_tasnet"
         | "convtasnet"
@@ -1303,7 +1314,7 @@ pub fn registry_lookup(model_id: &str) -> Option<LicenseClass> {
         | "conv-tasnet-libri1mix-enhsingle-16k"
         | "conv_tasnet_libri1mix_enhsingle_16k"
         | "joriscos/convtasnet_libri1mix_enhsingle_16k"
-        | "vokra/conv-tasnet-libri1mix" => LicenseClass::Copyleft,
+        | "vokra/conv-tasnet-libri1mix" => LicenseClass::Unknown,
         // --- gated: CC-BY-NC-SA (research flag) ------------------------------
         "fish-speech" | "fish-speech-v1.4" | "fish-speech-v1.5" => {
             LicenseClass::NonCommercialShareAlike
@@ -1746,6 +1757,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conv_tasnet_license_conflict_fails_closed() {
+        for id in [
+            "conv-tasnet",
+            "conv_tasnet",
+            "conv-tasnet-libri1mix",
+            "joriscos/convtasnet_libri1mix_enhsingle_16k",
+            "vokra/conv-tasnet-libri1mix",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::Unknown),
+                "{id}: conflicting upstream terms must remain fail-closed"
+            );
+        }
+    }
+
     /// AGPL / GPL weights used to fall through to `Unknown`, which fails
     /// closed and therefore demanded a research flag to *load*. That was an
     /// artifact of not recognising the string, not a considered position:
@@ -1796,6 +1824,40 @@ mod tests {
             );
             assert_eq!(c.redistributable(), publishable, "{c:?}: publishable");
         }
+    }
+
+    #[test]
+    fn llama_3_2_companion_preserves_conditional_commercial_threshold() {
+        for license in [
+            "llama3.2",
+            "llama-3.2-community-license",
+            "Llama 3.2 Community License",
+            "llama_3_2_community_license",
+        ] {
+            let class = LicenseClass::from_license_str(license);
+            assert_eq!(class, LicenseClass::ConditionalCommercial, "{license}");
+            assert!(!class.requires_research_flag(), "{license}: not NC");
+            assert!(
+                !class.commercial_ok(),
+                "{license}: threshold must be evaluated"
+            );
+        }
+        for id in [
+            "ultravox_llama_companion",
+            "meta-llama-3.2-1b-instruct-ultravox-companion",
+            "meta-llama/Llama-3.2-1B-Instruct",
+        ] {
+            assert_eq!(
+                registry_lookup(id),
+                Some(LicenseClass::ConditionalCommercial),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            registry_lookup("ultravox"),
+            Some(LicenseClass::Permissive),
+            "the public MIT audio artifact remains independently permissive"
+        );
     }
 
     /// `RedistributionForbidden` must never be reachable by parsing a licence

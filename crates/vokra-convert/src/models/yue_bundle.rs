@@ -17,8 +17,8 @@
 //! ============================================   ======   =============================================
 //! [`YueBundleVariant::Upsampler`]                145 MB   Vocos backbone + iSTFT head — 44.1 kHz
 //!                                                          vocoder decoding YuE codec latents to PCM
-//! [`YueBundleVariant::XcodecMini`]                2.2 GB   SoundStream RVQ codec (16 kHz, 25 Hz
-//!                                                          frame rate, 640x downsample, up to 6 kbps)
+//! [`YueBundleVariant::XcodecMini`]                2.2 GB   SoundStream RVQ codec (16 kHz, 50 Hz
+//!                                                          frame rate, 320x downsample, up to 6 kbps)
 //!                                                          + HuBERT-base semantic encoder + a byte-
 //!                                                          identical copy of the same Vocos decoder
 //! ============================================   ======   =============================================
@@ -37,15 +37,16 @@
 //! zero-dep posture (FR-LD-05 permanent, whisper.cpp 型 self
 //! re-implementation, CLAUDE.md 設計判断 4).
 //!
-//! Output: a GGUF carrying every float tensor verbatim under its
-//! upstream state-dict name (for [`YueBundleVariant::Upsampler`] =
-//! `backbone.*` / `head.*` from the Vocos decoder; for
-//! [`YueBundleVariant::XcodecMini`] = the prep-script's role-prefixed
+//! Output: a GGUF carrying upstream state-dict names verbatim. The
+//! [`YueBundleVariant::Upsampler`] path accepts only the exact 81 F32
+//! `backbone.*` / `head.*` manifest. The historical public
+//! [`YueBundleVariant::XcodecMini`] bundle is now strictly bound for its
+//! released 12-codebook token-to-44.1-kHz path and retains the prep-script's role-prefixed
 //! `codec.*` / `semantic.*` / `decoder.*` names — the prep script picks
-//! these prefixes so a future `YueXcodecMini::from_gguf` can locate the
+//! these prefixes so `YueXcodecMini::from_gguf` can locate the
 //! three sub-modules that share one repo). Plus the
 //! `vokra.provenance.*` / `vokra.model.*` / `vokra.yue_bundle.variant`
-//! metadata chunks a future native YuE codec / vocoder loader will read.
+//! metadata and the strict upsampler identity/topology contract.
 //!
 //! # Provenance
 //!
@@ -88,7 +89,7 @@
 //!   accordingly. The two upstream repos are distinct HF publish
 //!   targets → distinct `vokra.model.name` → distinct arch tag.
 //! - `yue_xcodec_mini` — SoundStream RVQ (n_filters=32, D=256,
-//!   ratios=[8,5,4,2] → 640x downsample, sample_rate=16000, bins=1024,
+//!   ratios=[8,5,4,2] → 320x downsample / 50 Hz, sample_rate=16000, bins=1024,
 //!   6 RVQ target bandwidths). Sibling **RVQ** codecs (Mimi / DAC /
 //!   SNAC) share the same quantizer family but wrap different
 //!   encoder/decoder backbones; sibling **FSQ** codecs (WavTokenizer /
@@ -136,27 +137,28 @@
 //! conv_stride=[5,2,2,2,2,2,2], intermediate_size=3072, do_normalize=true,
 //! sampling_rate=16000). YuE's xcodec-mini fuses semantic tokens
 //! (from this encoder) with acoustic RVQ codes (from the SoundStream
-//! codec) for its codec token stream — this is what distinguishes it
-//! from a plain SoundStream codec. The Rust runtime can either
-//! re-implement the HuBERT forward natively (whisper.cpp 型) or
-//! delegate to the sibling wav2vec2/HuBERT-family binder when that
-//! lands; today's converter surface is byte-exact tensor-name
-//! preservation only.
+//! codec) for its PCM-to-token path — this is what distinguishes it
+//! from a plain SoundStream codec. The released token-to-PCM path does not
+//! execute HuBERT: it sums the selected RVQ rows and calls Vocos, which the
+//! Rust runtime now implements. HuBERT/RepCodec fusion remains an explicit
+//! boundary for future PCM encode work.
 //!
 //! # Upstream source-tree attribution (RepCodec + descript-audio-codec)
 //!
 //! `xcodec_mini_infer` ships full source-tree copies of RepCodec
-//! (ByteDance/Chutong Meng, MIT) and Descript-Audio-Codec (MIT) at
+//! and Descript-Audio-Codec at
 //! `RepCodec/` and `descriptaudiocodec/dac/` — these are inference-tree
 //! artefacts of the upstream release process, **not** loaded at
 //! runtime and **not** touched by this converter. The prep bridge
 //! must NOT recurse into these subtrees. NOTICE credit is preserved
 //! because their code informed the YuE codec design, but no weights
-//! are lifted from them.
+//! are lifted from them. RepCodec's bundled license material is mixed
+//! (MIT text plus CC-BY-NC-4.0 text/source headers); the native token
+//! decoder uses only generic RVQ math and separately released Vocos weights.
 //!
-//! # BF16 pass-through (mirror of vocos / snac / focalcodec)
+//! # Xcodec-mini BF16 pass-through (mirror of vocos / snac / focalcodec)
 //!
-//! F32 / F16 / BF16 float tensors ride the verbatim pass-through arm —
+//! Xcodec-mini F32 / F16 / BF16 tensors ride the pass-through arm —
 //! no convert-time widening. BF16 stays GGUF type 30
 //! (`GgmlType::BF16`); the runtime widens BF16 → f32 losslessly at
 //! load via the single choke point
@@ -164,9 +166,8 @@
 //! top 16 bits of an f32 — `bits << 16` is exact). The observability
 //! counter [`YueBundleReport::bf16_passthrough`] records how many
 //! BF16 tensors landed on this arm so a silent widen / downcast
-//! cannot slip in undetected. Both upstream releases are F32 at rest
-//! (verified 2026-08-01), so the BF16 arm is defensive today; the
-//! counter is kept for future BF16-quantized derivative releases.
+//! cannot slip in undetected. YuE-upsampler instead rejects BF16/F16:
+//! its exact historical and upstream checkpoints are F32.
 //!
 //! # Vocos quantization warning (CLAUDE.md 設計判断 §Vocos)
 //!
@@ -175,8 +176,8 @@
 //! 崩壊) → fp16 必須」. This converter never emits INT8 (the K-quant
 //! path is Whisper-only per `main.rs --quantize` guard); BF16 is
 //! expected to be safe (BF16 loss is mantissa-only, not
-//! activation-crushing INT8 saturation), but no parity data yet — an
-//! owner-side follow-up when the runtime binder lands. The xcodec-mini
+//! activation-crushing INT8 saturation), but the strict public runtime
+//! intentionally accepts only the released F32 checkpoint. The xcodec-mini
 //! variant's SoundStream RVQ codec is not subject to the Vocos
 //! INT8 warning per se, but its embedded Vocos decoder head is; the
 //! K-quant refusal is a global converter guard so this is moot.
@@ -185,26 +186,25 @@
 //!
 //! GGUF tensor names are the **upstream state-dict names verbatim**
 //! (the vocos / snac / focalcodec / speecht5_hifigan / neucodec
-//! contract). Real-weight parity vs the upstream YuE Python
-//! inference pipeline
-//! (`github.com/multimodal-art-projection/YuE/inference/xcodec_mini_infer/`)
-//! is deferred to owner (`docs/license-audit.md` §3.1 sign-off queue).
+//! contract). The upsampler parity oracle imports the pinned official
+//! `vocos==0.1.0` classes directly; real-weight CPU/Metal measurements remain
+//! measurement-only until remote observations establish numerical bounds.
 //!
 //! # No ONNX / no pickle in runtime (permanent)
 //!
 //! Both upstream repos ship PyTorch pickle checkpoints only; this
 //! converter **never** touches ONNX (FR-LD-05) and **never** touches
-//! pickle (NFR-DS-02 zero-dep). The pipeline is re-implemented
-//! natively when the runtime binders land (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
+//! pickle (NFR-DS-02 zero-dep). Both the upsampler and the released
+//! xcodec-mini token decoder are native Rust.
 //!
-//! # Loud-partial precedent
+//! # Runtime status
 //!
-//! Real-weight forward binding is deferred: the runtime consumer will
-//! walk the emitted tensor names and either succeed or fail loudly per
-//! FR-EX-08. Today's converter surface is byte-exact provenance +
-//! tensor-name preservation only.
+//! YuE-upsampler has a strict CPU/Metal reader and CLI feature decode route.
+//! The exact historical YuE xcodec-mini GGUF has a strict CPU/Metal
+//! `[frames,12]` token-to-44.1-kHz route. PCM encode remains an explicit
+//! unsupported operation and is never substituted with a sibling codec.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -227,7 +227,7 @@ pub const ARCH_UPSAMPLER: &str = "yue_upsampler";
 
 /// `vokra.model.arch` for the YuE xcodec-mini GGUF (SoundStream RVQ
 /// codec + HuBERT semantic encoder + Vocos decoder head bundle at
-/// 16 kHz / 25 Hz frame rate).
+/// 16 kHz / 50 Hz frame rate).
 ///
 /// Intentionally distinct from every sibling codec (`mimi` / `dac` /
 /// `snac` / `wavtokenizer` / `neucodec` / `xcodec2` / `focalcodec` /
@@ -268,6 +268,44 @@ pub const NAME_XCODEC_MINI: &str = "yue-xcodec-mini";
 #[allow(dead_code)]
 pub const UPSTREAM_HF_UPSAMPLER: &str = "m-a-p/YuE-upsampler";
 
+/// Immutable upstream YuE-upsampler revision audited on 2026-08-26.
+pub const UPSAMPLER_UPSTREAM_REVISION: &str = "c6d7494a60555672be09ca809a40be400d682a53";
+/// Default/latest upstream decoder snapshot consumed by the public GGUF.
+pub const UPSAMPLER_CHECKPOINT_FILE: &str = "decoder_151000.pth";
+/// SHA-256 of the pinned upstream `decoder_151000.pth`.
+pub const UPSAMPLER_CHECKPOINT_SHA256: &str =
+    "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998";
+/// Exact byte length of the pinned upstream checkpoint.
+pub const UPSAMPLER_CHECKPOINT_BYTES: u32 = 72_610_550;
+/// Independent official implementation imported by the parity dumper.
+pub const UPSAMPLER_SOURCE_PACKAGE: &str = "vocos==0.1.0";
+/// SHA-256 of the pinned PyPI `vocos-0.1.0` wheel in `tools/parity/uv.lock`.
+pub const UPSAMPLER_SOURCE_PACKAGE_SHA256: &str =
+    "0ac13eaef68596074301e912d781399b3defa4b4ca60b6bc52c8a4b9209ca235";
+/// Canonical SHA-256 of the sorted 81-tensor `(name, shape)` manifest.
+pub const UPSAMPLER_TENSOR_MANIFEST_SHA256: &str =
+    "c8b3f2a4de49f9d4ed1819a57e8850439b66578112de5fd94595c3e53c58956e";
+/// Exact public `vokra/yue-upsampler` revision whose legacy metadata is read.
+pub const UPSAMPLER_PUBLIC_REVISION: &str = "6eea19bd301c5214123ee69217a61a989ffe80d0";
+/// SHA-256 of public `yue-upsampler.gguf` at [`UPSAMPLER_PUBLIC_REVISION`].
+pub const UPSAMPLER_PUBLIC_GGUF_SHA256: &str =
+    "17df9c667c931544cf84545266d07e3598a9528d751ca6f281fffd305f4409ff";
+/// Exact public GGUF byte length.
+pub const UPSAMPLER_PUBLIC_GGUF_BYTES: u32 = 72_531_456;
+/// Exact inference tensor count.
+pub const UPSAMPLER_TENSOR_COUNT: usize = 81;
+/// Exact parameter count reported by the public GGUF header.
+#[allow(dead_code)]
+pub const UPSAMPLER_PARAMETER_COUNT: u32 = 18_131_346;
+
+pub const UPSAMPLER_SAMPLE_RATE: u32 = 44_100;
+pub const UPSAMPLER_INPUT_CHANNELS: u32 = 1_024;
+pub const UPSAMPLER_DIM: u32 = 512;
+pub const UPSAMPLER_INTERMEDIATE_DIM: u32 = 1_536;
+pub const UPSAMPLER_NUM_LAYERS: u32 = 8;
+pub const UPSAMPLER_N_FFT: u32 = 3_528;
+pub const UPSAMPLER_HOP_LENGTH: u32 = 882;
+
 /// `vokra.provenance.upstream_hf` for the [`YueBundleVariant::XcodecMini`]
 /// variant.
 #[allow(dead_code)]
@@ -283,7 +321,24 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// `vokra.model.name` (mirrors `vokra.snac.variant` /
 /// `vokra.focalcodec.variant`).
 pub const KEY_YUE_BUNDLE_VARIANT: &str = "vokra.yue_bundle.variant";
-
+pub const KEY_UPSAMPLER_UPSTREAM_REVISION: &str = "vokra.yue_upsampler.upstream_revision";
+pub const KEY_UPSAMPLER_CHECKPOINT_FILE: &str = "vokra.yue_upsampler.checkpoint_file";
+pub const KEY_UPSAMPLER_CHECKPOINT_SHA256: &str = "vokra.yue_upsampler.checkpoint_sha256";
+pub const KEY_UPSAMPLER_CHECKPOINT_BYTES: &str = "vokra.yue_upsampler.checkpoint_bytes";
+pub const KEY_UPSAMPLER_SOURCE_PACKAGE: &str = "vokra.yue_upsampler.source_package";
+pub const KEY_UPSAMPLER_SOURCE_PACKAGE_SHA256: &str = "vokra.yue_upsampler.source_package_sha256";
+pub const KEY_UPSAMPLER_TENSOR_MANIFEST_SHA256: &str = "vokra.yue_upsampler.tensor_manifest_sha256";
+pub const KEY_UPSAMPLER_PUBLIC_REVISION: &str = "vokra.yue_upsampler.public_revision";
+pub const KEY_UPSAMPLER_PUBLIC_GGUF_SHA256: &str = "vokra.yue_upsampler.public_gguf_sha256";
+pub const KEY_UPSAMPLER_PUBLIC_GGUF_BYTES: &str = "vokra.yue_upsampler.public_gguf_bytes";
+pub const KEY_UPSAMPLER_SAMPLE_RATE: &str = "vokra.yue_upsampler.sample_rate";
+pub const KEY_UPSAMPLER_INPUT_CHANNELS: &str = "vokra.yue_upsampler.input_channels";
+pub const KEY_UPSAMPLER_DIM: &str = "vokra.yue_upsampler.dim";
+pub const KEY_UPSAMPLER_INTERMEDIATE_DIM: &str = "vokra.yue_upsampler.intermediate_dim";
+pub const KEY_UPSAMPLER_NUM_LAYERS: &str = "vokra.yue_upsampler.num_layers";
+pub const KEY_UPSAMPLER_N_FFT: &str = "vokra.yue_upsampler.n_fft";
+pub const KEY_UPSAMPLER_HOP_LENGTH: &str = "vokra.yue_upsampler.hop_length";
+pub const KEY_UPSAMPLER_PADDING: &str = "vokra.yue_upsampler.padding";
 /// Which YuE bundle repo the caller is converting. Selects the model
 /// name / upstream HF slug / category / arch tag / variant tag
 /// written into the GGUF.
@@ -306,7 +361,7 @@ pub enum YueBundleVariant {
     /// Category = `vocoder`. `vokra.yue_bundle.variant = "upsampler"`.
     Upsampler,
     /// `m-a-p/xcodec_mini_infer`: SoundStream RVQ codec
-    /// (n_filters=32, D=256, ratios=[8,5,4,2] → 640x downsample,
+    /// (n_filters=32, D=256, ratios=[8,5,4,2] → 320x downsample / 50 Hz,
     /// sample_rate=16000, bins=1024, target_bandwidths=[0.5, 1, 1.5,
     /// 2, 4, 6] kbps) + HuBERT-base semantic encoder (hidden_size=768,
     /// 12 layers, sampling_rate=16000, do_normalize=true) + Vocos
@@ -373,7 +428,7 @@ impl YueBundleVariant {
             }
             Self::XcodecMini => {
                 "m-a-p/xcodec_mini_infer (YuE xcodec-mini bundle = SoundStream \
-                 RVQ codec 25 Hz + HuBERT-base semantic encoder + Vocos decoder \
+                 RVQ codec 50 Hz + HuBERT-base semantic encoder + Vocos decoder \
                  head, apache-2.0)"
             }
         }
@@ -440,18 +495,15 @@ pub fn convert_yue_bundle_file(
 /// before invoking this converter — no pickle parser enters the Vokra
 /// runtime (NFR-DS-02 / FR-LD-05).
 ///
-/// Every F32 / F16 / BF16 tensor passes through under its upstream
-/// state-dict name; the `vokra.model.*` (arch / name / category),
+/// Upsampler requires its exact 81-tensor F32 manifest. Xcodec-mini retains
+/// the existing float pass-through path. The `vokra.model.*` (arch / name / category),
 /// `vokra.provenance.*` (weight_license / license / model_id / source
 /// / upstream_hf), and `vokra.yue_bundle.variant` chunks are stamped
 /// for the runtime compliance gate (FR-CP-03) and shape-checked config
 /// dispatch.
 ///
-/// `license` optionally overrides the stamped weight license (raw
-/// SPDX string; the [`LicenseClass`] is re-derived via
-/// [`LicenseClass::from_license_str`]). The default is
-/// `DEFAULT_LICENSE_SPDX` (`"apache-2.0"`, `Permissive`) — both
-/// upstream YuE HF releases ship apache-2.0.
+/// `license` may override xcodec-mini's stamp. Upsampler is pinned to the
+/// official Apache-2.0 release and rejects conflicting overrides.
 ///
 /// # Errors
 ///
@@ -463,31 +515,45 @@ pub fn convert_yue_bundle_variant_file(
     variant: YueBundleVariant,
     license: Option<&str>,
 ) -> Result<YueBundleReport, ConvertError> {
-    // Upsampler (~145 MB after prep flatten) and XcodecMini merged
-    // safetensors (~1.88 GB of unique weights = codec 1.36 GB +
-    // HuBERT 377 MB + Vocos decoder 145 MB; the prep script may or
-    // may not include the byte-identical Vocos decoder depending on
-    // caller choice) are both below the memory
-    // [[feedback-large-models-on-vast-ai]] ≥8 GB vast.ai threshold,
-    // so the simple `std::fs::read` posture the sibling non-streaming
-    // BF16 pass-through converters use applies (both fit comfortably
-    // on the M1 iMac 16 GB local converter host).
+    // The upsampler is small enough for this non-streaming reader. The
+    // xcodec-mini bundle remains subject to the repository's current
+    // large-artifact policy at the caller/workflow boundary.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    if variant == YueBundleVariant::Upsampler {
+        validate_upsampler_manifest(&st)?;
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, variant.arch());
     b.add_string(chunks::KEY_MODEL_NAME, variant.name());
     b.add_string(KEY_MODEL_CATEGORY, variant.category());
     b.add_string(KEY_YUE_BUNDLE_VARIANT, variant.tag());
+    if variant == YueBundleVariant::Upsampler {
+        stamp_upsampler_contract(&mut b);
+    }
 
     // Default provenance stamp — Permissive apache-2.0 end-to-end
     // (both upstream YuE model cards verified via HF API 2026-08-01,
     // upstream `github.com/multimodal-art-projection/YuE` also
     // apache-2.0). The optional `license` argument overrides below.
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
+    let (spdx, class) = match (variant, license) {
+        (YueBundleVariant::Upsampler, Some(value))
+            if !value.trim().eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX) =>
+        {
+            return Err(upsampler_parse_error(format!(
+                "license override {value:?} conflicts with the pinned official Apache-2.0 checkpoint"
+            )));
+        }
+        (YueBundleVariant::Upsampler, _) => {
+            (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive)
+        }
+        (YueBundleVariant::XcodecMini, Some(s)) if !s.is_empty() => {
+            (s.to_owned(), LicenseClass::from_license_str(s))
+        }
+        (YueBundleVariant::XcodecMini, _) => {
+            (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive)
+        }
     };
     vokra_core::stamp_provenance(
         &mut b,
@@ -534,6 +600,112 @@ pub fn convert_yue_bundle_variant_file(
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
     std::fs::write(output, out_bytes)?;
     Ok(report)
+}
+
+fn stamp_upsampler_contract(builder: &mut GgufBuilder) {
+    builder.add_string(KEY_UPSAMPLER_UPSTREAM_REVISION, UPSAMPLER_UPSTREAM_REVISION);
+    builder.add_string(KEY_UPSAMPLER_CHECKPOINT_FILE, UPSAMPLER_CHECKPOINT_FILE);
+    builder.add_string(KEY_UPSAMPLER_CHECKPOINT_SHA256, UPSAMPLER_CHECKPOINT_SHA256);
+    builder.add_u32(KEY_UPSAMPLER_CHECKPOINT_BYTES, UPSAMPLER_CHECKPOINT_BYTES);
+    builder.add_string(KEY_UPSAMPLER_SOURCE_PACKAGE, UPSAMPLER_SOURCE_PACKAGE);
+    builder.add_string(
+        KEY_UPSAMPLER_SOURCE_PACKAGE_SHA256,
+        UPSAMPLER_SOURCE_PACKAGE_SHA256,
+    );
+    builder.add_string(
+        KEY_UPSAMPLER_TENSOR_MANIFEST_SHA256,
+        UPSAMPLER_TENSOR_MANIFEST_SHA256,
+    );
+    builder.add_string(KEY_UPSAMPLER_PUBLIC_REVISION, UPSAMPLER_PUBLIC_REVISION);
+    builder.add_string(
+        KEY_UPSAMPLER_PUBLIC_GGUF_SHA256,
+        UPSAMPLER_PUBLIC_GGUF_SHA256,
+    );
+    builder.add_u32(KEY_UPSAMPLER_PUBLIC_GGUF_BYTES, UPSAMPLER_PUBLIC_GGUF_BYTES);
+    builder.add_u32(KEY_UPSAMPLER_SAMPLE_RATE, UPSAMPLER_SAMPLE_RATE);
+    builder.add_u32(KEY_UPSAMPLER_INPUT_CHANNELS, UPSAMPLER_INPUT_CHANNELS);
+    builder.add_u32(KEY_UPSAMPLER_DIM, UPSAMPLER_DIM);
+    builder.add_u32(KEY_UPSAMPLER_INTERMEDIATE_DIM, UPSAMPLER_INTERMEDIATE_DIM);
+    builder.add_u32(KEY_UPSAMPLER_NUM_LAYERS, UPSAMPLER_NUM_LAYERS);
+    builder.add_u32(KEY_UPSAMPLER_N_FFT, UPSAMPLER_N_FFT);
+    builder.add_u32(KEY_UPSAMPLER_HOP_LENGTH, UPSAMPLER_HOP_LENGTH);
+    builder.add_string(KEY_UPSAMPLER_PADDING, "same");
+}
+
+fn validate_upsampler_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = upsampler_tensor_manifest();
+    if st.tensors().len() != UPSAMPLER_TENSOR_COUNT {
+        return Err(upsampler_parse_error(format!(
+            "checkpoint has {} tensors, expected exactly {UPSAMPLER_TENSOR_COUNT} from {UPSTREAM_HF_UPSAMPLER}@{UPSAMPLER_UPSTREAM_REVISION}",
+            st.tensors().len()
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for tensor in st.tensors() {
+        let shape = expected
+            .get(&tensor.name)
+            .ok_or_else(|| upsampler_parse_error(format!("unexpected tensor `{}`", tensor.name)))?;
+        if &tensor.shape != shape {
+            return Err(upsampler_parse_error(format!(
+                "tensor `{}` has shape {:?}, expected {shape:?}",
+                tensor.name, tensor.shape
+            )));
+        }
+        if tensor.dtype != GgmlType::F32 {
+            return Err(upsampler_parse_error(format!(
+                "tensor `{}` is {:?}, expected F32 in the pinned official checkpoint",
+                tensor.name, tensor.dtype
+            )));
+        }
+        if !seen.insert(tensor.name.as_str()) {
+            return Err(upsampler_parse_error(format!(
+                "checkpoint repeats tensor `{}`",
+                tensor.name
+            )));
+        }
+    }
+    if let Some(missing) = expected.keys().find(|name| !seen.contains(name.as_str())) {
+        return Err(upsampler_parse_error(format!(
+            "checkpoint is missing tensor `{missing}`"
+        )));
+    }
+    Ok(())
+}
+
+fn upsampler_parse_error(message: impl Into<String>) -> ConvertError {
+    ConvertError::Parse(format!("yue-upsampler: {}", message.into()))
+}
+
+/// Exact public/official 81-tensor Vocos name and shape contract.
+pub fn upsampler_tensor_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut out = BTreeMap::new();
+    insert_upsampler(&mut out, "backbone.embed.weight", &[512, 1024, 7]);
+    insert_upsampler(&mut out, "backbone.embed.bias", &[512]);
+    insert_upsampler(&mut out, "backbone.norm.weight", &[512]);
+    insert_upsampler(&mut out, "backbone.norm.bias", &[512]);
+    for layer in 0..UPSAMPLER_NUM_LAYERS {
+        let prefix = format!("backbone.convnext.{layer}");
+        insert_upsampler(&mut out, &format!("{prefix}.dwconv.weight"), &[512, 1, 7]);
+        insert_upsampler(&mut out, &format!("{prefix}.dwconv.bias"), &[512]);
+        insert_upsampler(&mut out, &format!("{prefix}.norm.weight"), &[512]);
+        insert_upsampler(&mut out, &format!("{prefix}.norm.bias"), &[512]);
+        insert_upsampler(&mut out, &format!("{prefix}.pwconv1.weight"), &[1536, 512]);
+        insert_upsampler(&mut out, &format!("{prefix}.pwconv1.bias"), &[1536]);
+        insert_upsampler(&mut out, &format!("{prefix}.pwconv2.weight"), &[512, 1536]);
+        insert_upsampler(&mut out, &format!("{prefix}.pwconv2.bias"), &[512]);
+        insert_upsampler(&mut out, &format!("{prefix}.gamma"), &[512]);
+    }
+    insert_upsampler(&mut out, "backbone.final_layer_norm.weight", &[512]);
+    insert_upsampler(&mut out, "backbone.final_layer_norm.bias", &[512]);
+    insert_upsampler(&mut out, "head.istft.window", &[3528]);
+    insert_upsampler(&mut out, "head.out.weight", &[3530, 512]);
+    insert_upsampler(&mut out, "head.out.bias", &[3530]);
+    debug_assert_eq!(out.len(), UPSAMPLER_TENSOR_COUNT);
+    out
+}
+
+fn insert_upsampler(out: &mut BTreeMap<String, Vec<u64>>, name: &str, shape: &[u64]) {
+    assert!(out.insert(name.to_owned(), shape.to_vec()).is_none());
 }
 
 #[cfg(test)]
@@ -640,80 +812,58 @@ mod tests {
     }
 
     #[test]
-    fn f32_upsampler_tensor_passes_through_and_stamps_land() {
-        // Upstream YuE-upsampler is F32 (torch-native pickle) — this
-        // test pins the primary code path for the vocoder variant.
+    fn upsampler_rejects_partial_manifest_and_writes_no_output() {
         let f32_vals: [f32; 6] = [0.5, -0.25, 1.5, -3.0, 42.0, 0.0];
         let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-
-        // Mirror a realistic upstream tensor name from Vocos's
-        // backbone body (upstream `backbone.norm.weight` is the final
-        // LayerNorm of the ConvNeXt V2 stack).
         let input_bytes = safetensors_one_f32("backbone.norm.weight", &[2, 3], &f32_bytes);
         let input_path = write_temp("upsampler-f32-in", &input_bytes);
         let output_path = write_temp("upsampler-f32-out", &[]);
+        std::fs::remove_file(&output_path).unwrap();
 
-        let report = convert_yue_bundle_variant_file(
+        let error = convert_yue_bundle_variant_file(
             &input_path,
             &output_path,
             YueBundleVariant::Upsampler,
             None,
         )
-        .expect("convert_yue_bundle_variant_file must accept an F32 upsampler checkpoint");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32 does not increment BF16 counter"
-        );
-        assert_eq!(report.variant, Some(YueBundleVariant::Upsampler));
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
-        let info = file
-            .tensor_info("backbone.norm.weight")
-            .expect("F32 tensor present in output");
-        assert_eq!(info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(info), f32_bytes.as_slice());
-
-        // Provenance / category / arch / variant chunks landed.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH_UPSAMPLER)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME_UPSAMPLER)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF_UPSAMPLER)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY_VOCODER),
-            "vokra.model.category must be `vocoder` for the Upsampler variant"
-        );
-        assert_eq!(
-            file.get(KEY_YUE_BUNDLE_VARIANT).and_then(|v| v.as_str()),
-            Some("upsampler")
-        );
+        .unwrap_err();
+        assert!(error.to_string().contains("expected exactly 81"));
+        assert!(!output_path.exists());
 
         std::fs::remove_file(&input_path).ok();
-        std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn upsampler_manifest_and_contract_pin_the_public_release() {
+        let manifest = upsampler_tensor_manifest();
+        assert_eq!(manifest.len(), UPSAMPLER_TENSOR_COUNT);
+        let parameters: u64 = manifest
+            .values()
+            .map(|shape| shape.iter().product::<u64>())
+            .sum();
+        assert_eq!(parameters, u64::from(UPSAMPLER_PARAMETER_COUNT));
+
+        let path = write_temp("upsampler-contract", &[]);
+        let mut builder = GgufBuilder::new();
+        stamp_upsampler_contract(&mut builder);
+        std::fs::write(&path, builder.to_bytes().unwrap()).unwrap();
+        let file = GgufFile::open(&path).unwrap();
+        assert_eq!(
+            file.get(KEY_UPSAMPLER_UPSTREAM_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(UPSAMPLER_UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_UPSAMPLER_TENSOR_MANIFEST_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(UPSAMPLER_TENSOR_MANIFEST_SHA256)
+        );
+        assert_eq!(
+            file.get(KEY_UPSAMPLER_SAMPLE_RATE)
+                .and_then(|value| value.as_u64()),
+            Some(u64::from(UPSAMPLER_SAMPLE_RATE))
+        );
+        std::fs::remove_file(path).ok();
     }
 
     #[test]
@@ -772,7 +922,6 @@ mod tests {
             Some(CATEGORY_CODEC),
             "vokra.model.category must be `codec` for the XcodecMini variant"
         );
-
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
     }
@@ -791,18 +940,19 @@ mod tests {
             .collect();
         assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
 
-        // Mirror a realistic upstream Vocos iSTFT head tensor name.
-        let input_bytes = safetensors_one_bf16("head.out.weight", &[2, 3], &bf16);
+        // Xcodec-mini remains a pass-through converter until its complete
+        // multi-part manifest is separately audited.
+        let input_bytes = safetensors_one_bf16("decoder.head.out.weight", &[2, 3], &bf16);
         let input_path = write_temp("bf16-in", &input_bytes);
         let output_path = write_temp("bf16-out", &[]);
 
         let report = convert_yue_bundle_variant_file(
             &input_path,
             &output_path,
-            YueBundleVariant::Upsampler,
+            YueBundleVariant::XcodecMini,
             None,
         )
-        .expect("convert BF16 upsampler");
+        .expect("convert BF16 xcodec-mini pass-through");
         assert_eq!(report.read, 1);
         assert_eq!(report.written, 1);
         assert_eq!(report.bf16_passthrough, 1);
@@ -810,7 +960,7 @@ mod tests {
         let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
         let file = GgufFile::parse(out_bytes).expect("parse output GGUF");
         let info = file
-            .tensor_info("head.out.weight")
+            .tensor_info("decoder.head.out.weight")
             .expect("BF16 tensor present");
         assert_eq!(info.dtype, GgmlType::BF16, "no convert-time widening");
         assert_eq!(
@@ -833,14 +983,14 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect();
-        let input_bytes = safetensors_one_f32("backbone.pos_embed", &[1, 2], &f32_bytes);
+        let input_bytes = safetensors_one_f32("codec.backbone.pos_embed", &[1, 2], &f32_bytes);
         let input_path = write_temp("license-in", &input_bytes);
         let output_path = write_temp("license-out", &[]);
 
         convert_yue_bundle_variant_file(
             &input_path,
             &output_path,
-            YueBundleVariant::Upsampler,
+            YueBundleVariant::XcodecMini,
             Some("mit"),
         )
         .expect("license override must succeed");
@@ -868,7 +1018,7 @@ mod tests {
     /// smaller and simpler of the pair matches the sibling
     /// default-canonical dispatch convention.
     #[test]
-    fn backward_compat_entry_defaults_to_upsampler() {
+    fn backward_compat_entry_defaults_to_strict_upsampler() {
         let f32_bytes: Vec<u8> = [1.0_f32, 2.0]
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -877,9 +1027,8 @@ mod tests {
         let input_path = write_temp("compat-in", &input_bytes);
         let output_path = write_temp("compat-out", &[]);
 
-        let report = convert_yue_bundle_file(&input_path, &output_path, None)
-            .expect("backward-compat entry must succeed");
-        assert_eq!(report.variant, Some(YueBundleVariant::Upsampler));
+        let error = convert_yue_bundle_file(&input_path, &output_path, None).unwrap_err();
+        assert!(error.to_string().contains("expected exactly 81"));
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();

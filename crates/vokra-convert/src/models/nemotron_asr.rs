@@ -32,6 +32,16 @@
 //! - SPDX: **`openmdw-1.1`** (mapped to `LicenseClass::Permissive`).
 //! - Category: `asr` (streaming ASR, 36 langs per model card).
 //!
+//! # Native-runtime contract
+//!
+//! The offline runtime implements the released causal FastConformer,
+//! prompt-conditioning projector and RNN-T prediction/joint networks. The
+//! converter therefore stamps the complete audited `vokra.nemotron_asr.*`
+//! configuration group and can embed the byte-exact official
+//! `tokenizer.json`. Stateful cache streaming remains a separate explicit
+//! runtime boundary; these metadata values describe the released
+//! full-utterance causal path without inventing cache state.
+//!
 //! # BF16 pass-through (mirror of wespeaker / omniasr_ctc)
 //!
 //! Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
@@ -42,23 +52,26 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the upstream safetensors names verbatim. Real-
-//! weight parity + runtime forward binding is a follow-up wave gated on
-//! Nemotron-3.5 tensor-name manifest fetch + native ASR streaming
-//! architecture implementation (Nemotron is a custom NVIDIA ASR arch,
-//! not a Conformer / FastConformer sibling of the existing Parakeet /
-//! Canary family).
+//! weight binding is strict against the canonical 655-tensor manifest. The
+//! learned FastConformer primitives are shared with Parakeet only after the
+//! checkpoint-specific differences (causal padding, LayerNorm convolution
+//! module and chunk-limited attention) are selected explicitly.
 //!
 //! # No ONNX (permanent)
 //!
 //! Nemotron ships safetensors; this converter **never** touches ONNX
-//! (FR-LD-05); the pipeline is re-implemented natively in a future
-//! `crates/vokra-models/src/nemotron_asr/` module when the runtime lands
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! (FR-LD-05). The pipeline is re-implemented natively in
+//! `crates/vokra-models/src/nemotron_asr_streaming/` (whisper.cpp 型 self
+//! re-implementation). The native runtime exposes complete offline causal
+//! inference; stateful cache streaming remains an explicit unsupported
+//! boundary until its convolution and attention caches are represented.
 
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -86,6 +99,43 @@ pub(crate) const UPSTREAM_HF: &str = "nvidia/nemotron-3.5-asr-streaming-0.6b";
 /// the model card (`cardData.license_name: "openmdw-1.1"`).
 pub(crate) const DEFAULT_LICENSE: &str = "openmdw-1.1";
 
+const KEY_TOKENIZER_JSON: &str = "vokra.nemotron_asr.tokenizer.json";
+const KEY_SAMPLE_RATE: &str = "vokra.nemotron_asr.sample_rate";
+const KEY_N_FFT: &str = "vokra.nemotron_asr.frontend.n_fft";
+const KEY_HOP_LENGTH: &str = "vokra.nemotron_asr.frontend.hop_length";
+const KEY_WIN_LENGTH: &str = "vokra.nemotron_asr.frontend.win_length";
+const KEY_PREEMPHASIS: &str = "vokra.nemotron_asr.frontend.preemphasis";
+const KEY_N_MELS: &str = "vokra.nemotron_asr.frontend.n_mels";
+const KEY_ENC_N_LAYER: &str = "vokra.nemotron_asr.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.nemotron_asr.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.nemotron_asr.encoder.n_head";
+const KEY_ENC_N_HEAD_KV: &str = "vokra.nemotron_asr.encoder.n_head_kv";
+const KEY_ENC_FFN_DIM: &str = "vokra.nemotron_asr.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.nemotron_asr.encoder.conv_kernel_size";
+const KEY_ENC_SUB_FACTOR: &str = "vokra.nemotron_asr.encoder.subsampling_factor";
+const KEY_ENC_SUB_KERNEL: &str = "vokra.nemotron_asr.encoder.subsampling_conv_kernel_size";
+const KEY_ENC_SUB_STRIDE: &str = "vokra.nemotron_asr.encoder.subsampling_conv_stride";
+const KEY_ENC_SUB_CHANNELS: &str = "vokra.nemotron_asr.encoder.subsampling_conv_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.nemotron_asr.encoder.max_position_embeddings";
+const KEY_ENC_SLIDING_WINDOW: &str = "vokra.nemotron_asr.encoder.sliding_window";
+const KEY_ENC_DEFAULT_LOOKAHEAD: &str = "vokra.nemotron_asr.encoder.default_lookahead_tokens";
+const KEY_ENC_ATTN_BIAS: &str = "vokra.nemotron_asr.encoder.attention_bias";
+const KEY_ENC_CONV_BIAS: &str = "vokra.nemotron_asr.encoder.convolution_bias";
+const KEY_ENC_SCALE_INPUT: &str = "vokra.nemotron_asr.encoder.scale_input";
+const KEY_DEC_N_LAYER: &str = "vokra.nemotron_asr.decoder.n_layer";
+const KEY_DEC_D_MODEL: &str = "vokra.nemotron_asr.decoder.d_model";
+const KEY_VOCAB_SIZE: &str = "vokra.nemotron_asr.joint.vocab_size";
+const KEY_BLANK_ID: &str = "vokra.nemotron_asr.joint.blank_token_id";
+const KEY_PAD_ID: &str = "vokra.nemotron_asr.joint.pad_token_id";
+const KEY_MAX_SYMBOLS: &str = "vokra.nemotron_asr.joint.max_symbols_per_step";
+const KEY_NUM_PROMPTS: &str = "vokra.nemotron_asr.prompt.num_prompts";
+const KEY_PROMPT_INTERMEDIATE: &str = "vokra.nemotron_asr.prompt.intermediate_size";
+const KEY_DEFAULT_PROMPT: &str = "vokra.nemotron_asr.prompt.default_id";
+const KEY_ENCODER_ACT: &str = "vokra.nemotron_asr.encoder.hidden_act";
+const KEY_JOINT_ACT: &str = "vokra.nemotron_asr.joint.hidden_act";
+const PREFIX_LOOKAHEAD: &str = "vokra.nemotron_asr.encoder.supported_lookahead.";
+const SUPPORTED_LOOKAHEAD_TOKENS: &[u32] = &[3, 0, 6, 13];
+
 /// Outcome of a Nemotron-ASR conversion.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct NemotronAsrReport {
@@ -98,6 +148,8 @@ pub struct NemotronAsrReport {
     pub skipped_non_float: usize,
     /// Of the tensors in `written`, how many were BF16 (subset counter).
     pub bf16_passthrough: usize,
+    /// Whether the official Parakeet BPE + Metaspace tokenizer was embedded.
+    pub tokenizer_embedded: bool,
 }
 
 /// File-based Nemotron-ASR converter (`vokra-cli convert --model
@@ -112,6 +164,27 @@ pub fn convert_nemotron_asr_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<NemotronAsrReport, ConvertError> {
+    convert_nemotron_asr_file_with_tokenizer(input, None, output, license)
+}
+
+/// Converts the pinned official checkpoint and optionally embeds its exact
+/// Hugging Face `tokenizer.json`. The legacy weight-only entry point is kept
+/// for API compatibility, but CLI text-ASR conversion requires the sidecar.
+pub fn convert_nemotron_asr_file_with_tokenizer(
+    input: &Path,
+    tokenizer: Option<&Path>,
+    output: &Path,
+    license: Option<&str>,
+) -> Result<NemotronAsrReport, ConvertError> {
+    let tokenizer_bytes = tokenizer
+        .map(std::fs::read)
+        .transpose()
+        .map_err(ConvertError::Io)?;
+    if let Some(bytes) = tokenizer_bytes.as_deref() {
+        validate_tokenizer_json(bytes)?;
+    }
+    // Validate the small sidecar before touching the multi-gigabyte weight
+    // file, so a malformed tokenizer fails without paying the model read.
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let st = SafetensorsFile::parse(bytes)?;
 
@@ -120,6 +193,16 @@ pub fn convert_nemotron_asr_file(
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    write_hparams(&mut b);
+    if let Some(tokenizer) = tokenizer_bytes {
+        b.add_metadata(
+            KEY_TOKENIZER_JSON,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: tokenizer.into_iter().map(GgufMetadataValue::U8).collect(),
+            }),
+        );
+    }
 
     // Self-describing redistribution: the artifact carries its own
     // licence. Default = openmdw-1.1 (upstream `nvidia/nemotron-3.5-asr-
@@ -141,7 +224,10 @@ pub fn convert_nemotron_asr_file(
         ),
     );
 
-    let mut report = NemotronAsrReport::default();
+    let mut report = NemotronAsrReport {
+        tokenizer_embedded: tokenizer.is_some(),
+        ..Default::default()
+    };
     for t in st.tensors() {
         report.read += 1;
         match t.dtype {
@@ -171,6 +257,86 @@ pub fn convert_nemotron_asr_file(
     Ok(report)
 }
 
+fn validate_tokenizer_json(bytes: &[u8]) -> Result<(), ConvertError> {
+    if bytes.is_empty() {
+        return Err(ConvertError::Parse(
+            "Nemotron ASR tokenizer.json is empty".to_owned(),
+        ));
+    }
+    let root = vokra_core::json::parse(bytes).map_err(|error| {
+        ConvertError::Parse(format!("Nemotron ASR tokenizer.json parse failed: {error}"))
+    })?;
+    if root
+        .get("model")
+        .and_then(|model| model.get("type"))
+        .and_then(|value| value.as_str())
+        != Some("BPE")
+    {
+        return Err(ConvertError::Parse(
+            "Nemotron ASR tokenizer.json must use model.type=BPE".to_owned(),
+        ));
+    }
+    let decoder = root.get("decoder").ok_or_else(|| {
+        ConvertError::Parse("Nemotron ASR tokenizer.json is missing decoder".to_owned())
+    })?;
+    if decoder.get("type").and_then(|value| value.as_str()) != Some("Metaspace")
+        || decoder.get("replacement").and_then(|value| value.as_str()) != Some("▁")
+        || decoder
+            .get("prepend_scheme")
+            .and_then(|value| value.as_str())
+            != Some("always")
+    {
+        return Err(ConvertError::Parse(
+            "Nemotron ASR tokenizer.json must use the official Metaspace decoder (`▁`, prepend_scheme=always)"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn write_hparams(b: &mut GgufBuilder) {
+    for (key, value) in [
+        (KEY_SAMPLE_RATE, 16_000),
+        (KEY_N_FFT, 512),
+        (KEY_HOP_LENGTH, 160),
+        (KEY_WIN_LENGTH, 400),
+        (KEY_N_MELS, 128),
+        (KEY_ENC_N_LAYER, 24),
+        (KEY_ENC_D_MODEL, 1_024),
+        (KEY_ENC_N_HEAD, 8),
+        (KEY_ENC_N_HEAD_KV, 8),
+        (KEY_ENC_FFN_DIM, 4_096),
+        (KEY_ENC_CONV_KERNEL, 9),
+        (KEY_ENC_SUB_FACTOR, 8),
+        (KEY_ENC_SUB_KERNEL, 3),
+        (KEY_ENC_SUB_STRIDE, 2),
+        (KEY_ENC_SUB_CHANNELS, 256),
+        (KEY_ENC_MAX_POS, 5_000),
+        (KEY_ENC_SLIDING_WINDOW, 57),
+        (KEY_ENC_DEFAULT_LOOKAHEAD, 3),
+        (KEY_ENC_ATTN_BIAS, 0),
+        (KEY_ENC_CONV_BIAS, 0),
+        (KEY_ENC_SCALE_INPUT, 0),
+        (KEY_DEC_N_LAYER, 2),
+        (KEY_DEC_D_MODEL, 640),
+        (KEY_VOCAB_SIZE, 13_088),
+        (KEY_BLANK_ID, 13_087),
+        (KEY_PAD_ID, 0),
+        (KEY_MAX_SYMBOLS, 10),
+        (KEY_NUM_PROMPTS, 128),
+        (KEY_PROMPT_INTERMEDIATE, 2_048),
+        (KEY_DEFAULT_PROMPT, 101),
+    ] {
+        b.add_u32(key, value);
+    }
+    for (index, value) in SUPPORTED_LOOKAHEAD_TOKENS.iter().copied().enumerate() {
+        b.add_u32(&format!("{PREFIX_LOOKAHEAD}{index}"), value);
+    }
+    b.add_f32(KEY_PREEMPHASIS, 0.97);
+    b.add_string(KEY_ENCODER_ACT, "silu");
+    b.add_string(KEY_JOINT_ACT, "relu");
+}
+
 #[cfg(test)]
 mod tests {
     //! Sibling-mirror unit tests (ast / clap / funcodec / speechtokenizer
@@ -196,6 +362,12 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use vokra_core::gguf::GgufFile;
+
+    const MINI_TOKENIZER: &[u8] = br#"{
+      "model":{"type":"BPE","vocab":{"<unk>":0,"a":1,"<pad>":2,"\u2581hello":3}},
+      "decoder":{"type":"Metaspace","replacement":"\u2581","prepend_scheme":"always","split":true},
+      "added_tokens":[{"id":4,"content":"<blank>","special":true}]
+    }"#;
 
     /// Returns a unique per-test tempfile path. PID + monotonic-nanos
     /// suffix keeps parallel `cargo test` invocations from clashing.
@@ -302,6 +474,7 @@ mod tests {
         assert_eq!(report.written, 1, "BF16 must reach the pass-through arm");
         assert_eq!(report.skipped_non_float, 0, "BF16 is float — no skip");
         assert_eq!(report.bf16_passthrough, 1, "BF16 subset counter must fire");
+        assert!(!report.tokenizer_embedded, "legacy API is weight-only");
 
         let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
         std::fs::remove_file(&input).ok();
@@ -361,6 +534,75 @@ mod tests {
             Some(LicenseClass::Permissive.as_str()),
             "openmdw resolves to Permissive (LicenseClass::from_license_str)",
         );
+        assert_eq!(file.get(KEY_ENC_N_LAYER), Some(&GgufMetadataValue::U32(24)),);
+        assert_eq!(
+            file.get(KEY_ENC_SLIDING_WINDOW),
+            Some(&GgufMetadataValue::U32(57)),
+        );
+        assert_eq!(
+            file.get(&format!("{PREFIX_LOOKAHEAD}3")),
+            Some(&GgufMetadataValue::U32(13)),
+        );
+        assert_eq!(
+            file.get(KEY_PREEMPHASIS),
+            Some(&GgufMetadataValue::F32(0.97)),
+        );
+    }
+
+    #[test]
+    fn official_tokenizer_contract_is_validated_and_embedded_byte_exact() {
+        let payload = distinctive_bf16_payload();
+        let blob = safetensors_one("encoder.embed.weight", "BF16", &[2, 3], &payload);
+        let input = scratch_path("tokenizer-in", "safetensors");
+        let tokenizer = scratch_path("tokenizer", "json");
+        let output = scratch_path("tokenizer-out", "gguf");
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        std::fs::write(&tokenizer, MINI_TOKENIZER).expect("write tokenizer");
+
+        let report =
+            convert_nemotron_asr_file_with_tokenizer(&input, Some(&tokenizer), &output, None)
+                .expect("convert with tokenizer");
+        assert!(report.tokenizer_embedded);
+
+        let out_bytes = std::fs::read(&output).expect("read emitted GGUF");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&tokenizer).ok();
+        std::fs::remove_file(&output).ok();
+        let file = GgufFile::parse(out_bytes).expect("parse emitted GGUF");
+        let Some(GgufMetadataValue::Array(array)) = file.get(KEY_TOKENIZER_JSON) else {
+            panic!("embedded tokenizer u8 array");
+        };
+        let actual = array
+            .values
+            .iter()
+            .map(|value| match value {
+                GgufMetadataValue::U8(byte) => *byte,
+                other => panic!("tokenizer element must be u8, found {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, MINI_TOKENIZER);
+    }
+
+    #[test]
+    fn tokenizer_rejects_non_bpe_model_before_output() {
+        let payload = distinctive_bf16_payload();
+        let blob = safetensors_one("encoder.embed.weight", "BF16", &[2, 3], &payload);
+        let input = scratch_path("bad-tokenizer-in", "safetensors");
+        let tokenizer = scratch_path("bad-tokenizer", "json");
+        let output = scratch_path("bad-tokenizer-out", "gguf");
+        let invalid = std::str::from_utf8(MINI_TOKENIZER)
+            .expect("fixture utf8")
+            .replacen("\"BPE\"", "\"Unigram\"", 1);
+        std::fs::write(&input, &blob).expect("write input safetensors");
+        std::fs::write(&tokenizer, invalid).expect("write bad tokenizer");
+
+        let error =
+            convert_nemotron_asr_file_with_tokenizer(&input, Some(&tokenizer), &output, None)
+                .expect_err("non-BPE tokenizer must fail");
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&tokenizer).ok();
+        assert!(!output.exists());
+        assert!(error.to_string().contains("model.type=BPE"));
     }
 
     /// (a): the F32 + F16 legs of the union match arm surface too, and

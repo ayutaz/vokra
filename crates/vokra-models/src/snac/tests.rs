@@ -1,451 +1,393 @@
-//! Tests for the SNAC runtime binder — round-trip on the variant
-//! discriminator, negative-space round-trip on the loud-partial gates.
-//!
-//! # What "round-trip" means here
-//!
-//! The task spec asks for a "round-trip" unit test. On real PCM this
-//! would be `encode(decode(codes)) == pcm` (up to codec quantization
-//! error), but the encoder / decoder body primitives do not exist in
-//! `vokra-ops` today (see the module doc + [`Snac::encode`] /
-//! [`Snac::decode`] rustdoc). Fabricating a real-PCM round-trip would
-//! violate CLAUDE.md 教訓 (a) ("loud-partial は fake-complete より
-//! honest").
-//!
-//! The round-trip semantics we *can* honestly test here are:
-//!
-//! 1. **Variant round-trip**: `from_gguf` accepts both `"24khz"` and
-//!    `"44khz"` tag values, and every stamped variant produces the
-//!    correct per-variant config axes.
-//! 2. **Loud-error negative-space round-trip**: every stated blocker
-//!    (missing arch / wrong arch / missing variant / unknown variant /
-//!    unsupported forward surface) fires at its documented surface
-//!    point, in the documented error variant. A silent stub swap
-//!    (e.g. someone replacing the loud gate with a `Vec::new()`
-//!    return) would break these tests immediately.
-
+use super::runtime::expected_manifest;
 use super::*;
-use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
-
-// ---------------------------------------------------------------------------
-// Fixture helpers — hand-assembled GGUFs (bypass the converter for isolation;
-// the converter e2e lives in `crates/vokra-convert/src/models/snac.rs::tests`).
-// ---------------------------------------------------------------------------
-
-/// Builds a minimal SNAC GGUF carrying the arch tag + variant tag +
-/// provenance stamp — the same three chunks every real converter output
-/// carries. `weight_license_class` is written under
-/// `vokra.provenance.weight_license` (or omitted if `None`).
-fn snac_gguf_for(variant_tag: &str, weight_license_class: Option<LicenseClass>) -> GgufFile {
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, &format!("snac-{variant_tag}"));
-    b.add_string(KEY_SNAC_VARIANT, variant_tag);
-    if let Some(cls) = weight_license_class {
-        b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
-    }
-    // Also stamp a defensive extra tensor so a downstream reader that
-    // walks tensors on a real-weight GGUF does not accidentally
-    // short-circuit on an empty-file heuristic. Value is deliberately
-    // arbitrary — no primitive today consumes it.
-    b.add_tensor(
-        "encoder.block.0.block.0.weight",
-        GgmlType::F32,
-        vec![2, 3],
-        vec![0u8; 2 * 3 * 4],
-    )
-    .expect("add_tensor");
-    GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
-}
-
-// ---------------------------------------------------------------------------
-// Variant round-trip — every SnacVariant round-trips through from_gguf
-// ---------------------------------------------------------------------------
+use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile, chunks};
 
 #[test]
-fn from_gguf_reads_hz24_variant() {
-    let file = snac_gguf_for("24khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).expect("Hz24 GGUF must bind");
-    assert_eq!(snac.variant(), SnacVariant::Hz24);
-    let cfg = snac.config();
-    assert_eq!(cfg.variant, SnacVariant::Hz24);
-    assert_eq!(cfg.sample_rate, 24_000);
-    assert_eq!(cfg.n_stages, 3);
-    // Full slice includes the trailing 0 slot (honest — a caller
-    // iterating past `n_stages` must see the unpopulated marker, never
-    // a fabricated stride).
-    assert_eq!(cfg.vq_strides, [4, 2, 1, 0]);
-    // Active slice trims to the 3 real Hz24 stages.
-    assert_eq!(cfg.active_vq_strides(), &[4, 2, 1][..]);
-    assert_eq!(snac.weight_license(), LicenseClass::Permissive);
-}
-
-#[test]
-fn from_gguf_reads_hz44_variant() {
-    let file = snac_gguf_for("44khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).expect("Hz44 GGUF must bind");
-    assert_eq!(snac.variant(), SnacVariant::Hz44);
-    let cfg = snac.config();
-    assert_eq!(cfg.variant, SnacVariant::Hz44);
-    assert_eq!(cfg.sample_rate, 44_100);
-    assert_eq!(cfg.n_stages, 4);
-    assert_eq!(cfg.vq_strides, [8, 4, 2, 1]);
-    assert_eq!(cfg.active_vq_strides(), &[8, 4, 2, 1][..]);
-    assert_eq!(snac.weight_license(), LicenseClass::Permissive);
-}
-
-#[test]
-fn from_gguf_defaults_weight_license_to_unknown_when_missing() {
-    // A GGUF missing `vokra.provenance.weight_license` reads back as
-    // `Unknown` (fail-closed at the compliance gate). Never a silent
-    // Permissive default.
-    let file = snac_gguf_for("24khz", None);
-    let snac = Snac::from_gguf(&file).expect("missing provenance must still bind");
-    assert_eq!(snac.weight_license(), LicenseClass::Unknown);
-}
-
-// ---------------------------------------------------------------------------
-// Loud-error round-trip — arch / variant validation (FR-EX-08)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn from_gguf_rejects_wrong_arch() {
-    // A DAC / Mimi / WavTokenizer GGUF handed to the SNAC binder by
-    // mistake must fail loud with a specific message rather than
-    // silently mis-binding.
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, "dac");
-    b.add_string(KEY_SNAC_VARIANT, "24khz");
-    let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-    let err = Snac::from_gguf(&file).expect_err("wrong arch must be rejected");
-    match err {
-        VokraError::ModelLoad(m) => {
-            assert!(
-                m.contains("`dac`") && m.contains("`snac`"),
-                "message must name both the got and expected arch tags, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-    }
-}
-
-#[test]
-fn from_gguf_rejects_missing_arch() {
-    // A GGUF with no `vokra.model.arch` at all — a converter that
-    // forgot to stamp it must be caught here, not surface as a
-    // downstream "missing tensor".
-    let mut b = GgufBuilder::new();
-    b.add_string(KEY_SNAC_VARIANT, "24khz");
-    let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-    let err = Snac::from_gguf(&file).expect_err("missing arch must be rejected");
-    match err {
-        VokraError::ModelLoad(m) => {
-            assert!(
-                m.contains("vokra.model.arch"),
-                "message must name the missing arch key, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-    }
-}
-
-#[test]
-fn from_gguf_rejects_missing_variant() {
-    // Correct arch but missing `vokra.snac.variant` — a partially-
-    // stamped GGUF must be caught here, not silently defaulted to
-    // Hz24 (which would corrupt every downstream code-rate).
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-    let err = Snac::from_gguf(&file).expect_err("missing variant must be rejected");
-    match err {
-        VokraError::ModelLoad(m) => {
-            assert!(
-                m.contains(KEY_SNAC_VARIANT),
-                "message must name the missing variant key, got `{m}`"
-            );
-            // Both accepted tag values MUST appear in the hint so the
-            // reader can pick the correct one without cross-referencing
-            // rustdoc.
-            assert!(m.contains(VARIANT_TAG_HZ24), "hint missing Hz24 tag: `{m}`");
-            assert!(m.contains(VARIANT_TAG_HZ44), "hint missing Hz44 tag: `{m}`");
-        }
-        other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-    }
-}
-
-#[test]
-fn from_gguf_rejects_unknown_variant_tag() {
-    // A rogue converter or a future 3rd variant this runtime does not
-    // dispatch on — never a silent default.
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(KEY_SNAC_VARIANT, "16khz"); // not a real SNAC variant
-    let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-    let err = Snac::from_gguf(&file).expect_err("unknown variant must be rejected");
-    match err {
-        VokraError::ModelLoad(m) => {
-            assert!(
-                m.contains("`16khz`"),
-                "message must echo the bad tag, got `{m}`"
-            );
-            assert!(
-                m.contains(VARIANT_TAG_HZ24) && m.contains(VARIANT_TAG_HZ44),
-                "message must list the accepted tags, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Loud-partial round-trip — encode / decode / decode_codes_to_features
-// each fire at their documented surface point with the documented variant.
-// A silent stub swap (replacing the loud gate with a `Vec::new()` return)
-// would break these tests immediately.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn encode_returns_unsupported_op_with_primitive_gap_message() {
-    let file = snac_gguf_for("24khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).unwrap();
-    // Give the encode path a legitimate-shape PCM buffer so the loud-
-    // partial gate is what fires, not the sample-rate mismatch guard.
-    let pcm = vec![0.0f32; 24_000]; // 1 s of silence at Hz24
-    let err = snac
-        .encode(&pcm, 24_000)
-        .expect_err("encode must loud-partial");
-    match err {
-        VokraError::UnsupportedOp(m) => {
-            // Grep-style substring assert — a silent stub swap would drop
-            // these substrings, failing the test loudly.
-            assert!(
-                m.contains("encoder Conv1D"),
-                "message must name the encoder Conv1D gap, got `{m}`"
-            );
-            assert!(
-                m.contains("VectorQuantize.forward"),
-                "message must name the VectorQuantize gap, got `{m}`"
-            );
-            // Variant-specific rate list must be present (Hz24 = [2,4,8,8]).
-            assert!(
-                m.contains("[2, 4, 8, 8]"),
-                "message must cite the Hz24 encoder_rates, got `{m}`"
-            );
-
-            // --- Anti-rot guard: an earlier revision claimed "none of the
-            // --- required primitives are in `vokra-ops` today", which is
-            // --- false for the convolution — a conv1d kernel exists and is
-            // --- reachable through the Compute seam. The negative assertion
-            // --- keeps that phrasing from rotting back in.
-            assert!(
-                !m.contains("none of the required primitives"),
-                "stale claim — `vokra_backend_cpu::kernels::conv1d_f32` exists and is \
-                 reachable through `Compute::conv1d_f32`, got `{m}`"
-            );
-            assert!(
-                m.contains("NOT missing, do not re-report") && m.contains("conv1d_f32"),
-                "message must name the convolution primitive that already exists so the \
-                 reader wires the seam instead of writing one, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-    }
-}
-
-#[test]
-fn encode_rejects_sample_rate_mismatch_before_loud_partial() {
-    // A sample-rate mismatch fires as InvalidArgument BEFORE the
-    // encoder loud-partial gate — a caller passing the wrong SR sees
-    // the SR error (which they can fix by resampling), not the deeper
-    // "primitive missing" error (which they can't fix at all).
-    let file = snac_gguf_for("24khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).unwrap();
-    let pcm = vec![0.0f32; 24_000];
-    let err = snac
-        .encode(&pcm, 48_000)
-        .expect_err("wrong SR must be rejected");
-    match err {
-        VokraError::InvalidArgument(m) => {
-            assert!(
-                m.contains("48000") && m.contains("24000"),
-                "message must name both the got and expected SR, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
-    }
-}
-
-#[test]
-fn decode_returns_unsupported_op_with_primitive_gap_message() {
-    let file = snac_gguf_for("44khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).unwrap();
-    // Give decode a legitimate outer shape (4 stages for Hz44) so the
-    // loud-partial gate fires, not the stage-count guard.
-    let codes: Vec<Vec<u32>> = vec![vec![0u32; 1], vec![0u32; 2], vec![0u32; 4], vec![0u32; 8]];
-    let err = snac.decode(&codes).expect_err("decode must loud-partial");
-    match err {
-        VokraError::UnsupportedOp(m) => {
-            assert!(
-                m.contains("decoder Conv1D"),
-                "message must name the decoder Conv1D gap, got `{m}`"
-            );
-            assert!(
-                m.contains("feature→PCM"),
-                "message must call out the terminal PCM synthesis gap, got `{m}`"
-            );
-            // Variant-specific rate list must be present (Hz44 = [8,8,3,2]).
-            assert!(
-                m.contains("[8, 8, 3, 2]"),
-                "message must cite the Hz44 decoder_rates, got `{m}`"
-            );
-            // Must forward the reader to the intermediate-features seam.
-            assert!(
-                m.contains("decode_codes_to_features"),
-                "message must forward the reader to the intermediate seam, got `{m}`"
-            );
-
-            // --- Anti-rot guard (mirror of the `beat_this` / `squim` guards).
-            //
-            // An earlier revision listed "Snake activation on every decoder
-            // block" among the MISSING pieces. `vokra_ops::snake_activation_f32`
-            // and `vokra_ops::snake_beta_f32` are landed public primitives
-            // (Metal-covered via `HotOp::SnakeActivation`), so that entry sent
-            // the next reader off to write an activation that already exists.
-            // Asserting it is ABSENT is the load-bearing half — omission alone
-            // is not enforceable.
-            assert!(
-                !m.contains("(b) Snake activation"),
-                "stale claim — `vokra_ops::snake_activation_f32` is a landed, \
-                 Metal-covered primitive, got `{m}`"
-            );
-            assert!(
-                m.contains("NOT missing, do not re-report"),
-                "message must positively disclaim the resolved blockers rather \
-                 than merely omitting them, got `{m}`"
-            );
-            assert!(
-                m.contains("snake_activation_f32") && m.contains("conv1d_f32"),
-                "message must name the primitives that already exist so the reader \
-                 does not rewrite them, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
-    }
-}
-
-#[test]
-fn decode_rejects_wrong_stage_count_before_loud_partial() {
-    // A caller passing 3 stages to a Hz44 binder (which needs 4) sees
-    // the shape error, not the loud-partial gate — the shape error is
-    // actionable ("pad the stage list"), the loud-partial is not.
-    let file = snac_gguf_for("44khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).unwrap();
-    let codes: Vec<Vec<u32>> = vec![vec![0u32; 1], vec![0u32; 2], vec![0u32; 4]]; // 3, not 4
-    let err = snac
-        .decode(&codes)
-        .expect_err("wrong stage count must be rejected");
-    match err {
-        VokraError::InvalidArgument(m) => {
-            assert!(
-                m.contains("3") && m.contains("4"),
-                "message must name both the got and expected stage counts, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
-    }
-}
-
-#[test]
-fn decode_codes_to_features_reports_derived_tensor_gap() {
-    let file = snac_gguf_for("24khz", Some(LicenseClass::Permissive));
-    let snac = Snac::from_gguf(&file).unwrap();
-    let codes: Vec<Vec<u32>> = vec![vec![0u32; 1], vec![0u32; 2], vec![0u32; 4]];
-    let err = snac
-        .decode_codes_to_features(&codes)
-        .expect_err("intermediate features must loud-partial");
-    // ModelLoad (not UnsupportedOp) because the primitive itself exists
-    // in vokra-ops — the block is a converter-side missing tensor.
-    match err {
-        VokraError::ModelLoad(m) => {
-            assert!(
-                m.contains("vokra.snac.codebook_tables"),
-                "message must name the derived codebook-tables tensor, got `{m}`"
-            );
-            assert!(
-                m.contains("out_proj_weight") && m.contains("out_proj_bias"),
-                "message must name the derived out_proj tensors, got `{m}`"
-            );
-            assert!(
-                m.contains("weight_norm") || m.contains("weight-norm"),
-                "message must call out the weight-norm folding step, got `{m}`"
-            );
-            assert!(
-                m.contains("vokra_ops::SnacDecoder"),
-                "message must forward the reader to the existing primitive, got `{m}`"
-            );
-        }
-        other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SnacVariant / SnacConfig direct property tests
-// ---------------------------------------------------------------------------
-
-#[test]
-fn variant_tag_round_trips() {
-    for v in [SnacVariant::Hz24, SnacVariant::Hz44] {
-        assert_eq!(SnacVariant::from_tag(v.tag()), Some(v));
-    }
-    assert_eq!(SnacVariant::from_tag("16khz"), None);
-    assert_eq!(SnacVariant::from_tag(""), None);
-    assert_eq!(SnacVariant::from_tag("24"), None);
-}
-
-#[test]
-fn variant_tags_are_distinct() {
-    // Copy-paste guard — every SnacVariant maps to a distinct tag
-    // (mirror of the converter's `every_variant_has_distinct_stamps`
-    // test). A tuple that ties two variants to the same string would
-    // silently collapse the runtime dispatch.
-    let variants = [SnacVariant::Hz24, SnacVariant::Hz44];
-    for i in 0..variants.len() {
-        for j in (i + 1)..variants.len() {
-            let a = variants[i];
-            let b = variants[j];
-            assert_ne!(a.tag(), b.tag(), "tags must differ ({a:?} vs {b:?})");
-        }
-    }
-}
-
-#[test]
-fn config_active_slice_never_contains_zero_stride() {
-    // A caller iterating `active_vq_strides()` MUST never see the
-    // trailing 0 slot — that slot exists to make `[u32; 4]` honestly
-    // represent "unpopulated" on Hz24, but consuming it as a real
-    // stride would divide the base frame rate by zero.
-    for v in [SnacVariant::Hz24, SnacVariant::Hz44] {
-        let cfg = SnacConfig::for_variant(v);
-        for (i, &s) in cfg.active_vq_strides().iter().enumerate() {
-            assert!(
-                s > 0,
-                "variant {v:?} active stride[{i}] = 0 (would divide the base \
-                 frame rate by zero)"
-            );
-        }
-    }
-}
-
-#[test]
-fn config_stride_axes_match_upstream_config_json() {
-    // Primary-source pin — the axes must match what the converter
-    // transcribed from the upstream `config.json`. A silent drift in
-    // either the converter or this binder would fail here.
+fn released_variant_configs_match_upstream() {
     let hz24 = SnacConfig::for_variant(SnacVariant::Hz24);
     assert_eq!(hz24.sample_rate, 24_000);
-    assert_eq!(hz24.active_vq_strides(), &[4, 2, 1][..]);
+    assert_eq!(hz24.active_vq_strides(), [4, 2, 1]);
+    assert_eq!(hz24.n_stages, 3);
 
     let hz44 = SnacConfig::for_variant(SnacVariant::Hz44);
     assert_eq!(hz44.sample_rate, 44_100);
-    assert_eq!(hz44.active_vq_strides(), &[8, 4, 2, 1][..]);
+    assert_eq!(hz44.active_vq_strides(), [8, 4, 2, 1]);
+    assert_eq!(hz44.n_stages, 4);
+}
+
+#[test]
+fn released_manifests_have_revisioned_public_counts() {
+    assert_eq!(expected_manifest(SnacVariant::Hz24).len(), 269);
+    assert_eq!(expected_manifest(SnacVariant::Hz44).len(), 286);
+}
+
+#[test]
+fn hz44_manifest_contains_both_attention_blocks_and_four_codebooks() {
+    let manifest = expected_manifest(SnacVariant::Hz44);
+    assert_eq!(
+        manifest.get("encoder.block.5.to_qkv.weight"),
+        Some(&vec![3072, 1024])
+    );
+    assert_eq!(
+        manifest.get("decoder.model.2.to_qkv.weight"),
+        Some(&vec![4608, 1536])
+    );
+    assert_eq!(
+        manifest.get("quantizer.quantizers.3.codebook.weight"),
+        Some(&vec![4096, 8])
+    );
+}
+
+#[test]
+fn hz24_manifest_has_no_attention_and_three_codebooks() {
+    let manifest = expected_manifest(SnacVariant::Hz24);
+    assert!(!manifest.contains_key("encoder.block.5.to_qkv.weight"));
+    assert!(!manifest.contains_key("decoder.model.2.to_qkv.weight"));
+    assert!(manifest.contains_key("quantizer.quantizers.2.codebook.weight"));
+    assert!(!manifest.contains_key("quantizer.quantizers.3.codebook.weight"));
+}
+
+#[test]
+fn odd_stride_decoder_manifest_pins_output_padding_weight_shape() {
+    let manifest = expected_manifest(SnacVariant::Hz44);
+    assert_eq!(
+        manifest.get("decoder.model.5.block.1.parametrizations.weight.original1"),
+        Some(&vec![384, 192, 6])
+    );
+}
+
+fn tiny_file(arch: &str, variant: &str) -> GgufFile {
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, arch);
+    builder.add_string(KEY_SNAC_VARIANT, variant);
+    builder.add_string(chunks::KEY_MODEL_NAME, "snac-24khz");
+    builder.add_string("vokra.model.category", "codec");
+    builder.add_string(chunks::KEY_PROVENANCE_MODEL_ID, "snac-24khz");
+    builder.add_string(chunks::KEY_PROVENANCE_LICENSE, "mit");
+    builder.add_string(
+        chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+        vokra_core::LicenseClass::Permissive.as_str(),
+    );
+    builder.add_string("vokra.provenance.upstream_hf", "hubertsiuzdak/snac_24khz");
+    builder.add_string(chunks::KEY_PROVENANCE_SOURCE, "test source");
+    builder
+        .add_tensor(
+            "unexpected",
+            GgmlType::F32,
+            vec![1],
+            0.0_f32.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+    GgufFile::parse(builder.to_bytes().unwrap()).unwrap()
+}
+
+#[test]
+fn strict_binder_rejects_wrong_arch_before_tensor_load() {
+    let error = Snac::from_gguf(&tiny_file("dac", VARIANT_TAG_HZ24)).unwrap_err();
+    assert!(matches!(error, vokra_core::VokraError::ModelLoad(_)));
+    assert!(error.to_string().contains("vokra.model.arch"));
+}
+
+#[test]
+fn strict_binder_rejects_unknown_variant() {
+    let error = Snac::from_gguf(&tiny_file(ARCH, "16khz")).unwrap_err();
+    assert!(matches!(error, vokra_core::VokraError::ModelLoad(_)));
+    assert!(error.to_string().contains(KEY_SNAC_VARIANT));
+}
+
+#[test]
+fn strict_binder_rejects_partial_tensor_manifest() {
+    let error = Snac::from_gguf(&tiny_file(ARCH, VARIANT_TAG_HZ24)).unwrap_err();
+    assert!(matches!(error, vokra_core::VokraError::ModelLoad(_)));
+    assert!(error.to_string().contains("tensor manifest mismatch"));
+}
+
+const SNAC_24_PCM: &[u8] = include_bytes!("../../tests/fixtures/snac_24khz/pcm.f32");
+const SNAC_24_ENCODED: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_24khz/encoded_features.f32");
+const SNAC_24_DECODED_FEATURES: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_24khz/decoded_features_time_major.f32");
+const SNAC_24_DECODED_PCM: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_24khz/decoded_pcm.f32");
+const SNAC_24_CODES: [&[u8]; 3] = [
+    include_bytes!("../../tests/fixtures/snac_24khz/codes_0.u32"),
+    include_bytes!("../../tests/fixtures/snac_24khz/codes_1.u32"),
+    include_bytes!("../../tests/fixtures/snac_24khz/codes_2.u32"),
+];
+const SNAC_24_NOISE: [&[u8]; 4] = [
+    include_bytes!("../../tests/fixtures/snac_24khz/noise_0.f32"),
+    include_bytes!("../../tests/fixtures/snac_24khz/noise_1.f32"),
+    include_bytes!("../../tests/fixtures/snac_24khz/noise_2.f32"),
+    include_bytes!("../../tests/fixtures/snac_24khz/noise_3.f32"),
+];
+const SNAC_24_MANIFEST: &str = include_str!("../../tests/fixtures/snac_24khz/manifest.json");
+
+const SNAC_44_PCM: &[u8] = include_bytes!("../../tests/fixtures/snac_44khz/pcm.f32");
+const SNAC_44_ENCODED: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_44khz/encoded_features.f32");
+const SNAC_44_DECODED_FEATURES: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_44khz/decoded_features_time_major.f32");
+const SNAC_44_DECODED_PCM: &[u8] =
+    include_bytes!("../../tests/fixtures/snac_44khz/decoded_pcm.f32");
+const SNAC_44_CODES: [&[u8]; 4] = [
+    include_bytes!("../../tests/fixtures/snac_44khz/codes_0.u32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/codes_1.u32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/codes_2.u32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/codes_3.u32"),
+];
+const SNAC_44_NOISE: [&[u8]; 4] = [
+    include_bytes!("../../tests/fixtures/snac_44khz/noise_0.f32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/noise_1.f32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/noise_2.f32"),
+    include_bytes!("../../tests/fixtures/snac_44khz/noise_3.f32"),
+];
+const SNAC_44_MANIFEST: &str = include_str!("../../tests/fixtures/snac_44khz/manifest.json");
+
+fn fixture_f32(bytes: &[u8]) -> Vec<f32> {
+    assert_eq!(bytes.len() % 4, 0, "truncated SNAC f32 fixture");
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+fn fixture_u32(bytes: &[u8]) -> Vec<u32> {
+    assert_eq!(bytes.len() % 4, 0, "truncated SNAC u32 fixture");
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+#[derive(Debug)]
+struct ParityMetrics {
+    max_abs: f64,
+    max_abs_index: usize,
+    relative_l1: f64,
+    cosine: f64,
+}
+
+fn parity_metrics(label: &str, actual: &[f32], expected: &[f32]) -> ParityMetrics {
+    assert_eq!(actual.len(), expected.len(), "{label} length");
+    assert!(!actual.is_empty(), "{label} must be non-empty");
+    assert!(
+        actual.iter().all(|value| value.is_finite()),
+        "{label} must be finite"
+    );
+    let mut max_abs = 0.0_f64;
+    let mut max_abs_index = 0usize;
+    let mut sum_abs = 0.0_f64;
+    let mut expected_l1 = 0.0_f64;
+    let mut dot = 0.0_f64;
+    let mut actual_sq = 0.0_f64;
+    let mut expected_sq = 0.0_f64;
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        let actual = f64::from(actual);
+        let expected = f64::from(expected);
+        let error = (actual - expected).abs();
+        if error > max_abs {
+            max_abs = error;
+            max_abs_index = index;
+        }
+        sum_abs += error;
+        expected_l1 += expected.abs();
+        dot += actual * expected;
+        actual_sq += actual * actual;
+        expected_sq += expected * expected;
+    }
+    let metrics = ParityMetrics {
+        max_abs,
+        max_abs_index,
+        relative_l1: sum_abs / expected_l1.max(1.0e-30),
+        cosine: dot / (actual_sq.sqrt() * expected_sq.sqrt()).max(1.0e-30),
+    };
+    eprintln!(
+        "SNAC {label}: max_abs={:.9e} at {} (actual={:.9e}, reference={:.9e}), relative_l1={:.9e}, cosine={:.9e}",
+        metrics.max_abs,
+        metrics.max_abs_index,
+        actual[metrics.max_abs_index],
+        expected[metrics.max_abs_index],
+        metrics.relative_l1,
+        metrics.cosine,
+    );
+    metrics
+}
+
+fn assert_parity(
+    label: &str,
+    actual: &[f32],
+    expected: &[f32],
+    max_abs_bound: f64,
+    relative_l1_bound: f64,
+    cosine_bound: f64,
+) {
+    let metrics = parity_metrics(label, actual, expected);
+    assert!(metrics.max_abs <= max_abs_bound, "{metrics:?}");
+    assert!(metrics.relative_l1 <= relative_l1_bound, "{metrics:?}");
+    assert!(metrics.cosine >= cosine_bound, "{metrics:?}");
+}
+
+struct OfficialFixture {
+    variant: SnacVariant,
+    env: &'static str,
+    sample_rate: u32,
+    pcm: &'static [u8],
+    encoded: &'static [u8],
+    decoded_features: &'static [u8],
+    decoded_pcm: &'static [u8],
+    codes: &'static [&'static [u8]],
+    noises: &'static [&'static [u8]],
+}
+
+fn run_official_parity(fixture: &OfficialFixture) {
+    let Some(path) = std::env::var_os(fixture.env) else {
+        eprintln!(
+            "[snac official parity] SKIP: set {} to the canonical public GGUF",
+            fixture.env
+        );
+        return;
+    };
+    let model = Snac::from_path(path).expect("strict public SNAC bind");
+    assert_eq!(model.variant(), fixture.variant);
+    let pcm = fixture_f32(fixture.pcm);
+    let encoded = fixture_f32(fixture.encoded);
+    let decoded_features = fixture_f32(fixture.decoded_features);
+    let decoded_pcm = fixture_f32(fixture.decoded_pcm);
+    let codes: Vec<Vec<u32>> = fixture
+        .codes
+        .iter()
+        .map(|bytes| fixture_u32(bytes))
+        .collect();
+    let noises: Vec<Vec<f32>> = fixture
+        .noises
+        .iter()
+        .map(|bytes| fixture_f32(bytes))
+        .collect();
+
+    let actual_encoded = model
+        .encode_features_for_parity(&pcm, fixture.sample_rate)
+        .expect("CPU official-input encoder");
+    // VAST 48584151 measured max_abs=7.8201e-5 / relative-L1=2.2713e-6
+    // at 24 kHz and max_abs=3.1018e-4 / relative-L1=4.2411e-6 at 44.1 kHz.
+    // The committed envelope leaves less than 1.3x max-error headroom while
+    // remaining far below the project-wide FP32 0.01 default.
+    assert_parity(
+        "CPU encoder vs official",
+        &actual_encoded,
+        &encoded,
+        4.0e-4,
+        1.0e-5,
+        0.999_999,
+    );
+    assert_eq!(
+        model
+            .encode(&pcm, fixture.sample_rate)
+            .expect("CPU official-input RVQ"),
+        codes,
+        "SNAC CPU encode codes must match the official package exactly"
+    );
+    let actual_features = model
+        .decode_codes_to_features(&codes)
+        .expect("CPU official-code RVQ decode");
+    assert_parity(
+        "CPU RVQ decode vs official",
+        &actual_features,
+        &decoded_features,
+        5.0e-6,
+        1.0e-7,
+        0.999_999_9,
+    );
+    let actual_pcm = model
+        .decode_with_noise_for_parity(&codes, &noises)
+        .expect("CPU official-noise decoder");
+    assert_parity(
+        "CPU decoder vs official",
+        &actual_pcm,
+        &decoded_pcm,
+        1.5e-6,
+        4.0e-6,
+        0.999_999_9,
+    );
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    {
+        let metal = model.with_backend(vokra_core::BackendKind::Metal);
+        let metal_features = metal
+            .decode_codes_to_features(&codes)
+            .expect("Metal official-code RVQ decode");
+        assert_parity(
+            "Metal RVQ decode vs official",
+            &metal_features,
+            &decoded_features,
+            5.0e-5,
+            5.0e-4,
+            0.999_99,
+        );
+        let metal_pcm = metal
+            .decode_with_noise_for_parity(&codes, &noises)
+            .expect("Metal official-noise decoder");
+        assert_parity(
+            "Metal decoder vs official",
+            &metal_pcm,
+            &decoded_pcm,
+            2.0e-3,
+            1.0e-2,
+            0.999,
+        );
+    }
+}
+
+#[test]
+fn official_reference_fixtures_pin_source_checkpoints_and_shapes() {
+    assert_eq!(fixture_f32(SNAC_24_PCM).len(), 1_567);
+    assert_eq!(fixture_f32(SNAC_24_ENCODED).len(), 768 * 4);
+    assert_eq!(fixture_f32(SNAC_24_DECODED_PCM).len(), 2_048);
+    assert_eq!(fixture_f32(SNAC_44_PCM).len(), 5_003);
+    assert_eq!(fixture_f32(SNAC_44_ENCODED).len(), 1_024 * 32);
+    assert_eq!(fixture_f32(SNAC_44_DECODED_PCM).len(), 12_288);
+    for manifest in [SNAC_24_MANIFEST, SNAC_44_MANIFEST] {
+        assert!(manifest.contains("vokra-snac-reference-v1"));
+        assert!(manifest.contains("8f79a718f1ad71f94f79999f0071348227aff22e"));
+        assert!(manifest.contains("snac.SNAC.from_pretrained/encode/decode"));
+    }
+    assert!(SNAC_24_MANIFEST.contains("d73ad176a12188fcf4f360ba3bf2c2fbbe8f58ec"));
+    assert!(
+        SNAC_24_MANIFEST
+            .contains("4b8164cc6606bfa627f1a784734c1e539891518f1191ed9194fe1e3b9b4bff40")
+    );
+    assert!(SNAC_44_MANIFEST.contains("873ebef9718b89660340c6f55a2b515e98cfa1d9"));
+    assert!(
+        SNAC_44_MANIFEST
+            .contains("b0a676cbdc8d1cc53186f6d777bc956fb7932ceacdc657a4c3741646e9e7ead0")
+    );
+}
+
+#[test]
+fn public_snac_24khz_matches_official_codec() {
+    run_official_parity(&OfficialFixture {
+        variant: SnacVariant::Hz24,
+        env: "VOKRA_SNAC_24KHZ_GGUF",
+        sample_rate: 24_000,
+        pcm: SNAC_24_PCM,
+        encoded: SNAC_24_ENCODED,
+        decoded_features: SNAC_24_DECODED_FEATURES,
+        decoded_pcm: SNAC_24_DECODED_PCM,
+        codes: &SNAC_24_CODES,
+        noises: &SNAC_24_NOISE,
+    });
+}
+
+#[test]
+fn public_snac_44khz_matches_official_codec() {
+    run_official_parity(&OfficialFixture {
+        variant: SnacVariant::Hz44,
+        env: "VOKRA_SNAC_44KHZ_GGUF",
+        sample_rate: 44_100,
+        pcm: SNAC_44_PCM,
+        encoded: SNAC_44_ENCODED,
+        decoded_features: SNAC_44_DECODED_FEATURES,
+        decoded_pcm: SNAC_44_DECODED_PCM,
+        codes: &SNAC_44_CODES,
+        noises: &SNAC_44_NOISE,
+    });
 }

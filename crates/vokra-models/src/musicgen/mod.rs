@@ -1,4 +1,4 @@
-//! **Meta MusicGen** (`facebook/musicgen-{small,medium}`,
+//! **Meta MusicGen** (`facebook/musicgen-{small,medium,large,melody}`,
 //! CC-BY-NC-4.0 — T4 tier) — text-to-music autoregressive transformer
 //! LM runtime binder (2026-08-14 audit follow-up Wave 5, first
 //! **music generation** runtime binder in the tree).
@@ -27,26 +27,24 @@
 //!
 //! ```text
 //! text prompt (UTF-8 string)
-//!   -> frozen T5-base text encoder                   ← **loud-partial**
-//!        (google-t5/t5-base — HF transformers `T5EncoderModel`,
-//!         encoder-only, no reusable primitive in `vokra_ops` today;
-//!         the follow-up wave lands a T5-base implementation or a
-//!         first-class `t5_text_encode` op — see the loud-partial
-//!         message for the concrete plan.)
-//!   -> autoregressive transformer LM with            ← **loud-partial**
-//!      4-codebook delay pattern and text-conditioned
-//!      cross-attention to T5 tokens
+//!   -> layout-specific text / melody conditioner    ← **loud-partial**
+//!        (Small/Melody public GGUFs are Transformers composites and
+//!         carry `text_encoder.*`; Medium/Large are AudioCraft LM-only
+//!         files and require explicit companion conditioner assets.
+//!         Tokenizer assets are not embedded in any of the GGUFs.)
+//!   -> autoregressive transformer LM                 ← **real raw step for
+//!      with layout-specific prompt conditioning          all public layouts**
+//!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`)
+//!   -> 4-codebook delay pattern + CFG + sampling     ← **real for all
+//!                                                         public layouts**
 //!        (Copet et al. Algorithm 1 — the MusicGen-specific
-//!         "delay pattern" interleave over the 4 codebook streams,
-//!         plus cross-attention to the T5-encoded prompt tokens; the
-//!         single-codebook AR LMs already in the tree — cosyvoice2 /
-//!         moshi / voxtral — cover neither the delay pattern nor the
-//!         text-encoder cross-attention.)
-//!   -> EnCodec RVQ decode (4 codebooks, 50 Hz frame ← **primitive
-//!      rate, 32 kHz PCM output)                        exists**
-//!        (available via `vokra_ops::encodec_rvq_decode` — this is the
-//!         ONE landed anchor the loud-partial message cites so the
-//!         reader knows the composition anchor.)
+//!         "delay pattern" interleave over the 4 codebook streams;
+//!         the exact conditioner path differs between the published
+//!         AudioCraft and Transformers layouts.)
+//!   -> EnCodec RVQ + neural SEANet to 32 kHz PCM       ← **real**
+//!        (`decode_codes` / `decode_frame_major`; LM-only Medium/Large
+//!         use an explicit [`MusicGenCompanion`] strictly extracted from the
+//!         public Small composite)
 //!   -> PCM (mono f32, 32 kHz)
 //! ```
 //!
@@ -54,14 +52,9 @@
 //!
 //! - **Real (this WP)**:
 //!   - [`MusicGenVariant`] enum discrimination via
-//!     [`MusicGenVariant::from_name`] (Small / Medium only — the
-//!     task-scoped variant set).
+//!     [`MusicGenVariant::from_name`] (Small / Medium / Large / Melody).
 //!   - [`MusicGen::from_gguf`] with strict `vokra.model.arch == "musicgen"`
-//!     validation + name-based variant dispatch. Unknown MusicGen family
-//!     variants (`musicgen-large` / `musicgen-melody` shipped by the
-//!     converter but not bound here yet) fail with a distinct error
-//!     naming the "follow-up wave adds Large + Melody to `MusicGenVariant`
-//!     enum" so a reader diagnosing the mismatch has an anchor.
+//!     validation + name-based variant dispatch.
 //!   - [`MusicGenConfig::from_gguf`] with primary-source constant
 //!     fallback **per variant** (the MusicGen converter does NOT
 //!     currently stamp the `vokra.musicgen.*` chunk group — only arch /
@@ -73,30 +66,47 @@
 //!     a future converter sub-wave that starts stamping the chunk group
 //!     upgrades this to real-stamped reads seamlessly — mirror of the
 //!     Sortformer / PyanNet fallback pattern).
-//!   - [`MusicGenWeights::from_gguf`] with a floor of non-empty tensor
-//!     count enforced loud (a GGUF that carries zero tensors is refused
-//!     rather than silently running an all-zero forward — FR-EX-08).
+//!   - [`MusicGenWeights::from_gguf`] with a pinned complete sorted
+//!     `(tensor name, dimensions)` manifest per public artifact. A
+//!     truncated or wrong-layout GGUF is refused before tensor decode
+//!     (FR-EX-08).
 //!   - Weight-license class surfacing (defaults to
 //!     [`LicenseClass::NonCommercial`] per the MusicGen converter's
 //!     stamped `cc-by-nc-4.0` — T4 tier, fail-closed at the runtime
 //!     compliance gate M2-13).
+//!   - Mapping-owned [`MusicGen::from_path_with_policy_and_backend`] plus the
+//!     shared [`crate::audiocraft_lm::AudioCraftLmDecoder`] execute the exact
+//!     layout-specific learned condition projection, pre-norm self/cross-
+//!     attention stack, GELU MLP and four logits heads on one selected
+//!     CPU/Metal backend. AudioCraft Medium/Large use fused Q/K/V tensors;
+//!     Transformers-composite Small/Melody use authenticated split Q/K/V
+//!     tensors and their checkpointed sinusoidal table. Unsupported backend
+//!     operations fail before state mutation; borrowed handles fail explicitly
+//!     instead of falling back.
+//!   - [`MusicGen::generate_codes`] runs AudioCraft's two-state CFG 3.0,
+//!     complete four-codebook delay mask and seeded top-k 250 sampling and
+//!     returns frame-major EnCodec indices without delay-padding tokens.
+//!   - Mapping-owned composite Small/Melody handles bind the embedded four
+//!     EnCodec codebooks plus complete non-causal SEANet decoder. RVQ,
+//!     convolution, transposed-convolution projection and LSTM projections
+//!     execute on the selected CPU/Metal backend; [`MusicGen::decode_codes`]
+//!     emits real 32 kHz mono PCM.
+//!   - Those same composites bind their embedded canonical T5-base encoder.
+//!     [`MusicGen::generate_from_token_ids`] takes explicit conditional and
+//!     unconditional token ids, then composes T5, LM generation and EnCodec
+//!     decode on the selected CPU/Metal backend.
+//!   - [`MusicGenCompanion`] verifies the exact public Small manifest and
+//!     binds only its T5-base and EnCodec components.  Medium/Large compose
+//!     those components with their own learned description projection and LM
+//!     through [`MusicGen::generate_from_token_ids_with_companion`].  Both
+//!     files independently pass the license gate and use one backend; a
+//!     mismatch is an explicit error with no CPU fallback.
 //!
-//! - **Loud-partial (this WP)**: [`MusicGen::generate`] returns
-//!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
-//!   1. the frozen T5-base text encoder forward (upstream
-//!      `transformers.T5EncoderModel`; no reusable primitive in
-//!      `vokra_ops` today; the follow-up wave lands the T5-base body or
-//!      a first-class `t5_text_encode` op);
-//!   2. the autoregressive transformer LM decode with the **4-codebook
-//!      delay pattern** (the MusicGen-specific interleave over 4 RVQ
-//!      streams) + text-conditioned **cross-attention** to the T5-encoded
-//!      prompt tokens (the single-codebook AR LMs already in the tree —
-//!      cosyvoice2 / moshi / voxtral — cover neither the delay pattern
-//!      nor the text-encoder cross-attention);
-//!   3. the EnCodec RVQ decode from the 4 codebook streams to 32 kHz PCM
-//!      — **available via `vokra_ops::encodec_rvq_decode`**, cited as
-//!      the one landed piece so a reader diagnosing this gap knows the
-//!      composition anchor.
+//! - **Explicit boundary**: [`MusicGen::generate`] returns
+//!   [`VokraError::UnsupportedOp`] for raw text because tokenizer assets are
+//!   absent from every public GGUF.  Composite and LM-only artifacts both have
+//!   complete explicit token-id-to-waveform routes; no tokenizer or
+//!   unknown-token behavior is guessed.
 //!
 //! The error names the **three primary source URLs** (HF card for the
 //! bound variant + AudioCraft repo + paper), the config axes echoed
@@ -109,15 +119,9 @@
 //! beat_this / mt3 / sortformer loud-partial precedent, CLAUDE.md 教訓
 //! (a) — "loud-partial は fake-complete より honest"): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MusicGenVariant`
-//! enum + FR-EX-08 loud-fails land today so a follow-up wave can flip
-//! the switch by (i) landing the T5-base text encoder body against a
-//! real T5-base state_dict (the converter already emits the T5 weights
-//! under `text_encoder.*` — see the converter's tensor-name contract),
-//! (ii) implementing the delay-pattern + cross-attention AR transformer
-//! LM decode, and (iii) wiring the composed loop to the existing
-//! `vokra_ops::encodec_rvq_decode` primitive. The primitive for (iii)
-//! already exists so the follow-up wave is composition + two greenfield
-//! forward bodies, NOT three greenfield kernels.
+//! enum + FR-EX-08 loud-fails landed first. Raw LM code generation and
+//! explicit token-id-to-waveform generation are now native for both artifact
+//! layouts. Raw-text tokenization remains an honest caller boundary.
 //!
 //! # `vokra.musicgen.*` chunk group (read here — fallback-friendly)
 //!
@@ -143,11 +147,9 @@
 //!   matching; AudioLDM2 / Stable-Audio-Open are diffusion; ACE-Step is
 //!   yet another decoder topology; BS-Roformer is source-separation, not
 //!   generation). FR-EX-08 forbids the silent-wrong shape mismatch.
-//! - `vokra.model.name` (`String`): [`NAME_SMALL`] (`"musicgen-small"`)
-//!   or [`NAME_MEDIUM`] (`"musicgen-medium"`) — the variant discriminator
-//!   under the shared `musicgen` arch tag. Sibling variants shipped by
-//!   the converter but NOT yet bound here (`musicgen-large` /
-//!   `musicgen-melody`) fail loudly with a "follow-up wave" anchor.
+//! - `vokra.model.name` (`String`): [`NAME_SMALL`], [`NAME_MEDIUM`],
+//!   [`NAME_LARGE`], or [`NAME_MELODY`] — the variant discriminator under
+//!   the shared `musicgen` arch tag.
 //! - `vokra.musicgen.{d_model, num_layers, n_heads, ffn_dim, vocab_size,
 //!   num_codebooks, codec_frame_rate_hz, sample_rate_hz}` (`u32` each):
 //!   the composite topology axes. Fallback constants transcribed from
@@ -182,8 +184,21 @@
 //! not part of the runtime), mirroring the SpeechT5-HiFi-GAN /
 //! Sortformer / Charsiu bridge pattern.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use vokra_core::backend::BackendKind;
+use vokra_core::compliance::{CompliancePolicy, check_weight_license};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
+
+use crate::audiocraft_encodec::{AudioCraftEncodecDecoder, NUM_CODEBOOKS as ENCODEC_NUM_CODEBOOKS};
+use crate::audiocraft_lm::{
+    AudioCraftCondition, AudioCraftGeneratedCodes, AudioCraftGenerationConfig, AudioCraftLmConfig,
+    AudioCraftLmDecoder, AudioCraftLmState,
+};
+use crate::strict_checkpoint::verify_tensor_manifest;
+use crate::t5_encoder::T5Encoder;
 
 // ---------------------------------------------------------------------------
 // Arch / metadata-key constants — mirror of
@@ -193,13 +208,12 @@ use vokra_core::{LicenseClass, Result, VokraError};
 // ---------------------------------------------------------------------------
 
 /// Expected `vokra.model.arch` value written by
-/// `vokra-cli convert --model musicgen-{small|medium}`.
+/// `vokra-cli convert --model musicgen-{small|medium|large|melody}`.
 ///
 /// **Shared across every MusicGen family variant** (small / medium /
 /// large / melody / stereo-*) — the family shares the AR-LM +
-/// text-conditioned cross-attention + delay-pattern EnCodec topology,
-/// only the model dims + optional chroma-conditioning frontend
-/// (melody-only) differ. Variant discrimination happens via
+/// delay-pattern EnCodec-token topology, while artifact layout and
+/// conditioning topology differ. Variant discrimination happens via
 /// [`MusicGenVariant::from_name`] against `vokra.model.name`.
 ///
 /// Deliberately distinct from every sibling music-generation arch —
@@ -224,6 +238,14 @@ pub const NAME_SMALL: &str = "musicgen-small";
 /// upstream slug + the converter's `NAME` constant.
 pub const NAME_MEDIUM: &str = "musicgen-medium";
 
+/// Expected `vokra.model.name` value for the **Large** (3.3B params)
+/// variant.
+pub const NAME_LARGE: &str = "musicgen-large";
+
+/// Expected `vokra.model.name` value for the melody-conditioned 1.5B
+/// variant.
+pub const NAME_MELODY: &str = "musicgen-melody";
+
 /// `vokra.musicgen.d_model` — transformer LM hidden dim (per-variant).
 /// Primary-source defaults: 1024 (small) / 1536 (medium).
 pub const GGUF_KEY_D_MODEL: &str = "vokra.musicgen.d_model";
@@ -246,7 +268,7 @@ pub const GGUF_KEY_FFN_DIM: &str = "vokra.musicgen.ffn_dim";
 pub const GGUF_KEY_VOCAB_SIZE: &str = "vokra.musicgen.vocab_size";
 /// `vokra.musicgen.num_codebooks` — number of RVQ codebook streams the
 /// LM emits per frame. Shared across variants: 4 (the EnCodec 32 kHz
-/// codec configuration MusicGen bundles).
+/// codec configuration paired with MusicGen generation).
 pub const GGUF_KEY_NUM_CODEBOOKS: &str = "vokra.musicgen.num_codebooks";
 /// `vokra.musicgen.codec_frame_rate_hz` — the EnCodec 32 kHz output
 /// frame rate. Shared across variants: 50 Hz.
@@ -294,10 +316,20 @@ pub const DEFAULT_N_HEADS_MEDIUM: u32 = 24;
 /// "4× hidden" convention: `6144 = 4 × 1536`.
 pub const DEFAULT_FFN_DIM_MEDIUM: u32 = 6144;
 
+/// Large variant transformer LM hidden dim (`d_model`). Primary source:
+/// `facebook/musicgen-large/config.json` (`decoder.hidden_size`).
+pub const DEFAULT_D_MODEL_LARGE: u32 = 2048;
+/// Large variant transformer LM depth (`num_hidden_layers`).
+pub const DEFAULT_NUM_LAYERS_LARGE: u32 = 48;
+/// Large variant attention head count (`num_attention_heads`).
+pub const DEFAULT_N_HEADS_LARGE: u32 = 32;
+/// Large variant feedforward inner dimension (`ffn_dim`).
+pub const DEFAULT_FFN_DIM_LARGE: u32 = 8192;
+
 /// Shared per-codebook vocabulary size across MusicGen variants. Primary
 /// source: HF `config.json` (`decoder.vocab_size`) + AudioCraft
 /// `EncodecModel.quantizer.bins`. The EnCodec 32 kHz codec MusicGen
-/// bundles is a 4-codebook RVQ with 2048 entries per codebook.
+/// uses a 4-codebook RVQ with 2048 entries per codebook.
 pub const DEFAULT_VOCAB_SIZE: u32 = 2048;
 
 /// Number of RVQ codebook streams the LM emits per frame. Shared across
@@ -305,11 +337,11 @@ pub const DEFAULT_VOCAB_SIZE: u32 = 2048;
 /// `MusicGen(...).lm.n_q = 4`.
 pub const NUM_CODEBOOKS: u32 = 4;
 
-/// EnCodec output frame rate for the bundled 32 kHz codec (matches
+/// EnCodec output frame rate for the paired 32 kHz codec (matches
 /// AudioCraft `EncodecModel.frame_rate = 50`).
 pub const CODEC_FRAME_RATE_HZ: u32 = 50;
 
-/// EnCodec sample rate for the bundled 32 kHz codec (matches AudioCraft
+/// EnCodec sample rate for the paired 32 kHz codec (matches AudioCraft
 /// `EncodecModel.sample_rate = 32000`).
 pub const SAMPLE_RATE_HZ: u32 = 32_000;
 
@@ -321,6 +353,10 @@ pub const PRIMARY_SOURCE_HF_CARD_SMALL: &str = "huggingface.co/facebook/musicgen
 /// Cited in the loud-partial error so a reader diagnosing the gap knows
 /// the definitive artifact source.
 pub const PRIMARY_SOURCE_HF_CARD_MEDIUM: &str = "huggingface.co/facebook/musicgen-medium";
+/// Primary-source anchor for the **Large** variant's HF model card.
+pub const PRIMARY_SOURCE_HF_CARD_LARGE: &str = "huggingface.co/facebook/musicgen-large";
+/// Primary-source anchor for the melody-conditioned variant's HF model card.
+pub const PRIMARY_SOURCE_HF_CARD_MELODY: &str = "huggingface.co/facebook/musicgen-melody";
 /// Primary-source anchor for the AudioCraft reference repository
 /// (MIT code — the tensor-name walk anchor). Cited in the loud-partial
 /// error so a reader knows the code reference.
@@ -339,14 +375,6 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2306.05284";
 /// Which MusicGen family variant a GGUF represents. Determined by
 /// [`MusicGenVariant::from_name`] against `vokra.model.name`.
 ///
-/// **This WP is scoped to Small + Medium only**, per the 2026-08-14
-/// audit follow-up task spec ("Add runtime binder for both small (300M)
-/// and medium (1.5B) variants"). Sibling variants shipped by the
-/// converter but NOT bound here yet (`musicgen-large` /
-/// `musicgen-melody`) map to `None` in [`from_name`](Self::from_name)
-/// so [`MusicGen::from_gguf`] can emit a specific "converter exists but
-/// runtime enum extension pending in this WP" error rather than a
-/// generic bind failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MusicGenVariant {
     /// `facebook/musicgen-small` — 300M-parameter LM decoder
@@ -355,20 +383,25 @@ pub enum MusicGenVariant {
     /// `facebook/musicgen-medium` — 1.5B-parameter LM decoder
     /// (`d_model=1536`, `num_layers=48`, `n_heads=24`, `ffn_dim=6144`).
     Medium,
+    /// `facebook/musicgen-large` — 3.3B-parameter LM decoder
+    /// (`d_model=2048`, `num_layers=48`, `n_heads=32`, `ffn_dim=8192`).
+    Large,
+    /// `facebook/musicgen-melody` — the medium-width decoder plus melody
+    /// conditioning (`d_model=1536`, `num_layers=48`).
+    Melody,
 }
 
 impl MusicGenVariant {
     /// Discriminates a MusicGen variant from `vokra.model.name`. Returns
-    /// `None` for MusicGen family variants that exist as converters but
-    /// are not bound in the runtime yet (`musicgen-large` /
-    /// `musicgen-melody`) so [`MusicGen::from_gguf`] can emit a specific
-    /// "follow-up wave adds Large + Melody to the enum" error, and for
-    /// any string that isn't a MusicGen family name at all.
+    /// `None` for any string that is not one of the four public Vokra
+    /// MusicGen repositories.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             NAME_SMALL => Some(Self::Small),
             NAME_MEDIUM => Some(Self::Medium),
+            NAME_LARGE => Some(Self::Large),
+            NAME_MELODY => Some(Self::Melody),
             _ => None,
         }
     }
@@ -380,6 +413,8 @@ impl MusicGenVariant {
         match self {
             Self::Small => NAME_SMALL,
             Self::Medium => NAME_MEDIUM,
+            Self::Large => NAME_LARGE,
+            Self::Melody => NAME_MELODY,
         }
     }
 
@@ -390,6 +425,8 @@ impl MusicGenVariant {
         match self {
             Self::Small => PRIMARY_SOURCE_HF_CARD_SMALL,
             Self::Medium => PRIMARY_SOURCE_HF_CARD_MEDIUM,
+            Self::Large => PRIMARY_SOURCE_HF_CARD_LARGE,
+            Self::Melody => PRIMARY_SOURCE_HF_CARD_MELODY,
         }
     }
 
@@ -422,6 +459,98 @@ impl MusicGenVariant {
                 codec_frame_rate_hz: CODEC_FRAME_RATE_HZ,
                 sample_rate_hz: SAMPLE_RATE_HZ,
             },
+            Self::Large => MusicGenConfig {
+                variant: Self::Large,
+                d_model: DEFAULT_D_MODEL_LARGE,
+                num_layers: DEFAULT_NUM_LAYERS_LARGE,
+                n_heads: DEFAULT_N_HEADS_LARGE,
+                ffn_dim: DEFAULT_FFN_DIM_LARGE,
+                vocab_size: DEFAULT_VOCAB_SIZE,
+                num_codebooks: NUM_CODEBOOKS,
+                codec_frame_rate_hz: CODEC_FRAME_RATE_HZ,
+                sample_rate_hz: SAMPLE_RATE_HZ,
+            },
+            Self::Melody => MusicGenConfig {
+                variant: Self::Melody,
+                d_model: DEFAULT_D_MODEL_MEDIUM,
+                num_layers: DEFAULT_NUM_LAYERS_MEDIUM,
+                n_heads: DEFAULT_N_HEADS_MEDIUM,
+                ffn_dim: DEFAULT_FFN_DIM_MEDIUM,
+                vocab_size: DEFAULT_VOCAB_SIZE,
+                num_codebooks: NUM_CODEBOOKS,
+                codec_frame_rate_hz: CODEC_FRAME_RATE_HZ,
+                sample_rate_hz: SAMPLE_RATE_HZ,
+            },
+        }
+    }
+}
+
+/// Tensor topology carried by the already-published Vokra artifact.
+///
+/// Medium/Large were published from AudioCraft's LM-only state dict, while
+/// Small/Melody were published from the Transformers composite checkpoint.
+/// Keeping this distinction explicit prevents a missing T5/EnCodec sidecar
+/// from being mistaken for a corrupt tensor group or silently fabricated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MusicGenArtifactLayout {
+    /// AudioCraft `LMModel` only: prompt embeddings and codec decoding must be
+    /// supplied by explicit companion components.
+    AudioCraftLm,
+    /// Transformers composite: decoder + T5 encoder + EnCodec tensors.
+    TransformersComposite,
+}
+
+impl MusicGenVariant {
+    /// Artifact layout used by the corresponding already-published Vokra
+    /// repository.
+    #[must_use]
+    pub const fn artifact_layout(self) -> MusicGenArtifactLayout {
+        match self {
+            Self::Small | Self::Melody => MusicGenArtifactLayout::TransformersComposite,
+            Self::Medium | Self::Large => MusicGenArtifactLayout::AudioCraftLm,
+        }
+    }
+
+    const fn tensor_count(self) -> usize {
+        match self {
+            Self::Small => 612,
+            Self::Medium | Self::Large => 588,
+            Self::Melody => 710,
+        }
+    }
+
+    const fn manifest_sha256(self) -> [u8; 32] {
+        match self {
+            // facebook/musicgen-small revision
+            // 257fc170552e35a0db0ffaf7759c14ab18dff9a4; the public
+            // vokra/musicgen-small repo is 30e7e356c9d8326c42965a337e810162d7cdbc70.
+            // The converter preserves all 612 tensor names/shapes verbatim.
+            Self::Small => [
+                0xdb, 0x5a, 0x81, 0x5f, 0x58, 0x87, 0x83, 0x9e, 0xf7, 0x9e, 0x63, 0xf8, 0x1a, 0x37,
+                0xf3, 0x63, 0x41, 0x89, 0x15, 0x91, 0x93, 0x4a, 0xc8, 0x3f, 0xa6, 0xa6, 0x76, 0x86,
+                0xee, 0xeb, 0xdd, 0xd8,
+            ],
+            // vokra/musicgen-medium revision
+            // 29b20532e56d3a4803ce1488e03aace0f976e5cc (public GGUF header).
+            Self::Medium => [
+                0xab, 0xe4, 0xbe, 0x30, 0x4e, 0xc1, 0x1d, 0xdd, 0x89, 0xd2, 0x66, 0x2e, 0xee, 0x96,
+                0xd4, 0xcf, 0x32, 0x37, 0xfb, 0x2c, 0x47, 0x1a, 0xfd, 0x24, 0xe5, 0x92, 0x7a, 0xf5,
+                0x10, 0x50, 0x64, 0x58,
+            ],
+            // vokra/musicgen-large revision
+            // 306a9091012eb15e8ad3e108a72dd2ea0bfd8586 (public GGUF header).
+            Self::Large => [
+                0xe6, 0x71, 0x49, 0x16, 0xe1, 0xe3, 0xf8, 0xa9, 0x99, 0x20, 0x35, 0x06, 0x89, 0xc4,
+                0xc4, 0xd4, 0xf6, 0x6b, 0x8f, 0x84, 0x3b, 0x51, 0xc2, 0x55, 0xa9, 0x0a, 0x60, 0xa6,
+                0xc7, 0x11, 0x93, 0x63,
+            ],
+            // vokra/musicgen-melody revision
+            // 3046aff1158f4351d92f73d51afb0814939eddb3 (public GGUF header).
+            Self::Melody => [
+                0x49, 0xcb, 0x02, 0x8a, 0xb4, 0x96, 0xc4, 0x4f, 0xfc, 0xe9, 0x13, 0xdd, 0x44, 0x0b,
+                0xfb, 0xe3, 0x3a, 0xbf, 0x0b, 0xba, 0xc6, 0x45, 0x77, 0x85, 0x24, 0x68, 0xb5, 0x64,
+                0x04, 0xd9, 0x2a, 0x5a,
+            ],
         }
     }
 }
@@ -449,7 +578,7 @@ impl MusicGenVariant {
 pub struct MusicGenConfig {
     /// Which MusicGen family variant this config represents.
     pub variant: MusicGenVariant,
-    /// Transformer LM hidden dim (default 1024 small / 1536 medium).
+    /// Transformer LM hidden dim (1024 Small, 1536 Medium/Melody, 2048 Large).
     pub d_model: u32,
     /// Transformer LM depth (default 24 small / 48 medium).
     pub num_layers: u32,
@@ -550,19 +679,16 @@ impl MusicGenConfig {
 }
 
 // ---------------------------------------------------------------------------
-// MusicGenWeights — bound the tensor manifest with a non-emptiness gate.
-// Under the loud-partial WP the weights are counted but the T5-base
-// encoder + AR LM (delay pattern + cross-attention) + EnCodec RVQ
-// decode composition is deferred. Mirror of `SortformerWeights` /
-// `Mt3Weights` / `BeatThisWeights`.
+// MusicGenWeights — bind the exact release-specific tensor manifest.
+// Execution remains loud-partial, but production binding is no longer a
+// count-only or non-empty claim.
 // ---------------------------------------------------------------------------
 
 /// Weight tensors bound from a MusicGen GGUF.
 ///
-/// **Contract**: [`from_gguf`](Self::from_gguf) is a *loud* verification
-/// step. A GGUF that carries zero tensors is rejected with
-/// [`VokraError::ModelLoad`] (FR-EX-08 — an empty GGUF is never a valid
-/// MusicGen checkpoint).
+/// **Contract**: [`from_gguf`](Self::from_gguf) verifies the complete sorted
+/// `(tensor name, dimensions)` manifest pinned for the selected public
+/// variant. Empty, truncated and wrong-layout files fail closed.
 ///
 /// Under the current landing this struct stores the tensor names +
 /// GGUF-side dims discovered on disk. The follow-up wave sizes its
@@ -573,22 +699,22 @@ impl MusicGenConfig {
 /// inputs without re-parsing the GGUF.
 #[derive(Debug)]
 pub struct MusicGenWeights {
-    /// Tensors discovered on disk, indexed by upstream `state_dict`
-    /// name with their GGUF-side dims. Used by the load-time
-    /// non-emptiness gate and by the future follow-up
-    /// T5-encoder + AR-LM + EnCodec-decode composition wave.
+    /// Tensors discovered on disk, indexed by upstream `state_dict` name
+    /// with their GGUF-side dims. Production construction has already
+    /// verified this full collection against the pinned manifest.
     tensors: Vec<(String, Vec<usize>)>,
+    layout: MusicGenArtifactLayout,
 }
 
 impl MusicGenWeights {
-    /// Scans `gguf` for the MusicGen state_dict tensors. Refuses to bind
-    /// if the GGUF carries zero tensors (FR-EX-08 — an empty GGUF is
-    /// never a valid MusicGen checkpoint).
+    /// Scans `gguf` for the MusicGen state_dict tensors and verifies the
+    /// complete public manifest for `variant`.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors.
-    pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
+    /// - [`VokraError::ModelLoad`] when the GGUF is empty, truncated or
+    ///   does not match the pinned variant manifest.
+    pub fn from_gguf(gguf: &GgufFile, variant: MusicGenVariant) -> Result<Self> {
         let mut tensors: Vec<(String, Vec<usize>)> = Vec::new();
         for info in gguf.tensors() {
             let dims: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
@@ -598,15 +724,47 @@ impl MusicGenWeights {
         if tensors.is_empty() {
             return Err(VokraError::ModelLoad(
                 "musicgen: GGUF carries zero tensors — refusing to bind an all-zero \
-                 forward (FR-EX-08). Re-run `vokra-cli convert --model \
-                 musicgen-{small|medium}` against a `facebook/musicgen-{small,medium}` \
-                 safetensors checkpoint (the upstream release ships a bundle of LM \
-                 decoder + T5-base text encoder + EnCodec RVQ codec — every group \
-                 must be present)."
+                 forward (FR-EX-08). Re-acquire or convert the exact selected variant; \
+                 do not substitute a different MusicGen layout. Published Medium/Large \
+                 artifacts are AudioCraft LM-only, while Small/Melody are Transformers \
+                 composites, and production binding verifies each complete manifest."
                     .to_owned(),
             ));
         }
-        Ok(Self { tensors })
+        verify_tensor_manifest(
+            gguf,
+            "musicgen",
+            variant.tensor_count(),
+            variant.manifest_sha256(),
+            variant.name(),
+        )?;
+        Ok(Self {
+            tensors,
+            layout: variant.artifact_layout(),
+        })
+    }
+
+    #[cfg(test)]
+    fn from_fixture(gguf: &GgufFile, variant: MusicGenVariant) -> Result<Self> {
+        let tensors = gguf
+            .tensors()
+            .iter()
+            .map(|info| {
+                (
+                    info.name.clone(),
+                    info.dimensions.iter().map(|&axis| axis as usize).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if tensors.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "musicgen: GGUF carries zero tensors (FR-EX-08)".to_owned(),
+            ));
+        }
+        Ok(Self {
+            tensors,
+            layout: variant.artifact_layout(),
+        })
     }
 
     /// Number of tensors bound from the GGUF. Purely a diagnostic
@@ -617,19 +775,16 @@ impl MusicGenWeights {
         self.tensors.len()
     }
 
-    /// Load-time shape gate — validates that at least one bound tensor
-    /// has an axis matching `config.d_model`. Under the current landing
-    /// this is a **soft** gate (mismatch is silently ignored) because
-    /// the T5-encoder + AR-LM + EnCodec-decode tensor-name walk has not
-    /// yet been pinned pending the follow-up wave's manifest fetch —
-    /// a hard shape assertion today would fail against every
-    /// legitimate future manifest.
-    ///
-    /// The follow-up wave will replace this soft accessor with a hard
-    /// pin against the primary-source-verified tensor-name walk
-    /// (mirror of `pyannote::PyanNetWeights::verify_core_shapes`).
-    ///
-    /// Kept as a `#[must_use]` accessor so the read is deliberate.
+    #[must_use]
+    /// Layout represented by the verified tensor manifest.
+    pub const fn artifact_layout(&self) -> MusicGenArtifactLayout {
+        self.layout
+    }
+
+    /// Diagnostic consistency check: at least one verified tensor must carry
+    /// the configured decoder width. Exact identity is enforced earlier by
+    /// the complete manifest hash; this accessor is retained for tests and
+    /// human-readable topology diagnostics.
     #[must_use]
     pub fn matches_config(&self, config: &MusicGenConfig) -> bool {
         let d = config.d_model as usize;
@@ -642,25 +797,180 @@ impl MusicGenWeights {
 // ---------------------------------------------------------------------------
 
 /// Meta MusicGen text-to-music autoregressive transformer LM runtime
-/// binder (`facebook/musicgen-{small,medium}`, CC-BY-NC-4.0 T4 tier).
+/// binder (`facebook/musicgen-{small,medium,large,melody}`,
+/// CC-BY-NC-4.0 T4 tier).
 ///
-/// Bind with [`from_gguf`](Self::from_gguf), then call
-/// [`generate`](Self::generate) with a text prompt + duration to obtain
-/// a `Vec<f32>` of 32 kHz PCM samples. See the module doc for the
-/// current implementation-status matrix and the FR-EX-08 loud-error
-/// contract on the T5-base + AR-LM + EnCodec-decode composition.
+/// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
+/// fails explicitly for raw text because tokenizer assets are absent. Explicit
+/// token-id-to-waveform generation is available directly for mapping-owned
+/// Small/Melody composites and through [`MusicGenCompanion`] for LM-only
+/// Medium/Large; raw LM generation remains available for every layout.
 #[derive(Debug)]
 pub struct MusicGen {
     config: MusicGenConfig,
     variant: MusicGenVariant,
-    // The bound weights are held (real, counted) but the T5-encoder +
-    // AR-LM + EnCodec-decode composition is a follow-up wave; the field
+    // The bound weights are held and manifest-verified, but prompt + complete
+    // layout composition is a follow-up wave; the field
     // is deliberately `#[allow(dead_code)]` until the composition lands
     // so a reader is not misled by an unused field. Same posture as
     // RMVPE / pyannote / mt3 / beat_this / sortformer.
     #[allow(dead_code)]
     weights: MusicGenWeights,
     weight_license: LicenseClass,
+    /// Present for every authenticated layout opened through
+    /// [`Self::from_path_with_policy_and_backend`]. AudioCraft LM-only files
+    /// use fused attention tensors; composite files use split Q/K/V tensors.
+    decoder: Option<AudioCraftLmDecoder>,
+    /// Present for authenticated Transformers-composite Small/Melody files,
+    /// which embed canonical T5-base under `text_encoder.*`.
+    text_encoder: Option<T5Encoder>,
+    /// Present for authenticated Transformers-composite Small/Melody files,
+    /// which embed the complete 32 kHz EnCodec component.
+    codec_decoder: Option<AudioCraftEncodecDecoder>,
+    backend: BackendKind,
+}
+
+/// Exact companion surface extracted from the public MusicGen Small
+/// Transformers composite.
+///
+/// Medium and Large were published as AudioCraft LM-only GGUFs.  The public
+/// Small artifact contains the same canonical T5-base conditioner and 32 kHz
+/// four-codebook EnCodec required by those releases, alongside a Small LM that
+/// is deliberately *not* decoded by this handle.  Construction first verifies
+/// the complete Small manifest and license policy, then binds only
+/// `text_encoder.*` and `audio_encoder.*`.  This keeps the dependency explicit
+/// and avoids loading an unused second language model.
+#[derive(Debug)]
+pub struct MusicGenCompanion {
+    text_encoder: T5Encoder,
+    codec_decoder: AudioCraftEncodecDecoder,
+    weight_license: LicenseClass,
+    backend: BackendKind,
+}
+
+impl MusicGenCompanion {
+    /// Opens the exact public MusicGen Small composite on CPU under an
+    /// explicit compliance policy.
+    pub fn from_path_with_policy(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, policy, BackendKind::Cpu)
+    }
+
+    /// Opens and strictly verifies the MusicGen Small composite, then binds
+    /// only its T5-base and EnCodec components on `backend`.
+    ///
+    /// A Medium/Large LM, a Melody composite, a family-shared arch lookalike,
+    /// or a backend with incomplete op coverage is rejected before inference.
+    /// Both this companion and the target LM must pass the caller's compliance
+    /// policy independently.
+    pub fn from_path_with_policy_and_backend(
+        path: impl AsRef<Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
+        let authenticated = MusicGen::from_gguf(&file)?;
+        check_weight_license(&file, policy)?;
+        if authenticated.variant() != MusicGenVariant::Small
+            || authenticated.artifact_layout() != MusicGenArtifactLayout::TransformersComposite
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "musicgen companion: expected the exact public `{NAME_SMALL}` Transformers composite, got variant {:?} with layout {:?}; family-shared topology inference is forbidden",
+                authenticated.variant(),
+                authenticated.artifact_layout()
+            )));
+        }
+
+        // Each component preflights its complete learned-op set for `backend`
+        // before decoding payload tensors.  No Small LM decoder is bound.
+        let text_encoder =
+            T5Encoder::t5_base_from_gguf(&file, "text_encoder")?.with_backend(backend);
+        let codec_decoder = AudioCraftEncodecDecoder::bind_transformers_composite(&file, backend)?;
+        Ok(Self {
+            text_encoder,
+            codec_decoder,
+            weight_license: authenticated.weight_license(),
+            backend,
+        })
+    }
+
+    /// Backend used by both companion components.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Fail-closed license class read from the authenticated companion.
+    #[must_use]
+    pub const fn weight_license(&self) -> LicenseClass {
+        self.weight_license
+    }
+
+    fn prepare_condition_for(
+        &self,
+        target: &MusicGen,
+        token_ids: &[u32],
+        attention_mask: Option<&[bool]>,
+    ) -> Result<AudioCraftCondition> {
+        validate_external_companion_pair(
+            target.artifact_layout(),
+            target.backend(),
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            self.backend,
+        )?;
+        let hidden = self.text_encoder.encode_tokens(token_ids, attention_mask)?;
+        let lm_mask: Option<Vec<u8>> = attention_mask.map(|mask| {
+            mask.iter()
+                .map(|&visible| if visible { 1 } else { 0 })
+                .collect()
+        });
+        // The target owns the release-specific 768 -> d_model projection.
+        // Reusing the Small LM projection here would be a silent shape/model
+        // substitution for Medium/Large.
+        target.prepare_lm_condition(&hidden, token_ids.len(), lm_mask.as_deref())
+    }
+
+    fn decode_codes(&self, codes: &AudioCraftGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != ENCODEC_NUM_CODEBOOKS {
+            return Err(VokraError::InvalidArgument(format!(
+                "musicgen companion EnCodec decode: generated codebook count {} != expected {ENCODEC_NUM_CODEBOOKS}",
+                codes.num_codebooks()
+            )));
+        }
+        self.codec_decoder
+            .decode_frame_major(codes.as_frame_major(), codes.frames())
+    }
+}
+
+fn validate_external_companion_pair(
+    target_layout: MusicGenArtifactLayout,
+    target_backend: BackendKind,
+    companion_variant: MusicGenVariant,
+    companion_layout: MusicGenArtifactLayout,
+    companion_backend: BackendKind,
+) -> Result<()> {
+    if target_layout != MusicGenArtifactLayout::AudioCraftLm {
+        return Err(VokraError::InvalidArgument(
+            "musicgen companion: the target already embeds T5-base and EnCodec; use its native generate_from_token_ids route instead of substituting an external companion"
+                .to_owned(),
+        ));
+    }
+    if companion_variant != MusicGenVariant::Small
+        || companion_layout != MusicGenArtifactLayout::TransformersComposite
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "musicgen companion: expected exact Small/TransformersComposite identity, got {companion_variant:?}/{companion_layout:?}"
+        )));
+    }
+    if target_backend != companion_backend {
+        return Err(VokraError::InvalidArgument(format!(
+            "musicgen companion backend {companion_backend:?} does not match target LM backend {target_backend:?}; the composed graph must use one backend and never hide a CPU fallback"
+        )));
+    }
+    Ok(())
 }
 
 impl MusicGen {
@@ -683,13 +993,19 @@ impl MusicGen {
     ///   `audiogen_medium` / … — fails with a clear message instead of a
     ///   downstream missing-tensor).
     /// - [`VokraError::ModelLoad`] when `vokra.model.name` is absent, or
-    ///   when it identifies a MusicGen family variant not bound in this
-    ///   WP (`musicgen-large` / `musicgen-melody` — converters exist but
-    ///   the runtime enum extension is a follow-up wave).
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
-    ///   ([`MusicGenWeights::from_gguf`] refuses to bind an all-zero
-    ///   forward).
+    ///   when it is not one of the four public variants.
+    /// - [`VokraError::ModelLoad`] when the complete variant-specific
+    ///   tensor manifest does not match.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        Self::bind(file, true)
+    }
+
+    #[cfg(test)]
+    fn from_fixture(file: &GgufFile) -> Result<Self> {
+        Self::bind(file, false)
+    }
+
+    fn bind(file: &GgufFile, strict_manifest: bool) -> Result<Self> {
         // 1. Arch check — always first so a mis-typed model handed here
         //    fails with a specific message instead of a downstream
         //    missing-tensor error.
@@ -698,7 +1014,8 @@ impl MusicGen {
             Some(other) => {
                 return Err(VokraError::ModelLoad(format!(
                     "musicgen: GGUF arch is `{other}`, expected `{ARCH}` (was this \
-                     GGUF produced by `vokra-cli convert --model musicgen-{{small|medium}}`? \
+                     GGUF produced by `vokra-cli convert --model \
+                     musicgen-{{small|medium|large|melody}}`? \
                      Note that the sibling music-generation arch tags — \
                      `magnet_small_10secs` / `magnet_medium_30secs` (Meta AudioCraft \
                      non-autoregressive masked-LM), `melodyflow_t24_30secs` (Meta \
@@ -709,8 +1026,8 @@ impl MusicGen {
                      (chunked-AR), `bs_roformer` (source-separation) — all live in the \
                      same music-generation neighbourhood but have completely different \
                      forward topologies; MusicGen's autoregressive transformer LM with \
-                     4-codebook delay pattern + T5 text-encoder cross-attention has no \
-                     analog in any sibling and silently aliasing arch would misroute \
+                     4-codebook delay pattern has no analog in many siblings and \
+                     silently aliasing arch would misroute \
                      the runtime dispatch, FR-EX-08)"
                 )));
             }
@@ -725,49 +1042,25 @@ impl MusicGen {
 
         // 2. Variant discrimination via `vokra.model.name`. Every
         //    MusicGen variant shares the `musicgen` arch tag; the name
-        //    chunk is the discriminator. Unknown MusicGen family
-        //    variants (`musicgen-large` / `musicgen-melody` — the
-        //    converter ships them but this WP does not bind them) get
-        //    a specific "runtime enum extension pending" error rather
-        //    than a generic bind failure.
+        //    chunk is the discriminator. Unknown family strings fail
+        //    before any tensor interpretation.
         let name = file
             .get(chunks::KEY_MODEL_NAME)
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 VokraError::ModelLoad(
                     "musicgen: GGUF is missing `vokra.model.name` (converter did not \
-                     stamp it — cannot discriminate the MusicGen family variant \
-                     between `musicgen-small` and `musicgen-medium`)"
+                     stamp it — cannot discriminate among `musicgen-small`, \
+                     `musicgen-medium`, `musicgen-large`, and `musicgen-melody`)"
                         .to_owned(),
                 )
             })?;
         let variant = MusicGenVariant::from_name(name).ok_or_else(|| {
-            if name == "musicgen-large" {
-                VokraError::ModelLoad(format!(
-                    "musicgen: NAME `{name}` is not yet bound in the runtime — the \
-                     converter exists but this WP scopes to small + medium (2026-08-14 \
-                     audit follow-up task spec). A follow-up wave adds Large + Melody \
-                     to the `MusicGenVariant` enum. Primary source: \
-                     huggingface.co/facebook/{name}."
-                ))
-            } else if name == "musicgen-melody" {
-                VokraError::ModelLoad(format!(
-                    "musicgen: NAME `{name}` is not yet bound in the runtime — the \
-                     converter exists but this WP scopes to small + medium (2026-08-14 \
-                     audit follow-up task spec). A follow-up wave adds Large + Melody \
-                     to the `MusicGenVariant` enum. Melody also needs a chroma \
-                     conditioning frontend in addition to the LM. Primary source: \
-                     huggingface.co/facebook/{name}."
-                ))
-            } else {
-                VokraError::ModelLoad(format!(
-                    "musicgen: NAME `{name}` is not a recognised MusicGen family \
-                     variant. Expected one of `{NAME_SMALL}` or `{NAME_MEDIUM}`. \
-                     (Was this GGUF produced by a MusicGen converter? The converters \
-                     stamp `vokra.model.name` = `musicgen-small` / `musicgen-medium` \
-                     / `musicgen-large` / `musicgen-melody`.)"
-                ))
-            }
+            VokraError::ModelLoad(format!(
+                "musicgen: NAME `{name}` is not a recognised public MusicGen family \
+                 variant. Expected one of `{NAME_SMALL}`, `{NAME_MEDIUM}`, \
+                 `{NAME_LARGE}`, or `{NAME_MELODY}`."
+            ))
         })?;
 
         // 3. Topology axes from the `vokra.musicgen.*` chunk group
@@ -775,8 +1068,17 @@ impl MusicGen {
         //    converter's stamp posture).
         let config = MusicGenConfig::from_gguf(file, variant);
 
-        // 4. Load the tensor manifest with the non-emptiness gate.
-        let weights = MusicGenWeights::from_gguf(file)?;
+        // 4. Load and verify the complete variant-specific tensor manifest.
+        let weights = if strict_manifest {
+            MusicGenWeights::from_gguf(file, variant)?
+        } else {
+            #[cfg(test)]
+            {
+                MusicGenWeights::from_fixture(file, variant)?
+            }
+            #[cfg(not(test))]
+            unreachable!("non-test MusicGen binds always verify the public manifest")
+        };
 
         // 5. Provenance surfacing — read the stamped weight-license
         //    class for compliance gate cross-checks. The MusicGen
@@ -796,7 +1098,64 @@ impl MusicGen {
             variant,
             weights,
             weight_license,
+            decoder: None,
+            text_encoder: None,
+            codec_decoder: None,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Opens a mapped MusicGen GGUF under the fail-closed compliance policy.
+    ///
+    /// Official MusicGen weights are non-commercial, so this default refuses
+    /// them until the caller explicitly opts into research-license use through
+    /// [`Self::from_path_with_policy`].
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, &CompliancePolicy::strict(), BackendKind::Cpu)
+    }
+
+    /// Opens a mapped MusicGen GGUF with an explicit compliance policy on CPU.
+    pub fn from_path_with_policy(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, policy, BackendKind::Cpu)
+    }
+
+    /// Opens a mapped MusicGen GGUF, enforces weight-license policy, and binds
+    /// the selected backend without a silent CPU fallback.
+    pub fn from_path_with_policy_and_backend(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
+        let mut model = Self::from_gguf(&file)?;
+        check_weight_license(&file, policy)?;
+        match model.artifact_layout() {
+            MusicGenArtifactLayout::AudioCraftLm => {
+                model.decoder = Some(AudioCraftLmDecoder::bind(
+                    Arc::clone(&file),
+                    model.audiocraft_lm_config(),
+                    backend,
+                )?);
+            }
+            MusicGenArtifactLayout::TransformersComposite => {
+                model.text_encoder = Some(
+                    T5Encoder::t5_base_from_gguf(&file, "text_encoder")?.with_backend(backend),
+                );
+                model.decoder = Some(AudioCraftLmDecoder::bind_transformers_musicgen(
+                    Arc::clone(&file),
+                    model.audiocraft_lm_config(),
+                    backend,
+                )?);
+                model.codec_decoder = Some(AudioCraftEncodecDecoder::bind_transformers_composite(
+                    &file, backend,
+                )?);
+            }
+        }
+        model.backend = backend;
+        Ok(model)
     }
 
     /// The bound topology axes (from `vokra.musicgen.*` chunk group with
@@ -837,33 +1196,284 @@ impl MusicGen {
         self.weights.tensor_count()
     }
 
+    /// Layout of the already-published artifact that was bound.
+    #[inline]
+    #[must_use]
+    pub const fn artifact_layout(&self) -> MusicGenArtifactLayout {
+        self.weights.artifact_layout()
+    }
+
+    /// Backend selected for the executable LM route.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Applies the learned AudioCraft T5 output projection.
+    ///
+    /// This route is available for every mapping-owned public MusicGen
+    /// artifact. Medium/Large use AudioCraft's description projection;
+    /// Small/Melody use the composite root's T5-to-decoder projection.
+    pub fn prepare_lm_condition(
+        &self,
+        hidden: &[f32],
+        frames: usize,
+        mask: Option<&[u8]>,
+    ) -> Result<AudioCraftCondition> {
+        self.lm_decoder()?.prepare_condition(hidden, frames, mask)
+    }
+
+    /// Encodes caller-supplied T5 token ids and prepares one LM condition.
+    ///
+    /// The public Small/Melody composites embed canonical T5-base weights but
+    /// not tokenizer assets. Accepting explicit ids keeps this offline and
+    /// exact instead of inventing a tokenizer. `attention_mask`, when present,
+    /// is used by T5 self-attention and then removes padded rows from the
+    /// Transformers MusicGen cross-attention condition.
+    pub fn prepare_text_condition(
+        &self,
+        token_ids: &[u32],
+        attention_mask: Option<&[bool]>,
+    ) -> Result<AudioCraftCondition> {
+        let hidden = self
+            .text_encoder()?
+            .encode_tokens(token_ids, attention_mask)?;
+        let lm_mask: Option<Vec<u8>> = attention_mask.map(|mask| {
+            mask.iter()
+                .map(|&visible| if visible { 1 } else { 0 })
+                .collect()
+        });
+        self.prepare_lm_condition(&hidden, token_ids.len(), lm_mask.as_deref())
+    }
+
+    /// Precomputes cross-attention K/V for one AudioCraft LM stream.
+    pub fn new_lm_state(
+        &self,
+        condition: &AudioCraftCondition,
+        max_steps: usize,
+    ) -> Result<AudioCraftLmState> {
+        self.lm_decoder()?.new_state(condition, max_steps)
+    }
+
+    /// Advances one delayed MusicGen position and writes four codebook-logit
+    /// rows. No waveform or fake token sequence is fabricated.
+    pub fn lm_step_into(
+        &self,
+        state: &mut AudioCraftLmState,
+        tokens: &[u32],
+        logits: &mut [f32],
+    ) -> Result<()> {
+        self.lm_decoder()?.step_into(state, tokens, logits)
+    }
+
+    /// Runs AudioCraft's two-state CFG, delay pattern and seeded sampling,
+    /// returning frame-major EnCodec indices. Prompt tokenization and waveform
+    /// decoding stay at their explicit companion boundaries.
+    pub fn generate_codes(
+        &self,
+        conditional: &AudioCraftCondition,
+        unconditional: &AudioCraftCondition,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        self.lm_decoder()?
+            .generate_codes(conditional, unconditional, generation)
+    }
+
+    /// Runs embedded T5-base plus LM generation from explicit conditional and
+    /// unconditional token ids. The caller supplies both sequences so the
+    /// classifier-free null prompt is never guessed.
+    pub fn generate_codes_from_token_ids(
+        &self,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        let conditional =
+            self.prepare_text_condition(conditional_token_ids, conditional_attention_mask)?;
+        let unconditional =
+            self.prepare_text_condition(unconditional_token_ids, unconditional_attention_mask)?;
+        self.generate_codes(&conditional, &unconditional, generation)
+    }
+
+    /// Generates mono 32 kHz PCM from explicit T5 token ids on a public
+    /// Small/Melody composite. Medium/Large return their existing explicit
+    /// missing-T5 or missing-codec companion error.
+    pub fn generate_from_token_ids(
+        &self,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<Vec<f32>> {
+        let codes = self.generate_codes_from_token_ids(
+            conditional_token_ids,
+            conditional_attention_mask,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+            generation,
+        )?;
+        self.decode_codes(&codes)
+    }
+
+    /// Runs an LM-only Medium/Large checkpoint with the exact public
+    /// MusicGen Small T5/EnCodec companion.
+    ///
+    /// Conditional and classifier-free-null T5 ids remain explicit because
+    /// neither public artifact embeds tokenizer assets.  T5 hidden states are
+    /// projected by this target model's own learned description projection,
+    /// then its LM performs CFG/delay-pattern generation.  Only the resulting
+    /// four EnCodec streams are decoded by the companion.  Target and
+    /// companion must select the same backend; a mismatch is an explicit error
+    /// and never falls back to CPU.
+    pub fn generate_codes_from_token_ids_with_companion(
+        &self,
+        companion: &MusicGenCompanion,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        let conditional = companion.prepare_condition_for(
+            self,
+            conditional_token_ids,
+            conditional_attention_mask,
+        )?;
+        let unconditional = companion.prepare_condition_for(
+            self,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+        )?;
+        self.generate_codes(&conditional, &unconditional, generation)
+    }
+
+    /// Generates mono 32 kHz PCM from an LM-only Medium/Large public GGUF and
+    /// one explicitly supplied, strictly authenticated MusicGen Small
+    /// companion.
+    pub fn generate_from_token_ids_with_companion(
+        &self,
+        companion: &MusicGenCompanion,
+        conditional_token_ids: &[u32],
+        conditional_attention_mask: Option<&[bool]>,
+        unconditional_token_ids: &[u32],
+        unconditional_attention_mask: Option<&[bool]>,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<Vec<f32>> {
+        let codes = self.generate_codes_from_token_ids_with_companion(
+            companion,
+            conditional_token_ids,
+            conditional_attention_mask,
+            unconditional_token_ids,
+            unconditional_attention_mask,
+            generation,
+        )?;
+        companion.decode_codes(&codes)
+    }
+
+    /// Decodes generated frame-major EnCodec indices to mono 32 kHz PCM.
+    ///
+    /// This is available on the public Small/Melody composite artifacts,
+    /// which embed the authenticated EnCodec tensors. Medium/Large are
+    /// LM-only artifacts and return an explicit companion-required error.
+    pub fn decode_codes(&self, codes: &AudioCraftGeneratedCodes) -> Result<Vec<f32>> {
+        if codes.num_codebooks() != ENCODEC_NUM_CODEBOOKS {
+            return Err(VokraError::InvalidArgument(format!(
+                "musicgen EnCodec decode: generated codebook count {} != expected \
+                 {ENCODEC_NUM_CODEBOOKS}",
+                codes.num_codebooks()
+            )));
+        }
+        self.decode_frame_major(codes.as_frame_major(), codes.frames())
+    }
+
+    /// Decodes raw frame-major [frames, 4] EnCodec indices to mono 32 kHz PCM.
+    pub fn decode_frame_major(&self, codes: &[u32], frames: usize) -> Result<Vec<f32>> {
+        self.codec_decoder()?.decode_frame_major(codes, frames)
+    }
+
+    fn audiocraft_lm_config(&self) -> AudioCraftLmConfig {
+        AudioCraftLmConfig {
+            d_model: self.config.d_model as usize,
+            num_layers: self.config.num_layers as usize,
+            n_heads: self.config.n_heads as usize,
+            ffn_dim: self.config.ffn_dim as usize,
+            vocab_size: self.config.vocab_size as usize,
+            num_codebooks: self.config.num_codebooks as usize,
+        }
+    }
+
+    fn lm_decoder(&self) -> Result<&AudioCraftLmDecoder> {
+        self.decoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so the mapping stays alive"
+                }
+                MusicGenArtifactLayout::TransformersComposite => "the handle was created from a \
+                     borrowed GgufFile; use MusicGen::from_path_with_policy_and_backend so the \
+                     mapped split-q/k/v decoder stays alive",
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native LM execution unavailable: {reason} (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
+    }
+
+    fn text_encoder(&self) -> Result<&T5Encoder> {
+        self.text_encoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::TransformersComposite => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so embedded T5-base weights \
+                     can be bound"
+                }
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "this public Medium/Large artifact is LM-only and contains no T5 tensors; \
+                     supply an authenticated T5-base companion explicitly"
+                }
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native T5 text encoding unavailable: {reason} \
+                 (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
+    }
+
+    fn codec_decoder(&self) -> Result<&AudioCraftEncodecDecoder> {
+        self.codec_decoder.as_ref().ok_or_else(|| {
+            let reason = match self.artifact_layout() {
+                MusicGenArtifactLayout::TransformersComposite => {
+                    "the handle was created from a borrowed GgufFile; use \
+                     MusicGen::from_path_with_policy_and_backend so the codec weights can be bound"
+                }
+                MusicGenArtifactLayout::AudioCraftLm => {
+                    "this public Medium/Large artifact is LM-only and contains no EnCodec \
+                     tensors; supply an authenticated non-commercial codec companion explicitly"
+                }
+            };
+            VokraError::UnsupportedOp(format!(
+                "musicgen native EnCodec waveform decode unavailable: {reason} \
+                 (FR-EX-08: explicit, no CPU fallback)"
+            ))
+        })
+    }
+
     /// Generates a `duration_secs`-length 32 kHz PCM stream conditioned
     /// on the text `prompt`.
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — MusicGen's inference path
-    /// requires **three** deferred pieces:
+    /// Returns [`VokraError::UnsupportedOp`] — MusicGen's PCM inference path
+    /// still requires the following caller-owned input:
     ///
-    /// 1. **Frozen T5-base text encoder forward**: the upstream release
-    ///    freezes a `google-t5/t5-base` encoder for text conditioning
-    ///    (HF transformers `T5EncoderModel`); no reusable primitive
-    ///    exists in `vokra_ops` today. The follow-up wave lands either
-    ///    a T5-base implementation dedicated to MusicGen or a first-
-    ///    class `t5_text_encode` op that other future consumers can
-    ///    share.
-    /// 2. **Autoregressive transformer LM decode with 4-codebook delay
-    ///    pattern + text-conditioned cross-attention**: Copet et al.
-    ///    Algorithm 1 describes the MusicGen-specific "delay pattern"
-    ///    interleave across the 4 RVQ codebook streams, plus the
-    ///    cross-attention over the T5-encoded prompt tokens. The
-    ///    single-codebook autoregressive LMs already in the tree
-    ///    (`cosyvoice2` / `moshi` / `voxtral`) cover neither the delay
-    ///    pattern nor the text-encoder cross-attention.
-    /// 3. **EnCodec RVQ decode**: available via
-    ///    `vokra_ops::encodec_rvq_decode` — this is the **ONE landed
-    ///    anchor** the loud-partial message cites so a reader
-    ///    diagnosing this gap knows the composition anchor.
+    /// **Raw-text tokenization**: tokenizer assets are absent from the public
+    /// GGUFs. Composite GGUFs expose the complete explicit token-id route
+    /// through [`Self::generate_from_token_ids`]; LM-only GGUFs expose the
+    /// equivalent route through
+    /// [`Self::generate_from_token_ids_with_companion`].
     ///
     /// The error names **three** primary source URLs (HF card for the
     /// bound variant + AudioCraft repo + paper) so a reader diagnosing
@@ -872,8 +1482,8 @@ impl MusicGen {
     ///
     /// # Errors
     ///
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
-    ///   deferred T5-encoder + AR-LM + EnCodec-decode composition.
+    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for prompt /
+    ///   layout-specific companion composition.
     pub fn generate(&self, prompt: &str, duration_secs: f32) -> Result<Vec<f32>> {
         // Bind unused args so a `#[warn(unused_variables)]` change does
         // not silently mask the loud-partial fire path; the future real
@@ -882,6 +1492,7 @@ impl MusicGen {
         Err(generate_forward_loud_partial(
             &self.config,
             self.variant,
+            self.artifact_layout(),
             prompt,
             duration_secs,
         ))
@@ -889,7 +1500,7 @@ impl MusicGen {
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`MusicGen::generate`] until the T5-encoder + AR-LM + EnCodec-decode
+/// [`MusicGen::generate`] until prompt and layout-specific companion
 /// composition lands.
 ///
 /// Names **all three** primary source URLs (HF card for the bound
@@ -900,25 +1511,45 @@ impl MusicGen {
 fn generate_forward_loud_partial(
     cfg: &MusicGenConfig,
     variant: MusicGenVariant,
+    layout: MusicGenArtifactLayout,
     prompt: &str,
     duration_secs: f32,
 ) -> VokraError {
+    let companion_gap = match layout {
+        MusicGenArtifactLayout::AudioCraftLm => {
+            "this already-published GGUF is the AudioCraft LM-only layout: it contains \
+             neither the frozen text-conditioner weights/tokenizer nor EnCodec weights, \
+             and the complete explicit token-id-to-waveform route is available by supplying \
+             the exact public Small composite through MusicGenCompanion; its native raw LM + \
+             delay/CFG/sampling route is also available through generate_codes"
+        }
+        MusicGenArtifactLayout::TransformersComposite => {
+            "this already-published GGUF is the Transformers composite layout: it carries \
+             `text_encoder.*` and `audio_encoder.*`; complete token-id-to-waveform generation is \
+             available through generate_from_token_ids, while raw-text tokenizer assets remain \
+             absent"
+        }
+    };
+    let codec_status = match layout {
+        MusicGenArtifactLayout::AudioCraftLm => {
+            "the LM-only artifact decodes through the strictly authenticated Small \
+             MusicGenCompanion on the same backend"
+        }
+        MusicGenArtifactLayout::TransformersComposite => {
+            "the embedded EnCodec RVQ + SEANet decoder is landed through decode_codes"
+        }
+    };
     VokraError::UnsupportedOp(format!(
-        "musicgen generate: T5-base text encoder forward + autoregressive transformer \
-         LM decode (with 4-codebook delay pattern + text-conditioned cross-attention) \
-         + EnCodec RVQ decode composition pending. What is missing is (a) the frozen \
-         T5-base text encoder forward (upstream `transformers.T5EncoderModel` — no \
-         reusable primitive in `vokra_ops` today; the follow-up wave lands either a \
-         T5-base implementation dedicated to MusicGen or a first-class \
-         `t5_text_encode` op), (b) the autoregressive transformer LM decode with the \
-         MusicGen-specific 4-codebook delay pattern (Copet et al. Algorithm 1 — the \
-         interleave across the 4 RVQ codebook streams) plus text-conditioned \
-         cross-attention over the T5-encoded prompt tokens (the single-codebook AR \
-         LMs already in the tree — cosyvoice2 / moshi / voxtral — cover neither the \
-         delay pattern nor the text-encoder cross-attention), and (c) the EnCodec RVQ \
-         decode step — this is available via `vokra_ops::encodec_rvq_decode` (the ONE \
-         landed anchor of the composition; the follow-up wave wires the AR LM output \
-         onto this primitive). Config: variant={variant_short}, d_model={d_model}, \
+        "musicgen generate: raw-text tokenization is unavailable. \
+         Artifact layout={layout:?}: {companion_gap}. What is missing from this raw-text API is \
+         tokenizer data. `generate_from_token_ids` composes native CPU/Metal T5-base, raw LM, \
+         delay pattern, CFG, sampling and embedded EnCodec for composite checkpoints, while \
+         `generate_from_token_ids_with_companion` provides the complete LM-only route; \
+         independent real-weight parity remains pending. Raw LM \
+         execution, the MusicGen-specific 4-codebook delay pattern, CFG and sampling are \
+         landed through generate_codes for both authenticated layouts. Codec status: \
+         {codec_status}. \
+         Config: variant={variant_short}, d_model={d_model}, \
          num_layers={num_layers}, n_heads={n_heads}, num_codebooks={num_codebooks}, \
          sample_rate_hz={sample_rate_hz}. Requested prompt_len={prompt_len} chars, \
          duration_secs={duration_secs}. Primary sources: {hf_card} + {audiocraft_repo} \
@@ -927,6 +1558,8 @@ fn generate_forward_loud_partial(
         variant_short = match variant {
             MusicGenVariant::Small => "Small",
             MusicGenVariant::Medium => "Medium",
+            MusicGenVariant::Large => "Large",
+            MusicGenVariant::Melody => "Melody",
         },
         d_model = cfg.d_model,
         num_layers = cfg.num_layers,
@@ -955,8 +1588,9 @@ mod tests {
     //!
     //! The task spec asks for 5+ unit tests. On real inference this
     //! would be `generate(...)` returning real 32 kHz PCM, but the
-    //! T5-base + AR-LM (delay pattern + cross-attention) + EnCodec-
-    //! decode composition is deferred (see the module doc +
+    //! prompt-conditioning plus the two LM layouts' complete composition is
+    //! deferred, while Medium/Large raw-code generation and Small/Melody
+    //! EnCodec/SEANet decode are real separate APIs (see the module doc +
     //! [`MusicGen::generate`] rustdoc). Fabricating a real-inference
     //! output would violate CLAUDE.md 教訓 (a) ("loud-partial は
     //! fake-complete より honest").
@@ -1088,9 +1722,42 @@ mod tests {
             MusicGenVariant::from_name(NAME_MEDIUM),
             Some(MusicGenVariant::Medium)
         );
-        // Sibling variants (converters exist but not bound here).
-        assert_eq!(MusicGenVariant::from_name("musicgen-large"), None);
-        assert_eq!(MusicGenVariant::from_name("musicgen-melody"), None);
+        assert_eq!(
+            MusicGenVariant::from_name(NAME_LARGE),
+            Some(MusicGenVariant::Large)
+        );
+        assert_eq!(
+            MusicGenVariant::from_name(NAME_MELODY),
+            Some(MusicGenVariant::Melody)
+        );
+        let large = MusicGenVariant::Large.default_config();
+        assert_eq!(
+            (
+                large.d_model,
+                large.num_layers,
+                large.n_heads,
+                large.ffn_dim
+            ),
+            (2048, 48, 32, 8192)
+        );
+        let melody = MusicGenVariant::Melody.default_config();
+        assert_eq!(
+            (
+                melody.d_model,
+                melody.num_layers,
+                melody.n_heads,
+                melody.ffn_dim
+            ),
+            (1536, 48, 24, 6144)
+        );
+        assert_eq!(
+            MusicGenVariant::Small.artifact_layout(),
+            MusicGenArtifactLayout::TransformersComposite
+        );
+        assert_eq!(
+            MusicGenVariant::Medium.artifact_layout(),
+            MusicGenArtifactLayout::AudioCraftLm
+        );
         // Random arbitrary string.
         assert_eq!(MusicGenVariant::from_name("not-musicgen"), None);
     }
@@ -1108,7 +1775,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).expect("valid Small GGUF must bind");
+        let mg = MusicGen::from_fixture(&file).expect("valid Small fixture must bind");
         assert_eq!(mg.variant(), MusicGenVariant::Small);
         // Config round-trip — every stamped axis reads back into the
         // same MusicGenConfig value (converter follow-up sub-wave
@@ -1138,7 +1805,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).expect("valid Medium GGUF must bind");
+        let mg = MusicGen::from_fixture(&file).expect("valid Medium fixture must bind");
         assert_eq!(mg.variant(), MusicGenVariant::Medium);
         assert_eq!(*mg.config(), cfg);
         // Sanity: Medium axes differ from Small — a variant mix-up
@@ -1189,82 +1856,78 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 5. from_gguf rejects unsupported variant (musicgen-large) with
-    //    "pending enum extension" anchor
+    // 5. Large/Melody are real variants; incomplete manifests fail closed.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn from_gguf_rejects_unsupported_variant_large_pending_enum_extension() {
-        // A `musicgen-large` GGUF handed to this WP's binder must fail
-        // loud with the "converter exists but runtime enum extension
-        // pending" anchor so the reader knows the follow-up wave path.
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, "musicgen-large");
-        b.add_tensor(
-            "decoder.model.decoder.layers.0.self_attn.q_proj.weight",
-            GgmlType::F32,
-            vec![2, 2],
-            vec![0u8; 16],
-        )
-        .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        let Err(err) = MusicGen::from_gguf(&file) else {
-            panic!("expected ModelLoad on unsupported variant");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("musicgen-large"),
-                    "message must name the unsupported variant, got `{m}`"
-                );
-                assert!(
-                    m.contains("follow-up wave"),
-                    "message must anchor the reader on the follow-up wave path, got `{m}`"
-                );
-                assert!(
-                    m.contains("MusicGenVariant"),
-                    "message must name the enum being extended, got `{m}`"
-                );
-                assert!(
-                    m.contains("huggingface.co/facebook/musicgen-large"),
-                    "message must name the primary source URL for the unsupported variant, \
-                     got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
-        }
+    fn large_and_melody_variants_bind_metadata_but_require_exact_public_manifests() {
+        for (variant, name) in [
+            (MusicGenVariant::Large, NAME_LARGE),
+            (MusicGenVariant::Melody, NAME_MELODY),
+        ] {
+            let file = musicgen_gguf(
+                name,
+                variant.default_config(),
+                true,
+                Some(LicenseClass::NonCommercial),
+            );
+            let fixture = MusicGen::from_fixture(&file).expect("variant metadata binds");
+            assert_eq!(fixture.variant(), variant);
+            assert_eq!(fixture.artifact_layout(), variant.artifact_layout());
 
-        // Same check for `musicgen-melody` — the melody variant needs
-        // a chroma-conditioning frontend on top of the LM, and the
-        // error message must call that out.
-        let mut b = GgufBuilder::new();
-        b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-        b.add_string(chunks::KEY_MODEL_NAME, "musicgen-melody");
-        b.add_tensor(
-            "decoder.model.decoder.layers.0.self_attn.q_proj.weight",
-            GgmlType::F32,
-            vec![2, 2],
-            vec![0u8; 16],
-        )
-        .expect("add_tensor");
-        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        let Err(err) = MusicGen::from_gguf(&file) else {
-            panic!("expected ModelLoad on melody variant");
-        };
-        match err {
-            VokraError::ModelLoad(m) => {
-                assert!(
-                    m.contains("musicgen-melody"),
-                    "message must name the melody variant, got `{m}`"
-                );
-                assert!(
-                    m.contains("chroma"),
-                    "message must call out the additional chroma conditioning frontend, got `{m}`"
-                );
-            }
-            other => panic!("expected VokraError::ModelLoad, got {other:?}"),
+            let error = MusicGen::from_gguf(&file)
+                .expect_err("a one-tensor fixture is not a public checkpoint");
+            let VokraError::ModelLoad(message) = error else {
+                panic!("expected ModelLoad, got {error:?}");
+            };
+            assert!(message.contains(name));
+            assert!(message.contains("tensor count 1"));
+            assert!(message.contains(&format!("expected {}", variant.tensor_count())));
         }
+    }
+
+    #[test]
+    fn external_small_companion_is_lm_only_and_backend_exact() {
+        validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Cpu,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect("Medium/Large plus exact Small companion on one backend is valid");
+
+        let embedded_target = validate_external_companion_pair(
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("Small/Melody targets must use their embedded components");
+        assert!(embedded_target.to_string().contains("already embeds"));
+
+        let wrong_variant = validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Cpu,
+            MusicGenVariant::Melody,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("family-shared composite inference must be rejected");
+        assert!(wrong_variant.to_string().contains("exact Small"));
+
+        let backend_mismatch = validate_external_companion_pair(
+            MusicGenArtifactLayout::AudioCraftLm,
+            BackendKind::Metal,
+            MusicGenVariant::Small,
+            MusicGenArtifactLayout::TransformersComposite,
+            BackendKind::Cpu,
+        )
+        .expect_err("a composed graph may not fall back to CPU");
+        let message = backend_mismatch.to_string();
+        assert!(message.contains("does not match"));
+        assert!(message.contains("never hide a CPU fallback"));
     }
 
     // -----------------------------------------------------------------------
@@ -1320,7 +1983,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).unwrap();
+        let mg = MusicGen::from_fixture(&file).unwrap();
         // A legitimate prompt + duration — the loud-partial gate must
         // fire on the composition surface, not on pre-generate arg
         // validation.
@@ -1333,20 +1996,27 @@ mod tests {
                     m.contains("musicgen generate"),
                     "message must call out the musicgen generate surface, got `{m}`"
                 );
-                // The three deferred pieces MUST all be named so the
-                // follow-up wave has an unambiguous work anchor.
+                // The remaining companion pieces and the landed raw-code
+                // route MUST all be named so the follow-up is unambiguous.
                 assert!(
                     m.contains("T5"),
-                    "message must name the T5-base text encoder deferred piece, got `{m}`"
+                    "message must name the embedded T5-base route, got `{m}`"
+                );
+                assert!(
+                    m.contains("generate_from_token_ids"),
+                    "message must point to the complete composite token-id route, got `{m}`"
                 );
                 assert!(
                     m.contains("delay pattern"),
-                    "message must name the MusicGen-specific delay pattern, got `{m}`"
+                    "message must name the landed MusicGen-specific delay pattern, got `{m}`"
                 );
                 assert!(
-                    m.contains("encodec_rvq_decode"),
-                    "message must name the ONE landed anchor (`vokra_ops::encodec_rvq_decode`), \
-                     got `{m}`"
+                    m.contains("generate_codes"),
+                    "message must point to the landed raw-code API, got `{m}`"
+                );
+                assert!(
+                    m.contains("decode_codes"),
+                    "message must name the landed complete embedded EnCodec API, got `{m}`"
                 );
                 // All three primary source URLs must be cited — task
                 // hint requires this.
@@ -1394,6 +2064,16 @@ mod tests {
             other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
         }
 
+        let error = mg
+            .prepare_text_condition(&[1], None)
+            .expect_err("borrowed fixture cannot own embedded T5 weights");
+        assert!(
+            error
+                .to_string()
+                .contains("from_path_with_policy_and_backend"),
+            "borrowed-handle text error must name the mapping-owned constructor: {error}"
+        );
+
         // Same assertion against a Medium GGUF — the message must swap
         // the HF card URL to the medium variant's card.
         let cfg = MusicGenConfig::v_medium_default();
@@ -1403,7 +2083,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).unwrap();
+        let mg = MusicGen::from_fixture(&file).unwrap();
         let Err(err) = mg.generate("classical string quartet", 10.0) else {
             panic!("generate must loud-partial for medium");
         };
@@ -1456,7 +2136,7 @@ mod tests {
             /*stamp_topology=*/ false,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).expect("bind");
+        let mg = MusicGen::from_fixture(&file).expect("bind");
         assert_eq!(
             mg.weight_license(),
             LicenseClass::NonCommercial,
@@ -1468,7 +2148,7 @@ mod tests {
         // fail-closed at the gate).
         let file_no_license = musicgen_gguf(NAME_SMALL, cfg, /*stamp_topology=*/ false, None);
         let mg_no_license =
-            MusicGen::from_gguf(&file_no_license).expect("bind without license stamp");
+            MusicGen::from_fixture(&file_no_license).expect("bind without license stamp");
         assert_eq!(
             mg_no_license.weight_license(),
             LicenseClass::Unknown,
@@ -1540,8 +2220,8 @@ mod tests {
             /*stamp_topology=*/ false,
             Some(LicenseClass::NonCommercial),
         );
-        let mg_small =
-            MusicGen::from_gguf(&file_small).expect("chunk-free Small GGUF must bind via fallback");
+        let mg_small = MusicGen::from_fixture(&file_small)
+            .expect("chunk-free Small fixture must bind via fallback");
         // Every axis fell through to its primary-source Small default —
         // the loader returns the same values as v_small_default().
         assert_eq!(mg_small.config().d_model, DEFAULT_D_MODEL_SMALL);
@@ -1562,8 +2242,8 @@ mod tests {
             /*stamp_topology=*/ false,
             Some(LicenseClass::NonCommercial),
         );
-        let mg_medium = MusicGen::from_gguf(&file_medium)
-            .expect("chunk-free Medium GGUF must bind via fallback");
+        let mg_medium = MusicGen::from_fixture(&file_medium)
+            .expect("chunk-free Medium fixture must bind via fallback");
         assert_eq!(mg_medium.config().d_model, DEFAULT_D_MODEL_MEDIUM);
         assert_eq!(mg_medium.config().num_layers, DEFAULT_NUM_LAYERS_MEDIUM);
         assert_eq!(mg_medium.config().n_heads, DEFAULT_N_HEADS_MEDIUM);
@@ -1630,7 +2310,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let mg = MusicGen::from_gguf(&file).unwrap();
+        let mg = MusicGen::from_fixture(&file).unwrap();
         assert!(
             mg.weights.matches_config(mg.config()),
             "at least one bound tensor must have an axis matching config.d_model"

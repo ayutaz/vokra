@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "vokra-backend-coreml"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-backend-cpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-cuda"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-metal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
@@ -36,14 +36,14 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-qnn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-backend-vulkan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-webgpu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-bert"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-convert",
  "vokra-core",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-capi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-convert",
  "vokra-core",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-convert",
  "vokra-core",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-convert"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
  "vokra-mmap",
@@ -101,11 +101,11 @@ dependencies = [
 
 [[package]]
 name = "vokra-core"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "vokra-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-core",
@@ -114,25 +114,25 @@ dependencies = [
 
 [[package]]
 name = "vokra-kws-micro"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-math"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "vokra-mmap"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-models"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-coreml",
  "vokra-backend-cpu",
@@ -154,7 +154,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-ops"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -163,7 +163,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-parity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
  "vokra-ops",
@@ -171,21 +171,21 @@ dependencies = [
 
 [[package]]
 name = "vokra-piper-plus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-vad-micro"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-wasm-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-backend-webgpu",

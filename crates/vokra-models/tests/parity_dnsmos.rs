@@ -1,302 +1,292 @@
-//! DNSMOS P.808 / P.835 numerical parity harness — env-gated (2026-08-05).
+//! Independent real-weight DNSMOS P.808 + P.835 numerical parity.
 //!
-//! Sibling of `parity_openwakeword.rs` / `parity_rmvpe.rs`: every test
-//! that needs a real DNSMOS GGUF is gated on the [`GGUF_ENV`]
-//! environment variable and skips cleanly when unset (never a
-//! fabricated pass — memory `[[project-real-weight-eval]]`). Once
-//! opted in, every failure is hard: a missing / malformed / wrong-
-//! shaped fixture is a loud panic (FR-EX-08).
-//!
-//! # The MOS-comparison leg is unreachable today
-//!
-//! Step 3 of the recipe below invokes
-//! `tools/parity/dnsmos_score_reference.py`, which **has never been
-//! written** — it is not on disk anywhere in this repository. Its
-//! sibling `dnsmos_prepare_checkpoint.py` DOES exist, so the recipe is
-//! *half*-runnable, which is exactly why the gap went unnoticed: an
-//! owner gets through steps 1, 2, 4 and 5 and only step 3 silently
-//! yields nothing.
-//!
-//! The consequence is concrete: [`REFERENCE_JSONL_ENV`] cannot be
-//! produced by any tool in this tree, so the numeric MOS comparison
-//! **can never run**, and `parity_dnsmos_gated_scores` always takes its
-//! skip branch. The header above says a skip is "never a fabricated
-//! pass" — but a skip that is *unreachable by construction* has become
-//! precisely that. **A green run of this file is NOT evidence that
-//! Vokra's DNSMOS scores match the upstream reference; it is evidence
-//! that nothing compared them.** Until the reference dumper lands, treat
-//! this harness as covering fixture plumbing and shape validation only.
-//!
-//! Writing that dumper is the one change that opens the leg. It is
-//! deliberately not stubbed here: a fabricated reference emitted by
-//! Vokra itself would compare Vokra to Vokra and prove nothing (see
-//! `numerical-parity`'s independence rule).
-//!
-//! # Fixture recipe (owner-side)
-//!
-//! `microsoft/DNS-Challenge/DNSMOS/` (MIT) ships two ONNX checkpoints
-//! (`model_v8.onnx` = P.808, `sig_bak_ovr.onnx` = P.835). Bridge them
-//! offline into a merged safetensors + reference JSONL:
+//! Generate the reference JSONL with the exact official Microsoft
+//! `dnsmos_local.py` through `tools/parity/dnsmos_score_reference.py`, then
+//! convert the audited 38 tensors through `dnsmos_prepare_checkpoint.py` and
+//! the strict Vokra converter. Model execution and this `vokra-models` test
+//! belong on VAST; the real-weight legs skip unless explicitly configured.
 //!
 //! ```text
-//! # 1. Fetch upstream ONNX from github.com/microsoft/DNS-Challenge
-//! # 2. Prepare merged safetensors (uv / Python 3.12):
-//! uv run python tools/parity/dnsmos_prepare_checkpoint.py \
-//!     --p808     ~/DNSMOS/model_v8.onnx \
-//!     --p835     ~/DNSMOS/sig_bak_ovr.onnx \
-//!     --output-st ~/dnsmos.safetensors
-//! # 3. Emit the reference JSONL. NOTE: a future
-//! #    `tools/parity/dnsmos_score_reference.py` (not yet written — see
-//! #    the section above). It would wrap the upstream `dnsmos_local.py`
-//! #    under `onnxruntime` as an offline reference tool that never
-//! #    enters the runtime dependency graph. This step is CURRENTLY
-//! #    UNRUNNABLE:
-//! uv run python tools/parity/dnsmos_score_reference.py \
-//!     --p808      ~/DNSMOS/model_v8.onnx \
-//!     --p835      ~/DNSMOS/sig_bak_ovr.onnx \
-//!     --input-wav ~/test-clean.wav \
-//!     --input-wav ~/test-noisy.wav \
-//!     --output-jsonl ~/dnsmos_reference.jsonl
-//! # 4. Convert safetensors → GGUF:
-//! vokra-cli convert --model dnsmos-p808-p835 \
-//!     --input  ~/dnsmos.safetensors \
-//!     --output ~/dnsmos.gguf
-//! # 5. Point the parity harness at every artefact:
+//! uv run --project tools/parity python tools/parity/dnsmos_score_reference.py \
+//!   --source-dir ~/DNS-Challenge \
+//!   --p808 ~/DNS-Challenge/DNSMOS/model_v8.onnx \
+//!   --p835 ~/DNS-Challenge/DNSMOS/sig_bak_ovr.onnx \
+//!   --input-wav ~/clean.wav --input-wav ~/noisy.wav \
+//!   --output-jsonl ~/dnsmos-reference.jsonl
+//!
 //! export VOKRA_DNSMOS_REAL_GGUF=~/dnsmos.gguf
-//! export VOKRA_DNSMOS_REAL_WAVS=~/test-clean.wav:~/test-noisy.wav
-//! export VOKRA_DNSMOS_REFERENCE_JSONL=~/dnsmos_reference.jsonl
+//! export VOKRA_DNSMOS_REAL_WAVS=~/clean.wav:~/noisy.wav
+//! export VOKRA_DNSMOS_REFERENCE_JSONL=~/dnsmos-reference.jsonl
+//! export VOKRA_DNSMOS_MOS_ATOL=<recorded-independent-VAST-bound>
 //! cargo test -p vokra-models --test parity_dnsmos -- --nocapture
 //! ```
 //!
-//! # Numeric parity contract
-//!
-//! DNSMOS emits per-chunk MOS scalars (`p808 ∈ [1,5]` and P.835
-//! `(SIG, BAK, OVRL) ∈ [1,5]³`), averaged across all 9.01 s chunks.
-//! [`MOS_ATOL`] bounds `max_v |Δ|` between Vokra's runtime and the
-//! upstream `dnsmos_local.py` + `onnxruntime` reference — calibrated
-//! after the first owner-run once real weights ship (mirror of
-//! `parity_kokoro.rs`'s per-tensor scaffold, see
-//! `[[feedback-honest-parity-atol]]`).
-//!
-//! **When the CNN backbone forward wires** (deferred per module docs
-//! in `crates/vokra-models/src/dnsmos_p808_p835/mod.rs`), the
-//! `parity_dnsmos_gated_scores` test upgrades from a loud-partial smoke
-//! to a real MOS comparison; no code change beyond wiring
-//! `cnn_forward` behind the `vokra.dnsmos.{p808,p835}.topology`
-//! metadata is required here.
+//! The tolerance is deliberately required from the environment. It is not
+//! invented before the first recorded independent VAST comparison.
 
-use std::env;
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use vokra_core::VokraError;
-use vokra_core::engines::MosScorerEngine;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use vokra_core::BackendKind;
+use vokra_core::engines::MosScore;
+use vokra_core::json::JsonValue;
 use vokra_models::dnsmos_p808_p835::{
     Dnsmos, DnsmosSubmodel, EXPECTED_SAMPLE_RATE, INPUT_LENGTH_SAMPLES,
 };
+use vokra_models::silero_vad::wav::read_wav_f32;
 
-/// Env var the owner sets to point the gated harness at a real DNSMOS
-/// GGUF. Absent = skip cleanly (never a fabricated pass).
 const GGUF_ENV: &str = "VOKRA_DNSMOS_REAL_GGUF";
-
-/// Env var holding a colon-separated list of 16 kHz mono WAV paths the
-/// reference scorer also consumed. Iterating in the same order as the
-/// reference JSONL lets the parity harness key on file basename.
 const WAVS_ENV: &str = "VOKRA_DNSMOS_REAL_WAVS";
-
-/// Env var pointing at the reference JSONL side-car — one line per
-/// WAV, each `{"wav": "<basename>", "p808": <f>, "sig": <f>, ...}`.
 const REFERENCE_JSONL_ENV: &str = "VOKRA_DNSMOS_REFERENCE_JSONL";
+const MOS_ATOL_ENV: &str = "VOKRA_DNSMOS_MOS_ATOL";
+#[cfg(all(feature = "metal", target_os = "macos"))]
+const METAL_ATOL_ENV: &str = "VOKRA_DNSMOS_METAL_ATOL";
 
-/// Per-MOS-scalar |Δ| tolerance (consumed once the CNN forward wires).
-/// Calibrated by the first owner-run against the upstream reference —
-/// the initial value is a placeholder honest to typical
-/// `onnxruntime`-vs-Rust f32 rounding on a small CNN + FC (mirror of
-/// the openwakeword `PROB_ATOL = 1e-4`).
-#[allow(dead_code)]
-const MOS_ATOL: f32 = 1e-2;
+const SOURCE_REVISION: &str = "591184a9fcb2cbdec02520fed81a32bbbf9d73ff";
+const SOURCE_SHA256: &str = "1ab566afe006daab32ac7073296a5d0ef99f8b82f91c7266f3ccf26113d7a28b";
+const P808_ONNX_SHA256: &str = "9246480c58567bc6affd4200938e77eef49468c8bc7ed3776d109c07456f6e91";
+const P835_ONNX_SHA256: &str = "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd";
+const ONNXRUNTIME_VERSION: &str = "1.29.0";
+const NUMPY_VERSION: &str = "2.3.5";
+const LIBROSA_VERSION: &str = "0.11.0";
+const SOUNDFILE_VERSION: &str = "0.14.0";
 
-/// FIXTURE-FREE: primary-source constants pin. `INPUT_LENGTH_SAMPLES`
-/// = 144160 (9.01 s at 16 kHz) is transcribed verbatim from
-/// `microsoft/DNS-Challenge/DNSMOS/dnsmos_local.py:INPUT_LENGTH` — a
-/// silent drift in this constant would misalign the chunking window
-/// against every reference dumper run.
+#[derive(Debug, Clone, Copy)]
+struct ReferenceScore {
+    p808: f32,
+    sig: f32,
+    bak: f32,
+    ovrl: f32,
+}
+
+fn required_bound(name: &str) -> f32 {
+    let raw = std::env::var(name).unwrap_or_else(|_| {
+        panic!(
+            "{name} is required when {GGUF_ENV} is set; calibrate it from the recorded independent VAST comparison"
+        )
+    });
+    let value = raw
+        .parse::<f32>()
+        .unwrap_or_else(|error| panic!("{name}={raw:?}: {error}"));
+    assert!(
+        value.is_finite() && value >= 0.0,
+        "{name} must be finite and non-negative"
+    );
+    value
+}
+
+fn number(value: &JsonValue, context: &str) -> f32 {
+    let value = match value {
+        JsonValue::Int(value) => *value as f64,
+        JsonValue::Float(value) => *value,
+        other => panic!("{context}: expected a JSON number, got {other:?}"),
+    };
+    assert!(value.is_finite(), "{context}: value must be finite");
+    value as f32
+}
+
+fn required_string<'a>(root: &'a JsonValue, key: &str, context: &str) -> &'a str {
+    root.get(key)
+        .and_then(JsonValue::as_str)
+        .unwrap_or_else(|| panic!("{context}: missing/non-string `{key}`"))
+}
+
+fn parse_references(path: &Path) -> BTreeMap<String, ReferenceScore> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("read reference JSONL {}: {error}", path.display()));
+    let mut references = BTreeMap::new();
+    for (line_index, line) in text.lines().enumerate() {
+        assert!(
+            !line.trim().is_empty(),
+            "{}:{}: blank JSONL record",
+            path.display(),
+            line_index + 1
+        );
+        let context = format!("{}:{}", path.display(), line_index + 1);
+        let root = vokra_core::json::parse(line.as_bytes())
+            .unwrap_or_else(|error| panic!("{context}: {error}"));
+        assert_eq!(
+            required_string(&root, "source_revision", &context),
+            SOURCE_REVISION,
+            "{context}: source revision"
+        );
+        assert_eq!(
+            required_string(&root, "source_sha256", &context),
+            SOURCE_SHA256,
+            "{context}: official source hash"
+        );
+        assert_eq!(
+            required_string(&root, "p808_onnx_sha256", &context),
+            P808_ONNX_SHA256,
+            "{context}: P.808 ONNX hash"
+        );
+        assert_eq!(
+            required_string(&root, "p835_onnx_sha256", &context),
+            P835_ONNX_SHA256,
+            "{context}: P.835 ONNX hash"
+        );
+        for (key, expected) in [
+            ("onnxruntime_version", ONNXRUNTIME_VERSION),
+            ("numpy_version", NUMPY_VERSION),
+            ("librosa_version", LIBROSA_VERSION),
+            ("soundfile_version", SOUNDFILE_VERSION),
+        ] {
+            assert_eq!(
+                required_string(&root, key, &context),
+                expected,
+                "{context}: reference dependency `{key}`"
+            );
+        }
+        let wav = required_string(&root, "wav", &context).to_owned();
+        let score = ReferenceScore {
+            p808: number(root.get("p808").expect("reference p808"), "p808"),
+            sig: number(root.get("sig").expect("reference sig"), "sig"),
+            bak: number(root.get("bak").expect("reference bak"), "bak"),
+            ovrl: number(root.get("ovrl").expect("reference ovrl"), "ovrl"),
+        };
+        assert!(
+            references.insert(wav.clone(), score).is_none(),
+            "{context}: duplicate WAV basename `{wav}`"
+        );
+    }
+    assert!(!references.is_empty(), "reference JSONL is empty");
+    references
+}
+
+fn real_fixture() -> Option<(PathBuf, Vec<PathBuf>, BTreeMap<String, ReferenceScore>)> {
+    let Some(gguf) = std::env::var_os(GGUF_ENV).map(PathBuf::from) else {
+        eprintln!(
+            "[parity_dnsmos] SKIP: set {GGUF_ENV}, {WAVS_ENV}, {REFERENCE_JSONL_ENV}, and {MOS_ATOL_ENV} after generating the official VAST reference"
+        );
+        return None;
+    };
+    let wavs = std::env::var_os(WAVS_ENV)
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .filter(|paths| !paths.is_empty())
+        .unwrap_or_else(|| panic!("{WAVS_ENV} is required when {GGUF_ENV} is set"));
+    let reference_path = std::env::var_os(REFERENCE_JSONL_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{REFERENCE_JSONL_ENV} is required when {GGUF_ENV} is set"));
+    Some((gguf, wavs, parse_references(&reference_path)))
+}
+
+fn score_fields(score: &MosScore) -> ReferenceScore {
+    ReferenceScore {
+        p808: score.p808.expect("strict DNSMOS emits P.808"),
+        sig: score.sig.expect("strict DNSMOS emits SIG"),
+        bak: score.bak.expect("strict DNSMOS emits BAK"),
+        ovrl: score.ovrl.expect("strict DNSMOS emits OVRL"),
+    }
+}
+
+fn compare(label: &str, actual: ReferenceScore, expected: ReferenceScore, bound: f32) {
+    for (field, actual, expected) in [
+        ("p808", actual.p808, expected.p808),
+        ("sig", actual.sig, expected.sig),
+        ("bak", actual.bak, expected.bak),
+        ("ovrl", actual.ovrl, expected.ovrl),
+    ] {
+        let delta = (actual - expected).abs();
+        eprintln!(
+            "DNSMOS {label} {field}: actual={actual:.9e}, reference={expected:.9e}, abs={delta:.9e}"
+        );
+        assert!(
+            delta <= bound,
+            "DNSMOS {label} {field}: abs={delta:.9e}, bound={bound:.9e}"
+        );
+    }
+}
+
+fn load_pcm(path: &Path) -> Vec<f32> {
+    let wav = read_wav_f32(path)
+        .unwrap_or_else(|error| panic!("read DNSMOS WAV {}: {error}", path.display()));
+    assert_eq!(
+        wav.sample_rate,
+        EXPECTED_SAMPLE_RATE,
+        "{}: DNSMOS parity WAV must be 16 kHz",
+        path.display()
+    );
+    assert!(!wav.samples.is_empty(), "{}: empty WAV", path.display());
+    wav.samples
+}
+
 #[test]
 fn dnsmos_primary_source_constants_pin() {
-    assert_eq!(
-        EXPECTED_SAMPLE_RATE, 16_000,
-        "DNSMOS is trained at 16 kHz PCM in (dnsmos_local.py::SAMPLING_RATE)"
-    );
-    assert_eq!(
-        INPUT_LENGTH_SAMPLES, 144_160,
-        "DNSMOS chunks input to 9.01 s windows (dnsmos_local.py::INPUT_LENGTH)"
-    );
-    // Sub-model short-name pin — the tensor prefix and metadata key
-    // both derive from these strings.
+    assert_eq!(EXPECTED_SAMPLE_RATE, 16_000);
+    assert_eq!(INPUT_LENGTH_SAMPLES, 144_160);
     assert_eq!(DnsmosSubmodel::P808.short(), "p808");
     assert_eq!(DnsmosSubmodel::P835.short(), "p835");
     assert_eq!(DnsmosSubmodel::P808.tensor_prefix(), "p808.");
     assert_eq!(DnsmosSubmodel::P835.tensor_prefix(), "p835.");
 }
 
-/// FIXTURE-FREE: the loud-partial `Dnsmos::score_*` contract must
-/// surface a `VokraError::UnsupportedOp` naming both the future
-/// topology metadata chunk and the sidecar to extend so an owner
-/// reading the error knows exactly where to flip the switch. Uses the
-/// synthesized-bundle constructor which lets this test run without a
-/// real GGUF fixture.
-#[test]
-fn dnsmos_score_paths_are_loud_partial() {
-    let session = Dnsmos::synthesized();
-    let pcm = vec![0.0f32; 16_000]; // 1 s zero — small enough to short-circuit.
-
-    let err = session
-        .score_p808(&pcm)
-        .expect_err("loud-partial p808 must not return Ok");
-    let msg = match err {
-        VokraError::UnsupportedOp(m) => m,
-        other => panic!("expected UnsupportedOp for p808, got {other:?}"),
-    };
-    assert!(
-        msg.contains("vokra.dnsmos") && msg.contains("topology"),
-        "loud-partial message must name the topology metadata: {msg}"
-    );
-    assert!(
-        msg.contains("dnsmos_prepare_checkpoint"),
-        "loud-partial message must name the sidecar to extend: {msg}"
-    );
-
-    // Same posture for the 3-scalar P.835 head.
-    let err = session
-        .score_p835(&pcm)
-        .expect_err("loud-partial p835 must not return Ok");
-    assert!(matches!(err, VokraError::UnsupportedOp(_)));
-}
-
-/// GATED: opens a real DNSMOS GGUF and verifies the load path is a
-/// genuine bind (real config parse, real bundle-inventory walk, real
-/// tensor-prefix presence check per variant).
-///
-/// Skips cleanly when [`GGUF_ENV`] is unset. Once set, all failures
-/// are hard: a missing / malformed / wrong-arch fixture fails loudly.
 #[test]
 fn parity_dnsmos_gguf_smoke() {
-    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
-        eprintln!(
-            "{GGUF_ENV} unset — skipping DNSMOS GGUF parity smoke; \
-             this is a clean skip (never a fabricated pass). See the \
-             module docs for the fixture recipe."
-        );
+    let Some((gguf, _, _)) = real_fixture() else {
         return;
     };
-
-    let path = Path::new(&gguf_path);
-    let session = Dnsmos::from_path(path).unwrap_or_else(|e| {
-        panic!(
-            "dnsmos GGUF at {gguf_path} failed to load: {e:?} \
-             (opted-in ⇒ any error is a hard failure — FR-EX-08)"
-        )
-    });
-
-    let cfg = session.config();
-    assert_eq!(
-        cfg.sample_rate, 16_000,
-        "DNSMOS is trained at 16 kHz PCM in; a differently-rated GGUF is \
-         either mis-configured or a non-canonical fork (loud-fail)"
-    );
-    assert!(
-        !cfg.bundle.is_empty(),
-        "real DNSMOS GGUF must advertise at least one variant; bundle is empty"
-    );
-    for v in &cfg.bundle {
-        assert!(
-            v == "p808" || v == "p835",
-            "bundle inventory carries unknown variant `{v}` (real DNSMOS ships \
-             only `p808` / `p835`)"
-        );
-    }
-    let variants = session.variants();
-    for v in variants {
-        assert!(cfg.bundle.iter().any(|b| b == v));
-    }
-    eprintln!(
-        "dnsmos GGUF loaded from {gguf_path}: bundle={:?}, sample_rate={} Hz",
-        cfg.bundle, cfg.sample_rate
-    );
+    let model = Dnsmos::from_path(&gguf)
+        .unwrap_or_else(|error| panic!("strict DNSMOS bind {}: {error}", gguf.display()));
+    assert_eq!(model.sample_rate(), EXPECTED_SAMPLE_RATE);
+    assert_eq!(model.tensor_count(), 38);
+    assert_eq!(model.config().bundle, ["p808", "p835"]);
 }
 
-/// GATED: pushes real 16 kHz PCM through the session and compares MOS
-/// scalars against the reference JSONL. Today this test enforces the
-/// **loud-partial** posture: it opts in, loads the real GGUF, invokes
-/// [`Dnsmos::score`] on a placeholder buffer, and asserts the call
-/// errors with [`VokraError::UnsupportedOp`] — no fabricated `0.0 == 0.0`
-/// "match". The moment the CNN backbone forward wires (see the module
-/// docs), the assertion flips from "expect UnsupportedOp" to "match
-/// reference MOS within [`MOS_ATOL`]".
 #[test]
-fn parity_dnsmos_gated_scores() {
-    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
-        eprintln!(
-            "{GGUF_ENV} unset — skipping DNSMOS MOS parity; clean skip. \
-             See module docs for the fixture recipe."
-        );
+fn cpu_matches_official_dnsmos() {
+    let Some((gguf, wavs, references)) = real_fixture() else {
         return;
     };
-    // WAV / JSONL side-cars are only consumed once the CNN forward
-    // lights up; assert their presence for owner-side documentation so
-    // the missing side-car is caught early.
-    if env::var(WAVS_ENV).is_err() {
-        eprintln!(
-            "note: {WAVS_ENV} unset — the loud-partial gate still fires \
-             without it; the side-car becomes required once the CNN \
-             forward wires."
+    let bound = required_bound(MOS_ATOL_ENV);
+    let model = Dnsmos::from_path(&gguf)
+        .unwrap_or_else(|error| panic!("strict DNSMOS bind {}: {error}", gguf.display()));
+    assert_eq!(references.len(), wavs.len(), "reference/WAV count");
+    for wav in wavs {
+        let basename = wav
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_else(|| panic!("non-UTF-8 WAV basename: {}", wav.display()));
+        let reference = *references
+            .get(basename)
+            .unwrap_or_else(|| panic!("reference JSONL has no `{basename}`"));
+        let actual = model
+            .score_all(&load_pcm(&wav))
+            .unwrap_or_else(|error| panic!("CPU DNSMOS {}: {error}", wav.display()));
+        compare(
+            &format!("CPU vs official ({basename})"),
+            score_fields(&actual),
+            reference,
+            bound,
         );
     }
-    if env::var(REFERENCE_JSONL_ENV).is_err() {
-        eprintln!("note: {REFERENCE_JSONL_ENV} unset — same posture as {WAVS_ENV}.");
-    }
+}
 
-    let session = Dnsmos::from_path(&gguf_path)
-        .unwrap_or_else(|e| panic!("dnsmos GGUF at {gguf_path} failed to load: {e:?}"));
-
-    // A 1 s zero buffer suffices to reach the loud-partial gate; it is
-    // still under the reference 9.01 s window so the length-check runs.
-    let pcm = vec![0.0f32; 16_000];
-    let result = session.score(&pcm);
-
-    match result {
-        Err(VokraError::UnsupportedOp(msg)) => {
-            assert!(
-                msg.contains("vokra.dnsmos") && msg.contains("topology"),
-                "loud-partial message must name the topology metadata: {msg}"
-            );
-            assert!(
-                msg.contains("dnsmos_prepare_checkpoint"),
-                "loud-partial message must name the sidecar to extend: {msg}"
-            );
-            eprintln!(
-                "dnsmos MOS parity: loud-partial gate fired as expected — the \
-                 CNN backbone forward is deferred to the topology-metadata \
-                 sidecar extension. When that lands, this test flips to \
-                 reference-JSONL MOS comparison (see the module docs)."
-            );
-        }
-        Ok(_score) => {
-            // Once the CNN forward lights up we land here. The follow-
-            // up wave parses REFERENCE_JSONL_ENV with vokra_core::json
-            // (zero-dep) and iterates WAVS_ENV.
-            let _ = env::var(REFERENCE_JSONL_ENV).unwrap_or_else(|_| {
-                panic!(
-                    "the CNN forward is now real but {REFERENCE_JSONL_ENV} is \
-                     unset — and no tool in this tree can produce it: a future \
-                     tools/parity/dnsmos_score_reference.py (not yet written) \
-                     is the missing half. See the module docs."
-                )
-            });
-            panic!(
-                "reference-JSONL comparison harness is a follow-up wave; \
-                 CNN forward lit up unexpectedly early — wire the comparison here"
-            );
-        }
-        Err(other) => panic!("dnsmos score returned unexpected error: {other:?}"),
+#[cfg(all(feature = "metal", target_os = "macos"))]
+#[test]
+fn metal_matches_cpu_dnsmos() {
+    let Some((gguf, wavs, _)) = real_fixture() else {
+        return;
+    };
+    let bound = required_bound(METAL_ATOL_ENV);
+    let file = vokra_core::gguf::GgufFile::open(&gguf)
+        .unwrap_or_else(|error| panic!("open DNSMOS GGUF {}: {error}", gguf.display()));
+    let cpu = Dnsmos::from_gguf(&file).expect("strict CPU DNSMOS bind");
+    let metal = Dnsmos::from_gguf_with_backend(&file, BackendKind::Metal)
+        .expect("strict Metal DNSMOS bind");
+    for wav in wavs {
+        let pcm = load_pcm(&wav);
+        let cpu_score = cpu
+            .score_all(&pcm)
+            .unwrap_or_else(|error| panic!("CPU DNSMOS {}: {error}", wav.display()));
+        let metal_score = metal
+            .score_all(&pcm)
+            .unwrap_or_else(|error| panic!("Metal DNSMOS {}: {error}", wav.display()));
+        compare(
+            &format!("Metal vs CPU ({})", wav.display()),
+            score_fields(&metal_score),
+            score_fields(&cpu_score),
+            bound,
+        );
     }
 }

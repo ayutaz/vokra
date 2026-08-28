@@ -39,21 +39,23 @@
 //! the model-id / model-name stamps are preserved. Absent, the
 //! upstream MIT verdict rides through.
 //!
-//! # Real-weight parity — deferred to owner
+//! # Native runtime and real-weight parity
 //!
-//! Real-weight parity vs the upstream `funcodec` Python reference is
-//! deferred to owner (`docs/license-audit.md` §3.1 sign-off). This
-//! converter passes every F32 / F16 / BF16 tensor through unchanged so
-//! a future `FunCodecWeights::from_gguf` can walk the same upstream
-//! names — no shape check today (**FR-EX-08** loud runtime bind gate is
-//! the authoritative shape enforcer).
+//! `vokra-models::funcodec` now authenticates the complete released
+//! 230-tensor name/shape manifest and executes the official residual-VQ plus
+//! SEANet decoder on CPU or Metal. This converter still preserves every
+//! F32 / F16 / BF16 tensor under its upstream name; the runtime's complete
+//! manifest and individual inference-shape checks are the authoritative
+//! **FR-EX-08** bind gate. Independent official-reference generation lives in
+//! `tools/parity/funcodec/dump_reference.py`; its first real VAST CPU and
+//! Apple Metal measurements remain required before recording a numerical
+//! parity pass.
 //!
 //! # No ONNX (permanent)
 //!
 //! FunCodec ships as a ModelScope PyTorch checkpoint; the converter
-//! **never** touches ONNX (FR-LD-05); the pipeline is re-implemented
-//! natively in `crates/vokra-models/src/…` when the codec lands
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! **never** touches ONNX (FR-LD-05). The token-to-waveform pipeline is
+//! re-implemented natively in `crates/vokra-models/src/funcodec.rs`.
 
 use std::path::Path;
 

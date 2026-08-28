@@ -13,6 +13,11 @@ use vokra_core::{Result, VokraError};
 /// Raw official Hugging Face `tokenizer.json` bytes embedded by the converter.
 pub const KEY_TOKENIZER_JSON: &str = "vokra.parakeet.tokenizer.json";
 
+/// Plaintext SentencePiece vocabulary embedded for the original
+/// Parakeet-TDT-1.1B NeMo release. The runtime needs only id-to-piece
+/// decoding, so it deliberately does not parse the protobuf `.model`.
+pub const KEY_SENTENCEPIECE_VOCAB: &str = "vokra.parakeet_tdt_1_1b.tokenizer.vocab";
+
 /// Decode-only Parakeet tokenizer.
 #[derive(Debug, Clone)]
 pub struct ParakeetTokenizer {
@@ -23,29 +28,81 @@ pub struct ParakeetTokenizer {
 impl ParakeetTokenizer {
     /// Parses the embedded official tokenizer JSON.
     pub fn from_gguf(file: &GgufFile, vocab_size: usize) -> Result<Self> {
-        let bytes = match file.get(KEY_TOKENIZER_JSON) {
-            Some(GgufMetadataValue::Array(array)) => array
-                .values
-                .iter()
-                .map(|value| match value {
-                    GgufMetadataValue::U8(byte) => Ok(*byte),
-                    _ => Err(VokraError::ModelLoad(format!(
-                        "Parakeet tokenizer: `{KEY_TOKENIZER_JSON}` contains a non-u8 element"
-                    ))),
-                })
-                .collect::<Result<Vec<_>>>()?,
-            Some(other) => {
-                return Err(VokraError::ModelLoad(format!(
-                    "Parakeet tokenizer: `{KEY_TOKENIZER_JSON}` must be a u8 array, found {other:?}"
-                )));
-            }
-            None => {
-                return Err(VokraError::ModelLoad(format!(
-                    "Parakeet tokenizer: `{KEY_TOKENIZER_JSON}` is absent; reconvert the official checkpoint with `--tokenizer tokenizer.json`"
-                )));
-            }
-        };
+        let bytes = required_u8_array(file, KEY_TOKENIZER_JSON)?;
         Self::from_bytes(&bytes, vocab_size)
+    }
+
+    /// Parses the embedded decode-only SentencePiece vocabulary used by
+    /// Parakeet-TDT-1.1B.
+    pub fn from_gguf_sentencepiece_vocab(
+        file: &GgufFile,
+        vocab_size: usize,
+        blank_id: u32,
+    ) -> Result<Self> {
+        let bytes = required_u8_array(file, KEY_SENTENCEPIECE_VOCAB)?;
+        Self::from_sentencepiece_vocab_bytes(&bytes, vocab_size, blank_id)
+    }
+
+    /// Parses SentencePiece's plaintext `piece<TAB>score` export for
+    /// decode-only inference and appends the model's blank symbol at its
+    /// declared id. Scores are syntax-checked but are not needed to decode
+    /// emitted token ids.
+    pub fn from_sentencepiece_vocab_bytes(
+        bytes: &[u8],
+        vocab_size: usize,
+        blank_id: u32,
+    ) -> Result<Self> {
+        let blank_id = blank_id as usize;
+        if vocab_size == 0 || blank_id >= vocab_size {
+            return Err(VokraError::ModelLoad(format!(
+                "Parakeet SentencePiece vocab: blank id {blank_id} is outside 0..{vocab_size}"
+            )));
+        }
+        let document = std::str::from_utf8(bytes).map_err(|error| {
+            VokraError::ModelLoad(format!(
+                "Parakeet SentencePiece vocab is not UTF-8: {error}"
+            ))
+        })?;
+        let mut source_pieces = Vec::new();
+        for (line_index, line) in document.lines().enumerate() {
+            let (piece, score) = line.rsplit_once('\t').ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "Parakeet SentencePiece vocab line {} is not `piece<TAB>score`",
+                    line_index + 1
+                ))
+            })?;
+            if piece.is_empty() {
+                return Err(VokraError::ModelLoad(format!(
+                    "Parakeet SentencePiece vocab line {} has an empty piece",
+                    line_index + 1
+                )));
+            }
+            let score = score.parse::<f32>().map_err(|error| {
+                VokraError::ModelLoad(format!(
+                    "Parakeet SentencePiece vocab line {} has invalid score {score:?}: {error}",
+                    line_index + 1
+                ))
+            })?;
+            if !score.is_finite() {
+                return Err(VokraError::ModelLoad(format!(
+                    "Parakeet SentencePiece vocab line {} has non-finite score {score}",
+                    line_index + 1
+                )));
+            }
+            source_pieces.push(piece.to_owned());
+        }
+        if source_pieces.len() + 1 != vocab_size || source_pieces.len() != blank_id {
+            return Err(VokraError::ModelLoad(format!(
+                "Parakeet SentencePiece vocab has {} pieces; expected {} pieces followed by blank id {blank_id} in a head of width {vocab_size}",
+                source_pieces.len(),
+                vocab_size.saturating_sub(1),
+            )));
+        }
+        let mut pieces = source_pieces;
+        pieces.push(String::new());
+        let mut special = vec![false; vocab_size];
+        special[blank_id] = true;
+        Ok(Self { pieces, special })
     }
 
     /// Parses an official Hugging Face `tokenizer.json` payload.
@@ -154,11 +211,11 @@ impl ParakeetTokenizer {
         token_ids: &[u32],
         blank_id: u32,
         pad_id: u32,
-        eos_id: u32,
+        eos_id: Option<u32>,
     ) -> Result<String> {
         let mut encoded = String::new();
         for &token_id in token_ids {
-            if token_id == blank_id || token_id == pad_id || token_id == eos_id {
+            if token_id == blank_id || token_id == pad_id || eos_id == Some(token_id) {
                 continue;
             }
             let id = token_id as usize;
@@ -175,6 +232,27 @@ impl ParakeetTokenizer {
         }
         let decoded = encoded.replace('▁', " ");
         Ok(decoded.strip_prefix(' ').unwrap_or(&decoded).to_owned())
+    }
+}
+
+pub(super) fn required_u8_array(file: &GgufFile, key: &str) -> Result<Vec<u8>> {
+    match file.get(key) {
+        Some(GgufMetadataValue::Array(array)) => array
+            .values
+            .iter()
+            .map(|value| match value {
+                GgufMetadataValue::U8(byte) => Ok(*byte),
+                _ => Err(VokraError::ModelLoad(format!(
+                    "Parakeet tokenizer: `{key}` contains a non-u8 element"
+                ))),
+            })
+            .collect(),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "Parakeet tokenizer: `{key}` must be a u8 array, found {other:?}"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "Parakeet tokenizer: `{key}` is absent; supply the pinned official tokenizer sidecar or reconvert with `--tokenizer`"
+        ))),
     }
 }
 
@@ -196,7 +274,7 @@ mod tests {
     fn bpe_metaspace_decode_keeps_repeated_tdt_tokens() {
         let tokenizer = ParakeetTokenizer::from_bytes(MINI, 5).expect("parse mini tokenizer");
         assert_eq!(
-            tokenizer.decode(&[3, 1, 1, 4, 2], 4, 2, 0).unwrap(),
+            tokenizer.decode(&[3, 1, 1, 4, 2], 4, 2, Some(0)).unwrap(),
             "helloaa"
         );
     }
@@ -207,5 +285,19 @@ mod tests {
         let bytes = document.replacen("\"BPE\"", "\"Unigram\"", 1);
         let error = ParakeetTokenizer::from_bytes(bytes.as_bytes(), 5).unwrap_err();
         assert!(error.to_string().contains("must be `BPE`"));
+    }
+
+    #[test]
+    fn sentencepiece_vocab_decodes_without_a_protobuf_runtime() {
+        let tokenizer = ParakeetTokenizer::from_sentencepiece_vocab_bytes(
+            b"<unk>\t0\n\xe2\x96\x81hello\t-1\na\t-2\n",
+            4,
+            3,
+        )
+        .expect("parse plaintext vocab");
+        assert_eq!(
+            tokenizer.decode(&[1, 2, 2, 3], 3, 3, None).unwrap(),
+            "helloaa"
+        );
     }
 }

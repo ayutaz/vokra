@@ -1,87 +1,24 @@
-//! **FRCRN** (Frequency Recurrent Convolutional Recurrent Network):
-//! safetensors checkpoint → GGUF conversion (coverage-audit wave-a,
-//! 2026-08-03).
+//! Exact Alibaba FRCRN-SE-16K checkpoint to GGUF conversion.
 //!
-//! Input: the upstream FRCRN release from `alibabasglab/FRCRN`
-//! (`github.com/alibabasglab/FRCRN`), also distributed inside the
-//! ClearerVoice-Studio pipeline (`github.com/modelscope/ClearerVoice-Studio`).
-//! Output: a GGUF carrying every float tensor plus the `vokra.provenance.*`
-//! / `vokra.model.*` / `vokra.schema.*` metadata chunks a future native
-//! `vokra-models::frcrn::*` implementation will read.
+//! The official checkpoint is a PyTorch pickle. The offline
+//! `tools/parity/frcrn_prepare_checkpoint.py` sidecar extracts its inference
+//! state into safetensors; this converter then accepts exactly the audited
+//! 812-tensor F32 topology. Missing, extra, renamed, reshaped, or non-F32
+//! tensors are errors. An arbitrary float checkpoint can therefore no longer
+//! acquire the `frcrn` architecture tag.
 //!
-//! # Model class
+//! The topology is independently transcribed from ClearerVoice-Studio source
+//! revision [`SOURCE_REVISION`] and its `FRCRN_SE_16K.yaml`. Code and weights
+//! are Apache-2.0: the weight declaration is the official
+//! `alibabasglab/FRCRN_SE_16K` model card, while the implementation license is
+//! the ClearerVoice-Studio root `LICENSE`. The older standalone FRCRN GitHub
+//! repository does not currently carry a license file and is not used as the
+//! weight-license source.
 //!
-//! FRCRN is a monaural speech-enhancement model that boosts feature
-//! representation via **frequency recurrence** on top of a Complex-valued
-//! U-Net + frequency-recurrent LSTM (Zhao et al., ICASSP 2022,
-//! `arXiv:2206.07293` "FRCRN: Boosting Feature Representation Using
-//! Frequency Recurrence for Monaural Speech Enhancement"). Category is
-//! `"denoise"` — same tier as DeepFilterNet3
-//! (`crates/vokra-convert/src/models/denoise.rs`), but the topology is
-//! completely distinct (Complex U-Net + freq-recurrent LSTM vs the DFN3
-//! ERB / DF-net stack) so the arch tag is deliberately not aliased with
-//! `"denoise"` (silently sharing the DFN3 tag would misroute the runtime
-//! dispatch — the future `vokra-models::frcrn::from_gguf` reads a
-//! completely different tensor manifest than DeepFilterNet3).
-//!
-//! # License
-//!
-//! Both code and weights ship **Apache-2.0** end-to-end
-//! (`github.com/alibabasglab/FRCRN/blob/main/LICENSE` and the
-//! ClearerVoice-Studio umbrella `github.com/modelscope/ClearerVoice-Studio`
-//! `LICENSE`, both Apache-2.0, verified from the upstream repos'
-//! primary sources per the ticket's "Publish gate" `redistributable`
-//! entry, `docs/tickets/coverage-audit-2026-08-03/wave-a/frcrn.md`).
-//! Apache-2.0 is a `Permissive` license class — no runtime-side
-//! attribution obligation (unlike NVIDIA's CC-BY 4.0 Parakeet-CTC or
-//! Canary which stamp FR-MD-09 attribution text).
-//!
-//! # BF16 pass-through
-//!
-//! Every F32 / F16 / BF16 tensor passes through **verbatim** as the
-//! matching GGUF type (BF16 emits type 30 = `GgmlType::BF16`, no
-//! convert-time widening — the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point `crates/vokra-core/src/gguf/quant/
-//! mod.rs decode_bf16`). Mirror of `qwen3_tts` / `vibevoice` /
-//! `voxcpm2` / `wespeaker` / `emotion2vec` — the landed sibling posture
-//! that keeps the CI cache footprint at the smallest tensor payload
-//! while preserving the exact upstream bit pattern.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / WeSpeaker / emotion2vec contract). Real-weight parity
-//! binding is a follow-up wave gated on the upstream tensor-name
-//! manifest fetch + license §3.1 sign-off (`docs/license-audit.md`);
-//! this converter passes every float tensor through unchanged so a
-//! future `FrcrnWeights::from_gguf` can walk the same names.
-//!
-//! # Prep script bridge
-//!
-//! The FRCRN upstream release ships torch `.pt` (or `.pth`) checkpoints
-//! (see `alibabasglab/FRCRN` + the ClearerVoice-Studio ModelScope hub
-//! download logic), so a downstream user runs the sidecar
-//! `tools/parity/frcrn_prepare_checkpoint.py` (uv-managed, Python 3.12)
-//! to flatten the pickle to safetensors before invoking this converter —
-//! the same posture the DFN3 / DAC / Kokoro / UTMOS / SBV2 converters
-//! use. The runtime never sees Python / torch (FR-LD-05).
-//!
-//! # No ONNX (permanent)
-//!
-//! FRCRN is distributed as torch pickles + a Python pipeline; this
-//! converter **never** touches ONNX (FR-LD-05); the enhancement pipeline
-//! is re-implemented natively in a future
-//! `crates/vokra-models/src/frcrn/` module (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
-//!
-//! # Wiring status
-//!
-//! Fully wired: `ModelKind::Frcrn` + `from_arg("frcrn" | …)` +
-//! `as_arg() == "frcrn"` + `convert_file` dispatch arm all land with this
-//! module (mirror of the ecapa_tdnn / wespeaker / speaker_3d /
-//! emotion2vec wiring landed 2026-07-25).
+//! Runtime execution is native Rust. Neither this converter nor the runtime
+//! consumes ONNX, protobuf, or a Python runtime.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -90,167 +27,322 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for FRCRN GGUFs. Distinct from every sibling arch
-/// tag — silently aliasing `"denoise"` (which DeepFilterNet3 owns) would
-/// misroute the runtime dispatch (an ERB / DF-net loader would try to
-/// interpret a Complex U-Net + freq-recurrent LSTM checkpoint).
+/// Runtime/converter architecture tag.
 pub const ARCH: &str = "frcrn";
-
-/// `vokra.model.name` value written for the canonical FRCRN GGUF.
+/// Canonical public model name retained for compatibility with `vokra/frcrn`.
 pub const NAME: &str = "frcrn";
-
-/// `vokra.model.category` value — the second `"denoise"` model in the
-/// converter tree (after DeepFilterNet3). Consumed by the model-card
-/// generator + zoo manifest tier gate.
+/// Model-zoo category.
 pub const CATEGORY: &str = "denoise";
-
-/// Ad-hoc metadata key for the model category. Kept as a converter-side
-/// constant (not a `chunks::KEY_*` alias) until a sibling `category`
-/// consumer lands in `vokra-core` — mirror of the wespeaker /
-/// speaker_3d / emotion2vec local constant.
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-
-/// Upstream repository slug (`org/name`) recorded under
-/// `vokra.provenance.upstream_hf` so a downstream consumer can trace the
-/// artifact back to its serving location. The value points at the
-/// original author's GitHub repo — the ClearerVoice-Studio mirror is
-/// noted in the free-text `vokra.provenance.source` stamp.
-const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-pub const UPSTREAM_HF: &str = "alibabasglab/FRCRN";
-
-/// Canonical weight license SPDX (`apache-2.0`). Overrides via the
-/// [`convert_frcrn_file`] `license` parameter — the standing mechanism
-/// for "implementation is clean-room MIT but the upstream distributed
-/// checkpoint is another license" scenarios (mirror of
-/// `convert_file_licensed` in `lib.rs` and the `license` arg on
-/// `convert_wespeaker_file` / `convert_emotion2vec_file`).
+/// Official Hugging Face weight repository.
+pub const UPSTREAM_HF: &str = "alibabasglab/FRCRN_SE_16K";
+/// Immutable official weight revision audited on 2026-08-26.
+pub const UPSTREAM_REVISION: &str = "3766e6a64b0d8cb58f08d913d617bf129f11ed53";
+/// ClearerVoice-Studio source revision used for the native transcription.
+pub const SOURCE_REVISION: &str = "6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61";
+/// SHA-256 of official `last_best_checkpoint.pt` (161,053,751 bytes).
+pub const CHECKPOINT_SHA256: &str =
+    "b22256adbb91b68cf5a3db8f6657a4fb17066eecd5f069803e59c186c1cf3ebb";
+/// Canonical name/shape manifest digest of the published 812-tensor GGUF.
+pub const TENSOR_MANIFEST_SHA256: &str =
+    "ca71dad1ae5293d3d63628b71127c0efdf004cec684e5a341ab376ce3e2851b7";
+/// Pinned checkpoint byte length.
+pub const CHECKPOINT_BYTES: u32 = 161_053_751;
+/// Official checkpoint and source license.
 pub const DEFAULT_LICENSE: &str = "apache-2.0";
+/// Exact float tensor count after dropping BatchNorm counters.
+pub const TENSOR_COUNT: usize = 812;
 
-/// Outcome of an FRCRN conversion.
-///
-/// All counters are additive and default to zero — a zero-tensor
-/// checkpoint returns `FrcrnReport::default()` and the caller remains
-/// responsible for surfacing the "no float tensors" loud note (mirror
-/// of the qwen3_tts / vibevoice / voxcpm2 / wespeaker / emotion2vec
-/// `Report` pattern). `read == written + skipped_non_float` is an
-/// invariant preserved by [`convert_frcrn_file`].
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const WINDOW_LENGTH: u32 = 640;
+pub const HOP_LENGTH: u32 = 320;
+pub const FFT_LENGTH: u32 = 640;
+pub const FEATURE_DIM: u32 = 321;
+pub const MODEL_DEPTH: u32 = 14;
+pub const CHANNELS: u32 = 128;
+pub const FSMN_ORDER: u32 = 20;
+pub const SE_HIDDEN: u32 = 16;
+pub const UNET_COUNT: u32 = 2;
+
+const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub const KEY_UPSTREAM_REVISION: &str = "vokra.frcrn.upstream_revision";
+pub const KEY_SOURCE_REVISION: &str = "vokra.frcrn.source_revision";
+pub const KEY_CHECKPOINT_SHA256: &str = "vokra.frcrn.checkpoint_sha256";
+pub const KEY_CHECKPOINT_BYTES: &str = "vokra.frcrn.checkpoint_bytes";
+pub const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.frcrn.tensor_manifest_sha256";
+pub const KEY_SAMPLE_RATE: &str = "vokra.frcrn.sample_rate";
+pub const KEY_WINDOW_LENGTH: &str = "vokra.frcrn.window_length";
+pub const KEY_HOP_LENGTH: &str = "vokra.frcrn.hop_length";
+pub const KEY_FFT_LENGTH: &str = "vokra.frcrn.fft_length";
+pub const KEY_FEATURE_DIM: &str = "vokra.frcrn.feature_dim";
+pub const KEY_MODEL_DEPTH: &str = "vokra.frcrn.model_depth";
+pub const KEY_CHANNELS: &str = "vokra.frcrn.channels";
+pub const KEY_FSMN_ORDER: &str = "vokra.frcrn.fsmn_order";
+pub const KEY_SE_HIDDEN: &str = "vokra.frcrn.se_hidden";
+pub const KEY_UNET_COUNT: &str = "vokra.frcrn.unet_count";
+pub const KEY_WINDOW_TYPE: &str = "vokra.frcrn.window_type";
+pub const KEY_COMPLEX: &str = "vokra.frcrn.complex";
+
+const PROVENANCE_SOURCE: &str =
+    "alibabasglab/FRCRN_SE_16K weights + modelscope/ClearerVoice-Studio native source (Apache-2.0)";
+
+/// Successful conversion counters. Exact conversion always returns
+/// `812 / 812 / 0 / 0`; the legacy fields remain API-compatible.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FrcrnReport {
-    /// Total tensors observed in the input safetensors header.
+    /// Exact tensors read from the prepared checkpoint.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16 all go through
-    /// the same byte-copy path since the BF16 pass-through landed
-    /// 2026-07-25).
+    /// Exact F32 tensors written to GGUF.
     pub written: usize,
-    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
-    /// safetensors reader rejects unknown dtypes at parse time; anything
-    /// that reaches this arm signals a reader change upstream).
+    /// Always zero for a successful strict conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset counter).
-    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
-    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    /// Always zero because the official checkpoint is F32.
     pub bf16_passthrough: usize,
 }
 
-/// Reads a safetensors checkpoint at `input` and writes an FRCRN GGUF to
-/// `output`.
-///
-/// Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
-/// name; the `vokra.provenance.*` + `vokra.model.*` chunk groups pin the
-/// upstream slug, weight license, and model category so the zoo
-/// manifest + model-card generator can gate on the artifact alone (no
-/// side-car lookup). `vokra.schema.*` is written unconditionally by the
-/// GGUF writer.
-///
-/// `license` overrides `DEFAULT_LICENSE` (`"apache-2.0"`) — the same
-/// mechanism `lib.rs::convert_file_licensed` uses when the implementation
-/// is clean-room but the redistributed checkpoint carries a different
-/// SPDX.
-///
-/// # Errors
-///
-/// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input;
-/// [`ConvertError::Gguf`] if the GGUF serialization fails.
+/// Convert the exact official FRCRN-SE-16K prepared checkpoint to GGUF.
 pub fn convert_frcrn_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<FrcrnReport, ConvertError> {
-    // Whole-file read: FRCRN ships as a single ~30 MB `.pt` (per the
-    // ticket size estimate), which the prep script flattens into an
-    // equally small `.safetensors` — well under the streaming threshold
-    // the Moshi 15 GB / Voxtral 8.7 GB converters run. Any future
-    // 500M+ FRCRN sibling would swap this call for
-    // `SafetensorsFileReader::open` + `GgufStreamWriter::begin` per the
-    // moshi.rs / qwen3_tts.rs ADR.
+    let license = require_official_license(license)?;
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let st = SafetensorsFile::parse(bytes)?;
+    validate_input_manifest(&st)?;
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    let mut builder = GgufBuilder::new();
+    stamp_contract(&mut builder, license);
+    for tensor in st.tensors() {
+        builder
+            .add_tensor(
+                &tensor.name,
+                GgmlType::F32,
+                tensor.shape.clone(),
+                st.tensor_bytes(tensor).to_vec(),
+            )
+            .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    }
+    let output_bytes = builder
+        .to_bytes()
+        .map_err(|error| ConvertError::Gguf(error.to_string()))?;
+    std::fs::write(output, output_bytes).map_err(ConvertError::Io)?;
 
-    // Self-describing redistribution: the artifact carries its own
-    // licence. Default = apache-2.0 (upstream `alibabasglab/FRCRN`
-    // `LICENSE` + the ClearerVoice-Studio umbrella `LICENSE`, both
-    // Apache-2.0, primary-source verified per the wave-a ticket).
-    // `license` overrides for callers who obtained the weight under a
-    // different SPDX (see `convert_file_licensed` in `lib.rs`).
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE.to_owned(), LicenseClass::Permissive),
-    };
+    Ok(FrcrnReport {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+    })
+}
+
+fn require_official_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
+    let requested = license.unwrap_or(DEFAULT_LICENSE).trim();
+    if !requested.eq_ignore_ascii_case(DEFAULT_LICENSE) {
+        return Err(parse_error(format!(
+            "license override `{requested}` conflicts with the pinned official Apache-2.0 checkpoint"
+        )));
+    }
+    Ok(DEFAULT_LICENSE)
+}
+
+fn stamp_contract(builder: &mut GgufBuilder, spdx: &str) {
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    builder.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    builder.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    builder.add_string(KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256);
+    builder.add_u32(KEY_CHECKPOINT_BYTES, CHECKPOINT_BYTES);
+    builder.add_string(KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256);
+    builder.add_u32(KEY_SAMPLE_RATE, SAMPLE_RATE);
+    builder.add_u32(KEY_WINDOW_LENGTH, WINDOW_LENGTH);
+    builder.add_u32(KEY_HOP_LENGTH, HOP_LENGTH);
+    builder.add_u32(KEY_FFT_LENGTH, FFT_LENGTH);
+    builder.add_u32(KEY_FEATURE_DIM, FEATURE_DIM);
+    builder.add_u32(KEY_MODEL_DEPTH, MODEL_DEPTH);
+    builder.add_u32(KEY_CHANNELS, CHANNELS);
+    builder.add_u32(KEY_FSMN_ORDER, FSMN_ORDER);
+    builder.add_u32(KEY_SE_HIDDEN, SE_HIDDEN);
+    builder.add_u32(KEY_UNET_COUNT, UNET_COUNT);
+    builder.add_string(KEY_WINDOW_TYPE, "hanning-sqrt-periodic");
+    builder.add_bool(KEY_COMPLEX, true);
     vokra_core::stamp_provenance(
-        &mut b,
-        class,
-        &spdx,
+        builder,
+        LicenseClass::Permissive,
+        spdx,
         Some(NAME),
-        Some(
-            "alibabasglab/FRCRN (Complex U-Net + frequency-recurrent LSTM, \
-             DNS Challenge 2022, apache-2.0; also distributed via \
-             modelscope/ClearerVoice-Studio)",
-        ),
+        Some(PROVENANCE_SOURCE),
     );
+}
 
-    let mut report = FrcrnReport::default();
-    // Float tensors pass through **verbatim** — no convert-time
-    // widening. BF16 stays GGUF `BF16` (type 30) per the accepted ADR
-    // (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough); the runtime
-    // widens BF16 → f32 exactly at load via the single choke point
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
-    // `qwen3_tts::convert` / `vibevoice::convert` / `voxcpm2::convert` /
-    // `wespeaker::convert` / `emotion2vec::convert`.
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+fn validate_input_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = tensor_manifest();
+    if expected.len() != TENSOR_COUNT || st.tensors().len() != TENSOR_COUNT {
+        return Err(parse_error(format!(
+            "checkpoint has {} tensors, expected exactly {TENSOR_COUNT} from {UPSTREAM_HF}@{UPSTREAM_REVISION}",
+            st.tensors().len()
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for tensor in st.tensors() {
+        let shape = expected
+            .get(&tensor.name)
+            .ok_or_else(|| parse_error(format!("unexpected tensor `{}`", tensor.name)))?;
+        if &tensor.shape != shape {
+            return Err(parse_error(format!(
+                "tensor `{}` has shape {:?}, expected {shape:?}",
+                tensor.name, tensor.shape
+            )));
+        }
+        if tensor.dtype != GgmlType::F32 {
+            return Err(parse_error(format!(
+                "tensor `{}` is {:?}, expected F32 in the pinned official checkpoint",
+                tensor.name, tensor.dtype
+            )));
+        }
+        if !seen.insert(tensor.name.as_str()) {
+            return Err(parse_error(format!(
+                "checkpoint repeats tensor `{}`",
+                tensor.name
+            )));
         }
     }
+    if let Some(missing) = expected.keys().find(|name| !seen.contains(name.as_str())) {
+        return Err(parse_error(format!(
+            "checkpoint is missing tensor `{missing}`"
+        )));
+    }
+    Ok(())
+}
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
-    Ok(report)
+fn parse_error(message: impl Into<String>) -> ConvertError {
+    ConvertError::Parse(format!("frcrn: {}", message.into()))
+}
+
+/// Exact public/official 812-tensor F32 name and shape contract.
+pub fn tensor_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut out = BTreeMap::new();
+    insert(&mut out, "stft.weight", &[642, 1, 640]);
+    insert(&mut out, "istft.weight", &[642, 1, 640]);
+    insert(&mut out, "istft.window", &[1, 640, 1]);
+    insert(&mut out, "istft.enframe", &[640, 1, 640]);
+    add_unet(&mut out, "unet");
+    add_unet(&mut out, "unet2");
+    debug_assert_eq!(out.len(), TENSOR_COUNT);
+    out
+}
+
+fn add_unet(out: &mut BTreeMap<String, Vec<u64>>, root: &str) {
+    for layer in 0..7 {
+        let in_channels = if layer == 0 { 1 } else { 128 };
+        let kernel_h = if layer == 6 { 2 } else { 5 };
+        let prefix = format!("{root}.encoder{layer}");
+        add_complex_conv(
+            out,
+            &format!("{prefix}.conv"),
+            "conv",
+            &[128, in_channels, kernel_h, 2],
+            128,
+        );
+        add_complex_batch_norm(out, &format!("{prefix}.bn"), 128);
+    }
+
+    let decoder_geometry: &[(u64, u64, u64)] = &[
+        (128, 128, 2),
+        (256, 128, 5),
+        (256, 128, 5),
+        (256, 128, 5),
+        (256, 128, 6),
+        (256, 128, 5),
+        (256, 1, 5),
+    ];
+    for (layer, &(in_channels, out_channels, kernel_h)) in decoder_geometry.iter().enumerate() {
+        let prefix = format!("{root}.decoder{layer}");
+        add_complex_conv(
+            out,
+            &format!("{prefix}.transconv"),
+            "tconv",
+            &[in_channels, out_channels, kernel_h, 2],
+            out_channels,
+        );
+        add_complex_batch_norm(out, &format!("{prefix}.bn"), out_channels);
+    }
+
+    add_central_fsmn(out, &format!("{root}.fsmn"));
+    for layer in 0..7 {
+        add_l1_fsmn(out, &format!("{root}.fsmn_enc{layer}"));
+        add_l1_fsmn(out, &format!("{root}.fsmn_dec{layer}"));
+        add_se(out, &format!("{root}.se_layer_enc{layer}"));
+        if layer < 6 {
+            add_se(out, &format!("{root}.se_layer_dec{layer}"));
+        }
+    }
+    add_complex_conv(out, &format!("{root}.linear"), "conv", &[1, 1, 1, 1], 1);
+}
+
+fn add_complex_conv(
+    out: &mut BTreeMap<String, Vec<u64>>,
+    prefix: &str,
+    stem: &str,
+    weight_shape: &[u64],
+    bias: u64,
+) {
+    for component in ["re", "im"] {
+        insert(
+            out,
+            format!("{prefix}.{stem}_{component}.weight"),
+            weight_shape,
+        );
+        insert(out, format!("{prefix}.{stem}_{component}.bias"), &[bias]);
+    }
+}
+
+fn add_complex_batch_norm(out: &mut BTreeMap<String, Vec<u64>>, prefix: &str, channels: u64) {
+    for component in ["re", "im"] {
+        for field in ["weight", "bias", "running_mean", "running_var"] {
+            insert(out, format!("{prefix}.bn_{component}.{field}"), &[channels]);
+        }
+    }
+}
+
+fn add_central_fsmn(out: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    for component in ["re", "im"] {
+        for level in ["L1", "L2"] {
+            add_real_fsmn(out, &format!("{prefix}.fsmn_{component}_{level}"));
+        }
+    }
+}
+
+fn add_l1_fsmn(out: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    for component in ["re", "im"] {
+        add_real_fsmn(out, &format!("{prefix}.fsmn_{component}_L1"));
+    }
+}
+
+fn add_real_fsmn(out: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    insert(out, format!("{prefix}.linear.weight"), &[128, 128]);
+    insert(out, format!("{prefix}.linear.bias"), &[128]);
+    insert(out, format!("{prefix}.project.weight"), &[128, 128]);
+    insert(out, format!("{prefix}.conv1.weight"), &[128, 1, 20, 1]);
+}
+
+fn add_se(out: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    for component in ["r", "i"] {
+        insert(out, format!("{prefix}.fc_{component}.0.weight"), &[16, 128]);
+        insert(out, format!("{prefix}.fc_{component}.0.bias"), &[16]);
+        insert(out, format!("{prefix}.fc_{component}.2.weight"), &[128, 16]);
+        insert(out, format!("{prefix}.fc_{component}.2.bias"), &[128]);
+    }
+}
+
+fn insert(out: &mut BTreeMap<String, Vec<u64>>, name: impl Into<String>, shape: &[u64]) {
+    let name = name.into();
+    assert!(
+        out.insert(name.clone(), shape.to_vec()).is_none(),
+        "duplicate FRCRN manifest entry {name}"
+    );
 }
 
 #[cfg(test)]
@@ -258,234 +350,126 @@ mod tests {
     use super::*;
     use vokra_core::gguf::GgufFile;
 
-    /// Per-process, per-test scratch path in the system temp dir (moshi
-    /// / emotion2vec / wespeaker test pattern — no external `tempfile`
-    /// dep, preserving zero-dep NFR-DS-02). The nanosecond suffix
-    /// separates parallel `cargo test` runs so they cannot clobber each
-    /// other's files.
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-frcrn-{}-{}-{}.bin",
-            tag,
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "vokra-frcrn-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default(),
-        ));
-        p
+                .unwrap()
+                .as_nanos()
+        ))
     }
 
-    /// Builds a synthetic safetensors buffer with a single BF16 tensor.
-    ///
-    /// The payload is chosen from a known set of non-zero BF16 bit
-    /// patterns so a byte-identity assert catches any silent widen /
-    /// downcast attempt — the raw zeroed payload would round-trip
-    /// trivially through F32 / F16 widen and defeat the pin (mirror of
-    /// emotion2vec's fixture).
-    fn synthetic_bf16_safetensors() -> (Vec<u8>, Vec<u8>) {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
+    fn one_tensor_safetensors(dtype: &str, name: &str, shape: &[u64]) -> Vec<u8> {
+        let width = match dtype {
+            "F32" => 4,
+            "F16" | "BF16" => 2,
+            _ => panic!("unsupported fixture dtype"),
+        };
+        let bytes = shape.iter().product::<u64>() as usize * width;
+        let dimensions = shape
             .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
-        let header = r#"{"encoder.complex_conv0.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&bf16);
-        (buf, bf16)
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let header = format!(
+            "{{\"{name}\":{{\"dtype\":\"{dtype}\",\"shape\":[{dimensions}],\"data_offsets\":[0,{bytes}]}}}}"
+        );
+        let mut out = Vec::with_capacity(8 + header.len() + bytes);
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(header.as_bytes());
+        out.resize(8 + header.len() + bytes, 0);
+        out
     }
 
-    /// Builds a synthetic safetensors buffer with one F32 tensor
-    /// (`shape=[2,3]`, 24 B) followed by one F16 tensor
-    /// (`shape=[1,4]`, 8 B). The offsets are chosen so the tensors are
-    /// contiguous in the data region — mirror of emotion2vec's fixture.
-    fn synthetic_f32_and_f16_safetensors() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let f32_vals: [f32; 6] = [1.0, -2.0, 3.5, -0.25, 100.0, 0.001];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 24, "6 elements × 4 bytes F32 payload");
-        let f16_patterns: [u16; 4] = [0x3C00, 0xC000, 0x4200, 0x0001];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|p| p.to_le_bytes()).collect();
-        assert_eq!(f16_bytes.len(), 8, "4 elements × 2 bytes F16 payload");
-        let header = r#"{"encoder.complex_conv0.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"decoder.complex_conv0.weight":{"dtype":"F16","shape":[1,4],"data_offsets":[24,32]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&f32_bytes);
-        buf.extend_from_slice(&f16_bytes);
-        (buf, f32_bytes, f16_bytes)
-    }
-
-    /// BF16 pass-through: the upstream BF16 checkpoint must survive the
-    /// file-based converter round-trip with its dtype preserved (GGUF
-    /// type 30 = `GgmlType::BF16`) and its payload byte-identical to the
-    /// input. Mirror of the emotion2vec / wespeaker equivalent.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synthetic_bf16_safetensors();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
+    fn exact_manifest_has_public_tensor_count_and_shapes() {
+        let manifest = tensor_manifest();
+        assert_eq!(manifest.len(), 812);
+        assert_eq!(manifest["stft.weight"], vec![642, 1, 640]);
+        assert_eq!(
+            manifest["unet.encoder0.conv.conv_re.weight"],
+            vec![128, 1, 5, 2]
+        );
+        assert_eq!(
+            manifest["unet2.decoder4.transconv.tconv_im.weight"],
+            vec![256, 128, 6, 2]
+        );
+        assert_eq!(
+            manifest["unet2.fsmn.fsmn_re_L2.conv1.weight"],
+            vec![128, 1, 20, 1]
+        );
+        assert_eq!(manifest["unet.se_layer_dec5.fc_i.2.weight"], vec![128, 16]);
+        assert!(!manifest.contains_key("unet.se_layer_dec6.fc_i.0.weight"));
+    }
 
-        let report = convert_frcrn_file(&input, &output, None).expect("convert");
+    #[test]
+    fn incomplete_or_non_f32_checkpoint_is_refused_without_output() {
+        for (tag, dtype) in [("incomplete", "F32"), ("bf16", "BF16")] {
+            let input = scratch(&format!("{tag}.safetensors"));
+            let output = scratch(&format!("{tag}.gguf"));
+            std::fs::write(
+                &input,
+                one_tensor_safetensors(dtype, "stft.weight", &[642, 1, 640]),
+            )
+            .unwrap();
+            let error = convert_frcrn_file(&input, &output, None).unwrap_err();
+            assert!(error.to_string().contains("expected exactly 812"));
+            assert!(!output.exists());
+            std::fs::remove_file(input).ok();
+        }
+    }
 
-        // Counters: single BF16 tensor read + written + BF16 subset.
-        assert_eq!(report.read, 1, "one tensor visible in safetensors header");
-        assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of emotion2vec)"
+    #[test]
+    fn conflicting_license_override_is_refused_before_input_read() {
+        let error = convert_frcrn_file(
+            Path::new("does-not-exist.safetensors"),
+            Path::new("does-not-exist.gguf"),
+            Some("mit"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("conflicts with the pinned official")
         );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
+    }
 
-        // Round-trip: dtype preserved, payload byte-identical (no silent widen).
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let info = file
-            .tensor_info("encoder.complex_conv0.weight")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input"
-        );
-
-        // Provenance + category chunks pinned on the artifact itself.
+    #[test]
+    fn contract_stamps_pinned_provenance_and_topology() {
+        let path = scratch("contract.gguf");
+        let mut builder = GgufBuilder::new();
+        stamp_contract(&mut builder, DEFAULT_LICENSE);
+        std::fs::write(&path, builder.to_bytes().unwrap()).unwrap();
+        let file = GgufFile::open(&path).unwrap();
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
             Some(ARCH)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF)
         );
         assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE)
+            file.get(KEY_CHECKPOINT_SHA256).and_then(|v| v.as_str()),
+            Some(CHECKPOINT_SHA256)
         );
+        assert_eq!(
+            file.get(KEY_CHECKPOINT_BYTES).and_then(|v| v.as_u64()),
+            Some(u64::from(CHECKPOINT_BYTES))
+        );
+        assert_eq!(
+            file.get(KEY_SAMPLE_RATE).and_then(|v| v.as_u64()),
+            Some(u64::from(SAMPLE_RATE))
+        );
+        assert_eq!(file.get(KEY_COMPLEX).and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
                 .and_then(|v| v.as_str()),
             Some(LicenseClass::Permissive.as_str())
         );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY),
-            "category chunk pins the second `denoise` model in the tree"
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF),
-            "upstream slug pins traceability back to alibabasglab/FRCRN"
-        );
-        assert!(
-            file.get(chunks::KEY_SCHEMA_VERSION).is_some(),
-            "vokra.schema.version must be stamped"
-        );
-        assert!(
-            file.get(chunks::KEY_SCHEMA_PRODUCER).is_some(),
-            "vokra.schema.producer must be stamped"
-        );
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-    }
-
-    /// F32 + F16 pass-through: two float tensors of distinct dtypes in
-    /// the same input must both reach the pass-through arm without
-    /// collapsing into a single dtype branch, and the BF16 counter must
-    /// remain 0. Guards against a naive `if bf16 { … } else` refactor.
-    #[test]
-    fn f32_and_f16_tensors_pass_through() {
-        let (input_bytes, f32_payload, f16_payload) = synthetic_f32_and_f16_safetensors();
-        let input = scratch_path("f32f16-in");
-        let output = scratch_path("f32f16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
-
-        let report = convert_frcrn_file(&input, &output, None).expect("convert");
-
-        assert_eq!(report.read, 2, "two tensors visible in header");
-        assert_eq!(report.written, 2, "both F32 and F16 must pass through");
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "no tensor may reach the skipped arm"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32+F16-only input must leave the BF16 subset counter at Default 0"
-        );
-
-        // Both tensors survive the round-trip with their upstream names
-        // and dtypes preserved.
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let f32_info = file
-            .tensor_info("encoder.complex_conv0.weight")
-            .expect("F32 tensor present");
-        assert_eq!(f32_info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(f32_info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_payload.as_slice());
-
-        let f16_info = file
-            .tensor_info("decoder.complex_conv0.weight")
-            .expect("F16 tensor present");
-        assert_eq!(f16_info.dtype, GgmlType::F16, "F16 stays F16");
-        assert_eq!(f16_info.dimensions, vec![1, 4]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_payload.as_slice());
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-    }
-
-    /// License override: the caller-supplied SPDX must replace the
-    /// default `apache-2.0` stamp on the artifact (mirror of the
-    /// wespeaker / emotion2vec test — proves the standing
-    /// `convert_file_licensed` override reaches this arm).
-    #[test]
-    fn license_override_replaces_default_stamp() {
-        let (input_bytes, _) = synthetic_bf16_safetensors();
-        let input = scratch_path("license-in");
-        let output = scratch_path("license-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
-
-        // Override with `mit` (a Permissive alternative to apache-2.0)
-        // — the SPDX must land in the license stamp and the class must
-        // re-derive to Permissive.
-        convert_frcrn_file(&input, &output, Some("mit")).expect("convert with license override");
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit"),
-            "override SPDX must land in vokra.provenance.license"
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "MIT still resolves to Permissive"
-        );
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+        std::fs::remove_file(path).ok();
     }
 }

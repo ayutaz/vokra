@@ -9,12 +9,16 @@
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{Result, VokraError};
 use vokra_ops::{
-    FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, KaldiFbankOpts,
-    KaldiFbankWindow, fsmn_vad_forward, kaldi_fbank_with_window, softmax_last_axis,
+    FsmnBackendOps, FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights,
+    KaldiFbankOpts, KaldiFbankWindow, fsmn_vad_forward, fsmn_vad_forward_with_ops,
+    kaldi_fbank_with_window, softmax_last_axis,
 };
+
+use crate::compute::{Compute, HotOp};
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +41,11 @@ pub const MODEL_SHA256: &str = "b3be75be477f0780277f3bae0fe489f48718f585f3a6e45d
 pub const CMVN_SHA256: &str = "df189fd5f4352df84a0fd464eeab4e450a5e645665d6b38f13c832492261a739";
 /// SHA-256 of the pinned `config.yaml`.
 pub const CONFIG_SHA256: &str = "486861ca26ddb79081663b6179cb204c6bfae71c52f04aafc48a9e9d8dde1e93";
+
+/// Every learned primitive in the released FSMN encoder. CMVN, fbank, ReLU,
+/// residual addition, softmax and stream-history bookkeeping remain host
+/// preprocessing/control flow.
+const FSMN_VAD_HOT_OPS: &[HotOp] = &[HotOp::Gemv, HotOp::GroupedConv1d];
 
 /// Model-category metadata key.
 pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
@@ -288,6 +297,7 @@ pub struct FsmnVadV1 {
     weights: Arc<FsmnVadWeights>,
     cmvn_add_shift: Arc<Vec<f32>>,
     cmvn_rescale: Arc<Vec<f32>>,
+    backend: BackendKind,
 }
 
 impl FsmnVadV1 {
@@ -379,6 +389,7 @@ impl FsmnVadV1 {
             weights: Arc::new(weights),
             cmvn_add_shift: Arc::new(cmvn_add_shift),
             cmvn_rescale: Arc::new(cmvn_rescale),
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -392,10 +403,31 @@ impl FsmnVadV1 {
         &self.cfg
     }
 
+    /// Selects the backend for every learned projection and causal memory
+    /// convolution. Unsupported/unavailable backends fail explicitly when the
+    /// first feature chunk runs; they are never replaced with CPU execution.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected learned-op backend.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Runs a fresh-state network forward on normalized LFR features.
     pub fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
         let mut state = FsmnStreamState::zeros(&self.cfg.encoder)?;
-        let logits = fsmn_vad_forward(&self.cfg.encoder, &self.weights, features, &mut state)?;
+        let logits = fsmn_forward_dispatch(
+            self.backend,
+            &self.cfg.encoder,
+            &self.weights,
+            features,
+            &mut state,
+        )?;
         Ok(softmax_last_axis(&logits, self.cfg.encoder.output_dim))
     }
 }
@@ -407,6 +439,7 @@ impl vokra_core::engines::VadEngine for FsmnVadV1 {
             Arc::clone(&self.weights),
             Arc::clone(&self.cmvn_add_shift),
             Arc::clone(&self.cmvn_rescale),
+            self.backend,
         ))
     }
 }
@@ -422,6 +455,7 @@ pub struct FsmnVadStream {
     pending_pcm: Vec<f32>,
     pending_frames: Vec<f32>,
     lfr_initialized: bool,
+    backend: BackendKind,
 }
 
 impl FsmnVadStream {
@@ -430,6 +464,7 @@ impl FsmnVadStream {
         weights: Arc<FsmnVadWeights>,
         cmvn_add_shift: Arc<Vec<f32>>,
         cmvn_rescale: Arc<Vec<f32>>,
+        backend: BackendKind,
     ) -> Self {
         let state = FsmnStreamState::zeros(&cfg.encoder).expect("validated FSMN config");
         let fbank_opts = fsmn_vad_fbank_opts(cfg.sample_rate, cfg.n_mels as usize);
@@ -443,12 +478,19 @@ impl FsmnVadStream {
             pending_pcm: Vec::new(),
             pending_frames: Vec::new(),
             lfr_initialized: false,
+            backend,
         }
     }
 
     /// Runs normalized LFR features and returns `1 - p(silence)` per row.
     pub fn push_features(&mut self, features: &[f32]) -> Result<Vec<f32>> {
-        let logits = fsmn_vad_forward(&self.cfg.encoder, &self.weights, features, &mut self.state)?;
+        let logits = fsmn_forward_dispatch(
+            self.backend,
+            &self.cfg.encoder,
+            &self.weights,
+            features,
+            &mut self.state,
+        )?;
         let width = self.cfg.encoder.output_dim;
         let probabilities = softmax_last_axis(&logits, width);
         Ok(probabilities
@@ -513,6 +555,153 @@ impl FsmnVadStream {
                 *value = (*value + shift) * scale;
             }
         }
+    }
+}
+
+fn fsmn_forward_dispatch(
+    backend: BackendKind,
+    cfg: &FsmnEncoderConfig,
+    weights: &FsmnVadWeights,
+    features: &[f32],
+    state: &mut FsmnStreamState,
+) -> Result<Vec<f32>> {
+    if backend == BackendKind::Cpu {
+        return fsmn_vad_forward(cfg, weights, features, state);
+    }
+    let compute = Compute::for_backend(backend, FSMN_VAD_HOT_OPS)?;
+    fsmn_vad_forward_with_ops(
+        cfg,
+        weights,
+        features,
+        state,
+        &mut ComputeFsmnOps { compute: &compute },
+    )
+}
+
+struct ComputeFsmnOps<'a> {
+    compute: &'a Compute,
+}
+
+impl FsmnBackendOps for ComputeFsmnOps<'_> {
+    fn linear(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let input_len = rows.checked_mul(input_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad linear input extent overflow".to_owned())
+        })?;
+        let weight_len = output_dim.checked_mul(input_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad linear weight extent overflow".to_owned())
+        })?;
+        if input.len() != input_len
+            || weight.len() != weight_len
+            || bias.is_some_and(|values| values.len() != output_dim)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "fsmn-vad linear shape mismatch: input={} expected={input_len}, weight={} expected={weight_len}, bias={} expected=0-or-{output_dim}",
+                input.len(),
+                weight.len(),
+                bias.map_or(0, <[f32]>::len)
+            )));
+        }
+        let output_len = rows.checked_mul(output_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad linear output extent overflow".to_owned())
+        })?;
+        let mut output = vec![0.0f32; output_len];
+        for row in 0..rows {
+            self.compute.gemv_f32(
+                output_dim,
+                input_dim,
+                weight,
+                &input[row * input_dim..(row + 1) * input_dim],
+                bias,
+                &mut output[row * output_dim..(row + 1) * output_dim],
+            )?;
+        }
+        Ok(output)
+    }
+
+    fn causal_memory(
+        &mut self,
+        projected: &[f32],
+        frames: usize,
+        cfg: &FsmnEncoderConfig,
+        weights: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>> {
+        if cfg.lstride != 1 {
+            return Err(VokraError::UnsupportedOp(format!(
+                "fsmn-vad Metal causal memory requires the released lstride=1 contract, got {}; no CPU fallback is performed",
+                cfg.lstride
+            )));
+        }
+        let history_frames = cfg.left_history_frames();
+        let projected_len = frames.checked_mul(cfg.proj_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad projected extent overflow".to_owned())
+        })?;
+        let history_len = history_frames.checked_mul(cfg.proj_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad history extent overflow".to_owned())
+        })?;
+        let weight_len = cfg.proj_dim.checked_mul(cfg.lorder).ok_or_else(|| {
+            VokraError::InvalidArgument("fsmn-vad memory-weight extent overflow".to_owned())
+        })?;
+        if projected.len() != projected_len
+            || history.len() != history_len
+            || weights.len() != weight_len
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "fsmn-vad causal-memory shape mismatch: projected={} expected={projected_len}, history={} expected={history_len}, weights={} expected={weight_len}",
+                projected.len(),
+                history.len(),
+                weights.len()
+            )));
+        }
+
+        let in_len = history_frames + frames;
+        let mut combined = Vec::with_capacity((history_frames + frames) * cfg.proj_dim);
+        combined.extend_from_slice(history);
+        combined.extend_from_slice(projected);
+
+        // Grouped Conv1D consumes [channel, time], while the public FSMN op
+        // keeps [time, channel] to match the checkpoint/reference fixture.
+        let mut channel_major = vec![0.0f32; cfg.proj_dim * in_len];
+        for channel in 0..cfg.proj_dim {
+            for frame in 0..in_len {
+                channel_major[channel * in_len + frame] = combined[frame * cfg.proj_dim + channel];
+            }
+        }
+        let mut convolved = vec![0.0f32; cfg.proj_dim * frames];
+        self.compute.grouped_conv1d_f32(
+            &channel_major,
+            cfg.proj_dim,
+            in_len,
+            weights,
+            cfg.proj_dim,
+            cfg.lorder,
+            None,
+            1,
+            0,
+            cfg.proj_dim,
+            &mut convolved,
+        )?;
+
+        let mut output = projected.to_vec();
+        for frame in 0..frames {
+            for channel in 0..cfg.proj_dim {
+                output[frame * cfg.proj_dim + channel] += convolved[channel * frames + frame];
+            }
+        }
+
+        history.clear();
+        if history_len > 0 {
+            history.extend_from_slice(&combined[combined.len() - history_len..]);
+        }
+        Ok(output)
     }
 }
 

@@ -1,4 +1,4 @@
-# piper-plus MB-iSTFT-VITS2 parity fixture (M0-07-T21)
+# piper-plus official-ONNX parity fixture (M0-07-T21)
 # Generated offline by gen_reference.py via onnxruntime (deterministic).
 piper_version = 1.11.0
 phoneme_ids = 1 32 0 14 0 25 0 57 0 11 0 38 0 11 0 63 0 10 0 2
@@ -8,6 +8,12 @@ length_scale = 1.0
 noise_w = 0.0
 hidden = 192
 t_phonemes = 20
-t_frames = 49
-pcm_len = 12544
+t_frames = 21
+pcm_len = 5376
 sample_rate = 22050
+onnx_file = css10-ja-6lang-fp16.onnx
+onnx_sha256 = 5ebc51dbf897238523f3df0d6e0f6c93033bc5cda3f8602a8379ebe2a4738c42
+config_sha256 = 3c613dacf139349c20159433559b2e94e6364e9a340d95245f3de6006f453fcc
+reference_engine = onnxruntime 1.23.2
+upstream_repo = ayousanz/piper-plus-css10-ja-6lang
+upstream_revision = bf70fae2e21f9670456ebb40e8df131f146f1821

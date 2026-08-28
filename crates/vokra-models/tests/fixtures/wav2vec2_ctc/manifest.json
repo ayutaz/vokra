@@ -1,0 +1,19 @@
+{
+  "audio": "../../tests/parity/utmos/ref-clip.wav",
+  "cpu": "x86_64",
+  "format": "vokra-wav2vec2-ctc-reference-v1",
+  "frames": 99,
+  "hidden_size": 768,
+  "model_id": "facebook/wav2vec2-base-960h",
+  "numpy": "2.3.5",
+  "pad_blank_id": 0,
+  "pcm_samples": 32000,
+  "python": "3.12.14",
+  "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156",
+  "sample_rate": 16000,
+  "text": "FELL MY FELLOW AMERICANS",
+  "torch": "2.13.0+cu130",
+  "torch_cpu_capability": "DEFAULT",
+  "transformers": "5.15.0",
+  "vocab_size": 32
+}

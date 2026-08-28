@@ -228,9 +228,11 @@ const V001_FMAX: f32 = 1975.5;
 /// not a constructor parameter, which is why it is asserted rather than
 /// derived.
 const V001_STEM_GROUPS: u32 = 4;
-/// `fcpe_c_v001` V/UV threshold — upstream
-/// `latent2cents_local_decoder(threshold=0.05)`.
-const V001_CONFIDENCE_THRESHOLD: f32 = 0.05;
+/// `fcpe_c_v001` V/UV threshold — the upstream public waveform-to-F0 wrapper
+/// (`InferCFNaiveMelPE.forward` / `infer`) uses
+/// `threshold=0.006`. The lower-level local decoder's standalone default is
+/// 0.05, but it is overridden by the official public inference path.
+const V001_CONFIDENCE_THRESHOLD: f32 = 0.006;
 
 /// The count of `vokra.f0.fcpe.*` axes derived from tensor shapes.
 const DERIVED_AXIS_COUNT: usize = 7;

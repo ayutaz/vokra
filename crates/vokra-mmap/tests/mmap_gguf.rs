@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use vokra_core::VokraError;
 use vokra_core::gguf::{GgmlType, GgufBuilder, GgufError, GgufFile};
 
 /// A unique temp path for one test (tests share a pid, so the tag disambiguates).
@@ -101,6 +102,41 @@ fn mapped_bytes_survive_dropping_the_mmap_handle_indirection() {
     let again: Vec<u8> = mapped.tensor_data("t.f32").unwrap().to_vec();
     assert_eq!(copied, again);
     assert_eq!(copied.len(), 24);
+}
+
+#[test]
+fn mapped_f32_tensor_has_a_checked_zero_copy_view() {
+    let path = tmp_path("f32-view");
+    std::fs::write(&path, build_sample_gguf()).expect("write temp gguf");
+
+    let mapped = vokra_mmap::open_gguf(&path).expect("mmap path opens");
+    let bytes = mapped.tensor_data("t.f32").expect("raw tensor exists");
+    let values = vokra_mmap::tensor_f32_view(&mapped, "t.f32").expect("F32 view");
+
+    assert_eq!(values, &[1.0, -2.0, 3.5, 4.25, -5.0, 6.0]);
+    assert_eq!(values.as_ptr().cast::<u8>(), bytes.as_ptr());
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn zero_copy_f32_view_rejects_missing_and_non_f32_tensors() {
+    let path = tmp_path("f32-view-errors");
+    std::fs::write(&path, build_sample_gguf()).expect("write temp gguf");
+
+    let mapped = vokra_mmap::open_gguf(&path).expect("mmap path opens");
+    let err = vokra_mmap::tensor_f32_view(&mapped, "t.f16").unwrap_err();
+    assert!(
+        matches!(err, VokraError::ModelLoad(ref message) if message.contains("requires F32")),
+        "got {err:?}"
+    );
+    let err = vokra_mmap::tensor_f32_view(&mapped, "missing").unwrap_err();
+    assert!(
+        matches!(err, VokraError::ModelLoad(ref message) if message.contains("is missing")),
+        "got {err:?}"
+    );
+
+    std::fs::remove_file(&path).ok();
 }
 
 #[test]

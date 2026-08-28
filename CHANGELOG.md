@@ -12,6 +12,360 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ## [Unreleased]
 
+### Changed
+
+- The public Bark and Bark Small GGUFs now have a strict mapping-owned native
+  runtime for the semantic, coarse and fine token hierarchy and their embedded
+  causal 24 kHz EnCodec decoder. Exact 758/518-tensor all-F32 manifests select
+  the Full/Small topology; the historical Full width/head metadata is repaired
+  only after its complete immutable manifest matches. Callers pass text token
+  ids explicitly because the public files do not embed a tokenizer. CPU and
+  Metal preflight the complete learned hot-op set, including Bark's ELU codec
+  activation, and unsupported backends fail before generation. Standalone
+  EnCodec weights remain excluded, and VAST official-reference plus Apple
+  real-weight numerical parity are still pending rather than claimed.
+- The two public Qwen3-ASR checkpoints now have a strict, bounded-memory
+  runtime binder and a strict streaming converter. Fixed-revision GGUF header
+  audits authenticate the complete
+  612-tensor 0.6B and 708-tensor 1.7B name/shape manifests, every persisted
+  audio/text topology axis, exact upstream repository and permissive weight
+  provenance without decoding multi-gigabyte payloads. The converter consumes
+  either the official single safetensors file or Hugging Face shard index
+  directly, rejects manifest/dtype/license drift before writing, copies one
+  BF16 tensor at a time, and stamps the immutable source revision plus audited
+  manifest digest. New artifacts also stamp the exact 13-field 16 kHz,
+  400-point Hann, 160-hop, 128-band Slaney frontend contract. The runtime can
+  retain all 612/708 tensor descriptors over a true mmap without widening the
+  checkpoint, rejects missing/drifted frontend metadata on that executable
+  path, and implements the official variable-length log-mel and chunked
+  three-stride length transform. The complete three-layer Conv2D stem,
+  18/24-layer bidirectional audio Transformer and projector now execute through
+  one preflighted CPU or Metal `Compute` backend; Conv2D lowers to im2col plus
+  the existing GEMM kernel and all attention/normalization/activation hot ops
+  are backend-dispatched without per-op fallback. The CLI now reports
+  the model-specific bound route instead of claiming that no runtime exists,
+  while end-to-end transcription remains an explicit unsupported operation
+  naming the missing Qwen3/BPE pieces. Full-model completion and real-weight
+  CPU/Metal parity are not claimed by this audio-tower wave.
+- The strict canonical SpeechT5 TTS artifact now has a complete native
+  text-to-mel runtime: 12-layer relative-position text encoder, cached
+  six-layer autoregressive speech decoder with always-on seeded prenet
+  dropout, stop-token generation, five-layer convolutional postnet, and an
+  optional strict SpeechT5 HiFi-GAN waveform bridge. CPU and Metal share one
+  whole-model hot-op registry; uncovered backends and missing speaker/vocoder
+  inputs fail explicitly. `vokra-cli run` now routes the `speecht5` arch and
+  requires explicit `--vocoder` plus `--speaker-embedding` sidecars, passing
+  the selected CPU/Metal backend through both stages. A dedicated locked
+  Transformers 4.45.2 oracle, real-weight Rust gate, and no-upload VAST worker
+  stage tokenizer/pre-postnet/stop-step comparison at the unchanged 0.01 FP32
+  bound. The historical tokenizer-less public GGUF remains rejected, and the
+  VAST CPU plus Apple-device real-weight runs are still pending rather than
+  claimed.
+- The imperative model compute seam now exposes element-wise `Tanh` on CPU
+  and Metal for SpeechT5's activated postnet blocks. Metal uses a dedicated
+  MSL kernel; unsupported GPU backends fail whole-model coverage explicitly
+  instead of falling back to the host.
+
+- The original NVIDIA Parakeet-TDT-1.1B release now strict-binds its exact
+  1,667-F32-tensor public GGUF and runs the complete 80-bin frontend,
+  42-layer FastConformer, two-layer LSTM prediction network and duration-aware
+  TDT joint through explicit Mac CPU/Metal backends. Its official no-EOS
+  contract is represented without a fabricated sentinel, and the published
+  legacy GGUF accepts the SHA-pinned plaintext SentencePiece vocabulary as a
+  sidecar. New VAST-only conversions stamp all verified axes and embed that
+  vocabulary; the header-only manifest audit independently derives all 1,667
+  names and shapes. Malformed manifests, sidecars, metadata and unsupported
+  backends fail closed. Real-weight VAST and Apple-device parity remain pending
+  and are not claimed by this source route.
+- The exact public pyannote segmentation-3.0 checkpoint now strict-binds and
+  executes by default on CPU or Metal: SincNet, the released four-layer
+  bidirectional LSTM, both projection layers, classifier and softmax all use
+  one selected backend for learned reductions, with no silent CPU fallback.
+  The immutable historical 54-F32-tensor GGUF receives only its audited
+  two-to-four-layer metadata repair; partial/foreign metadata still fails
+  closed. CLI `run` and `bench` preflight the selected backend, and the public
+  coverage audit now classifies the architecture as CPU/Metal code-complete.
+  A dedicated Python 3.12 lock, source-identity-checking official
+  `pyannote.audio==3.0.0` dumper, VAST-only worker and ignored Rust comparison
+  test now stage the independent probability gate at the standard FP32 bound
+  0.01. The VAST run and real Apple measurement remain pending rather than
+  being inferred from synthetic tests.
+- The pyannote segmentation-3.0 converter now accepts only the exact public
+  54-F32-tensor PyanNet manifest and stamps immutable upstream/source/public
+  artifact identities. The released checkpoint's four-layer bidirectional
+  LSTM override replaces the historical two-layer class-default assumption;
+  partial, extra, wrong-shape, wrong-dtype, and conflicting-license inputs now
+  fail closed instead of producing a plausible GGUF.
+- The exact public deepfake-audio-detection-v2 GGUF now binds as its actual
+  `Wav2Vec2ForSequenceClassification` architecture instead of the historical
+  WavLM placeholder and runs the complete normalized waveform frontend,
+  12-layer encoder, 256-wide projector, mean pool and `[fake, real]` head
+  through explicit CPU/Metal backends. CLI run and bench routes expose both
+  logits/scores without inventing a verdict threshold; malformed contracts,
+  unsupported backends and invalid 16 kHz PCM fail without a CPU fallback.
+  An independent Transformers 4.41.2 VAST oracle and Apple Metal measurement
+  are staged, with numerical bounds intentionally unset until observed.
+- The exact public emotion2vec+ Large GGUF now strict-binds its 185-tensor
+  native classifier and runs the 7-layer waveform frontend, grouped positional
+  convolutions, learned tokens, 4+8 post-norm ALiBi blocks, mean pool and
+  bilingual nine-way head through explicit CPU/Metal backends. CLI run and
+  bench routes return all scores in official label order; malformed contracts,
+  unsupported backends and invalid 16 kHz PCM fail without a CPU fallback.
+  VAST official CPU parity and Apple-device Metal parity are staged but not yet
+  claimed.
+- The emotion2vec+ Large converter now pins the immutable official
+  `model.pt`, exact 185-F32-tensor manifest, 16 kHz frontend, 8+4 post-norm
+  ALiBi encoder topology and official bilingual nine-label order. A dedicated
+  VAST-only preparation sidecar permits only the documented
+  `[1,1,16,1,1] -> [16]` ALiBi reshape, while the independent parity dumper
+  imports the public-release FunASR commit directly. Loose/partial tensors,
+  wrong shapes/dtypes and conflicting license overrides now fail closed;
+  the native forward consumes the resulting strict contract directly.
+- The public YuE-upsampler GGUF now strict-binds its exact 81-tensor
+  `m-a-p/YuE-upsampler` 151k release and decodes 1024-channel codec features
+  to 44.1 kHz PCM through the existing native Vocos CPU/Metal graph. The
+  converter pins the official checkpoint, PyPI `vocos==0.1.0` oracle, public
+  GGUF, manifest and topology; partial or conflicting contracts fail closed.
+  Real-weight VAST CPU and Apple-device Metal measurements are staged but not
+  yet claimed as numerical parity.
+- The public FRCRN-SE-16K GGUF now has a strict 812-F32-tensor native
+  enhancer and CLI/bench CPU/Metal route. The fixed convolutional STFT/iSTFT,
+  two complex U-Nets, squeeze/excitation and frequency/central FSMN graph are
+  reproduced without ONNX or runtime dependencies; every learned reduction
+  uses the selected GEMM/grouped-Conv1D backend and unsupported backends fail
+  explicitly. Converter/reference identity is pinned, while VAST official
+  CPU parity and Apple-device Metal parity remain pending and are not claimed.
+- The public Research-only NISQA v2 multidimensional GGUF now runs its strict
+  94-F32-tensor AdaptCNN, self-attention and five cloned pooling heads through
+  native CPU/Metal CLI and bench routes. All `mos/noi/dis/col/loud` dimensions
+  are preserved, the CC-BY-NC-SA-4.0 gate remains fail-closed, and VAST/Apple
+  real-weight numerical parity is still pending rather than inferred from the
+  source route.
+- RMVPE now targets the fixed `yxlllc/RMVPE` E2E0 contract instead of the
+  historical reduced topology: exact 1024-point magnitude HTK mel analysis,
+  five encoder/decoder stages with paired skips, four intermediate stages,
+  BiGRU, 360-way head and nine-bin F0 decode route through native CPU/Metal
+  GEMM/GEMV seams without fallback. The converter requires all 623 inference
+  tensors and explicitly omits only the unused `unet.tf.*` state. The live
+  `vokra/rmvpe` file remains an explicit load error because it incorrectly
+  stamps the unlicensed `yxlllc` source/weight as MIT/permissive; real CPU and
+  remote-Apple Metal measurements are still pending and are not claimed here.
+- The public X-Codec2 GGUF now strict-binds its complete 1,153-tensor
+  pass-through manifest and decodes 50 Hz, 65,536-way FSQ codes to 16 kHz PCM
+  through the native CPU/Metal Vocos graph. The exact 3.29 GB artifact matches
+  the pinned official `xcodec2==0.1.5` decoder at CPU
+  `max_abs=8.22e-6`, `RMSE=2.49e-6` and cosine `0.999999999931`.
+  CC-BY-NC-4.0 weights remain fail-closed behind the explicit research-license
+  gate, unsupported backends never fall back to CPU, and waveform encoding is
+  still an explicit error.
+- The public NeuCodec base and distill GGUFs now strict-bind their distinct
+  811- and 294-tensor manifests and decode 50 Hz FSQ codes to 24 kHz PCM
+  through one native CPU/Metal graph. The base artifact's legacy normalized
+  tensor namespace and the distill pass-through namespace are both handled
+  explicitly; unknown layouts and unsupported backends fail without a CPU
+  fallback. Both public files match the pinned official `CodecDecoderVocos`
+  oracle within `3.57e-6` CPU max-abs error, and Apple M1 Metal on distill
+  matches CPU within `5.23e-6`. Waveform encoding remains explicitly
+  unsupported.
+- Both public WavTokenizer repositories now share a strict native
+  token-to-waveform decoder for their byte-identical 1,091-tensor GGUF. The
+  single-codebook gather, positional ResNet/attention network, 12 ConvNeXt
+  blocks and Vocos iSTFT head honor explicit CPU/Metal selection; unknown
+  manifests and unsupported backends fail without a CPU fallback. The exact
+  public artifact matches the pinned official WavTokenizer decoder at CPU
+  `max_abs=1.63e-5`, while Apple M1 Metal matches CPU at
+  `max_abs=5.16e-6`. Waveform encoding remains explicitly unsupported.
+- The three public standalone BERT-family GGUFs now run as CPU/Metal text encoders
+  through Rust and `vokra-cli run --token-ids`, returning final hidden-state
+  features for Chinese RoBERTa, Japanese DeBERTa v2 and DeBERTa v3. The early
+  public DeBERTa v3 tensor schema is detected and normalized through the same
+  Q/K-sharing and relative-embedding LayerNorm contract as the current
+  converter; mixed/incomplete schemas fail closed. All three exact public
+  files completed real CPU forwards on VAST and real Apple M1 CPU/Metal
+  comparisons. Their largest final-hidden CPU/Metal error was `3.41e-5`;
+  GEMM, Softmax, LayerNorm, GELU and DeBERTa Conv1D honor the selected backend,
+  while unimplemented backends remain explicit errors with no CPU fallback.
+- FCPE now matches the official `torchfcpe` waveform-to-F0 path instead of a
+  merely plausible pitch track: overlap/reflect padding, magnitude (not power)
+  mel analysis, the upstream `pcm_len / hop + 1` duplicate-last frame contract,
+  and the public wrapper's `0.006` confidence threshold are all pinned by an
+  independent `torchfcpe-0.0.4` fixture. The freshly converted strict v001
+  artifact passes official CPU parity and unrounded Apple M1 CPU/Metal track
+  parity with identical timestamps and voiced decisions. The currently
+  published `vokra/fcpe` GGUF predates all fourteen required metadata axes and
+  remains an explicit load error; replacing it on Hugging Face still requires
+  separate upload authorization.
+- Both public Piper Plus GGUFs now load and synthesize through the native CPU
+  and Metal routes. Legacy language-only voices no longer require an invented
+  zero-shot speaker projection, and supplying a speaker embedding to them is
+  an explicit error. The decoder selects exactly one released head: CSS10's
+  MB-iSTFT/PQMF path or Mera's three-stage HiFi-GAN waveform path with its
+  biasless post-convolution and final tanh. Fixed official ONNX fixtures cover
+  both public checkpoints; no unsupported head or backend falls back to CPU.
+- The five public MeloTTS acoustic GGUFs now route through `vokra-cli run` on
+  explicit CPU or Metal backends. A dependency-free `VKRMELO1` v1 input
+  container pins the language variant, speaker, phoneme/tone/language ids and
+  position-major BERT feature matrices; malformed, cross-language or raw-text
+  input fails explicitly because the acoustic files do not embed the five
+  language-specific frontend pipelines. No backend silently falls back to CPU.
+- The three public Descript DAC repositories (16, 24 and 44.1 kHz) now have a
+  strict native token-to-waveform runtime. Factorized RVQ, every
+  weight-normalized SEANet convolution and every Snake activation honor the
+  selected CPU/Metal backend without fallback; the CLI decodes raw time-major
+  `u32le` code frames to WAV. The 44.1 kHz public GGUF matches the pinned
+  official DAC 0.0.1 decoder at end-to-end CPU `max_abs=1.02e-6`, and the M1
+  Metal result remains within the same narrow bound. Encoding is not exposed
+  as completed and returns an explicit unsupported error.
+- Both public NVIDIA TitaNet-Large repositories now share a strict native
+  108-tensor speaker runtime: the checkpoint-era NeMo 1.10 log-mel frontend,
+  five depthwise-separable Jasper/SE blocks, attentive statistics pooling and
+  the 192-dimensional projection. Conv1D, grouped Conv1D, GEMV and Softmax
+  honor explicit CPU/Metal selection through Rust, CLI and the existing C
+  speaker API. Independent NeMo parity measured end-to-end
+  `max_abs=7.34e-7`, and the canonical converter now rejects partial/extra
+  manifests and licence overrides incompatible with the audited CC-BY-4.0
+  weights.
+- The public pyannote WeSpeaker ResNet34-LM artifact now has a strict native
+  speaker runtime: Hamming-window Kaldi fbank with utterance CMN, the complete
+  `[3,4,6,3]` ResNet, Bessel-corrected temporal statistics pooling and the
+  256-dimensional projection. All learned Conv2D/projection work honors
+  explicit CPU/Metal selection through Rust, CLI and the existing C speaker
+  API. CPU embedding output matches the pinned official WeSpeaker source at
+  `max_abs=1.34e-6` and cosine approximately `1.0`. The older canonical
+  `vokra/wespeaker` file remains a loud artifact error because it stamps the
+  CC-BY-4.0 checkpoint as Apache-2.0/permissive and omits attribution.
+- The two canonical public SpeechBrain ECAPA-TDNN GGUF repositories now have
+  a strict 200-tensor native speaker runtime: official 80-bin frontend,
+  reflect-padded TDNN, three SE-Res2Net blocks, multi-layer aggregation,
+  attentive statistics pooling and a 192-dimensional projection. Conv1D and
+  attention softmax honor explicit CPU/Metal selection through Rust, CLI and
+  the existing C speaker API. The mis-stamped 202-tensor voice-gender artifact
+  and headless language-ID artifact remain explicit errors rather than being
+  treated as compatible ECAPA classifiers.
+- Both public SpeechBrain X-vector GGUF layouts now have a strict native
+  speaker-embedding runtime: the 32-tensor embedding-only artifact and the
+  46-tensor combined classifier artifact bind by exact name/shape manifest,
+  run the official 24-bin SpeechBrain fbank plus five reflect-padded TDNN
+  blocks, and emit 512-dimensional embeddings through Rust, CLI, and the
+  existing C speaker API. CPU output matches the pinned SpeechBrain 1.0.3
+  oracle (`relative_l1=8.01e-5`, cosine `0.999999821`). Conv1D dispatch honors
+  explicit CPU/Metal selection with no fallback; Apple-device execution is
+  still recorded separately from code-route completion.
+- Conv-TasNet Libri1Mix now has a strict 345-tensor native encoder, 24-block
+  dilated TCN masker and learned decoder across the Rust `SeparationEngine`,
+  CLI run/bench and existing C `vokra_separate` surfaces. Conv1D, grouped
+  Conv1D and Global LayerNorm honor explicit CPU/Metal selection. CPU output
+  passes an independent Asteroid 0.7.0 fixture (final relative L1
+  `3.30e-4`). The current Hub GGUF remains rejected: it stamps the obsolete
+  16/8 encoder geometry instead of the official 32/16 topology, while the
+  upstream card conflicts among CC-BY-SA-4.0, CC-BY-SA-3.0 and research-only
+  training-data terms. Converter provenance and publication therefore fail
+  closed as `Unknown`; no upload or artifact replacement is authorized.
+- SepFormer now has a complete native encoder, dual-path Transformer masker,
+  gated mask head and decoder for all seven public GGUF repositories. CPU
+  output matches the pinned official SpeechBrain WHAM16k reference
+  (`max_abs=1.87e-4`, `mean_abs=1.22e-5`), all seven artifacts strict-bind,
+  and CLI/C ABI sessions preserve explicit CPU/Metal selection. The first
+  WHAMR artifacts' incorrect one-output enhancement metadata is repaired only
+  for their exact audited variant/provenance contract; new conversions stamp
+  the official two-speaker separation topology.
+- Wav2Vec2 CTC/XLSR, Data2Vec Audio and HuBERT public checkpoints now have
+  strict native CPU binders, independent encoder/logit/text parity fixtures,
+  CLI/C ABI routing where the task surface exists, and declared Metal learned-
+  op paths. Encoder-only XLSR remains an explicit feature-tensor task instead
+  of masquerading as ASR; the adapter-only MMS public artifact remains a loud
+  artifact error pending lawful full-backbone replacement.
+- Moonshine Tiny/Base now dispatch the complete composed attention path on
+  Metal: Q/K and attention/value products use the shared GEMM backend seam,
+  alongside the existing projections, softmax, normalization, GELU and Conv1D
+  kernels. Unsupported backends still fail explicitly; no CPU fallback was
+  introduced. The strict loader also accepts the exact historical
+  `UsefulSensors/moonshine-{tiny,base}` repository ids stamped into the public
+  GGUFs before their upstream move to `moonshine-ai`; unrelated provenance is
+  still rejected.
+- Whisper beam search, stochastic sampling and word-timestamp alignment now
+  preserve the selected decoder backend instead of constructing a CPU scorer
+  after a Metal encoder. Whisper-Medusa-v1 also dispatches its required
+  module-0 dense transform through the selected backend; Metal uses the
+  correctness-first per-op decoder path until the resident session gains a
+  pre-projection adapter. The future-token tree API remains explicitly
+  unsupported.
+- Moshi CLI and C ABI sessions now pass the selected backend through the
+  existing `MoshiEngine::with_backend` seam after any Mimi side-car swap.
+  Metal therefore reaches the temporal/depth transformers and both Mimi
+  neural codec ends instead of being rejected by a stale CPU-only front-door
+  guard.
+- NSNet2 now carries an explicit backend selector. Metal dispatches every
+  learned dense and GRU projection through GEMV and applies the complex
+  spectral mask through the existing Metal denoise kernel; STFT/iSTFT and
+  scalar nonlinearities remain host-side DSP/glue.
+- NSNet2 conversion and inference now match the pinned official Microsoft
+  graph: 161-bin/320-point square-root-Hann log-power analysis, exact numeric
+  initializer mapping/transposition, separate ONNX GRU biases,
+  `linear_before_reset=1`, `-80 dB` gain floor, and raw overlap-add synthesis.
+  The exact historical public 161-bin initializer layout is normalized only
+  after its full header contract matches; partial or unrelated legacy layouts
+  fail closed. An independent ONNX reference measured max waveform error
+  `3.61e-7` on CPU and Metal; the real-weight gate is tightened to `5e-5`.
+- `DenoiseStreamHandle::finalize` now provides an additive tail-flush seam;
+  NSNet2 uses it to emit the final right-padded frame and iSTFT overlap tail,
+  while frame-complete denoisers retain the empty default.
+- Vocos mel/Encodec now supports an explicit Metal backend for the complete
+  learned ConvNeXt path. Dense and pointwise Conv1D, depthwise grouped Conv1D,
+  LayerNorm and GELU dispatch through one whole-model coverage gate; iSTFT and
+  magnitude/phase assembly remain host DSP. Official non-zero references pass
+  the existing `1e-5` waveform bound on CPU and Metal. The current public
+  Encodec GGUF is still rejected because its Mel metadata/provenance
+  contradicts its Encodec tensor shapes; a corrected local reconversion passes.
+- FSMN-VAD now routes all learned dense projections through GEMV and all four
+  learned causal depthwise-memory blocks through grouped Conv1D on Metal.
+  Fbank, CMVN, ReLU, softmax and stream-history bookkeeping remain host glue.
+  The current public GGUF predates the strict provenance/topology/CMVN schema
+  and still fails closed; a strict local reconversion runs end-to-end on CPU
+  and Metal with identical CLI summary output.
+- Silero VAD v5 now routes every learned convolution, LSTM projection and
+  output affine through the selected backend while sharing its nonlinear and
+  recurrent arithmetic with the existing `no_std` CPU implementation.
+  FireRedVAD and TEN-VAD likewise route their complete learned DFSMN/GRU
+  projection sets through GEMV; frontend DSP, activations, cache management
+  and softmax remain host control/glue.
+- RNNoise v0.2 now expands its compressed dense/sparse int8 matrices once at
+  load into backend-ready FP32 views, preserves the release's exact host-side
+  activation quantization and recurrent nonlinearities, and dispatches every
+  learned matrix-vector product through the selected backend. CPU retains the
+  original compressed oracle path. The old public GGUF predates the strict
+  release provenance schema and still fails closed pending gated replacement.
+- NKF-AEC now honors the selected backend for every learned complex-dense and
+  GRU projection. STFT, nonlinear gates, complex Kalman updates and overlap-add
+  remain host DSP/control flow; unsupported backends fail explicitly. This is
+  a correctness-first Metal route and does not yet claim a speedup for its many
+  small per-bin GEMV dispatches.
+- HiFi-GAN and BigVGAN now preserve the selected backend across their complete
+  learned vocoder forwards. Dilated/transposed convolutions use the Conv1D
+  dispatch seam; BigVGAN additionally dispatches both Snake activation
+  variants. Padding, alias-free resampling and waveform assembly remain host
+  DSP, and unsupported backends fail before inference.
+- FCPE and SmartTurn now route every learned convolution, projection,
+  normalization, attention/softmax and classifier operation through their
+  declared whole-model backend sets. Pyannote gains the same complete learned
+  primitive dispatch, but remains explicitly partial because its real forward
+  is still disabled by default pending independent checkpoint parity. The
+  stale public SmartTurn source-style GGUF remains fail-closed.
+- RMVPE now has backend-dispatched Conv2D/ConvTranspose2D lowering, BiGRU and
+  pitch-head projections. It remains classified partial: the existing CPU
+  implementation omits the upstream decoder skip-concat and has no real-weight
+  numeric oracle, so the new Metal primitives are not presented as model
+  completion.
+- Parakeet CTC 1.1B and TDT 0.6B v3 now carry the selected backend through the
+  shared FastConformer encoder and their complete CTC/TDT heads. Convolutions,
+  projections, attention products, softmax, normalization and recurrent/joint
+  projections dispatch through `Compute`; frontend, masks, layout and token
+  search remain host control. The per-channel 2-D depthwise lowering is a
+  correctness-first path and does not yet claim a Metal speedup. The current
+  public TDT GGUF lacks its tokenizer and the current public CTC GGUF stamps
+  an incompatible convolution-bias contract; both remain fail-closed pending
+  separately authorized gated replacement.
+
 ## [0.1.0] — 2026-08-23
 
 This first tagged release includes the source-publication baseline plus the

@@ -168,11 +168,74 @@ impl TenVadNetworkState {
     }
 }
 
+/// Backend seam for the three learned stages in the pinned TEN-VAD graph.
+/// The LPCNet feature frontend, max-pooling, activations and recurrent state
+/// updates remain host DSP/control flow.
+pub trait TenVadBackendOps {
+    /// Runs the three separable-convolution stages and returns the flattened
+    /// 80-wide first-LSTM input.
+    fn conv_stack(&mut self, features: &[f32], weights: &TenVadNetworkWeights) -> Result<Vec<f32>>;
+
+    /// Runs one learned LSTM projection pair and updates the host state.
+    fn lstm_step(
+        &mut self,
+        input: &[f32],
+        weights: &LstmWeights,
+        hidden: &mut [f32],
+        cell: &mut [f32],
+    ) -> Result<Vec<f32>>;
+
+    /// Runs the `128 -> 32 -> 1` learned head and returns its sigmoid score.
+    fn dense_head(
+        &mut self,
+        hidden1: &[f32],
+        hidden0: &[f32],
+        weights: &TenVadNetworkWeights,
+    ) -> Result<f32>;
+}
+
+struct ScalarTenVadOps;
+
+impl TenVadBackendOps for ScalarTenVadOps {
+    fn conv_stack(&mut self, features: &[f32], weights: &TenVadNetworkWeights) -> Result<Vec<f32>> {
+        Ok(conv_stack(features, weights))
+    }
+
+    fn lstm_step(
+        &mut self,
+        input: &[f32],
+        weights: &LstmWeights,
+        hidden: &mut [f32],
+        cell: &mut [f32],
+    ) -> Result<Vec<f32>> {
+        Ok(lstm_step(input, weights, hidden, cell))
+    }
+
+    fn dense_head(
+        &mut self,
+        hidden1: &[f32],
+        hidden0: &[f32],
+        weights: &TenVadNetworkWeights,
+    ) -> Result<f32> {
+        Ok(dense_head(hidden1, hidden0, weights))
+    }
+}
+
 /// Runs one `3 x 41` feature context and advances both LSTM layers.
 pub fn network_forward(
     features: &[f32],
     weights: &TenVadNetworkWeights,
     state: &mut TenVadNetworkState,
+) -> Result<f32> {
+    network_forward_with_ops(features, weights, state, &mut ScalarTenVadOps)
+}
+
+/// Runs one TEN-VAD network step through an injected learned-stage backend.
+pub fn network_forward_with_ops<O: TenVadBackendOps>(
+    features: &[f32],
+    weights: &TenVadNetworkWeights,
+    state: &mut TenVadNetworkState,
+    ops: &mut O,
 ) -> Result<f32> {
     if features.len() != CONTEXT_FRAMES * N_FEATURES {
         return Err(VokraError::InvalidArgument(format!(
@@ -196,6 +259,23 @@ pub fn network_forward(
         check_len(label, values, HIDDEN_DIM)?;
     }
 
+    let lstm_input = ops.conv_stack(features, weights)?;
+    let hidden0 = ops.lstm_step(
+        &lstm_input,
+        &weights.lstm0,
+        &mut state.hidden0,
+        &mut state.cell0,
+    )?;
+    let hidden1 = ops.lstm_step(
+        &hidden0,
+        &weights.lstm1,
+        &mut state.hidden1,
+        &mut state.cell1,
+    )?;
+    ops.dense_head(&hidden1, &hidden0, weights)
+}
+
+fn conv_stack(features: &[f32], weights: &TenVadNetworkWeights) -> Vec<f32> {
     // [1,3,41] -> valid 3x3 -> [1,1,39] -> pointwise 16 -> pool -> [16,19].
     let mut conv0_scalar = [0.0f32; 39];
     for x in 0..39 {
@@ -236,23 +316,14 @@ pub fn network_forward(
             lstm_input[time * CONV_CHANNELS + channel] = conv2[channel * 5 + time];
         }
     }
-    let hidden0 = lstm_step(
-        &lstm_input,
-        &weights.lstm0,
-        &mut state.hidden0,
-        &mut state.cell0,
-    );
-    let hidden1 = lstm_step(
-        &hidden0,
-        &weights.lstm1,
-        &mut state.hidden1,
-        &mut state.cell1,
-    );
+    lstm_input.to_vec()
+}
 
+fn dense_head(hidden1: &[f32], hidden0: &[f32], weights: &TenVadNetworkWeights) -> f32 {
     // Official concat order is layer-2 output followed by layer-1 output.
     let mut dense_input = Vec::with_capacity(HIDDEN_DIM * 2);
-    dense_input.extend_from_slice(&hidden1);
-    dense_input.extend_from_slice(&hidden0);
+    dense_input.extend_from_slice(hidden1);
+    dense_input.extend_from_slice(hidden0);
     let mut dense = [0.0f32; 32];
     for (output, dense_value) in dense.iter_mut().enumerate() {
         let mut sum = weights.dense0_bias[output];
@@ -267,7 +338,7 @@ pub fn network_forward(
         .fold(weights.dense1_bias, |sum, (&value, &weight)| {
             sum + value * weight
         });
-    Ok(sigmoid(logit))
+    sigmoid(logit)
 }
 
 fn separable_1d(
@@ -930,8 +1001,8 @@ fn dct_inverse(table: &[[f32; 18]; 18], input: &[f32; 18]) -> [f32; 18] {
     let mut output = [0.0f32; 18];
     let scale = (2.0f32 / 18.0).sqrt();
     for (row, value) in output.iter_mut().enumerate() {
-        for column in 0..18 {
-            *value += input[column] * table[row][column];
+        for (column, input_value) in input.iter().copied().enumerate() {
+            *value += input_value * table[row][column];
         }
         *value *= scale;
     }

@@ -1,0 +1,26 @@
+[project]
+name = "vokra-bark-parity"
+version = "0.1.0"
+description = "Pinned independent Transformers 4.31.0 Bark reference; VAST only"
+requires-python = "==3.12.*"
+dependencies = [
+    "huggingface-hub==1.27.0",
+    "numpy==1.26.4",
+    "safetensors==0.4.5",
+    "torch==2.13.0",
+    "transformers==5.5.0",
+]
+
+[tool.uv]
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

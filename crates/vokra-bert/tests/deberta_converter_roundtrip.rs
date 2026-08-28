@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use vokra_bert::deberta_v2::DebertaV2Encoder;
 use vokra_bert::deberta_v3::DebertaV3Encoder;
 use vokra_convert::{convert_deberta_v2_file, convert_deberta_v3_file};
-use vokra_core::gguf::GgufFile;
+use vokra_core::gguf::{chunks, GgmlType, GgufBuilder, GgufFile};
 
 /// f32 slice → little-endian byte payload (matches `SafetensorsFile::parse`).
 fn f32_bytes(vals: &[f32]) -> Vec<u8> {
@@ -549,4 +549,151 @@ fn v2_rel_embeddings_ln_pre_normalization_changes_forward_output() {
     std::fs::remove_file(&in_with_ln).ok();
     std::fs::remove_file(&out_no_ln).ok();
     std::fs::remove_file(&out_with_ln).ok();
+}
+
+fn copy_tensor_as(builder: &mut GgufBuilder, source: &GgufFile, from: &str, to: &str) {
+    let info = source
+        .tensor_info(from)
+        .unwrap_or_else(|| panic!("canonical fixture is missing `{from}`"));
+    builder
+        .add_tensor(
+            to,
+            info.dtype,
+            info.dimensions.clone(),
+            source.tensor_bytes(info).to_vec(),
+        )
+        .unwrap_or_else(|error| panic!("copy `{from}` as `{to}`: {error}"));
+}
+
+/// Reconstruct the early public DeBERTa-v3 GGUF layout from a current
+/// converter output. Learned tensors use verbatim HF `deberta.*` names;
+/// shared position embeddings remain raw and carry their encoder-level LN
+/// pair. This is an adapter-equivalence fixture, not an independent model
+/// reference: the existing `deberta_v3_real` suite owns upstream final-hidden
+/// parity, while this test proves both on-disk schemas reach the same Rust
+/// forward without a second mathematical implementation.
+fn legacy_v3_from_canonical(source: &GgufFile) -> GgufFile {
+    const N_LAYERS: usize = 2;
+    const D_MODEL: usize = 8;
+    const VOCAB: usize = 6;
+    const N_POS_BUCKETS: usize = 4;
+
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, "deberta_v3");
+    builder.add_u32("vokra.bert.deberta_v3.n_layers", N_LAYERS as u32);
+    builder.add_u32("vokra.bert.deberta_v3.d_model", D_MODEL as u32);
+    builder.add_u32("vokra.bert.deberta_v3.n_heads", 1);
+    builder.add_u32("vokra.bert.deberta_v3.vocab_size", VOCAB as u32);
+    builder.add_u32("vokra.bert.deberta_v3.n_pos_buckets", N_POS_BUCKETS as u32);
+    builder.add_u32("vokra.bert.deberta_v3.max_pos_dist", 512);
+
+    copy_tensor_as(
+        &mut builder,
+        source,
+        "bert.embed.weight",
+        "deberta.embeddings.word_embeddings.weight",
+    );
+    copy_tensor_as(
+        &mut builder,
+        source,
+        "bert.embed.ln.gamma",
+        "deberta.embeddings.LayerNorm.weight",
+    );
+    copy_tensor_as(
+        &mut builder,
+        source,
+        "bert.embed.ln.beta",
+        "deberta.embeddings.LayerNorm.bias",
+    );
+
+    // The differential fixture's exact pre-LN values and parameters.
+    let rel: Vec<f32> = (0..N_POS_BUCKETS)
+        .flat_map(|i| (0..D_MODEL).map(move |j| (i as f32 + 1.0) * 0.1 + (j as f32 + 1.0) * 0.01))
+        .collect();
+    builder
+        .add_tensor(
+            "deberta.encoder.rel_embeddings.weight",
+            GgmlType::F32,
+            vec![N_POS_BUCKETS as u64, D_MODEL as u64],
+            f32_bytes(&rel),
+        )
+        .unwrap();
+    builder
+        .add_tensor(
+            "deberta.encoder.LayerNorm.weight",
+            GgmlType::F32,
+            vec![D_MODEL as u64],
+            f32_bytes(&[2.0; D_MODEL]),
+        )
+        .unwrap();
+    builder
+        .add_tensor(
+            "deberta.encoder.LayerNorm.bias",
+            GgmlType::F32,
+            vec![D_MODEL as u64],
+            f32_bytes(&[0.5; D_MODEL]),
+        )
+        .unwrap();
+
+    for i in 0..N_LAYERS {
+        let canonical = format!("bert.encoder.layer.{i}");
+        let legacy = format!("deberta.encoder.layer.{i}");
+        for (canonical_tail, legacy_tail) in [
+            ("attn.wq.weight", "attention.self.query_proj.weight"),
+            ("attn.wq.bias", "attention.self.query_proj.bias"),
+            ("attn.wk.weight", "attention.self.key_proj.weight"),
+            ("attn.wk.bias", "attention.self.key_proj.bias"),
+            ("attn.wv.weight", "attention.self.value_proj.weight"),
+            ("attn.wv.bias", "attention.self.value_proj.bias"),
+            ("attn.w_out.weight", "attention.output.dense.weight"),
+            ("attn.w_out.bias", "attention.output.dense.bias"),
+            ("ln1.gamma", "attention.output.LayerNorm.weight"),
+            ("ln1.beta", "attention.output.LayerNorm.bias"),
+            ("ffn.w1.weight", "intermediate.dense.weight"),
+            ("ffn.w1.bias", "intermediate.dense.bias"),
+            ("ffn.w2.weight", "output.dense.weight"),
+            ("ffn.w2.bias", "output.dense.bias"),
+            ("ln2.gamma", "output.LayerNorm.weight"),
+            ("ln2.beta", "output.LayerNorm.bias"),
+        ] {
+            copy_tensor_as(
+                &mut builder,
+                source,
+                &format!("{canonical}.{canonical_tail}"),
+                &format!("{legacy}.{legacy_tail}"),
+            );
+        }
+    }
+
+    GgufFile::parse(builder.to_bytes().expect("build legacy v3 GGUF"))
+        .expect("parse legacy v3 GGUF")
+}
+
+#[test]
+fn v3_legacy_hf_schema_matches_current_converter_forward() {
+    let (input, output) = temp_pair("v3-legacy-adapter");
+    let blob = deberta_v2_ln_differential_fixture(Some((2.0, 0.5)));
+    std::fs::write(&input, blob).expect("write upstream-shaped safetensors");
+    convert_deberta_v3_file(&input, &output, None, None).expect("convert canonical v3 GGUF");
+    let canonical_file = GgufFile::open(&output).expect("open canonical v3 GGUF");
+    let legacy_file = legacy_v3_from_canonical(&canonical_file);
+
+    let canonical = DebertaV3Encoder::from_gguf(&canonical_file).expect("load canonical schema");
+    let legacy = DebertaV3Encoder::from_gguf(&legacy_file).expect("load legacy HF schema");
+    let ids = [1, 2, 3, 4];
+    let expected = canonical.forward(&ids);
+    let actual = legacy.forward(&ids);
+    assert_eq!(actual.len(), expected.len());
+    let max_abs = actual
+        .iter()
+        .zip(&expected)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_abs <= 1.0e-6,
+        "legacy HF schema adapter drift max|Δ|={max_abs:.9e} exceeds 1e-6; the official real-weight bound remains unchanged in deberta_v3_real"
+    );
+
+    std::fs::remove_file(input).ok();
+    std::fs::remove_file(output).ok();
 }

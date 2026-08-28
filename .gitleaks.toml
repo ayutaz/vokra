@@ -62,9 +62,15 @@ paths = [
 
   # SHA-256 sidecar files (`sha256sum` output shipped alongside binary
   # fixtures per tests/fixtures/audio/README.md convention).
-  '''^tests/fixtures/.*\.sha256$''',
-  '''^crates/.+/tests/fixtures/.*\.sha256$''',
+  '''(^|/)tests/fixtures/.*\.sha256$''',
+  '''(^|/)crates/.+/tests/fixtures/.*\.sha256$''',
   '''\.sha256$''',
+
+  # Structured fixture manifests contain only reference hashes and numeric
+  # tensors. Account for both relative paths and gitleaks --source /repo
+  # absolute paths used by CI.
+  '''(^|/)tests/fixtures/''',
+  '''(^|/)crates/.+/tests/fixtures/''',
 
   # Vokra model-zoo PROVENANCE stamps and license/notice files (upstream
   # sha refs, git URLs @ 40-hex, PGP-adjacent hex).
@@ -122,8 +128,8 @@ paths = [
   '''^docs/_research/''',
   '''^docs/tickets/''',
   '''^docs/adr/''',
-  '''^docs/handoff/''',
-  '''^docs/superpowers/''',
+  '''(^|/)docs/handoff/''',
+  '''(^|/)docs/superpowers/''',
 
   # Ephemeral scout workspaces used by the ultracode subagent workflow.
   # These are throwaway git worktrees; they may contain half-written
@@ -217,6 +223,16 @@ regexes = [
   # the `vokra.*` strings are schema identifiers, not credentials. The
   # constant-name and `assert_eq!` anchors keep this narrow.
   '''assert_eq!\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*::)?(?:KEY|GGUF_KEY)_[A-Z0-9_]+\s*,\s*"vokra\.[a-z0-9_.]+"''',
+
+  # Strict GGUF binders compare schema identifiers such as
+  # "logmel-reflect-v1" against KEY_* constants. These are wire-format
+  # values, not credentials; require the complete helper-call shape.
+  '''require_string\s*\(\s*file\s*,\s*KEY_[A-Z0-9_]+\s*,\s*"[A-Za-z0-9_.-]+"\s*\)''',
+
+  # SHA-256 maps in parity preparers use an authenticated artifact filename
+  # as the key. Restrict this to known source/config text-file extensions and
+  # an exact 64-hex digest so ordinary key/value assignments remain scanned.
+  '''(?i)['"](?:LICENSE|[A-Za-z0-9_.-]+\.(?:json|py|txt))['"]\s*:\s*['"][a-f0-9]{64}['"]''',
 
   # Torch `state_dict()` tensor paths (dotted key ending in a well-known
   # parameter suffix: `weight`, `bias`, `gamma`, `beta`, `running_mean`,

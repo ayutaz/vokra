@@ -124,6 +124,82 @@ fn parity_rnnoise_v02_gguf_smoke() {
     );
 }
 
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn parity_rnnoise_v02_cpu_metal_matches_xiph_network() {
+    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
+        eprintln!("{GGUF_ENV} unset — skipping RNNoise CPU/Metal parity");
+        return;
+    };
+    let path = Path::new(&gguf_path);
+    let cpu = RnnoiseV02::open(path).expect("bind RNNoise CPU");
+    let metal = RnnoiseV02::open(path)
+        .expect("bind RNNoise Metal")
+        .with_backend(vokra_core::BackendKind::Metal);
+    assert_eq!(cpu.backend(), vokra_core::BackendKind::Cpu);
+    assert_eq!(metal.backend(), vokra_core::BackendKind::Metal);
+
+    let fixture = include_str!("../../../tools/parity/fixtures/rnnoise_v02_network.csv");
+    let mut cpu_state = RnnoiseNetworkState::default();
+    let mut metal_state = RnnoiseNetworkState::default();
+    let mut cpu_reference_max = 0.0f32;
+    let mut metal_reference_max = 0.0f32;
+    let mut cpu_metal_max = 0.0f32;
+    for line in fixture.lines() {
+        let values: Vec<f32> = line
+            .split(',')
+            .map(|value| value.parse::<f32>().expect("fixture f32"))
+            .collect();
+        let features: [f32; V02_N_FEATURES] =
+            values[..V02_N_FEATURES].try_into().expect("65 features");
+        let cpu_output = cpu.forward_features(&mut cpu_state, &features).unwrap();
+        let metal_output = metal.forward_features(&mut metal_state, &features).unwrap();
+        for band in 0..V02_N_BANDS {
+            let expected = values[V02_N_FEATURES + band];
+            cpu_reference_max = cpu_reference_max.max((cpu_output.gains[band] - expected).abs());
+            metal_reference_max =
+                metal_reference_max.max((metal_output.gains[band] - expected).abs());
+            cpu_metal_max =
+                cpu_metal_max.max((metal_output.gains[band] - cpu_output.gains[band]).abs());
+        }
+        let expected_vad = values[V02_N_FEATURES + V02_N_BANDS];
+        cpu_reference_max =
+            cpu_reference_max.max((cpu_output.vad_probability - expected_vad).abs());
+        metal_reference_max =
+            metal_reference_max.max((metal_output.vad_probability - expected_vad).abs());
+        cpu_metal_max =
+            cpu_metal_max.max((metal_output.vad_probability - cpu_output.vad_probability).abs());
+    }
+    eprintln!(
+        "RNNoise CPU/Metal network parity: cpu_ref={cpu_reference_max:e}, \
+         metal_ref={metal_reference_max:e}, cpu_metal={cpu_metal_max:e}"
+    );
+    assert!(cpu_reference_max <= 2e-5);
+    // Same fixed FP32 Metal recurrent-network gate used by the other VAD
+    // backends. The independent Xiph CPU gate above remains two orders of
+    // magnitude tighter, so this cannot replace or weaken source parity.
+    assert!(metal_reference_max <= 1e-2);
+    assert!(cpu_metal_max <= 1e-2);
+
+    let mut cpu_stream = cpu.stream();
+    let mut metal_stream = metal.stream();
+    let mut rng = 0x6d2b79f5u32;
+    let mut pcm_max = 0.0f32;
+    let mut vad_max = 0.0f32;
+    for frame_index in 0..16 {
+        let input = std::array::from_fn(|index| waveform_sample(&mut rng, frame_index, index));
+        let cpu_frame = cpu_stream.process_frame(&input).unwrap();
+        let metal_frame = metal_stream.process_frame(&input).unwrap();
+        vad_max = vad_max.max((metal_frame.vad_probability - cpu_frame.vad_probability).abs());
+        for (&metal_sample, &cpu_sample) in metal_frame.pcm.iter().zip(&cpu_frame.pcm) {
+            pcm_max = pcm_max.max((metal_sample - cpu_sample).abs());
+        }
+    }
+    eprintln!("RNNoise CPU/Metal waveform parity: pcm={pcm_max:e}, vad={vad_max:e}");
+    assert!(pcm_max <= 1e-2);
+    assert!(vad_max <= 1e-2);
+}
+
 #[test]
 fn parity_rnnoise_v02_waveform_matches_xiph_process_frame() {
     let Some(gguf_path) = env::var(GGUF_ENV).ok() else {

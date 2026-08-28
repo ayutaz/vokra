@@ -44,6 +44,7 @@
 //! entry, threading `&Compute` down. That keeps the engines `Send + Sync` while
 //! the `!Send` context lives only for the call.
 
+use vokra_backend_cpu::IsaPath;
 use vokra_backend_cpu::kernels;
 use vokra_backend_cpu::kernels::KQuantDtype;
 use vokra_core::backend::BackendKind;
@@ -80,8 +81,52 @@ pub enum HotOp {
     Softmax,
     /// Affine layer normalisation (`layer_norm_f32`) — Whisper pre-norm blocks.
     LayerNorm,
+    /// Gamma-only RMS normalisation (`rms_norm_f32`): no mean subtraction and
+    /// no bias. NeuCodec's decoder Transformer uses this before attention and
+    /// its MLP. CPU is the scalar reference; Metal dispatches the existing
+    /// `vokra_rms_norm_f32` kernel. Other backends remain explicitly
+    /// uncovered until they gain matching kernels.
+    RmsNorm,
+    /// Scalar-gain ScaleNorm (`scale_norm_f32`) used by MossFormer2 FLASH
+    /// projections: divide each row by
+    /// `max(||row||₂ * cols^-0.5, eps)`, then multiply by the learned gain.
+    /// This is not an RMSNorm alias because epsilon clamps the completed norm.
+    /// CPU and Metal have dedicated kernels; other backends stay explicitly
+    /// uncovered rather than running the reduction on the host.
+    ScaleNorm,
+    /// One-group affine GroupNorm over channel-major audio features. SepFormer
+    /// uses this for the full mask tensor and needs a stable large reduction.
+    GroupNorm,
     /// Exact (erf) GELU (`gelu_f32`) — Whisper MLP / conv stem.
     Gelu,
+    /// GPT-2 / Transformers `gelu_new` tanh approximation. Distinct from
+    /// [`Self::Gelu`]: substituting the exact/erf form changes released MOSS-
+    /// TTS Nano numerics. CPU uses the portable scalar kernel and Metal uses a
+    /// dedicated MSL kernel; uncovered backends fail the whole-model coverage
+    /// gate rather than falling back.
+    GeluNew,
+    /// Element-wise ReLU (`max(x, 0)`). T5-base uses this between its two
+    /// feed-forward projections. CPU dispatches the existing SIMD kernel and
+    /// Metal has a dedicated MSL kernel; other backends remain explicit
+    /// unsupported operations.
+    Relu,
+    /// Element-wise ELU with `alpha = 1`, used by Bark's embedded causal
+    /// EnCodec decoder. CPU uses the portable scalar reference and Metal a
+    /// dedicated MSL kernel. CUDA, Vulkan, WebGPU, CoreML, and QNN remain
+    /// explicitly uncovered; a model listing this op is rejected before
+    /// execution on those backends rather than silently running it on CPU.
+    Elu,
+    /// Element-wise hyperbolic tangent. SpeechT5's four activated postnet
+    /// convolution blocks require this exact nonlinearity. CPU dispatches the
+    /// existing portable kernel and Metal has a dedicated MSL kernel; other
+    /// backends remain explicitly uncovered rather than executing on the
+    /// host.
+    Tanh,
+    /// Element-wise SiLU / Swish (`x * sigmoid(x)`). WavTokenizer's
+    /// positional ResNet applies this after every GroupNorm. The CPU arm is
+    /// the scalar mathematical reference; Metal dispatches the existing
+    /// `vokra_silu_f32` kernel. Other backends remain explicitly uncovered.
+    Silu,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
     /// Mimi (Kyutai) residual vector quantization codec decode
@@ -134,10 +179,15 @@ pub enum HotOp {
     /// refuses them without a research flag). Separate variant for honest
     /// per-op coverage (ADR M4-04 §D-e).
     ///
-    /// **CPU-only on every backend today** — the last RVQ variant with no
-    /// Metal kernel (its siblings [`HotOp::MimiRvq`] and [`HotOp::DacRvq`]
-    /// both flipped to Metal-covered on 2026-08-13; this one did not, which is
-    /// exactly why the coverage table is per-op).
+    /// **Metal-covered since the AudioCraft waveform-decode wave
+    /// (2026-08-26)** — EnCodec's unfactorized RVQ is mathematically the same
+    /// shape-generic gather + FP32 fold as [`HotOp::MimiRvq`]. The Metal arm
+    /// therefore dispatches the already-parity-pinned
+    /// `vokra_mimi_rvq_gather_fold_f32` kernel after EnCodec-specific host
+    /// shape/index validation. This does not change FR-OP-32: standalone
+    /// pretrained EnCodec artifacts remain excluded from the official model
+    /// zoo; the consumer is an authenticated MusicGen composite artifact.
+    /// CUDA / Vulkan / WebGPU remain explicitly unsupported.
     EncodecRvq,
     /// WavTokenizer single-codebook VQ decode (`wavtokenizer_vq_decode`) —
     /// M4-16, FR-OP-31 **FSQ family** (single-stage, *separate subgraph from
@@ -349,6 +399,14 @@ pub enum HotOp {
     /// `covered_by_webgpu` / `covered_by_coreml` / `covered_by_qnn` return
     /// `false`.
     AntiAliasedUpsample,
+    /// Grouped 1-D convolution with PyTorch weight layout
+    /// `[out_ch, in_ch / groups, kernel]`. Vocos uses the depthwise case
+    /// (`groups == in_ch == out_ch`) in every ConvNeXt block.
+    ///
+    /// The CPU arm composes the existing dense convolution kernel per group;
+    /// the Metal arm uses group-local indexing in the direct Conv1d shader.
+    /// CUDA/WebGPU/Vulkan/delegates remain explicitly uncovered.
+    GroupedConv1d,
     /// Stateful causal HiFi-GAN generator forward (#46), including the
     /// generator's causal transposed-convolution stages and streaming state.
     /// This is one model-level hot op rather than a claim that the existing
@@ -380,10 +438,11 @@ impl HotOp {
     /// factorized gather + per-quantizer projection + FP32 fold behind
     /// [`Compute::dac_rvq_f32`] (semantics equal to
     /// `vokra_ops::dac_rvq::dac_rvq_decode` within FP32 fast-math tolerance,
-    /// host-side per-index bound check upstream — FR-EX-08). [`HotOp::EncodecRvq`]
-    /// and the M4-16 FSQ family stay deferred (each lands its own kernel /
-    /// coverage flip). CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai
-    /// owner track and remains uncovered here. (The *graph* backend
+    /// host-side per-index bound check upstream — FR-EX-08). The AudioCraft
+    /// waveform-decode wave (2026-08-26) wires [`HotOp::EncodecRvq`] through
+    /// that same shape-generic Mimi kernel with EnCodec-specific validation.
+    /// CUDA sibling (M3-06 T15 NVRTC kernel) is on the vast.ai owner track and
+    /// remains uncovered here. (The *graph* backend
     /// `MetalBackend::supports` / `eval_op` is a separate path and still
     /// covers only `MatMul` — the two coverage surfaces are intentionally
     /// independent.)
@@ -398,19 +457,31 @@ impl HotOp {
         // added `SnakeActivation` via `vokra_snake_activation_f32`; Vocoder
         // Metal wave WF5 (2026-08-13) added `SnacDecode` via
         // `vokra_snac_decode_f32` and `DenoiseApplyMask` via
-        // `vokra_denoise_apply_mask_f32`. Any model listing the still-deferred
-        // sibling (`EncodecRvq`) continues to fail the Metal coverage gate —
-        // no silent CPU fall back (FR-EX-08).
+        // `vokra_denoise_apply_mask_f32`. AudioCraft waveform decoding
+        // (2026-08-26) added EncodecRvq through
+        // the same shape-generic gather + fold kernel as MimiRvq. The
+        // EnCodec-specific seam still performs its own host validation before
+        // dispatch; no CPU fall back is involved (FR-EX-08).
         matches!(
             self,
             HotOp::Gemm
                 | HotOp::Gemv
                 | HotOp::Softmax
                 | HotOp::LayerNorm
+                | HotOp::RmsNorm
+                | HotOp::ScaleNorm
+                | HotOp::GroupNorm
                 | HotOp::Gelu
+                | HotOp::GeluNew
+                | HotOp::Relu
+                | HotOp::Elu
+                | HotOp::Tanh
+                | HotOp::Silu
                 | HotOp::Conv1d
+                | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
+                | HotOp::EncodecRvq
                 | HotOp::WavTokenizerVq
                 | HotOp::Xcodec2Fsq
                 | HotOp::SnakeActivation
@@ -576,6 +647,7 @@ impl HotOp {
 /// directly is a single branch.
 pub struct Compute {
     be: Be,
+    cpu_isa: Option<IsaPath>,
 }
 
 /// The explicit refusal every GPU arm of [`Compute::gemm_q_f32`] returns
@@ -632,7 +704,24 @@ impl Compute {
     /// its methods reproduce the pre-seam kernel calls bit-for-bit.
     #[must_use]
     pub fn cpu() -> Self {
-        Compute { be: Be::Cpu }
+        Compute {
+            be: Be::Cpu,
+            cpu_isa: None,
+        }
+    }
+
+    /// Builds the requested backend while forcing the portable scalar CPU
+    /// kernels only when `kind` is [`BackendKind::Cpu`]. GPU selections remain
+    /// unchanged and never fall back to the CPU.
+    pub(crate) fn for_backend_with_scalar_cpu(
+        kind: BackendKind,
+        required: &[HotOp],
+    ) -> Result<Self> {
+        let mut compute = Self::for_backend(kind, required)?;
+        if kind == BackendKind::Cpu {
+            compute.cpu_isa = Some(IsaPath::Scalar);
+        }
+        Ok(compute)
     }
 
     /// Builds a dispatcher for `kind`, requiring it to cover every op in
@@ -641,7 +730,7 @@ impl Compute {
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] if `kind` is a real backend that does not
-    ///   cover some op in `required` (e.g. Metal for a model that needs softmax)
+    ///   cover some op in `required` (e.g. Metal for a model that needs GroupFsq)
     ///   — never a per-op CPU fall back.
     /// - [`VokraError::BackendUnavailable`] if `kind` is not built into this
     ///   binary (e.g. `Metal` without the `metal` feature, or off an Apple
@@ -678,6 +767,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::Metal(Box::new(vokra_backend_metal::MetalContext::new()?)),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -692,6 +782,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::Cuda(Box::new(vokra_backend_cuda::CudaContext::new()?)),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(
@@ -739,6 +830,7 @@ impl Compute {
                 }
                 Ok(Compute {
                     be: Be::WebGpu(vokra_backend_webgpu::WebGpuContext::new()?),
+                    cpu_isa: None,
                 })
             }
             #[cfg(all(feature = "coreml", any(target_os = "macos", target_os = "ios")))]
@@ -909,7 +1001,10 @@ impl Compute {
         out: &mut [f32],
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::gemm_f32(m, n, k, a, b, bias, out),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::gemm_f32_on(isa, m, n, k, a, b, bias, out),
+                None => kernels::gemm_f32(m, n, k, a, b, bias, out),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.gemm_f32(m, n, k, a, b, bias, out),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -993,7 +1088,10 @@ impl Compute {
         cols: usize,
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::softmax_f32(input, out, rows, cols),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::softmax_f32_on(isa, input, out, rows, cols),
+                None => kernels::softmax_f32(input, out, rows, cols),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.softmax_f32(input, out, rows, cols),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
@@ -1017,13 +1115,139 @@ impl Compute {
         eps: f32,
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => {
+                    kernels::layer_norm_f32_on(isa, input, out, rows, cols, gamma, beta, eps)
+                }
+                None => kernels::layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.layer_norm_f32(input, out, rows, cols, gamma, beta, eps),
+        }
+    }
+
+    /// Gamma-only RMS normalisation over the innermost axis of a
+    /// `rows × cols` buffer. Unlike [`Self::layer_norm_f32`], this does not
+    /// subtract a mean and has no beta term.
+    pub fn rms_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        if rows == 0 || cols == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: rows and cols must be non-zero, got {rows}x{cols}"
+            )));
+        }
+        if !eps.is_finite() || eps <= 0.0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: eps must be finite and positive, got {eps}"
+            )));
+        }
+        let expected = rows.checked_mul(cols).ok_or_else(|| {
+            VokraError::InvalidArgument("rms_norm_f32: rows*cols overflow".to_owned())
+        })?;
+        if input.len() != expected || out.len() != expected || gamma.len() != cols {
+            return Err(VokraError::InvalidArgument(format!(
+                "rms_norm_f32: expected input/out {expected} and gamma {cols}, got input {}, out {}, gamma {}",
+                input.len(),
+                out.len(),
+                gamma.len()
+            )));
+        }
+        match &self.be {
+            Be::Cpu => {
+                for row in 0..rows {
+                    let start = row * cols;
+                    let src = &input[start..start + cols];
+                    let sum_sq: f32 = src.iter().map(|value| value * value).sum();
+                    let inverse_rms = 1.0 / (sum_sq / cols as f32 + eps).sqrt();
+                    for col in 0..cols {
+                        out[start + col] = src[col] * inverse_rms * gamma[col];
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.rms_norm_f32(input, out, rows, cols, gamma, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "rms_norm_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "rms_norm_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Scalar-gain ScaleNorm over the innermost axis of a `rows × cols`
+    /// buffer. Unlike [`Self::rms_norm_f32`], epsilon clamps the completed
+    /// scaled L2 norm instead of being added inside the square root.
+    pub fn scale_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::scale_norm_f32(input, out, rows, cols, gain, eps),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.scale_norm_f32(input, out, rows, cols, gain, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "scale_norm_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "scale_norm_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// One-group affine GroupNorm over channel-major `[channels, positions]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::group_norm_f32(input, out, channels, positions, gamma, beta, eps),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.group_norm_f32(input, out, channels, positions, gamma, beta, eps),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_f32 has no wired CUDA kernel; Vokra does not silently run the op on \
+                 the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_f32 has no wired WebGPU kernel; Vokra does not silently run the op \
+                 on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -1037,6 +1261,129 @@ impl Compute {
             Be::Cuda(ctx) => ctx.gelu_f32(x, out),
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(ctx) => ctx.gelu_f32(x, out),
+        }
+    }
+
+    /// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+    pub fn gelu_new_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::gelu_new_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.gelu_new_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "gelu_new_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "gelu_new_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise ReLU (`out = max(x, 0)`).
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Relu`] cannot
+    /// silently execute this activation on the host.
+    pub fn relu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::relu_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.relu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "relu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "relu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise ELU with the EnCodec/Bark default `alpha = 1`.
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Elu`] cannot
+    /// silently execute this activation on the host.
+    pub fn elu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::elu_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.elu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "elu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "elu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise hyperbolic tangent (`out = tanh(x)`).
+    ///
+    /// Metal uses its dedicated MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms so a model listing [`HotOp::Tanh`] cannot
+    /// silently execute this activation on the host.
+    pub fn tanh_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::tanh_f32(x, out),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.tanh_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "tanh_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "tanh_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Element-wise SiLU / Swish (`out = x * sigmoid(x)`).
+    ///
+    /// Metal uses its native MSL kernel. CUDA and WebGPU are explicit
+    /// unsupported-operation arms because listing [`HotOp::Silu`] must never
+    /// conceal a host fallback.
+    pub fn silu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        if x.len() != out.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "silu_f32: input length {} != output length {}",
+                x.len(),
+                out.len()
+            )));
+        }
+        match &self.be {
+            Be::Cpu => {
+                for (output, &value) in out.iter_mut().zip(x) {
+                    *output = value / (1.0 + (-value).exp());
+                }
+                Ok(())
+            }
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.silu_f32(x, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "silu_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "silu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -1057,9 +1404,14 @@ impl Compute {
         out: &mut [f32],
     ) -> Result<()> {
         match &self.be {
-            Be::Cpu => kernels::conv1d_f32(
-                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
-            ),
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::conv1d_f32_on(
+                    isa, input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+                None => kernels::conv1d_f32(
+                    input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+            },
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
             Be::Metal(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
@@ -1072,6 +1424,45 @@ impl Compute {
             Be::WebGpu(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
+        }
+    }
+
+    /// Grouped 1-D convolution. The CPU and Metal arms execute real grouped
+    /// kernels; other GPU arms refuse explicitly because their coverage gate
+    /// does not list [`HotOp::GroupedConv1d`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn grouped_conv1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::grouped_conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.grouped_conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "grouped_conv1d has no CUDA Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "grouped_conv1d has no WebGPU Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -1097,31 +1488,27 @@ impl Compute {
     /// M3-09 (CosyVoice2) calls this at chunk granularity, not at the
     /// per-token hot-path granularity the GEMM seam serves.
     ///
-    /// # CPU-only through this seam today (Metal / CUDA arms return `UnsupportedOp`)
+    /// # CPU + Metal through this seam
     ///
     /// The CPU arm delegates verbatim to [`vokra_ops::mimi_rvq_decode`]
     /// (M3-06 T04 kernel; bit-for-bit reproduces a direct kernel call, so a
     /// `Compute::cpu()` run reproduces the pre-seam output exactly). The
-    /// **Metal** and **CUDA** arms return an explicit
-    /// [`VokraError::UnsupportedOp`] because the M3-06 T14 (MSL) / T15 (NVRTC)
-    /// GPU kernels are still deferred to the M3-09 mimi_bridge upgrade past
-    /// stub — this is the honest state today and is *never* a silent CPU
-    /// fall back (FR-EX-08). The coverage gate on
-    /// [`Compute::for_backend`] additionally rejects any model that lists
-    /// [`HotOp::MimiRvq`] against Metal / CUDA / Vulkan, so a well-behaved
-    /// consumer never reaches this method through those arms; the explicit
-    /// error here is the belt-and-braces defence for any consumer that
-    /// bypassed the coverage gate (e.g. built a `Compute::for_backend(Metal,
-    /// &[])` with an empty required set and then reached for
-    /// `mimi_rvq_f32`).
+    /// **Metal** arm validates the complete shape/index contract on the host,
+    /// packs the tables in codebook-major order, and dispatches the M3-06 T14
+    /// MSL gather/fold kernel. The **CUDA** and **WebGPU** arms remain explicit
+    /// [`VokraError::UnsupportedOp`] results; no backend silently runs this op
+    /// on the CPU (FR-EX-08). [`Compute::for_backend`] rejects those uncovered
+    /// backend/op combinations before inference starts.
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates the [`VokraError::InvalidArgument`] variants
     ///   [`vokra_ops::mimi_rvq_decode`] raises (shape mismatch, out-of-range
     ///   codebook index; never a silent 0-clamp — FR-EX-08).
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`] until the
-    ///   M3-06 T14 / T15 GPU kernels land.
+    /// - Metal arm: the same shape/index errors are checked before dispatch;
+    ///   device or kernel failures are propagated.
+    /// - CUDA / WebGPU arms: explicit [`VokraError::UnsupportedOp`] until a
+    ///   native kernel is wired.
     pub fn mimi_rvq_f32(
         &self,
         codes: &[u32],
@@ -1239,21 +1626,22 @@ impl Compute {
     /// same heterogeneous-signature reason as `mimi_rvq_f32` (chunk
     /// granularity, not per-token hot path).
     ///
-    /// # CPU-only through this seam today
+    /// # CPU + Metal through this seam
     ///
-    /// The CPU arm delegates verbatim to [`vokra_ops::dac_rvq_decode`]
-    /// (bit-for-bit vs a direct kernel call); the **Metal** / **CUDA** arms
-    /// return an explicit [`VokraError::UnsupportedOp`] — the M4-04 GPU
-    /// kernels are deferred, and Vokra never silently substitutes the CPU
-    /// (FR-EX-08). The [`Compute::for_backend`] coverage gate additionally
-    /// rejects any model listing [`HotOp::DacRvq`] against Metal / CUDA /
-    /// Vulkan.
+    /// The CPU arm delegates verbatim to [`vokra_ops::dac_rvq_decode`]. The
+    /// Metal arm validates every shape and index on the host, then dispatches
+    /// `vokra_dac_rvq_gather_project_fold_f32`; it never substitutes the CPU.
+    /// CUDA and every other uncovered backend return an explicit
+    /// [`VokraError::UnsupportedOp`] through the coverage gate (FR-EX-08).
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates [`vokra_ops::dac_rvq_decode`]'s
     ///   [`VokraError::InvalidArgument`] (shape mismatch, out-of-range index).
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    /// - Metal arm: mirrors the CPU shape/index checks before GPU dispatch and
+    ///   propagates backend failures.
+    /// - CUDA and other uncovered backends: explicit
+    ///   [`VokraError::UnsupportedOp`].
     pub fn dac_rvq_f32(
         &self,
         codes: &[u32],
@@ -1393,22 +1781,23 @@ impl Compute {
         }
     }
 
-    /// EnCodec residual VQ codec decode — the M4-04 engine-only op wired into
-    /// the imperative `Compute` seam (FR-OP-32: the op exists, the pretrained
-    /// weights are permanently zoo-excluded — see `vokra_ops::encodec_rvq`
-    /// module docs).
+    /// EnCodec residual VQ codec decode — the M4-04 engine op wired into the
+    /// imperative `Compute` seam (FR-OP-32: standalone pretrained weights are
+    /// permanently zoo-excluded; authenticated composites such as Bark may
+    /// reuse the shape-generic op — see `vokra_ops::encodec_rvq` module docs).
     ///
-    /// Same shape-generic gather + FP32 fold as [`Compute::mimi_rvq_f32`];
-    /// the CPU arm delegates verbatim to [`vokra_ops::encodec_rvq_decode`],
-    /// the Metal / CUDA arms are explicit [`VokraError::UnsupportedOp`]
-    /// (FR-EX-08 — no silent CPU fall back), and the coverage gate rejects
-    /// [`HotOp::EncodecRvq`] against every GPU backend.
+    /// Same shape-generic gather + FP32 fold as [`Compute::mimi_rvq_f32`].
+    /// The CPU arm delegates verbatim to [`vokra_ops::encodec_rvq_decode`];
+    /// Metal dispatches the already-pinned Mimi gather/fold kernel after
+    /// EnCodec-specific host validation. CUDA / WebGPU remain explicit
+    /// [`VokraError::UnsupportedOp`] (FR-EX-08 — no silent CPU fall back).
     ///
     /// # Errors
     ///
     /// - CPU arm: propagates [`vokra_ops::encodec_rvq_decode`]'s
     ///   [`VokraError::InvalidArgument`].
-    /// - Metal / CUDA arms: explicit [`VokraError::UnsupportedOp`].
+    /// - Metal arm: EnCodec-specific validation plus backend failures.
+    /// - CUDA / WebGPU arms: explicit [`VokraError::UnsupportedOp`].
     pub fn encodec_rvq_f32(
         &self,
         codes: &[u32],
@@ -1419,12 +1808,80 @@ impl Compute {
         match &self.be {
             Be::Cpu => encodec_rvq_decode(codes, time, codebook_tables, attrs),
             #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
-            Be::Metal(_) => Err(VokraError::UnsupportedOp(
-                "encodec_rvq_f32 has no wired Metal MSL kernel; the M4-04 GPU arm is deferred. \
-                 Select BackendKind::Cpu (which delegates to vokra_ops::encodec_rvq_decode) — \
-                 Vokra does not silently run the op on the CPU (FR-EX-08)."
-                    .to_owned(),
-            )),
+            Be::Metal(ctx) => {
+                if attrs.n_codebooks == 0 || attrs.codebook_size == 0 || attrs.d_model == 0 {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: attrs must have every axis > 0, got \
+                         n_codebooks={} codebook_size={} d_model={}",
+                        attrs.n_codebooks, attrs.codebook_size, attrs.d_model,
+                    )));
+                }
+                if codebook_tables.len() != attrs.n_codebooks {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: codebook_tables.len() {} != \
+                         attrs.n_codebooks {}",
+                        codebook_tables.len(),
+                        attrs.n_codebooks
+                    )));
+                }
+                for (index, table) in codebook_tables.iter().enumerate() {
+                    if table.codebook_size != attrs.codebook_size || table.d_model != attrs.d_model
+                    {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "encodec_rvq_f32 metal: codebook_tables[{index}] shape [{},{}] \
+                             != attrs [{},{}]",
+                            table.codebook_size, table.d_model, attrs.codebook_size, attrs.d_model
+                        )));
+                    }
+                }
+                let expected_codes = time.checked_mul(attrs.n_codebooks).ok_or_else(|| {
+                    VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: time ({time}) * n_codebooks ({}) overflows usize",
+                        attrs.n_codebooks
+                    ))
+                })?;
+                if codes.len() != expected_codes {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "encodec_rvq_f32 metal: codes.len() {} != time * n_codebooks \
+                         {expected_codes}",
+                        codes.len()
+                    )));
+                }
+                for (position, &code) in codes.iter().enumerate() {
+                    if (code as usize) >= attrs.codebook_size {
+                        return Err(VokraError::InvalidArgument(format!(
+                            "encodec_rvq_f32 metal: codes[{position}] = {code} >= \
+                             codebook_size {} (no silent clamp — FR-EX-08)",
+                            attrs.codebook_size
+                        )));
+                    }
+                }
+                if time == 0 {
+                    return Ok(Vec::new());
+                }
+                let table_values = attrs
+                    .n_codebooks
+                    .checked_mul(attrs.codebook_size)
+                    .and_then(|value| value.checked_mul(attrs.d_model))
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "encodec_rvq_f32 metal: flattened codebook size overflows usize"
+                                .to_owned(),
+                        )
+                    })?;
+                let mut tables_flat = Vec::with_capacity(table_values);
+                for table in codebook_tables {
+                    tables_flat.extend_from_slice(&table.data);
+                }
+                ctx.mimi_rvq_gather_fold_f32(
+                    codes,
+                    &tables_flat,
+                    attrs.n_codebooks,
+                    attrs.codebook_size,
+                    attrs.d_model,
+                    time,
+                )
+            }
             #[cfg(all(feature = "cuda", any(unix, windows)))]
             Be::Cuda(_) => Err(VokraError::UnsupportedOp(
                 "encodec_rvq_f32 has no wired CUDA NVRTC kernel; the M4-04 GPU arm is deferred. \
@@ -2034,11 +2491,11 @@ impl Compute {
         }
     }
 
-    /// SNAC 3-stage hierarchical residual VQ codec decode — the Vocoder
+    /// SNAC 3/4-stage hierarchical residual VQ codec decode — the Vocoder
     /// wave WF5 op wired into the imperative `Compute` seam (upstream
     /// `hubertsiuzdak/snac`, MIT / Apache-2.0).
     ///
-    /// Given `[3]` per-stage `codes` vectors of `u32` codebook indices, the
+    /// Given one per-stage `codes` vector of `u32` codebook indices, the
     /// SNAC [`SnacConfig`] (holds per-stage temporal strides) and the
     /// [`SnacWeights`] bundle (3 factorized [`CodebookTable`]s and 3
     /// [`DacOutProj`]s), returns a fresh `[t_expanded × d_model]` row-major
@@ -2088,10 +2545,10 @@ impl Compute {
     ///   [`VokraError::UnsupportedOp`] until the GPU kernel lands.
     pub fn snac_decode_f32(
         &self,
-        codes: &[Vec<u32>; 3],
+        codes: &[Vec<u32>],
         config: SnacConfig,
-        codebooks: &[CodebookTable; 3],
-        out_projs: &[DacOutProj; 3],
+        codebooks: &[CodebookTable],
+        out_projs: &[DacOutProj],
     ) -> Result<Vec<f32>> {
         match &self.be {
             Be::Cpu => {
@@ -2101,16 +2558,8 @@ impl Compute {
                 // algorithmic changes. Chunk-granularity so building the
                 // decoder per call is negligible next to the FP32 fold.
                 let weights = SnacWeights {
-                    codebooks: [
-                        codebooks[0].clone(),
-                        codebooks[1].clone(),
-                        codebooks[2].clone(),
-                    ],
-                    out_projs: [
-                        out_projs[0].clone(),
-                        out_projs[1].clone(),
-                        out_projs[2].clone(),
-                    ],
+                    codebooks: codebooks.to_vec(),
+                    out_projs: out_projs.to_vec(),
                 };
                 let decoder = SnacDecoder::new(config, weights)?;
                 decoder.decode(codes)
@@ -2125,8 +2574,28 @@ impl Compute {
                 // `vokra_ops::snac_decode::SnacDecoder::new` /
                 // `SnacDecoder::decode` (FR-EX-08 — never a silent GPU OOB or
                 // CPU fall back).
+                if !(1..=vokra_ops::MAX_SNAC_STAGES).contains(&config.n_stages) {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "snac_decode_f32 metal: config.n_stages {} is outside 1..={}",
+                        config.n_stages,
+                        vokra_ops::MAX_SNAC_STAGES
+                    )));
+                }
+                if codes.len() != config.n_stages
+                    || codebooks.len() != config.n_stages
+                    || out_projs.len() != config.n_stages
+                {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "snac_decode_f32 metal: n_stages={} but codes.len()={}, \
+                         codebooks.len()={}, out_projs.len()={} (one entry per stage required)",
+                        config.n_stages,
+                        codes.len(),
+                        codebooks.len(),
+                        out_projs.len()
+                    )));
+                }
                 let strides = config.vq_strides;
-                for (s, &stride) in strides.iter().enumerate() {
+                for (s, &stride) in strides[..config.n_stages].iter().enumerate() {
                     if stride == 0 {
                         return Err(VokraError::InvalidArgument(format!(
                             "snac_decode_f32 metal: config.vq_strides[{s}] = 0 (stride 0 would \
@@ -2217,7 +2686,7 @@ impl Compute {
                 // next to the GPU dispatch (matches the heap-returning shape).
                 let total_codes: usize = codes.iter().map(std::vec::Vec::len).sum();
                 let mut codes_flat: Vec<u32> = Vec::with_capacity(total_codes);
-                let mut stage_offsets: [u32; 3] = [0, 0, 0];
+                let mut stage_offsets: [u32; 4] = [0, 0, 0, 0];
                 let mut running: usize = 0;
                 for (s, stage_codes) in codes.iter().enumerate() {
                     stage_offsets[s] = u32::try_from(running).map_err(|_| {
@@ -2233,13 +2702,13 @@ impl Compute {
                     })?;
                 }
                 let mut codebooks_flat: Vec<f32> =
-                    Vec::with_capacity(3 * codebook_size * codebook_dim);
+                    Vec::with_capacity(config.n_stages * codebook_size * codebook_dim);
                 for cb in codebooks {
                     codebooks_flat.extend_from_slice(&cb.data);
                 }
                 let mut proj_weights_flat: Vec<f32> =
-                    Vec::with_capacity(3 * d_model * codebook_dim);
-                let mut proj_biases_flat: Vec<f32> = Vec::with_capacity(3 * d_model);
+                    Vec::with_capacity(config.n_stages * d_model * codebook_dim);
+                let mut proj_biases_flat: Vec<f32> = Vec::with_capacity(config.n_stages * d_model);
                 for p in out_projs {
                     proj_weights_flat.extend_from_slice(&p.weight);
                     proj_biases_flat.extend_from_slice(&p.bias);
@@ -2248,6 +2717,7 @@ impl Compute {
                     &codes_flat,
                     stage_offsets,
                     strides,
+                    config.n_stages,
                     &codebooks_flat,
                     &proj_weights_flat,
                     &proj_biases_flat,
@@ -3526,15 +3996,10 @@ mod tests {
         }
     }
 
-    /// On a Metal build the `encodec_rvq_f32` Metal arm is still an explicit
-    /// `UnsupportedOp` — the M4-04 EnCodec GPU kernel stays deferred (Meta
-    /// EnCodec's pretrained weights are on the FR-OP-32 permanent-exclusion
-    /// list, so its Metal arm was never wired). The `dac_rvq_f32` Metal arm
-    /// is now wired (commit `f9f6e40`, MSL kernel
-    /// `vokra_dac_rvq_gather_project_fold_f32`), so its trivial (1,1,1)
-    /// shape should return an `Ok` fold — this test confirms both siblings
-    /// stay in lock-step with their [`HotOp::covered_by_metal`] flags
-    /// (FR-EX-08, mirror of the mimi test above).
+    /// On a Metal build both DAC and EnCodec RVQ arms dispatch real kernels.
+    /// EnCodec reuses Mimi's identical shape-generic gather/fold kernel; the
+    /// standalone-weight exclusion is a publication rule, not a reason to
+    /// leave an authenticated MusicGen composite's learned gather on CPU.
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn metal_dac_and_encodec_rvq_arms_track_coverage_no_silent_fallback() {
@@ -3564,22 +4029,36 @@ mod tests {
             .expect("DAC Metal arm is wired (Vocoder wave WF2, 2026-08-13) — must succeed");
         assert_eq!(dac_out.len(), 1);
 
-        // EnCodec Metal arm stays deferred (FR-OP-32 permanent weight
-        // exclusion — the Metal kernel would never have real callers).
         let enc_attrs = EncodecRvqAttrs {
             n_codebooks: 1,
             codebook_size: 1,
             d_model: 1,
         };
         let enc_tables = vec![CodebookTable::new(1, 1, vec![0.0]).unwrap()];
-        assert!(
-            matches!(
-                compute.encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs),
-                Err(VokraError::UnsupportedOp(_)),
-            ),
-            "EnCodec Metal arm must stay `UnsupportedOp` (FR-OP-32 permanent weight exclusion — \
-             never a silent CPU fall back, FR-EX-08)",
-        );
+        let enc_out = compute
+            .encodec_rvq_f32(&[0u32], 1, &enc_tables, &enc_attrs)
+            .expect("EnCodec Metal arm reuses the wired Mimi gather/fold kernel");
+        assert_eq!(enc_out, vec![0.0]);
+        assert!(matches!(
+            compute.encodec_rvq_f32(&[1u32], 1, &enc_tables, &enc_attrs),
+            Err(VokraError::InvalidArgument(_)),
+        ));
+
+        let parity_attrs = EncodecRvqAttrs {
+            n_codebooks: 2,
+            codebook_size: 3,
+            d_model: 2,
+        };
+        let parity_tables = vec![
+            CodebookTable::new(3, 2, vec![0.0, 0.5, 1.0, 1.5, 2.0, 2.5]).unwrap(),
+            CodebookTable::new(3, 2, vec![3.0, 3.5, 4.0, 4.5, 5.0, 5.5]).unwrap(),
+        ];
+        let parity_codes = [0, 2, 1, 1, 2, 0];
+        let cpu_out = encodec_rvq_decode(&parity_codes, 3, &parity_tables, &parity_attrs).unwrap();
+        let metal_out = compute
+            .encodec_rvq_f32(&parity_codes, 3, &parity_tables, &parity_attrs)
+            .expect("nontrivial EnCodec gather/fold must run on Metal");
+        assert_eq!(metal_out, cpu_out);
     }
 
     /// On a CUDA build the `dac_rvq_f32` / `encodec_rvq_f32` CUDA arms are
@@ -3801,6 +4280,80 @@ mod tests {
     }
 
     #[test]
+    fn cpu_rms_norm_matches_gamma_only_reference() {
+        let input = [1.0f32, -2.0, 3.0, 4.0, -1.0, 0.5];
+        let gamma = [0.5f32, 1.5, -2.0];
+        let mut actual = [0.0f32; 6];
+        Compute::cpu()
+            .rms_norm_f32(&input, &mut actual, 2, 3, &gamma, 1.0e-6)
+            .expect("cpu RMSNorm");
+        for row in 0..2 {
+            let src = &input[row * 3..row * 3 + 3];
+            let inverse_rms =
+                1.0 / ((src.iter().map(|x| x * x).sum::<f32>() / 3.0) + 1.0e-6).sqrt();
+            for col in 0..3 {
+                let expected = src[col] * inverse_rms * gamma[col];
+                assert!((actual[row * 3 + col] - expected).abs() <= f32::EPSILON);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_rms_norm_rejects_degenerate_axes_and_epsilon() {
+        let cpu = Compute::cpu();
+        assert!(matches!(
+            cpu.rms_norm_f32(&[], &mut [], 0, 3, &[1.0; 3], 1.0e-6),
+            Err(VokraError::InvalidArgument(_))
+        ));
+        assert!(matches!(
+            cpu.rms_norm_f32(&[1.0], &mut [0.0], 1, 1, &[1.0], 0.0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn cpu_scale_norm_matches_released_equation() {
+        let input = [1.0f32, -2.0, 3.0, 4.0, -1.0, 0.5];
+        let gain = 0.75f32;
+        let eps = 1.0e-5f32;
+        let mut actual = [0.0f32; 6];
+        Compute::cpu()
+            .scale_norm_f32(&input, &mut actual, 2, 3, gain, eps)
+            .expect("cpu ScaleNorm");
+        let dimension_scale = (3.0f64).sqrt().recip() as f32;
+        for row in 0..2 {
+            let source = &input[row * 3..row * 3 + 3];
+            let squared_norm = source.iter().map(|value| value * value).sum::<f32>();
+            let denominator = (squared_norm.sqrt() * dimension_scale).max(eps);
+            for col in 0..3 {
+                let expected = source[col] / denominator * gain;
+                assert_eq!(actual[row * 3 + col], expected);
+            }
+        }
+    }
+
+    #[test]
+    fn cpu_scale_norm_rejects_invalid_epsilon() {
+        assert!(matches!(
+            Compute::cpu().scale_norm_f32(&[1.0], &mut [0.0], 1, 1, 1.0, 0.0),
+            Err(VokraError::InvalidArgument(_))
+        ));
+    }
+
+    #[test]
+    fn cpu_elu_dispatches_to_the_alpha_one_kernel() {
+        let input = [f32::NEG_INFINITY, -4.0, -1.0, -0.0, 0.0, 0.5, 8.0];
+        let mut via_compute = [f32::NAN; 7];
+        Compute::cpu()
+            .elu_f32(&input, &mut via_compute)
+            .expect("CPU Compute ELU");
+
+        let mut direct = [f32::NAN; 7];
+        kernels::elu_f32(&input, &mut direct).expect("direct CPU ELU");
+        assert_eq!(via_compute.map(f32::to_bits), direct.map(f32::to_bits));
+    }
+
+    #[test]
     fn cpu_for_backend_covers_every_op() {
         // The CPU backend covers the full hot-op set unconditionally —
         // including MimiRvq (M3-06 T04 kernel via `vokra_ops::mimi_rvq_decode`).
@@ -3809,8 +4362,17 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::GeluNew,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -3872,17 +4434,28 @@ mod tests {
         // the Vocoder Metal wave WF2 (2026-08-13, MSL kernel
         // `vokra_snake_activation_f32`); SnacDecode and DenoiseApplyMask are
         // covered as of the Vocoder Metal wave WF5 (2026-08-13, MSL kernels
-        // `vokra_snac_decode_f32` / `vokra_denoise_apply_mask_f32`). Only
-        // EncodecRvq stays deferred.
+        // `vokra_snac_decode_f32` / `vokra_denoise_apply_mask_f32`).
+        // EncodecRvq reuses Mimi's identical shape-generic gather/fold kernel
+        // as of the AudioCraft waveform-decode wave (2026-08-26).
         for op in [
             HotOp::Gemm,
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::GeluNew,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
+            HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
             HotOp::Xcodec2Fsq,
             HotOp::SnakeActivation,
@@ -3904,10 +4477,10 @@ mod tests {
             );
         }
 
-        // The remaining M4-04 RVQ sibling and the two NanoCodec hot ops are
-        // deliberately CPU-only. Keep these flags in lock-step with the
+        // The two NanoCodec hot ops remain deliberately CPU-only. Keep these
+        // flags in lock-step with the
         // corresponding model required-op registries and Compute method arms.
-        for op in [HotOp::EncodecRvq, HotOp::GroupFsq, HotOp::CausalHifiGan] {
+        for op in [HotOp::GroupFsq, HotOp::CausalHifiGan] {
             assert!(
                 !op.covered_by_metal(),
                 "{op:?} unexpectedly Metal-covered — its GPU kernel is deferred; if it has \
@@ -4070,6 +4643,14 @@ mod tests {
         // `xcodec2_fsq_f32` / `snake_activation_f32` / `snac_decode_f32` /
         // `denoise_apply_mask_f32`).
         for op in [
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
+            HotOp::GeluNew,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
             HotOp::WavTokenizerVq,
@@ -4084,6 +4665,7 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
         ] {
@@ -4148,8 +4730,16 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4208,8 +4798,16 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4255,8 +4853,16 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4319,8 +4925,16 @@ mod tests {
             HotOp::Gemv,
             HotOp::Softmax,
             HotOp::LayerNorm,
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
             HotOp::Gelu,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4496,6 +5110,14 @@ mod tests {
             );
         }
         for op in [
+            HotOp::RmsNorm,
+            HotOp::ScaleNorm,
+            HotOp::GroupNorm,
+            HotOp::GeluNew,
+            HotOp::Relu,
+            HotOp::Elu,
+            HotOp::Tanh,
+            HotOp::Silu,
             HotOp::MimiRvq,
             HotOp::DacRvq,
             HotOp::EncodecRvq,
@@ -4509,6 +5131,7 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
         ] {

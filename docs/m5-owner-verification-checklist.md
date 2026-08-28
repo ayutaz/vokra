@@ -35,7 +35,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
 | Scope | Current state | Remaining done-condition / route |
 |---|---|---|
-| M5-01 / M5-02 | Delegate selection/probe scaffolds and bakeoff tooling landed; both backends still advertise zero executable ops | Implement the selected CoreML/QNN delegate graph paths, then capture real ANE + Hexagon placement/RTF, record two verdicts, and make the M5-13 C-export decision (§1.5; 9 literal boxes) |
+| M5-01 / M5-02 | CoreML now executes the complete Whisper encoder submodel; its 2026-08-24 M1 bakeoff recorded 99.63% ANE placement but parity and 2x speed FAIL. QNN remains an SDK-gated zero-op scaffold. | Implement the QNN delegate graph, capture the Hexagon result, then combine its verdict with the recorded CoreML NO-GO for the M5-13 C-export decision (§1.5). |
 | M5-03 | ADR **Accepted**; `vokra-vad-micro`, cross-build, host differential, and memory budget landed | Real Cortex-M55/FVP run plus Tier-3/Helium investment decision (§2.2/§2.3) |
 | M5-04 | Static-link and no-dynamic-load gate landed | Console NDA, real SDK triple build, and ADR ratification (§4) |
 | M5-05 | ADR option (ii) **Accepted**; `f0_extract` placement = core / M5-16; naming migration applied | Legal sufficiency, consent trust root, separate-repository publication, and RVC/GPT-SoVITS sign-off (§3) |
@@ -85,8 +85,8 @@ The freeze machinery is landed (`abi-diff.sh --gate`, proven to fail on a blocki
 
 ## 1.5 NPU bakeoff (M5-01 CoreML/ANE + M5-02 QNN/Hexagon)
 
-- **(a)**: first land executable delegate graph/submodel paths, then run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19. The current scaffolds deliberately report `supports = false` for every op; non-empty graphs return `UnsupportedOp` and empty-graph `execute` returns `NotImplemented`, so a placement-only probe cannot produce a valid bakeoff yet.
-- **(b)**: implementation needs the ratified CoreML model-supply ADR and the SDK-gated QNN graph API transcription; measurement then needs real ANE / Hexagon silicon. This machine has neither an NPU bakeoff rig nor the QNN delegate runtime.
+- **(a)**: first land executable delegate graph/submodel paths, then run the CoreML (Apple ANE) and QNN (Qualcomm Hexagon) delegates on real hardware and measure the NFR-PF-12 acceptance criterion (≥ 2× over the CPU baseline). Feeds T19. The CoreML complete-Whisper-encoder path and its M1 result are now recorded in `docs/handoff/m5-01-coreml-bakeoff-2026-08-24.md`; QNN still deliberately reports zero executable ops until its official SDK ABI is transcribed.
+- **(b)**: QNN implementation needs the SDK-gated graph API transcription and its measurement needs real Hexagon silicon. The current Apple M1 machine supplied the CoreML/ANE result but has neither the Qualcomm SDK/runtime nor a Snapdragon/Hexagon target.
 - **(c)**: spec M5-01-T24 / M5-02-T12 (gitignore-local); runbook is the sub-sections below.
 - **(d)**: a `PASS` / `FAIL` / `INSUFFICIENT DATA` verdict vs the 2× bar is recorded for each delegate in the sibling template files.
 
@@ -106,11 +106,27 @@ CC has landed the CC-actionable prep (WP-15) for owner NPU bakeoff. No hardware 
 - `tools/parity/provision-h100.sh` — H100 provisioning script for the M4-07 FA v3 bench, sibling of `scripts/publish/vast-ai/provision.sh`; includes a Hopper compute-cap gate (exit 1 if < 9.0).
 - `docs/handoff/m5-01-coreml-bakeoff-template.md` — CoreML/ANE bakeoff report template.
 - `docs/handoff/m5-02-qnn-bakeoff-template.md` — QNN/Hexagon bakeoff report template.
+- `tools/coreml/generate_whisper_encoder.py` — strict offline GGUF to CoreML
+  MLProgram converter for the complete Whisper encoder.
+- `tools/coreml/check_placement.sh` — official `MLComputePlan` estimated-cost
+  placement gate (constants remain visible but contribute zero cost).
+- `vokra-cli npu-bakeoff` — release-only alternating CPU/delegate exact-submodel
+  harness that reuses one process, model, input feature tensor, and delegate
+  session while enforcing parity and the 2x threshold.
 
 ### 1.5.3 Owner runbook (per delegate)
 
 Run this loop once per delegate (CoreML then QNN). Both loops end with a
 recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
+
+**CoreML 2026-08-24 protocol note:** the completed M5-01 run uses the exact
+delegated Whisper-encoder unit rather than separate whole-ASR CLI processes.
+Its alternating same-session samples satisfy the baseline-discipline intent
+more directly. Because the measured encoder-only ratio is 1.422828x, it is an
+upper bound on the full hybrid-ASR ratio: adding the same non-negative CPU
+decoder time to numerator and denominator can only move the ratio toward 1x.
+The clean encoder-only FAIL therefore decides the 2x question without a
+second whole-ASR RTF capture. See the dated report for the proof and raw data.
 
 **Prep**
 1. Wire up a **placement probe** for the delegate — a shell wrapper that
@@ -153,15 +169,22 @@ recorded verdict feeding **§1.3 T19 GO/NO-GO** on the C-ABI symbol call.
 
 ### 1.5.4 Bakeoff checklist
 
-- [ ] CoreML delegate graph/submodel execution and placement probe (Xcode Instruments MLModel trace wrapper) are wired up + emit the expected JSON.
-- [ ] CoreML baseline captured (`cpu`, N=10, CV ≤ 0.20).
-- [ ] CoreML NPU captured (`coreml`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
-- [ ] CoreML verdict recorded in `docs/handoff/m5-01-coreml-bakeoff-YYYY-MM-DD.md`.
+- [x] CoreML complete-Whisper-encoder submodel execution and official
+  `MLComputePlan` estimated-cost placement probe are wired up.
+- [x] CoreML same-session CPU encoder baseline captured (`N=10`, CV
+  `0.148269320`).
+- [x] CoreML same-session delegate encoder captured (`N=10`, CV
+  `0.131539500`, ANE estimated-cost placement `0.996281551`).
+- [x] CoreML FAIL / C ABI NO-GO recorded in
+  `docs/handoff/m5-01-coreml-bakeoff-2026-08-24.md`.
 - [ ] QNN graph construction/execution and placement probe (`qnn-net-run --profiling_option=op` wrapper) are wired up + emit the expected JSON.
 - [ ] QNN baseline captured (`cpu`, N=10, CV ≤ 0.20).
 - [ ] QNN NPU captured (`qnn`, N=10, CV ≤ 0.20, mean placement ≥ 0.90).
-- [ ] QNN verdict recorded in `docs/handoff/m5-02-qnn-bakeoff-YYYY-MM-DD.md`.
-- [ ] Both verdicts fed into §1.3 T19 (GO/NO-GO on the delegate selector C-ABI symbol).
+- [x] QNN prerequisite verdict recorded as `INSUFFICIENT DATA` in
+  `docs/handoff/m5-02-qnn-bakeoff-2026-08-24.md`; no performance number was
+  fabricated without SDK/runtime/Hexagon hardware.
+- [x] CoreML FAIL plus QNN INSUFFICIENT DATA fed into §1.3 T19: NPU delegate
+  selector C ABI = **NO-GO** for v1.0.
 
 ---
 
@@ -286,7 +309,7 @@ Original SoTA Phase 1-4 seven families:
 - [ ] Family 2 (whisper-extras, `VOKRA_WHISPER_EXTRAS_ENABLE`): VAST converted pinned Distil-Whisper Large v3.5 (`728a…`, 539 tensors, 3,025,666,272-byte GGUF) and Kotoba-Whisper v2.2 (`9d334…`, 539 tensors, 3,025,666,304-byte GGUF); both targeted harnesses passed their current GGUF metadata/hparam checks and loudly confirmed the native loader is still absent. Keep open because native transcription and independent output parity are not implemented, and repository scheduling is undecided.
 - [ ] Family 3 (tts-dac, `VOKRA_TTS_DAC_ENABLE`): VAST converted pinned Dia 1.6B (`257bc…`, 343 tensors, 6,444,673,088-byte GGUF) and Zonos v0.1 transformer (`9d833…`, 246 tensors, 3,248,843,808-byte GGUF); both targeted scaffold harnesses passed. Keep open because no reference-stage/output numerical parity ran and native synthesis remains a scaffold; repository scheduling is undecided.
 - [ ] Family 4 (tts-hiftnet, `VOKRA_TTS_HIFTNET_ENABLE`): VAST converted and passed the current targeted GGUF harness for Chatterbox multilingual (292 tensors, 2,143,980,064 bytes), turbo (299 tensors, 1,915,470,144 bytes), and nano (155 tensors, 869,895,424 bytes), all at pinned revisions. Keep open: reference stage taps were unset, CosyVoice3 still lacks its required torch-to-safetensors sidecar, and repository scheduling is undecided.
-- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Keep open because this is structural/config parity only: native synthesis and PCM numerical parity remain absent, and repository scheduling is undecided.
+- [ ] Family 5 (Qwen3-TTS, `VOKRA_QWEN3_TTS_ENABLE`): VAST converted the pinned 0.6B release (`5d839924…`) to a 478-tensor, 1,829,328,672-byte GGUF. Its targeted harness passed 12 tests and matched the upstream talker (13 axes) and code-predictor (10 axes) config exactly. Conversion now embeds and authenticates the fixed-revision config, byte-BPE and generation sidecars for all five official main checkpoints. The runtime implements the exact Base/CustomVoice/VoiceDesign prompt boundary, bounded mmap autoregressive talker with KV cache, all fifteen code-predictor rows, frame-major sixteen-codebook generation, and an explicit same-backend main + 12-Hz waveform-decoder API/CLI join on CPU or Metal. The separately released pinned tokenizer has a strict 271-tensor decode-only GGUF contract and complete native mapped waveform graph. Keep open because independent real-weight CPU parity and Apple-hardware Metal parity have not run, and the four historical public main GGUFs plus absent public companion still require separately authorized gated replacement/publication; repository scheduling is also undecided.
 - [ ] Family 6 (tts-continuous-vae, `VOKRA_TTS_CONT_VAE_ENABLE`): in addition to the prior VAST VoxCPM2 proof, VAST merged all three pinned VibeVoice-1.5B shards with the fail-loud checkpoint merger (1,204 tensors, 2,704,021,987 parameters, zero dropped/shared tensors), then converted the full model to a 5,408,160,960-byte GGUF and passed the targeted harness. The workflow now mirrors that proven full-shard path instead of selecting only the first shard. Keep open because byte-reference taps/native synthesis remain absent and repository scheduling is undecided.
 - [ ] Family 7 (tts-japanese, `VOKRA_TTS_JA_ENABLE`): VAST converted pinned Irodori-TTS-500M-v3 (`236c…`) to a 637-tensor, 2,048,247,584-byte GGUF and passed the current targeted harness. Keep open because its byte-reference directory was unset; VITS-JA remains intentionally unfetched and publication-blocked by the JSUT/JVS redistribution terms (§6.8), and repository scheduling is undecided.
 
@@ -354,7 +377,7 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [x] **kyutai/stt-2.6b-en** (row 266) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/kyutai-stt-2.6b-en` = live, ~5.23 GB / 323 tensors, BF16 direct (no strip). Mimi sibling already at `vokra/mimi`.
 - [x] **nvidia/parakeet-tdt-0.6b-v3** (row 267) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-tdt-0.6b-v3` = live, ~2.51 GB / 699 tensors, `num_batches_tracked` 24 stripped via `tools/parity/strip_int_tensors.py` (inference-inert BatchNorm counter). NVIDIA-EULA overlay decision: weight redistribution governed by CC-BY-4.0 card.
 - [x] **nvidia/parakeet-ctc-1.1b** (row 268) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED**: `huggingface.co/vokra/parakeet-ctc-1.1b` = live, ~4.25 GB / 1652 tensors, `num_batches_tracked` 42 stripped. **2026-08-22 runtime proof**: strict re-conversion on VAST produced a 4,251,045,248-byte GGUF (`sha256=8cbe063d…13f6d`); native JFK encoder/logits stayed inside the predeclared bounds, 138 raw ids + 26 tokens + full text matched pinned Transformers 5.15.0 exactly, and the public CLI route returned the same transcript. No upload occurred in this runtime run.
-- [x] **nvidia/canary-1b-v2** (row 269) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED (vast.ai)**: `huggingface.co/vokra/canary-1b-v2` = live. Upstream distributes `.nemo` only (2.5 GB tar); `tools/parity/nemo_pt_to_safetensors.py` extracts the inner `timestamps_asr_model_weights.ckpt` (688 float tensors kept, 24 int tensors stripped as inference-inert) into safetensors, then `vokra-cli convert --model canary` produces the GGUF. NVIDIA-EULA overlay decision: weight redistribution governed by the CC-BY-4.0 card (NOTICE §7 carries NVIDIA credit).
+- [x] **nvidia/canary-1b-v2** (row 269) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED BUT ARTIFACT-PARTIAL (audit 2026-08-26)**: `huggingface.co/vokra/canary-1b-v2` is live, but both filenames resolve to the same 688-F32-tensor / 24-layer timestamp auxiliary CTC manifest (`sha256(name,shape)=2318daa8…5d65bcb`), not the advertised 32-layer FastConformer + eight-layer Transformer AED. The pinned upstream revision `87bc5265…54bf` is a 6,358,958,080-byte tar (`sha256=ae5ef1bf…431094`) containing `./timestamps_asr_model_weights.ckpt` (2,503,310,314 bytes) **and a separate correct** `./model_weights.ckpt` (3,853,798,427 bytes). The old extractor missed the latter because of its `./` prefix and silently selected the first `.ckpt`; checkpoint selection now normalizes member paths, prefers the unique main member and refuses ambiguity. A tensor-payload-free audit of that main member pins 1,510 state tensors = 1,478 float inference tensors + 32 I64 BatchNorm counters and strict float manifest `a7a50151…ae34`; against the Flash release it has exactly four additional 26-tensor decoder layers and three 16,384-vocab shape changes. The strict complete-main converter, native CPU/Metal binder, 25-language CLI/bench route, and independent official-NeMo worker are implemented on this branch; the partial live GGUF still fails the 1,478-tensor gate. VAST compile/CPU token parity and Apple-silicon real-weight Metal parity remain pending, and no replacement upload is authorized. NVIDIA-EULA overlay decision remains unchanged: weight redistribution is governed by the CC-BY-4.0 card (NOTICE §7 carries NVIDIA credit).
 - [x] **facebook/omniASR-CTC-1B** (row 270) — ☑ Commercial 2026-07-28 yousan. **PUBLISHED (vast.ai)**: `huggingface.co/vokra/omniasr-ctc-1b` = live. Upstream distributes `omniASR-CTC-1B.pt` (3.9 GB — a regular pickled `state_dict`, not TorchScript); `tools/parity/nemo_pt_to_safetensors.py` handles it via `torch.load` + `model` wrapper unwrap (807 float tensors kept, 0 int tensors stripped) into safetensors, then `vokra-cli convert --model omniasr-ctc` produces the GGUF. HONEST DISCREPANCY pin ratified in same wave: `facebook/omniASR-CTC-1B` is canonical, the SoTA-plan-listed `suno/omniASR-CTC-1B-v1` is a 401 dead reference.
 
 **BF16 fleet skeletons (16 entries, PR #20 Wave E landing)**:
@@ -376,7 +399,11 @@ Per 2026-07-28 owner explicit go-signal ("Wave 3 の 22 owner-signoff モデル 
 - [x] **speechbrain/spkrec-ecapa-voxceleb** (ECAPA-TDNN candidate) — Commercial signed; CLI dispatch is complete. The exact upstream candidate remains recorded in §3.1. Remaining: real-weight preparation/binding/parity and publish gate.
 - [x] **Wespeaker/wespeaker-voxceleb-resnet34-LM** — Commercial signed; CLI dispatch is complete. category=speaker. Its current CC-BY-4.0 provenance includes FR-MD-09 attribution. Remaining: real-weight preparation/binding/parity and publish gate.
 - [x] **iic/speech_eres2net_sv_zh-cn_16k-common** (3D-Speaker) — Commercial signed; CLI dispatch is complete. category=speaker. Remaining: real-weight preparation/binding/parity and publish gate.
-- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; CLI dispatch is complete. category=emotion. Remaining: real-weight preparation/binding/parity and publish gate.
+- [x] **emotion2vec/emotion2vec_plus_large** — Commercial signed; strict
+  real-weight preparation, binding and native CPU/Metal CLI dispatch are
+  complete in the 2026-08-26 wave. category=emotion. Remaining: VAST official
+  CPU parity and Apple-device Metal parity. The existing public GGUF is the
+  destination; no republish is planned by this runtime wave.
 
 **Copyleft (1 entry) — SKU rename + PUBLISHED 2026-07-28**:
 
@@ -458,3 +485,88 @@ Rejected in §3.1. Owner action: choose the destination.
 
 - [x] **Register the FA v3 vs FA v2 dashboard row**: `tools/bench/build_dashboard.py` now renders `e2e_speedup_summary.fa_v3_vs_fa_v2_e2e_median` from `docs/perf/cuda-large-v3-h100-fa-v3-baseline.json` as `1.0573x` in the GPU table; its test pins the value. This satisfies the code/artifact part of M4-07 T18 without inventing a benchmark result.
 - [ ] **Owner deployment gate**: enable GitHub Pages and set `VOKRA_PAGES_ENABLED=true` if the dashboard must be publicly deployed. Until then `dashboard.yml` still produces the downloadable dashboard artifact, and no public-deployment claim is made.
+
+---
+
+## 8. Parity-oracle dependency upgrade (2026-08-28)
+
+**Status**: every pinned reference toolchain under `tools/parity/**` was audited
+against the GitHub Advisory Database — 401 unique package/version pairs across
+27 trees, of which 16 carried a moderate-or-higher advisory. Fourteen of the
+seventeen affected trees were upgraded and now resolve clean: `bark`, `dac`,
+`deepfake_detection`, `facodec`, `funcodec`, `moss_audio`, `nanocodec`,
+`neutts_air`, `pyannote_diarization`, `pyannote_segmentation`, `speecht5_tts`,
+`speechtokenizer`, `t5_encoder`, and `ultravox`. Transformers moved to `5.5.0`,
+torch to `2.13.0`, `sentencepiece` to `0.2.2`, `setuptools` to `84.0.0`, and
+`hydra-core` to `1.3.5`. Each dumper's fail-closed `TRANSFORMERS_VERSION` guard
+and Bark's pinned Transformers source revision were updated with them.
+
+`dac` moved only `protobuf` (3.19.6 to 7.36.0) through a `tool.uv` override:
+its numeric path is unchanged, verified by diffing the lockfiles, so the
+committed 16/24/44.1 kHz fixtures stay valid.
+
+Three trees cannot be upgraded because their newest upstream release still
+hard-pins a vulnerable dependency:
+
+| Tree | Upstream pin | Residual |
+| --- | --- | --- |
+| `qwen3_asr` | `qwen-asr==0.0.6` (latest) requires `transformers==4.57.6` | 3 advisories |
+| `parler_tts` | `parler-tts==0.2.2` requires `transformers==4.46.1` | 16 advisories |
+| `xcodec2` | `xcodec2==0.1.5` (latest) requires `torch==2.5.0` | 4 advisories |
+
+`xcodec2` would accept Transformers 5.5.0, but its torch pin keeps the tree
+flagged either way and the bump would void five committed fixtures, so it was
+left alone. The union of the three residues — 20 exact GHSA ids — is
+allow-listed in `.github/workflows/ci-security.yml`. torch and Transformers
+appear nowhere outside `tools/parity/**`: the Rust runtime carries no
+dependencies (enforced by `scripts/check-zero-deps.sh`) and the published
+Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
+
+- [x] **VAST verification of the upgraded oracles** (2026-08-28, instance
+      `48950897`, destroyed after log recovery, account verified at zero running
+      instances). All sixteen touched trees installed from their committed
+      lockfiles, executed every `transformers`/`torch` import their dumper
+      declares — at module scope and inside functions — and ran that dumper's
+      argument parser: 16 pass, 0 fail. Log SHA-256
+      `f4f295abe4140bb6d87087608082657a0c4ac651fe170ad63af71548d830c1c3`.
+
+      The run found one real defect, and it predates this branch's dependency
+      work: `parler_tts` resolved `torch` from the `pytorch-cpu` index while
+      `torchaudio` came from PyPI, so `_torchaudio.abi3.so` could not load and
+      the oracle could not start. The same cross-index split existed at
+      `torch 2.5.1+cpu`, so that oracle had never run on this branch. Routing
+      `torchaudio` through the same index fixes it. Measurement, not version
+      arithmetic, settled this: `torch 2.13.0` with `torchaudio 2.11.0` loads
+      fine in six other trees where both come from one index.
+
+      This exercises installation and the import surface. It does not re-derive
+      any reference tensor, so a numerical change inside Transformers 5.5.0
+      would not be caught here.
+- [ ] Re-check the three blocked trees when `qwen-asr`, `parler-tts`, or
+      `xcodec2` publish a release that relaxes its pin, and drop the
+      corresponding ids from the allow-list.
+
+---
+
+## 9. GGUF producer stamp after the 0.2.0 bump (2026-08-28)
+
+Every GGUF carries `general.schema_producer = "vokra-core <CARGO_PKG_VERSION>"`,
+written by `GgufWriter` so the stamp always describes the build that produced
+the bytes (`vokra-core::gguf::schema::tests::every_builder_written_gguf_is_stamped`
+pins this). Opening the 0.2.0 line therefore changes the bytes of every
+regenerated GGUF, and with them the committed SHA-256 sidecars.
+
+`parity-sbv2-real` passed on `32efad34`, the commit immediately before the
+bump, and the only change from there to `4e59e12b` is Cargo version metadata,
+so the producer string is the whole delta. The three sidecars that job
+regenerates on a pull request were re-pinned to the values that run measured.
+
+- [ ] **Re-pin `tests/fixtures/sbv2/chinese-roberta-wwm-ext-large.gguf.sha256`**.
+      Its artefact is only rebuilt when `parity-sbv2-real` is dispatched with
+      `RUN_ZH=true`, so no run has produced the 0.2.0 value yet and the sidecar
+      still holds the 0.1.0 one. The next ZH dispatch will fail on it, which is
+      the intended fail-closed behaviour; re-pin from that run.
+- [ ] Published GGUFs on `huggingface.co/vokra` carry the 0.1.0 stamp. Nothing
+      republishes them automatically, but any future re-upload will differ in
+      this field from the artefact currently recorded in
+      `docs/license-audit.md`.

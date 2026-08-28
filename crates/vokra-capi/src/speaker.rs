@@ -13,8 +13,8 @@
 //!
 //! # PCM in, not filterbank in
 //!
-//! `SpeakerEncoder::embed` consumes a Kaldi filterbank. No host binding
-//! (C# / GDScript / Swift / Kotlin) can reasonably compute one, so
+//! Native speaker engines consume model-specific filterbanks. No host binding
+//! (C# / GDScript / Swift / Kotlin) can reasonably compute those, so
 //! [`vokra_speaker_embed`] takes the waveform and runs the model's own
 //! front-end — the same choice `vokra_asr_transcribe` already makes. The rate
 //! is checked, never silently converted (FR-EX-08).
@@ -37,8 +37,9 @@ use crate::handle::vokra_session_t;
 /// Computes the speaker embedding of one mono reference utterance.
 ///
 /// The session must have been created from a speaker-encoder model (GGUF arch
-/// `campplus`); any other model reports `VOKRA_ERROR_NOT_IMPLEMENTED`, the same
-/// task-mismatch posture as `vokra_asr_transcribe` on a TTS voice.
+/// `campplus`, `xvector`, `ecapa_tdnn`, `wespeaker`, or `titanet-large`); any other model reports
+/// `VOKRA_ERROR_NOT_IMPLEMENTED`, the same task-mismatch posture as
+/// `vokra_asr_transcribe` on a TTS voice.
 ///
 /// # Parameters
 ///
@@ -46,9 +47,10 @@ use crate::handle::vokra_session_t;
 /// - `pcm` / `num_samples`: mono `f32` samples in `[-1, 1]`. The clip must
 ///   cover at least one analysis frame (25 ms at 16 kHz).
 /// - `sample_rate`: sample rate of `pcm` in Hz. Must equal the rate the model's
-///   front-end was trained at (16000 for CAM++); a mismatch is rejected instead
-///   of resampled, because a silent resample would change the embedding without
-///   telling the caller (FR-EX-08).
+///   front-end was trained at (16000 for CAM++, X-vector, ECAPA-TDNN,
+///   WeSpeaker, and TitaNet-L); a mismatch is
+///   rejected instead of resampled, because a silent resample would change the
+///   embedding without telling the caller (FR-EX-08).
 /// - `out_embedding` / `out_capacity`: caller-owned destination array and its
 ///   length **in floats**. May be `NULL` / `0` to query the size only.
 /// - `out_written`: receives the embedding dimension — on success the number of
@@ -132,8 +134,8 @@ pub unsafe extern "C" fn vokra_speaker_embed(
         // The empty case is skipped rather than copied: `copy_nonoverlapping`
         // requires a non-null, aligned destination even for a zero count, and
         // `out_embedding` is only NULL-checked above when `out_capacity > 0`.
-        // No in-tree engine returns an empty embedding (CAM++ is 192-d, and it
-        // is the only `SpeakerEngine`), so this guard is unreachable today —
+        // No in-tree engine returns an empty embedding (CAM++ is 192-d and
+        // X-vector is 512-d), so this guard is unreachable today —
         // it is here so the `unsafe` block below rests on conditions this
         // function actually checks, not on a property of the current engine
         // set (2026-08-14 C ABI review).
@@ -616,6 +618,433 @@ mod tests {
             vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT,
             "a 22.05 kHz clip must be rejected, not silently resampled"
         );
+
+        // SAFETY: freshly created handle, destroyed exactly once.
+        unsafe { crate::session::vokra_session_destroy(session) };
+    }
+
+    /// End-to-end over the public 32-tensor SpeechBrain X-vector GGUF.  This
+    /// pins the model-generic C ABI wiring and its 512-dimensional sizing path;
+    /// numerical parity with the official SpeechBrain oracle is gated in
+    /// `vokra-models/tests/parity_xvector_real.rs`.
+    #[test]
+    fn embed_over_a_real_xvector_gguf_matches_the_rust_chain() {
+        let Ok(model) = std::env::var("VOKRA_XVECTOR_GGUF") else {
+            eprintln!("skipping X-vector C ABI e2e: set VOKRA_XVECTOR_GGUF to run");
+            return;
+        };
+        let cpath = std::ffi::CString::new(model.clone()).expect("path has no interior NUL");
+        let mut session: *mut vokra_session_t = ptr::null_mut();
+        // SAFETY: valid C path; NULL options selects the documented defaults;
+        // `session` is a writable out-slot.
+        let st = unsafe {
+            crate::session::vokra_session_create_from_file_with_options(
+                cpath.as_ptr(),
+                ptr::null(),
+                &mut session,
+            )
+        };
+        assert_eq!(
+            st,
+            vokra_status_t::VOKRA_OK,
+            "loading the X-vector GGUF failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert!(!session.is_null());
+
+        let pcm = reference_pcm();
+        let mut needed = 0usize;
+        // SAFETY: live session; NULL/0 output is the documented sizing form.
+        let st = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(st, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert_eq!(needed, 512, "X-vector embeddings are 512-d");
+
+        let mut embedding = vec![0.0f32; needed];
+        let mut written = 0usize;
+        // SAFETY: live session and caller-owned output buffer.
+        let st = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                embedding.as_mut_ptr(),
+                embedding.len(),
+                &mut written,
+            )
+        };
+        assert_eq!(
+            st,
+            vokra_status_t::VOKRA_OK,
+            "X-vector embed failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert_eq!(written, needed);
+        assert!(embedding.iter().any(|&value| value != 0.0));
+
+        let expected = vokra_models::xvector::XVector::from_path(&model)
+            .expect("bind X-vector through Rust")
+            .embed_pcm(&pcm, 16_000)
+            .expect("Rust X-vector embed");
+        for (index, (actual, expected)) in embedding.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "X-vector dimension {index} differs ({actual} vs {expected})"
+            );
+        }
+
+        // SAFETY: freshly created handle, destroyed exactly once.
+        unsafe { crate::session::vokra_session_destroy(session) };
+    }
+
+    /// End-to-end over the canonical public SpeechBrain ECAPA-TDNN GGUF.
+    #[test]
+    fn embed_over_a_real_ecapa_tdnn_gguf_matches_the_rust_chain() {
+        let Ok(model) = std::env::var("VOKRA_ECAPA_GGUF") else {
+            eprintln!("skipping ECAPA-TDNN C ABI e2e: set VOKRA_ECAPA_GGUF to run");
+            return;
+        };
+        let cpath = std::ffi::CString::new(model.clone()).expect("path has no interior NUL");
+        let mut session: *mut vokra_session_t = ptr::null_mut();
+        // SAFETY: valid C path and writable session out-slot.
+        let status = unsafe {
+            crate::session::vokra_session_create_from_file_with_options(
+                cpath.as_ptr(),
+                ptr::null(),
+                &mut session,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "loading ECAPA-TDNN failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+
+        let pcm = reference_pcm();
+        let mut needed = 0usize;
+        // SAFETY: live session; NULL/0 is the documented sizing form.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(status, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert_eq!(needed, 192, "ECAPA-TDNN embeddings are 192-d");
+
+        let mut embedding = vec![0.0f32; needed];
+        let mut written = 0usize;
+        // SAFETY: live session and caller-owned output buffer.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                embedding.as_mut_ptr(),
+                embedding.len(),
+                &mut written,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "ECAPA-TDNN embed failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert_eq!(written, needed);
+
+        let expected = vokra_models::ecapa_tdnn::EcapaTdnn::from_path(&model)
+            .expect("bind ECAPA-TDNN through Rust")
+            .embed_pcm(&pcm, 16_000)
+            .expect("Rust ECAPA-TDNN embed");
+        for (index, (actual, expected)) in embedding.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "ECAPA-TDNN dimension {index} differs ({actual} vs {expected})"
+            );
+        }
+
+        // SAFETY: freshly created handle, destroyed exactly once.
+        unsafe { crate::session::vokra_session_destroy(session) };
+    }
+
+    /// End-to-end over the public pyannote WeSpeaker ResNet34-LM GGUF.
+    #[test]
+    fn embed_over_a_real_wespeaker_gguf_matches_the_rust_chain() {
+        let Ok(model) = std::env::var("VOKRA_WESPEAKER_GGUF") else {
+            eprintln!("skipping WeSpeaker C ABI e2e: set VOKRA_WESPEAKER_GGUF to run");
+            return;
+        };
+        let cpath = std::ffi::CString::new(model.clone()).expect("path has no interior NUL");
+        let mut session: *mut vokra_session_t = ptr::null_mut();
+        // SAFETY: valid C path and writable session out-slot.
+        let status = unsafe {
+            crate::session::vokra_session_create_from_file_with_options(
+                cpath.as_ptr(),
+                ptr::null(),
+                &mut session,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "loading WeSpeaker failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+
+        let pcm = reference_pcm();
+        let mut needed = 0usize;
+        // SAFETY: live session; NULL/0 is the documented sizing form.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(status, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert_eq!(needed, 256, "WeSpeaker embeddings are 256-d");
+
+        let mut embedding = vec![0.0f32; needed];
+        let mut written = 0usize;
+        // SAFETY: live session and caller-owned output buffer.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                embedding.as_mut_ptr(),
+                embedding.len(),
+                &mut written,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "WeSpeaker embed failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert_eq!(written, needed);
+
+        let expected = vokra_models::wespeaker::WeSpeaker::from_path(&model)
+            .expect("bind WeSpeaker through Rust")
+            .embed_pcm(&pcm, 16_000)
+            .expect("Rust WeSpeaker embed");
+        for (index, (actual, expected)) in embedding.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "WeSpeaker dimension {index} differs ({actual} vs {expected})"
+            );
+        }
+
+        // SAFETY: freshly created handle, destroyed exactly once.
+        unsafe { crate::session::vokra_session_destroy(session) };
+    }
+
+    /// End-to-end over either byte-identical public NVIDIA TitaNet-L GGUF.
+    #[test]
+    fn embed_over_a_real_titanet_gguf_matches_the_rust_chain() {
+        let Ok(model) = std::env::var("VOKRA_TITANET_GGUF") else {
+            eprintln!("skipping TitaNet C ABI e2e: set VOKRA_TITANET_GGUF to run");
+            return;
+        };
+        let cpath = std::ffi::CString::new(model.clone()).expect("path has no interior NUL");
+        let mut session: *mut vokra_session_t = ptr::null_mut();
+        // SAFETY: valid C path and writable session out-slot.
+        let status = unsafe {
+            crate::session::vokra_session_create_from_file_with_options(
+                cpath.as_ptr(),
+                ptr::null(),
+                &mut session,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "loading TitaNet failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+
+        let pcm = reference_pcm();
+        let mut needed = 0usize;
+        // SAFETY: live session; NULL/0 is the documented sizing form.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                ptr::null_mut(),
+                0,
+                &mut needed,
+            )
+        };
+        assert_eq!(status, vokra_status_t::VOKRA_ERROR_INVALID_ARGUMENT);
+        assert_eq!(needed, 192, "TitaNet embeddings are 192-d");
+
+        let mut embedding = vec![0.0f32; needed];
+        let mut written = 0usize;
+        // SAFETY: live session and caller-owned output buffer.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                embedding.as_mut_ptr(),
+                embedding.len(),
+                &mut written,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "TitaNet embed failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert_eq!(written, needed);
+
+        let expected = vokra_models::titanet::TitaNet::from_path(&model)
+            .expect("bind TitaNet through Rust")
+            .embed_pcm(&pcm, 16_000)
+            .expect("Rust TitaNet embed");
+        for (index, (actual, expected)) in embedding.iter().zip(&expected).enumerate() {
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "TitaNet dimension {index} differs ({actual} vs {expected})"
+            );
+        }
+
+        // SAFETY: freshly created handle, destroyed exactly once.
+        unsafe { crate::session::vokra_session_destroy(session) };
+    }
+
+    /// Executes the complete public TitaNet-L learned graph on an actual
+    /// Apple Metal device and compares it with the independently gated CPU
+    /// path. This is deliberately more than a backend-accessor assertion.
+    #[cfg(all(feature = "metal", target_vendor = "apple"))]
+    #[test]
+    fn embed_over_a_real_titanet_gguf_runs_on_metal_and_matches_cpu() {
+        let Ok(model) = std::env::var("VOKRA_TITANET_GGUF") else {
+            eprintln!("skipping TitaNet Metal e2e: set VOKRA_TITANET_GGUF to run");
+            return;
+        };
+        vokra_models::make_backend(vokra_core::BackendKind::Metal)
+            .unwrap_or_else(|error| panic!("failed to create the Apple Metal backend: {error}"));
+
+        let pcm = reference_pcm();
+        let cpu = vokra_models::titanet::TitaNet::from_path(&model)
+            .expect("bind CPU TitaNet")
+            .embed_pcm(&pcm, 16_000)
+            .expect("CPU TitaNet embed");
+
+        let options = crate::options::vokra_session_options_create();
+        assert!(!options.is_null());
+        // SAFETY: live options handle owned by this test.
+        let status = unsafe {
+            crate::options::vokra_session_options_set_backend(
+                options,
+                crate::options::vokra_backend_t::VOKRA_BACKEND_METAL as i32,
+            )
+        };
+        assert_eq!(status, vokra_status_t::VOKRA_OK);
+
+        let cpath = std::ffi::CString::new(model).expect("path has no interior NUL");
+        let mut session: *mut vokra_session_t = ptr::null_mut();
+        // SAFETY: live path/options and writable session out-slot.
+        let status = unsafe {
+            crate::session::vokra_session_create_from_file_with_options(
+                cpath.as_ptr(),
+                options,
+                &mut session,
+            )
+        };
+        // SAFETY: session construction copied the options value.
+        unsafe { crate::options::vokra_session_options_destroy(options) };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "loading TitaNet on Metal failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+
+        let mut metal = vec![0.0f32; cpu.len()];
+        let mut written = 0usize;
+        // SAFETY: live Metal session and caller-owned output buffer.
+        let status = unsafe {
+            vokra_speaker_embed(
+                session,
+                pcm.as_ptr(),
+                pcm.len(),
+                16_000,
+                metal.as_mut_ptr(),
+                metal.len(),
+                &mut written,
+            )
+        };
+        assert_eq!(
+            status,
+            vokra_status_t::VOKRA_OK,
+            "Metal TitaNet embed failed: {:?}",
+            crate::error::vokra_last_error()
+        );
+        assert_eq!(written, cpu.len());
+
+        let max_abs = metal
+            .iter()
+            .zip(&cpu)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .fold(0.0f32, f32::max);
+        let relative_l1 = metal
+            .iter()
+            .zip(&cpu)
+            .map(|(actual, expected)| (actual - expected).abs())
+            .sum::<f32>()
+            / cpu
+                .iter()
+                .map(|value| value.abs())
+                .sum::<f32>()
+                .max(1.0e-12);
+        let cosine = vokra_models::speaker::cosine_similarity(&metal, &cpu)
+            .expect("non-zero TitaNet embeddings");
+        eprintln!(
+            "TitaNet Metal vs CPU: max_abs={max_abs:.9e} relative_l1={relative_l1:.9e} cosine={cosine:.9}"
+        );
+        assert!(
+            max_abs <= 1.0e-4,
+            "Metal/CPU max_abs {max_abs} exceeds 1e-4"
+        );
+        assert!(
+            relative_l1 <= 1.0e-4,
+            "Metal/CPU relative_l1 {relative_l1} exceeds 1e-4"
+        );
+        assert!(cosine >= 0.99999, "Metal/CPU cosine {cosine} is too low");
 
         // SAFETY: freshly created handle, destroyed exactly once.
         unsafe { crate::session::vokra_session_destroy(session) };

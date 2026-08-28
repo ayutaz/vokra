@@ -125,6 +125,9 @@ use vokra_core::{BackendKind, Result, VokraError};
 
 use crate::whisper::{WhisperAsr, WhisperTokenizer};
 
+#[cfg(feature = "coreml")]
+use crate::whisper::CoreMlArtifact;
+
 /// `vokra.model.arch` a kotoba-whisper GGUF must carry. Written by
 /// `vokra-convert::models::kotoba_whisper::ARCH`; the compliance registry
 /// (`vokra_core::compliance`) knows `kotoba-whisper` / `kotoba-whisper-v1.0` /
@@ -480,6 +483,21 @@ impl KotobaWhisperAsr {
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.inner = self.inner.map(|w| w.with_backend(backend));
         self
+    }
+
+    /// Binds the verified whole-encoder CoreML sidecar to the shared Whisper
+    /// delegate path. The config-only shell rejects it instead of silently
+    /// discarding the requested backend artifact.
+    #[cfg(feature = "coreml")]
+    pub fn with_coreml_artifact(mut self, artifact: CoreMlArtifact) -> Result<Self> {
+        let inner = self.inner.take().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "kotoba-whisper CoreML artifact requires from_gguf; the config-only shell has no executable weights"
+                    .to_owned(),
+            )
+        })?;
+        self.inner = Some(inner.with_coreml_artifact(artifact)?);
+        Ok(self)
     }
 
     /// The resolved configuration.

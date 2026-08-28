@@ -96,7 +96,121 @@
 
 use vokra_core::{Result, VokraError};
 
+use crate::hifigan::{HifiGanBackendOps, HifiGanConvPadding};
 use crate::hiftnet::Snake;
+
+/// Backend seam for BigVGAN's learned periodic activations in addition to the
+/// shared HiFi-GAN convolution contract.
+pub trait BigVganBackendOps: HifiGanBackendOps {
+    /// Plain Snake with effective (already exponentiated when required) alpha.
+    fn snake(&self, input: &[f32], alpha: &[f32], channels: usize, time: usize)
+    -> Result<Vec<f32>>;
+
+    /// SnakeBeta with effective alpha and beta vectors.
+    fn snake_beta(
+        &self,
+        input: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Vec<f32>>;
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScalarBigVganBackendOps;
+
+impl HifiGanBackendOps for ScalarBigVganBackendOps {
+    fn conv1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        padding_mode: HifiGanConvPadding,
+    ) -> Result<Vec<f32>> {
+        if stride != 1 || padding_mode != HifiGanConvPadding::Zero {
+            return Err(VokraError::UnsupportedOp(
+                "BigVGAN scalar convolution expects stride-1 zero padding".to_owned(),
+            ));
+        }
+        let zero_bias;
+        let bias = match bias {
+            Some(values) => values,
+            None => {
+                zero_bias = vec![0.0; out_ch];
+                &zero_bias
+            }
+        };
+        if dilation == 1 {
+            Ok(conv1d_same_padding(
+                input, in_ch, out_ch, kernel, padding, in_len, weight, bias,
+            ))
+        } else {
+            conv1d_dilated_same_padding(
+                input, in_ch, out_ch, kernel, dilation, padding, in_len, weight, bias,
+            )
+        }
+    }
+
+    fn conv_transpose1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        let zero_bias;
+        let bias = match bias {
+            Some(values) => values,
+            None => {
+                zero_bias = vec![0.0; out_ch];
+                &zero_bias
+            }
+        };
+        conv_transpose1d(
+            input, in_ch, out_ch, kernel, stride, padding, in_len, weight, bias,
+        )
+    }
+}
+
+impl BigVganBackendOps for ScalarBigVganBackendOps {
+    fn snake(
+        &self,
+        input: &[f32],
+        alpha: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0; input.len()];
+        crate::snake_activation_f32(input, alpha, channels, time, &mut output)?;
+        Ok(output)
+    }
+
+    fn snake_beta(
+        &self,
+        input: &[f32],
+        alpha: &[f32],
+        beta: &[f32],
+        channels: usize,
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0; input.len()];
+        crate::snake_beta_f32(input, alpha, beta, channels, time, &mut output)?;
+        Ok(output)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SnakeBeta activation (upstream `activations.py:62-114`)
@@ -161,6 +275,24 @@ impl SnakeBeta {
     /// Number of channels this activation covers (== `alpha.len() == beta.len()`).
     pub fn channels(&self) -> usize {
         self.alpha.len()
+    }
+
+    /// Materialises the effective alpha/beta vectors used by the activation.
+    /// Backend adapters consume these values because the stateless device op
+    /// accepts already-exponentiated parameters.
+    #[must_use]
+    pub fn effective_parameters(&self) -> (Vec<f32>, Vec<f32>) {
+        let transform = |value: f32| {
+            if self.alpha_logscale {
+                value.exp()
+            } else {
+                value
+            }
+        };
+        (
+            self.alpha.iter().copied().map(transform).collect(),
+            self.beta.iter().copied().map(transform).collect(),
+        )
     }
 
     /// Apply the activation in place to a `[channels, time]` row-major
@@ -240,6 +372,34 @@ impl AmpActivation {
             Self::SnakeBeta(sb) => sb.forward_in_place(x, channels, time),
         }
     }
+
+    fn forward_in_place_with_ops<O: BigVganBackendOps>(
+        &self,
+        x: &mut [f32],
+        channels: usize,
+        time: usize,
+        ops: &O,
+    ) -> Result<()> {
+        let output = match self {
+            Self::Snake(snake) => {
+                let alpha = snake.effective_alpha();
+                ops.snake(x, &alpha, channels, time)?
+            }
+            Self::SnakeBeta(snake) => {
+                let (alpha, beta) = snake.effective_parameters();
+                ops.snake_beta(x, &alpha, &beta, channels, time)?
+            }
+        };
+        if output.len() != x.len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "BigVGAN backend activation output length {} != input length {}",
+                output.len(),
+                x.len()
+            )));
+        }
+        x.copy_from_slice(&output);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +476,44 @@ impl AliasFreeActivation {
             &self.weights.downsample_filter,
         )?;
         debug_assert_eq!(downsampled.len(), x.len());
+        x.copy_from_slice(&downsampled);
+        Ok(())
+    }
+
+    fn forward_in_place_with_ops<O: BigVganBackendOps>(
+        &self,
+        x: &mut [f32],
+        channels: usize,
+        time: usize,
+        ops: &O,
+    ) -> Result<()> {
+        if x.len() != channels * time {
+            return Err(VokraError::InvalidArgument(format!(
+                "AliasFreeActivation forward: input length {} != channels * time = {}",
+                x.len(),
+                channels * time
+            )));
+        }
+        let mut upsampled = alias_free_upsample(
+            x,
+            channels,
+            time,
+            Self::RATIO,
+            &self.weights.upsample_filter,
+        )?;
+        self.activation.forward_in_place_with_ops(
+            &mut upsampled,
+            channels,
+            time * Self::RATIO,
+            ops,
+        )?;
+        let downsampled = alias_free_downsample(
+            &upsampled,
+            channels,
+            time * Self::RATIO,
+            Self::RATIO,
+            &self.weights.downsample_filter,
+        )?;
         x.copy_from_slice(&downsampled);
         Ok(())
     }
@@ -600,6 +798,59 @@ impl AmpBlock1 {
             )?;
             for (dst, &delta) in x.iter_mut().zip(xt.iter()) {
                 *dst += delta;
+            }
+        }
+        Ok(())
+    }
+
+    fn forward_in_place_with_ops<O: BigVganBackendOps>(
+        &self,
+        x: &mut [f32],
+        t: usize,
+        ops: &O,
+    ) -> Result<()> {
+        let ch = self.channels as usize;
+        let kernel = self.kernel_size as usize;
+        if x.len() != ch * t {
+            return Err(VokraError::InvalidArgument(format!(
+                "AmpBlock1 backend forward: input length {} != channels * t = {}",
+                x.len(),
+                ch * t
+            )));
+        }
+        for (index, &dilation) in self.dilations.iter().enumerate() {
+            let dilation = dilation as usize;
+            let mut branch = x.to_vec();
+            self.activations1[index].forward_in_place_with_ops(&mut branch, ch, t, ops)?;
+            branch = ops.conv1d(
+                &branch,
+                ch,
+                t,
+                &self.weights.convs1_w[index],
+                ch,
+                kernel,
+                Some(&self.weights.convs1_b[index]),
+                1,
+                dilation,
+                get_padding(kernel, dilation),
+                HifiGanConvPadding::Zero,
+            )?;
+            self.activations2[index].forward_in_place_with_ops(&mut branch, ch, t, ops)?;
+            branch = ops.conv1d(
+                &branch,
+                ch,
+                t,
+                &self.weights.convs2_w[index],
+                ch,
+                kernel,
+                Some(&self.weights.convs2_b[index]),
+                1,
+                1,
+                get_padding(kernel, 1),
+                HifiGanConvPadding::Zero,
+            )?;
+            for (destination, delta) in x.iter_mut().zip(&branch) {
+                *destination += *delta;
             }
         }
         Ok(())
@@ -995,6 +1246,18 @@ impl BigVGanGenerator {
     /// `t_mel * total_upsample_factor()`; the value range is `[-1, 1]`
     /// after the terminal `tanh` (or clamp).
     pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
+        self.forward_with_backend_ops(mel, t_mel, &ScalarBigVganBackendOps)
+    }
+
+    /// Runs the complete learned convolution and periodic-activation stack
+    /// through `ops`. Alias-free fixed FIR filtering, branch averaging,
+    /// residual additions and the terminal tanh/clamp remain host DSP/glue.
+    pub fn forward_with_backend_ops<O: BigVganBackendOps>(
+        &self,
+        mel: &[f32],
+        t_mel: usize,
+        ops: &O,
+    ) -> Result<Vec<f32>> {
         if t_mel == 0 {
             return Err(VokraError::InvalidArgument(
                 "BigVGanGenerator forward: t_mel must be > 0".to_owned(),
@@ -1011,16 +1274,19 @@ impl BigVGanGenerator {
         }
 
         // ---- 1. conv_pre (Conv1d k=7, pad=3) -----------------------------
-        let mut x = conv1d_same_padding(
+        let mut x = ops.conv1d(
             mel,
             inc,
-            bc,
-            7,
-            3,
             t_mel,
             &self.weights.conv_pre_w,
-            &self.weights.conv_pre_b,
-        );
+            bc,
+            7,
+            Some(&self.weights.conv_pre_b),
+            1,
+            1,
+            3,
+            HifiGanConvPadding::Zero,
+        )?;
         let mut t_cur = t_mel;
 
         let n_ups = self.cfg.num_upsamples();
@@ -1033,16 +1299,16 @@ impl BigVGanGenerator {
             let k = self.cfg.upsample_kernel_sizes[i] as usize;
             let stride = self.cfg.upsample_rates[i] as usize;
             let padding = (k - stride) / 2;
-            x = conv_transpose1d(
+            x = ops.conv_transpose1d(
                 &x,
                 in_ch,
-                out_ch,
-                k,
-                stride,
-                padding,
                 t_cur,
                 &self.weights.ups_w[i],
-                &self.weights.ups_b[i],
+                out_ch,
+                k,
+                Some(&self.weights.ups_b[i]),
+                stride,
+                padding,
             )?;
             t_cur *= stride;
 
@@ -1053,7 +1319,11 @@ impl BigVGanGenerator {
             let mut xs = vec![0.0f32; branch_len];
             for j in 0..n_kernels {
                 let mut branch = x.clone();
-                self.amp_blocks[i * n_kernels + j].forward_in_place(&mut branch, t_cur)?;
+                self.amp_blocks[i * n_kernels + j].forward_in_place_with_ops(
+                    &mut branch,
+                    t_cur,
+                    ops,
+                )?;
                 for (dst, &delta) in xs.iter_mut().zip(branch.iter()) {
                     *dst += delta;
                 }
@@ -1068,12 +1338,23 @@ impl BigVGanGenerator {
         // ---- 3. activation_post ------------------------------------------
         let last_ch = self.cfg.output_channels_at(n_ups - 1) as usize;
         self.activation_post
-            .forward_in_place(&mut x, last_ch, t_cur)?;
+            .forward_in_place_with_ops(&mut x, last_ch, t_cur, ops)?;
 
         // ---- 4. conv_post (Conv1d k=7, pad=3) -----------------------------
         let bias = self.weights.conv_post_b.as_deref().unwrap_or(&[0.0f32; 1]);
-        let out_1ch =
-            conv1d_same_padding(&x, last_ch, 1, 7, 3, t_cur, &self.weights.conv_post_w, bias);
+        let out_1ch = ops.conv1d(
+            &x,
+            last_ch,
+            t_cur,
+            &self.weights.conv_post_w,
+            1,
+            7,
+            Some(bias),
+            1,
+            1,
+            3,
+            HifiGanConvPadding::Zero,
+        )?;
         // out_1ch is [1, t_cur] row-major = length t_cur.
 
         // ---- 5. tanh (or clamp(-1, 1)) ------------------------------------

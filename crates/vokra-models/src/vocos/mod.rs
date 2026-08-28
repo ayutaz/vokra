@@ -9,11 +9,15 @@
 
 use std::collections::BTreeSet;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::{
-    VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
+    VocosAttrs, VocosBackendOps, VocosBlockWeights, VocosIstftPadding, VocosNormWeights,
+    VocosWeights, vocos_decode, vocos_decode_with_ops,
 };
+
+use crate::compute::{Compute, HotOp};
 
 /// Architecture tag emitted by the Vocos converter.
 pub const ARCH: &str = "vocos";
@@ -25,6 +29,14 @@ pub const CATEGORY: &str = "vocoder";
 pub const VARIANT_TAG_MEL24KHZ: &str = "mel_24khz";
 /// Encodec checkpoint variant tag.
 pub const VARIANT_TAG_ENCODEC24KHZ: &str = "encodec_24khz";
+
+/// Learned operations required for a complete Vocos Metal forward.
+pub const VOCOS_HOT_OPS: &[HotOp] = &[
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::LayerNorm,
+    HotOp::Gelu,
+];
 
 /// Which official Vocos checkpoint topology is loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +160,7 @@ pub struct Vocos {
     /// Encodec RVQ tables `[16 * 1024, 128]`; absent for the mel model.
     codebook_weights: Option<Vec<f32>>,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl Vocos {
@@ -160,6 +173,7 @@ impl Vocos {
             weights,
             codebook_weights: None,
             weight_license: LicenseClass::Unknown,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -199,6 +213,19 @@ impl Vocos {
         self.weight_license
     }
 
+    /// Selects the backend used by every learned Vocos operation.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Selected inference backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Decodes mel features.  The Encodec variant must use
     /// [`Self::decode_with_bandwidth`] because its AdaLayerNorm condition is
     /// a required part of the official contract.
@@ -209,13 +236,7 @@ impl Vocos {
                     .to_owned(),
             ));
         }
-        vocos_decode(
-            features,
-            n_frames,
-            None,
-            &self.weights,
-            &self.config.op_attrs(),
-        )
+        self.decode_inner(features, n_frames, None)
     }
 
     /// Decodes Encodec features with the official bandwidth condition id:
@@ -231,12 +252,28 @@ impl Vocos {
                 "Vocos::decode_with_bandwidth is only valid for encodec_24khz".to_owned(),
             ));
         }
-        vocos_decode(
+        self.decode_inner(features, n_frames, Some(bandwidth_id))
+    }
+
+    fn decode_inner(
+        &self,
+        features: &[f32],
+        n_frames: usize,
+        bandwidth_id: Option<usize>,
+    ) -> Result<Vec<f32>> {
+        let attrs = self.config.op_attrs();
+        if self.backend == BackendKind::Cpu {
+            return vocos_decode(features, n_frames, bandwidth_id, &self.weights, &attrs);
+        }
+        let compute = Compute::for_backend(self.backend, VOCOS_HOT_OPS)?;
+        let ops = ComputeVocosOps { compute: &compute };
+        vocos_decode_with_ops(
             features,
             n_frames,
-            Some(bandwidth_id),
+            bandwidth_id,
             &self.weights,
-            &self.config.op_attrs(),
+            &attrs,
+            &ops,
         )
     }
 
@@ -330,6 +367,143 @@ impl Vocos {
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
         Ok(model)
+    }
+}
+
+struct ComputeVocosOps<'a> {
+    compute: &'a Compute,
+}
+
+/// Reuses the standalone Vocos backend adapter for model-internal Vocos
+/// heads (FocalCodec is the first such consumer).  Keeping this seam here
+/// prevents an internal codec from accidentally routing learned ConvNeXt
+/// work through the scalar reference while a non-CPU backend is selected.
+pub(crate) fn decode_weights_with_compute(
+    features: &[f32],
+    frames: usize,
+    weights: &VocosWeights,
+    attrs: &VocosAttrs,
+    compute: &Compute,
+) -> Result<Vec<f32>> {
+    let ops = ComputeVocosOps { compute };
+    vocos_decode_with_ops(features, frames, None, weights, attrs, &ops)
+}
+
+impl VocosBackendOps for ComputeVocosOps<'_> {
+    fn conv1d_same(
+        &self,
+        input: &[f32],
+        input_channels: usize,
+        frames: usize,
+        output_channels: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0f32; output_channels * frames];
+        self.compute.conv1d_f32(
+            input,
+            input_channels,
+            frames,
+            weight,
+            output_channels,
+            kernel,
+            Some(bias),
+            1,
+            kernel / 2,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn depthwise_conv1d_same(
+        &self,
+        input: &[f32],
+        channels: usize,
+        frames: usize,
+        weight: &[f32],
+        bias: &[f32],
+        kernel: usize,
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0f32; channels * frames];
+        self.compute.grouped_conv1d_f32(
+            input,
+            channels,
+            frames,
+            weight,
+            channels,
+            kernel,
+            Some(bias),
+            1,
+            kernel / 2,
+            channels,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn norm_channel_major(
+        &self,
+        values: &mut [f32],
+        frames: usize,
+        dim: usize,
+        scale: &[f32],
+        shift: &[f32],
+    ) -> Result<()> {
+        let mut frame_major = vec![0.0f32; values.len()];
+        for channel in 0..dim {
+            for frame in 0..frames {
+                frame_major[frame * dim + channel] = values[channel * frames + frame];
+            }
+        }
+        let mut normalized = vec![0.0f32; values.len()];
+        self.compute.layer_norm_f32(
+            &frame_major,
+            &mut normalized,
+            frames,
+            dim,
+            scale,
+            shift,
+            1e-6,
+        )?;
+        for channel in 0..dim {
+            for frame in 0..frames {
+                values[channel * frames + frame] = normalized[frame * dim + channel];
+            }
+        }
+        Ok(())
+    }
+
+    fn pointwise(
+        &self,
+        input: &[f32],
+        input_dim: usize,
+        frames: usize,
+        output_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+    ) -> Result<Vec<f32>> {
+        let mut output = vec![0.0f32; output_dim * frames];
+        self.compute.conv1d_f32(
+            input,
+            input_dim,
+            frames,
+            weight,
+            output_dim,
+            1,
+            Some(bias),
+            1,
+            0,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn gelu_in_place(&self, values: &mut [f32]) -> Result<()> {
+        let mut output = vec![0.0f32; values.len()];
+        self.compute.gelu_f32(values, &mut output)?;
+        values.copy_from_slice(&output);
+        Ok(())
     }
 }
 

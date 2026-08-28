@@ -25,6 +25,14 @@ impl TensorStore {
         &self.file
     }
 
+    /// Whether the GGUF contains `name`, without turning absence into an
+    /// error. Used only for architecture variants whose tensors are optional
+    /// as a complete group (for example legacy piper voices without
+    /// `spk_proj`).
+    pub fn contains(&self, name: &str) -> bool {
+        self.file.tensor_info(name).is_some()
+    }
+
     /// Returns a tensor's dimensions (as stored), or an error if absent.
     pub fn shape(&self, name: &str) -> Result<Vec<usize>> {
         let info = self.file.tensor_info(name).ok_or_else(|| {

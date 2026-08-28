@@ -54,6 +54,19 @@ impl MoonshineVariant {
         }
     }
 
+    /// Original repository id stamped into the already-published Vokra GGUFs
+    /// before the upstream project moved to the `moonshine-ai` organization.
+    /// Hugging Face redirects these ids to the canonical repositories; the
+    /// loader accepts exactly this one historical alias per variant so the
+    /// public artifacts remain runnable without weakening provenance checks
+    /// for any unrelated source.
+    pub const fn legacy_upstream_hf(self) -> &'static str {
+        match self {
+            Self::Tiny => "UsefulSensors/moonshine-tiny",
+            Self::Base => "UsefulSensors/moonshine-base",
+        }
+    }
+
     /// Returns the pinned checkpoint revision.
     pub const fn revision(self) -> &'static str {
         match self {
@@ -228,7 +241,11 @@ impl Moonshine {
         })?;
         let config = MoonshineConfig::for_variant(variant);
         config.validate()?;
-        require_string(file, "vokra.provenance.upstream_hf", variant.upstream_hf())?;
+        require_one_of_strings(
+            file,
+            "vokra.provenance.upstream_hf",
+            &[variant.upstream_hf(), variant.legacy_upstream_hf()],
+        )?;
         require_string(file, "vokra.moonshine.revision", variant.revision())?;
         require_string(
             file,
@@ -305,7 +322,10 @@ impl Moonshine {
     }
 
     #[must_use]
-    /// Selects the execution backend; unsupported composed paths fail loudly.
+    /// Selects the execution backend. Every Moonshine projection, composed
+    /// attention matrix product, softmax, normalization, activation and Conv1D
+    /// is dispatched through the model's declared hot-op set; a backend that
+    /// cannot cover that complete set fails loudly at inference.
     pub const fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend = backend;
         self
@@ -368,6 +388,16 @@ fn require_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
     if actual != expected {
         return Err(VokraError::ModelLoad(format!(
             "moonshine: metadata `{key}` is `{actual}`, expected `{expected}`"
+        )));
+    }
+    Ok(())
+}
+
+fn require_one_of_strings(file: &GgufFile, key: &str, expected: &[&str]) -> Result<()> {
+    let actual = required_string(file, key)?;
+    if !expected.contains(&actual) {
+        return Err(VokraError::ModelLoad(format!(
+            "moonshine: metadata `{key}` is `{actual}`, expected one of {expected:?}"
         )));
     }
     Ok(())
@@ -448,6 +478,14 @@ mod tests {
         assert_eq!(
             MoonshineVariant::Base.upstream_hf(),
             "moonshine-ai/moonshine-base"
+        );
+        assert_eq!(
+            MoonshineVariant::Tiny.legacy_upstream_hf(),
+            "UsefulSensors/moonshine-tiny"
+        );
+        assert_eq!(
+            MoonshineVariant::Base.legacy_upstream_hf(),
+            "UsefulSensors/moonshine-base"
         );
     }
 

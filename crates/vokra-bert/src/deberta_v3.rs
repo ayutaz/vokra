@@ -30,9 +30,83 @@
 //! - github.com/fishaudio/Bert-VITS2 (AGPL-3.0)
 //! - Any AGPL derivative of the above.
 
+use crate::backend::BertBackendOps;
 use crate::deberta_v2::{AttnWeights, DisentangledAttention, EncoderLayer, FfnBlock, LayerNorm};
 use vokra_core::gguf::GgufFile;
-use vokra_core::VokraError;
+use vokra_core::{Result as VokraResult, VokraError};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GgufTensorSchema {
+    /// Current converter output: inference-ready `bert.*` names and a
+    /// pre-normalized shared relative-position table.
+    Canonical,
+    /// Early public release: verbatim HF `deberta.*` tensor names. The
+    /// loader performs the same lossless rename/QK-sharing and one-time
+    /// relative-embedding LayerNorm as the offline converter.
+    LegacyHf,
+}
+
+fn detect_tensor_schema(g: &GgufFile) -> Result<GgufTensorSchema, VokraError> {
+    let canonical = g.tensor_info("bert.embed.weight").is_some();
+    let legacy = g
+        .tensor_info("deberta.embeddings.word_embeddings.weight")
+        .is_some();
+    match (canonical, legacy) {
+        (true, false) => Ok(GgufTensorSchema::Canonical),
+        (false, true) => Ok(GgufTensorSchema::LegacyHf),
+        (true, true) => Err(VokraError::ModelLoad(
+            "deberta_v3 GGUF mixes canonical `bert.*` and legacy HF `deberta.*` tensor schemas; refusing ambiguous precedence (FR-EX-08)"
+                .to_owned(),
+        )),
+        (false, false) => Err(VokraError::ModelLoad(
+            "deberta_v3 GGUF contains neither canonical `bert.embed.weight` nor legacy HF `deberta.embeddings.word_embeddings.weight`"
+                .to_owned(),
+        )),
+    }
+}
+
+fn legacy_shared_position_embedding(g: &GgufFile, d_model: usize) -> Result<Vec<f32>, VokraError> {
+    let load = |name: &str| {
+        g.tensor_f32(name)
+            .map_err(|error| VokraError::ModelLoad(format!("{name}: {error}")))
+    };
+    let rel = load("deberta.encoder.rel_embeddings.weight")?;
+    if d_model == 0 || rel.len() % d_model != 0 {
+        return Err(VokraError::ModelLoad(format!(
+            "deberta.encoder.rel_embeddings.weight has {} elements, not a positive multiple of d_model {d_model}",
+            rel.len()
+        )));
+    }
+    let gamma_present = g.tensor_info("deberta.encoder.LayerNorm.weight").is_some();
+    let beta_present = g.tensor_info("deberta.encoder.LayerNorm.bias").is_some();
+    match (gamma_present, beta_present) {
+        (false, false) => Ok(rel),
+        (true, true) => {
+            let gamma = load("deberta.encoder.LayerNorm.weight")?;
+            let beta = load("deberta.encoder.LayerNorm.bias")?;
+            if gamma.len() != d_model || beta.len() != d_model {
+                return Err(VokraError::ModelLoad(format!(
+                    "deberta.encoder.LayerNorm gamma/beta lengths ({}/{}) do not match d_model {d_model}",
+                    gamma.len(),
+                    beta.len()
+                )));
+            }
+            // HF `DebertaV2Encoder.get_rel_embedding` applies this once per
+            // forward. The canonical converter performs the identical f32
+            // operation offline and stores its result under
+            // `bert.encoder.pos_embed.weight`.
+            Ok(LayerNorm::new(gamma, beta, 1e-7).forward(
+                &rel,
+                rel.len() / d_model,
+                d_model,
+            ))
+        }
+        _ => Err(VokraError::ModelLoad(
+            "legacy deberta_v3 GGUF has a partial `deberta.encoder.LayerNorm.{weight,bias}` pair; refusing to synthesize the missing half (FR-EX-08)"
+                .to_owned(),
+        )),
+    }
+}
 
 /// Full DeBERTa v3 encoder: token embedding lookup → embed LayerNorm →
 /// N-layer transformer stack, with a single position embedding table
@@ -65,6 +139,29 @@ impl DebertaV3Encoder {
             hidden = layer.forward(&hidden, seq_len);
         }
         hidden
+    }
+
+    /// Backend-dispatched sibling of [`Self::forward`].
+    pub fn forward_with_backend(
+        &self,
+        backend: &dyn BertBackendOps,
+        ids: &[u32],
+    ) -> VokraResult<Vec<f32>> {
+        let seq_len = ids.len();
+        let mut hidden = vec![0.0; seq_len * self.d_model];
+        for (position, &id) in ids.iter().enumerate() {
+            let id = id as usize;
+            assert!(id < self.vocab_size);
+            hidden[position * self.d_model..(position + 1) * self.d_model]
+                .copy_from_slice(&self.embed[id * self.d_model..(id + 1) * self.d_model]);
+        }
+        hidden = self
+            .embed_ln
+            .forward_with_backend(backend, &hidden, seq_len, self.d_model)?;
+        for layer in &self.layers {
+            hidden = layer.forward_with_backend(backend, &hidden, seq_len)?;
+        }
+        Ok(hidden)
     }
 
     pub fn get_d_model(&self) -> usize {
@@ -128,8 +225,13 @@ impl DebertaV3Encoder {
         }
     }
 
-    /// Loads a `DebertaV3Encoder` from a GGUF file written by the SBV2
-    /// converter.
+    /// Loads a `DebertaV3Encoder` from a current converter GGUF or the early
+    /// public GGUF layout that retained verbatim Hugging Face tensor names.
+    ///
+    /// Schema detection is fail-closed: files that mix both layouts or contain
+    /// neither layout are rejected. For the legacy layout, this loader performs
+    /// the same Q/K sharing and shared-relative-embedding LayerNorm as the
+    /// current offline converter.
     ///
     /// # Metadata keys (`vokra.bert.deberta_v3.*`)
     ///
@@ -137,7 +239,7 @@ impl DebertaV3Encoder {
     /// - `d_model` (default 1024), `n_heads` (default 16),
     ///   `n_pos_buckets` (default 512), `max_pos_dist` (default 512)
     ///
-    /// # Tensor names
+    /// # Canonical tensor names
     ///
     /// - `bert.embed.weight`, `bert.embed.ln.{gamma,beta}`
     /// - `bert.encoder.pos_embed.weight` — single shared table (v3's
@@ -174,6 +276,7 @@ impl DebertaV3Encoder {
             )));
         }
         let head_dim = d_model / n_heads;
+        let tensor_schema = detect_tensor_schema(g)?;
 
         let load_tensor_f32 = |name: &str| -> Result<Vec<f32>, VokraError> {
             g.tensor_f32(name)
@@ -190,54 +293,138 @@ impl DebertaV3Encoder {
             }
         };
 
-        let embed = load_tensor_f32("bert.embed.weight")?;
-        let embed_ln = LayerNorm::new(
-            load_tensor_f32("bert.embed.ln.gamma")?,
-            load_tensor_f32("bert.embed.ln.beta")?,
-            1e-7,
-        );
+        let (embed, embed_ln) = match tensor_schema {
+            GgufTensorSchema::Canonical => (
+                load_tensor_f32("bert.embed.weight")?,
+                LayerNorm::new(
+                    load_tensor_f32("bert.embed.ln.gamma")?,
+                    load_tensor_f32("bert.embed.ln.beta")?,
+                    1e-7,
+                ),
+            ),
+            GgufTensorSchema::LegacyHf => (
+                load_tensor_f32("deberta.embeddings.word_embeddings.weight")?,
+                LayerNorm::new(
+                    load_tensor_f32("deberta.embeddings.LayerNorm.weight")?,
+                    load_tensor_f32("deberta.embeddings.LayerNorm.bias")?,
+                    1e-7,
+                ),
+            ),
+        };
 
         // v3's only inference-relevant delta vs v2: one shared position
         // embedding table, read once and cloned into every layer below
         // (v2 reads a fresh `<layer>.attn.pos_embed.weight` tensor per layer).
-        let shared_pos_embed = load_tensor_f32("bert.encoder.pos_embed.weight")?;
+        let shared_pos_embed = match tensor_schema {
+            GgufTensorSchema::Canonical => load_tensor_f32("bert.encoder.pos_embed.weight")?,
+            GgufTensorSchema::LegacyHf => legacy_shared_position_embedding(g, d_model)?,
+        };
 
         let mut layers = Vec::with_capacity(n_layers);
         for i in 0..n_layers {
             let p = format!("bert.encoder.layer.{i}");
+            let legacy_p = format!("deberta.encoder.layer.{i}");
+            let (wq, wk, wv, wq_pos, wk_pos, w_out, bq, bk, bv, bout, bq_pos, bk_pos) =
+                match tensor_schema {
+                    GgufTensorSchema::Canonical => (
+                        load_tensor_f32(&format!("{p}.attn.wq.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.wk.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.wv.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.wq_pos.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.wk_pos.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.w_out.weight"))?,
+                        load_tensor_f32(&format!("{p}.attn.wq.bias"))?,
+                        load_tensor_f32(&format!("{p}.attn.wk.bias"))?,
+                        load_tensor_f32(&format!("{p}.attn.wv.bias"))?,
+                        load_tensor_f32(&format!("{p}.attn.w_out.bias"))?,
+                        load_optional_tensor_f32(&format!("{p}.attn.wq_pos.bias"))?,
+                        load_optional_tensor_f32(&format!("{p}.attn.wk_pos.bias"))?,
+                    ),
+                    GgufTensorSchema::LegacyHf => {
+                        let wq = load_tensor_f32(&format!(
+                            "{legacy_p}.attention.self.query_proj.weight"
+                        ))?;
+                        let wk =
+                            load_tensor_f32(&format!("{legacy_p}.attention.self.key_proj.weight"))?;
+                        let bq =
+                            load_tensor_f32(&format!("{legacy_p}.attention.self.query_proj.bias"))?;
+                        let bk =
+                            load_tensor_f32(&format!("{legacy_p}.attention.self.key_proj.bias"))?;
+                        (
+                            wq.clone(),
+                            wk.clone(),
+                            load_tensor_f32(&format!(
+                                "{legacy_p}.attention.self.value_proj.weight"
+                            ))?,
+                            wq,
+                            wk,
+                            load_tensor_f32(&format!("{legacy_p}.attention.output.dense.weight"))?,
+                            bq.clone(),
+                            bk.clone(),
+                            load_tensor_f32(&format!("{legacy_p}.attention.self.value_proj.bias"))?,
+                            load_tensor_f32(&format!("{legacy_p}.attention.output.dense.bias"))?,
+                            Some(bq),
+                            Some(bk),
+                        )
+                    }
+                };
             let w = AttnWeights {
-                wq: load_tensor_f32(&format!("{p}.attn.wq.weight"))?,
-                wk: load_tensor_f32(&format!("{p}.attn.wk.weight"))?,
-                wv: load_tensor_f32(&format!("{p}.attn.wv.weight"))?,
-                wq_pos: load_tensor_f32(&format!("{p}.attn.wq_pos.weight"))?,
-                wk_pos: load_tensor_f32(&format!("{p}.attn.wk_pos.weight"))?,
-                w_out: load_tensor_f32(&format!("{p}.attn.w_out.weight"))?,
+                wq,
+                wk,
+                wv,
+                wq_pos,
+                wk_pos,
+                w_out,
                 pos_embed: shared_pos_embed.clone(),
-                bq: load_tensor_f32(&format!("{p}.attn.wq.bias"))?,
-                bk: load_tensor_f32(&format!("{p}.attn.wk.bias"))?,
-                bv: load_tensor_f32(&format!("{p}.attn.wv.bias"))?,
-                bout: load_tensor_f32(&format!("{p}.attn.w_out.bias"))?,
-                bq_pos: load_optional_tensor_f32(&format!("{p}.attn.wq_pos.bias"))?,
-                bk_pos: load_optional_tensor_f32(&format!("{p}.attn.wk_pos.bias"))?,
+                bq,
+                bk,
+                bv,
+                bout,
+                bq_pos,
+                bk_pos,
             };
-            let ffn = FfnBlock::new(
-                load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
-                load_tensor_f32(&format!("{p}.ffn.w1.bias"))?,
-                load_tensor_f32(&format!("{p}.ffn.w2.weight"))?,
-                load_tensor_f32(&format!("{p}.ffn.w2.bias"))?,
-                d_model,
-                4 * d_model,
-            );
-            let ln1 = LayerNorm::new(
-                load_tensor_f32(&format!("{p}.ln1.gamma"))?,
-                load_tensor_f32(&format!("{p}.ln1.beta"))?,
-                1e-7,
-            );
-            let ln2 = LayerNorm::new(
-                load_tensor_f32(&format!("{p}.ln2.gamma"))?,
-                load_tensor_f32(&format!("{p}.ln2.beta"))?,
-                1e-7,
-            );
+            let (ffn, ln1, ln2) = match tensor_schema {
+                GgufTensorSchema::Canonical => (
+                    FfnBlock::new(
+                        load_tensor_f32(&format!("{p}.ffn.w1.weight"))?,
+                        load_tensor_f32(&format!("{p}.ffn.w1.bias"))?,
+                        load_tensor_f32(&format!("{p}.ffn.w2.weight"))?,
+                        load_tensor_f32(&format!("{p}.ffn.w2.bias"))?,
+                        d_model,
+                        4 * d_model,
+                    ),
+                    LayerNorm::new(
+                        load_tensor_f32(&format!("{p}.ln1.gamma"))?,
+                        load_tensor_f32(&format!("{p}.ln1.beta"))?,
+                        1e-7,
+                    ),
+                    LayerNorm::new(
+                        load_tensor_f32(&format!("{p}.ln2.gamma"))?,
+                        load_tensor_f32(&format!("{p}.ln2.beta"))?,
+                        1e-7,
+                    ),
+                ),
+                GgufTensorSchema::LegacyHf => (
+                    FfnBlock::new(
+                        load_tensor_f32(&format!("{legacy_p}.intermediate.dense.weight"))?,
+                        load_tensor_f32(&format!("{legacy_p}.intermediate.dense.bias"))?,
+                        load_tensor_f32(&format!("{legacy_p}.output.dense.weight"))?,
+                        load_tensor_f32(&format!("{legacy_p}.output.dense.bias"))?,
+                        d_model,
+                        4 * d_model,
+                    ),
+                    LayerNorm::new(
+                        load_tensor_f32(&format!("{legacy_p}.attention.output.LayerNorm.weight"))?,
+                        load_tensor_f32(&format!("{legacy_p}.attention.output.LayerNorm.bias"))?,
+                        1e-7,
+                    ),
+                    LayerNorm::new(
+                        load_tensor_f32(&format!("{legacy_p}.output.LayerNorm.weight"))?,
+                        load_tensor_f32(&format!("{legacy_p}.output.LayerNorm.bias"))?,
+                        1e-7,
+                    ),
+                ),
+            };
             layers.push(EncoderLayer {
                 attn: DisentangledAttention::new(
                     w,

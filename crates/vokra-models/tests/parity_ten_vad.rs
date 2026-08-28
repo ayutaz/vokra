@@ -174,3 +174,72 @@ fn official_network_and_stream_parity() {
         "stream max_abs={stream_error:.9e} exceeds fixed STREAM_ATOL={STREAM_ATOL:.9e}"
     );
 }
+
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn official_network_and_stream_cpu_metal_parity() {
+    let Some(gguf) = std::env::var_os(GGUF_ENV) else {
+        eprintln!("skip: set {GGUF_ENV} and {REFERENCE_ENV}");
+        return;
+    };
+    let reference_path = std::env::var_os(REFERENCE_ENV)
+        .unwrap_or_else(|| panic!("{REFERENCE_ENV} is required when {GGUF_ENV} is set"));
+    let bytes = std::fs::read(Path::new(&reference_path)).expect("read TEN-VAD reference");
+    let root = vokra_core::json::parse(&bytes).expect("parse TEN-VAD reference");
+    let network = root.get("network").expect("reference missing network");
+    let feature_steps = array(network, "features");
+    let expected = numeric_array(
+        network.get("probabilities").expect("network probabilities"),
+        "network.probabilities",
+    );
+    let cpu = TenVad::open(Path::new(&gguf)).expect("bind TEN-VAD CPU");
+    let metal = TenVad::open(Path::new(&gguf))
+        .expect("bind TEN-VAD Metal")
+        .with_backend(vokra_core::BackendKind::Metal);
+    let mut cpu_state = TenVadNetworkState::default();
+    let mut metal_state = TenVadNetworkState::default();
+    let mut cpu_probabilities = Vec::new();
+    let mut metal_probabilities = Vec::new();
+    for (step, context) in feature_steps.iter().enumerate() {
+        let mut features = Vec::with_capacity(123);
+        for (row_index, row) in context
+            .as_array()
+            .unwrap_or_else(|| panic!("network.features[{step}] must be an array"))
+            .iter()
+            .enumerate()
+        {
+            features.extend(numeric_array(
+                row,
+                &format!("network.features[{step}][{row_index}]"),
+            ));
+        }
+        cpu_probabilities.push(cpu.predict_features(&features, &mut cpu_state).unwrap());
+        metal_probabilities.push(metal.predict_features(&features, &mut metal_state).unwrap());
+    }
+    assert!(max_abs(&cpu_probabilities, &expected, "CPU network") <= NETWORK_ATOL);
+    assert!(max_abs(&metal_probabilities, &expected, "Metal network") <= 0.01);
+    assert!(
+        max_abs(
+            &metal_probabilities,
+            &cpu_probabilities,
+            "CPU/Metal network"
+        ) <= 0.01
+    );
+
+    let stream = root.get("stream").expect("reference missing stream");
+    let pcm = numeric_array(stream.get("pcm_i16").expect("stream PCM"), "stream.pcm_i16")
+        .into_iter()
+        .map(|sample| sample / 32768.0)
+        .collect::<Vec<_>>();
+    let expected_stream = numeric_array(
+        stream.get("probabilities").expect("stream probabilities"),
+        "stream.probabilities",
+    );
+    let mut cpu_handle = cpu.open_stream();
+    let mut metal_handle = metal.open_stream();
+    let cpu_stream = cpu_handle.push_pcm(&pcm, 16_000).unwrap();
+    let metal_stream = metal_handle.push_pcm(&pcm, 16_000).unwrap();
+    assert!(max_abs(&cpu_stream, &expected_stream, "CPU stream") <= STREAM_ATOL);
+    assert!(max_abs(&metal_stream, &expected_stream, "Metal stream") <= 0.01);
+    assert!(max_abs(&metal_stream, &cpu_stream, "CPU/Metal stream") <= 0.01);
+}

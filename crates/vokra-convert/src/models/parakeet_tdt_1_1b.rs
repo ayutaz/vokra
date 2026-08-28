@@ -1,127 +1,22 @@
-//! NVIDIA **Parakeet-TDT-1.1B**: safetensors checkpoint → GGUF
-//! conversion (coverage-audit 2026-08-03 Wave B ticket
-//! `parakeet-tdt-1.1b`).
+//! NVIDIA Parakeet-TDT-1.1B safetensors → executable GGUF conversion.
 //!
-//! Input: an upstream `nvidia/parakeet-tdt-1.1b` safetensors checkpoint
-//! (the release ships `.nemo`, which the operator flattens to
-//! safetensors offline via `tools/parity/nemo_pt_to_safetensors.py`
-//! before invoking this converter — same posture as `canary` /
-//! `parakeet` / `parakeet_ctc`). Output: a GGUF carrying every F32 /
-//! F16 / BF16 tensor verbatim plus the `vokra.provenance.*` /
-//! `vokra.model.*` / `vokra.schema.*` metadata chunks a future native
-//! `vokra-models::parakeet_tdt_1_1b::*` implementation will read.
+//! The immutable upstream `.nemo` archive contains 1,667 F32 tensors, a
+//! 42-layer FastConformer config and a 1,024-piece SentencePiece Unigram
+//! tokenizer. The offline preparation step flattens `model_weights.ckpt`
+//! without renaming tensors. This converter preserves those payload bytes,
+//! stamps the complete verified hparam contract and optionally embeds the
+//! byte-exact plaintext `tokenizer.vocab` needed for native decoding.
 //!
-//! # Relationship to the existing Parakeet family
-//!
-//! The Parakeet family already lands two sibling variants in the
-//! converter tree:
-//!
-//! * [`crate::models::parakeet`] — **Parakeet-TDT-0.6B-v3** (24-layer
-//!   FastConformer encoder + 2-layer RNN-T prediction net + TDT joint
-//!   head, `num_mel_bins=128`, `attention_bias=false`, F32 upstream).
-//! * [`crate::models::parakeet_ctc`] — **Parakeet-CTC-1.1B** (42-layer
-//!   FastConformer encoder + single-Linear CTC head — no RNN-T /
-//!   joint / duration head, `num_mel_bins=80`, `attention_bias=true`,
-//!   BF16 upstream).
-//!
-//! Parakeet-TDT-1.1B is the **scale-up of the 0.6B-v3 TDT variant**
-//! (Token-and-Duration Transducer, same joint-head + duration-bins
-//! topology as 0.6B-v3, but with the 1.1B-family axes reshaped — the
-//! specific numeric axes of the 1.1B TDT release are transcribed by
-//! owner from the upstream `config.json` when the first real weight
-//! arrives; this converter defers that transcription to preserve the
-//! ticket's "primary-source verified" contract and lands the
-//! byte-parallel GGUF surface as a BF16 pass-through skeleton (mirror
-//! of neucodec / emotion2vec / rnnoise / nsnet2 / dnsmos / frcrn) so
-//! the real-weight parity leg lands without a schema churn).
-//!
-//! # Why a distinct `ModelKind` variant
-//!
-//! A distinct arch tag + `ModelKind` for the 1.1B TDT variant, rather
-//! than a size-inferring branch inside [`crate::models::parakeet`], is
-//! chosen because:
-//!
-//! * The two variants ship with different upstream dtypes (0.6B-v3 =
-//!   F32, 1.1B ≈ BF16 per the Parakeet-CTC-1.1B sibling posture) —
-//!   silently sharing the same `write_hparams` chunk would misroute the
-//!   runtime's dtype-informed pass.
-//! * The `vokra.parakeet.*` chunk group in [`crate::models::parakeet`]
-//!   hard-codes the 0.6B-v3 axes verbatim (24-layer / 128 mel bins /
-//!   `attention_bias=false`) — an owner-side scale-up transcription
-//!   would rewrite those constants, breaking the runtime-side loader
-//!   (`ParakeetConfig::validate_for_forward`). A separate module keeps
-//!   each release's transcribed constants pinned to a single upstream
-//!   config so a byte-shape mismatch surfaces loudly at load
-//!   (FR-EX-08).
-//! * The `docs/license-audit.md §3.1` sign-off row for
-//!   `parakeet-tdt-1.1b` is separate from the `parakeet-tdt-0.6b-v3`
-//!   row; the owner-facing publish pipeline gates on the exact SKU id
-//!   the CLI accepted (`--model parakeet-tdt-1.1b`).
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / WeSpeaker / emotion2vec / parakeet / parakeet_ctc
-//! contract). Real-weight parity binding is a follow-up wave gated on
-//! the upstream tensor-name manifest fetch + license §3.1 sign-off
-//! (`docs/license-audit.md`); this converter passes every float tensor
-//! through unchanged so a future
-//! `ParakeetTdt11bWeights::from_gguf` can walk the same names.
-//!
-//! # BF16 posture
-//!
-//! Every F32 / F16 / BF16 tensor passes through **verbatim** as the
-//! matching GGUF type (BF16 emits type 30 = `GgmlType::BF16`, no
-//! convert-time widening — the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point `crates/vokra-core/src/gguf/quant/
-//! mod.rs decode_bf16`). Per the qwen3-tts ADR
-//! (`docs/adr/qwen3-tts-bf16.md`, strategy `A_passthrough`, Accepted
-//! 2026-07-25) the release BF16 checkpoint stays bit-identical through
-//! the offline pipe. Mirror of `parakeet_ctc` (the sibling 1.1B CTC
-//! variant) which lands the same BF16 pass-through skeleton.
-//!
-//! # License
-//!
-//! Both code and weights ship **CC-BY 4.0** (attribution required;
-//! commercial use permitted — same as `parakeet_ctc` / `parakeet` /
-//! `canary`, primary-source verified per the ticket's "License SPDX"
-//! entry, `docs/tickets/coverage-audit-2026-08-03/wave-b/parakeet-tdt-1.1b.md`).
-//! CC-BY-4.0 is an `AttributionRequired` license class in
-//! `crates/vokra-core/src/compliance/license_class.rs` — the FR-MD-09
-//! attribution surface activates so a downstream must show the NVIDIA
-//! attribution.
-//!
-//! # Prep script bridge
-//!
-//! Upstream ships `.nemo` (tar.gz of yaml + ckpt); the operator runs
-//! `tools/parity/nemo_pt_to_safetensors.py` (uv-managed, Python 3.12,
-//! part of the existing tools/parity venv) to flatten it to safetensors
-//! before this converter runs — the same posture the sibling
-//! [`crate::models::canary`] and [`crate::models::parakeet_ctc`] Nemo
-//! converters use. **No new prep script is added** for this variant:
-//! `nemo_pt_to_safetensors.py` is family-generic. The runtime never
-//! sees Python / torch (FR-LD-05).
-//!
-//! # No ONNX (permanent)
-//!
-//! Parakeet ships as safetensors / a Python pipeline; this converter
-//! **never** touches ONNX (FR-LD-05); the ASR pipeline is
-//! re-implemented natively in a future
-//! `crates/vokra-models/src/parakeet_tdt_1_1b/` module (whisper.cpp
-//! 型 self re-implementation, CLAUDE.md 設計判断 4).
-//!
-//! # Wiring status
-//!
-//! Fully wired: `ModelKind::ParakeetTdt11b` + `from_arg("parakeet-tdt-1.1b" | …)` +
-//! `as_arg() == "parakeet-tdt-1.1b"` + `convert_file_licensed` dispatch arm all land
-//! with this module (mirror of the rnnoise / frcrn / nsnet2 / dnsmos wiring landed
-//! 2026-08-03).
+//! The 4.28 GB artifact is VAST-only under the repository's >=2 GB safety
+//! policy. The runtime remains Rust-only and never loads Python, pickle,
+//! SentencePiece protobuf, ONNX or ONNX Runtime.
 
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -171,6 +66,47 @@ pub const UPSTREAM_HF: &str = "nvidia/parakeet-tdt-1.1b";
 /// `convert_frcrn_file` / `convert_rnnoise_file`).
 pub const DEFAULT_LICENSE: &str = "cc-by-4.0";
 
+const KEY_SOURCE_REVISION: &str = "vokra.parakeet_tdt_1_1b.source_revision";
+const KEY_SOURCE_NEMO_SHA256: &str = "vokra.parakeet_tdt_1_1b.source_nemo_sha256";
+const KEY_SAMPLE_RATE: &str = "vokra.parakeet_tdt_1_1b.sample_rate";
+const KEY_N_FFT: &str = "vokra.parakeet_tdt_1_1b.frontend.n_fft";
+const KEY_HOP_LENGTH: &str = "vokra.parakeet_tdt_1_1b.frontend.hop_length";
+const KEY_WIN_LENGTH: &str = "vokra.parakeet_tdt_1_1b.frontend.win_length";
+const KEY_N_MELS: &str = "vokra.parakeet_tdt_1_1b.frontend.n_mels";
+const KEY_PREEMPHASIS: &str = "vokra.parakeet_tdt_1_1b.frontend.preemphasis";
+const KEY_ENC_N_LAYER: &str = "vokra.parakeet_tdt_1_1b.encoder.n_layer";
+const KEY_ENC_D_MODEL: &str = "vokra.parakeet_tdt_1_1b.encoder.d_model";
+const KEY_ENC_N_HEAD: &str = "vokra.parakeet_tdt_1_1b.encoder.n_head";
+const KEY_ENC_N_HEAD_KV: &str = "vokra.parakeet_tdt_1_1b.encoder.n_head_kv";
+const KEY_ENC_FFN_DIM: &str = "vokra.parakeet_tdt_1_1b.encoder.ffn_dim";
+const KEY_ENC_CONV_KERNEL: &str = "vokra.parakeet_tdt_1_1b.encoder.conv_kernel_size";
+const KEY_ENC_SUB_FACTOR: &str = "vokra.parakeet_tdt_1_1b.encoder.subsampling_factor";
+const KEY_ENC_SUB_KERNEL: &str = "vokra.parakeet_tdt_1_1b.encoder.subsampling_kernel";
+const KEY_ENC_SUB_STRIDE: &str = "vokra.parakeet_tdt_1_1b.encoder.subsampling_stride";
+const KEY_ENC_SUB_CHANNELS: &str = "vokra.parakeet_tdt_1_1b.encoder.subsampling_channels";
+const KEY_ENC_MAX_POS: &str = "vokra.parakeet_tdt_1_1b.encoder.max_position_embeddings";
+const KEY_ENC_USE_BIAS: &str = "vokra.parakeet_tdt_1_1b.encoder.use_bias";
+const KEY_ENC_SCALE_INPUT: &str = "vokra.parakeet_tdt_1_1b.encoder.scale_input";
+const KEY_DEC_N_LAYER: &str = "vokra.parakeet_tdt_1_1b.decoder.n_layer";
+const KEY_DEC_D_MODEL: &str = "vokra.parakeet_tdt_1_1b.decoder.d_model";
+const KEY_JOINT_VOCAB_SIZE: &str = "vokra.parakeet_tdt_1_1b.joint.vocab_size";
+const KEY_JOINT_BLANK_ID: &str = "vokra.parakeet_tdt_1_1b.joint.blank_token_id";
+const KEY_JOINT_PAD_ID: &str = "vokra.parakeet_tdt_1_1b.joint.pad_token_id";
+const KEY_JOINT_N_DURATIONS: &str = "vokra.parakeet_tdt_1_1b.joint.n_durations";
+const PREFIX_JOINT_DURATION: &str = "vokra.parakeet_tdt_1_1b.joint.duration.";
+const KEY_JOINT_MAX_SYMBOLS: &str = "vokra.parakeet_tdt_1_1b.joint.max_symbols_per_step";
+const KEY_JOINT_ACT: &str = "vokra.parakeet_tdt_1_1b.joint.activation";
+const KEY_TOKENIZER_VOCAB: &str = "vokra.parakeet_tdt_1_1b.tokenizer.vocab";
+const KEY_TOKENIZER_VOCAB_SHA256: &str = "vokra.parakeet_tdt_1_1b.tokenizer.vocab_sha256";
+
+pub const SOURCE_REVISION: &str = "53276c6469d1f17a1352e30c4d11be3d0d7e9575";
+pub const SOURCE_NEMO_SHA256: &str =
+    "9c563d52bdffeacbac0c5b894fdea9be82fea3a6bd8bb8018ff57888e2b5d988";
+pub const TOKENIZER_VOCAB_SHA256: &str =
+    "dc8f48909c2d3a0374f45b7478226d26a7de16bbc5334448a8e989f4538384d1";
+
+const DURATIONS: [u32; 5] = [0, 1, 2, 3, 4];
+
 /// The FR-MD-09 attribution text stamped into
 /// `vokra.provenance.attribution` — wording aligned with `NOTICE` and
 /// the `docs/license-audit.md` NVIDIA Parakeet family rows. Final legal
@@ -210,6 +146,58 @@ pub struct ParakeetTdt11bReport {
     pub bf16_passthrough: usize,
 }
 
+fn write_runtime_metadata(builder: &mut GgufBuilder, tokenizer_vocab: Option<&[u8]>) {
+    builder.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    builder.add_string(KEY_SOURCE_NEMO_SHA256, SOURCE_NEMO_SHA256);
+    for (key, value) in [
+        (KEY_SAMPLE_RATE, 16_000),
+        (KEY_N_FFT, 512),
+        (KEY_HOP_LENGTH, 160),
+        (KEY_WIN_LENGTH, 400),
+        (KEY_N_MELS, 80),
+        (KEY_ENC_N_LAYER, 42),
+        (KEY_ENC_D_MODEL, 1024),
+        (KEY_ENC_N_HEAD, 8),
+        (KEY_ENC_N_HEAD_KV, 8),
+        (KEY_ENC_FFN_DIM, 4096),
+        (KEY_ENC_CONV_KERNEL, 9),
+        (KEY_ENC_SUB_FACTOR, 8),
+        (KEY_ENC_SUB_KERNEL, 3),
+        (KEY_ENC_SUB_STRIDE, 2),
+        (KEY_ENC_SUB_CHANNELS, 256),
+        (KEY_ENC_MAX_POS, 5000),
+        (KEY_ENC_USE_BIAS, 1),
+        (KEY_ENC_SCALE_INPUT, 0),
+        (KEY_DEC_N_LAYER, 2),
+        (KEY_DEC_D_MODEL, 640),
+        (KEY_JOINT_VOCAB_SIZE, 1025),
+        (KEY_JOINT_BLANK_ID, 1024),
+        (KEY_JOINT_PAD_ID, 1024),
+        (KEY_JOINT_N_DURATIONS, DURATIONS.len() as u32),
+        (KEY_JOINT_MAX_SYMBOLS, 10),
+    ] {
+        builder.add_u32(key, value);
+    }
+    builder.add_f32(KEY_PREEMPHASIS, 0.97);
+    builder.add_string(KEY_JOINT_ACT, "relu");
+    for (index, duration) in DURATIONS.iter().enumerate() {
+        builder.add_u32(&format!("{PREFIX_JOINT_DURATION}{index}"), *duration);
+    }
+    if let Some(bytes) = tokenizer_vocab {
+        builder.add_metadata(
+            KEY_TOKENIZER_VOCAB,
+            GgufMetadataValue::Array(GgufArray {
+                element_type: GgufValueType::U8,
+                values: bytes
+                    .iter()
+                    .map(|&byte| GgufMetadataValue::U8(byte))
+                    .collect(),
+            }),
+        );
+        builder.add_string(KEY_TOKENIZER_VOCAB_SHA256, TOKENIZER_VOCAB_SHA256);
+    }
+}
+
 /// Reads a safetensors checkpoint at `input` and writes a
 /// Parakeet-TDT-1.1B GGUF to `output`.
 ///
@@ -238,22 +226,36 @@ pub fn convert_parakeet_tdt_1_1b_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<ParakeetTdt11bReport, ConvertError> {
-    // Whole-file read: Parakeet-TDT-1.1B ships as ~2.2 GB BF16 —
-    // comfortably below the 8 GB threshold at which the moshi /
-    // voxtral streaming path becomes mandatory (per memory
-    // [[feedback-large-models-on-vast-ai]] which flags >8 GB as
-    // vast.ai-preferred; 2.2 GB is Mac-tight but safe). Any future
-    // Parakeet 3B+ variant that grows past 8 GB would swap this call
-    // for `SafetensorsFileReader::open` + `GgufStreamWriter::begin`
-    // per the moshi.rs / voxtral.rs ADR.
+    convert_parakeet_tdt_1_1b_file_with_tokenizer(input, output, license, None)
+}
+
+/// Converts the official checkpoint and optionally embeds its byte-exact
+/// plaintext SentencePiece vocabulary.
+pub fn convert_parakeet_tdt_1_1b_file_with_tokenizer(
+    input: &Path,
+    output: &Path,
+    license: Option<&str>,
+    tokenizer_vocab: Option<&Path>,
+) -> Result<ParakeetTdt11bReport, ConvertError> {
+    // Whole-file conversion of this 4.28 GB F32 release is intentionally
+    // VAST-only under AGENTS.md. Do not run this path on the maintainer Mac.
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let st = SafetensorsFile::parse(bytes)?;
+
+    let tokenizer_vocab = tokenizer_vocab
+        .map(std::fs::read)
+        .transpose()
+        .map_err(ConvertError::Io)?;
+    if let Some(bytes) = tokenizer_vocab.as_deref() {
+        validate_tokenizer_vocab(bytes)?;
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    write_runtime_metadata(&mut b, tokenizer_vocab.as_deref());
 
     // Self-describing redistribution: the artifact carries its own
     // licence. Default = cc-by-4.0 (upstream `nvidia/parakeet-tdt-1.1b`
@@ -310,6 +312,42 @@ pub fn convert_parakeet_tdt_1_1b_file(
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
     std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
     Ok(report)
+}
+
+fn validate_tokenizer_vocab(bytes: &[u8]) -> Result<(), ConvertError> {
+    let document = std::str::from_utf8(bytes).map_err(|error| {
+        ConvertError::Parse(format!(
+            "Parakeet-TDT-1.1B tokenizer.vocab is not UTF-8: {error}"
+        ))
+    })?;
+    let lines = document.lines().collect::<Vec<_>>();
+    if lines.len() != 1024
+        || lines
+            .first()
+            .and_then(|line| line.split_once('\t'))
+            .map(|v| v.0)
+            != Some("<unk>")
+    {
+        return Err(ConvertError::Parse(format!(
+            "Parakeet-TDT-1.1B tokenizer.vocab must contain the official 1024-piece SentencePiece export beginning with `<unk>`; found {} lines",
+            lines.len()
+        )));
+    }
+    for (index, line) in lines.iter().enumerate() {
+        let Some((piece, score)) = line.rsplit_once('\t') else {
+            return Err(ConvertError::Parse(format!(
+                "Parakeet-TDT-1.1B tokenizer.vocab line {} is not `piece<TAB>score`",
+                index + 1
+            )));
+        };
+        if piece.is_empty() || score.parse::<f32>().is_err() {
+            return Err(ConvertError::Parse(format!(
+                "Parakeet-TDT-1.1B tokenizer.vocab line {} is malformed",
+                index + 1
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

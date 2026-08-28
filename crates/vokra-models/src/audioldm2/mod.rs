@@ -30,12 +30,9 @@
 //! ```text
 //! text prompt (UTF-8 string)
 //!   -> frozen T5-base text encoder                   ← **loud-partial**
-//!        (google-t5/t5-base — HF transformers `T5EncoderModel`; no
-//!         reusable primitive in `vokra_ops` today; the follow-up wave
-//!         lands a T5-base body or a shared `t5_text_encode` op.
-//!         Shared with sibling MusicGen family — a future landing of
-//!         the T5-base primitive unblocks both AudioLDM 2 and MusicGen
-//!         simultaneously.)
+//!        (google-t5/t5-base — HF transformers `T5EncoderModel`;
+//!         shared native CPU/Metal math now lives in
+//!         `crate::t5_encoder`, but this pipeline has not bound it.)
 //!   -> CLAP text encoder                             ← **loud-partial**
 //!        (LAION CLAP text tower — <https://github.com/LAION-AI/CLAP>,
 //!         joint audio-text embedding; no reusable primitive in
@@ -102,11 +99,9 @@
 //!
 //! - **Loud-partial (this WP)**: [`AudioLdm2::generate`] returns
 //!   [`VokraError::UnsupportedOp`] naming **five** deferred pieces:
-//!   1. the frozen **T5-base text encoder** forward (upstream
-//!      `transformers.T5EncoderModel`; no reusable primitive in
-//!      `vokra_ops` today; the follow-up wave lands a T5-base
-//!      implementation or a first-class `t5_text_encode` op — shared
-//!      with sibling MusicGen family);
+//!   1. binding/composition of the landed native
+//!      [`crate::t5_encoder::T5Encoder`] plus tokenizer metadata for
+//!      the frozen **T5-base text encoder** tensors;
 //!   2. the **CLAP text encoder** forward (LAION CLAP text tower;
 //!      no reusable primitive; the paper §3 novel triple-fusion
 //!      condition depends on this);
@@ -133,8 +128,8 @@
 //! CLAUDE.md 教訓 (a) — "loud-partial は fake-complete より honest"):
 //! the surrounding scaffold + `from_gguf` arch validation +
 //! `AudioLdm2Config` primary-source fallback + FR-EX-08 loud-fails
-//! land today so a follow-up wave can flip the switch by (i) landing
-//! the T5-base text encoder body against a real T5-base state_dict
+//! land today so a follow-up wave can flip the switch by (i) binding
+//! the landed T5-base text encoder body and tokenizer metadata
 //! (the converter already emits the T5 weights under
 //! `text_encoder.*` — see the converter's tensor-name contract at
 //! `crates/vokra-convert/src/models/audioldm2.rs`), (ii) landing the
@@ -745,11 +740,11 @@ impl AudioLdm2 {
     /// Returns [`VokraError::UnsupportedOp`] — AudioLDM 2's inference
     /// path requires **five** deferred pieces:
     ///
-    /// 1. **Frozen T5-base text encoder forward** (upstream
-    ///    `transformers.T5EncoderModel` — no reusable primitive in
-    ///    `vokra_ops` today; the follow-up wave lands either a T5-base
-    ///    implementation dedicated to AudioLDM 2 or a first-class
-    ///    `t5_text_encode` op that other future consumers can share).
+    /// 1. **T5 prompt composition**: the shared native
+    ///    [`crate::t5_encoder::T5Encoder`] CPU/Metal body has landed,
+    ///    but AudioLDM 2 has not yet bound its tokenizer metadata and
+    ///    `text_encoder.*` tensors into this pipeline; independent
+    ///    real-weight parity remains pending.
     /// 2. **CLAP text encoder forward** (LAION CLAP text tower —
     ///    <https://github.com/LAION-AI/CLAP>, joint audio-text
     ///    embedding; no reusable primitive today).
@@ -829,10 +824,10 @@ fn generate_forward_loud_partial(
     VokraError::UnsupportedOp(format!(
         "audioldm2 generate: T5-base text encoder + CLAP text encoder + latent-diffusion \
          U-Net + VAE decoder + HiFi-GAN vocoder composition pending. What is missing is \
-         (a) the frozen T5-base text encoder forward (upstream `transformers.T5EncoderModel` \
-         — no reusable primitive in `vokra_ops` today; the follow-up wave lands either a \
-         T5-base implementation dedicated to AudioLDM 2 or a first-class `t5_text_encode` \
-         op, shared with sibling MusicGen family), (b) the CLAP text encoder forward \
+         (a) the T5 prompt path — `crate::t5_encoder::T5Encoder` now supplies shared \
+         native CPU/Metal math, but AudioLDM 2 has not bound tokenizer metadata plus \
+         its `text_encoder.*` tensors into `generate`, and real-weight parity remains \
+         pending — (b) the CLAP text encoder forward \
          (LAION CLAP text tower — no reusable primitive today; the paper §3 novel \
          triple-fusion condition depends on both T5 + CLAP + GPT-2 audio-caption LM tokens), \
          (c) the latent-diffusion U-Net forward (2D U-Net over the VAE-compressed audio \

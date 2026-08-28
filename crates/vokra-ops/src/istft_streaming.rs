@@ -79,6 +79,8 @@ pub struct IstftStreamingState {
     tail_trim: usize,
     /// Optional target output length (batch `istft` `length` override).
     length: Option<usize>,
+    /// Whether completed OLA samples are divided by their window-square sum.
+    normalize_window: bool,
     /// Synthesis window, length `n` (identical to the batch op's).
     synth_window: Vec<f32>,
     /// Precomputed `synth_window[i]²` — the per-frame window-sum-of-squares
@@ -162,6 +164,7 @@ impl IstftStreamingState {
             head_trim: trim,
             tail_trim: trim,
             length: ia.length,
+            normalize_window: ia.normalize_window,
             synth_window,
             wsq,
             unscale,
@@ -328,7 +331,11 @@ impl IstftStreamingState {
             let w = self.wss[k];
             // Matches the batch op: divide only where the window overlap is
             // non-negligible, else leave the raw sum (which is ~0 there).
-            out.push(if w > NOLA_EPS { a / w } else { a });
+            out.push(if self.normalize_window && w > NOLA_EPS {
+                a / w
+            } else {
+                a
+            });
             self.out_emitted += 1;
             self.emit_ptr += 1;
         }

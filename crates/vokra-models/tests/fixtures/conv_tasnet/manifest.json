@@ -1,0 +1,39 @@
+{
+  "asteroid": "0.7.0",
+  "format": "vokra-conv-tasnet-reference-v1",
+  "model_id": "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k",
+  "numpy": "2.5.2",
+  "pcm_samples": 4096,
+  "python": "3.12.14",
+  "revision": "bb8a876bc157b5cf3c405994accb798c49146016",
+  "sample_rate": 16000,
+  "shapes": {
+    "bottleneck": [
+      1,
+      128,
+      255
+    ],
+    "decoded": [
+      1,
+      1,
+      4096
+    ],
+    "encoded": [
+      1,
+      512,
+      255
+    ],
+    "masks": [
+      1,
+      1,
+      512,
+      255
+    ],
+    "separated": [
+      1,
+      1,
+      4096
+    ]
+  },
+  "torch": "2.13.0+cu130"
+}

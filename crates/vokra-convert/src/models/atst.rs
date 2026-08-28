@@ -874,6 +874,7 @@ mod tests {
     /// `raw.githubusercontent.com/Audio-WestlakeU/audiossl/main/...`,
     /// 2026-08-15) are named per group in the constants block above.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // Compile-time drift guards are intentional.
     fn topology_constants_match_transcribed_upstream_values() {
         // `AST_base(patch_h=64,patch_w=4,...)` → embed_dim / depth / num_heads.
         assert_eq!(EMBED_DIM, 768);

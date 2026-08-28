@@ -1,5 +1,5 @@
-//! Round-trip test (Coverage-audit 2026-08-03 Wave A): a synthetic
-//! NSNet2 safetensors payload is written to disk, run through
+//! Round-trip test (Coverage-audit 2026-08-03 Wave A): a synthetic exact
+//! NSNet2 initializer manifest is written to disk, run through
 //! [`vokra_convert::convert_file`] (via [`ModelKind::Nsnet2`]) as the
 //! CLI would, and the resulting GGUF is loaded back with the runtime
 //! loader. This mirrors the whisper / campplus round-trip in
@@ -42,22 +42,65 @@ fn scratch_path(tag: &str) -> PathBuf {
     p
 }
 
-/// Synthetic single-tensor safetensors buffer (`gru_1.W` F32 `[2, 3]`)
-/// with non-zero values so a silent-widen bug would fail on the byte
-/// pin. NSNet2's real initializers are larger but shape-agnostic —
-/// what this test proves is that the plumbing lands on
-/// `convert_nsnet2_file`, not the numeric accuracy of any particular
-/// tensor.
+const OFFICIAL_TENSORS: &[(&str, &[usize])] = &[
+    ("172", &[161, 400]),
+    ("fc_in.0.bias", &[400]),
+    ("192", &[1, 1200, 400]),
+    ("193", &[1, 1200, 400]),
+    ("194", &[1, 2400]),
+    ("212", &[1, 1200, 400]),
+    ("213", &[1, 1200, 400]),
+    ("214", &[1, 2400]),
+    ("215", &[400, 600]),
+    ("fc_out.0.bias", &[600]),
+    ("216", &[600, 600]),
+    ("fc_out.2.bias", &[600]),
+    ("217", &[600, 161]),
+    ("fc_out.4.bias", &[161]),
+];
+
+/// Synthetic exact-manifest safetensors buffer. Initializer `172` carries
+/// non-zero sentinels so the test independently verifies its
+/// `[161,400]` → `[400,161]` transpose and semantic rename.
 fn synthetic_nsnet2_safetensors() -> (Vec<u8>, Vec<u8>) {
-    let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-    let payload: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-    assert_eq!(payload.len(), 24, "6 elements x 4 bytes F32 payload");
-    let header = r#"{"gru_1.W":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]}}"#;
+    let mut entries = Vec::with_capacity(OFFICIAL_TENSORS.len());
+    let mut payload = Vec::new();
+    let mut expected_fc_in = vec![0u8; 400 * 161 * 4];
+    for &(name, shape) in OFFICIAL_TENSORS {
+        let start = payload.len();
+        let elements = shape.iter().product::<usize>();
+        let mut tensor = vec![0u8; elements * 4];
+        if name == "172" {
+            for (row, col, value) in [
+                (0usize, 0usize, 1.0f32),
+                (0, 399, -2.5),
+                (7, 23, 0.15625),
+                (160, 0, 3.5),
+                (160, 399, 42.0),
+            ] {
+                let source = (row * 400 + col) * 4;
+                tensor[source..source + 4].copy_from_slice(&value.to_le_bytes());
+                let target = (col * 161 + row) * 4;
+                expected_fc_in[target..target + 4].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        payload.extend_from_slice(&tensor);
+        let shape = shape
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        entries.push(format!(
+            "\"{name}\":{{\"dtype\":\"F32\",\"shape\":[{shape}],\"data_offsets\":[{start},{}]}}",
+            payload.len(),
+        ));
+    }
+    let header = format!("{{{}}}", entries.join(","));
     let mut buf = Vec::new();
     buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
     buf.extend_from_slice(header.as_bytes());
     buf.extend_from_slice(&payload);
-    (buf, payload)
+    (buf, expected_fc_in)
 }
 
 /// Pins the end-to-end wiring: `ModelKind::Nsnet2` reaches the NSNet2
@@ -73,11 +116,11 @@ fn nsnet2_safetensors_roundtrips_through_convert_file() {
 
     let summary = convert_file(ModelKind::Nsnet2, &input, &output).expect("convert");
     assert_eq!(summary.model, ModelKind::Nsnet2);
-    assert_eq!(summary.tensor_count, 1, "one float tensor written");
+    assert_eq!(summary.tensor_count, 14, "official tensor manifest written");
     assert_eq!(
         summary.notes.len(),
         1,
-        "one summary note surfaced for the float pass-through counter"
+        "one summary note surfaced for the strict conversion report"
     );
     assert!(
         summary.notes[0].starts_with("nsnet2:"),
@@ -85,16 +128,16 @@ fn nsnet2_safetensors_roundtrips_through_convert_file() {
     );
 
     let file = GgufFile::open(&output).expect("load output gguf");
-    assert_eq!(file.tensors().len(), 1);
+    assert_eq!(file.tensors().len(), 14);
     let info = file
-        .tensor_info("gru_1.W")
-        .expect("upstream tensor name preserved");
+        .tensor_info("fc_in.weight")
+        .expect("numeric initializer renamed to semantic runtime name");
     assert_eq!(info.dtype, GgmlType::F32);
-    assert_eq!(info.dimensions, vec![2, 3]);
+    assert_eq!(info.dimensions, vec![400, 161]);
     assert_eq!(
         file.tensor_bytes(info),
         payload.as_slice(),
-        "F32 payload byte-identical to input"
+        "MatMul initializer transposed independently into runtime layout"
     );
 
     // Provenance chunks the publish gate reads.
@@ -111,14 +154,14 @@ fn nsnet2_safetensors_roundtrips_through_convert_file() {
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_LICENSE)
             .and_then(|v| v.as_str()),
-        Some("mit"),
-        "MIT default license stamped verbatim"
+        Some("cc-by-4.0"),
+        "released-model CC-BY-4.0 default stamped verbatim"
     );
     assert_eq!(
         file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
             .and_then(|v| v.as_str()),
-        Some(LicenseClass::Permissive.as_str()),
-        "MIT normalises to Permissive"
+        Some(LicenseClass::AttributionRequired.as_str()),
+        "CC-BY-4.0 normalises to AttributionRequired"
     );
 
     let _ = std::fs::remove_file(&input);

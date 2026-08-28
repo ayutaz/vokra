@@ -12,17 +12,21 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertSummary, LlamaOmni2Variant, ModelKind, PolicyPreset, SbV2ConvertReport, SileroVariant,
-    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file, convert_chatterbox_file,
-    convert_chatterbox_nano_file, convert_chatterbox_turbo_file, convert_cosyvoice2_file,
-    convert_cosyvoice3_file, convert_crepe_file, convert_dac_file, convert_deberta_v2_file,
-    convert_deberta_v3_file, convert_file, convert_file_quantized, convert_file_with_policy,
-    convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
+    VoxtralConfig, convert_beat_this_with_config, convert_bert_base_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_canary_file_with_tokenizer,
+    convert_chatterbox_file, convert_chatterbox_nano_file, convert_chatterbox_turbo_file,
+    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_crepe_file, convert_dac_file,
+    convert_deberta_v2_file, convert_deberta_v3_file, convert_file, convert_file_quantized,
+    convert_file_with_policy, convert_file_with_slug, convert_irodori_file, convert_kokoro_file,
     convert_llama_omni2_file_with_config, convert_moonshine_base_file_with_tokenizer,
     convert_moonshine_tiny_file_with_tokenizer, convert_nanocodec_file,
-    convert_openwakeword_op_file_with_config, convert_parakeet_ctc_file_with_assets,
-    convert_parakeet_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
-    convert_sbv2_file, convert_silero_file, convert_styletts2_file, convert_vibevoice_file,
-    convert_vits_ja_file, convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
+    convert_nemotron_asr_file_with_tokenizer, convert_openwakeword_op_file_with_config,
+    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
+    convert_parakeet_tdt_1_1b_file_with_tokenizer, convert_piper_plus_file, convert_qwen3_tts_file,
+    convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file, convert_silero_file,
+    convert_speecht5_file_with_tokenizer, convert_styletts2_file,
+    convert_ultravox_llama_companion_file, convert_vibevoice_file, convert_vits_ja_file,
+    convert_voxcpm2_file_with_tokenizer, convert_voxtral_file_quantized,
     convert_voxtral_file_streaming, convert_voxtral_file_streaming_with_adapter_config,
     convert_voxtral_file_with_adapter_config_quantized, convert_whisper_medusa_v1_with_config,
     parse_voxtral_hf_config,
@@ -33,7 +37,7 @@ pub(crate) const USAGE: &str = "\
 vokra-cli convert — convert an upstream checkpoint to Vokra GGUF (offline tool)
 
 USAGE:
-    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
+    vokra-cli convert --model <whisper|silero-vad|campplus|mimi|csm|moshi|denoise|dia|zonos|kyutai-stt|parakeet-tdt|parakeet-ctc|canary|canary-qwen|omniasr-ctc|distil-whisper|kotoba-whisper|chatterbox|chatterbox-turbo|chatterbox-nano|qwen3-tts|qwen3-tts-tokenizer-12hz|vits-ja|vocos-mel-24khz|vocos-encodec-24khz> --input <ckpt> --output <out.gguf>
     vokra-cli convert --model piper-plus --input <voice.onnx> --config <config.json> --output <out.gguf>
     vokra-cli convert --model kokoro --input <ckpt.safetensors> [--config <config.json>] --output <out.gguf>
     vokra-cli convert --model cosyvoice2 --input <llm.safetensors> [--config <config.json>] --output <out.gguf>
@@ -42,14 +46,28 @@ USAGE:
     vokra-cli convert --model chatterbox-turbo --input <t3_turbo_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model chatterbox-nano --input <t3_nano_v1.safetensors> --output <out.gguf>
     vokra-cli convert --model qwen3-tts --input <model.safetensors> --output <out.gguf>
+    vokra-cli convert --model qwen3-tts-tokenizer-12hz --input <model.safetensors> \
+                      --output <decoder.gguf>
     vokra-cli convert --model voxcpm2 --input <complete.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model moonshine-<tiny|base> --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model parakeet-tdt --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model parakeet-tdt-1.1b --input <prepared.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model canary-1b-flash --input <prepared.safetensors> \
+                      --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
+    vokra-cli convert --model canary --input <prepared-main.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> \
+                      --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-cli convert --model speecht5-tts --input <model.safetensors> \
+                      --tokenizer <spm_char.model> --output <out.gguf>
     vokra-cli convert --model parakeet-ctc --input <prepared.safetensors> \
                       --config <config.json> --preprocessor <preprocessor_config.json> \
+                      --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-cli convert --model nemotron-asr-streaming --input <model.safetensors> \
                       --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-cli convert --model vibevoice --input <model.safetensors> --output <out.gguf>
     vokra-cli convert --model irodori --input <model.safetensors> --output <out.gguf>
@@ -84,15 +102,19 @@ USAGE:
     vokra-cli convert --model openwakeword-op --input <prepared.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model llama-omni2-<release> --input <merged.safetensors> --config <config.json> --output <out.gguf>
     vokra-cli convert --model whisper-medusa-v1 --input <merged.safetensors> --config <config.json> --output <out.gguf>
+    vokra-cli convert --model ultravox-llama-companion --input <model.safetensors> \
+                      --config <config.json> --revision <audited-revision> \
+                      --output <companion.gguf>
 
 OPTIONS:
     --model <kind>            whisper (alias: whisper-base) | silero-vad | piper-plus |
                               campplus | kokoro | cosyvoice2 | cosyvoice3 | voxtral | mimi | nanocodec | dac |
                               csm | moshi | denoise | dia | zonos | kyutai-stt |
-                              parakeet-tdt | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
+                              parakeet-tdt | parakeet-tdt-1.1b | parakeet-ctc | canary | canary-qwen | omniasr-ctc |
+                              reazonspeech-nemo-v2 |
                               distil-whisper | kotoba-whisper | whisper-medusa-v1 |
                               chatterbox | chatterbox-turbo | chatterbox-nano |
-                              qwen3-tts | voxcpm | vibevoice | irodori | vits-ja |
+                              qwen3-tts | qwen3-tts-tokenizer-12hz | voxcpm | vibevoice | irodori | vits-ja |
                               sbv2 | deberta-v2 | deberta-v3 | xcodec2 |
                               kimi-audio | step-audio2-mini | baichuan-audio |
                               speechtokenizer | funcodec | xy-tokenizer |
@@ -104,6 +126,7 @@ OPTIONS:
                               indic-parler-tts | vieneu-tts | bark | bark-small |
                               hifigan-vocoder | speecht5-hifigan | bigvgan |
                               vocos-mel-24khz | vocos-encodec-24khz | focalcodec |
+                              naturalspeech3-facodec-v2 |
                               snac | snac-24khz | snac-44khz |
                               tiger | tiger-speech | mp-senet | metricgan-plus |
                               sepformer | sepformer-wham16k | sepformer-whamr16k |
@@ -286,9 +309,9 @@ OPTIONS:
                               tag from CosyVoice2/3 because Qwen3-TTS is
                               codec-LM not vocoder-LM (terminal step =
                               qwen3_tts_codec, NOT HiFTChain); upstream
-                              ships BF16 (~0.9 GB) — pre-widen to F32
-                              offline or wait for the streaming BF16
-                              pass-through path; every hparam is
+                              ships BF16 (1,829,344,272 bytes at the pinned
+                              revision) and passes it through verbatim as GGUF
+                              type 30; every hparam is
                               transcribed verbatim from config.json
                               (huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base)
                               — no --config side-car; weight license =
@@ -390,7 +413,8 @@ OPTIONS:
                               path (see docs/tickets/m3/M3-10*.md). Omit for
                               the honest LM-continuation path.
     --tokenizer <path>        Voxtral | deberta-v2 | deberta-v3 | parakeet-tdt |
-                              parakeet-ctc.
+                              parakeet-ctc | canary | canary-1b-flash |
+                              nemotron-asr-streaming.
                               (voxtral) raw tokenizer bytes embedded
                               verbatim into `vokra.tokenizer.model` (the
                               tekken compact-vocab blob). REQUIRED for a
@@ -440,6 +464,11 @@ OPTIONS:
                               committed parity fixture; the loader classifies
                               the absent key as v5 for backward compatibility).
                               Unknown tags are a fail-closed error (FR-EX-08).
+    --revision <commit>       ultravox-llama-companion only: exact audited
+                              Meta Llama-3.2-1B-Instruct snapshot revision.
+                              The gated base remains a separate
+                              ConditionalCommercial artifact and is never
+                              bundled into the public MIT Ultravox GGUF.
     -h, --help                print this help
 ";
 
@@ -468,6 +497,8 @@ struct Parsed {
     /// trained transcription prompt (both surface explicit errors) — so a
     /// CLI-only conversion was previously unusable through `vokra-cli run`.
     tokenizer: Option<PathBuf>,
+    /// Ultravox Llama companion only: immutable gated upstream commit.
+    revision: Option<String>,
     output: PathBuf,
     quant: Option<GgmlType>,
     policy: Option<PolicyPreset>,
@@ -507,6 +538,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut preprocessor: Option<PathBuf> = None;
     let mut adapter_config: Option<PathBuf> = None;
     let mut tokenizer: Option<PathBuf> = None;
+    let mut revision: Option<String> = None;
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut policy: Option<PolicyPreset> = None;
@@ -569,6 +601,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 ));
                 i += 2;
             }
+            "--revision" => {
+                revision = Some(
+                    args.get(i + 1)
+                        .ok_or("--revision requires a 40-hex commit")?
+                        .clone(),
+                );
+                i += 2;
+            }
             "--output" => {
                 output = Some(PathBuf::from(
                     args.get(i + 1).ok_or("--output requires a value")?,
@@ -623,6 +663,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         preprocessor,
         adapter_config,
         tokenizer,
+        revision,
         output: output.ok_or("--output is required")?,
         quant,
         policy,
@@ -638,6 +679,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
 fn conversion_display_model(model: ModelKind, raw_model_slug: &str) -> &str {
     match model {
         ModelKind::Vocos => raw_model_slug,
+        ModelKind::UltravoxV05Llama321b
+            if matches!(
+                raw_model_slug,
+                "ultravox-llama-companion" | "ultravox_llama_companion"
+            ) =>
+        {
+            raw_model_slug
+        }
         _ => model.as_arg(),
     }
 }
@@ -650,6 +699,14 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     }
     let p = parse_args(args)?;
     let model = p.model; // ModelKind is Copy; reused after the move into convert_*.
+    let is_ultravox_companion = matches!(model, ModelKind::UltravoxV05Llama321b)
+        && matches!(
+            p.raw_model_slug.as_str(),
+            "ultravox-llama-companion" | "ultravox_llama_companion"
+        );
+    if p.revision.is_some() && !is_ultravox_companion {
+        return Err("--revision is only supported for --model ultravox-llama-companion".to_owned());
+    }
 
     // `--adapter-config` is Voxtral-only. Passing it on another model would
     // previously be dropped without a word; reject instead (FR-EX-08 —
@@ -680,11 +737,17 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             | ModelKind::MoonshineBase
             | ModelKind::Parakeet
             | ModelKind::ParakeetCtc
+            | ModelKind::ParakeetTdt11b
+            | ModelKind::Canary
+            | ModelKind::Canary1bFlash
+            | ModelKind::ReazonspeechNemoV2
+            | ModelKind::SpeechT5Tts
+            | ModelKind::NemotronAsrStreaming
     ) && p.tokenizer.is_some()
     {
         return Err(
             "--tokenizer is only supported for --model voxtral / deberta-v2 / deberta-v3 / \
-             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc. Other archs embed their tokenizer through their own path \
+             bert-base / voxcpm2 / moonshine-tiny / moonshine-base / parakeet-tdt / parakeet-ctc / parakeet-tdt-1.1b / canary / canary-1b-flash / reazonspeech-nemo-v2 / speecht5-tts / nemotron-asr-streaming. Other archs embed their tokenizer through their own path \
              (whisper: the converter bakes the vocab; csm / moshi: the standalone \
              `vokra-convert` binary's --config side-car)"
                 .to_owned(),
@@ -922,6 +985,170 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 &p.output,
             )
         }
+        ModelKind::ParakeetTdt11b => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model parakeet-tdt-1.1b; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model parakeet-tdt-1.1b; the immutable NeMo config is stamped directly"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model parakeet-tdt-1.1b requires --tokenizer <tokenizer.vocab> for executable text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_parakeet_tdt_1_1b_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                Some(tokenizer),
+            )
+            .map_err(|error| error.to_string())?;
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| error.to_string())?
+                .len();
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 47,
+                output_bytes,
+                notes: vec![format!(
+                    "parakeet-tdt-1.1b: {} tensors read, {} float tensors written ({} F32/F16 plus {} BF16 passthrough), official tokenizer.vocab embedded, complete audited runtime metadata stamped",
+                    report.read,
+                    report.written,
+                    report.written.saturating_sub(report.bf16_passthrough),
+                    report.bf16_passthrough,
+                )],
+            })
+        }
+        ModelKind::ReazonspeechNemoV2 => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model reazonspeech-nemo-v2; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model reazonspeech-nemo-v2; the immutable NeMo config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model reazonspeech-nemo-v2 requires --tokenizer <tokenizer.vocab> for executable Japanese text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                notes: vec![format!(
+                    "reazonspeech-nemo-v2: complete {}-tensor F32 manifest and exact 3,000-piece tokenizer.vocab embedded",
+                    report.written
+                )],
+            })
+        }
+        ModelKind::Canary => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model canary; preserve the canonical F32 main checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model canary; the immutable Canary-1B-v2 `.nemo` config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model canary requires --tokenizer <tokenizer.vocab> for executable ASR/AST"
+                    .to_owned()
+            })?;
+            let report = convert_canary_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                notes: vec![format!(
+                    "canary-1b-v2: complete {}-tensor F32 main manifest and exact 16,384-piece aggregate tokenizer embedded",
+                    report.written
+                )],
+            })
+        }
+        ModelKind::Canary1bFlash => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model canary-1b-flash; preserve the canonical F32 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model canary-1b-flash; the immutable `.nemo` config is pinned by revision and manifest"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model canary-1b-flash requires --tokenizer <canary-1b-flash.aggregate.vocab> for executable ASR/AST"
+                    .to_owned()
+            })?;
+            let report = convert_canary_1b_flash_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                notes: vec![format!(
+                    "canary-1b-flash: complete {}-tensor F32 release manifest and exact 5,248-piece aggregate tokenizer embedded",
+                    report.written
+                )],
+            })
+        }
         ModelKind::CosyVoice2 => {
             // Quantization surface is whisper-only; reject rather than
             // silently ignoring.
@@ -1037,11 +1264,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelKind::Qwen3Tts => {
             // SoTA plan Phase 3 (2026-07-24): Qwen3-TTS-12Hz-0.6B-Base ships
-            // a real `config.json`, but every field is fixed for the 0.6B
-            // release and byte-parallel to the transcribed constants in
-            // `models::qwen3_tts` — so the CLI takes no --config side-car
-            // today (a future 0.6B-CustomVoice / 0.6B-VoiceDesign / 1.7B
-            // variant that reshapes the backbone would demand one).
+            // real `config.json` files, but the released 0.6B Base and
+            // CustomVoice contracts are pinned in `models::qwen3_tts`, so the
+            // CLI takes no --config side-car. Exact 478-vs-402 manifest
+            // detection selects Base versus speaker-less CustomVoice.
             // Quantization surface is whisper-only (same posture as
             // Chatterbox family / CosyVoice3 / dia / zonos).
             if p.quant.is_some() {
@@ -1051,6 +1277,21 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
             convert_qwen3_tts_file(&p.input, &p.output)
+        }
+        ModelKind::Qwen3TtsTokenizer12Hz => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() || p.tokenizer.is_some() {
+                return Err(
+                    "qwen3-tts-tokenizer-12hz authenticates the immutable official checkpoint and takes no --config/--preprocessor/--tokenizer side-car"
+                        .to_owned(),
+                );
+            }
+            convert_file(ModelKind::Qwen3TtsTokenizer12Hz, &p.input, &p.output)
         }
         ModelKind::VoxCpm2 => {
             // The pinned VoxCPM2-2B release splits its AudioVAE from the
@@ -1136,6 +1377,46 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 return Err("--policy-preset is only supported for whisper".to_owned());
             }
             convert_vits_ja_file(&p.input, &p.output)
+        }
+        ModelKind::SpeechT5Tts => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model speecht5-tts; preserve the pinned F32 checkpoint for CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() || p.preprocessor.is_some() {
+                return Err(
+                    "--config/--preprocessor are not supported for --model speecht5-tts; the fixed upstream config is stamped directly"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model speecht5-tts requires --tokenizer <spm_char.model> for executable text TTS"
+                    .to_owned()
+            })?;
+            let report = convert_speecht5_file_with_tokenizer(
+                &p.input,
+                &p.output,
+                p.license.as_deref(),
+                tokenizer,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                metadata_count: 0,
+                output_bytes: std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len(),
+                notes: vec![format!(
+                    "speecht5-tts: complete {}-tensor F32 inference manifest and exact 81-piece spm_char.model embedded; the pinned prepare step excludes five named integer BatchNorm counters",
+                    report.written
+                )],
+            })
         }
         ModelKind::StyleTts2 => {
             // StyleTTS 2 (yl4579, 2026-07-30) — config-only scaffold.
@@ -1564,6 +1845,103 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 p.license.as_deref(),
             )
         }
+        ModelKind::NemotronAsrStreaming => {
+            if p.quant.is_some() {
+                return Err(
+                    "--quantize is not supported for --model nemotron-asr-streaming; preserve the canonical BF16 checkpoint for initial CPU/Metal parity"
+                        .to_owned(),
+                );
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if p.config.is_some() {
+                return Err(
+                    "--config is not supported for --model nemotron-asr-streaming; the audited release topology is stamped directly and text decoding uses --tokenizer <tokenizer.json>"
+                        .to_owned(),
+                );
+            }
+            let tokenizer = p.tokenizer.as_deref().ok_or_else(|| {
+                "--model nemotron-asr-streaming requires --tokenizer <tokenizer.json> for executable text ASR"
+                    .to_owned()
+            })?;
+            let report = convert_nemotron_asr_file_with_tokenizer(
+                &p.input,
+                Some(tokenizer),
+                &p.output,
+                p.license.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
+            let output_bytes = std::fs::metadata(&p.output)
+                .map_err(|error| error.to_string())?
+                .len();
+            Ok(ConvertSummary {
+                model,
+                tensor_count: report.written,
+                // 37 audited runtime hparams + arch/name/category/upstream
+                // + four provenance keys + optional tokenizer.
+                metadata_count: 45 + usize::from(report.tokenizer_embedded),
+                output_bytes,
+                notes: vec![format!(
+                    "nemotron-asr-streaming: {} tensors read, {} float tensors written ({} BF16 passthrough), tokenizer embedded={}, complete audited runtime metadata stamped",
+                    report.read, report.written, report.bf16_passthrough, report.tokenizer_embedded,
+                )],
+            })
+        }
+        ModelKind::UltravoxV05Llama321b => {
+            if p.quant.is_some() {
+                return Err("--quantize is only supported for whisper and voxtral".to_owned());
+            }
+            if p.policy.is_some() {
+                return Err("--policy-preset is only supported for whisper".to_owned());
+            }
+            if is_ultravox_companion {
+                if p.license.is_some() {
+                    return Err(
+                        "--model ultravox-llama-companion has the fixed Llama 3.2 Community License; --license cannot override it"
+                            .to_owned(),
+                    );
+                }
+                let config = p.config.as_deref().ok_or_else(|| {
+                    "--model ultravox-llama-companion requires --config <official config.json>"
+                        .to_owned()
+                })?;
+                let revision = p.revision.as_deref().ok_or_else(|| {
+                    "--model ultravox-llama-companion requires --revision <audited snapshot>"
+                        .to_owned()
+                })?;
+                let report =
+                    convert_ultravox_llama_companion_file(&p.input, config, revision, &p.output)
+                        .map_err(|error| error.to_string())?;
+                let output_bytes = std::fs::metadata(&p.output)
+                    .map_err(|error| error.to_string())?
+                    .len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: report.metadata_count,
+                    output_bytes,
+                    notes: vec![
+                        "strict 146-BF16-tensor Meta Llama-3.2-1B-Instruct companion; streamed one tensor at a time; ConditionalCommercial 700M-MAU threshold preserved; never bundled or published with the MIT audio artifact"
+                            .to_owned(),
+                    ],
+                })
+            } else {
+                if p.config.is_some() {
+                    return Err(
+                        "--model ultravox does not take --config; use --model ultravox-llama-companion for the separately licensed Meta base"
+                            .to_owned(),
+                    );
+                }
+                convert_file_with_slug(
+                    model,
+                    &p.raw_model_slug,
+                    &p.input,
+                    &p.output,
+                    p.license.as_deref(),
+                )
+            }
+        }
         _ => {
             // Ticket precedence: an explicit --policy-preset wins; else the
             // legacy --quantize q4_k alias maps to the whisper_q4_k preset;
@@ -1893,9 +2271,9 @@ mod tests {
     /// Every accepted spelling from `ModelKind::from_arg` parses via the
     /// CLI front-end for the Qwen3-TTS family — the canonical HF release
     /// id, the arch-tag underscore spelling, and the common short forms.
-    /// Qwen3-TTS takes no --config side-car today (every hparam is fixed
-    /// for the 0.6B-Base release and transcribed as compile-time
-    /// constants).
+    /// Qwen3-TTS takes no --config side-car: the converter authenticates the
+    /// released 0.6B Base/CustomVoice manifest before selecting the pinned
+    /// constants.
     #[test]
     fn parses_qwen3_tts_variant_ids() {
         for spelling in [
@@ -1906,6 +2284,13 @@ mod tests {
             "qwen3-tts-12hz-0.6b-base",
             "qwen3-tts-12hz-0_6b-base",
             "qwen3-tts-12hz-0.6b",
+            "qwen3-tts-0.6b-customvoice",
+            "qwen3-tts-0_6b-customvoice",
+            "qwen3-tts-0.6b-custom-voice",
+            "qwen3-tts-12hz-0.6b-customvoice",
+            "qwen3-tts-12hz-0_6b-customvoice",
+            "qwen3-tts-12hz-0.6b-custom-voice",
+            "qwen/qwen3-tts-12hz-0.6b-customvoice",
         ] {
             let p = parse_args(&args(&[
                 "--model", spelling, "--input", "i", "--output", "o",
@@ -1913,6 +2298,24 @@ mod tests {
             .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
             assert_eq!(p.model, ModelKind::Qwen3Tts, "--model {spelling}");
             assert!(p.config.is_none(), "qwen3-tts takes no --config side-car");
+        }
+
+        for spelling in [
+            "qwen3-tts-tokenizer-12hz",
+            "qwen3_tts_tokenizer_12hz",
+            "qwen3-tts-12hz-tokenizer",
+            "qwen3-tts-code2wav",
+            "qwen/qwen3-tts-tokenizer-12hz",
+        ] {
+            let p = parse_args(&args(&[
+                "--model", spelling, "--input", "i", "--output", "o",
+            ]))
+            .unwrap_or_else(|e| panic!("--model {spelling} should parse: {e}"));
+            assert_eq!(
+                p.model,
+                ModelKind::Qwen3TtsTokenizer12Hz,
+                "--model {spelling}"
+            );
         }
     }
 
@@ -1959,6 +2362,32 @@ mod tests {
         .expect("valid");
         assert_eq!(p.model, ModelKind::CosyVoice2);
         assert_eq!(p.config, Some(PathBuf::from("config.json")));
+    }
+
+    #[test]
+    fn parses_ultravox_companion_as_separate_revisioned_mode() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let parsed = parse_args(&args(&[
+            "--model",
+            "ultravox-llama-companion",
+            "--input",
+            "model.safetensors",
+            "--config",
+            "config.json",
+            "--revision",
+            revision,
+            "--output",
+            "companion.gguf",
+        ]))
+        .expect("companion args");
+        assert_eq!(parsed.model, ModelKind::UltravoxV05Llama321b);
+        assert_eq!(parsed.raw_model_slug, "ultravox-llama-companion");
+        assert_eq!(parsed.config, Some(PathBuf::from("config.json")));
+        assert_eq!(parsed.revision.as_deref(), Some(revision));
+        assert_eq!(
+            conversion_display_model(parsed.model, &parsed.raw_model_slug),
+            "ultravox-llama-companion"
+        );
     }
 
     /// Campaign-1 P3 #11 (campaign-2 cli-enablers Fix B): every kind
@@ -2285,6 +2714,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_canary_v2_tokenizer_side_car() {
+        let p = parse_args(&args(&[
+            "--model",
+            "canary-1b-v2",
+            "--input",
+            "prepared-main.safetensors",
+            "--tokenizer",
+            "tokenizer.vocab",
+            "--output",
+            "canary.gguf",
+        ]))
+        .expect("valid");
+        assert_eq!(p.model, ModelKind::Canary);
+        assert_eq!(p.tokenizer, Some(PathBuf::from("tokenizer.vocab")));
+    }
+
+    #[test]
     fn parakeet_requires_tokenizer_before_reading_input() {
         let error = main(&args(&[
             "--model",
@@ -2296,6 +2742,21 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(error.contains("requires --tokenizer"));
+    }
+
+    #[test]
+    fn canary_v2_requires_tokenizer_before_reading_input() {
+        let error = main(&args(&[
+            "--model",
+            "canary",
+            "--input",
+            "missing.safetensors",
+            "--output",
+            "unused.gguf",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("requires --tokenizer"), "got: {error}");
+        assert!(error.contains("tokenizer.vocab"), "got: {error}");
     }
 
     #[test]

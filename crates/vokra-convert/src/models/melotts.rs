@@ -1,4 +1,5 @@
-//! **MeloTTS** (`myshell-ai/MeloTTS-{English,Chinese,Korean}`, MIT):
+//! **MeloTTS** (`myshell-ai/MeloTTS-{English,Chinese,Korean,Spanish,Japanese}`,
+//! MIT):
 //! safetensors → GGUF conversion (implementer C wave, 2026-07-30).
 //!
 //! Input: an upstream `myshell-ai/MeloTTS-<lang>` release — the upstream
@@ -15,10 +16,11 @@
 //! duration predictor (`use_duration_discriminator=true` +
 //! `use_noise_scaled_mas=true` +
 //! `n_layers_trans_flow=3`). Every hparam below is transcribed verbatim
-//! from `huggingface.co/myshell-ai/MeloTTS-{English,Chinese,Korean}/raw/
-//! main/config.json` (fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
+//! from `huggingface.co/myshell-ai/MeloTTS-<Language>/raw/main/config.json`
+//! (re-verified 2026-08-25 against upstream commit
+//! `209145371cff8fc3bd60d7be902ea69cbdb7965a`).
 //!
-//! Shared axes (all three language releases):
+//! Shared axes (all five language releases):
 //! - `data.sampling_rate = 44100`
 //! - `data.filter_length = 2048` (n_fft)
 //! - `data.hop_length = 512`
@@ -36,18 +38,18 @@
 //! - `model.resblock = "1"` (HiFi-GAN ResBlock1)
 //!
 //! Language-specific axes (compile-time [`MeloVariant`] constants):
-//! - **English**: `n_symbols = 178`, `num_tones = ?` (English config has
-//!   no explicit `num_tones` — the CJK-tonal head is absent), `spk2id =
-//!   {EN-US:0, EN-BR:1, EN_INDIA:2, EN-AU:3, EN-Default:4}` (5 speakers)
-//! - **Chinese**: `n_symbols = 112`, `num_tones = 11`, `spk2id = {ZH:1}`
-//!   (1 speaker)
-//! - **Korean**: `n_symbols = 219`, `num_tones = 16`, `num_languages = 10`,
-//!   `spk2id = {KR:0}` (1 speaker)
+//! - **English**: `n_symbols = 219`, `num_tones = 16`,
+//!   `num_languages = 10`, `spk2id = {EN-US:0, EN-BR:1, EN_INDIA:2,
+//!   EN-AU:3, EN-Default:4}` (5 active speakers)
+//! - **Chinese**: `n_symbols = 112`, `num_tones = 11`,
+//!   `num_languages = 4`, `spk2id = {ZH:1}` (1 active speaker)
+//! - **Korean / Spanish / Japanese**: `n_symbols = 219`,
+//!   `num_tones = 16`, `num_languages = 10`, one active speaker each
 //!
-//! The variant tag rides the GGUF at `vokra.melotts.variant` (one of
-//! `"english"` / `"chinese"` / `"korean"`) so a runtime dispatcher can
-//! resolve the tone-embedding and speaker table without inspecting the
-//! tensor shapes. Every hparam listed above rides
+//! The variant tag rides the GGUF at `vokra.melotts.variant` (`"english"`,
+//! `"chinese"`, `"korean"`, `"spanish"` or `"japanese"`) so a runtime
+//! dispatcher can resolve the tone-embedding and speaker table without
+//! inspecting the tensor shapes. Every hparam listed above rides
 //! `vokra.melotts.*` verbatim so a future `MeloTtsWeights::from_gguf`
 //! reader can walk them without re-parsing the upstream `config.json`.
 //!
@@ -110,15 +112,12 @@ pub(crate) const CATEGORY: &str = "tts";
 /// `filter_channels=768` / `n_heads=2` / `n_layers=6` /
 /// `n_layers_trans_flow=3` / `gin_channels=256` /
 /// `upsample_rates=[8,8,2,2,2]` / `upsample_initial_channel=512`) are
-/// identical across the three releases and live at module scope
+/// identical across the five releases and live at module scope
 /// ([`SAMPLE_RATE`] / [`HIDDEN_CHANNELS`] / …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeloVariant {
-    /// `myshell-ai/MeloTTS-English` (MIT). 178 symbols, 5 speakers.
-    /// English config has no `num_tones` (the CJK tone-embedding head is
-    /// absent for English) — the metadata key is written as `0` to
-    /// distinguish "the head is not part of the model" from an
-    /// "unstated" positive value.
+    /// `myshell-ai/MeloTTS-English` (MIT). 219 symbols, 16 tones,
+    /// 10 language rows and 5 active speakers.
     English,
     /// `myshell-ai/MeloTTS-Chinese` (MIT). 112 symbols, 11 tones,
     /// 1 speaker (`ZH`).
@@ -149,8 +148,7 @@ impl MeloVariant {
         }
     }
 
-    /// The `vokra.melotts.variant` short tag written on the GGUF (one of
-    /// `"english"` / `"chinese"` / `"korean"`).
+    /// The `vokra.melotts.variant` short tag written on the GGUF.
     pub const fn variant_tag(self) -> &'static str {
         match self {
             Self::English => "english",
@@ -177,7 +175,7 @@ impl MeloVariant {
     /// `config.json`'s `symbols` array length).
     pub const fn n_symbols(self) -> u32 {
         match self {
-            Self::English => 178,
+            Self::English => 219,
             Self::Chinese => 112,
             Self::Korean => 219,
             Self::Spanish => 219,
@@ -185,12 +183,11 @@ impl MeloVariant {
         }
     }
 
-    /// `num_tones` — CJK tone-embedding vocab. English has no tone head
-    /// (returns 0 = "the head is not part of the model", distinct from
-    /// an unstated positive value).
+    /// `num_tones` — tone-embedding vocabulary size from the official
+    /// per-language config.
     pub const fn num_tones(self) -> u32 {
         match self {
-            Self::English => 0,
+            Self::English => 16,
             Self::Chinese => 11,
             Self::Korean => 16,
             Self::Spanish => 16,
@@ -198,13 +195,12 @@ impl MeloVariant {
         }
     }
 
-    /// `num_languages` — multilingual embedding vocab (Korean release
-    /// carries a 10-language cross-lingual head; English + Chinese
-    /// releases are monolingual = 1).
+    /// `num_languages` — multilingual embedding vocabulary size from the
+    /// official per-language config.
     pub const fn num_languages(self) -> u32 {
         match self {
-            Self::English => 1,
-            Self::Chinese => 1,
+            Self::English => 10,
+            Self::Chinese => 4,
             Self::Korean => 10,
             Self::Spanish => 10,
             Self::Japanese => 10,
@@ -224,7 +220,7 @@ impl MeloVariant {
     }
 }
 
-// ---- Shared VITS2 backbone axes (identical across the 3 variants) ---
+// ---- Shared VITS2 backbone axes (identical across the 5 variants) ---
 
 /// `data.sampling_rate = 44100` (all variants).
 pub(crate) const SAMPLE_RATE: u32 = 44_100;
@@ -340,7 +336,7 @@ pub fn convert_melotts_file(
     // Variant tag — the runtime dispatcher's fast path.
     b.add_string(KEY_MELO_VARIANT, variant.variant_tag());
 
-    // Shared VITS2 backbone axes (all 3 variants).
+    // Shared VITS2 backbone axes (all 5 variants).
     b.add_u32(KEY_MELO_SAMPLE_RATE, SAMPLE_RATE);
     b.add_u32(KEY_MELO_N_FFT, N_FFT);
     b.add_u32(KEY_MELO_HOP_LENGTH, HOP_LENGTH);
@@ -362,7 +358,7 @@ pub fn convert_melotts_file(
     b.add_u32(KEY_MELO_N_SPEAKERS_ACTIVE, variant.n_speakers_active());
 
     // Self-describing redistribution: the artifact carries its own
-    // licence. Default = mit (all 3 MeloTTS variants ship MIT per the
+    // licence. Default = mit (all 5 MeloTTS variants ship MIT per the
     // HF model-card front-matter, fetched 2026-07-30 — CLAUDE.md
     // 「ハルシネーション厳禁」). `license` overrides for callers who
     // obtained the weight under a different SPDX (see
@@ -525,19 +521,21 @@ mod tests {
             Some(u64::from(HOP_LENGTH))
         );
 
-        // English-specific pins.
+        // English-specific pins. These values were re-verified against
+        // myshell-ai/MeloTTS-English/config.json on 2026-08-25. The former
+        // 178/0/1 constants described a stale pre-release symbol table and
+        // produced GGUF metadata that disagreed with the released tensors.
         assert_eq!(
             file.get(KEY_MELO_N_SYMBOLS).and_then(|v| v.as_u64()),
-            Some(178)
+            Some(219)
         );
         assert_eq!(
             file.get(KEY_MELO_NUM_TONES).and_then(|v| v.as_u64()),
-            Some(0),
-            "English has no CJK tone head — the metadata pins 0 to make the absence explicit"
+            Some(16)
         );
         assert_eq!(
             file.get(KEY_MELO_NUM_LANGUAGES).and_then(|v| v.as_u64()),
-            Some(1)
+            Some(10)
         );
         assert_eq!(
             file.get(KEY_MELO_N_SPEAKERS_ACTIVE)
@@ -562,9 +560,9 @@ mod tests {
     }
 
     #[test]
-    fn variant_metadata_is_stamped_chinese_and_korean() {
+    fn variant_metadata_is_stamped_for_non_english_variants() {
         for (v, expect_symbols, expect_tones, expect_langs, expect_active) in [
-            (MeloVariant::Chinese, 112, 11, 1, 1),
+            (MeloVariant::Chinese, 112, 11, 4, 1),
             (MeloVariant::Korean, 219, 16, 10, 1),
             (MeloVariant::Spanish, 219, 16, 10, 1),
             (MeloVariant::Japanese, 219, 16, 10, 1),

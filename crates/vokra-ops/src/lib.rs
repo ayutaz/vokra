@@ -160,6 +160,17 @@ pub mod flow_sampler;
 pub mod firered_vad;
 // -----------------------------------------------------------------------
 pub mod frontend;
+// ---- MusicGen / AudioGen delay-pattern scheduling ------------------------
+// Deterministic host-side codebook interleave shared by the two AudioCraft
+// AR families. Learned decoder math remains backend-dispatched; this runtime
+// function only builds/applies prompt, prediction and padding positions.
+pub mod musicgen_delay_pattern;
+// ---- Shared T5 relative-position indexing -------------------------------
+// Deterministic host-side bucket/gather glue shared by MusicGen, AudioGen,
+// JASCO, AudioLDM2 and MT3. Learned attention reductions remain backend
+// dispatched by the consuming model; this runtime function only constructs
+// the exact additive bias indices from Raffel et al. / Transformers.
+pub mod t5_relative_position;
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad primitive ---------------------------
 // FSMN-VAD (funasr/fsmn-vad, MIT) — Feed-forward Sequential Memory Network
 // for voice activity detection. First-class audio-dialect op (distinct
@@ -317,6 +328,7 @@ pub mod snac_decode;
 // GPU dispatch.
 pub mod snake;
 // -------------------------------------------------------------------------
+pub mod speechbrain_fbank;
 pub mod stft;
 // ---- TEN-VAD v1.0 native network + LPCNet-derived frontend --------------
 pub mod ten_vad;
@@ -503,14 +515,14 @@ pub use fsq_codec::{
 };
 // ---------------------------------------------------------------------------
 pub use firered_vad::{
-    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
-    FireredVadDfsmnWeights, firered_vad_dfsmn_forward,
+    FireredVadBackendOps, FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, firered_vad_dfsmn_forward, firered_vad_dfsmn_forward_with_ops,
 };
 pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
 // ---- SoTA plan Phase 5 VAD-2 fsmn_vad re-exports --------------------------
 pub use fsmn_vad::{
-    FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward,
-    softmax_last_axis,
+    FsmnBackendOps, FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights,
+    fsmn_vad_forward, fsmn_vad_forward_with_ops, softmax_last_axis,
 };
 // ---------------------------------------------------------------------------
 pub use fused_logmel::fused_log_mel_scalar;
@@ -528,8 +540,10 @@ pub use kaldi_fbank::{KaldiFbankOpts, KaldiFbankWindow, kaldi_fbank, kaldi_fbank
 pub use length_conditioning::length_conditioning;
 pub use mel::mel_filterbank;
 pub use mfcc::mfcc;
+pub use speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank};
 pub use vocos::{
-    VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode,
+    VocosAttrs, VocosBackendOps, VocosBlockWeights, VocosIstftPadding, VocosNormWeights,
+    VocosWeights, vocos_decode, vocos_decode_with_ops,
 };
 // ---- SoTA plan KWS binder openwakeword re-exports (2026-08-05) ----------
 pub use openwakeword::{
@@ -570,7 +584,7 @@ pub use rnnoise::{
 pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
 // -------------------------------------------------------------------------
 // ---- SoTA plan Phase 3 snac_decode re-exports ---------------------------
-pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+pub use snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights};
 // -------------------------------------------------------------------------
 // ---- Vocoder Metal wave WF2 snake activation re-exports (2026-08-13) ----
 pub use snake::snake_activation_f32;

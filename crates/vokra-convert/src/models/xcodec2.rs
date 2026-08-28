@@ -2,11 +2,10 @@
 //! (SoTA plan Phase 5 codec, 2026-07-28).
 //!
 //! Upstream: `HKUSTAudio/xcodec2` (HKUST-Audio). Neural audio codec paired
-//! with the Llasa TTS family — the M4-16 (`xcodec2_fsq`) op-only landing
-//! implemented the FSQ decode path (`crates/vokra-ops/src/fsq_codec.rs`,
-//! parity fixture is synthetic vector-quantize-pytorch 1.17.8 projection);
-//! this converter completes the missing "convert an upstream checkpoint into
-//! a Vokra GGUF" side.
+//! with the Llasa TTS family. The M4-16 (`xcodec2_fsq`) landing introduced the
+//! FSQ primitive, this converter preserves the upstream state dict, and the
+//! native `vokra-models::xcodec2` binder now executes the complete released
+//! token-to-waveform decoder.
 //!
 //! # License posture — CC-BY-NC 4.0 default (**NonCommercial**)
 //!
@@ -42,27 +41,30 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim** (the
 //! CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM / VibeVoice
-//! / neucodec / step_audio2_mini contract). Real-weight binding is a
-//! follow-up wave gated on the upstream tensor-name manifest fetch; this
-//! converter passes every F32 / F16 / BF16 tensor through unchanged so a
-//! future `XCodec2Weights::from_gguf` can walk the same names.
+//! / neucodec / step_audio2_mini contract). The public runtime binder pins the
+//! complete released 1,153-tensor name/shape manifest before mapping the
+//! `generator.*` decoder state. This converter continues to pass every F32 /
+//! F16 / BF16 tensor through unchanged so newly converted canonical artifacts
+//! retain that namespace.
 //!
 //! # Real-weight parity
 //!
-//! Real-weight parity against the upstream Python pipeline is deferred to
-//! owner (`docs/license-audit.md` §3.1 sign-off). The M4-16 op-side
-//! (`xcodec2_fsq`, `crates/vokra-ops/tests/parity_fsq_codec.rs`) already
-//! runs the FSQ decode against the vector-quantize-pytorch 1.17.8
-//! reference on a synthetic projection; a full end-to-end parity gate
-//! (encode → codes → decode against `HKUSTAudio/xcodec2` published
-//! reference audio) is a follow-up.
+//! Weight redistribution remains governed by the owner sign-off recorded in
+//! `docs/license-audit.md` §3.1. The M4-16 op-side (`xcodec2_fsq`,
+//! `crates/vokra-ops/tests/parity_fsq_codec.rs`) runs FSQ decode against the
+//! vector-quantize-pytorch 1.17.8 reference on a synthetic projection. The
+//! model-side gate additionally restores the audited public GGUF into the
+//! official `xcodec2==0.1.5` `CodecDecoderVocos` and compares its FSQ-to-PCM
+//! output with the native Rust decoder. Waveform-to-token encoding remains a
+//! separate unsupported surface; the runtime does not claim or approximate
+//! it.
 //!
 //! # No ONNX (permanent)
 //!
 //! X-Codec 2 is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05). The pipeline is
-//! re-implemented natively in a future `crates/vokra-models/src/xcodec2/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! re-implemented natively in `crates/vokra-models/src/xcodec2/`
+//! (whisper.cpp-style self re-implementation).
 
 use std::path::Path;
 

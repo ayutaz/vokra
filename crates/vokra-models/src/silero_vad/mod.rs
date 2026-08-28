@@ -57,11 +57,18 @@ mod parity;
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::{VadEngine, VadStreamHandle};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};
 
-use vokra_vad_micro::SileroWeights;
+use vokra_vad_micro::{
+    LstmState, RateWeights, SileroBackendOps, SileroWeights, run_frame, run_frame_with_ops,
+};
+
+use crate::compute::{Compute, HotOp};
+
+pub(super) const SILERO_HOT_OPS: &[HotOp] = &[HotOp::Conv1d, HotOp::Gemv];
 
 /// The `vokra.model.arch` value a Silero VAD GGUF must carry.
 ///
@@ -106,6 +113,7 @@ pub use vokra_vad_micro::SileroVariant;
 /// [`open_stream`]: VadEngine::open_stream
 pub struct SileroVadV5 {
     weights: Arc<SileroWeights>,
+    backend: BackendKind,
 }
 
 impl SileroVadV5 {
@@ -133,6 +141,7 @@ impl SileroVadV5 {
         verify_arch(gguf)?;
         Ok(Self {
             weights: Arc::new(SileroWeights::from_gguf(gguf)?),
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -162,6 +171,21 @@ impl SileroVadV5 {
         self.weights.variant()
     }
 
+    /// Selects the backend for the learned pseudo-STFT, encoder convolutions,
+    /// LSTM projections and output head. Unsupported/unavailable backends fail
+    /// explicitly when a frame runs; no CPU fallback is performed.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected learned-op backend.
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Runs a single fixed-size frame from a **fresh zero state** and returns its
     /// speech probability (the T07 single-chunk entry point).
     ///
@@ -174,7 +198,20 @@ impl SileroVadV5 {
     /// `frame` must be exactly [`SampleRate::frame_len`] samples. Errors if the
     /// model lacks weights for `rate` or the frame length is wrong.
     pub fn forward_chunk(&self, rate: SampleRate, frame: &[f32]) -> Result<f32> {
-        self.weights.forward_chunk(rate, frame)
+        let weights = self.weights.rate(rate).ok_or_else(|| {
+            VokraError::InvalidArgument(format!("model has no weights for {} Hz", rate.hz()))
+        })?;
+        if frame.len() != rate.frame_len() {
+            return Err(VokraError::InvalidArgument(format!(
+                "frame must be {} samples for {} Hz, got {}",
+                rate.frame_len(),
+                rate.hz(),
+                frame.len()
+            )));
+        }
+        let mut input = vec![0.0f32; rate.context_len() + frame.len()];
+        input[rate.context_len()..].copy_from_slice(frame);
+        run_frame_dispatch(self.backend, rate, weights, &input, &mut LstmState::zeros())
     }
 
     /// Opens a stream over the **raw** 1:1 ONNX frame interface: bare
@@ -186,13 +223,146 @@ impl SileroVadV5 {
     /// production path can reach the collapsed semantics.
     #[cfg(test)]
     pub(crate) fn open_raw_stream(&self) -> Box<dyn VadStreamHandle + Send> {
-        Box::new(stream::VadStream::new_raw(Arc::clone(&self.weights)))
+        Box::new(stream::VadStream::new_raw(
+            Arc::clone(&self.weights),
+            self.backend,
+        ))
     }
 }
 
 impl VadEngine for SileroVadV5 {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send> {
-        Box::new(stream::VadStream::new(Arc::clone(&self.weights)))
+        Box::new(stream::VadStream::new(
+            Arc::clone(&self.weights),
+            self.backend,
+        ))
+    }
+}
+
+pub(super) fn run_frame_dispatch(
+    backend: BackendKind,
+    rate: SampleRate,
+    weights: &RateWeights,
+    frame: &[f32],
+    state: &mut LstmState,
+) -> Result<f32> {
+    if backend == BackendKind::Cpu {
+        return Ok(run_frame(rate, weights, frame, state));
+    }
+    let compute = Compute::for_backend(backend, SILERO_HOT_OPS)?;
+    run_frame_with_ops(
+        rate,
+        weights,
+        frame,
+        state,
+        &mut ComputeSileroOps { compute: &compute },
+    )
+}
+
+struct ComputeSileroOps<'a> {
+    compute: &'a Compute,
+}
+
+impl SileroBackendOps for ComputeSileroOps<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d(
+        &mut self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        weight_t: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        if stride == 0 || kernel == 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "silero-vad Conv1D requires non-zero kernel/stride, got kernel={kernel} stride={stride}"
+            )));
+        }
+        let input_len = in_ch.checked_mul(in_len).ok_or_else(|| {
+            VokraError::InvalidArgument("silero-vad Conv1D input extent overflow".to_owned())
+        })?;
+        let weight_len = out_ch
+            .checked_mul(in_ch)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("silero-vad Conv1D weight extent overflow".to_owned())
+            })?;
+        let padded = in_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("silero-vad Conv1D padding overflow".to_owned())
+            })?)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("silero-vad Conv1D padded extent overflow".to_owned())
+            })?;
+        let out_len = padded.checked_sub(kernel).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "silero-vad Conv1D kernel {kernel} exceeds padded length {padded}"
+            ))
+        })? / stride
+            + 1;
+        if input.len() != input_len
+            || weight.len() != weight_len
+            || weight_t.len() != weight_len
+            || bias.is_some_and(|values| values.len() != out_ch)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "silero-vad Conv1D shape mismatch: input={} expected={input_len}, weight={} transposed={} expected={weight_len}, bias={} expected=0-or-{out_ch}",
+                input.len(),
+                weight.len(),
+                weight_t.len(),
+                bias.map_or(0, <[f32]>::len)
+            )));
+        }
+        let output_len = out_ch.checked_mul(out_len).ok_or_else(|| {
+            VokraError::InvalidArgument("silero-vad Conv1D output extent overflow".to_owned())
+        })?;
+        let mut output = vec![0.0f32; output_len];
+        self.compute.conv1d_f32(
+            input,
+            in_ch,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn gemv(
+        &mut self,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+        input_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let weight_len = output_dim.checked_mul(input_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("silero-vad GEMV weight extent overflow".to_owned())
+        })?;
+        if input.len() != input_dim
+            || weight.len() != weight_len
+            || bias.is_some_and(|values| values.len() != output_dim)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "silero-vad GEMV shape mismatch: input={} expected={input_dim}, weight={} expected={weight_len}, bias={} expected=0-or-{output_dim}",
+                input.len(),
+                weight.len(),
+                bias.map_or(0, <[f32]>::len)
+            )));
+        }
+        let mut output = vec![0.0f32; output_dim];
+        self.compute
+            .gemv_f32(output_dim, input_dim, weight, input, bias, &mut output)?;
+        Ok(output)
     }
 }
 
@@ -246,6 +416,14 @@ mod tests {
         let m = SileroVadV5::open(test_gguf_path()).expect("load fixture gguf");
         assert!(m.supports(SampleRate::Hz8000));
         assert!(m.supports(SampleRate::Hz16000));
+        assert_eq!(m.backend(), BackendKind::Cpu);
+        assert_eq!(
+            SileroVadV5::open(test_gguf_path())
+                .unwrap()
+                .with_backend(BackendKind::Metal)
+                .backend(),
+            BackendKind::Metal
+        );
     }
 
     /// The committed fixture predates the `vokra.silero.version` tag, so it

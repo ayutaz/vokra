@@ -110,6 +110,14 @@ pub(crate) fn relu(x: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Element-wise ELU with the EnCodec/Bark default `alpha = 1`:
+/// `out[i] = x[i]` for positive inputs and `exp(x[i]) - 1` otherwise.
+pub(crate) fn elu(x: &[f32], out: &mut [f32]) {
+    for (o, &v) in out.iter_mut().zip(x) {
+        *o = if v > 0.0 { v } else { v.exp() - 1.0 };
+    }
+}
+
 /// Element-wise logistic sigmoid `out[i] = 1 / (1 + exp(-x[i]))`.
 pub(crate) fn sigmoid(x: &[f32], out: &mut [f32]) {
     for (o, &v) in out.iter_mut().zip(x) {
@@ -166,6 +174,20 @@ fn erf(x: f32) -> f32 {
 pub(crate) fn gelu(x: &[f32], out: &mut [f32]) {
     for (o, &v) in out.iter_mut().zip(x) {
         *o = 0.5 * v * (1.0 + erf(v * std::f32::consts::FRAC_1_SQRT_2));
+    }
+}
+
+/// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+///
+/// This is deliberately distinct from [`gelu`]: the released MOSS-TTS Nano
+/// custom GPT-2 sets `activation_function = "gelu_new"`, whose official
+/// equation is `0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3)))`.
+pub(crate) fn gelu_new(x: &[f32], out: &mut [f32]) {
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6;
+    const CUBIC_COEFFICIENT: f32 = 0.044_715;
+    for (o, &v) in out.iter_mut().zip(x) {
+        let inner = SQRT_2_OVER_PI * (v + CUBIC_COEFFICIENT * v * v * v);
+        *o = 0.5 * v * (1.0 + inner.tanh());
     }
 }
 
@@ -295,6 +317,11 @@ mod tests {
         relu(&[-1.0, 0.0, 2.0], &mut out);
         assert_eq!(out, [0.0, 0.0, 2.0]);
 
+        elu(&[-1.0, 0.0, 2.0], &mut out);
+        assert!((out[0] - (-1.0f32).exp_m1()).abs() < 1e-7);
+        assert_eq!(out[1], 0.0);
+        assert_eq!(out[2], 2.0);
+
         sigmoid(&[0.0, 100.0, -100.0], &mut out);
         assert!((out[0] - 0.5).abs() < 1e-6);
         assert!((out[1] - 1.0).abs() < 1e-6);
@@ -311,6 +338,15 @@ mod tests {
         assert!(g[0].abs() < 1e-6);
         assert!((g[1] - 0.841_192).abs() < 1e-3); // gelu(1) ~= 0.8412
         assert!(g[2] < 0.0 && g[2] > -0.2);
+
+        let mut gpt2 = [0.0; 5];
+        gelu_new(&[-8.0, -1.0, 0.0, 1.0, 8.0], &mut gpt2);
+        assert!(gpt2.iter().all(|value| value.is_finite()));
+        assert_eq!(gpt2[2], 0.0);
+        assert!(gpt2[0].abs() < 1e-6);
+        assert!((gpt2[1] - -0.158_808).abs() < 2e-6);
+        assert!((gpt2[3] - 0.841_192).abs() < 2e-6);
+        assert!((gpt2[4] - 8.0).abs() < 1e-6);
     }
 
     #[test]

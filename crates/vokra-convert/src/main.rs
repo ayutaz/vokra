@@ -19,13 +19,16 @@ use std::process::ExitCode;
 
 use vokra_convert::{
     ConvertError, ConvertSummary, ModelKind, convert_beat_this_with_config,
-    convert_cosyvoice2_file, convert_cosyvoice3_file, convert_csm_file, convert_dac_file,
-    convert_file_licensed, convert_file_quantized, convert_moonshine_base_file_with_tokenizer,
-    convert_moonshine_tiny_file_with_tokenizer, convert_moshi_file, convert_nanocodec_file,
-    convert_parakeet_ctc_file_with_assets, convert_parakeet_file_with_tokenizer,
-    convert_piper_plus_file, convert_sbv2_file, convert_utmos_file,
+    convert_canary_1b_flash_file_with_tokenizer, convert_cosyvoice2_file, convert_cosyvoice3_file,
+    convert_csm_file, convert_dac_file, convert_file_licensed, convert_file_quantized,
+    convert_moonshine_base_file_with_tokenizer, convert_moonshine_tiny_file_with_tokenizer,
+    convert_moshi_file, convert_nanocodec_file, convert_parakeet_ctc_file_with_assets,
+    convert_parakeet_file_with_tokenizer, convert_parakeet_tdt_1_1b_file_with_tokenizer,
+    convert_piper_plus_file, convert_reazonspeech_nemo_v2_file_with_tokenizer, convert_sbv2_file,
+    convert_speecht5_file_with_tokenizer, convert_ultravox_llama_companion_file,
+    convert_utmos_file,
 };
-use vokra_core::gguf::{FrontendSpec, GgmlType};
+use vokra_core::gguf::{FrontendSpec, GgmlType, chunks};
 
 const USAGE: &str = "\
 vokra-convert — convert an upstream checkpoint to Vokra GGUF (M0-03, FR-TL-01)
@@ -40,6 +43,11 @@ USAGE:
     vokra-convert --model moonshine-<tiny|base> --input <model.safetensors> --config <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-tdt --input <model.safetensors> --tokenizer <tokenizer.json> --output <out.gguf>
     vokra-convert --model parakeet-ctc --input <prepared.safetensors> --config <config.json> --preprocessor <preprocessor_config.json> --tokenizer <tokenizer.json> --output <out.gguf>
+    vokra-convert --model canary-1b-flash --input <prepared.safetensors> --tokenizer <canary-1b-flash.aggregate.vocab> --output <out.gguf>
+    vokra-convert --model reazonspeech-nemo-v2 --input <prepared.safetensors> --tokenizer <tokenizer.vocab> --output <out.gguf>
+    vokra-convert --model speecht5-tts --input <model.safetensors> --tokenizer <spm_char.model> --output <out.gguf>
+    vokra-convert --model ultravox-llama-companion --input <model.safetensors> \
+                  --config <config.json> --revision <audited-revision> --output <companion.gguf>
 
 OPTIONS:
     --model <kind>     whisper (safetensors; size auto-detected from
@@ -155,6 +163,8 @@ OPTIONS:
                        tokenizer file (moshi; optional — without it the
                        monologue decode fails loudly)
     --output <path>    GGUF file to write
+    --revision <hash>  ultravox-llama-companion only: exact audited
+                       Meta Llama-3.2-1B-Instruct snapshot revision
     --quantize <kind>  K-quantize large weight matrices: q4_k | q5_k | q6_k
                        (whisper only; biases/norms stay F32)
     -h, --help         print this help
@@ -190,11 +200,35 @@ fn main() -> ExitCode {
         output,
         quant,
         license,
+        revision,
+        ultravox_companion,
     } = parsed;
 
-    if !matches!(model, ModelKind::Parakeet | ModelKind::ParakeetCtc) && tokenizer.is_some() {
+    if revision.is_some() && !ultravox_companion {
         eprintln!(
-            "error: --tokenizer is only supported for --model parakeet-tdt in the standalone converter\n\n{USAGE}"
+            "error: --revision is only supported for --model ultravox-llama-companion\n\n{USAGE}"
+        );
+        return ExitCode::from(2);
+    }
+    if ultravox_companion && revision.is_none() {
+        eprintln!(
+            "error: --model ultravox-llama-companion requires --revision <audited snapshot>\n\n{USAGE}"
+        );
+        return ExitCode::from(2);
+    }
+
+    if !matches!(
+        model,
+        ModelKind::Parakeet
+            | ModelKind::ParakeetCtc
+            | ModelKind::ParakeetTdt11b
+            | ModelKind::Canary1bFlash
+            | ModelKind::ReazonspeechNemoV2
+            | ModelKind::SpeechT5Tts
+    ) && tokenizer.is_some()
+    {
+        eprintln!(
+            "error: --tokenizer is only supported for Parakeet, Canary-1B-Flash, ReazonSpeech-NeMo-v2, and SpeechT5-TTS models in the standalone converter\n\n{USAGE}"
         );
         return ExitCode::from(2);
     }
@@ -372,6 +406,160 @@ fn main() -> ExitCode {
             };
             convert_parakeet_ctc_file_with_assets(&input, config, preprocessor, tokenizer, &output)
         }
+        ModelKind::ParakeetTdt11b => {
+            if quant.is_some() {
+                eprintln!("error: --quantize is not supported for parakeet-tdt-1.1b\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            if config.is_some() {
+                eprintln!(
+                    "error: parakeet-tdt-1.1b uses the pinned NeMo config and --tokenizer <tokenizer.vocab>, not --config\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model parakeet-tdt-1.1b requires --tokenizer <tokenizer.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_parakeet_tdt_1_1b_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                Some(tokenizer),
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 47,
+                    output_bytes,
+                    notes: vec![
+                        "complete Parakeet-TDT-1.1B runtime metadata and tokenizer.vocab embedded"
+                            .to_owned(),
+                    ],
+                })
+            })
+        }
+        ModelKind::ReazonspeechNemoV2 => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for reazonspeech-nemo-v2; preserve F32 for initial CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: reazonspeech-nemo-v2 uses the pinned `.nemo` config and --tokenizer <tokenizer.vocab>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model reazonspeech-nemo-v2 requires --tokenizer <tokenizer.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_reazonspeech_nemo_v2_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete ReazonSpeech-NeMo-v2 {}-tensor manifest and tokenizer.vocab embedded",
+                        report.written
+                    )],
+                })
+            })
+        }
+        ModelKind::SpeechT5Tts => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for speecht5-tts; preserve F32 for CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: speecht5-tts uses its fixed upstream config and --tokenizer <spm_char.model>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model speecht5-tts requires --tokenizer <spm_char.model>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_speecht5_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete SpeechT5-TTS {}-tensor manifest and exact spm_char.model embedded",
+                        report.written
+                    )],
+                })
+            })
+        }
+        ModelKind::Canary1bFlash => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for canary-1b-flash; preserve F32 for initial CPU/Metal parity\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if config.is_some() || preprocessor.is_some() {
+                eprintln!(
+                    "error: canary-1b-flash uses the pinned `.nemo` config and --tokenizer <canary-1b-flash.aggregate.vocab>, not --config/--preprocessor\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(tokenizer) = tokenizer.as_deref() else {
+                eprintln!(
+                    "error: --model canary-1b-flash requires --tokenizer <canary-1b-flash.aggregate.vocab>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            convert_canary_1b_flash_file_with_tokenizer(
+                &input,
+                &output,
+                license.as_deref(),
+                tokenizer,
+            )
+            .and_then(|report| {
+                let output_bytes = std::fs::metadata(&output).map_err(ConvertError::Io)?.len();
+                Ok(ConvertSummary {
+                    model,
+                    tensor_count: report.written,
+                    metadata_count: 0,
+                    output_bytes,
+                    notes: vec![format!(
+                        "complete Canary-1B-Flash {}-tensor manifest and aggregate tokenizer embedded",
+                        report.written
+                    )],
+                })
+            })
+        }
         ModelKind::CosyVoice2 => {
             if quant.is_some() {
                 eprintln!("error: --quantize is only supported for whisper\n\n{USAGE}");
@@ -429,6 +617,41 @@ fn main() -> ExitCode {
             // documents the schema and refuses every missing key by name.
             convert_beat_this_with_config(&input, &output, config.as_deref(), license.as_deref())
         }
+        ModelKind::UltravoxV05Llama321b if ultravox_companion => {
+            if quant.is_some() {
+                eprintln!(
+                    "error: --quantize is not supported for the Ultravox Llama companion\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            if license.is_some() {
+                eprintln!(
+                    "error: the Ultravox Llama companion has the fixed Llama 3.2 Community License; --license cannot override it\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            }
+            let Some(config) = config.as_deref() else {
+                eprintln!(
+                    "error: --model ultravox-llama-companion requires --config <official config.json>\n\n{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            let source_revision = revision.as_deref().expect("guarded by match");
+            convert_ultravox_llama_companion_file(&input, config, source_revision, &output).and_then(
+                |report| {
+                    Ok(ConvertSummary {
+                        model,
+                        tensor_count: report.written,
+                        metadata_count: report.metadata_count,
+                        output_bytes: std::fs::metadata(&output)?.len(),
+                        notes: vec![
+                            "strict user-acquired 146-BF16-tensor Meta Llama-3.2-1B-Instruct companion; ConditionalCommercial threshold preserved; no upload path"
+                                .to_owned(),
+                        ],
+                    })
+                },
+            )
+        }
         _ => match quant {
             Some(q) => convert_file_quantized(model, &input, &output, q),
             None => convert_file_licensed(model, &input, &output, license.as_deref()),
@@ -447,7 +670,12 @@ fn main() -> ExitCode {
             for note in &summary.notes {
                 println!("  note: {note}");
             }
-            if let Err(code) = verify(model, &output) {
+            let verified = if ultravox_companion {
+                verify_ultravox_companion(&output)
+            } else {
+                verify(model, &output)
+            };
+            if let Err(code) = verified {
                 return code;
             }
             ExitCode::SUCCESS
@@ -513,6 +741,8 @@ struct Parsed {
     output: PathBuf,
     quant: Option<GgmlType>,
     license: Option<String>,
+    revision: Option<String>,
+    ultravox_companion: bool,
 }
 
 /// Parses the `--quantize` argument into a K-quant target dtype.
@@ -534,12 +764,18 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut output: Option<PathBuf> = None;
     let mut quant: Option<GgmlType> = None;
     let mut license: Option<String> = None;
+    let mut revision: Option<String> = None;
+    let mut ultravox_companion = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--model" => {
                 let v = args.get(i + 1).ok_or("--model requires a value")?;
+                ultravox_companion = matches!(
+                    v.as_str(),
+                    "ultravox-llama-companion" | "ultravox_llama_companion"
+                );
                 model = Some(ModelKind::from_arg(v).ok_or_else(|| {
                     format!(
                         "unknown model `{v}` (whisper [alias: whisper-base] | silero-vad | \
@@ -597,6 +833,14 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 );
                 i += 2;
             }
+            "--revision" => {
+                revision = Some(
+                    args.get(i + 1)
+                        .ok_or("--revision requires a 40-hex commit")?
+                        .clone(),
+                );
+                i += 2;
+            }
             other => return Err(format!("unexpected argument `{other}`")),
         }
     }
@@ -610,7 +854,48 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         output: output.ok_or("--output is required")?,
         quant,
         license,
+        revision,
+        ultravox_companion,
     })
+}
+
+fn verify_ultravox_companion(output: &PathBuf) -> Result<(), ExitCode> {
+    let file = vokra_mmap::open_gguf(output).map_err(|error| {
+        eprintln!("error: companion GGUF failed to load back: {error}");
+        ExitCode::FAILURE
+    })?;
+    let read = |key: &str| file.get(key).and_then(|value| value.as_str());
+    let expected = [
+        (chunks::KEY_MODEL_ARCH, "ultravox_llama_companion"),
+        (
+            chunks::KEY_MODEL_NAME,
+            "meta-llama-3.2-1b-instruct-ultravox-companion",
+        ),
+        ("vokra.provenance.license", "llama3.2"),
+        ("vokra.provenance.weight_license", "conditional-commercial"),
+    ];
+    for (key, value) in expected {
+        if read(key) != Some(value) {
+            eprintln!(
+                "error: companion GGUF verification: `{key}` is {:?}, expected {value:?}",
+                read(key)
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    }
+    if file.tensors().len() != 146 {
+        eprintln!(
+            "error: companion GGUF verification: {} tensors, expected 146",
+            file.tensors().len()
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    println!(
+        "verified companion load: {} tensors, {} metadata keys, separate ConditionalCommercial license",
+        file.tensors().len(),
+        file.metadata().len()
+    );
+    Ok(())
 }
 
 /// Re-opens the produced GGUF through the runtime loader and prints a
@@ -1703,6 +1988,37 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
                  code_predictor.vocab={cp_vocab}"
             );
         }
+        ModelKind::Qwen3TtsTokenizer12Hz => {
+            let arch = file
+                .get("vokra.model.arch")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            let name = file
+                .get("vokra.model.name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            let sample_rate = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.output_sample_rate")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let upsample = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.decode_upsample_rate")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let quantizers = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.num_quantizers")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let manifest = file
+                .get("vokra.qwen3_tts_tokenizer_12hz.decoder_manifest_sha256")
+                .and_then(|value| value.as_str())
+                .unwrap_or("<none>");
+            println!(
+                "; arch={arch} name={name} output_sample_rate={sample_rate} \
+                 decode_upsample_rate={upsample} num_quantizers={quantizers} \
+                 decoder_manifest_sha256={manifest}"
+            );
+        }
         ModelKind::VoxCpm2 => {
             // SoTA plan Phase 4 (2026-07-24): VoxCPM-0.5B verify surface —
             // arch / name plus the MiniCPM-4 LM axes + AudioVAE V2
@@ -2398,6 +2714,7 @@ fn verify(model: ModelKind, output: &PathBuf) -> Result<(), ExitCode> {
         | ModelKind::MossTtsV15
         | ModelKind::MossTtsNano
         | ModelKind::MossTtsLocal
+        | ModelKind::MossVoiceGenerator
         // 2026-08-02 wave: MOSS-Audio-4B-Instruct
         // (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Reuses
         // the sibling MossTts converter per the parent workflow's
@@ -3388,6 +3705,28 @@ mod tests {
         assert_eq!(parsed.output, PathBuf::from("o"));
         assert_eq!(parsed.config, None);
         assert_eq!(parsed.quant, None);
+    }
+
+    #[test]
+    fn parses_revisioned_ultravox_companion_mode() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let parsed = parse_args(&args(&[
+            "--model",
+            "ultravox-llama-companion",
+            "--input",
+            "model.safetensors",
+            "--config",
+            "config.json",
+            "--revision",
+            revision,
+            "--output",
+            "companion.gguf",
+        ]))
+        .expect("companion args");
+        assert_eq!(parsed.model, ModelKind::UltravoxV05Llama321b);
+        assert!(parsed.ultravox_companion);
+        assert_eq!(parsed.revision.as_deref(), Some(revision));
+        assert_eq!(parsed.config, Some(PathBuf::from("config.json")));
     }
 
     /// The legacy `whisper-base` label from pre-M2-06 CLI invocations must

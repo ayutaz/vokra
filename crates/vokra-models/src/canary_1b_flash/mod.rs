@@ -1,167 +1,40 @@
-//! NVIDIA **Canary-1B-Flash** — FastConformer encoder + Transformer AED
-//! decoder, multitask multilingual ASR / AST runtime binder (Wave C1,
-//! 2026-08-15; loud-partial per the `canary` / `canary_qwen` /
-//! `parakeet_ctc` / `emotion2vec` precedent — CLAUDE.md 教訓 (a):
-//! 「loud-partial は fake-complete より honest」).
+//! NVIDIA Canary-1B-Flash native multilingual ASR / AST.
 //!
-//! # Why this module exists
+//! The runtime binds the exact released `.nemo` inference contract: 1,374
+//! float tensors, a 32-layer FastConformer encoder, a four-layer pre-LayerNorm
+//! Transformer AED decoder, the 5,248-entry aggregate SentencePiece
+//! vocabulary, and the nine-token `canary2` prompt. The historical public
+//! `vokra/canary-1b-flash` GGUF contains only the 1,292 encoder tensors and is
+//! rejected explicitly; no decoder or tokenizer is synthesized.
 //!
-//! `crates/vokra-convert/src/models/canary_1b_flash.rs` produces a GGUF
-//! stamped `vokra.model.arch = "canary-1b-flash"`, but before this module
-//! landed **nothing in the workspace read that arch string**: the weights
-//! could be converted and then no loader would accept them. This binder
-//! closes that gap — it is the runtime half of the converter's contract.
+//! Learned matrix, normalization, attention, activation, and grouped-conv
+//! work is routed through [`crate::compute::Compute`]. CPU is the default;
+//! Metal is selected explicitly and must cover the complete declared hot-op
+//! set before inference begins. Other backends fail without CPU fallback.
 //!
-//! # Primary sources
-//!
-//! - HF release / model card: <https://huggingface.co/nvidia/canary-1b-flash>
-//!   — 883 M parameters, multitask ASR + AST (speech translation) +
-//!   timestamps across **four** European languages (English / German /
-//!   French / Spanish), 16 kHz mono `.wav` / `.flac`, weights **CC-BY 4.0**.
-//!   Transcribed by the converter on 2026-08-03 and mirrored here verbatim
-//!   (CLAUDE.md「ハルシネーション厳禁」).
-//! - Family reference config (every axis the card does **not** state):
-//!   `github.com/NVIDIA-NeMo/Speech/blob/main/examples/asr/conf/speech_multitask/fast-conformer_aed.yaml`
-//!   — the shared FastConformer-Transformer AED reference the whole Canary
-//!   family reuses. Its variant table records `canary-1b-flash` explicitly:
-//!   `model_defaults.asr_enc_hidden` / `.lm_dec_hidden` = `1024`, decoder
-//!   `max_sequence_length` = `1024`. Those two are **directly attested for
-//!   the flash variant**, not extrapolated (see
-//!   [`crate::canary`]'s module docstring, which transcribes the same table).
-//! - Checkpoint bridge: the release ships as a `.nemo` tarball; the generic
-//!   `tools/parity/nemo_pt_to_safetensors.py` (uv-managed, Python 3.12)
-//!   flattens it to safetensors before `vokra-cli convert --model
-//!   canary-1b-flash` runs. The runtime never sees Python / torch / `.nemo`
-//!   (FR-LD-05).
-//!
-//! # Architecture (transcribed, never invented)
-//!
-//! ```text
-//! PCM (mono f32, 16 kHz)
-//!   -> 128-bin log-mel front-end                 ← primitive EXISTS (`vokra_ops::waveform_frontend`)
-//!   -> FastConformer encoder, 32 layers          ← primitive EXISTS (`vokra_ops::conformer`,
-//!                                                   `ConvSubsampleKind::Stacking { factor: 8 }`)
-//!   -> (optional) encoder->decoder width proj    ← identity for the flash widths (1024 == 1024)
-//!   -> Transformer AED decoder, **4 layers**     ← per-step wiring NOT LANDED (shared gap with `canary`)
-//!        (pre-norm self-attn + cross-attn to the
-//!         encoder-out + FFN, driven by a task-token
-//!         prompt prefix)
-//!   -> vocab head -> beam search                 ← primitive EXISTS (`vokra_core::decode::beam_search`)
-//!   -> SentencePiece detokenize                  ← tokenizer NOT AVAILABLE (`.nemo` extraction owed)
-//! ```
-//!
-//! The **4-layer decoder** is the whole point of the Flash variant: it is the
-//! distillation of Canary-1B-v2's 8-layer decoder (and Canary-1B-v1's 24), and
-//! is the axis that unlocks the model card's "1000+ RTFx" throughput claim.
-//! That is also why [`ARCH`] must stay distinct from `"canary"` — see
-//! "Sibling family distinctness" below.
-//!
-//! # Loud-partial classification (CLAUDE.md 教訓 (a))
-//!
-//! **Real in this WP** (nothing here is a stub):
-//!
-//! - Strict `vokra.model.arch == "canary-1b-flash"` verification, with a
-//!   sibling-mis-route diagnostic naming the whole Canary neighbourhood.
-//! - [`Canary1bFlashConfig`] — every axis transcribed from a primary source,
-//!   with the axes that no primary source states left as **`0` placeholder
-//!   sentinels** (`head.vocab_size` / `pad` / `bos` / `eos`) that
-//!   [`Canary1bFlashConfig::validate_for_forward`] **refuses**, so a caller
-//!   cannot silently run a hallucinated forward.
-//! - Forward-compatible `vokra.canary_1b_flash.*` axis overrides: the current
-//!   converter stamps **none** of them (it writes only the `vokra.model.*` /
-//!   `vokra.provenance.*` / `vokra.schema.*` groups plus the verbatim tensor
-//!   payload), so a real converted GGUF resolves to
-//!   [`Canary1bFlashConfigSource::FamilyAnchored`]. Any override that *is*
-//!   present is honoured, and a present-but-wrong-dtype key fails loud.
-//! - [`Canary1bFlashWeights`] — the tensor manifest discovered on disk under
-//!   the verbatim upstream names the converter passes through, with a
-//!   non-empty gate, name lookup ([`Canary1bFlashWeights::require_tensor`])
-//!   and shape checking ([`Canary1bFlashWeights::require_tensor_dims`]) that
-//!   fail loud naming the tensor.
-//! - Weight-license + FR-MD-09 attribution surfacing from the provenance
-//!   chunks, fail-closed to [`LicenseClass::Unknown`] when unstamped.
-//!
-//! **Loud-partial in this WP**: [`Canary1bFlashAsr::transcribe`] /
-//! [`Canary1bFlashAsr::transcribe_with_task`] return
-//! [`VokraError::UnsupportedOp`] naming four concrete blockers:
-//!
-//! 1. **No tensor-name manifest.** The converter copies every float tensor
-//!    under its verbatim upstream safetensors name; nothing in-repo
-//!    transcribes NeMo's `EncDecMultiTaskModel` `state_dict` naming, and the
-//!    `.nemo` tarball is owner-gated. Walking guessed names into typed slots
-//!    would fabricate the layout.
-//! 2. **No tokenizer.** The unified Canary SentencePiece model, its vocab
-//!    width, and the concrete `pad` / `bos` / `eos` / `<taskname>` ids live
-//!    inside the `.nemo` tarball. The model card does not enumerate them.
-//! 3. **`head.vocab_size` is a `0` sentinel** as a direct consequence of (2)
-//!    — the head width is unknown, so no logits array can be shaped.
-//! 4. **The AED decoder step is not wired.** The encoder body
-//!    (`vokra_ops::conformer`), the front-end
-//!    (`vokra_ops::waveform_frontend`) and the search
-//!    (`vokra_core::decode::beam_search`) all exist; the per-step
-//!    self-attn + cross-attn + FFN decoder loop with a task-prompt prefix
-//!    does not — a gap shared with [`crate::canary`], not specific to Flash.
-//!
-//! **No fabricated token ids are ever emitted** (FR-EX-08 — no silent partial
-//! output, no silent zero-fill, no empty-transcript-as-success).
-//!
-//! # Sibling family distinctness
-//!
-//! [`ARCH`] = `"canary-1b-flash"` is deliberately distinct from every sibling
-//! in the Canary / NeMo-ASR neighbourhood:
-//!
-//! - `canary` (Canary-1B-v2) — same FastConformer encoder depth (32) but an
-//!   **8-layer** Transformer AED decoder and a 25-language vocabulary;
-//! - `canary-qwen` (Canary-Qwen-2.5B) — same encoder, but the decoder is a
-//!   **Qwen LLM** consuming the encoder-out as a soft-prompt prefix (GQA +
-//!   RoPE + SwiGLU + RMSNorm), not an AED decoder with cross-attention;
-//! - `parakeet-ctc` / `parakeet-tdt` — FastConformer encoders with **CTC /
-//!   RNN-T** heads (no decoder stack at all, English-only);
-//! - `whisper` / `voxtral` / `kyutai-stt` — unrelated ASR topologies.
-//!
-//! A loader that binds a 4-layer decoder manifest against an 8-layer
-//! expectation does not crash — it silently mis-reads. FR-EX-08 forbids that
-//! silent misroute, hence the strict arch gate.
-//!
-//! # Structure reuse (no third shape)
-//!
-//! The config axes reuse [`crate::canary`]'s types verbatim
-//! ([`CanaryEncoderConfig`] / [`CanaryDecoderConfig`] / [`CanaryHeadConfig`])
-//! and [`Canary1bFlashConfig::validate_for_forward`] **delegates** to the
-//! shared Canary-family validator rather than duplicating ~130 lines of shape
-//! algebra. This mirrors [`crate::canary_qwen`], which re-exports the same
-//! encoder types. Flash-specific state is only what genuinely differs: the
-//! 4-layer decoder anchor, the 4-language subset, and the
-//! [`Canary1bFlashConfigSource`] provenance marker.
-//!
-//! # Cross-crate constant duplication
-//!
-//! [`ARCH`] / [`NAME`] / [`CATEGORY`] / [`UPSTREAM_HF`] / [`DEFAULT_LICENSE`]
-//! mirror the converter's constants by value (pinned by a test) so
-//! `vokra-models` does not gain a dependency edge onto `vokra-convert`,
-//! preserving the layered convention: `vokra-ops` → nothing GGUF-aware,
-//! `vokra-core` → GGUF reader, `vokra-models` → GGUF binder, `vokra-convert`
-//! → GGUF writer.
-//!
-//! # Licensing posture
-//!
-//! The converter stamps `cc-by-4.0` → [`LicenseClass::AttributionRequired`]
-//! (commercial use permitted, attribution required — the FR-MD-09 surface
-//! activates and [`Canary1bFlashAsr::attribution`] returns the stamped text).
-//! This binder only **surfaces** whatever class the artifact carries and
-//! fail-closes to [`LicenseClass::Unknown`] when nothing is stamped. The
-//! `docs/license-audit.md` §3.1 sign-off stays **blank** (owner-only per
-//! `[[feedback-license-signoff-primary-source]]` — the converter's default is
-//! not a sign-off).
-//!
-//! # No ONNX (permanent)
-//!
-//! Canary-1B-Flash ships as a `.nemo` tarball / PyTorch pipeline; the pipeline
-//! is re-implemented natively here (whisper.cpp 型, CLAUDE.md 設計判断 4).
-//! This module never touches ONNX (FR-LD-05).
+//! The upstream weights are CC-BY-4.0. Runtime provenance and attribution are
+//! surfaced from GGUF metadata, while publication remains a separate gated
+//! operation. No ONNX or third-party runtime dependency is used.
 
-use vokra_core::gguf::{GgufFile, chunks};
-use vokra_core::{CompliancePolicy, LicenseClass, Result, VokraError, check_weight_license};
+mod tokenizer;
+
+use std::sync::Arc;
+
+use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+use vokra_core::{
+    AsrEngine, BackendKind, CompliancePolicy, LicenseClass, Result, Transcription, VokraError,
+    check_weight_license,
+};
+
+use crate::compute::{Compute, HotOp};
+
+use crate::canary_aed_bound::{CanaryAedReleaseSpec, CanaryBoundWeights};
+
+pub use tokenizer::{
+    BOS_ID, Canary1bFlashOptions, CanaryEmotion, CanaryLanguage, CanaryTokenizer, EOS_ID,
+    KEY_TOKENIZER_VOCAB, KEY_TOKENIZER_VOCAB_SHA256, PAD_ID, SPECIAL_VOCAB_SIZE,
+    TOKENIZER_VOCAB_SHA256, VOCAB_SIZE,
+};
 
 pub use crate::canary::{CanaryDecoderConfig, CanaryEncoderConfig, CanaryHeadConfig};
 
@@ -188,8 +61,7 @@ pub const NAME: &str = "canary-1b-flash";
 pub const CATEGORY: &str = "asr";
 
 /// Upstream HuggingFace repository slug recorded under
-/// `vokra.provenance.upstream_hf` by the converter. Echoed in loud-partial
-/// diagnostics so a reader never has to re-fetch a manifest to find it.
+/// `vokra.provenance.upstream_hf` by the converter.
 pub const UPSTREAM_HF: &str = "nvidia/canary-1b-flash";
 
 /// Canonical weight-license SPDX the converter stamps by default
@@ -201,6 +73,34 @@ pub const DEFAULT_LICENSE: &str = "cc-by-4.0";
 /// PCM sample rate Canary-1B-Flash expects — **16 000 Hz** mono
 /// (model card: "16kHz Audio, .wav and .flac audio formats, Monochannel").
 pub const CANARY_1B_FLASH_SAMPLE_RATE: u32 = 16_000;
+
+/// Complete backend-dispatched learned-op set used by the native encoder and
+/// decoder. `Compute::for_backend` checks this set as one unit, so selecting a
+/// backend can never execute an uncovered operation on the CPU silently.
+pub const CANARY_1B_FLASH_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Gemv,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Relu,
+    HotOp::GroupedConv1d,
+];
+
+const RELEASE_TENSOR_COUNT: usize = 1_374;
+const RELEASE_MANIFEST_SHA256: [u8; 32] = [
+    0xf7, 0x6f, 0x4c, 0x3d, 0x28, 0x14, 0x7b, 0x41, 0x87, 0x05, 0xc8, 0x27, 0x2a, 0x81, 0xda, 0xb5,
+    0x34, 0x25, 0xe3, 0xbd, 0x26, 0x4b, 0x8a, 0x20, 0x40, 0xff, 0xb0, 0xde, 0x03, 0x38, 0x5c, 0xb6,
+];
+const RELEASE_SPEC: CanaryAedReleaseSpec = CanaryAedReleaseSpec::new(
+    "Canary-1B-Flash",
+    ARCH,
+    NAME,
+    RELEASE_TENSOR_COUNT,
+    RELEASE_MANIFEST_SHA256,
+    CANARY_1B_FLASH_SAMPLE_RATE,
+    VOCAB_SIZE,
+    EOS_ID,
+);
 
 /// FastConformer encoder depth — **32 layers** (model card, transcribed by
 /// the converter 2026-08-03). Identical to Canary-1B-v2: the Flash
@@ -216,26 +116,27 @@ pub const DECODER_N_LAYER: usize = 4;
 /// The four languages Canary-1B-Flash covers (model card): English, German,
 /// French, Spanish — a strict subset of Canary-1B-v2's 25.
 ///
-/// Recorded as ISO 639-1 codes. The concrete `<source_lang>` /
-/// `<target_lang>` **token spellings** are *not* pinned here: they live in the
-/// `.nemo` SentencePiece model and no primary source enumerates them, so
-/// asserting them would be fabrication.
+/// Recorded as ISO 639-1 codes. Their concrete prompt spellings and ids are
+/// authenticated separately by the aggregate vocabulary hash in
+/// [`CanaryTokenizer`].
 pub const SUPPORTED_LANGUAGES: [&str; 4] = ["en", "de", "fr", "es"];
 
-/// The task-token families the unified Canary SentencePiece vocabulary
-/// carries (converter docstring, transcribed from the model card).
+/// The eight variable slots in the released `canary2` user prompt.
 ///
-/// These are the token *families*, verbatim as the upstream documents name
-/// them — not their integer ids, which the `.nemo` tokenizer owns.
+/// `decodercontext` is empty in the one-shot API. ASR versus AST is selected
+/// by equal versus different source/target languages; Canary2 has no separate
+/// task-name slot. The historical constant name is retained for Rust-source
+/// compatibility even though these are prompt slots rather than eight literal
+/// task tokens.
 pub const TASK_TOKENS: [&str; 8] = [
+    "<decodercontext>",
+    "<emotion>",
     "<source_lang>",
     "<target_lang>",
-    "<taskname>",
     "<pnc>",
     "<itn>",
     "<timestamp>",
     "<diarize>",
-    "<emotion>",
 ];
 
 /// Primary-source anchor: the HF model card.
@@ -249,19 +150,15 @@ pub const PRIMARY_SOURCE_FAMILY_YAML: &str = "github.com/NVIDIA-NeMo/Speech/blob
 /// Primary-source anchor: the in-repo `.nemo` → safetensors bridge a
 /// downstream runs before the converter (uv-managed, Python 3.12; the runtime
 /// itself never sees Python — FR-LD-05 / NFR-DS-02).
-pub const PRIMARY_SOURCE_NEMO_PREP: &str = "tools/parity/nemo_pt_to_safetensors.py";
+pub const PRIMARY_SOURCE_NEMO_PREP: &str = "tools/parity/canary_1b_flash_prepare_checkpoint.py";
 
 // ---------------------------------------------------------------------------
-// Forward-compatible `vokra.canary_1b_flash.*` axis-override keys.
+// Immutable-release `vokra.canary_1b_flash.*` axis keys.
 //
-// The CURRENT converter stamps NONE of these — it writes only the
-// `vokra.model.*` / `vokra.provenance.*` / `vokra.schema.*` groups plus the
-// verbatim tensor payload. They are defined here so that (a) the naming
-// convention is fixed by the reader before a writer exists (the sibling
-// convention is `vokra.<arch-with-underscores>.*`, cf. `vokra.canary.*` /
-// `vokra.canary_qwen.*` / `vokra.parakeet_ctc.*`), and (b) the moment a
-// converter revision starts stamping real `.nemo`-extracted axes, this binder
-// honours them with no runtime change.
+// The authenticated converter stamps the complete group. The reader still
+// accepts an absent group for the historical encoder-only artifact only far
+// enough to emit its exact manifest error; any present conflicting value is
+// refused by `validate_release_contract` before weights execute.
 //
 // Booleans ride as `u32` (0 / 1) — the sibling convention; `hidden_act` rides
 // as a string.
@@ -330,6 +227,77 @@ pub const GGUF_KEY_HEAD_BOS_ID: &str = "vokra.canary_1b_flash.head.bos_token_id"
 /// Optional override for the decoder end-of-sequence token id.
 pub const GGUF_KEY_HEAD_EOS_ID: &str = "vokra.canary_1b_flash.head.eos_token_id";
 
+const GGUF_KEY_SOURCE_REVISION: &str = "vokra.canary_1b_flash.source_revision";
+const GGUF_KEY_SOURCE_NEMO_SHA256: &str = "vokra.canary_1b_flash.source_nemo_sha256";
+const GGUF_KEY_MODEL_CONFIG_SHA256: &str = "vokra.canary_1b_flash.model_config_sha256";
+const GGUF_KEY_DATA_PICKLE_SHA256: &str = "vokra.canary_1b_flash.data_pickle_sha256";
+const GGUF_KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.canary_1b_flash.tensor_manifest_sha256";
+const GGUF_KEY_FRONTEND_N_FFT: &str = "vokra.canary_1b_flash.frontend.n_fft";
+const GGUF_KEY_FRONTEND_HOP: &str = "vokra.canary_1b_flash.frontend.hop_length";
+const GGUF_KEY_FRONTEND_WIN: &str = "vokra.canary_1b_flash.frontend.win_length";
+const GGUF_KEY_FRONTEND_N_MELS: &str = "vokra.canary_1b_flash.frontend.n_mels";
+const GGUF_KEY_FRONTEND_PREEMPHASIS: &str = "vokra.canary_1b_flash.frontend.preemphasis";
+const GGUF_KEY_FRONTEND_WINDOW: &str = "vokra.canary_1b_flash.frontend.window";
+const GGUF_KEY_FRONTEND_WINDOW_PERIODIC: &str = "vokra.canary_1b_flash.frontend.window_periodic";
+const GGUF_KEY_FRONTEND_NORMALIZE: &str = "vokra.canary_1b_flash.frontend.normalize";
+const GGUF_KEY_FRONTEND_PAD_MODE: &str = "vokra.canary_1b_flash.frontend.pad_mode";
+
+const SOURCE_REVISION: &str = "2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e";
+const SOURCE_NEMO_SHA256: &str = "3887cce1afdd425429cfc5109575a8f2cffeb07c02c503a9faff7612bd74e324";
+const MODEL_CONFIG_SHA256: &str =
+    "42d71aebc1f4b9f387a20902db71e00128b324ff5156bdac63897e1afad55ff9";
+const DATA_PICKLE_SHA256: &str = "a60784f60aa5cea26d3c11d62c3ed7270e5c7bf52844d99b553656d9498a3617";
+const TENSOR_MANIFEST_SHA256: &str =
+    "f76f4c3d28147b418705c8272a81dab53425e3bd264b8a2040ffb0de03385cb6";
+
+const RELEASE_STRING_METADATA: &[(&str, &str)] = &[
+    ("vokra.model.category", CATEGORY),
+    ("vokra.provenance.upstream_hf", UPSTREAM_HF),
+    (GGUF_KEY_SOURCE_REVISION, SOURCE_REVISION),
+    (GGUF_KEY_SOURCE_NEMO_SHA256, SOURCE_NEMO_SHA256),
+    (GGUF_KEY_MODEL_CONFIG_SHA256, MODEL_CONFIG_SHA256),
+    (GGUF_KEY_DATA_PICKLE_SHA256, DATA_PICKLE_SHA256),
+    (GGUF_KEY_TENSOR_MANIFEST_SHA256, TENSOR_MANIFEST_SHA256),
+    (GGUF_KEY_DEC_HIDDEN_ACT, "relu"),
+    (GGUF_KEY_FRONTEND_WINDOW, "hann"),
+    (GGUF_KEY_FRONTEND_NORMALIZE, "per_feature"),
+    (GGUF_KEY_FRONTEND_PAD_MODE, "constant"),
+];
+
+const RELEASE_U32_METADATA: &[(&str, u32)] = &[
+    (GGUF_KEY_SAMPLE_RATE, 16_000),
+    (GGUF_KEY_ENC_N_LAYER, 32),
+    (GGUF_KEY_ENC_D_MODEL, 1_024),
+    (GGUF_KEY_ENC_N_HEAD, 8),
+    (GGUF_KEY_ENC_N_HEAD_KV, 8),
+    (GGUF_KEY_ENC_FFN_DIM, 4_096),
+    (GGUF_KEY_ENC_CONV_KERNEL, 9),
+    (GGUF_KEY_ENC_IN_DIM, 128),
+    (GGUF_KEY_ENC_SUBSAMPLING_FACTOR, 8),
+    (GGUF_KEY_ENC_SUB_CONV_KERNEL, 3),
+    (GGUF_KEY_ENC_SUB_CONV_STRIDE, 2),
+    (GGUF_KEY_ENC_SUB_CONV_CHANNELS, 256),
+    (GGUF_KEY_ENC_MAX_POS, 5_000),
+    (GGUF_KEY_ENC_ATTN_BIAS, 1),
+    (GGUF_KEY_ENC_CONV_BIAS, 1),
+    (GGUF_KEY_ENC_SCALE_INPUT, 0),
+    (GGUF_KEY_DEC_N_LAYER, 4),
+    (GGUF_KEY_DEC_D_MODEL, 1_024),
+    (GGUF_KEY_DEC_N_HEAD, 8),
+    (GGUF_KEY_DEC_FFN_DIM, 4_096),
+    (GGUF_KEY_DEC_MAX_SEQ, 1_024),
+    (GGUF_KEY_DEC_PRE_LN, 1),
+    (GGUF_KEY_HEAD_VOCAB_SIZE, 5_248),
+    (GGUF_KEY_HEAD_PAD_ID, 2),
+    (GGUF_KEY_HEAD_BOS_ID, 4),
+    (GGUF_KEY_HEAD_EOS_ID, 3),
+    (GGUF_KEY_FRONTEND_N_FFT, 512),
+    (GGUF_KEY_FRONTEND_HOP, 160),
+    (GGUF_KEY_FRONTEND_WIN, 400),
+    (GGUF_KEY_FRONTEND_N_MELS, 128),
+    (GGUF_KEY_FRONTEND_WINDOW_PERIODIC, 0),
+];
+
 // ---------------------------------------------------------------------------
 // Task surface
 // ---------------------------------------------------------------------------
@@ -337,10 +305,9 @@ pub const GGUF_KEY_HEAD_EOS_ID: &str = "vokra.canary_1b_flash.head.eos_token_id"
 /// The multitask modes Canary-1B-Flash exposes (model card: "multi-task
 /// ASR / AST").
 ///
-/// The enum records **what the model can be asked to do**; the concrete
-/// `<taskname>` token spelling that selects a mode lives in the `.nemo`
-/// SentencePiece model and is deliberately **not** pinned here (no primary
-/// source enumerates it — asserting one would be fabrication).
+/// The enum records **what the model can be asked to do**. The released
+/// Canary2 formatter selects ASR when source and target language are equal and
+/// AST when they differ; it does not carry a separate `<taskname>` token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Canary1bFlashTask {
     /// Automatic speech recognition — transcribe in the source language.
@@ -368,9 +335,8 @@ impl Canary1bFlashTask {
 /// Where the axes in a [`Canary1bFlashConfig`] came from.
 ///
 /// This marker is the honest answer to "did the artifact tell us its shape, or
-/// did we anchor it to the published family reference?". The current converter
-/// stamps no `vokra.canary_1b_flash.*` axes, so every real converted GGUF
-/// resolves to [`Self::FamilyAnchored`].
+/// did we anchor it to the immutable released family reference?". Canonical
+/// new conversions stamp the complete group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Canary1bFlashConfigSource {
     /// No `vokra.canary_1b_flash.*` axis chunk was present; every axis comes
@@ -397,9 +363,8 @@ pub struct Canary1bFlashConfig {
     pub encoder: CanaryEncoderConfig,
     /// Transformer AED decoder axes (**4 layers** for Flash).
     pub decoder: CanaryDecoderConfig,
-    /// Vocabulary / special-token / head axes. `vocab_size` and the three
-    /// token ids are `0` placeholder sentinels until the `.nemo` tokenizer is
-    /// extracted — [`Self::validate_for_forward`] refuses them.
+    /// Vocabulary / special-token / head axes from the released aggregate
+    /// tokenizer and loss configuration.
     pub head: CanaryHeadConfig,
     /// PCM sample rate the model expects (16 000 Hz).
     pub sample_rate: u32,
@@ -424,14 +389,11 @@ impl Canary1bFlashConfig {
     ///   `in_dim = 128` (`preprocessor.features`), `subsampling_factor = 8`
     ///   with stride-2 kernel-3 `dw_striding` stages and 256 channels,
     ///   `pos_emb_max_len = 5000`, `untie_biases = true` → `attention_bias`,
-    ///   bias-free convolutions, `xscaling = false`, `pre_ln = true`,
+    ///   biased convolutions (`ConformerEncoder::use_bias` defaults true),
+    ///   `xscaling = false`, `pre_ln = true`,
     ///   `hidden_act = "relu"`.
-    /// - **No source at all**: `head.vocab_size` / `pad` / `bos` / `eos`. The
-    ///   model card describes the tokenizer as "the 4-language subset of the
-    ///   unified Canary SentencePiece" without stating a width, and the ids
-    ///   live inside the `.nemo` tarball. They stay `0` — a sentinel
-    ///   [`Self::validate_for_forward`] rejects — rather than being copied
-    ///   from Canary-1B-v2's 25-language 16 384 (a different tokenizer).
+    /// - **Released `.nemo` tokenizer/config**: `head.vocab_size = 5248`,
+    ///   `pad = 2`, `bos = 4`, `eos = 3`.
     ///
     /// The `.nemo` `model_config.yaml` is the ultimate authority; a divergence
     /// surfaces through the shape gate, never through a silent widen
@@ -445,6 +407,7 @@ impl Canary1bFlashConfig {
         Self {
             encoder: CanaryEncoderConfig {
                 n_layer: ENCODER_N_LAYER,
+                convolution_bias: true,
                 ..family.encoder
             },
             decoder: CanaryDecoderConfig {
@@ -459,13 +422,10 @@ impl Canary1bFlashConfig {
                 ..family.decoder
             },
             head: CanaryHeadConfig {
-                // `0` placeholder sentinels — see the fn docstring. NOT copied
-                // from Canary-1B-v2: that is a 25-language tokenizer, this is
-                // a 4-language one.
-                vocab_size: 0,
-                pad_token_id: 0,
-                bos_token_id: 0,
-                eos_token_id: 0,
+                vocab_size: VOCAB_SIZE,
+                pad_token_id: PAD_ID,
+                bos_token_id: BOS_ID,
+                eos_token_id: EOS_ID,
             },
             sample_rate: CANARY_1B_FLASH_SAMPLE_RATE,
             source: Canary1bFlashConfigSource::FamilyAnchored,
@@ -502,7 +462,7 @@ impl Canary1bFlashConfig {
         matches!(self.source, Canary1bFlashConfigSource::FamilyAnchored)
     }
 
-    /// Rejects `0`-placeholder / ill-formed configs before any forward runs.
+    /// Rejects incomplete or ill-formed configs before any forward runs.
     ///
     /// **Delegates** to the shared Canary-family validator
     /// (`crate::canary::CanaryConfig::validate_for_forward`) — the Flash
@@ -510,21 +470,11 @@ impl Canary1bFlashConfig {
     /// create drift. The delegated message is re-prefixed so a reader sees
     /// which model surfaced the failure.
     ///
-    /// Note that [`Self::canary_1b_flash`] **fails** this check on
-    /// `head.vocab_size == 0`. That is deliberate and is the mechanism that
-    /// stops a caller from running a hallucinated forward on a tokenizer that
-    /// has not been extracted yet (FR-EX-08).
-    ///
     /// # Errors
     ///
     /// [`VokraError::InvalidArgument`] naming the offending field.
     pub fn validate_for_forward(&self) -> Result<()> {
-        let family = crate::canary::CanaryConfig {
-            encoder: self.encoder.clone(),
-            decoder: self.decoder.clone(),
-            head: self.head.clone(),
-            sample_rate: self.sample_rate,
-        };
+        let family = self.to_family_config();
         family.validate_for_forward().map_err(|e| match e {
             VokraError::InvalidArgument(m) => {
                 // Cosmetic: strip the delegate's own prefix so the composed
@@ -541,26 +491,50 @@ impl Canary1bFlashConfig {
         })
     }
 
+    fn to_family_config(&self) -> crate::canary::CanaryConfig {
+        crate::canary::CanaryConfig {
+            encoder: self.encoder.clone(),
+            decoder: self.decoder.clone(),
+            head: self.head.clone(),
+            sample_rate: self.sample_rate,
+        }
+    }
+
+    /// Ensures metadata cannot change a non-shape inference axis while still
+    /// binding the same immutable released tensor manifest.
+    pub(crate) fn validate_release_contract(&self) -> Result<()> {
+        let expected = Self::canary_1b_flash();
+        if self.encoder != expected.encoder
+            || self.decoder != expected.decoder
+            || self.head != expected.head
+            || self.sample_rate != expected.sample_rate
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "canary-1b-flash: resolved runtime metadata does not match the pinned released `.nemo` topology (expected encoder={:?}, decoder={:?}, head={:?}, sample_rate={}; found encoder={:?}, decoder={:?}, head={:?}, sample_rate={}). Refusing to run an immutable 1,374-tensor checkpoint under conflicting axes (FR-EX-08)",
+                expected.encoder,
+                expected.decoder,
+                expected.head,
+                expected.sample_rate,
+                self.encoder,
+                self.decoder,
+                self.head,
+                self.sample_rate,
+            )));
+        }
+        Ok(())
+    }
+
     /// Resolves the axes for a Canary-1B-Flash GGUF.
     ///
     /// Starts from [`Self::canary_1b_flash`] (the primary-source anchor) and
     /// applies any `vokra.canary_1b_flash.*` override the artifact carries.
-    /// The **current converter stamps none of them**, so a real converted GGUF
-    /// resolves to [`Canary1bFlashConfigSource::FamilyAnchored`] — which is
-    /// exactly why this reader is permissive about absence and strict about
-    /// malformation:
+    /// Canonical new conversions stamp the full group. Absence remains
+    /// representable for an authenticated legacy artifact, while any partial
+    /// or conflicting group is rejected by the release contract:
     ///
     /// - an **absent** key is normal (the writer does not emit it yet);
     /// - a **present but wrong-dtype** key is a corrupted / hand-assembled
     ///   artifact and fails loud (FR-EX-08 — never silently ignored).
-    ///
-    /// # Loud-partial posture
-    ///
-    /// This reader deliberately does **not** call
-    /// [`Self::validate_for_forward`]. The family-anchored config carries `0`
-    /// head sentinels; validating here would make the GGUF unloadable and
-    /// prevent [`Canary1bFlashAsr::transcribe`] from firing its specific
-    /// loud-partial message. Same posture as `canary_qwen`.
     ///
     /// # Errors
     ///
@@ -697,8 +671,7 @@ impl Canary1bFlashConfig {
 
 /// Reads an **optional** `u32`-range integer chunk.
 ///
-/// `None` when the key is absent (normal — the converter stamps no axis
-/// chunks). A present value that is not a `u32`-range unsigned integer is a
+/// `None` when the key is absent. A present value that is not a `u32`-range unsigned integer is a
 /// loud [`VokraError::ModelLoad`]: silently ignoring a malformed override
 /// would run the model on the family default while the artifact claimed
 /// otherwise (FR-EX-08).
@@ -714,8 +687,8 @@ fn opt_u32(file: &GgufFile, key: &str) -> Result<Option<u32>> {
             VokraError::ModelLoad(format!(
                 "canary-1b-flash: metadata key `{key}` is present but is not a \
                  u32-range unsigned integer (got {value:?}). This axis-override \
-                 group is optional — the canonical converter stamps none of it — \
-                 but a key that IS present must be well-formed; ignoring it would \
+                 group is optional only for an authenticated legacy artifact, but a \
+                 key that IS present must be well-formed; ignoring it would \
                  silently run the family-anchored default while the artifact \
                  claimed a different shape (FR-EX-08). Primary source: \
                  {PRIMARY_SOURCE_HF}"
@@ -755,9 +728,8 @@ fn opt_string(file: &GgufFile, key: &str) -> Result<Option<String>> {
 /// `state_dict`). Nothing in-repo transcribes NeMo's `EncDecMultiTaskModel`
 /// naming, so this store deliberately does **not** walk names into typed
 /// encoder / decoder slots: a guessed manifest would bind shape-valid garbage.
-/// Instead it records what is actually on disk and offers loud lookups
-/// ([`Self::require_tensor`] / [`Self::require_tensor_dims`]) that the
-/// follow-up real-weight wave uses once the manifest is known.
+/// Instead it records what is actually on disk and offers diagnostic lookups;
+/// executable binding is handled by the exact typed manifest in `bound`.
 ///
 /// **Contract**: [`Self::from_gguf`] refuses a zero-tensor GGUF — an
 /// 883 M-parameter FastConformer + AED checkpoint always carries hundreds of
@@ -827,9 +799,7 @@ impl Canary1bFlashWeights {
     /// How many discovered tensors start with `prefix`.
     ///
     /// A pure observation over what is on disk — it asserts **no** naming
-    /// scheme (the upstream NeMo prefixes are not transcribed anywhere
-    /// in-repo). The follow-up real-weight wave uses it to sanity-check a
-    /// manifest once the naming *is* known.
+    /// scheme. The strict typed binder is the executable source of truth.
     #[must_use]
     pub fn count_with_prefix(&self, prefix: &str) -> usize {
         self.tensors
@@ -915,57 +885,56 @@ impl Canary1bFlashWeights {
 ///
 /// Bind with [`Self::from_gguf`] (or the compliance-gated
 /// [`Self::from_gguf_with_policy`] / [`Self::from_path`]), then call
-/// [`Self::transcribe`] / [`Self::transcribe_with_task`]. See the module
-/// docstring for the loud-partial contract on the forward path.
+/// [`Self::transcribe`] / [`Self::transcribe_with_options`].
 #[derive(Debug, Clone)]
 pub struct Canary1bFlashAsr {
     cfg: Canary1bFlashConfig,
+    runtime_cfg: crate::canary::CanaryConfig,
     weights: Canary1bFlashWeights,
-    weight_license: LicenseClass,
+    bound: Arc<CanaryBoundWeights>,
+    tokenizer: CanaryTokenizer,
+    backend: BackendKind,
     attribution: Option<String>,
 }
 
 impl Canary1bFlashAsr {
-    /// Binds a Canary-1B-Flash GGUF: verifies arch strictly, resolves the
-    /// axes, discovers the tensor manifest, and surfaces the weight-license
-    /// class plus the FR-MD-09 attribution text.
-    ///
-    /// Every failure is a distinct [`VokraError::ModelLoad`] naming the exact
-    /// key or tensor at fault, so a reader diagnosing a mis-produced GGUF has
-    /// one place to walk (FR-EX-08 — never a silent partial bind).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent, or is
-    ///   not `"canary-1b-flash"` (the message names both the found and the
-    ///   expected tag and enumerates the Canary neighbourhood).
-    /// - [`VokraError::ModelLoad`] when a present `vokra.canary_1b_flash.*`
-    ///   override has the wrong dtype
-    ///   ([`Canary1bFlashConfig::from_gguf`]).
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
-    ///   ([`Canary1bFlashWeights::from_gguf`]).
+    /// Strictly binds the complete released checkpoint and aggregate
+    /// tokenizer, selecting CPU by default.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
-        // 1. Arch first, so a mis-routed model surfaces a specific message
-        //    instead of a downstream missing-tensor trail.
+        Self::from_gguf_with_backend(file, BackendKind::Cpu)
+    }
+
+    /// Strictly binds the complete released checkpoint and records an
+    /// explicit backend choice. Backend availability and whole-model hot-op
+    /// coverage are checked before the multi-GB tensor payload is decoded and
+    /// rechecked at the inference boundary.
+    pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         verify_arch(file)?;
-
-        // 2. Axes. Deliberately NOT validate_for_forward'd — the
-        //    family-anchored head sentinels are `0` pending .nemo extraction,
-        //    and a strict validate here would make every real artifact
-        //    unloadable and suppress the specific loud-partial message.
         let cfg = Canary1bFlashConfig::from_gguf(file)?;
+        cfg.validate_for_forward()?;
+        cfg.validate_release_contract()?;
+        let runtime_cfg = cfg.to_family_config();
 
-        // 3. Tensor manifest with the non-emptiness gate.
+        // Fail an unavailable/uncovered backend before materializing the
+        // 3.54 GB release into typed vectors. This is both FR-EX-08 and an
+        // important Mac memory boundary: `--backend metal` on a CPU-only build
+        // must not spend gigabytes loading weights before reporting that Metal
+        // is unavailable. Inference constructs its own dispatcher again so a
+        // device loss between bind and execution is still surfaced.
+        let _backend_preflight = Compute::for_backend(backend, CANARY_1B_FLASH_HOT_OPS)?;
+
+        // Authenticate the manifest before decoding any large tensor. This
+        // makes the historical encoder-only public artifact fail cheaply and
+        // explicitly at 1,292 != 1,374 tensors.
+        CanaryBoundWeights::verify_manifest(file, RELEASE_SPEC)?;
+        validate_runtime_metadata(file)?;
+        let tokenizer = CanaryTokenizer::from_gguf(file)?;
         let weights = Canary1bFlashWeights::from_gguf(file)?;
-
-        // 4. Provenance surfacing. The converter stamps
-        //    `AttributionRequired` (CC-BY 4.0); a GGUF missing the stamp
-        //    reads back as `Unknown` — fail-closed at the M2-13 gate.
-        let weight_license = file
-            .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-            .and_then(|v| v.as_str())
-            .and_then(LicenseClass::from_class_str)
-            .unwrap_or(LicenseClass::Unknown);
+        let bound = Arc::new(CanaryBoundWeights::from_gguf(
+            file,
+            &runtime_cfg,
+            RELEASE_SPEC,
+        )?);
         let attribution = file
             .get(chunks::KEY_PROVENANCE_ATTRIBUTION)
             .and_then(|v| v.as_str())
@@ -973,8 +942,11 @@ impl Canary1bFlashAsr {
 
         Ok(Self {
             cfg,
+            runtime_cfg,
             weights,
-            weight_license,
+            bound,
+            tokenizer,
+            backend,
             attribution,
         })
     }
@@ -1019,6 +991,19 @@ impl Canary1bFlashAsr {
         Self::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
     }
 
+    /// Selects the backend used by subsequent encoder and decoder calls.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the explicitly selected backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// The resolved configuration.
     #[inline]
     #[must_use]
@@ -1037,7 +1022,13 @@ impl Canary1bFlashAsr {
     #[inline]
     #[must_use]
     pub fn tensor_count(&self) -> usize {
-        self.weights.tensor_count()
+        self.bound.tensor_count()
+    }
+
+    /// Authenticated upstream model name from the strict checkpoint binder.
+    #[must_use]
+    pub fn model_name(&self) -> &str {
+        self.bound.model_name()
     }
 
     /// PCM sample rate the bound model expects.
@@ -1055,8 +1046,8 @@ impl Canary1bFlashAsr {
     /// the stamp is absent (fail-closed).
     #[inline]
     #[must_use]
-    pub const fn weight_license(&self) -> LicenseClass {
-        self.weight_license
+    pub fn weight_license(&self) -> LicenseClass {
+        self.bound.weight_license()
     }
 
     /// The FR-MD-09 attribution text stamped under
@@ -1073,52 +1064,85 @@ impl Canary1bFlashAsr {
         self.attribution.as_deref()
     }
 
-    /// Transcribes a mono `f32` PCM slice at [`Self::sample_rate`]
-    /// (ASR mode — equivalent to
-    /// `transcribe_with_task(pcm, Canary1bFlashTask::Asr, false)`).
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::transcribe_with_task`].
+    /// Transcribes 16 kHz mono PCM to Canary aggregate token IDs using the
+    /// released English-ASR prompt defaults.
     pub fn transcribe(&self, pcm: &[f32]) -> Result<Vec<u32>> {
-        self.transcribe_with_task(pcm, Canary1bFlashTask::Asr, false)
+        self.transcribe_with_options(pcm, Canary1bFlashOptions::default())
     }
 
-    /// Runs the multitask forward: ASR or AST (speech translation), optionally
-    /// with segment timestamps (the `<timestamp>` task token).
-    ///
-    /// # Loud-partial (this WP)
-    ///
-    /// Returns [`VokraError::UnsupportedOp`] naming the four blockers listed
-    /// in the module docstring — the missing `.nemo` tensor-name manifest, the
-    /// missing SentencePiece tokenizer, the resulting `0`-sentinel head width,
-    /// and the unwired AED decoder step. The message names the primitives that
-    /// *do* exist (`vokra_ops::waveform_frontend`, `vokra_ops::conformer`,
-    /// `vokra_core::decode::beam_search`) so the follow-up wave knows exactly
-    /// what is left to write. **No fabricated token ids are ever emitted**
-    /// (FR-EX-08 — CLAUDE.md 教訓 (a)).
-    ///
-    /// # Errors
-    ///
-    /// - [`VokraError::InvalidArgument`] when `pcm` is empty.
-    /// - [`VokraError::UnsupportedOp`] — the loud-partial gate.
-    pub fn transcribe_with_task(
+    /// Runs multilingual ASR or AST according to the exact `canary2` prompt
+    /// fields in `options`.
+    pub fn transcribe_with_options(
         &self,
         pcm: &[f32],
-        task: Canary1bFlashTask,
-        timestamps: bool,
+        options: Canary1bFlashOptions,
     ) -> Result<Vec<u32>> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "canary-1b-flash transcribe: pcm slice is empty".to_owned(),
             ));
         }
-        Err(transcribe_loud_partial(
-            &self.cfg,
-            &self.weights,
-            task,
-            timestamps,
-        ))
+        let compute = Compute::for_backend(self.backend, CANARY_1B_FLASH_HOT_OPS)?;
+        let (encoder, frames) = self.bound.encode_pcm(&compute, pcm)?;
+        let prompt = options.prompt_tokens();
+        self.bound.decode_tokens(
+            &compute,
+            &encoder,
+            frames,
+            &self.runtime_cfg,
+            &prompt,
+            options.max_new_tokens,
+        )
+    }
+
+    /// Compatibility wrapper for the earlier task-only API. ASR uses the
+    /// released English defaults. AST requires explicit source and target
+    /// languages through [`Self::transcribe_with_options`] and is never
+    /// guessed here.
+    pub fn transcribe_with_task(
+        &self,
+        pcm: &[f32],
+        task: Canary1bFlashTask,
+        timestamps: bool,
+    ) -> Result<Vec<u32>> {
+        match task {
+            Canary1bFlashTask::Asr => self.transcribe_with_options(
+                pcm,
+                Canary1bFlashOptions {
+                    timestamps,
+                    ..Canary1bFlashOptions::default()
+                },
+            ),
+            Canary1bFlashTask::Ast => Err(VokraError::InvalidArgument(
+                "canary-1b-flash AST requires explicit source_language and target_language; use transcribe_with_options instead of guessing a translation target"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Runs the configured forward and decodes aggregate SentencePiece IDs to
+    /// text. Special prompt/timestamp/diarization tokens are omitted from the
+    /// text surface; callers that need them should use the token-ID method.
+    pub fn transcribe_text_with_options(
+        &self,
+        pcm: &[f32],
+        options: Canary1bFlashOptions,
+    ) -> Result<String> {
+        let tokens = self.transcribe_with_options(pcm, options)?;
+        self.tokenizer.decode(&tokens)
+    }
+}
+
+impl AsrEngine for Canary1bFlashAsr {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        Ok(Transcription::new(self.transcribe_text_with_options(
+            pcm,
+            Canary1bFlashOptions::default(),
+        )?))
+    }
+
+    fn backend(&self) -> BackendKind {
+        self.backend
     }
 }
 
@@ -1153,62 +1177,53 @@ fn verify_arch(file: &GgufFile) -> Result<()> {
     }
 }
 
-/// Builds the loud-partial [`VokraError::UnsupportedOp`] returned by the
-/// transcribe entry points.
-///
-/// Kept as a free function so the message has exactly one definition and the
-/// tests can assert against the same text every caller sees.
-fn transcribe_loud_partial(
-    cfg: &Canary1bFlashConfig,
-    weights: &Canary1bFlashWeights,
-    task: Canary1bFlashTask,
-    timestamps: bool,
-) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "canary-1b-flash transcribe (loud-partial, task={task}, timestamps={timestamps}): \
-         the full ASR / AST forward is deferred. Four blockers must land before real \
-         token ids can be emitted: \
-         (1) NO TENSOR-NAME MANIFEST — the converter copies every float tensor under \
-         its verbatim upstream safetensors name and nothing in-repo transcribes NeMo's \
-         `EncDecMultiTaskModel` state_dict naming, so walking guessed names into typed \
-         encoder / decoder slots would bind shape-valid garbage ({count} tensors are \
-         present on disk and can be inspected via \
-         `Canary1bFlashWeights::tensor_names`); \
-         (2) NO TOKENIZER — the unified Canary SentencePiece model, its vocabulary \
-         width and the concrete pad / bos / eos / `<taskname>` ids live inside the \
-         `.nemo` tarball and are not stated on the model card; \
-         (3) HEAD WIDTH IS A PLACEHOLDER — head.vocab_size={vocab} (a `0` sentinel is \
-         the direct consequence of (2); it is deliberately NOT copied from \
-         Canary-1B-v2's 25-language 16384, which is a different tokenizer), so no \
-         logits array can even be shaped; \
-         (4) THE AED DECODER STEP IS NOT WIRED — the {dec_layers}-layer pre-norm \
-         self-attn + cross-attn + FFN loop driven by a task-token prompt prefix has no \
-         implementation (a gap shared with `crate::canary`, not specific to Flash). \
-         The surrounding primitives DO exist and are what the follow-up wave composes: \
-         `vokra_ops::waveform_frontend` (128-bin log-mel front-end), \
-         `vokra_ops::conformer` with ConvSubsampleKind::Stacking {{ factor: {sub} }} \
-         (the {enc_layers}-layer FastConformer encoder, shared with Canary-1B-v2 / \
-         Parakeet), and `vokra_core::decode::beam_search` (the search, shared with \
-         Whisper / Voxtral). Config source: {source:?} (the current converter stamps \
-         no `vokra.canary_1b_flash.*` axes, so the axes above are anchored to the \
-         published family reference). Bind a real Canary-1B-Flash checkpoint — \
-         `{upstream}` (CC-BY 4.0), distributed as a `.nemo` tarball, prepared with \
-         `{prep}` — then re-run `vokra-cli convert --model canary-1b-flash`. Primary \
-         sources: model card {hf}; family reference {yaml}. Loud-partial per CLAUDE.md \
-         教訓 (a) — no fabricated token ids are ever emitted (FR-EX-08, no silent \
-         partial output).",
-        task = task.as_str(),
-        count = weights.tensor_count(),
-        vocab = cfg.head.vocab_size,
-        dec_layers = cfg.decoder.n_layer,
-        enc_layers = cfg.encoder.n_layer,
-        sub = cfg.encoder.subsampling_factor,
-        source = cfg.source,
-        upstream = UPSTREAM_HF,
-        prep = PRIMARY_SOURCE_NEMO_PREP,
-        hf = PRIMARY_SOURCE_HF,
-        yaml = PRIMARY_SOURCE_FAMILY_YAML,
-    ))
+/// Authenticates every non-tensor inference condition stamped by the complete
+/// converter. The shared frontend reproduces the released mel filter and Hann
+/// window rather than reading their checkpoint buffers, so accepting a
+/// conflicting FFT/window/normalization stamp would otherwise execute a
+/// different graph while appearing self-describing.
+fn validate_runtime_metadata(file: &GgufFile) -> Result<()> {
+    for &(key, expected) in RELEASE_STRING_METADATA {
+        require_release_string(file, key, expected)?;
+    }
+
+    for &(key, expected) in RELEASE_U32_METADATA {
+        require_release_u32(file, key, expected)?;
+    }
+
+    match file.get(GGUF_KEY_FRONTEND_PREEMPHASIS) {
+        Some(GgufMetadataValue::F32(value)) if value.to_bits() == 0.97f32.to_bits() => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: `{GGUF_KEY_FRONTEND_PREEMPHASIS}` must be f32 0.97, found {other:?}; refusing a frontend that differs from the authenticated release (FR-EX-08)"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: missing required release metadata `{GGUF_KEY_FRONTEND_PREEMPHASIS}`; reconvert the complete pinned `.nemo` checkpoint"
+        ))),
+    }
+}
+
+fn require_release_string(file: &GgufFile, key: &str, expected: &str) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::String(value)) if value == expected => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: `{key}` must be {expected:?}, found {other:?}; refusing metadata from a different release (FR-EX-08)"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: missing required release metadata `{key}`; reconvert the complete pinned `.nemo` checkpoint"
+        ))),
+    }
+}
+
+fn require_release_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> {
+    match file.get(key) {
+        Some(GgufMetadataValue::U32(value)) if *value == expected => Ok(()),
+        Some(other) => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: `{key}` must be u32 {expected}, found {other:?}; refusing metadata from a different release (FR-EX-08)"
+        ))),
+        None => Err(VokraError::ModelLoad(format!(
+            "canary-1b-flash: missing required release metadata `{key}`; reconvert the complete pinned `.nemo` checkpoint"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,34 +1234,14 @@ fn transcribe_loud_partial(
 mod tests {
     //! Tests for the Canary-1B-Flash runtime binder.
     //!
-    //! # What is honestly testable here
-    //!
-    //! On a real 16 kHz waveform the round-trip would be `transcribe(...)`
-    //! returning token ids, but the `.nemo` tensor manifest + SentencePiece
-    //! tokenizer are owner-gated (see the module doc). Fabricating a transcript
-    //! would violate CLAUDE.md 教訓 (a). What IS testable, and is tested:
-    //!
-    //! 1. **Contract-constant pins** — `ARCH` / `NAME` / `CATEGORY` /
-    //!    `UPSTREAM_HF` / `DEFAULT_LICENSE` match the converter by value, and
-    //!    the arch tag is distinct from every Canary sibling.
-    //! 2. **Primary-source axis pins** — 32 encoder layers, **4** decoder
-    //!    layers, 1024 widths, 16 kHz, and the `0` head sentinels that the
-    //!    validator refuses.
-    //! 3. **Metadata round-trip** — a synthetic GGUF built exactly the way the
-    //!    converter builds one binds, and its licence / attribution surface.
-    //! 4. **Loud negative space** — missing arch, foreign arch, empty
-    //!    manifest, missing tensor, wrong dims, malformed override: each fires
-    //!    at its documented surface in its documented variant.
-    //! 5. **Loud-partial contract** — `transcribe` names every blocker and
-    //!    every primitive the follow-up wave must compose.
+    //! Synthetic files exercise fail-closed metadata and manifest boundaries.
+    //! The real 3.54 GB `.nemo` forward/parity suite is VAST-only and must use
+    //! the independent upstream NeMo implementation as its oracle.
 
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
-    /// Builds a GGUF the way `convert_canary_1b_flash_file` builds one: the
-    /// `vokra.model.*` group, the provenance group, and float tensors carrying
-    /// verbatim upstream-style names. No `vokra.canary_1b_flash.*` axis chunk
-    /// — mirroring the real converter, which stamps none.
+    /// Builds a deliberately partial GGUF for negative and diagnostic tests.
     fn flash_gguf(weight_license_class: Option<LicenseClass>, attribution: bool) -> GgufFile {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -1285,6 +1280,25 @@ mod tests {
         GgufFile::parse(b.to_bytes().expect("serialize")).expect("parse")
     }
 
+    fn runtime_metadata_gguf(n_fft: u32) -> GgufFile {
+        let mut builder = GgufBuilder::new();
+        for &(key, value) in RELEASE_STRING_METADATA {
+            builder.add_string(key, value);
+        }
+        for &(key, value) in RELEASE_U32_METADATA {
+            builder.add_u32(
+                key,
+                if key == GGUF_KEY_FRONTEND_N_FFT {
+                    n_fft
+                } else {
+                    value
+                },
+            );
+        }
+        builder.add_f32(GGUF_KEY_FRONTEND_PREEMPHASIS, 0.97);
+        GgufFile::parse(builder.to_bytes().expect("serialize metadata")).expect("parse metadata")
+    }
+
     // -----------------------------------------------------------------------
     // 1 — contract-constant pins + sibling distinctness
     // -----------------------------------------------------------------------
@@ -1298,7 +1312,11 @@ mod tests {
         assert_eq!(DEFAULT_LICENSE, "cc-by-4.0", "default weight SPDX pin");
         assert_eq!(CANARY_1B_FLASH_SAMPLE_RATE, 16_000, "model card: 16 kHz");
         assert_eq!(SUPPORTED_LANGUAGES, ["en", "de", "fr", "es"]);
-        assert_eq!(TASK_TOKENS.len(), 8, "eight task-token families");
+        assert_eq!(TASK_TOKENS.len(), 8, "eight Canary2 prompt slots");
+        assert!(
+            !TASK_TOKENS.contains(&"<taskname>"),
+            "Canary2 selects ASR/AST from the language pair"
+        );
         assert!(
             TASK_TOKENS.contains(&"<timestamp>"),
             "timestamps are a task"
@@ -1338,10 +1356,22 @@ mod tests {
         assert_eq!(c.encoder.in_dim, 128, "preprocessor.features = 128");
         assert_eq!(c.encoder.subsampling_factor, 8);
         assert!(c.encoder.attention_bias, "untie_biases = true");
+        assert!(
+            c.encoder.convolution_bias,
+            "ConformerEncoder::use_bias defaults true and released conv tensors carry biases"
+        );
         assert!(!c.encoder.scale_input, "xscaling = false");
         assert!(c.decoder.pre_ln);
         assert_eq!(c.decoder.hidden_act, "relu");
         assert_eq!(c.encoder.head_dim(), 128);
+        assert_eq!(c.head.vocab_size, VOCAB_SIZE);
+        assert_eq!(c.head.pad_token_id, PAD_ID);
+        assert_eq!(c.head.bos_token_id, BOS_ID);
+        assert_eq!(c.head.eos_token_id, EOS_ID);
+        c.validate_for_forward()
+            .expect("released axes must validate");
+        c.validate_release_contract()
+            .expect("released axes must match the immutable contract");
         // Provenance marker.
         assert!(c.is_family_anchored());
     }
@@ -1355,31 +1385,27 @@ mod tests {
         assert_eq!(flash.decoder.n_layer, DECODER_N_LAYER);
         assert_eq!(v2.decoder.n_layer, 8, "Canary-1B-v2 decoder depth");
         assert_ne!(flash.decoder.n_layer, v2.decoder.n_layer);
-        // ... while the encoder is deliberately identical.
+        // ... while encoder depth and widths remain shared.
         assert_eq!(flash.encoder.n_layer, v2.encoder.n_layer);
-        assert_eq!(flash.encoder, v2.encoder, "shared FastConformer encoder");
+        assert_eq!(flash.encoder.d_model, v2.encoder.d_model);
+        assert_eq!(flash.encoder.ffn_dim, v2.encoder.ffn_dim);
     }
 
     #[test]
-    fn primary_source_config_refuses_to_run_on_placeholder_head() {
-        // vocab_size / pad / bos / eos are `0` sentinels because NO primary
-        // source states them. The validator must refuse — this is the
-        // mechanism that stops a hallucinated forward (FR-EX-08).
-        let c = Canary1bFlashConfig::canary_1b_flash();
-        assert_eq!(c.head.vocab_size, 0, "no primary source states the width");
+    fn release_contract_rejects_conflicting_non_shape_metadata() {
+        let mut c = Canary1bFlashConfig::canary_1b_flash();
+        c.head.vocab_size = 0;
         let Err(err) = c.validate_for_forward() else {
-            panic!("placeholder head must be refused, not accepted");
+            panic!("shared family validation must reject an empty head");
         };
-        match err {
-            VokraError::InvalidArgument(m) => {
-                assert!(m.contains("vocab_size"), "must name the field: {m}");
-                assert!(
-                    m.contains("canary-1b-flash config"),
-                    "must be attributed to this model: {m}"
-                );
-            }
-            other => panic!("expected InvalidArgument, got {other:?}"),
-        }
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+
+        let mut c = Canary1bFlashConfig::canary_1b_flash();
+        c.sample_rate = 8_000;
+        let Err(VokraError::ModelLoad(message)) = c.validate_release_contract() else {
+            panic!("conflicting inference metadata must fail the release contract");
+        };
+        assert!(message.contains("1,374-tensor"), "message: {message}");
     }
 
     #[test]
@@ -1405,50 +1431,27 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn from_gguf_binds_a_converter_shaped_artifact() {
+    fn strict_binder_rejects_the_historical_encoder_only_shape() {
         let file = flash_gguf(Some(LicenseClass::AttributionRequired), true);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("valid GGUF must bind");
+        let Err(VokraError::ModelLoad(message)) = Canary1bFlashAsr::from_gguf(&file) else {
+            panic!("a partial checkpoint must not bind");
+        };
+        assert!(message.contains("tensor count 2"), "message: {message}");
+        assert!(message.contains("expected 1374"), "message: {message}");
+    }
 
+    #[test]
+    fn diagnostic_manifest_view_remains_available_without_binding() {
+        let file = flash_gguf(None, false);
+        let weights = Canary1bFlashWeights::from_gguf(&file).expect("non-empty manifest");
         assert_eq!(
-            asr.weight_license(),
-            LicenseClass::AttributionRequired,
-            "cc-by-4.0 must surface as AttributionRequired"
-        );
-        assert_eq!(asr.tensor_count(), 2, "both fixture tensors bound");
-        assert_eq!(asr.sample_rate(), 16_000);
-        // The converter stamps no axis chunks, so the axes are family-anchored.
-        assert!(
-            asr.config().is_family_anchored(),
-            "no vokra.canary_1b_flash.* chunk => FamilyAnchored"
-        );
-        assert_eq!(asr.config().decoder.n_layer, DECODER_N_LAYER);
-        // FR-MD-09 attribution surface (CC-BY 4.0 obligation).
-        let attr = asr.attribution().expect("attribution stamp must surface");
-        assert!(
-            attr.contains("NVIDIA") && attr.contains("CC-BY 4.0"),
-            "attribution must name NVIDIA + CC-BY 4.0: {attr}"
-        );
-        // Manifest lookups over the real (verbatim upstream) names.
-        assert_eq!(
-            asr.weights()
+            weights
                 .require_tensor("encoder.blocks.0.attn.qkv_proj.weight")
                 .expect("present tensor"),
             &[2, 3]
         );
-        assert_eq!(asr.weights().count_with_prefix("decoder."), 1);
-        assert_eq!(asr.weights().tensor_names().len(), 2);
-    }
-
-    #[test]
-    fn missing_license_stamp_fails_closed_to_unknown() {
-        let file = flash_gguf(None, false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("arch + tensors are the bind gates");
-        assert_eq!(
-            asr.weight_license(),
-            LicenseClass::Unknown,
-            "absent stamp must fail-closed"
-        );
-        assert!(asr.attribution().is_none(), "no stamp => no attribution");
+        assert_eq!(weights.count_with_prefix("decoder."), 1);
+        assert_eq!(weights.tensor_names().len(), 2);
     }
 
     #[test]
@@ -1466,9 +1469,12 @@ mod tests {
         b.add_tensor("encoder.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
             .expect("add_tensor");
         let bytes = b.to_bytes().expect("serialize");
-        let asr = Canary1bFlashAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("CC-BY 4.0 must pass the strict gate");
-        assert_eq!(asr.weight_license(), LicenseClass::AttributionRequired);
+        let Err(VokraError::ModelLoad(message)) =
+            Canary1bFlashAsr::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
+        else {
+            panic!("the licence gate passes, then the one-tensor manifest must fail");
+        };
+        assert!(message.contains("expected 1374"), "message: {message}");
     }
 
     // -----------------------------------------------------------------------
@@ -1544,12 +1550,8 @@ mod tests {
         };
         match err {
             VokraError::ModelLoad(m) => {
-                assert!(m.contains("zero tensors"), "must name the gap: {m}");
-                assert!(m.contains("FR-EX-08"), "must cite FR-EX-08: {m}");
-                assert!(
-                    m.contains("vokra-cli convert --model canary-1b-flash"),
-                    "must include the repro command: {m}"
-                );
+                assert!(m.contains("tensor count 0"), "must name the gap: {m}");
+                assert!(m.contains("expected 1374"), "must name the contract: {m}");
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
@@ -1558,11 +1560,8 @@ mod tests {
     #[test]
     fn require_tensor_names_the_missing_tensor() {
         let file = flash_gguf(Some(LicenseClass::AttributionRequired), false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
-        let Err(err) = asr
-            .weights()
-            .require_tensor("encoder.blocks.31.ff2_fc2.weight")
-        else {
+        let weights = Canary1bFlashWeights::from_gguf(&file).expect("scan");
+        let Err(err) = weights.require_tensor("encoder.blocks.31.ff2_fc2.weight") else {
             panic!("absent tensor must fail loud");
         };
         match err {
@@ -1584,15 +1583,14 @@ mod tests {
     #[test]
     fn require_tensor_dims_names_expected_and_actual() {
         let file = flash_gguf(Some(LicenseClass::AttributionRequired), false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
+        let weights = Canary1bFlashWeights::from_gguf(&file).expect("scan");
         // Correct dims pass.
-        asr.weights()
+        weights
             .require_tensor_dims("decoder.blocks.0.self_attn.qkv.weight", &[1, 4])
             .expect("matching dims must pass");
         // Wrong dims fail loud, naming both sides.
-        let Err(err) = asr
-            .weights()
-            .require_tensor_dims("decoder.blocks.0.self_attn.qkv.weight", &[8, 8])
+        let Err(err) =
+            weights.require_tensor_dims("decoder.blocks.0.self_attn.qkv.weight", &[8, 8])
         else {
             panic!("dim mismatch must fail loud");
         };
@@ -1611,9 +1609,8 @@ mod tests {
 
     #[test]
     fn present_axis_override_is_honoured() {
-        // Forward-compatibility: the current converter stamps nothing, but a
-        // future one that stamps real .nemo-extracted axes must be honoured
-        // without a runtime change.
+        // The generic metadata reader reflects the stamp, while the immutable
+        // release contract rejects the conflict before inference.
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
@@ -1622,21 +1619,21 @@ mod tests {
         b.add_tensor("encoder.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
             .expect("add_tensor");
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
+        let config = Canary1bFlashConfig::from_gguf(&file).expect("read metadata");
+        assert_eq!(config.decoder.n_layer, 6, "stamp overrides the anchor");
+        assert_eq!(config.head.vocab_size, 16_384);
         assert_eq!(
-            asr.config().decoder.n_layer,
-            6,
-            "stamp overrides the anchor"
-        );
-        assert_eq!(asr.config().head.vocab_size, 16_384);
-        assert_eq!(
-            asr.config().source,
+            config.source,
             Canary1bFlashConfigSource::GgufStamped,
             "a present stamp must be reported as such"
         );
-        assert!(!asr.config().is_family_anchored());
+        assert!(!config.is_family_anchored());
         // Untouched axes still come from the family anchor.
-        assert_eq!(asr.config().encoder.n_layer, ENCODER_N_LAYER);
+        assert_eq!(config.encoder.n_layer, ENCODER_N_LAYER);
+        let Err(VokraError::ModelLoad(message)) = config.validate_release_contract() else {
+            panic!("the immutable release must reject conflicting axes");
+        };
+        assert!(message.contains("1,374-tensor"), "message: {message}");
     }
 
     #[test]
@@ -1650,7 +1647,7 @@ mod tests {
         b.add_tensor("encoder.probe", GgmlType::F32, vec![2, 2], vec![0u8; 16])
             .expect("add_tensor");
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
-        let Err(err) = Canary1bFlashAsr::from_gguf(&file) else {
+        let Err(err) = Canary1bFlashConfig::from_gguf(&file) else {
             panic!("malformed override must fail loud");
         };
         match err {
@@ -1666,94 +1663,117 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 5 — loud-partial contract
+    // 5 — backend and task contracts
     // -----------------------------------------------------------------------
 
     #[test]
-    fn transcribe_rejects_empty_pcm_before_the_loud_partial() {
-        let file = flash_gguf(Some(LicenseClass::AttributionRequired), false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
-        let Err(err) = asr.transcribe(&[]) else {
-            panic!("empty pcm must be rejected");
+    fn cpu_covers_the_complete_canary_hot_op_registry() {
+        Compute::for_backend(BackendKind::Cpu, CANARY_1B_FLASH_HOT_OPS)
+            .expect("CPU must cover every declared Canary op");
+    }
+
+    #[test]
+    fn complete_runtime_metadata_is_required_exactly() {
+        validate_runtime_metadata(&runtime_metadata_gguf(512)).expect("canonical release metadata");
+        let Err(VokraError::ModelLoad(message)) =
+            validate_runtime_metadata(&runtime_metadata_gguf(1_024))
+        else {
+            panic!("a conflicting frontend FFT must fail closed");
         };
-        match err {
-            VokraError::InvalidArgument(m) => {
-                assert!(m.contains("pcm slice is empty"), "message: {m}");
-            }
-            other => panic!("expected InvalidArgument, got {other:?}"),
+        assert!(message.contains(GGUF_KEY_FRONTEND_N_FFT), "{message}");
+        assert!(message.contains("u32 512"), "{message}");
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn metal_covers_the_complete_canary_hot_op_registry() {
+        Compute::for_backend(BackendKind::Metal, CANARY_1B_FLASH_HOT_OPS)
+            .expect("Metal must cover every declared Canary op without CPU fallback");
+    }
+
+    #[test]
+    fn hot_op_registry_covers_decoder_and_fastconformer_kernels() {
+        for op in [
+            HotOp::Gemm,
+            HotOp::Gemv,
+            HotOp::Softmax,
+            HotOp::LayerNorm,
+            HotOp::Relu,
+            HotOp::GroupedConv1d,
+        ] {
+            assert!(CANARY_1B_FLASH_HOT_OPS.contains(&op), "missing {op:?}");
         }
     }
 
     #[test]
-    fn transcribe_loud_partials_naming_every_blocker() {
-        let file = flash_gguf(Some(LicenseClass::AttributionRequired), false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
-        let pcm = vec![0.0_f32; 16_000]; // 1 s of silence at 16 kHz mono.
-        let Err(err) = asr.transcribe(&pcm) else {
-            panic!("transcribe must loud-partial (no tokenizer, no manifest)");
-        };
-        match err {
-            VokraError::UnsupportedOp(m) => {
-                assert!(m.contains("canary-1b-flash transcribe"), "surface: {m}");
-                assert!(m.contains("loud-partial"), "posture label: {m}");
-                // The four blockers.
-                assert!(m.contains("NO TENSOR-NAME MANIFEST"), "blocker 1: {m}");
-                assert!(m.contains("NO TOKENIZER"), "blocker 2: {m}");
-                assert!(m.contains("head.vocab_size=0"), "blocker 3: {m}");
-                assert!(
-                    m.contains("AED DECODER STEP IS NOT WIRED"),
-                    "blocker 4: {m}"
-                );
-                assert!(m.contains(".nemo"), "must name the checkpoint format: {m}");
-                assert!(m.contains("SentencePiece"), "must name the tokenizer: {m}");
-                // The primitives the follow-up wave composes — all of which
-                // genuinely exist today.
-                for primitive in [
-                    "vokra_ops::waveform_frontend",
-                    "vokra_ops::conformer",
-                    "vokra_core::decode::beam_search",
-                ] {
-                    assert!(m.contains(primitive), "must name {primitive}: {m}");
-                }
-                // Primary sources + honesty clause.
-                assert!(m.contains(PRIMARY_SOURCE_HF), "must cite the card: {m}");
-                assert!(
-                    m.contains(PRIMARY_SOURCE_NEMO_PREP),
-                    "must cite the prep script: {m}"
-                );
-                assert!(m.contains("FR-EX-08"), "must cite FR-EX-08: {m}");
-            }
-            other => panic!("expected UnsupportedOp, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn transcribe_with_task_reports_the_requested_mode() {
-        let file = flash_gguf(Some(LicenseClass::AttributionRequired), false);
-        let asr = Canary1bFlashAsr::from_gguf(&file).expect("bind");
-        let pcm = vec![0.0_f32; 1_600];
-
-        let Err(VokraError::UnsupportedOp(ast)) =
-            asr.transcribe_with_task(&pcm, Canary1bFlashTask::Ast, true)
-        else {
-            panic!("AST must loud-partial too");
-        };
-        assert!(ast.contains("task=ast"), "must report the task: {ast}");
-        assert!(
-            ast.contains("timestamps=true"),
-            "must report the timestamp request: {ast}"
-        );
-
-        let Err(VokraError::UnsupportedOp(asr_msg)) =
-            asr.transcribe_with_task(&pcm, Canary1bFlashTask::Asr, false)
-        else {
-            panic!("ASR must loud-partial too");
-        };
-        assert!(
-            asr_msg.contains("task=asr"),
-            "must report the task: {asr_msg}"
-        );
+    fn task_labels_remain_stable() {
         assert_eq!(Canary1bFlashTask::Asr.as_str(), "asr");
         assert_eq!(Canary1bFlashTask::Ast.as_str(), "ast");
+    }
+
+    /// VAST-only flip-the-switch gate against the independent official NeMo
+    /// hypothesis. No fixture values are embedded or synthesized here: the
+    /// three paths must come from `canary_1b_flash_dump_reference.py` and the
+    /// authenticated complete converter output in the same remote run.
+    #[test]
+    #[ignore = "VAST-only: loads the 3.54 GB released checkpoint and independent NeMo fixture"]
+    fn released_checkpoint_matches_official_nemo_greedy_tokens() {
+        let gguf_path = std::env::var("VOKRA_CANARY_REAL_GGUF")
+            .expect("set VOKRA_CANARY_REAL_GGUF on the provisioned VAST host");
+        let pcm_path = std::env::var("VOKRA_CANARY_REFERENCE_PCM")
+            .expect("set VOKRA_CANARY_REFERENCE_PCM from the NeMo dumper");
+        let tokens_path = std::env::var("VOKRA_CANARY_REFERENCE_TOKENS")
+            .expect("set VOKRA_CANARY_REFERENCE_TOKENS from the NeMo dumper");
+
+        let gguf_bytes = std::fs::read(&gguf_path).expect("read complete Canary GGUF on VAST");
+        let gguf = GgufFile::parse(gguf_bytes).expect("parse complete Canary GGUF");
+        let model = Canary1bFlashAsr::from_gguf_with_backend(&gguf, BackendKind::Cpu)
+            .expect("bind complete Canary release on CPU");
+
+        let pcm_bytes = std::fs::read(&pcm_path).expect("read NeMo input PCM");
+        assert_eq!(
+            pcm_bytes.len() % 4,
+            0,
+            "reference PCM must be raw little-endian f32"
+        );
+        let pcm = pcm_bytes
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("four-byte f32")))
+            .collect::<Vec<_>>();
+        let expected = std::fs::read_to_string(&tokens_path)
+            .expect("read official NeMo token fixture")
+            .split_whitespace()
+            .map(|token| token.parse::<u32>().expect("decimal token id"))
+            .collect::<Vec<_>>();
+        assert!(
+            !expected.is_empty(),
+            "official NeMo tokens must not be empty"
+        );
+
+        let language = |variable: &str, default: CanaryLanguage| {
+            let Ok(code) = std::env::var(variable) else {
+                return default;
+            };
+            match code.as_str() {
+                "en" => CanaryLanguage::English,
+                "de" => CanaryLanguage::German,
+                "es" => CanaryLanguage::Spanish,
+                "fr" => CanaryLanguage::French,
+                other => panic!("{variable}={other:?} must be one of en/de/es/fr"),
+            }
+        };
+        let options = Canary1bFlashOptions {
+            source_language: language("VOKRA_CANARY_SOURCE_LANGUAGE", CanaryLanguage::English),
+            target_language: language("VOKRA_CANARY_TARGET_LANGUAGE", CanaryLanguage::English),
+            ..Canary1bFlashOptions::default()
+        };
+
+        let actual = model
+            .transcribe_with_options(&pcm, options)
+            .expect("run Canary CPU forward");
+        assert_eq!(
+            actual, expected,
+            "Vokra greedy token sequence must exactly match official NeMo"
+        );
     }
 }

@@ -717,10 +717,6 @@ mod tests {
         );
         // The public accessor must return exactly the same slice.
         assert_eq!(SenseVoiceSmall::per_task_heads(), &PER_TASK_HEADS);
-        // Distinct-arch guarantee: the head list is not empty (a
-        // 0-head SenseVoice would be a single-task model, defeating
-        // the whole point of the arch distinctness discipline).
-        assert!(!PER_TASK_HEADS.is_empty());
     }
 
     // -----------------------------------------------------------------------

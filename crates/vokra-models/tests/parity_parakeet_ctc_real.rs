@@ -140,3 +140,42 @@ fn real_parakeet_ctc_pcm_encoder_logits_tokens_and_text_match_official() {
         "official BPE + Metaspace text"
     );
 }
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn real_parakeet_ctc_metal_matches_cpu() {
+    let Ok(gguf) = std::env::var("VOKRA_PARAKEET_CTC_GGUF") else {
+        eprintln!("skipping Parakeet-CTC Metal parity: set VOKRA_PARAKEET_CTC_GGUF");
+        return;
+    };
+    let reference_dir = std::env::var("VOKRA_PARAKEET_CTC_REFERENCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parakeet_ctc")
+        });
+    let file = GgufFile::open(gguf).expect("open Parakeet-CTC GGUF");
+    let model = ParakeetCtcAsr::from_gguf(&file).expect("strict Parakeet-CTC bind");
+    let pcm = read_f32(&reference_dir.join("pcm.f32"));
+    let (cpu_encoder, cpu_frames) = model.encode_pcm(&pcm).expect("CPU encoder");
+    let cpu_logits = model.logits(&cpu_encoder, cpu_frames).expect("CPU logits");
+    let model = model.with_backend(vokra_core::BackendKind::Metal);
+    let (metal_encoder, metal_frames) = model.encode_pcm(&pcm).expect("Metal encoder");
+    assert_eq!(metal_frames, cpu_frames);
+    compare(
+        "Metal encoder vs CPU",
+        &metal_encoder,
+        &cpu_encoder,
+        0.01,
+        0.001,
+    );
+    let metal_logits = model
+        .logits(&metal_encoder, metal_frames)
+        .expect("Metal logits");
+    compare(
+        "Metal logits vs CPU",
+        &metal_logits,
+        &cpu_logits,
+        0.01,
+        0.001,
+    );
+}

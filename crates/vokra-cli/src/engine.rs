@@ -1,6 +1,6 @@
 //! GGUF → native engine dispatch for the `run` / `bench` subcommands (M1-10a).
 //!
-//! Loads a GGUF on the CPU backend, reads `vokra.model.arch`, builds the
+//! Loads a GGUF on the requested backend, reads `vokra.model.arch`, builds the
 //! matching native engine from `vokra-models` and injects it into the
 //! [`Session`]. This mirrors the private `build_session` in
 //! `vokra-capi/src/session.rs`; lifting that dispatch into one public
@@ -14,15 +14,22 @@ use std::sync::Arc;
 use vokra_core::gguf::GgufFile;
 use vokra_core::{BackendKind, Session, VokraError};
 use vokra_models::csm::{CsmEngine, EchoPath, FixtureByteTokenizer};
+use vokra_models::data2vec_audio::Data2VecAudioCtc;
 use vokra_models::distil_whisper::DistilWhisperAsr;
+use vokra_models::hubert::HubertCtc;
 use vokra_models::kotoba_whisper::KotobaWhisperAsr;
 use vokra_models::moonshine::Moonshine;
 use vokra_models::parakeet::ParakeetAsr;
 use vokra_models::parakeet_ctc::ParakeetCtcAsr;
 use vokra_models::piper_plus::PiperPlusTts;
+use vokra_models::reazonspeech_nemo_v2::{KEY_TOKENIZER_VOCAB, ReazonSpeechNemoV2};
 use vokra_models::silero_vad::SileroVadV5;
+use vokra_models::wav2vec2_ctc::Wav2Vec2Ctc;
 use vokra_models::whisper::WhisperAsr;
 use vokra_models::whisper_medusa::WhisperMedusa;
+
+#[cfg(feature = "coreml")]
+use vokra_models::whisper::CoreMlArtifact;
 
 /// The task a loaded model performs (selected by its architecture).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +39,12 @@ pub(crate) enum ModelTask {
     Vad,
     /// Speech-to-text (Whisper base).
     Asr,
+    /// Wav2Vec2 encoder-only feature extraction.
+    ///
+    /// `facebook/wav2vec2-large-xlsr-53` deliberately has no CTC head. The
+    /// run/bench arms bind the concrete model once and expose its time-major
+    /// speech features rather than pretending it can transcribe.
+    SpeechFeaturesWav2Vec2,
     /// Speech-to-text through Voxtral (M3-10 / P2 cc-10).
     ///
     /// Like [`ModelTask::Speaker`], the dispatch returns a **bare session**
@@ -45,8 +58,105 @@ pub(crate) enum ModelTask {
     /// decodes to ~12 GB of f32 weights, so two live copies do not fit on a
     /// 16 GB machine. One load, both surfaces.
     AsrVoxtral,
+    /// Alibaba Qwen3-ASR 0.6B / 1.7B multilingual transcription.
+    ///
+    /// The dispatch returns a bare mmap-backed session and the run/bench arm
+    /// opens [`vokra_models::qwen3_asr::Qwen3Asr`] through its mapped
+    /// constructor exactly once. The concrete surface carries the optional
+    /// forced-language result and bounded generation controls that the generic
+    /// [`vokra_core::AsrEngine`] trait cannot represent.
+    AsrQwen3,
+    /// Prompt-conditioned Nemotron 3.5 ASR.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the concrete
+    /// model exactly once with either the embedded tokenizer or the explicit
+    /// `--tokenizer` sidecar required by the already-published legacy GGUF.
+    /// That concrete surface also exposes the released language-prompt map;
+    /// neither facility exists on the generic `AsrEngine` trait.
+    AsrNemotron,
+    /// NVIDIA Canary-1B-Flash multilingual ASR / AST.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the concrete
+    /// engine exactly once and pass the source/target-language Canary2 prompt.
+    /// The generic [`vokra_core::AsrEngine`] trait has no multilingual AST
+    /// request surface; attaching only that trait would silently collapse the
+    /// released four-language contract to English ASR.
+    AsrCanary1bFlash,
+    /// NVIDIA Canary-1B-v2 multilingual ASR / AST.
+    ///
+    /// Like the Flash release, this stays concrete through `run` so its
+    /// source/target language and task prompt can be supplied without loading
+    /// the multi-gigabyte checkpoint twice.
+    AsrCanary1bV2,
+    /// NVIDIA Parakeet-TDT-1.1B with an optional authenticated plaintext
+    /// SentencePiece vocabulary sidecar. The concrete engine binds once in
+    /// run/bench so the 4.28 GB F32 payload is never duplicated.
+    AsrParakeetTdt11b,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// Microsoft SpeechT5 text-to-speech with an explicit 512-value x-vector
+    /// and the strict 16 kHz SpeechT5 HiFi-GAN companion.
+    ///
+    /// The dispatch returns a bare session so `run` can bind the text model
+    /// and `--vocoder` sidecar exactly once, then thread the same selected
+    /// backend through both stages.  The generic session TTS slot cannot be
+    /// populated here because the sidecar path is a CLI input rather than
+    /// model metadata.
+    TtsSpeechT5,
+    /// Alibaba Qwen3-TTS main LM plus an explicitly supplied official 12-Hz
+    /// waveform-decoder companion. The run arm owns both mmap mappings and
+    /// threads one selected CPU/Metal backend through the complete graph.
+    TtsQwen3,
+    /// MusicGen Small/Melody explicit T5-token-id to waveform generation.
+    ///
+    /// The dispatch returns a bare session because the concrete mapping-owned
+    /// model reopens the GGUF in the run arm to keep its LM tensor descriptors
+    /// alive while T5, delayed-code generation and EnCodec execute. Public
+    /// Medium/Large files share this arch but fail explicitly when their
+    /// absent T5/codec companions are requested.
+    MusicGeneration,
+    /// Suno Bark / Bark Small explicit token-id to 24 kHz speech generation.
+    ///
+    /// The dispatch returns a bare session so the run arm can retain the
+    /// complete mmap checkpoint while the semantic, coarse, fine and embedded
+    /// codec stages execute on one selected backend. The public artifacts do
+    /// not embed a tokenizer, so the concrete CLI surface accepts token ids
+    /// rather than silently guessing a raw-text frontend.
+    TtsBark,
+    /// Parler-TTS Mini English/Multilingual explicit description/prompt-token
+    /// generation through the embedded 44.1 kHz DAC.
+    ///
+    /// The dispatch returns a bare session so the run arm owns one mmap-backed
+    /// strict composite checkpoint while FLAN-T5, the delayed LM and the
+    /// variant-specific DAC execute on one selected backend. Neither public
+    /// GGUF embeds its two tokenizer assets, so both token streams are explicit.
+    TtsParler,
+    /// Neuphonic NeuTTS Air explicit Qwen-token-id generation with an
+    /// separately supplied NeuCodec decoder.
+    ///
+    /// The public LM GGUF contains neither its Qwen tokenizer/phonemizer nor
+    /// reference-audio encoder, so the run arm requires the exact official
+    /// prompt ids and an explicit Base/Distill NeuCodec companion. Both
+    /// learned stages use the same selected CPU or Metal backend.
+    TtsNeuTtsAir,
+    /// Ultravox v0.5 audio-to-text generation through the public MIT audio
+    /// tower and a separately acquired, conditional-commercial Llama 3.2
+    /// companion.
+    ///
+    /// The dispatch returns a bare mmap-backed session. The `run` arm opens
+    /// both strict artifacts on the same selected backend and requires the
+    /// exact expanded prompt, audio replacement start, and stop-token IDs.
+    /// Neither tokenizer/chat templating nor the gated companion is inferred
+    /// or downloaded.
+    AudioLlmUltravox,
+    /// OpenMOSS MOSS-Audio 4B/8B Instruct audio understanding.
+    ///
+    /// Corrected GGUFs embed the authenticated Qwen2 tokenizer, ChatML
+    /// template and processor controls, so the concrete `run` arm accepts a
+    /// 16 kHz WAV plus an optional raw-text question. Historical public files
+    /// retain their wrong `moss_tts` stamp and therefore never enter this
+    /// route; their library-only exact-token compatibility remains explicit.
+    AudioLlmMossAudio,
     /// Text-to-speech through Kokoro-82M from a **phoneme string** (cc-24).
     ///
     /// Separate from [`ModelTask::Tts`] because the two archs take different
@@ -72,13 +182,37 @@ pub(crate) enum ModelTask {
     /// the mic side, `--duplex` selects the continuous push/pull demo
     /// with an optional `--echo-sim` synthetic echo path (T26).
     S2sDuplex,
-    /// Speaker embedding (CAM++ / M0-08, FR-OP-81). `--input` WAV →
-    /// 192-d embedding L2-norm; with `--compare <b.wav>` also the cosine
-    /// similarity of the two embeddings (`speaker::verify`). The encoder
-    /// is built in the `run` arm from the session's GGUF (the [`Session`]
-    /// facade has no speaker engine slot — deliberate: the embedding is a
-    /// conditioning input, not a session task).
+    /// Speaker embedding (CAM++ 192-d / SpeechBrain X-vector 512-d,
+    /// FR-OP-81). `--input` WAV prints the model-native embedding L2 norm;
+    /// with `--compare <b.wav>` it also prints cosine similarity through
+    /// `speaker::verify`.  The concrete encoder is built in the `run` arm
+    /// from the already-loaded GGUF so both model-specific frontend APIs are
+    /// available without loading the weights twice.
     Speaker,
+    /// Spoken-language identification through the complete SpeechBrain ECAPA
+    /// backbone and official classifier. The concrete handle binds in the
+    /// `run` arm so its ordered labels and task-specific result surface stay
+    /// available without adding a generic session trait.
+    LangId,
+    /// Four-axis CE / CU / PC / PQ audio-quality regression through Meta
+    /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
+    /// the selected CPU/Metal backend reaches its complete WavLM forward.
+    AudioQualityAudiobox,
+    /// Nine-way speech-emotion classification through emotion2vec+ Large.
+    /// The concrete strict binder is created in the run/bench arm so the
+    /// selected CPU/Metal backend reaches all learned hot operations without
+    /// loading the 648 MB public GGUF twice.
+    EmotionClassification,
+    /// Binary fake/real speech classification through the canonical
+    /// Wav2Vec2 sequence classifier. The concrete strict binder is created in
+    /// run/bench so the selected CPU/Metal backend reaches the full encoder
+    /// and task head without loading the public GGUF twice.
+    DeepfakeClassification,
+    /// AudioSeal 16-bit watermark generation/detection. The concrete four-
+    /// checkpoint bundle binds in the run/bench arm so malformed audio is
+    /// rejected before decoding weights and the selected CPU/Metal backend
+    /// reaches the complete SEANet/LSTM graph.
+    WatermarkAudioseal,
     /// Text-to-speech through SBV2 (Style-Bert-VITS2 v2 = Task 38).
     ///
     /// Like [`ModelTask::TtsKokoro`] / [`ModelTask::AsrVoxtral`] /
@@ -95,6 +229,15 @@ pub(crate) enum ModelTask {
     /// `--bert-ja` / `--bert-en` fresh — keeps this shared function's
     /// signature untouched.
     Sbv2,
+    /// Text-to-speech through one of the five official MeloTTS releases.
+    ///
+    /// The dispatch returns a bare session because the concrete low-level
+    /// acoustic model consumes a versioned precomputed-feature bundle rather
+    /// than the generic [`vokra_core::TtsEngine`] raw-text surface. The `run`
+    /// arm binds [`vokra_models::melotts::MeloTtsCheckpoint`] exactly once,
+    /// validates all 1,051 tensors, and threads the selected backend through
+    /// the complete text/duration/flow/decoder stack.
+    TtsMelo,
     /// Whisper log-mel front-end only (M2-04-T11). Runs
     /// [`vokra_models::whisper::mel::log_mel`] against the input WAV without
     /// touching the encoder / decoder, so bench-side RTF isolates the fused
@@ -166,16 +309,26 @@ pub(crate) enum ModelTask {
     /// model from `session.gguf()` — the [`Session`] facade has no denoise
     /// engine slot (the same reason [`ModelTask::Speaker`] binds late).
     Denoise,
+    /// Speech/music source separation or enhancement through a native separator.
+    ///
+    /// The dispatch returns a bare session and the run/bench arm binds the
+    /// concrete model once from `session.gguf()`, preserving the variant's
+    /// exact sample rate and output-stream count.
+    Separation,
     /// Speaker segmentation through pyannote `segmentation-3.0` (PyanNet).
     ///
-    /// The SincNet + BiLSTM + linear + powerset-classifier forward is real
-    /// but sits behind the binder's own env opt-in
-    /// (`VOKRA_PYANNET_ENABLE_FORWARD=1`): the BiLSTM stack has not been
-    /// byte-compared against PyTorch cuDNN yet. Routing here is precisely
-    /// the honest outcome — without the opt-in the user sees the binder's
-    /// own [`vokra_core::VokraError::UnsupportedOp`] naming the gate and the
-    /// reason, instead of a misleading "unsupported model arch".
+    /// The run/bench arms bind the exact release manifest and preflight the
+    /// selected CPU or Metal backend before executing the default-on SincNet +
+    /// four-layer BiLSTM + projection + powerset-classifier forward.
     Segment,
+    /// Complete pyannote speaker-diarization 3.1 pipeline.
+    ///
+    /// The main `--model` GGUF is the weightless orchestration contract. Run
+    /// and bench require the exact PyanNet and WeSpeaker dependency GGUFs as
+    /// explicit sidecars so provenance and licensing remain independently
+    /// auditable. All three bind before audio processing; CPU and Metal are
+    /// preflighted without a per-operation CPU fallback.
+    DiarizationPyannote,
     /// F0 (pitch) extraction through RMVPE.
     ///
     /// Real forward: [`vokra_models::f0::rmvpe::RMVPE::extract_real`] runs
@@ -211,10 +364,85 @@ pub(crate) enum ModelTask {
     /// punctuation-engine slot, so `run` binds [`vokra_models::ct_punc::CtPunc`]
     /// from `session.gguf()` and consumes the versioned paired token/id TSV.
     CtPunc,
+    /// Standalone final-hidden-state execution for plain BERT / DeBERTa v2 /
+    /// DeBERTa v3 sidecar GGUFs. The concrete encoder binds in the `run` arm;
+    /// CPU preserves the scalar oracle and Metal reaches the shared Compute
+    /// seam without fallback.
+    TextEncoder,
     /// Standalone Mimi codec encode/decode. `run` binds the real encoder,
     /// effective RVQ tables, and neural decoder from the same GGUF and uses
     /// the versioned portable code container between the two modes.
     MimiCodec,
+    /// Descript DAC offline token-to-PCM decode. The released SEANet is
+    /// non-causal, so this is deliberately a whole-code-matrix task rather
+    /// than the causal generic streaming codec handle.
+    DacCodec,
+    /// WavTokenizer large-speech 75 token/s single-codebook decode. The run
+    /// route binds the strict public GGUF and dispatches every learned op to
+    /// CPU or Metal; encode remains an explicit error until the Encodec
+    /// encoder parity wave lands.
+    WavTokenizerCodec,
+    /// Neuphonic NeuCodec base/distill 50 Hz FSQ token-to-waveform decode.
+    /// Both public checkpoints share one strict decoder and honor CPU/Metal;
+    /// waveform-to-code encode remains an explicit unsupported operation.
+    NeuCodec,
+    /// HKUST X-Codec2 50 Hz FSQ token-to-waveform decode at 16 kHz. The
+    /// public Research-only checkpoint uses the shared strict Vocos decoder;
+    /// waveform-to-code encode remains an explicit unsupported operation.
+    XCodec2,
+    /// Alibaba DAMO FunCodec 16 kHz residual-VQ token-to-waveform decode.
+    /// The exact public 32-codebook checkpoint routes RVQ, SEANet convolution,
+    /// GroupNorm and LSTM projections through one CPU/Metal backend. PCM encode
+    /// remains an explicit unsupported operation.
+    FunCodec,
+    /// YuE xcodec-mini fixed 12-codebook token-to-44.1-kHz decode.
+    /// The exact public composite checkpoint sums the released residual-VQ
+    /// tables and executes its embedded 151k Vocos head on CPU or Metal.
+    /// PCM encode remains an explicit unsupported operation.
+    YueXcodecMini,
+    /// Fudan/OpenMOSS SpeechTokenizer 16 kHz residual-VQ token-to-waveform
+    /// decode. The exact public eight-codebook checkpoint routes RVQ,
+    /// weight-normalized SEANet convolution and LSTM projections through one
+    /// CPU/Metal backend. PCM encode remains explicitly unsupported.
+    SpeechTokenizer,
+    /// Official Qwen3-TTS 12 Hz tokenizer companion. The route consumes a
+    /// fixed frame-major `[frames,16]` code matrix and executes the complete
+    /// RVQ -> sliding Transformer -> ConvNeXt -> causal waveform decoder on
+    /// one selected CPU or Metal backend.
+    Qwen3TtsTokenizer12HzCodec,
+    /// Aratako MioCodec 25 Hz FSQ token + 128-d global embedding to 44.1 kHz
+    /// waveform decode. Input uses the versioned VKRMIO01 container; PCM
+    /// encode remains an explicit unsupported operation.
+    MioCodec,
+    /// SNAC 24/44 kHz hierarchical codec encode/decode. The run route uses a
+    /// versioned stage-major code container because stage lengths differ.
+    /// CPU supports encode/decode; Metal supports complete decode and rejects
+    /// encode explicitly until GPU nearest-codebook search exists.
+    SnacCodec,
+    /// FocalCodec 50 / 25 / 12.5 Hz single-codebook speech codec. Both encode
+    /// and decode route every learned hot op through the selected backend and
+    /// exchange a versioned, exact-checkpoint-pinned BSQ token container.
+    FocalCodec,
+    /// NaturalSpeech 3 FACodec V2 16 kHz factorized codec. Encode emits six
+    /// frame-major code streams plus the required timbre embedding; decode
+    /// routes the complete learned graph through the selected CPU/Metal
+    /// backend and rejects any unsupported backend operation explicitly.
+    Facodec,
+    /// OpenMOSS Audio Tokenizer Full/Nano family. Both decode variable-width
+    /// frame-major LFQ codes through CPU/Metal using their distinct topology.
+    MossAudioTokenizerCodec,
+    /// OpenMOSS MOSS-TTS Nano explicit prompt-token generation. The concrete
+    /// LLM and required MOSS Audio Tokenizer Nano sidecar bind in `run` so
+    /// both large weight sets are loaded exactly once and select one backend.
+    TtsMossNano,
+    /// OpenMOSS MOSS-TTS Base/v1.5 delayed prompt-token generation. The
+    /// mmap-backed Qwen3 model and required Full codec sidecar bind in `run`
+    /// and select the same CPU/Metal backend.
+    TtsMossDelay,
+    /// OpenMOSS MOSS-VoiceGenerator delayed prompt-token generation. Its
+    /// Qwen3-1.7B/16-codebook manifest is distinct from Base/v1.5 even though
+    /// both use the Full codec and the same CPU/Metal execution algorithm.
+    TtsMossVoiceGenerator,
     /// NVIDIA BigVGAN mel-to-waveform vocoder. `run` binds the concrete
     /// model from the session GGUF and consumes channel-major little-endian
     /// f32 mel frames from `--input`.
@@ -222,9 +450,9 @@ pub(crate) enum ModelTask {
     /// Microsoft SpeechT5 HiFi-GAN mel-to-waveform vocoder. The concrete
     /// model is bound from the session GGUF in the `run` arm.
     VocoderHifiGan,
-    /// Charactr Vocos feature-to-waveform vocoder. The mel variant consumes
-    /// 100-channel features; the Encodec variant consumes 128-channel
-    /// features plus an explicit bandwidth condition.
+    /// Vocos-family feature-to-waveform vocoder. Charactr variants consume
+    /// 100/128-channel features; YuE-upsampler consumes 1024-channel codec
+    /// features and emits 44.1 kHz PCM.
     VocoderVocos,
     /// openWakeWord streaming keyword spotting. The generic Session facade
     /// has no KWS slot, so `run` binds the concrete mutable session once from
@@ -234,6 +462,23 @@ pub(crate) enum ModelTask {
     /// maps to one completion probability; this is deliberately distinct
     /// from the streaming frame-level VAD tasks.
     SmartTurn,
+    /// MIT AST AudioSet 527-way audio classification. The generic session has
+    /// no classifier slot, so run/bench bind the concrete CPU/Metal model once
+    /// from the already mmap-opened GGUF.
+    AudioClassificationAst,
+    /// SaruLab UTMOS22-strong non-intrusive MOS prediction. The independently
+    /// upstream-parity-verified topology lives in `vokra-eval`; run/bench bind
+    /// it from this session's GGUF and route all learned primitives through
+    /// CPU or Metal without loading the weights a second time.
+    Utmos,
+    /// Microsoft DNSMOS P.808 + P.835 non-intrusive quality scoring. The
+    /// concrete strict bundle binds in run/bench and routes every learned
+    /// convolution/dense reduction through the selected CPU/Metal GEMM.
+    Dnsmos,
+    /// NISQA v2 multidimensional quality scoring. The strict public
+    /// checkpoint emits overall MOS plus noisiness, discontinuity, coloration
+    /// and loudness through one complete CPU/Metal backend route.
+    Nisqa,
 }
 
 /// Optional caller-supplied hint that overrides the default task selection.
@@ -289,14 +534,31 @@ const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
+const ARCH_XVECTOR: &str = "xvector";
+const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
+const ARCH_LANG_ID: &str = "lang_id_ecapa";
+const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
+const ARCH_EMOTION2VEC: &str = "emotion2vec";
+const ARCH_DEEPFAKE_DETECTION: &str = "deepfake_detection";
+const ARCH_AUDIOSEAL: &str = "audioseal_real_weight";
+const ARCH_WESPEAKER: &str = "wespeaker";
+const ARCH_TITANET: &str = "titanet-large";
 /// Voxtral (M3-10) — matches `vokra-convert::models::voxtral::ARCH`.
 const ARCH_VOXTRAL: &str = "voxtral";
+/// Alibaba Qwen3-ASR 0.6B / 1.7B shared runtime architecture.
+const ARCH_QWEN3_ASR: &str = "qwen3_asr";
+/// Alibaba Qwen3-TTS Base/CustomVoice/VoiceDesign main generation family.
+const ARCH_QWEN3_TTS: &str = "qwen3_tts";
 /// Kokoro-82M (M2-07) — matches `vokra_models::kokoro`'s `EXPECTED_ARCH` and
 /// what `vokra-convert --model kokoro` writes.
 const ARCH_KOKORO: &str = "kokoro-82m-istftnet";
 /// SBV2 / Style-Bert-VITS2 v2 (Task 38) — matches
 /// `vokra-convert::models::sbv2::ARCH` (`crates/vokra-convert/src/models/sbv2.rs`).
 const ARCH_SBV2: &str = "sbv2";
+/// MeloTTS English / Chinese / Korean / Spanish / Japanese acoustic releases.
+/// The exact language is pinned by `vokra.melotts.variant` and the strict
+/// checkpoint identity; all five intentionally share one runtime architecture.
+const ARCH_MELOTTS: &str = "melotts";
 /// MAGNeT Small 10 secs (post-audit CC-gap 2026-08-13 Wave D) — matches
 /// [`vokra_models::magnet::ARCH_SMALL`]. Dispatch here is a **scaffold
 /// stop-gap**: the runtime forward is loud-partial pending
@@ -319,6 +581,26 @@ const ARCH_MAGNET_MEDIUM: &str = "magnet_medium_30secs";
 /// reverse-ODE editing inversion driver + the DiT block stack need to
 /// land before this reject can flip to a bare session dispatch.
 const ARCH_MELODYFLOW_T24_30SECS: &str = "melodyflow_t24_30secs";
+/// Meta MusicGen family. Small/Melody carry embedded T5 + EnCodec; the
+/// Medium/Large public artifacts are LM-only and stay companion-gated.
+const ARCH_MUSICGEN: &str = "musicgen";
+/// Suno Bark / Bark Small hierarchical TTS family.
+const ARCH_BARK: &str = "bark";
+/// Parler-TTS Mini English/Multilingual composite family.
+const ARCH_PARLER_TTS: &str = "parler_tts";
+/// Neuphonic NeuTTS Air Qwen2 LM emitting NeuCodec speech tokens.
+const ARCH_NEUTTS_AIR: &str = "neutts-air";
+/// Ultravox v0.5 public MIT audio tower; its Llama sidecar stays separate.
+const ARCH_ULTRAVOX: &str = "ultravox";
+/// OpenMOSS MOSS-Audio 4B/8B Instruct complete audio/Qwen3 graph.
+const ARCH_MOSS_AUDIO: &str = "moss_audio";
+
+/// Standalone SBV2 Chinese plain-BERT sidecar.
+const ARCH_BERT_BASE: &str = "bert_base";
+/// Standalone SBV2 Japanese DeBERTa-v2 sidecar.
+const ARCH_DEBERTA_V2: &str = "deberta_v2";
+/// Standalone SBV2 English DeBERTa-v3 sidecar.
+const ARCH_DEBERTA_V3: &str = "deberta_v3";
 
 // ---- Wave G (2026-08-15) — arches whose binder has a REAL forward ---------
 
@@ -334,14 +616,40 @@ const ARCH_TEN_VAD: &str = "ten_vad";
 const ARCH_OPENWAKEWORD_OP: &str = "openwakeword_op";
 /// Pipecat smart-turn v2 utterance-level endpoint classifier.
 const ARCH_SMART_TURN: &str = "smart_turn";
+/// MIT Audio Spectrogram Transformer AudioSet classifier.
+const ARCH_AST: &str = "ast";
+/// SaruLab UTMOS22-strong neural MOS predictor.
+const ARCH_UTMOS: &str = "utmos";
+/// Microsoft DNSMOS P.808 + P.835 quality bundle.
+const ARCH_DNSMOS: &str = "dnsmos";
+/// Gabriel Mittag NISQA v2 multidimensional quality predictor.
+const ARCH_NISQA: &str = "nisqa_v2_weight";
 /// NSNet2 (Microsoft DNS-Challenge baseline denoiser) — mirror of
 /// [`vokra_models::nsnet2::ARCH`].
 const ARCH_NSNET2: &str = "nsnet2";
 /// Xiph RNNoise v0.2 native waveform denoiser.
 const ARCH_RNNOISE: &str = "rnnoise";
+/// DeepFilterNet3 native waveform denoiser (the converter/runtime arch is
+/// intentionally the generic historical `denoise` tag).
+const ARCH_DENOISE: &str = "denoise";
+/// SpeechBrain MetricGAN+ VoiceBank spectral-mask enhancer.
+const ARCH_METRICGAN_PLUS: &str = "metricgan_plus";
+/// JacobLinCool MP-SENet DNS magnitude/phase enhancer.
+const ARCH_MP_SENET: &str = "mp_senet";
+/// Meta causal DNS48 waveform U-Net + LSTM enhancer.
+const ARCH_FACEBOOK_DENOISER: &str = "facebook_denoiser";
+/// Alibaba FRCRN-SE-16K two-complex-U-Net/FSMN waveform enhancer.
+const ARCH_FRCRN: &str = "frcrn";
+/// SpeechBrain SepFormer separation and enhancement family.
+const ARCH_SEPFORMER: &str = "sepformer";
+const ARCH_CONV_TASNET: &str = "conv_tasnet";
+const ARCH_TIGER: &str = "tiger_separator";
+const ARCH_MOSSFORMER2_SS_16K: &str = "mossformer2_ss_16k";
 /// pyannote `segmentation-3.0` — mirror of
 /// [`vokra_models::pyannote::EXPECTED_ARCH`].
 const ARCH_PYANNOTE_SEGMENTATION: &str = "pyannote-segmentation";
+/// pyannote `speaker-diarization-3.1` weightless orchestration contract.
+const ARCH_PYANNOTE_DIARIZATION: &str = "pyannote-speaker-diarization";
 /// RMVPE pitch extractor — mirror of `vokra-convert`'s `models::rmvpe::ARCH`.
 /// The binder itself does not read `vokra.model.arch` (the whole `f0` family
 /// keys off `vokra.f0.*` instead), so this dispatch is the only place the
@@ -364,14 +672,46 @@ const ARCH_CT_PUNC: &str = "ct_punc";
 /// Standalone Kyutai Mimi codec — mirror of what
 /// `vokra-cli convert --model mimi` writes.
 const ARCH_MIMI: &str = "mimi";
+/// Descript DAC 16/24/44.1 kHz codec family.
+const ARCH_DAC: &str = "dac";
+/// WavTokenizer large-speech 75 token/s codec.
+const ARCH_WAVTOKENIZER: &str = "wavtokenizer";
+/// Neuphonic NeuCodec base/distill 50 Hz FSQ codec.
+const ARCH_NEUCODEC: &str = "neucodec";
+/// HKUST X-Codec2 50 Hz FSQ codec.
+const ARCH_XCODEC2: &str = "xcodec2";
+/// Alibaba DAMO FunCodec 16 kHz / 32-codebook codec.
+const ARCH_FUNCODEC: &str = "funcodec";
+/// m-a-p YuE xcodec-mini 12-codebook composite codec.
+const ARCH_YUE_XCODEC_MINI: &str = "yue_xcodec_mini";
+/// Fudan/OpenMOSS SpeechTokenizer 16 kHz / eight-codebook codec.
+const ARCH_SPEECHTOKENIZER: &str = "speechtokenizer";
+/// Official Qwen3-TTS 12 Hz decode-only waveform companion.
+const ARCH_QWEN3_TTS_TOKENIZER_12HZ: &str = "qwen3_tts_tokenizer_12hz";
+/// Aratako MioCodec 25 Hz / 44.1 kHz v2 codec.
+const ARCH_MIOCODEC: &str = "miocodec";
+/// Hubert Siuzdak SNAC 24/44 kHz hierarchical codec family.
+const ARCH_SNAC: &str = "snac";
+/// Luca Della Libera FocalCodec 50 / 25 / 12.5 Hz family.
+const ARCH_FOCALCODEC: &str = "focalcodec";
+/// OpenMMLab Amphion NaturalSpeech 3 FACodec V2.
+const ARCH_FACODEC: &str = "facodec";
+/// OpenMOSS Full/Nano codec family.
+const ARCH_MOSS_AUDIO_TOKENIZER: &str = "moss_audio_tokenizer";
+/// OpenMOSS TTS family; exact Nano and Base/v1.5 releases route separately.
+const ARCH_MOSS_TTS: &str = "moss_tts";
 /// NVIDIA BigVGAN vocoder — mirror of [`vokra_models::bigvgan::ARCH`].
 const ARCH_BIGVGAN: &str = "bigvgan";
+/// Microsoft SpeechT5 text-to-mel TTS model.
+const ARCH_SPEECHT5: &str = "speecht5";
 /// Microsoft SpeechT5 HiFi-GAN vocoder.
 const ARCH_SPEECHT5_HIFIGAN: &str = "speecht5_hifigan";
 /// SpeechBrain LibriTTS 22.05 kHz HiFi-GAN vocoder.
 const ARCH_HIFIGAN_VOCODER: &str = "hifigan_vocoder";
 /// Charactr Fourier-space Vocos vocoder.
 const ARCH_VOCOS: &str = "vocos";
+/// m-a-p YuE 44.1 kHz Vocos upsampler.
+const ARCH_YUE_UPSAMPLER: &str = "yue_upsampler";
 
 // ---- Wave I (2026-08-15) — the two distilled Whisper checkpoints ----------
 //
@@ -395,10 +735,43 @@ const ARCH_KOTOBA_WHISPER: &str = "kotoba-whisper";
 const ARCH_MOONSHINE: &str = "moonshine";
 /// NVIDIA Parakeet-TDT-0.6B-v3 FastConformer + TDT ASR.
 const ARCH_PARAKEET_TDT: &str = "parakeet-tdt";
+/// Original NVIDIA Parakeet-TDT-1.1B NeMo release.
+const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 /// NVIDIA Parakeet-CTC-1.1B FastConformer + CTC ASR.
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
+/// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
+const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
+/// NVIDIA Canary-1B-Flash multilingual FastConformer + Transformer AED ASR/AST.
+const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
+/// NVIDIA Canary-1B-v2 multilingual FastConformer + Transformer AED ASR/AST.
+const ARCH_CANARY_1B_V2: &str = "canary";
+/// ReazonSpeech NeMo v2 Japanese FastConformer-Longformer + RNN-T ASR.
+const ARCH_REAZONSPEECH_NEMO_V2: &str = "reazonspeech_nemo_v2";
+/// Meta Wav2Vec2 raw-waveform encoder with an optional CTC head.
+const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
+/// Corrected Data2Vec Audio arch tag.
+const ARCH_DATA2VEC_AUDIO: &str = "data2vec_audio";
+/// Meta HuBERT-Large-LS960 waveform encoder plus CTC head.
+const ARCH_HUBERT: &str = "hubert";
 /// aiola Whisper-Medusa-v1 official module-0 ASR forward.
 const ARCH_WHISPER_MEDUSA_V1: &str = "whisper-medusa-v1";
+
+#[cfg(feature = "coreml")]
+fn resolve_coreml_whisper_artifact(
+    path: &str,
+    arch: &str,
+    n_mels: usize,
+    n_audio_ctx: usize,
+    d_model: usize,
+) -> Result<CoreMlArtifact, String> {
+    CoreMlArtifact::from_whisper_sidecar(
+        path,
+        arch,
+        [1, n_mels, vokra_models::whisper::mel::N_FRAMES],
+        [1, n_audio_ctx, d_model],
+    )
+    .map_err(|error| error.to_string())
+}
 
 /// Opens the GGUF at `path` on the CPU backend, injects the engine matching its
 /// `vokra.model.arch` and returns the ready session plus its task.
@@ -409,10 +782,10 @@ pub(crate) fn load_session(path: &str) -> Result<(Session, ModelTask), String> {
 
 /// As `load_session`, but runs the model's hot ops on `backend` (CPU / Metal /
 /// CUDA) and lets the caller override the default arch → task mapping via
-/// `hint`. Only the ASR (Whisper) path is backend-parameterised today; VAD/TTS
-/// stay on the CPU. A backend that does not cover the model's op set surfaces an
-/// explicit error at inference time (no silent CPU fall back, FR-EX-08); a hint
-/// that the loaded arch does not support is likewise a hard error.
+/// `hint`. Backend-aware engines receive the selection at construction; an
+/// engine that cannot honor it is rejected loudly rather than silently running
+/// on the CPU (FR-EX-08). A hint that the loaded arch does not support is
+/// likewise a hard error.
 pub(crate) fn load_session_with_backend(
     path: &str,
     backend: BackendKind,
@@ -457,6 +830,13 @@ pub(crate) fn load_session_with_backend_and_mimi(
         .ok_or_else(|| format!("GGUF is missing the `{KEY_MODEL_ARCH}` metadata key"))?
         .to_owned();
 
+    if backend == BackendKind::CoreMl && !cfg!(feature = "coreml") {
+        return Err(
+            "CoreML backend selected but vokra-cli was built without `--features coreml`; the CPU backend is never selected implicitly"
+                .to_owned(),
+        );
+    }
+
     if mimi.is_some() && arch != ARCH_MOSHI {
         return Err(format!(
             "--mimi is only supported on arch `{ARCH_MOSHI}` (got `{arch}`); the \
@@ -478,9 +858,23 @@ pub(crate) fn load_session_with_backend_and_mimi(
             if matches!(hint, Some(TaskHint::MelFrontend)) {
                 return Ok((session, ModelTask::MelFrontend));
             }
-            let asr = WhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let asr = WhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            let asr = if backend == BackendKind::CoreMl {
+                let config = asr.model().config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         // distil-whisper / kotoba-whisper (Wave I): the same `ModelTask::Asr`
@@ -503,9 +897,23 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_DISTIL_WHISPER}`)"
                 ));
             }
-            let asr = DistilWhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let asr = DistilWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            let asr = if backend == BackendKind::CoreMl {
+                let config = asr.config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_KOTOBA_WHISPER => {
@@ -515,9 +923,23 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_KOTOBA_WHISPER}`)"
                 ));
             }
-            let asr = KotobaWhisperAsr::from_gguf(session.gguf())
-                .map_err(|e| e.to_string())?
-                .with_backend(backend);
+            let asr = KotobaWhisperAsr::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            #[cfg(feature = "coreml")]
+            let asr = if backend == BackendKind::CoreMl {
+                let config = asr.config();
+                let artifact = resolve_coreml_whisper_artifact(
+                    path,
+                    &arch,
+                    config.n_mels,
+                    config.n_audio_ctx,
+                    config.d_model,
+                )?;
+                asr.with_coreml_artifact(artifact)
+                    .map_err(|error| error.to_string())?
+            } else {
+                asr
+            };
+            let asr = asr.with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_MOONSHINE => {
@@ -539,12 +961,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_PARAKEET_TDT}`)"
                 ));
             }
-            if backend != BackendKind::Cpu {
-                return Err(format!(
-                    "Parakeet-TDT currently implements the exact FastConformer/TDT forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
-                ));
-            }
-            let asr = ParakeetAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            let asr = ParakeetAsr::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
             if !asr.has_tokenizer() {
                 return Err(
                     "Parakeet-TDT GGUF has no embedded official tokenizer.json; reconvert with `vokra-cli convert --model parakeet-tdt --tokenizer tokenizer.json`"
@@ -560,14 +979,138 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_PARAKEET_CTC}`)"
                 ));
             }
-            if backend != BackendKind::Cpu {
+            let asr = ParakeetCtcAsr::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_REAZONSPEECH_NEMO_V2 => {
+            if hint.is_some() {
                 return Err(format!(
-                    "Parakeet-CTC currently implements the exact FastConformer/CTC forward on CPU only; backend {backend:?} is unsupported (no silent CPU fallback)"
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_REAZONSPEECH_NEMO_V2}`)"
                 ));
             }
-            let asr =
-                ParakeetCtcAsr::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            // The already-published legacy GGUF has the complete 965-tensor
+            // checkpoint but no tokenizer. Reject it before decoding ~2.48 GB
+            // of F32 payload, and state exactly which gated replacement is
+            // required instead of returning an empty or token-only transcript.
+            if session.gguf().get(KEY_TOKENIZER_VOCAB).is_none() {
+                return Err(format!(
+                    "ReazonSpeech-NeMo-v2 GGUF has no `{KEY_TOKENIZER_VOCAB}`; reconvert the pinned official checkpoint with `vokra-convert --model reazonspeech-nemo-v2 --tokenizer tokenizer.vocab`. The legacy public artifact is token-level only and is not silently accepted for CLI text ASR"
+                ));
+            }
+            let asr = ReazonSpeechNemoV2::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
+        }
+        ARCH_PARAKEET_TDT_1_1B => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` (got `{ARCH_PARAKEET_TDT_1_1B}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrParakeetTdt11b))
+        }
+        ARCH_QWEN3_ASR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_QWEN3_ASR}`)"
+                ));
+            }
+            // Bare session: Qwen3-ASR requires true mmap descriptors plus its
+            // concrete language/generation result. The run/bench arm opens
+            // Qwen3Asr exactly once and preflights its whole CPU/Metal graph.
+            Ok((session, ModelTask::AsrQwen3))
+        }
+        ARCH_NEMOTRON_ASR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_NEMOTRON_ASR}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrNemotron))
+        }
+        ARCH_CANARY_1B_FLASH => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_CANARY_1B_FLASH}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrCanary1bFlash))
+        }
+        ARCH_CANARY_1B_V2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_CANARY_1B_V2}`)"
+                ));
+            }
+            Ok((session, ModelTask::AsrCanary1bV2))
+        }
+        ARCH_WAV2VEC2_CTC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_WAV2VEC2_CTC}`)"
+                ));
+            }
+            let model_id = session
+                .gguf()
+                .get("vokra.provenance.model_id")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    "wav2vec2_ctc GGUF is missing `vokra.provenance.model_id`".to_owned()
+                })?;
+            if model_id == "data2vec-audio-base-960h" {
+                let model = Data2VecAudioCtc::from_file(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(backend);
+                return Ok((session.with_asr_engine(Arc::new(model)), ModelTask::Asr));
+            }
+            if model_id == "wav2vec2-large-xlsr-53" {
+                // Encoder-only: the concrete run/bench arm performs the
+                // strict bind and calls `encode_features`. Avoid decoding the
+                // 1.26 GB weight store here only to drop and decode it again.
+                return Ok((session, ModelTask::SpeechFeaturesWav2Vec2));
+            }
+            let model = Wav2Vec2Ctc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            if !model.config().has_ctc_head {
+                return Err(format!(
+                    "wav2vec2_ctc: model id {model_id:?} unexpectedly resolved without a CTC head"
+                ));
+            }
+            Ok((session.with_asr_engine(Arc::new(model)), ModelTask::Asr))
+        }
+        ARCH_DATA2VEC_AUDIO => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_DATA2VEC_AUDIO}`)"
+                ));
+            }
+            let model = Data2VecAudioCtc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(model)), ModelTask::Asr))
+        }
+        ARCH_HUBERT => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is only supported on arch `{ARCH_WHISPER}` \
+                     (got `{ARCH_HUBERT}`)"
+                ));
+            }
+            let model = HubertCtc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
+            Ok((session.with_asr_engine(Arc::new(model)), ModelTask::Asr))
         }
         ARCH_WHISPER_MEDUSA_V1 => {
             if hint.is_some() {
@@ -576,14 +1119,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_WHISPER_MEDUSA_V1}`)"
                 ));
             }
-            if backend != BackendKind::Cpu {
-                return Err(format!(
-                    "Whisper-Medusa module-0 output adaptation is CPU-only; backend \
-                     {backend:?} is unsupported (no silent CPU fallback)"
-                ));
-            }
-            let asr =
-                WhisperMedusa::from_gguf(session.gguf()).map_err(|error| error.to_string())?;
+            let asr = WhisperMedusa::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(backend);
             Ok((session.with_asr_engine(Arc::new(asr)), ModelTask::Asr))
         }
         ARCH_SILERO_VAD => {
@@ -593,7 +1131,9 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      (got `{ARCH_SILERO_VAD}`)"
                 ));
             }
-            let vad = SileroVadV5::from_gguf(session.gguf()).map_err(|e| e.to_string())?;
+            let vad = SileroVadV5::from_gguf(session.gguf())
+                .map_err(|e| e.to_string())?
+                .with_backend(backend);
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::Vad))
         }
         ARCH_PIPER_PLUS => {
@@ -606,8 +1146,30 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // `PiperPlusTts::from_gguf` consumes a `GgufFile`, but the session
             // only lends one by reference, so re-parse from the path (matches
             // vokra-capi; a shared-GGUF constructor is the same follow-up).
-            let tts = PiperPlusTts::from_path(path).map_err(|e| e.to_string())?;
+            let tts = PiperPlusTts::from_path(path)
+                .map_err(|e| e.to_string())?
+                .with_backend(backend);
             Ok((session.with_tts_engine(Arc::new(tts)), ModelTask::Tts))
+        }
+        ARCH_SPEECHT5 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHT5}`"
+                ));
+            }
+            // Bare session: run owns the `--vocoder` sidecar and binds both
+            // strict GGUFs once (see `ModelTask::TtsSpeechT5`).
+            Ok((session, ModelTask::TtsSpeechT5))
+        }
+        ARCH_QWEN3_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_QWEN3_TTS}`"
+                ));
+            }
+            // Bare session: the run arm owns the explicit 12-Hz companion and
+            // opens both mmap-backed artifacts once on the requested backend.
+            Ok((session, ModelTask::TtsQwen3))
         }
         ARCH_KOKORO => {
             if hint.is_some() {
@@ -633,19 +1195,69 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // tensors / hparams do not bind fails loudly there (FR-EX-08).
             Ok((session, ModelTask::AsrVoxtral))
         }
-        ARCH_CAMPPLUS => {
+        speaker_arch @ (ARCH_CAMPPLUS | ARCH_XVECTOR | ARCH_ECAPA_TDNN | ARCH_WESPEAKER
+        | ARCH_TITANET) => {
             if hint.is_some() {
                 return Err(format!(
-                    "task hint {hint:?} is not supported on arch `{ARCH_CAMPPLUS}`"
+                    "task hint {hint:?} is not supported on arch `{speaker_arch}`"
                 ));
             }
-            // CAM++ speaker encoder (M0-08). The encoder binds lazily in the
-            // `run` Speaker arm from `session.gguf()` (the Session facade has
-            // no speaker engine slot); a GGUF whose tensors do not bind fails
-            // loudly there (FR-EX-08). The selected backend is honored: CAM++
-            // dispatches GEMM only, so Metal runs the whole forward on GPU
-            // and an unavailable backend errors at embed time.
+            // Speaker encoders bind lazily in the `run` Speaker arm from
+            // `session.gguf()`. CAM++, X-vector, ECAPA-TDNN, WeSpeaker and TitaNet all honor the
+            // selected backend through complete Compute seams; malformed
+            // public artifacts fail before inference.
             Ok((session, ModelTask::Speaker))
+        }
+        ARCH_LANG_ID => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_LANG_ID}`"
+                ));
+            }
+            // Bare session: the run arm binds the task-specific handle once,
+            // preserving ordered labels and the selected backend.
+            Ok((session, ModelTask::LangId))
+        }
+        ARCH_AUDIOBOX_AESTHETICS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_AUDIOBOX_AESTHETICS}`"
+                ));
+            }
+            // Bare session: run/bench bind the strict four-axis scorer once
+            // and thread the caller-selected backend through every hot op.
+            Ok((session, ModelTask::AudioQualityAudiobox))
+        }
+        ARCH_EMOTION2VEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_EMOTION2VEC}`"
+                ));
+            }
+            // Bare session: run/bench bind the exact 185-tensor classifier
+            // once and thread the selected CPU/Metal backend through it.
+            Ok((session, ModelTask::EmotionClassification))
+        }
+        ARCH_DEEPFAKE_DETECTION => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_DEEPFAKE_DETECTION}`"
+                ));
+            }
+            // Bare session: run/bench bind the exact 215-tensor Wav2Vec2
+            // classifier once and thread the selected CPU/Metal backend
+            // through the complete encoder and head.
+            Ok((session, ModelTask::DeepfakeClassification))
+        }
+        ARCH_AUDIOSEAL => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_AUDIOSEAL}`"
+                ));
+            }
+            // Bare session: run/bench owns the task-specific embed/detect
+            // surface and binds the complete four-checkpoint bundle once.
+            Ok((session, ModelTask::WatermarkAudioseal))
         }
         ARCH_SBV2 => {
             if hint.is_some() {
@@ -662,6 +1274,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // mapping (Task 30) has not landed yet (see that function's
             // module doc).
             Ok((session, ModelTask::Sbv2))
+        }
+        ARCH_MELOTTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MELOTTS}`"
+                ));
+            }
+            // Bare session: the run arm owns the versioned feature-input
+            // contract and loads the concrete acoustic stack once. A malformed
+            // or stale public artifact fails in MeloTtsCheckpoint::from_gguf;
+            // no generic TTS adapter or CPU fallback is substituted.
+            Ok((session, ModelTask::TtsMelo))
         }
         ARCH_MOSHI => {
             if hint.is_some() {
@@ -688,10 +1312,14 @@ pub(crate) fn load_session_with_backend_and_mimi(
             } else if engine.mimi_is_synthesized() {
                 eprintln!(
                     "vokra: NOTE Mimi codec ends are the synthesized bridge (PCM has \
-                     no real audio semantics) — pass --mimi <mimi.gguf> from \
+                    no real audio semantics) — pass --mimi <mimi.gguf> from \
                      `vokra-cli convert --model mimi` to bind the real codec"
                 );
             }
+            // Moshi already routes its temporal/depth transformers and both
+            // Mimi codec ends through the Compute seam. Preserve the CLI
+            // selection across the complete engine after any side-car swap.
+            engine = engine.with_backend(backend);
             let sample_rate = engine.mimi_config().sample_rate;
             let hop = engine
                 .mimi_config()
@@ -762,11 +1390,12 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // `run` / `bench` VAD arms verbatim — no new output shape, no new
             // code path. `from_gguf` verifies `vokra.model.arch` strictly and
             // refuses a foreign GGUF loudly (FR-EX-08).
-            let vad =
-                vokra_models::fsmn_vad::FsmnVadV1::from_gguf(session.gguf()).map_err(|e| {
+            let vad = vokra_models::fsmn_vad::FsmnVadV1::from_gguf(session.gguf())
+                .map_err(|e| {
                     let msg = e.to_string();
                     format!("arch `{ARCH_FSMN_VAD}`: {msg}")
-                })?;
+                })?
+                .with_backend(backend);
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadFsmn))
         }
         ARCH_FIRERED_VAD => {
@@ -776,7 +1405,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             let vad = vokra_models::firered_vad::FireredVad::from_gguf(session.gguf())
-                .map_err(|error| format!("arch `{ARCH_FIRERED_VAD}`: {error}"))?;
+                .map_err(|error| format!("arch `{ARCH_FIRERED_VAD}`: {error}"))?
+                .with_backend(backend);
             Ok((
                 session.with_vad_engine(Arc::new(vad)),
                 ModelTask::VadFirered,
@@ -789,7 +1419,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             let vad = vokra_models::ten_vad::TenVad::from_gguf(session.gguf())
-                .map_err(|error| format!("arch `{ARCH_TEN_VAD}`: {error}"))?;
+                .map_err(|error| format!("arch `{ARCH_TEN_VAD}`: {error}"))?
+                .with_backend(backend);
             Ok((session.with_vad_engine(Arc::new(vad)), ModelTask::VadTen))
         }
         ARCH_OPENWAKEWORD_OP => {
@@ -810,17 +1441,34 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // exactly once and calls its utterance-level endpoint surface.
             Ok((session, ModelTask::SmartTurn))
         }
-        ARCH_NSNET2 | ARCH_RNNOISE => {
+        ARCH_NSNET2
+        | ARCH_RNNOISE
+        | ARCH_DENOISE
+        | ARCH_METRICGAN_PLUS
+        | ARCH_MP_SENET
+        | ARCH_FACEBOOK_DENOISER
+        | ARCH_FRCRN => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on denoise arch `{arch}`"
                 ));
             }
-            // Bare session — the `run` arm binds the concrete `Nsnet2V1` from
-            // `session.gguf()` once (the `Session` facade has no denoise
-            // engine slot, the `ModelTask::Speaker` precedent). A GGUF whose
-            // arch tag / tensors do not bind fails loudly there (FR-EX-08).
+            // Bare session — the `run` arm binds the concrete enhancement
+            // model from `session.gguf()` once (the `Session` facade has no
+            // denoise engine slot, the `ModelTask::Speaker` precedent). A
+            // GGUF whose arch tag / tensors do not bind fails loudly there
+            // (FR-EX-08).
             Ok((session, ModelTask::Denoise))
+        }
+        ARCH_SEPFORMER | ARCH_CONV_TASNET | ARCH_TIGER | ARCH_MOSSFORMER2_SS_16K => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on separation arch `{arch}`"
+                ));
+            }
+            // Bare session: run/bench binds the concrete separator once from
+            // this parsed GGUF and threads the backend into every learned op.
+            Ok((session, ModelTask::Separation))
         }
         ARCH_PYANNOTE_SEGMENTATION => {
             if hint.is_some() {
@@ -829,12 +1477,21 @@ pub(crate) fn load_session_with_backend_and_mimi(
                      `{ARCH_PYANNOTE_SEGMENTATION}`"
                 ));
             }
-            // Bare session — `PyanNet::open` takes a path, and the `run` arm
-            // binds it there. The forward is real but env-gated by the binder
-            // itself; the `run` arm deliberately does NOT set that env var,
-            // so a user without the opt-in sees pyannote's own explanation of
-            // why the BiLSTM stack is still loud-pending.
+            // Bare session — PyanNet takes a path, and run/bench bind it there
+            // while preflighting the selected CPU or Metal backend.
             Ok((session, ModelTask::Segment))
+        }
+        ARCH_PYANNOTE_DIARIZATION => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch \
+                     `{ARCH_PYANNOTE_DIARIZATION}`"
+                ));
+            }
+            // Bare session: run/bench bind the weightless pipeline plus both
+            // required dependency GGUFs from their explicit paths. The shared
+            // one-path dispatch cannot construct this three-artifact model.
+            Ok((session, ModelTask::DiarizationPyannote))
         }
         ARCH_RMVPE => {
             if hint.is_some() {
@@ -913,6 +1570,266 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // belongs in the ASR/TTS/S2S session slots.
             Ok((session, ModelTask::MimiCodec))
         }
+        ARCH_DAC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_DAC}`"
+                ));
+            }
+            Ok((session, ModelTask::DacCodec))
+        }
+        ARCH_WAVTOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_WAVTOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::WavTokenizerCodec))
+        }
+        ARCH_NEUCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NEUCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::NeuCodec))
+        }
+        ARCH_XCODEC2 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_XCODEC2}`"
+                ));
+            }
+            Ok((session, ModelTask::XCodec2))
+        }
+        ARCH_FUNCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FUNCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::FunCodec))
+        }
+        ARCH_YUE_XCODEC_MINI => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_YUE_XCODEC_MINI}`"
+                ));
+            }
+            Ok((session, ModelTask::YueXcodecMini))
+        }
+        ARCH_SPEECHTOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SPEECHTOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::SpeechTokenizer))
+        }
+        ARCH_QWEN3_TTS_TOKENIZER_12HZ => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_QWEN3_TTS_TOKENIZER_12HZ}`"
+                ));
+            }
+            Ok((session, ModelTask::Qwen3TtsTokenizer12HzCodec))
+        }
+        ARCH_MIOCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MIOCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::MioCodec))
+        }
+        ARCH_SNAC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_SNAC}`"
+                ));
+            }
+            Ok((session, ModelTask::SnacCodec))
+        }
+        ARCH_FOCALCODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FOCALCODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::FocalCodec))
+        }
+        ARCH_FACODEC => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_FACODEC}`"
+                ));
+            }
+            Ok((session, ModelTask::Facodec))
+        }
+        ARCH_MOSS_AUDIO_TOKENIZER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_AUDIO_TOKENIZER}`"
+                ));
+            }
+            Ok((session, ModelTask::MossAudioTokenizerCodec))
+        }
+        ARCH_BARK => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_BARK}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_BARK}` is missing `vokra.model.name`; refusing Full/Small topology inference"
+                    )
+                })?;
+            let small = vokra_models::bark::BarkVariant::Small.model_name();
+            let full = vokra_models::bark::BarkVariant::Full.model_name();
+            if name != small && name != full {
+                return Err(format!(
+                    "arch `{ARCH_BARK}` carries unknown model name `{name}`; expected `{small}` or `{full}`"
+                ));
+            }
+            Ok((session, ModelTask::TtsBark))
+        }
+        ARCH_PARLER_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_PARLER_TTS}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_PARLER_TTS}` is missing `vokra.model.name`; refusing English/Multilingual topology inference"
+                    )
+                })?;
+            let english = vokra_models::parler::ParlerVariant::MiniV1English.model_name();
+            let multilingual =
+                vokra_models::parler::ParlerVariant::MiniMultilingualV11.model_name();
+            if name != english && name != multilingual {
+                return Err(format!(
+                    "arch `{ARCH_PARLER_TTS}` carries unknown model name `{name}`; expected `{english}` or `{multilingual}`"
+                ));
+            }
+            Ok((session, ModelTask::TtsParler))
+        }
+        ARCH_NEUTTS_AIR => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_NEUTTS_AIR}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_NEUTTS_AIR}` is missing `vokra.model.name`; refusing topology inference"
+                    )
+                })?;
+            if name != "neutts-air" {
+                return Err(format!(
+                    "arch `{ARCH_NEUTTS_AIR}` carries unknown model name `{name}`; expected `neutts-air`"
+                ));
+            }
+            Ok((session, ModelTask::TtsNeuTtsAir))
+        }
+        ARCH_ULTRAVOX => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_ULTRAVOX}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_ULTRAVOX}` is missing `vokra.model.name`; refusing topology inference"
+                    )
+                })?;
+            if name != "ultravox-v0-5-llama-3-2-1b" {
+                return Err(format!(
+                    "arch `{ARCH_ULTRAVOX}` carries unknown model name `{name}`; expected `ultravox-v0-5-llama-3-2-1b`"
+                ));
+            }
+            Ok((session, ModelTask::AudioLlmUltravox))
+        }
+        ARCH_MOSS_AUDIO => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_AUDIO}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MOSS_AUDIO}` is missing `vokra.model.name`; refusing 4B/8B topology inference"
+                    )
+                })?;
+            let accepted = ["moss-audio-4b-instruct", "moss-audio-8b-instruct"];
+            if !accepted.contains(&name) {
+                return Err(format!(
+                    "arch `{ARCH_MOSS_AUDIO}` carries unknown model name `{name}`; expected `{}` or `{}`",
+                    accepted[0], accepted[1]
+                ));
+            }
+            Ok((session, ModelTask::AudioLlmMossAudio))
+        }
+        ARCH_MOSS_TTS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MOSS_TTS}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MOSS_TTS}` is missing `vokra.model.name`; refusing family-shared topology inference"
+                    )
+                })?;
+            let provenance_model_id = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID)
+                .and_then(|value| value.as_str());
+            if name == vokra_models::moss_tts::VOICE_GENERATOR_NAME
+                || provenance_model_id == Some(vokra_models::moss_tts::VOICE_GENERATOR_NAME)
+            {
+                Ok((session, ModelTask::TtsMossVoiceGenerator))
+            } else if name == vokra_models::moss_tts::NAME {
+                Ok((session, ModelTask::TtsMossNano))
+            } else if name == vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name()
+                || name == vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name()
+            {
+                Ok((session, ModelTask::TtsMossDelay))
+            } else {
+                Err(format!(
+                    "arch `{ARCH_MOSS_TTS}` model `{name}` is not an authenticated executable release; expected Nano `{}`, Base `{}`, v1.5 `{}` or VoiceGenerator `{}`. Local remains a distinct explicit contract and is never routed through another topology",
+                    vokra_models::moss_tts::NAME,
+                    vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name(),
+                    vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name(),
+                    vokra_models::moss_tts::VOICE_GENERATOR_NAME,
+                ))
+            }
+        }
         ARCH_BIGVGAN => {
             if hint.is_some() {
                 return Err(format!(
@@ -929,13 +1846,55 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::VocoderHifiGan))
         }
-        ARCH_VOCOS => {
+        ARCH_VOCOS | ARCH_YUE_UPSAMPLER => {
             if hint.is_some() {
                 return Err(format!(
-                    "task hint {hint:?} is not supported on arch `{ARCH_VOCOS}`"
+                    "task hint {hint:?} is not supported on Vocos-family arch `{arch}`"
                 ));
             }
             Ok((session, ModelTask::VocoderVocos))
+        }
+        ARCH_MUSICGEN => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_MUSICGEN}`"
+                ));
+            }
+            let name = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_NAME)
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "arch `{ARCH_MUSICGEN}` is missing `vokra.model.name`; cannot \
+                         distinguish MusicGen from the narrowly authenticated legacy AudioGen file"
+                    )
+                })?;
+            if name == vokra_models::audiogen::NAME {
+                let model = vokra_models::audiogen::AudioGen::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?;
+                return Err(format!(
+                    "legacy public AudioGen `{name}` loaded as {:?}, but its LM-only GGUF \
+                     has no text-conditioner or 16 kHz EnCodec companion; use the raw library \
+                     APIs until authenticated companions are supplied (FR-EX-08: it is never \
+                     misrouted through MusicGen)",
+                    model.artifact_layout()
+                ));
+            }
+            if ![
+                vokra_models::musicgen::NAME_SMALL,
+                vokra_models::musicgen::NAME_MEDIUM,
+                vokra_models::musicgen::NAME_LARGE,
+                vokra_models::musicgen::NAME_MELODY,
+            ]
+            .contains(&name)
+            {
+                return Err(format!(
+                    "arch `{ARCH_MUSICGEN}` carries unknown model name `{name}`; refusing \
+                     MusicGen/AudioGen family misrouting (FR-EX-08)"
+                ));
+            }
+            Ok((session, ModelTask::MusicGeneration))
         }
         ARCH_MAGNET_SMALL | ARCH_MAGNET_MEDIUM => {
             // post-audit CC-gap 2026-08-13 Wave D scaffold stop-gap. The
@@ -1012,6 +1971,52 @@ pub(crate) fn load_session_with_backend_and_mimi(
                  FR-EX-08 gate, not a converter bug."
             ))
         }
+        ARCH_BERT_BASE | ARCH_DEBERTA_V2 | ARCH_DEBERTA_V3 => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on standalone text-encoder arch `{arch}`"
+                ));
+            }
+            // Bind late in `run` so the selected CPU/Metal backend reaches the
+            // complete concrete text encoder after input validation.
+            Ok((session, ModelTask::TextEncoder))
+        }
+        ARCH_AST => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on AST audio classification"
+                ));
+            }
+            // Bind late in run/bench so the caller-selected CPU/Metal backend
+            // reaches the complete concrete classifier graph.
+            Ok((session, ModelTask::AudioClassificationAst))
+        }
+        ARCH_UTMOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on UTMOS22-strong"
+                ));
+            }
+            // Bare session: the run/bench adapter binds the parity-verified
+            // concrete scorer from this already mmap-opened GGUF exactly once.
+            Ok((session, ModelTask::Utmos))
+        }
+        ARCH_DNSMOS => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on DNSMOS quality scoring"
+                ));
+            }
+            Ok((session, ModelTask::Dnsmos))
+        }
+        ARCH_NISQA => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on NISQA v2 quality scoring"
+                ));
+            }
+            Ok((session, ModelTask::Nisqa))
+        }
         // Wave G (2026-08-15): before declaring the arch unknown, check the
         // bound-arch registry. `vokra-models` binds ~70 more architectures
         // than this CLI can run; telling their users "unsupported model arch"
@@ -1035,18 +2040,22 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 "unsupported model arch `{other}` (expected `{ARCH_WHISPER}` / \
                  `{ARCH_DISTIL_WHISPER}` / `{ARCH_KOTOBA_WHISPER}` / \
                  `{ARCH_MOONSHINE}` / `{ARCH_PARAKEET_TDT}` / \
+                 `{ARCH_PARAKEET_TDT_1_1B}` / \
+                 `{ARCH_REAZONSPEECH_NEMO_V2}` / \
                  `{ARCH_WHISPER_MEDUSA_V1}` / \
                  `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_CSM}` / \
                  `{ARCH_MOSHI}` / `{ARCH_CAMPPLUS}` / `{ARCH_VOXTRAL}` / \
-                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_FSMN_VAD}` / \
+                 `{ARCH_KOKORO}` / `{ARCH_SBV2}` / `{ARCH_MELOTTS}` / `{ARCH_FSMN_VAD}` / \
                  `{ARCH_FIRERED_VAD}` / \
                  `{ARCH_OPENWAKEWORD_OP}` / \
-                 `{ARCH_SMART_TURN}` / \
-                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_PYANNOTE_SEGMENTATION}` / \
+                 `{ARCH_SMART_TURN}` / `{ARCH_AST}` / `{ARCH_UTMOS}` / `{ARCH_DNSMOS}` / `{ARCH_NISQA}` / `{ARCH_AUDIOBOX_AESTHETICS}` / `{ARCH_AUDIOSEAL}` / \
+                 `{ARCH_NSNET2}` / `{ARCH_RNNOISE}` / `{ARCH_DENOISE}` / `{ARCH_METRICGAN_PLUS}` / `{ARCH_MP_SENET}` / `{ARCH_FACEBOOK_DENOISER}` / `{ARCH_FRCRN}` / `{ARCH_PYANNOTE_SEGMENTATION}` / `{ARCH_PYANNOTE_DIARIZATION}` / \
                  `{ARCH_RMVPE}` / `{ARCH_FCPE}` / `{ARCH_CREPE}` / \
                  `{ARCH_CHARSIU}` / \
                  `{ARCH_WETEXTPROCESSING}` / `{ARCH_NKF_AEC}` / \
-                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / \
+                 `{ARCH_CT_PUNC}` / `{ARCH_MIMI}` / `{ARCH_DAC}` / `{ARCH_WAVTOKENIZER}` / `{ARCH_NEUCODEC}` / `{ARCH_XCODEC2}` / `{ARCH_FUNCODEC}` / `{ARCH_SPEECHTOKENIZER}` / `{ARCH_QWEN3_TTS_TOKENIZER_12HZ}` / `{ARCH_MIOCODEC}` / `{ARCH_SNAC}` / `{ARCH_MOSS_AUDIO_TOKENIZER}` / `{ARCH_MOSS_TTS}` / `{ARCH_MOSS_AUDIO}` / \
+                 `{ARCH_FOCALCODEC}` / `{ARCH_FACODEC}` / \
+                 `{ARCH_BERT_BASE}` / `{ARCH_DEBERTA_V2}` / `{ARCH_DEBERTA_V3}` / \
                  `{ARCH_MAGNET_SMALL}` / `{ARCH_MAGNET_MEDIUM}` / \
                  `{ARCH_MELODYFLOW_T24_30SECS}`, or one of the {} architectures \
                  vokra-models binds without a CLI task yet)",
@@ -1126,20 +2135,6 @@ struct BoundArch {
 const BOUND_ARCHES: &[BoundArch] = &[
     // --- ASR / speech-to-text -------------------------------------------
     BoundArch {
-        arch: "canary",
-        module: "vokra_models::canary",
-        entry: "CanaryAsr::from_gguf → CanaryAsr::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::canary::CanaryAsr::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "canary-1b-flash",
-        module: "vokra_models::canary_1b_flash",
-        entry: "Canary1bFlashAsr::from_gguf → Canary1bFlashAsr::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::canary_1b_flash::Canary1bFlashAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "canary-qwen",
         module: "vokra_models::canary_qwen",
         entry: "CanaryQwenAsr::from_gguf → CanaryQwenAsr::transcribe",
@@ -1160,14 +2155,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
         probe: Some(|g: &GgufFile| {
             vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "parakeet-tdt-1_1b",
-        module: "vokra_models::parakeet_tdt_1_1b",
-        entry: "ParakeetTdt11b::from_gguf → ParakeetTdt11b::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(g).map(|_| ())
         }),
     },
     BoundArch {
@@ -1270,14 +2257,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }),
     },
     BoundArch {
-        arch: "qwen3_tts",
-        module: "vokra_models::qwen3_tts",
-        entry: "Qwen3TtsCheckpoint::from_gguf → Qwen3TtsCheckpoint::synthesize",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::qwen3_tts::Qwen3TtsCheckpoint::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "vibevoice",
         module: "vokra_models::vibevoice",
         entry: "VibeVoiceCheckpoint::from_gguf → VibeVoiceCheckpoint::synthesize",
@@ -1352,13 +2331,17 @@ const BOUND_ARCHES: &[BoundArch] = &[
         entry: "Voila::from_gguf → Voila::converse",
         probe: Some(|g: &GgufFile| vokra_models::voila::Voila::from_gguf(g).map(|_| ())),
     },
-    // --- Music / audio generation ----------------------------------------
+    // User-acquired, separately licensed Llama base. Strict mmap decoding and
+    // the exact consecutive audio-embedding replacement are available through
+    // the library API. This sidecar arch is not a standalone `run` target: the
+    // routed `ultravox` primary accepts it through `--ultravox-companion`.
     BoundArch {
-        arch: "musicgen",
-        module: "vokra_models::musicgen",
-        entry: "MusicGen::from_gguf → MusicGen::generate",
-        probe: Some(|g: &GgufFile| vokra_models::musicgen::MusicGen::from_gguf(g).map(|_| ())),
+        arch: "ultravox_llama_companion",
+        module: "vokra_models::ultravox",
+        entry: "UltravoxAudioTower::generate_from_log_mel_with_companion (library; explicit token IDs)",
+        probe: None,
     },
+    // --- Music / audio generation ----------------------------------------
     BoundArch {
         arch: "audiogen",
         module: "vokra_models::audiogen",
@@ -1385,18 +2368,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     // --- Source separation / enhancement / super-resolution ---------------
     BoundArch {
-        arch: "sepformer",
-        module: "vokra_models::sepformer",
-        entry: "SepFormer::from_gguf → SepFormer::separate",
-        probe: Some(|g: &GgufFile| vokra_models::sepformer::SepFormer::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "conv_tasnet",
-        module: "vokra_models::conv_tasnet",
-        entry: "ConvTasnet::from_gguf → ConvTasnet::separate",
-        probe: Some(|g: &GgufFile| vokra_models::conv_tasnet::ConvTasnet::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "demucs",
         module: "vokra_models::demucs",
         entry: "Demucs::from_gguf → Demucs::separate",
@@ -1407,14 +2378,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         module: "vokra_models::gtcrn",
         entry: "Gtcrn::from_gguf → Gtcrn::denoise",
         probe: Some(|g: &GgufFile| vokra_models::gtcrn::Gtcrn::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "facebook_denoiser",
-        module: "vokra_models::facebook_denoiser",
-        entry: "FbDenoiser::from_gguf → FbDenoiser::denoise",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::facebook_denoiser::FbDenoiser::from_gguf(g).map(|_| ())
-        }),
     },
     BoundArch {
         arch: "storm",
@@ -1463,10 +2426,10 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // that fires FIRST: their forwards are loud-partials today, so that is
     // what a caller hits. Even once those land, an SSL encoder emits `[T, D]`
     // hidden states — not a CLI-shaped artifact — so these rows would move to
-    // `NoCliShapedOutput` rather than gain a `run` task. The classifier heads
-    // (`emotion2vec`, `panns`, `maest::tag`) are the exception: a label +
-    // score list IS printable, so those become candidates for a real `run`
-    // arm the day their forwards land.
+    // `NoCliShapedOutput` rather than gain a `run` task. The remaining
+    // classifier heads (`panns`, `maest::tag`) are the exception: a label +
+    // score list is printable. emotion2vec left this table when its complete
+    // CPU/Metal forward and dedicated run task landed.
     BoundArch {
         arch: "atst",
         module: "vokra_models::atst",
@@ -1504,34 +2467,12 @@ const BOUND_ARCHES: &[BoundArch] = &[
         probe: Some(|g: &GgufFile| vokra_models::clap::Clap::from_gguf(g).map(|_| ())),
     },
     BoundArch {
-        arch: "emotion2vec",
-        module: "vokra_models::emotion2vec",
-        entry: "Emotion2Vec::from_gguf → Emotion2Vec::classify",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::emotion2vec::Emotion2Vec::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "panns",
         module: "vokra_models::panns",
         entry: "Panns::from_gguf → Panns::classify",
         probe: Some(|g: &GgufFile| vokra_models::panns::Panns::from_gguf(g).map(|_| ())),
     },
     // --- Quality metrics --------------------------------------------------
-    BoundArch {
-        arch: "dnsmos",
-        module: "vokra_models::dnsmos_p808_p835",
-        entry: "Dnsmos::from_gguf → Dnsmos::score_all",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "nisqa_v2_weight",
-        module: "vokra_models::nisqa",
-        entry: "Nisqa::from_gguf → Nisqa::score",
-        probe: Some(|g: &GgufFile| vokra_models::nisqa::Nisqa::from_gguf(g).map(|_| ())),
-    },
     BoundArch {
         arch: "utmosv2",
         module: "vokra_models::utmosv2",
@@ -1548,12 +2489,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // BigVGAN and Vocos left this registry on 2026-08-21 after strict
     // loaders, real forwards, parity, and explicit feature-file CLI
     // contracts landed.
-    BoundArch {
-        arch: "snac",
-        module: "vokra_models::snac",
-        entry: "Snac::from_gguf → Snac::encode / Snac::decode",
-        probe: Some(|g: &GgufFile| vokra_models::snac::Snac::from_gguf(g).map(|_| ())),
-    },
     // --- Text / alignment side-cars ---------------------------------------
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //
@@ -1581,20 +2516,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         // `from_gguf_with_policy` routes a real consumer takes, so probing
         // here neither loads weights for use nor steps around that gate.
         probe: Some(|g: &GgufFile| vokra_models::chattts::ChatTts::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "deepfake_detection",
-        module: "vokra_models::deepfake_detection",
-        entry: "DeepfakeDetection::from_gguf → DeepfakeDetection::score",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::deepfake_detection::DeepfakeDetection::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
-        arch: "lang_id_ecapa",
-        module: "vokra_models::lang_id",
-        entry: "LangIdEcapa::from_gguf → LangIdEcapa::identify",
-        probe: Some(|g: &GgufFile| vokra_models::lang_id::LangIdEcapa::from_gguf(g).map(|_| ())),
     },
     // DTLN-AEC still stops at the absent generic LSTM primitive. NKF-AEC is
     // routed above now that `run` has an explicit far-end WAV contract.
@@ -1696,6 +2617,343 @@ mod tests {
         assert_eq!(task, ModelTask::Speaker);
     }
 
+    #[test]
+    fn load_session_routes_named_musicgen_to_generation_without_aliasing_audiogen() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_MUSICGEN);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::musicgen::NAME_SMALL,
+        );
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-musicgen-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named MusicGen session builds (bare)");
+        assert_eq!(task, ModelTask::MusicGeneration);
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_MUSICGEN);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "foreign-audio");
+        let bytes = unknown.to_bytes().expect("serialize unknown gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-musicgen-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("unknown family name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("refusing MusicGen/AudioGen family misrouting"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_bark_releases_to_tts() {
+        for variant in [
+            vokra_models::bark::BarkVariant::Small,
+            vokra_models::bark::BarkVariant::Full,
+        ] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_BARK);
+            builder.add_string(
+                vokra_core::gguf::chunks::KEY_MODEL_NAME,
+                variant.model_name(),
+            );
+            let bytes = builder.to_bytes().expect("serialize Bark route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-{}-arch-{}.gguf",
+                variant.model_name(),
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named Bark session builds (bare)");
+            assert_eq!(task, ModelTask::TtsBark);
+        }
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_BARK);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "bark-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Bark GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-bark-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Bark name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_parler_releases_to_tts() {
+        for variant in [
+            vokra_models::parler::ParlerVariant::MiniV1English,
+            vokra_models::parler::ParlerVariant::MiniMultilingualV11,
+        ] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_PARLER_TTS);
+            builder.add_string(
+                vokra_core::gguf::chunks::KEY_MODEL_NAME,
+                variant.model_name(),
+            );
+            let bytes = builder.to_bytes().expect("serialize Parler route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-{}-arch-{}.gguf",
+                variant.model_name(),
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named Parler session builds (bare)");
+            assert_eq!(task, ModelTask::TtsParler);
+        }
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_PARLER_TTS);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "parler-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Parler GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-parler-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Parler name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_neutts_air_release_to_tts() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_NEUTTS_AIR);
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "neutts-air");
+        let bytes = builder.to_bytes().expect("serialize NeuTTS Air route GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-neutts-air-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named NeuTTS Air session builds (bare)");
+        assert_eq!(task, ModelTask::TtsNeuTtsAir);
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_NEUTTS_AIR);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "neutts-foreign");
+        let bytes = unknown
+            .to_bytes()
+            .expect("serialize foreign NeuTTS Air GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-neutts-air-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign NeuTTS name rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_ultravox_release_to_audio_llm() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_ULTRAVOX);
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            "ultravox-v0-5-llama-3-2-1b",
+        );
+        let bytes = builder.to_bytes().expect("serialize Ultravox route GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-ultravox-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("named Ultravox session builds (bare)");
+        assert_eq!(task, ModelTask::AudioLlmUltravox);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_ULTRAVOX));
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_ULTRAVOX);
+        unknown.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, "ultravox-foreign");
+        let bytes = unknown.to_bytes().expect("serialize foreign Ultravox GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-ultravox-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign Ultravox rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_only_named_moss_audio_releases_to_audio_llm() {
+        for name in ["moss-audio-4b-instruct", "moss-audio-8b-instruct"] {
+            let mut builder = vokra_core::gguf::GgufBuilder::new();
+            builder.add_string("vokra.model.arch", ARCH_MOSS_AUDIO);
+            builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, name);
+            let bytes = builder.to_bytes().expect("serialize MOSS-Audio route GGUF");
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "vokra-cli-moss-audio-{name}-{}.gguf",
+                std::process::id()
+            ));
+            std::fs::write(&path, &bytes).unwrap();
+            let result = load_session(path.to_str().unwrap());
+            let _ = std::fs::remove_file(&path);
+            let (_session, task) = result.expect("named MOSS-Audio session builds (bare)");
+            assert_eq!(task, ModelTask::AudioLlmMossAudio);
+        }
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_MOSS_AUDIO));
+
+        let mut unknown = vokra_core::gguf::GgufBuilder::new();
+        unknown.add_string("vokra.model.arch", ARCH_MOSS_AUDIO);
+        unknown.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            "moss-audio-foreign",
+        );
+        let bytes = unknown
+            .to_bytes()
+            .expect("serialize foreign MOSS-Audio GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-moss-audio-unknown-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let error = load_session(path.to_str().unwrap()).expect_err("foreign MOSS-Audio rejects");
+        let _ = std::fs::remove_file(&path);
+        assert!(error.contains("unknown model name"));
+    }
+
+    #[test]
+    fn load_session_routes_utmos_to_quality_score_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_UTMOS);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-utmos-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("utmos session builds (bare)");
+        assert_eq!(task, ModelTask::Utmos);
+    }
+
+    #[test]
+    fn load_session_routes_dnsmos_to_quality_score_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_DNSMOS);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-dnsmos-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("dnsmos session builds (bare)");
+        assert_eq!(task, ModelTask::Dnsmos);
+    }
+
+    #[test]
+    fn load_session_routes_nisqa_to_multidimensional_quality_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_NISQA);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!("vokra-cli-nisqa-arch-{}.gguf", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("nisqa session builds (bare)");
+        assert_eq!(task, ModelTask::Nisqa);
+    }
+
+    #[test]
+    fn load_session_detects_xvector_as_speaker_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "xvector");
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-xvector-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("X-vector session builds (bare)");
+        assert_eq!(task, ModelTask::Speaker);
+    }
+
+    #[test]
+    fn load_session_detects_ecapa_tdnn_as_speaker_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "ecapa_tdnn");
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-ecapa-tdnn-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("ECAPA-TDNN session builds (bare)");
+        assert_eq!(task, ModelTask::Speaker);
+    }
+
+    #[test]
+    fn load_session_detects_wespeaker_as_speaker_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "wespeaker");
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-wespeaker-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("WeSpeaker session builds (bare)");
+        assert_eq!(task, ModelTask::Speaker);
+    }
+
+    #[test]
+    fn load_session_detects_titanet_as_speaker_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_TITANET);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-titanet-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("TitaNet session builds (bare)");
+        assert_eq!(task, ModelTask::Speaker);
+    }
+
     /// Task hints are rejected on the campplus arch (FR-EX-08 — no silent
     /// hint drop).
     #[test]
@@ -1760,6 +3018,103 @@ mod tests {
         assert_eq!(task, ModelTask::AsrVoxtral);
     }
 
+    #[test]
+    fn load_session_detects_nemotron_as_bare_prompted_asr_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", ARCH_NEMOTRON_ASR);
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-nemotron-asr-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("Nemotron session builds bare");
+        assert_eq!(task, ModelTask::AsrNemotron);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_NEMOTRON_ASR));
+    }
+
+    #[test]
+    fn load_session_routes_qwen3_asr_to_the_concrete_native_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_QWEN3_ASR, "qwen3-asr-routed", |path| {
+            load_session(path).expect("Qwen3-ASR binds once in its concrete run/bench arm")
+        });
+        assert_eq!(task, ModelTask::AsrQwen3);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_QWEN3_ASR),
+            "a routed Qwen3-ASR forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_detects_parakeet_tdt_1_1b_as_native_asr_task() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_PARAKEET_TDT_1_1B);
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-parakeet-tdt-1-1b-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("Parakeet-TDT-1.1B session builds bare");
+        assert_eq!(task, ModelTask::AsrParakeetTdt11b);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_PARAKEET_TDT_1_1B)
+        );
+    }
+
+    #[test]
+    fn load_session_routes_canary_1b_flash_to_the_concrete_native_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_CANARY_1B_FLASH, "canary-1b-flash-routed", |path| {
+                load_session(path).expect("Canary binds once in its concrete run/bench arm")
+            });
+        assert_eq!(task, ModelTask::AsrCanary1bFlash);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_CANARY_1B_FLASH),
+            "a routed Canary forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_canary_1b_v2_to_the_concrete_native_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_CANARY_1B_V2, "canary-1b-v2-routed", |path| {
+                load_session(path).expect("Canary-v2 binds once in its concrete run/bench arm")
+            });
+        assert_eq!(task, ModelTask::AsrCanary1bV2);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_CANARY_1B_V2),
+            "a routed Canary-v2 forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_rejects_legacy_reazonspeech_before_weight_decode() {
+        let error = with_arch_only_gguf(
+            ARCH_REAZONSPEECH_NEMO_V2,
+            "reazonspeech-legacy-no-tokenizer",
+            |path| load_session(path).expect_err("tokenizer-less legacy GGUF must fail"),
+        );
+        assert!(error.contains(KEY_TOKENIZER_VOCAB), "{error}");
+        assert!(error.contains("legacy public artifact"), "{error}");
+        assert!(!error.contains("unsupported model arch"), "{error}");
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_REAZONSPEECH_NEMO_V2)
+        );
+    }
+
     /// Task hints are rejected on the voxtral arch (FR-EX-08 — no silent
     /// hint drop).
     #[test]
@@ -1802,6 +3157,52 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let (_session, task) = result.expect("sbv2 session builds (bare)");
         assert_eq!(task, ModelTask::Sbv2);
+    }
+
+    /// A `melotts` arch GGUF dispatches to the dedicated low-level acoustic
+    /// task with a bare session. The run arm owns the versioned feature bundle
+    /// and strict 1,051-tensor load, so architecture detection needs no tensor
+    /// payload.
+    #[test]
+    fn load_session_detects_melotts_as_melotts_task() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "melotts");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melotts-arch-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        let (_session, task) = result.expect("melotts session builds (bare)");
+        assert_eq!(task, ModelTask::TtsMelo);
+        assert!(BOUND_ARCHES.iter().all(|row| row.arch != ARCH_MELOTTS));
+    }
+
+    #[test]
+    fn load_session_rejects_hint_on_melotts() {
+        let mut b = vokra_core::gguf::GgufBuilder::new();
+        b.add_string("vokra.model.arch", "melotts");
+        let bytes = b.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-melotts-hint-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let result = load_session_with_backend(
+            path.to_str().unwrap(),
+            BackendKind::Cpu,
+            Some(TaskHint::MelFrontend),
+        );
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("hint on melotts is rejected");
+        assert!(
+            err.contains("not supported on arch `melotts`"),
+            "got: {err}"
+        );
     }
 
     /// Task hints are rejected on the sbv2 arch (FR-EX-08 — no silent hint
@@ -1855,7 +3256,7 @@ mod tests {
     /// A `magnet_small_10secs` arch GGUF is loud-rejected at load time
     /// with a scaffold message naming the ADR — the runtime forward is
     /// deferred, so the CLI never pretends a working task exists
-    /// (FR-EX-08). Mirror of the RMVPE / DNSMOS loud-partial posture.
+    /// (FR-EX-08).
     #[test]
     fn load_session_rejects_magnet_small_arch_with_scaffold_message() {
         let mut b = vokra_core::gguf::GgufBuilder::new();
@@ -2019,6 +3420,33 @@ mod tests {
         out
     }
 
+    fn with_named_arch_gguf<T>(
+        arch: &str,
+        name: &str,
+        provenance_model_id: Option<&str>,
+        tag: &str,
+        f: impl FnOnce(&str) -> T,
+    ) -> T {
+        static NEXT_FIXTURE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_ARCH, arch);
+        builder.add_string(vokra_core::gguf::chunks::KEY_MODEL_NAME, name);
+        if let Some(model_id) = provenance_model_id {
+            builder.add_string(vokra_core::gguf::chunks::KEY_PROVENANCE_MODEL_ID, model_id);
+        }
+        let bytes = builder.to_bytes().expect("serialize gguf");
+        let mut path = std::env::temp_dir();
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        path.push(format!(
+            "vokra-cli-{tag}-{}-{fixture_id}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let out = f(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
     /// An `fsmn-vad` GGUF is a REAL VAD: the dispatch binds
     /// [`vokra_models::fsmn_vad::FsmnVadV1`] into the session's VAD slot. A
     /// metadata-only fixture cannot bind (no config chunk, no tensors), so
@@ -2042,7 +3470,9 @@ mod tests {
         );
     }
 
-    /// An `nsnet2` or `rnnoise` GGUF dispatches to [`ModelTask::Denoise`] with
+    /// An `nsnet2`, `rnnoise`, DeepFilterNet3 `denoise`, MetricGAN+,
+    /// MP-SENet, or Facebook Denoiser GGUF dispatches to
+    /// [`ModelTask::Denoise`] with
     /// a bare session — the concrete model binds in the `run` arm (the
     /// campplus / voxtral precedent), so a metadata-only fixture is enough.
     #[test]
@@ -2052,9 +3482,31 @@ mod tests {
         });
         assert_eq!(task, ModelTask::Denoise);
 
+        let (_session, task) = with_arch_only_gguf(ARCH_MP_SENET, "mp-senet-arch", |p| {
+            load_session(p).expect("MP-SENet session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_FACEBOOK_DENOISER, "facebook-denoiser-arch", |p| {
+                load_session(p).expect("Facebook Denoiser session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::Denoise);
+
         let (_session, task) = with_arch_only_gguf("rnnoise", "rnnoise-arch", |p| {
             load_session(p).expect("rnnoise session builds (bare)")
         });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) = with_arch_only_gguf("denoise", "dfn3-arch", |p| {
+            load_session(p).expect("DeepFilterNet3 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Denoise);
+
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_METRICGAN_PLUS, "metricgan-plus-arch", |p| {
+                load_session(p).expect("MetricGAN+ session builds (bare)")
+            });
         assert_eq!(task, ModelTask::Denoise);
     }
 
@@ -2065,6 +3517,18 @@ mod tests {
             load_session(p).expect("pyannote session builds (bare)")
         });
         assert_eq!(task, ModelTask::Segment);
+    }
+
+    /// The weightless 3.1 orchestration GGUF dispatches to the distinct
+    /// three-artifact diarization task rather than the raw segmentation task.
+    #[test]
+    fn load_session_detects_pyannote_diarization_task() {
+        let (_session, task) = with_arch_only_gguf(
+            ARCH_PYANNOTE_DIARIZATION,
+            "pyannote-diarization-arch",
+            |path| load_session(path).expect("pyannote diarization session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::DiarizationPyannote);
     }
 
     /// An `rmvpe` GGUF dispatches to [`ModelTask::F0Rmvpe`].
@@ -2154,45 +3618,30 @@ mod tests {
 
     // ---- Wave G (2026-08-15) — bound-but-not-runnable arches -------------
 
-    /// A bound arch no longer reads as "unknown": the message names the
-    /// binding module and says the model IS bound.
+    /// Complete native separator forwards route to the audio-separation task.
     #[test]
-    fn load_session_bound_arch_reports_the_binder_not_an_unknown_arch() {
-        let err = with_arch_only_gguf("sepformer", "sepformer-arch", |p| {
-            let Err(e) = load_session(p) else {
-                panic!("sepformer has no run task");
-            };
-            e
-        });
-        assert!(
-            !err.contains("unsupported model arch"),
-            "sepformer has a binder — the old blanket message is the bug being fixed: {err}"
-        );
-        assert!(err.contains("is BOUND"), "must state it is bound: {err}");
-        assert!(
-            err.contains("vokra_models::sepformer"),
-            "must name the binding module: {err}"
-        );
-        assert!(
-            err.contains("SepFormer::separate"),
-            "must name the library entry point to call: {err}"
-        );
+    fn load_session_routes_native_separators_to_separation() {
+        for arch in [
+            "sepformer",
+            "conv_tasnet",
+            "tiger_separator",
+            "mossformer2_ss_16k",
+        ] {
+            with_arch_only_gguf(arch, "separator-arch", |p| {
+                let (_, task) = load_session(p).expect("native separator route");
+                assert_eq!(task, ModelTask::Separation);
+            });
+        }
     }
 
-    /// A row that carries a probe really loads the binder: the message
-    /// reports one of the two probe outcomes, never neither.
+    /// emotion2vec has a real printable classifier surface and therefore
+    /// routes to a task instead of the bound-but-not-runnable diagnostic.
     #[test]
-    fn load_session_bound_arch_probe_reports_a_load_outcome() {
-        let err = with_arch_only_gguf("emotion2vec", "emotion2vec-arch", |p| {
-            let Err(e) = load_session(p) else {
-                panic!("emotion2vec has no run task");
-            };
-            e
+    fn load_session_routes_emotion2vec_to_classification() {
+        with_arch_only_gguf(ARCH_EMOTION2VEC, "emotion2vec-arch", |path| {
+            let (_, task) = load_session(path).expect("emotion2vec route");
+            assert_eq!(task, ModelTask::EmotionClassification);
         });
-        assert!(
-            err.contains("LOADED and validated") || err.contains("FAILED — the binder reports:"),
-            "a probed row must report the binder's own load outcome: {err}"
-        );
     }
 
     /// Zonos moved from the last no-loader slice to a strict manifest probe;
@@ -2264,30 +3713,45 @@ mod tests {
         );
     }
 
-    /// Deepfake detection (`vokra_models::deepfake_detection`) — loud-partial
-    /// `score`. A spoof detector misreported as an unknown arch is the worst
-    /// of the five: the caller cannot tell "no such model" from "the model is
-    /// here but its feature extractor is deferred".
+    /// Deepfake detection now has a complete printable fake/real classifier
+    /// task instead of the retired bound-but-not-runnable diagnostic.
     #[test]
-    fn load_session_binds_deepfake_detection_arch() {
-        assert_bound_arch(
-            "deepfake_detection",
-            "deepfake-arch",
-            "vokra_models::deepfake_detection",
-            "DeepfakeDetection::score",
-        );
+    fn load_session_routes_deepfake_detection_to_classification() {
+        with_arch_only_gguf(ARCH_DEEPFAKE_DETECTION, "deepfake-arch", |path| {
+            let (_, task) = load_session(path).expect("deepfake route");
+            assert_eq!(task, ModelTask::DeepfakeClassification);
+        });
     }
 
-    /// Spoken-language ID (`vokra_models::lang_id`) — loud-partial `identify`.
-    /// Note the arch tag (`lang_id_ecapa`) is not the module name.
+    /// Spoken-language ID now has a real `run` task. The concrete model binds
+    /// later because its ordered-label result is not a generic Session trait.
     #[test]
-    fn load_session_binds_lang_id_ecapa_arch() {
-        assert_bound_arch(
-            "lang_id_ecapa",
-            "lang-id-arch",
-            "vokra_models::lang_id",
-            "LangIdEcapa::identify",
+    fn load_session_routes_lang_id_ecapa_task() {
+        let result = with_arch_only_gguf(ARCH_LANG_ID, "lang-id-arch", load_session);
+        let (_session, task) = result.expect("Lang-ID session builds (bare)");
+        assert_eq!(task, ModelTask::LangId);
+    }
+
+    /// Audiobox has a concrete CPU/Metal run task and binds after WAV rate
+    /// validation so malformed input does not decode the 415 MB checkpoint.
+    #[test]
+    fn load_session_routes_audiobox_aesthetics_task() {
+        let result = with_arch_only_gguf(
+            ARCH_AUDIOBOX_AESTHETICS,
+            "audiobox-aesthetics-arch",
+            load_session,
         );
+        let (_session, task) = result.expect("Audiobox session builds (bare)");
+        assert_eq!(task, ModelTask::AudioQualityAudiobox);
+    }
+
+    /// AudioSeal has a concrete CPU/Metal task. The task-specific arm binds
+    /// the strict 310-tensor bundle after validating its WAV input contract.
+    #[test]
+    fn load_session_routes_audioseal_task() {
+        let result = with_arch_only_gguf(ARCH_AUDIOSEAL, "audioseal-arch", load_session);
+        let (_session, task) = result.expect("AudioSeal session builds (bare)");
+        assert_eq!(task, ModelTask::WatermarkAudioseal);
     }
 
     /// DTLN-AEC (`vokra_models::aec::dtln_aec`) — loud-partial `process`
@@ -2425,7 +3889,12 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
+            ARCH_QWEN3_ASR,
+            ARCH_NEMOTRON_ASR,
+            ARCH_CANARY_1B_FLASH,
+            ARCH_REAZONSPEECH_NEMO_V2,
             ARCH_WHISPER_MEDUSA_V1,
         ] {
             assert!(
@@ -2519,6 +3988,18 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_speecht5_to_native_tts_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SPEECHT5, "speecht5-routed", |path| {
+            load_session(path).expect("SpeechT5 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::TtsSpeechT5);
+        assert!(
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_SPEECHT5),
+            "SpeechT5 has a strict real-weight loader, complete CPU/Metal forward, and CLI route"
+        );
+    }
+
+    #[test]
     fn load_session_routes_speechbrain_hifigan_to_vocoder_task() {
         let (_session, task) =
             with_arch_only_gguf(ARCH_HIFIGAN_VOCODER, "hifigan-vocoder-routed", |path| {
@@ -2542,6 +4023,21 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|row| row.arch != ARCH_VOCOS),
             "Vocos has strict loaders for both variants, a real forward, and a CLI route"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_yue_upsampler_to_vocoder_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_YUE_UPSAMPLER, "yue-upsampler-routed", |path| {
+                load_session(path).expect("YuE-upsampler session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::VocoderVocos);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != ARCH_YUE_UPSAMPLER),
+            "YuE-upsampler has a strict loader, real forward, and CLI route"
         );
     }
 
@@ -2587,6 +4083,20 @@ mod tests {
     }
 
     #[test]
+    fn standalone_bert_family_arches_route_to_text_encoder() {
+        for arch in [ARCH_BERT_BASE, ARCH_DEBERTA_V2, ARCH_DEBERTA_V3] {
+            let (_session, task) = with_arch_only_gguf(arch, "bert-sidecar-routed", |path| {
+                load_session(path).expect("standalone BERT-family session builds bare")
+            });
+            assert_eq!(task, ModelTask::TextEncoder, "arch={arch}");
+            assert!(
+                BOUND_ARCHES.iter().all(|binding| binding.arch != arch),
+                "routed standalone BERT arch `{arch}` must not retain a bound-only row"
+            );
+        }
+    }
+
+    #[test]
     fn load_session_routes_mimi_to_the_standalone_codec_task() {
         let (_session, task) = with_arch_only_gguf(ARCH_MIMI, "mimi-routed", |p| {
             load_session(p).expect("mimi session builds (bare)")
@@ -2595,6 +4105,253 @@ mod tests {
         assert!(
             BOUND_ARCHES.iter().all(|b| b.arch != ARCH_MIMI),
             "the routed standalone codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_dac_to_the_standalone_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_DAC, "dac-routed", |path| {
+            load_session(path).expect("dac session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::DacCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|binding| binding.arch != ARCH_DAC),
+            "the routed standalone DAC codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_wavtokenizer_to_the_single_codebook_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_WAVTOKENIZER, "wavtokenizer-routed", |path| {
+                load_session(path).expect("WavTokenizer session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::WavTokenizerCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_WAVTOKENIZER),
+            "the routed WavTokenizer codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_neucodec_to_the_fsq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_NEUCODEC, "neucodec-routed", |path| {
+            load_session(path).expect("NeuCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::NeuCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_NEUCODEC),
+            "the routed NeuCodec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_xcodec2_to_the_fsq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_XCODEC2, "xcodec2-routed", |path| {
+            load_session(path).expect("X-Codec2 session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::XCodec2);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_XCODEC2),
+            "the routed X-Codec2 must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_funcodec_to_the_residual_vq_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FUNCODEC, "funcodec-routed", |path| {
+            load_session(path).expect("FunCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::FunCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FUNCODEC),
+            "the routed FunCodec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_yue_xcodec_mini_to_its_fixed_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_YUE_XCODEC_MINI, "yue-xcodec-mini-routed", |path| {
+                load_session(path).expect("YuE xcodec-mini session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::YueXcodecMini);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_YUE_XCODEC_MINI),
+            "the routed YuE xcodec-mini must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_speechtokenizer_to_the_residual_vq_codec_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_SPEECHTOKENIZER, "speechtokenizer-routed", |path| {
+                load_session(path).expect("SpeechTokenizer session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::SpeechTokenizer);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_SPEECHTOKENIZER),
+            "the routed SpeechTokenizer must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_qwen3_tts_tokenizer_to_fixed_codec_task() {
+        let (_session, task) = with_arch_only_gguf(
+            ARCH_QWEN3_TTS_TOKENIZER_12HZ,
+            "qwen3-tts-tokenizer-12hz-routed",
+            |path| load_session(path).expect("Qwen3-TTS tokenizer session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::Qwen3TtsTokenizer12HzCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_QWEN3_TTS_TOKENIZER_12HZ),
+            "the routed Qwen3-TTS tokenizer must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_qwen3_tts_main_to_explicit_companion_task() {
+        let (_session, task) =
+            with_arch_only_gguf(ARCH_QWEN3_TTS, "qwen3-tts-main-routed", |path| {
+                load_session(path).expect("Qwen3-TTS main session builds (bare)")
+            });
+        assert_eq!(task, ModelTask::TtsQwen3);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_QWEN3_TTS),
+            "the routed Qwen3-TTS main must not retain a stale partial registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_miocodec_to_the_versioned_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_MIOCODEC, "miocodec-routed", |path| {
+            load_session(path).expect("MioCodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::MioCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_MIOCODEC),
+            "the routed MioCodec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_snac_to_the_hierarchical_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_SNAC, "snac-routed", |path| {
+            load_session(path).expect("snac session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::SnacCodec);
+        assert!(
+            BOUND_ARCHES.iter().all(|binding| binding.arch != ARCH_SNAC),
+            "the routed hierarchical SNAC codec must not retain a registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_focalcodec_to_the_single_codebook_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FOCALCODEC, "focalcodec-routed", |path| {
+            load_session(path).expect("focalcodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::FocalCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FOCALCODEC),
+            "the routed FocalCodec must not retain an unreachable registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_facodec_to_the_factorized_codec_task() {
+        let (_session, task) = with_arch_only_gguf(ARCH_FACODEC, "facodec-routed", |path| {
+            load_session(path).expect("facodec session builds (bare)")
+        });
+        assert_eq!(task, ModelTask::Facodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_FACODEC),
+            "the routed FACodec must not retain an unreachable registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_moss_audio_tokenizer_to_its_codec_task() {
+        let (_session, task) = with_arch_only_gguf(
+            ARCH_MOSS_AUDIO_TOKENIZER,
+            "moss-audio-tokenizer-routed",
+            |path| load_session(path).expect("MOSS Audio Tokenizer session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::MossAudioTokenizerCodec);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_MOSS_AUDIO_TOKENIZER),
+            "the routed MOSS Audio Tokenizer must not retain an unreachable registry row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_moss_tts_releases_to_distinct_generation_tasks() {
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::NAME,
+            None,
+            "moss-tts-nano",
+            |path| load_session(path).expect("MOSS-TTS Nano session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossNano);
+        for release in [
+            vokra_models::moss_tts::MossTtsDelayRelease::Base,
+            vokra_models::moss_tts::MossTtsDelayRelease::V1_5,
+        ] {
+            let (_session, task) = with_named_arch_gguf(
+                ARCH_MOSS_TTS,
+                release.model_name(),
+                None,
+                release.model_name(),
+                |path| load_session(path).expect("MOSS-TTS Delay session builds (bare)"),
+            );
+            assert_eq!(task, ModelTask::TtsMossDelay);
+        }
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::VOICE_GENERATOR_NAME,
+            None,
+            "moss-voice-generator-corrected",
+            |path| load_session(path).expect("corrected VoiceGenerator session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossVoiceGenerator);
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name(),
+            Some(vokra_models::moss_tts::VOICE_GENERATOR_NAME),
+            "moss-voice-generator-legacy",
+            |path| load_session(path).expect("legacy VoiceGenerator session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossVoiceGenerator);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|binding| binding.arch != ARCH_MOSS_TTS),
+            "the routed MOSS-TTS arch must not retain an unreachable registry row"
         );
     }
 
@@ -2615,22 +4372,42 @@ mod tests {
             ARCH_KOTOBA_WHISPER,
             ARCH_MOONSHINE,
             ARCH_PARAKEET_TDT,
+            ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
+            ARCH_CANARY_1B_FLASH,
+            ARCH_REAZONSPEECH_NEMO_V2,
             ARCH_WHISPER_MEDUSA_V1,
             ARCH_SILERO_VAD,
             ARCH_PIPER_PLUS,
             ARCH_CSM,
             ARCH_MOSHI,
             ARCH_CAMPPLUS,
+            ARCH_XVECTOR,
+            ARCH_ECAPA_TDNN,
+            ARCH_WESPEAKER,
+            ARCH_TITANET,
             ARCH_VOXTRAL,
+            ARCH_QWEN3_ASR,
+            ARCH_ULTRAVOX,
+            ARCH_MOSS_AUDIO,
             ARCH_KOKORO,
+            ARCH_MUSICGEN,
             ARCH_SBV2,
             ARCH_FSMN_VAD,
             ARCH_FIRERED_VAD,
             ARCH_SMART_TURN,
             ARCH_NSNET2,
             ARCH_RNNOISE,
+            ARCH_DENOISE,
+            ARCH_METRICGAN_PLUS,
+            ARCH_MP_SENET,
+            ARCH_FACEBOOK_DENOISER,
+            ARCH_SEPFORMER,
+            ARCH_CONV_TASNET,
+            ARCH_TIGER,
+            ARCH_MOSSFORMER2_SS_16K,
             ARCH_PYANNOTE_SEGMENTATION,
+            ARCH_PYANNOTE_DIARIZATION,
             ARCH_RMVPE,
             ARCH_FCPE,
             ARCH_CREPE,
@@ -2638,11 +4415,27 @@ mod tests {
             ARCH_NKF_AEC,
             ARCH_CT_PUNC,
             ARCH_MIMI,
+            ARCH_DAC,
+            ARCH_WAVTOKENIZER,
+            ARCH_NEUCODEC,
+            ARCH_XCODEC2,
+            ARCH_FUNCODEC,
+            ARCH_YUE_XCODEC_MINI,
+            ARCH_SPEECHTOKENIZER,
+            ARCH_MIOCODEC,
+            ARCH_SNAC,
+            ARCH_FOCALCODEC,
+            ARCH_FACODEC,
+            ARCH_MOSS_AUDIO_TOKENIZER,
+            ARCH_MOSS_TTS,
             ARCH_BIGVGAN,
+            ARCH_SPEECHT5,
             ARCH_SPEECHT5_HIFIGAN,
             ARCH_HIFIGAN_VOCODER,
             ARCH_VOCOS,
+            ARCH_YUE_UPSAMPLER,
             ARCH_CHARSIU,
+            ARCH_AUDIOSEAL,
             ARCH_MAGNET_SMALL,
             ARCH_MAGNET_MEDIUM,
             ARCH_MELODYFLOW_T24_30SECS,

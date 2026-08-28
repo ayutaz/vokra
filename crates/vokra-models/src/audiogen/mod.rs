@@ -22,90 +22,71 @@
 //!
 //! # Distinct from MusicGen sibling
 //!
-//! AudioGen shares the AR-LM-over-EnCodec-RVQ + frozen-T5-text-encoder
-//! topology with MusicGen (Kreuk et al. reused the AudioCraft `LMModel`
-//! spine that Copet et al. later hardened for MusicGen). The families
-//! diverge along **modality** (SFX / environmental sounds vs music) and
-//! **training corpus**; a future modality-specific head (SFX-only
-//! conditioning stack, per-class embedding table, stereo output head)
-//! must not silent-mis-bind against MusicGen's music-only runtime path.
-//! Hence the distinct `audiogen` arch tag — FR-EX-08 dispatch safety
-//! (2026-08-14 audit follow-up retags the converter's arch from the
-//! Wave 5 shared `musicgen` tag).
+//! AudioGen shares the AudioCraft AR-LM-over-EnCodec-RVQ spine with
+//! MusicGen, but differs in modality, training corpus and conditioner
+//! dimensions. The already-published Vokra GGUF predates the converter
+//! retag and carries `vokra.model.arch = "musicgen"`; the runtime accepts
+//! that legacy tag only when the canonical AudioGen name, upstream
+//! provenance and complete tensor manifest all match. New conversions use
+//! the distinct `audiogen` tag. Arbitrary MusicGen files never alias to
+//! AudioGen (FR-EX-08).
 //!
 //! # Architecture (transcribed from primary sources)
 //!
 //! ```text
 //! text prompt (UTF-8 string)
-//!   -> frozen T5-base text encoder                   ← **loud-partial**
-//!        (google-t5/t5-base — HF transformers `T5EncoderModel`,
-//!         encoder-only, no reusable primitive in `vokra_ops` today;
-//!         the follow-up wave lands a T5-base implementation or a
-//!         first-class `t5_text_encode` op — SHARED with MusicGen,
-//!         so the same fix unblocks both binders.)
-//!   -> autoregressive transformer LM with            ← **loud-partial**
-//!      4-codebook delay pattern and text-conditioned
-//!      cross-attention to T5 tokens
+//!   -> AudioCraft text conditioner                  ← **companion
+//!        (not contained in the public LM-only GGUF)     required**
+//!   -> autoregressive transformer LM with            ← **real raw step**
+//!      text-conditioned AudioCraft conditioning
+//!        (`prepare_lm_condition` + `new_lm_state` + `lm_step_into`)
+//!   -> 4-codebook delay pattern + CFG + sampling     ← **real raw codes**
 //!        (Kreuk et al. Algorithm 1 — reused in Copet et al. MusicGen;
 //!         the delay-pattern interleave across the 4 RVQ streams +
-//!         cross-attention to T5-encoded prompt tokens are shared with
-//!         the MusicGen sibling. The single-codebook AR LMs already in
-//!         the tree — cosyvoice2 / moshi / voxtral — cover neither the
-//!         delay pattern nor the text-encoder cross-attention.)
-//!   -> EnCodec RVQ decode (4 codebooks, 50 Hz frame ← **primitive
-//!      rate, 32 kHz PCM output)                        exists**
-//!        (available via `vokra_ops::encodec_rvq_decode` — the ONE
-//!         landed anchor cited in the loud-partial message so a reader
-//!         knows the composition anchor; identical bundled codec as
-//!         MusicGen.)
-//!   -> PCM (mono f32, 32 kHz)
+//!         conditioning path are shared implementation work with the
+//!         AudioCraft-layout MusicGen variants.)
+//!   -> EnCodec RVQ codebook-to-latent fold            ← **primitive
+//!        (`vokra_ops::encodec_rvq_decode`)               exists**
+//!   -> neural SEANet decoder to 16 kHz PCM             ← **companion
+//!        (not contained in the public LM-only GGUF)       required**
+//!   -> PCM (mono f32, 16 kHz)
 //! ```
 //!
 //! # Loud-partial classification (design § — CLAUDE.md 教訓 (a))
 //!
 //! - **Real (this WP)**:
-//!   - [`AudioGen::from_gguf`] with strict `vokra.model.arch == "audiogen"`
-//!     validation + `vokra.model.name == "audiogen-medium"` discriminator
-//!     (AudioGen ships as a single variant on HF today; the single-
-//!     variant simplification lets us skip the `MusicGenVariant`-style
-//!     enum that MusicGen needed for Small vs Medium — a future
-//!     `audiogen-large` release would land the enum in a follow-up
-//!     wave).
-//!   - [`AudioGenConfig::from_gguf`] with primary-source constant
-//!     fallback per key (the AudioGen converter does NOT currently stamp
-//!     the `vokra.audiogen.*` chunk group — only arch / name / category /
-//!     upstream_hf / provenance — so a *strict* reader would refuse the
-//!     already-published `huggingface.co/facebook/audiogen-medium` GGUF.
-//!     Primary source is well-established (HF `config.json` + AudioCraft
-//!     code + paper), so fallback does not fabricate axes; a future
-//!     converter sub-wave that adds the stamps upgrades this reader to
-//!     real-stamped reads per-key with no runtime code change — mirror
-//!     of the Sortformer / PyanNet / MusicGen fallback pattern).
-//!   - [`AudioGenWeights::from_gguf`] with a floor of non-empty tensor
-//!     count enforced loud (a GGUF that carries zero tensors is refused
-//!     rather than silently running an all-zero forward — FR-EX-08).
+//!   - [`AudioGen::from_gguf`] with `vokra.model.name ==
+//!     "audiogen-medium"` discrimination. It accepts the current
+//!     `audiogen` arch or the narrowly authenticated legacy public
+//!     `musicgen` arch described above.
+//!   - [`AudioGenConfig::from_gguf`] reads the converter-stamped
+//!     `vokra.audiogen.*` topology group. The already-published legacy GGUF
+//!     predates those stamps, so each missing key has the same primary-source
+//!     fallback; this preserves compatibility without fabricating axes.
+//!   - [`AudioGenWeights::from_gguf`] with the public 588-tensor complete
+//!     sorted `(name, dimensions)` manifest pinned. Empty, truncated and
+//!     wrong-family files fail before execution (FR-EX-08).
 //!   - Weight-license class surfacing (defaults to
 //!     [`LicenseClass::NonCommercial`] per the AudioGen converter's
 //!     stamped `cc-by-nc-4.0` — T4 tier, fail-closed at the runtime
 //!     compliance gate M2-13).
+//!   - Mapping-owned [`AudioGen::from_path_with_policy_and_backend`] plus the
+//!     shared [`crate::audiocraft_lm::AudioCraftLmDecoder`] execute the learned
+//!     T5-large projection, pre-norm self/cross-attention stack, GELU MLP and
+//!     four logits heads on one selected CPU/Metal backend. Unsupported
+//!     operations fail before partial execution; no CPU fallback is present.
+//!   - [`AudioGen::generate_codes`] runs AudioCraft's two-state CFG 3.0,
+//!     complete four-codebook delay mask and seeded top-k 250 sampling and
+//!     returns frame-major EnCodec indices without delay-padding tokens.
 //!
 //! - **Loud-partial (this WP)**: [`AudioGen::generate`] returns
-//!   [`VokraError::UnsupportedOp`] naming **three** deferred pieces:
-//!   1. the frozen T5-base text encoder forward (upstream
-//!      `transformers.T5EncoderModel`; no reusable primitive in
-//!      `vokra_ops` today; the follow-up wave lands the T5-base body or
-//!      a first-class `t5_text_encode` op — MusicGen shares this exact
-//!      gap and their solution will unblock both);
-//!   2. the autoregressive transformer LM decode with the **4-codebook
-//!      delay pattern** (Kreuk et al. Algorithm 1, shared with Copet et
-//!      al. MusicGen) + text-conditioned **cross-attention** to the
-//!      T5-encoded prompt tokens (the single-codebook AR LMs already
-//!      in the tree — cosyvoice2 / moshi / voxtral — cover neither the
-//!      delay pattern nor the text-encoder cross-attention);
-//!   3. the EnCodec RVQ decode from the 4 codebook streams to 32 kHz PCM
-//!      — **available via `vokra_ops::encodec_rvq_decode`**, cited as
-//!      the one landed piece so a reader diagnosing this gap knows the
-//!      composition anchor.
+//!   [`VokraError::UnsupportedOp`] naming **two** deferred companion pieces:
+//!   1. an authenticated text-conditioner/tokenizer companion. The public
+//!      GGUF contains the LM conditioning projection, not the conditioner;
+//!   2. complete EnCodec waveform decoding. The landed
+//!      `vokra_ops::encodec_rvq_decode` is only the codebook-to-latent
+//!      fold; the SEANet decoder must come from a separately authenticated
+//!      codec companion.
 //!
 //! The error names the **three primary source URLs** (HF card +
 //! AudioCraft repo + arXiv:2209.15352 paper), the config axes echoed
@@ -117,26 +98,23 @@
 //! Rationale (RMVPE / pyannote / hifigan / vocos / bigvgan / snac /
 //! beat_this / mt3 / sortformer / musicgen loud-partial precedent,
 //! CLAUDE.md 教訓 (a) — "loud-partial は fake-complete より honest"):
-//! the surrounding scaffold + `from_gguf` chunk-group validation +
-//! FR-EX-08 loud-fails land today so a follow-up wave can flip the
-//! switch by (i) landing the T5-base text encoder body (shared with
-//! MusicGen), (ii) implementing the delay-pattern + cross-attention AR
-//! transformer LM decode (shared with MusicGen), and (iii) wiring the
-//! composed loop to the existing `vokra_ops::encodec_rvq_decode`
-//! primitive. Because pieces (i) and (ii) are shared with MusicGen the
-//! composition wave lands both binders at once.
+//! the surrounding scaffold + `from_gguf` chunk-group validation + FR-EX-08
+//! loud-fails landed first. Raw shared LM + delay/CFG/sampling is now native;
+//! remaining work is the explicit conditioner companion and native SEANet
+//! decoder composition.
 //!
-//! # `vokra.audiogen.*` chunk group (read here — fallback-friendly)
+//! # `vokra.audiogen.*` chunk group
 //!
 //! The AudioGen converter (`crates/vokra-convert/src/models/
-//! audiogen_medium.rs`) currently stamps only the arch / name / category
-//! / upstream_hf / provenance chunks. The topology chunk group is READ
-//! by this binder but any absent key falls back to the **primary-source
-//! constant** so an already-published GGUF loads correctly. A future
-//! converter sub-wave that adds `vokra.audiogen.*` stamps will override
-//! the fallback automatically per-key with no runtime code change.
+//! audiogen_medium.rs`) stamps the complete topology group. The public
+//! pre-stamp artifact remains loadable because any absent key falls back to
+//! the same **primary-source constant**. New artifacts therefore carry their
+//! axes explicitly while the authenticated legacy artifact stays compatible.
 //!
-//! - `vokra.model.arch` (`String`): must equal [`ARCH`] (`"audiogen"`).
+//! - `vokra.model.arch` (`String`): normally [`ARCH`] (`"audiogen"`).
+//!   [`LEGACY_PUBLIC_ARCH`] (`"musicgen"`) is accepted only for the exact
+//!   public AudioGen identity and provenance, followed by full manifest
+//!   verification.
 //!   Deliberately distinct from every sibling music/audio-generation
 //!   arch — `musicgen` / `magnet_small_10secs` / `magnet_medium_30secs`
 //!   / `melodyflow_t24_30secs` / `jasco_400m_chords_drums` / `audioldm2`
@@ -149,12 +127,14 @@
 //! - `vokra.audiogen.{d_model, num_layers, n_heads, ffn_dim, vocab_size,
 //!   num_codebooks, codec_frame_rate_hz, sample_rate_hz}` (`u32` each):
 //!   the composite topology axes. Fallback constants transcribed from
-//!   HF `config.json` (see the `DEFAULT_*` constants for the primary-
-//!   source anchors). The AudioGen-Medium release ships with the same
+//!   AudioCraft's `model_scale/medium.yaml`, `audiogen_lm.yaml` and
+//!   `audiogen_base_16khz.yaml` (see the `DEFAULT_*` constants for the
+//!   primary-source anchors). The AudioGen-Medium release ships with the same
 //!   1.5B-family axes as MusicGen-Medium — this is a genuine coincidence
-//!   of the shared AudioCraft `LMModel` spine + the shared bundled 32
-//!   kHz EnCodec codec, NOT a fabrication (the HF config.json is the
-//!   primary source, not a MusicGen sibling extrapolation).
+//!   of the shared AudioCraft `LMModel` spine. AudioGen uses the distinct
+//!   16 kHz EnCodec configuration (stride 320 at 50 frames/s).
+//!   The axes are primary-source values, not a MusicGen sibling
+//!   extrapolation.
 //! - `vokra.provenance.*`: license class + raw license string, so the
 //!   runtime compliance gate (FR-CP-03 / M2-13) can classify the
 //!   artifact without re-inspecting the safetensors provenance. The
@@ -184,8 +164,18 @@
 //! `[[feedback-python-3-12]]` — not part of the runtime), mirroring the
 //! SpeechT5-HiFi-GAN / Sortformer / Charsiu / MusicGen bridge pattern.
 
+use std::sync::Arc;
+
+use vokra_core::backend::BackendKind;
+use vokra_core::compliance::{CompliancePolicy, check_weight_license};
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
+
+use crate::audiocraft_lm::{
+    AudioCraftCondition, AudioCraftGeneratedCodes, AudioCraftGenerationConfig, AudioCraftLmConfig,
+    AudioCraftLmDecoder, AudioCraftLmState,
+};
+use crate::strict_checkpoint::verify_tensor_manifest;
 
 // ---------------------------------------------------------------------------
 // Arch / metadata-key constants — mirror of
@@ -227,6 +217,28 @@ pub const ARCH: &str = "audiogen";
 /// [`crate::musicgen::MusicGenVariant`].
 pub const NAME: &str = "audiogen-medium";
 
+/// Exact legacy arch stamped by the already-published public GGUF before the
+/// converter changed to [`ARCH`]. It is accepted only with the canonical
+/// model name, upstream provenance and complete 588-tensor manifest.
+pub const LEGACY_PUBLIC_ARCH: &str = "musicgen";
+/// Canonical upstream provenance carried by the public artifact.
+pub const UPSTREAM_HF: &str = "facebook/audiogen-medium";
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const PUBLIC_TENSOR_COUNT: usize = 588;
+const PUBLIC_MANIFEST_SHA256: [u8; 32] = [
+    // vokra/audiogen-medium revision d537e1f92fc1665768be050c0e615c603717dc4e.
+    0xae, 0x9e, 0x44, 0x38, 0x1a, 0x6b, 0x33, 0xf3, 0x21, 0x48, 0xdf, 0x76, 0xbe, 0x2c, 0xa1, 0xff,
+    0x92, 0x8b, 0xcb, 0x25, 0x5b, 0x5e, 0x23, 0x84, 0x16, 0xaa, 0xe9, 0xd2, 0x00, 0x0c, 0x3f, 0x90,
+];
+
+/// Tensor topology of the already-published AudioGen artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioGenArtifactLayout {
+    /// AudioCraft `LMModel` only. Text conditioning and EnCodec are explicit
+    /// companion components; the public file does not contain their weights.
+    AudioCraftLm,
+}
+
 /// Shared taxonomy category with the MusicGen sibling — both are audio-
 /// generation members of the `music` taxonomy branch (per license-audit
 /// §3.1 row 402 rationale: "audio-generation taxonomy tree = text-to-
@@ -249,58 +261,61 @@ pub const GGUF_KEY_N_HEADS: &str = "vokra.audiogen.n_heads";
 /// Primary-source default: 6144 (AudioCraft "4× hidden" convention).
 pub const GGUF_KEY_FFN_DIM: &str = "vokra.audiogen.ffn_dim";
 /// `vokra.audiogen.vocab_size` — per-codebook token vocabulary size.
-/// Shared with MusicGen: 2048 (the bundled EnCodec 32 kHz RVQ codebook
-/// size, one entry per codebook — the LM emits `num_codebooks` streams
-/// each of this vocab size).
+/// Shared with MusicGen: 2048 entries per EnCodec RVQ codebook. The LM emits
+/// `num_codebooks` streams of this vocabulary size; the codec sample rate is
+/// a separate, AudioGen-specific axis.
 pub const GGUF_KEY_VOCAB_SIZE: &str = "vokra.audiogen.vocab_size";
 /// `vokra.audiogen.num_codebooks` — number of RVQ codebook streams the
-/// LM emits per frame. Shared with MusicGen: 4 (the bundled EnCodec 32
-/// kHz codec configuration).
+/// LM emits per frame. Shared with MusicGen: 4 (under AudioGen's distinct
+/// 16 kHz codec configuration).
 pub const GGUF_KEY_NUM_CODEBOOKS: &str = "vokra.audiogen.num_codebooks";
-/// `vokra.audiogen.codec_frame_rate_hz` — the EnCodec 32 kHz output
-/// frame rate. Shared with MusicGen: 50 Hz.
+/// `vokra.audiogen.codec_frame_rate_hz` — the EnCodec 16 kHz output frame
+/// rate. Shared with MusicGen: 50 Hz.
 pub const GGUF_KEY_CODEC_FRAME_RATE_HZ: &str = "vokra.audiogen.codec_frame_rate_hz";
 /// `vokra.audiogen.sample_rate_hz` — the paired EnCodec sample rate.
-/// Shared with MusicGen: 32000 Hz (32 kHz).
+/// AudioGen-specific: 16000 Hz (16 kHz). MusicGen uses a different 32 kHz
+/// EnCodec companion despite sharing the 50 Hz/4-codebook LM schedule.
 pub const GGUF_KEY_SAMPLE_RATE_HZ: &str = "vokra.audiogen.sample_rate_hz";
 
-// Primary-source constants transcribed from the HF model card's
-// `config.json` + the AudioCraft `EncodecModel` bundle (fetched 2026-08-14
-// — CLAUDE.md 「ハルシネーション厳禁」). AudioGen-Medium shares the
-// 1.5B-family axes with MusicGen-Medium via the shared AudioCraft
-// `LMModel` spine + the shared bundled 32 kHz EnCodec codec — this is a
-// genuine coincidence of the primary source, NOT a MusicGen sibling
-// extrapolation.
+// Primary-source constants transcribed from AudioCraft's
+// `config/model/lm/model_scale/medium.yaml`,
+// `config/model/lm/audiogen_lm.yaml`, `config/model/lm/default.yaml` and
+// `config/solver/audiogen/audiogen_base_16khz.yaml` (verified 2026-08-26).
+// AudioGen-Medium shares the 1.5B-family axes with MusicGen-Medium via the
+// shared AudioCraft `LMModel` spine. Its codec is deliberately not inherited
+// from MusicGen: AudioGen's official solver binds the 16 kHz EnCodec checkpoint
+// with stride 320, while MusicGen binds the 32 kHz checkpoint with stride 640.
 
-/// Transformer LM hidden dim (`d_model`). Primary source:
-/// `huggingface.co/facebook/audiogen-medium/config.json`
-/// (`decoder.hidden_size`). Matches AudioCraft 1.5B `LMModel` spine.
+/// Transformer LM hidden dim (`d_model`). Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.dim`).
 pub const DEFAULT_D_MODEL: u32 = 1536;
-/// Transformer LM depth (`num_hidden_layers`). Primary source:
-/// `audiogen-medium/config.json` (`decoder.num_hidden_layers`).
+/// Transformer LM depth. Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.num_layers`).
 pub const DEFAULT_NUM_LAYERS: u32 = 48;
-/// Multi-head attention head count (`num_attention_heads`). Primary
-/// source: `audiogen-medium/config.json` (`decoder.num_attention_heads`).
+/// Multi-head attention head count. Primary source: AudioCraft
+/// `config/model/lm/model_scale/medium.yaml` (`transformer_lm.num_heads`).
 /// `head_dim = 1536 / 24 = 64`.
 pub const DEFAULT_N_HEADS: u32 = 24;
-/// Feedforward inner dimension (`ffn_dim`). Primary source:
-/// `audiogen-medium/config.json` (`decoder.ffn_dim`). AudioCraft "4×
-/// hidden" convention: `6144 = 4 × 1536`.
+/// Feedforward inner dimension. Primary source: AudioCraft
+/// `config/model/lm/default.yaml` (`transformer_lm.hidden_scale = 4`) composed
+/// with the medium dimension: `6144 = 4 × 1536`.
 pub const DEFAULT_FFN_DIM: u32 = 6144;
-/// Per-codebook vocabulary size. Primary source: HF `config.json`
-/// (`decoder.vocab_size`) + AudioCraft `EncodecModel.quantizer.bins`.
-/// Shared with MusicGen: the bundled EnCodec 32 kHz codec is a 4-codebook
-/// RVQ with 2048 entries per codebook.
+/// Per-codebook vocabulary size. Primary source: AudioCraft
+/// `config/model/lm/audiogen_lm.yaml` (`transformer_lm.card = 2048`).
+/// Shared with MusicGen: the paired EnCodec RVQ has 4 codebooks with 2048
+/// entries each; AudioGen's waveform companion itself is the 16 kHz model.
 pub const DEFAULT_VOCAB_SIZE: u32 = 2048;
 /// Number of RVQ codebook streams the LM emits per frame. Primary
 /// source: AudioCraft `AudioGen(...).lm.n_q = 4` (shared with MusicGen).
 pub const NUM_CODEBOOKS: u32 = 4;
-/// EnCodec output frame rate for the bundled 32 kHz codec (matches
-/// AudioCraft `EncodecModel.frame_rate = 50`). Shared with MusicGen.
+/// EnCodec output frame rate for the paired 16 kHz codec (stride 320, so
+/// `16000 / 320 = 50`). Shared with MusicGen at the token schedule level.
 pub const CODEC_FRAME_RATE_HZ: u32 = 50;
-/// EnCodec sample rate for the bundled 32 kHz codec (matches AudioCraft
-/// `EncodecModel.sample_rate = 32000`). Shared with MusicGen.
-pub const SAMPLE_RATE_HZ: u32 = 32_000;
+/// EnCodec sample rate for AudioGen's paired codec. Primary source:
+/// AudioCraft `config/solver/audiogen/audiogen_base_16khz.yaml`
+/// (`sample_rate: 16000`, total stride 320). This intentionally differs from
+/// MusicGen's 32 kHz codec.
+pub const SAMPLE_RATE_HZ: u32 = 16_000;
 
 /// Primary-source anchor for the HF model card. Cited in the loud-partial
 /// error so a reader diagnosing the gap knows the definitive artifact
@@ -315,17 +330,14 @@ pub const PRIMARY_SOURCE_AUDIOCRAFT_REPO: &str = "github.com/facebookresearch/au
 /// + AudioCraft repo so a reader has the theoretical context as well.
 ///   DISTINCT from MusicGen's arXiv:2306.05284 (Copet et al. NeurIPS 2023)
 ///   — the two are sibling papers but AudioGen came first and pioneered
-///   the delay-pattern + text-encoder-cross-attention architecture that
+///   the delay-pattern + text-conditioning architecture that
 ///   MusicGen later refined.
 pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2209.15352";
 
 // ---------------------------------------------------------------------------
 // AudioGenConfig — the composite topology axes read from the
-// `vokra.audiogen.*` chunk group, with primary-source constant fallback
-// (the AudioGen converter does not currently stamp this chunk group —
-// the fallback is honest because the primary source is well-established;
-// a future converter sub-wave that adds the stamps upgrades this reader
-// to real-stamped reads seamlessly). Mirror of
+// `vokra.audiogen.*` chunk group, with primary-source constant fallback for
+// the already-published pre-stamp artifact. Mirror of
 // [`crate::musicgen::MusicGenConfig::from_gguf`] +
 // [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`] +
 // [`crate::pyannote::PyanNetConfig::from_gguf`].
@@ -335,8 +347,8 @@ pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2209.15352";
 /// group.
 ///
 /// [`from_gguf`](Self::from_gguf) reads the chunk with primary-source
-/// constant fallback per key — a GGUF that never carried the chunk still
-/// loads with the upstream defaults transcribed from HF `config.json`.
+/// constant fallback per key — the authenticated public GGUF that predates
+/// the topology stamps still loads with the upstream defaults.
 /// Every numeric axis is `u32` in the GGUF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioGenConfig {
@@ -356,14 +368,14 @@ pub struct AudioGenConfig {
     pub num_codebooks: u32,
     /// EnCodec output frame rate (50 Hz).
     pub codec_frame_rate_hz: u32,
-    /// EnCodec sample rate (32000 Hz = 32 kHz).
+    /// EnCodec sample rate (16000 Hz = 16 kHz).
     pub sample_rate_hz: u32,
 }
 
 impl AudioGenConfig {
     /// Primary-source-transcribed axes as a `const` — the fallback
-    /// baseline used by [`from_gguf`](Self::from_gguf) when the chunk
-    /// group is absent (the current converter's default posture).
+    /// baseline used by [`from_gguf`](Self::from_gguf) for a legacy artifact
+    /// whose topology chunk group is absent.
     #[must_use]
     pub const fn primary_source_default() -> Self {
         Self {
@@ -381,19 +393,15 @@ impl AudioGenConfig {
     /// Reads every `vokra.audiogen.*` chunk from `gguf`, falling back to
     /// the primary-source defaults per absent key.
     ///
-    /// The AudioGen converter does not currently stamp this chunk group
-    /// (only arch / name / category / upstream_hf / provenance), so on
-    /// an already-published GGUF every axis falls through to its
-    /// primary-source default. A future converter sub-wave that adds the
-    /// stamps upgrades this reader to real-stamped reads per-key with no
-    /// runtime code change.
+    /// New conversions stamp this chunk group. The already-published legacy
+    /// GGUF does not, so its axes fall through to the same primary-source
+    /// defaults on a per-key basis.
     ///
     /// Mirror of
     /// [`crate::musicgen::MusicGenConfig::from_gguf`] +
     /// [`crate::sortformer_diar_4spk_v1::SortformerConfig::from_gguf`]
-    /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same
-    ///   fallback pattern used for converters whose topology-stamp
-    ///   sub-wave is still queued.
+    /// + [`crate::pyannote::PyanNetConfig::from_gguf`] — the same fallback
+    ///   pattern used for legacy pre-stamp artifacts.
     #[must_use]
     pub fn from_gguf(gguf: &GgufFile) -> Self {
         let default = Self::primary_source_default();
@@ -443,19 +451,16 @@ impl AudioGenConfig {
 }
 
 // ---------------------------------------------------------------------------
-// AudioGenWeights — bound the tensor manifest with a non-emptiness gate.
-// Under the loud-partial WP the weights are counted but the T5-base
-// encoder + AR LM (delay pattern + cross-attention) + EnCodec RVQ
-// decode composition is deferred. Mirror of `MusicGenWeights` /
-// `SortformerWeights` / `Mt3Weights` / `BeatThisWeights`.
+// AudioGenWeights — bind the exact public LM-only tensor manifest.
+// Execution remains loud-partial, but production binding is no longer a
+// count-only or non-empty claim.
 // ---------------------------------------------------------------------------
 
 /// Weight tensors bound from an AudioGen GGUF.
 ///
-/// **Contract**: [`from_gguf`](Self::from_gguf) is a *loud* verification
-/// step. A GGUF that carries zero tensors is rejected with
-/// [`VokraError::ModelLoad`] (FR-EX-08 — an empty GGUF is never a valid
-/// AudioGen checkpoint).
+/// **Contract**: [`from_gguf`](Self::from_gguf) verifies the complete
+/// 588-tensor sorted `(name, dimensions)` manifest of the public LM-only
+/// release. Empty, truncated and wrong-layout files fail closed.
 ///
 /// Under the current landing this struct stores the tensor names +
 /// GGUF-side dims discovered on disk. The follow-up wave sizes its
@@ -466,21 +471,20 @@ impl AudioGenConfig {
 /// inputs without re-parsing the GGUF.
 #[derive(Debug)]
 pub struct AudioGenWeights {
-    /// Tensors discovered on disk, indexed by upstream `state_dict`
-    /// name with their GGUF-side dims. Used by the load-time
-    /// non-emptiness gate and by the future follow-up
-    /// T5-encoder + AR-LM + EnCodec-decode composition wave.
+    /// Tensors discovered on disk, indexed by upstream `state_dict` name
+    /// with their GGUF-side dims. Production construction has already
+    /// verified this full collection against the pinned manifest.
     tensors: Vec<(String, Vec<usize>)>,
 }
 
 impl AudioGenWeights {
-    /// Scans `gguf` for the AudioGen state_dict tensors. Refuses to bind
-    /// if the GGUF carries zero tensors (FR-EX-08 — an empty GGUF is
-    /// never a valid AudioGen checkpoint).
+    /// Scans `gguf` for the AudioGen state_dict tensors and verifies the
+    /// complete public LM-only manifest.
     ///
     /// # Errors
     ///
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors.
+    /// - [`VokraError::ModelLoad`] when the GGUF is empty, truncated or
+    ///   does not match the pinned public manifest.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         let mut tensors: Vec<(String, Vec<usize>)> = Vec::new();
         for info in gguf.tensors() {
@@ -491,11 +495,38 @@ impl AudioGenWeights {
         if tensors.is_empty() {
             return Err(VokraError::ModelLoad(
                 "audiogen: GGUF carries zero tensors — refusing to bind an all-zero \
-                 forward (FR-EX-08). Re-run `vokra-cli convert --model audiogen-medium` \
-                 against a `facebook/audiogen-medium` safetensors checkpoint (the upstream \
-                 release ships a bundle of LM decoder + T5-base text encoder + EnCodec RVQ \
-                 codec — every group must be present)."
+                 forward (FR-EX-08). Re-acquire or convert the exact AudioGen-Medium \
+                 LM artifact. The already-published GGUF is intentionally LM-only; \
+                 conditioner and EnCodec weights are authenticated companions rather \
+                 than tensor groups that may be silently fabricated."
                     .to_owned(),
+            ));
+        }
+        verify_tensor_manifest(
+            gguf,
+            "audiogen",
+            PUBLIC_TENSOR_COUNT,
+            PUBLIC_MANIFEST_SHA256,
+            NAME,
+        )?;
+        Ok(Self { tensors })
+    }
+
+    #[cfg(test)]
+    fn from_fixture(gguf: &GgufFile) -> Result<Self> {
+        let tensors = gguf
+            .tensors()
+            .iter()
+            .map(|info| {
+                (
+                    info.name.clone(),
+                    info.dimensions.iter().map(|&axis| axis as usize).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if tensors.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "audiogen: GGUF carries zero tensors (FR-EX-08)".to_owned(),
             ));
         }
         Ok(Self { tensors })
@@ -509,19 +540,10 @@ impl AudioGenWeights {
         self.tensors.len()
     }
 
-    /// Load-time shape gate — validates that at least one bound tensor
-    /// has an axis matching `config.d_model`. Under the current landing
-    /// this is a **soft** gate (mismatch is silently ignored) because
-    /// the T5-encoder + AR-LM + EnCodec-decode tensor-name walk has not
-    /// yet been pinned pending the follow-up wave's manifest fetch —
-    /// a hard shape assertion today would fail against every
-    /// legitimate future manifest.
-    ///
-    /// The follow-up wave will replace this soft accessor with a hard
-    /// pin against the primary-source-verified tensor-name walk
-    /// (mirror of `pyannote::PyanNetWeights::verify_core_shapes`).
-    ///
-    /// Kept as a `#[must_use]` accessor so the read is deliberate.
+    /// Diagnostic consistency check: at least one verified tensor must carry
+    /// the configured decoder width. Exact identity is enforced earlier by
+    /// the complete manifest hash; this accessor is retained for tests and
+    /// human-readable topology diagnostics.
     #[must_use]
     pub fn matches_config(&self, config: &AudioGenConfig) -> bool {
         let d = config.d_model as usize;
@@ -536,22 +558,23 @@ impl AudioGenWeights {
 /// Meta AudioGen text-to-audio autoregressive transformer LM runtime
 /// binder (`facebook/audiogen-medium`, CC-BY-NC-4.0 T4 tier).
 ///
-/// Bind with [`from_gguf`](Self::from_gguf), then call
-/// [`generate`](Self::generate) with a text prompt + duration to obtain
-/// a `Vec<f32>` of 32 kHz PCM samples. See the module doc for the
-/// current implementation-status matrix and the FR-EX-08 loud-error
-/// contract on the T5-base + AR-LM + EnCodec-decode composition.
+/// Bind with [`from_gguf`](Self::from_gguf). [`generate`](Self::generate)
+/// currently fails explicitly until authenticated conditioner/codec
+/// companions, the AR decoder and complete EnCodec/SEANet waveform decode
+/// are connected. See the module doc for the implementation-status matrix.
 #[derive(Debug)]
 pub struct AudioGen {
     config: AudioGenConfig,
-    // The bound weights are held (real, counted) but the T5-encoder +
-    // AR-LM + EnCodec-decode composition is a follow-up wave; the field
+    // The bound weights are held and manifest-verified, but prompt + AR-LM +
+    // EnCodec/SEANet execution is a follow-up wave; the field
     // is deliberately `#[allow(dead_code)]` until the composition lands
     // so a reader is not misled by an unused field. Same posture as
     // MusicGen / RMVPE / pyannote / mt3 / beat_this / sortformer.
     #[allow(dead_code)]
     weights: AudioGenWeights,
     weight_license: LicenseClass,
+    decoder: Option<AudioCraftLmDecoder>,
+    backend: BackendKind,
 }
 
 impl AudioGen {
@@ -568,38 +591,58 @@ impl AudioGen {
     /// # Errors
     ///
     /// - [`VokraError::ModelLoad`] when `vokra.model.arch` is absent or
-    ///   not `"audiogen"` (a sibling music/audio-generation GGUF handed
-    ///   to us by mistake — `musicgen` / `magnet_small_10secs` /
-    ///   `melodyflow_t24_30secs` / … — fails with a clear message
-    ///   instead of a downstream missing-tensor).
+    ///   neither `"audiogen"` nor the narrowly authenticated legacy
+    ///   public `"musicgen"` identity.
     /// - [`VokraError::ModelLoad`] when `vokra.model.name` is absent, or
     ///   when it is not `"audiogen-medium"` (a future release such as
     ///   `audiogen-large` would trigger a follow-up wave to lift the
     ///   discriminator to an `AudioGenVariant` enum).
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
-    ///   ([`AudioGenWeights::from_gguf`] refuses to bind an all-zero
-    ///   forward).
+    /// - [`VokraError::ModelLoad`] when the complete public 588-tensor
+    ///   manifest does not match.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
+        Self::bind(file, true)
+    }
+
+    #[cfg(test)]
+    fn from_fixture(file: &GgufFile) -> Result<Self> {
+        Self::bind(file, false)
+    }
+
+    fn bind(file: &GgufFile, strict_manifest: bool) -> Result<Self> {
         // 1. Arch check — always first so a mis-typed model handed here
         //    fails with a specific message instead of a downstream
-        //    missing-tensor error. The Wave 6 (2026-08-14) audit retag
-        //    from the Wave 5 shared `musicgen` tag means an already-
-        //    produced pre-Wave-6 AudioGen GGUF (arch = "musicgen") will
-        //    fail here — this is deliberate; the fix is to re-run
-        //    `vokra-cli convert --model audiogen-medium`.
+        //    missing-tensor error. The public pre-retag artifact carries
+        //    `musicgen`; accept that legacy tag only after exact identity
+        //    and upstream provenance authentication. The strict manifest
+        //    gate below completes the proof.
         match file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()) {
             Some(a) if a == ARCH => {}
+            Some(a) if a == LEGACY_PUBLIC_ARCH => {
+                let legacy_name = file
+                    .get(chunks::KEY_MODEL_NAME)
+                    .and_then(|value| value.as_str());
+                let upstream = file
+                    .get(KEY_PROVENANCE_UPSTREAM_HF)
+                    .and_then(|value| value.as_str());
+                if legacy_name != Some(NAME) || upstream != Some(UPSTREAM_HF) {
+                    return Err(VokraError::ModelLoad(format!(
+                        "audiogen: legacy public arch `{LEGACY_PUBLIC_ARCH}` is accepted only \
+                         for `{NAME}` with `{KEY_PROVENANCE_UPSTREAM_HF}={UPSTREAM_HF}`; \
+                         got name={legacy_name:?}, upstream={upstream:?}. Refusing to alias an \
+                         arbitrary MusicGen artifact to AudioGen (FR-EX-08)."
+                    )));
+                }
+            }
             Some(other) => {
                 return Err(VokraError::ModelLoad(format!(
                     "audiogen: GGUF arch is `{other}`, expected `{ARCH}` (was this \
-                     GGUF produced by `vokra-cli convert --model audiogen-medium`? Note \
-                     that Wave 6 audit follow-up 2026-08-14 retagged AudioGen from the \
-                     Wave 5 shared `musicgen` arch tag to the distinct `audiogen` tag — \
-                     an already-produced pre-Wave-6 AudioGen GGUF stamped `musicgen` \
-                     will fail this check and needs re-conversion). Note that the \
+                     GGUF produced by `vokra-cli convert --model audiogen-medium`? The \
+                     exact already-published pre-retag artifact is authenticated by name, \
+                     upstream provenance and complete tensor manifest; no other \
+                     `musicgen` artifact is accepted). Note that the \
                      sibling music/audio-generation arch tags — `musicgen` (Meta \
                      AudioCraft MusicGen family text-to-music AR LM — same AR-LM + \
-                     delay-pattern + T5-encoder-cross-attention topology as AudioGen but \
+                     delay-pattern + text-conditioning topology as AudioGen but \
                      different modality), `magnet_small_10secs` / `magnet_medium_30secs` \
                      (Meta AudioCraft non-autoregressive masked-LM), \
                      `melodyflow_t24_30secs` (Meta AudioCraft DiT flow-matching editing), \
@@ -608,7 +651,7 @@ impl AudioGen {
                      `ace_step` (chunked-AR), `bs_roformer` (source-separation) — all \
                      live in the same music-generation neighbourhood but have completely \
                      different forward topologies; AudioGen's autoregressive transformer \
-                     LM with 4-codebook delay pattern + T5 text-encoder cross-attention \
+                     LM with 4-codebook delay pattern + AudioCraft conditioning \
                      is topology-shared with MusicGen but modality-distinct (SFX vs \
                      music) and silently aliasing arch would misroute the runtime \
                      dispatch when a future modality-specific head ships, FR-EX-08)"
@@ -659,8 +702,17 @@ impl AudioGen {
         //    converter's stamp posture).
         let config = AudioGenConfig::from_gguf(file);
 
-        // 4. Load the tensor manifest with the non-emptiness gate.
-        let weights = AudioGenWeights::from_gguf(file)?;
+        // 4. Load and verify the complete public LM-only tensor manifest.
+        let weights = if strict_manifest {
+            AudioGenWeights::from_gguf(file)?
+        } else {
+            #[cfg(test)]
+            {
+                AudioGenWeights::from_fixture(file)?
+            }
+            #[cfg(not(test))]
+            unreachable!("non-test AudioGen binds always verify the public manifest")
+        };
 
         // 5. Provenance surfacing — read the stamped weight-license
         //    class for compliance gate cross-checks. The AudioGen
@@ -680,7 +732,43 @@ impl AudioGen {
             config,
             weights,
             weight_license,
+            decoder: None,
+            backend: BackendKind::Cpu,
         })
+    }
+
+    /// Opens a mapped AudioGen GGUF under the fail-closed compliance policy.
+    /// Official AudioGen weights are non-commercial and therefore require an
+    /// explicit research-license opt-in through [`Self::from_path_with_policy`].
+    pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, &CompliancePolicy::strict(), BackendKind::Cpu)
+    }
+
+    /// Opens a mapped AudioGen GGUF with an explicit policy on CPU.
+    pub fn from_path_with_policy(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+    ) -> Result<Self> {
+        Self::from_path_with_policy_and_backend(path, policy, BackendKind::Cpu)
+    }
+
+    /// Opens, authenticates and binds the AudioCraft LM-only decoder to one
+    /// explicit backend. Unsupported Metal operations fail before execution.
+    pub fn from_path_with_policy_and_backend(
+        path: impl AsRef<std::path::Path>,
+        policy: &CompliancePolicy,
+        backend: BackendKind,
+    ) -> Result<Self> {
+        let file = Arc::new(vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?);
+        let mut model = Self::from_gguf(&file)?;
+        check_weight_license(&file, policy)?;
+        model.decoder = Some(AudioCraftLmDecoder::bind(
+            Arc::clone(&file),
+            model.audiocraft_lm_config(),
+            backend,
+        )?);
+        model.backend = backend;
+        Ok(model)
     }
 
     /// The bound topology axes (from `vokra.audiogen.*` chunk group with
@@ -714,36 +802,101 @@ impl AudioGen {
         self.weights.tensor_count()
     }
 
-    /// Generates a `duration_secs`-length 32 kHz PCM stream conditioned
+    /// Returns the authenticated AudioCraft LM artifact layout.
+    #[inline]
+    #[must_use]
+    pub const fn artifact_layout(&self) -> AudioGenArtifactLayout {
+        AudioGenArtifactLayout::AudioCraftLm
+    }
+
+    /// Returns the selected execution backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    /// Applies AudioGen's learned T5-large (1024-wide) output projection and
+    /// condition mask. The actual input width is read from the authenticated
+    /// checkpoint rather than hard-coded.
+    pub fn prepare_lm_condition(
+        &self,
+        hidden: &[f32],
+        frames: usize,
+        mask: Option<&[u8]>,
+    ) -> Result<AudioCraftCondition> {
+        self.lm_decoder()?.prepare_condition(hidden, frames, mask)
+    }
+
+    /// Precomputes AudioGen cross-attention K/V for one generation stream.
+    pub fn new_lm_state(
+        &self,
+        condition: &AudioCraftCondition,
+        max_steps: usize,
+    ) -> Result<AudioCraftLmState> {
+        self.lm_decoder()?.new_state(condition, max_steps)
+    }
+
+    /// Advances one delayed AudioGen sequence position and writes four
+    /// codebook-logit rows.
+    pub fn lm_step_into(
+        &self,
+        state: &mut AudioCraftLmState,
+        tokens: &[u32],
+        logits: &mut [f32],
+    ) -> Result<()> {
+        self.lm_decoder()?.step_into(state, tokens, logits)
+    }
+
+    /// Runs AudioCraft's two-state CFG, delay pattern and seeded sampling,
+    /// returning frame-major EnCodec indices. Conditioner tokenization and
+    /// waveform decoding stay at their explicit companion boundaries.
+    pub fn generate_codes(
+        &self,
+        conditional: &AudioCraftCondition,
+        unconditional: &AudioCraftCondition,
+        generation: &AudioCraftGenerationConfig,
+    ) -> Result<AudioCraftGeneratedCodes> {
+        self.lm_decoder()?
+            .generate_codes(conditional, unconditional, generation)
+    }
+
+    fn audiocraft_lm_config(&self) -> AudioCraftLmConfig {
+        AudioCraftLmConfig {
+            d_model: self.config.d_model as usize,
+            num_layers: self.config.num_layers as usize,
+            n_heads: self.config.n_heads as usize,
+            ffn_dim: self.config.ffn_dim as usize,
+            vocab_size: self.config.vocab_size as usize,
+            num_codebooks: self.config.num_codebooks as usize,
+        }
+    }
+
+    fn lm_decoder(&self) -> Result<&AudioCraftLmDecoder> {
+        self.decoder.as_ref().ok_or_else(|| {
+            VokraError::UnsupportedOp(
+                "audiogen native LM execution requires a mapping-owned handle; use \
+                 AudioGen::from_path_with_policy_and_backend (FR-EX-08: explicit, no CPU fallback)"
+                    .to_owned(),
+            )
+        })
+    }
+
+    /// Generates a `duration_secs`-length 16 kHz PCM stream conditioned
     /// on the text `prompt` (an environmental-sound / SFX description
     /// such as "dog barking on a wooden porch").
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — AudioGen's inference path
-    /// requires **three** deferred pieces (all shared with the MusicGen
-    /// sibling — a single follow-up wave unblocks both binders):
+    /// Returns [`VokraError::UnsupportedOp`] — AudioGen's PCM inference path
+    /// requires **two** deferred companion pieces:
     ///
-    /// 1. **Frozen T5-base text encoder forward**: the upstream release
-    ///    freezes a `google-t5/t5-base` encoder for text conditioning
-    ///    (HF transformers `T5EncoderModel`); no reusable primitive
-    ///    exists in `vokra_ops` today. The follow-up wave lands either
-    ///    a T5-base implementation dedicated to AudioCraft models or a
-    ///    first-class `t5_text_encode` op that other future consumers
-    ///    can share.
-    /// 2. **Autoregressive transformer LM decode with 4-codebook delay
-    ///    pattern + text-conditioned cross-attention**: Kreuk et al.
-    ///    Algorithm 1 (later refined in Copet et al. MusicGen)
-    ///    describes the delay-pattern interleave across the 4 RVQ
-    ///    codebook streams, plus the cross-attention over the T5-encoded
-    ///    prompt tokens. The single-codebook autoregressive LMs already
-    ///    in the tree (`cosyvoice2` / `moshi` / `voxtral`) cover neither
-    ///    the delay pattern nor the text-encoder cross-attention.
-    /// 3. **EnCodec RVQ decode**: available via
-    ///    `vokra_ops::encodec_rvq_decode` — this is the **ONE landed
-    ///    anchor** the loud-partial message cites so a reader
-    ///    diagnosing this gap knows the composition anchor. The
-    ///    bundled 32 kHz codec is identical to MusicGen's.
+    /// 1. **Prompt composition**: the public file contains the LM
+    ///    conditioning projection but no conditioner/tokenizer weights;
+    ///    an explicit authenticated companion is required.
+    /// 2. **Complete EnCodec waveform decode**:
+    ///    `vokra_ops::encodec_rvq_decode` supplies only the codebook-to-
+    ///    latent fold. A companion neural SEANet decoder is required for
+    ///    latent-to-PCM execution.
     ///
     /// The error names **three** primary source URLs (HF card +
     /// AudioCraft repo + arXiv:2209.15352 paper) so a reader diagnosing
@@ -753,7 +906,7 @@ impl AudioGen {
     /// # Errors
     ///
     /// - [`VokraError::UnsupportedOp`] — the loud-partial gate for the
-    ///   deferred T5-encoder + AR-LM + EnCodec-decode composition.
+    ///   deferred conditioner/tokenizer + EnCodec waveform composition.
     pub fn generate(&self, prompt: &str, duration_secs: f32) -> Result<Vec<f32>> {
         // Bind unused args so a `#[warn(unused_variables)]` change does
         // not silently mask the loud-partial fire path; the future real
@@ -761,6 +914,7 @@ impl AudioGen {
         let _ = (prompt, duration_secs);
         Err(generate_forward_loud_partial(
             &self.config,
+            self.artifact_layout(),
             prompt,
             duration_secs,
         ))
@@ -768,7 +922,7 @@ impl AudioGen {
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`AudioGen::generate`] until the T5-encoder + AR-LM + EnCodec-decode
+/// [`AudioGen::generate`] until conditioner/tokenizer + EnCodec waveform
 /// composition lands.
 ///
 /// Names **all three** primary source URLs (HF card + AudioCraft repo +
@@ -784,27 +938,26 @@ impl AudioGen {
 /// (musicgen precedent).
 fn generate_forward_loud_partial(
     cfg: &AudioGenConfig,
+    layout: AudioGenArtifactLayout,
     prompt: &str,
     duration_secs: f32,
 ) -> VokraError {
     VokraError::UnsupportedOp(format!(
-        "audiogen generate: T5-base text encoder forward + autoregressive transformer \
-         LM decode (with 4-codebook delay pattern + text-conditioned cross-attention) \
-         + EnCodec RVQ decode composition pending. What is missing is (a) the frozen \
-         T5-base text encoder forward (upstream `transformers.T5EncoderModel` — no \
-         reusable primitive in `vokra_ops` today; the follow-up wave lands either a \
-         T5-base implementation dedicated to AudioCraft models or a first-class \
-         `t5_text_encode` op — SHARED with the MusicGen sibling so a single fix \
-         unblocks both binders), (b) the autoregressive transformer LM decode with the \
-         AudioCraft 4-codebook delay pattern (Kreuk et al. Algorithm 1 — the interleave \
-         across the 4 RVQ codebook streams that MusicGen later refined) plus \
-         text-conditioned cross-attention over the T5-encoded prompt tokens (the \
-         single-codebook AR LMs already in the tree — cosyvoice2 / moshi / voxtral — \
-         cover neither the delay pattern nor the text-encoder cross-attention), and \
-         (c) the EnCodec RVQ decode step — this is available via \
-         `vokra_ops::encodec_rvq_decode` (the ONE landed anchor of the composition; the \
-         follow-up wave wires the AR LM output onto this primitive; identical bundled \
-         32 kHz codec as MusicGen). Config: d_model={d_model}, num_layers={num_layers}, \
+        "audiogen generate: prompt conditioning companion + complete EnCodec waveform \
+         decoding pending. \
+         Artifact layout={layout:?}: the already-published AudioCraft LM-only GGUF \
+         contains neither text-conditioner/tokenizer nor EnCodec weights; explicit \
+         authenticated companion components are required. What is missing is (a) the \
+         T5-family prompt path and real-weight parity — the public LM's conditioning \
+         projection is present, but the conditioner itself is not in this GGUF. The \
+         native raw LM plus AudioCraft 4-codebook delay pattern, CFG and sampling are \
+         available through generate_codes. What also remains is (b) complete EnCodec decoding: \
+         `vokra_ops::encodec_rvq_decode` is only the landed codebook-to-latent fold; the \
+         neural SEANet decoder from latent frames to PCM is not contained in the public \
+         LM-only artifact and must be supplied and executed separately. The SEANet \
+         implementation is shared with MusicGen, while conditioner dimensions remain \
+         artifact-specific. Config: \
+         d_model={d_model}, num_layers={num_layers}, \
          n_heads={n_heads}, ffn_dim={ffn_dim}, vocab_size={vocab_size}, \
          num_codebooks={num_codebooks}, codec_frame_rate_hz={codec_frame_rate_hz}, \
          sample_rate_hz={sample_rate_hz}. Requested prompt_len={prompt_len} chars, \
@@ -840,19 +993,17 @@ mod tests {
     //! # What "round-trip" means here
     //!
     //! The task spec asks for 5+ unit tests. On real inference this
-    //! would be `generate(...)` returning real 32 kHz PCM, but the
-    //! T5-base + AR-LM (delay pattern + cross-attention) + EnCodec-
-    //! decode composition is deferred (see the module doc +
+    //! would be `generate(...)` returning real 16 kHz PCM, but the
+    //! prompt-conditioning + delay-pattern AR-LM + complete EnCodec/SEANet
+    //! composition is deferred (see the module doc +
     //! [`AudioGen::generate`] rustdoc). Fabricating a real-inference
     //! output would violate CLAUDE.md 教訓 (a) ("loud-partial は
     //! fake-complete より honest").
     //!
     //! The round-trip semantics we *can* honestly test:
     //!
-    //! 1. **Config round-trip**: `from_gguf` reads every axis stamped by
-    //!    the converter (via the fallback path today; the strict path
-    //!    when a future converter sub-wave stamps the topology chunk
-    //!    group).
+    //! 1. **Config round-trip**: `from_gguf` reads every converter-stamped
+    //!    axis and keeps the legacy pre-stamp fallback pinned separately.
     //! 2. **Loud-error negative-space round-trip**: every stated blocker
     //!    (missing arch / wrong arch / missing name / unsupported
     //!    variant / empty tensor list / unsupported forward surface)
@@ -914,24 +1065,25 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 1. Default config matches primary-source HF config.json axes
+    // 1. Default config matches primary-source AudioCraft config axes
     // -----------------------------------------------------------------------
 
     #[test]
-    fn default_config_matches_primary_source_hf_config_json_axes() {
-        // Pin every DEFAULT_* constant with rustdoc reference to HF
-        // config.json + AudioCraft EncodecModel bundle. A rename or
-        // axis-value drift would land here in the same commit or fail
-        // this test.
+    fn default_config_matches_primary_source_audiocraft_axes() {
+        // Pin every DEFAULT_* constant to the official AudioCraft model-scale,
+        // LM and codec solver configs. A rename or axis-value drift would land
+        // here in the same commit or fail this test.
         let cfg = AudioGenConfig::primary_source_default();
-        assert_eq!(cfg.d_model, 1536, "d_model = 1536 per HF config.json");
-        assert_eq!(cfg.num_layers, 48, "num_layers = 48 per HF config.json");
-        assert_eq!(cfg.n_heads, 24, "n_heads = 24 per HF config.json");
-        assert_eq!(cfg.ffn_dim, 6144, "ffn_dim = 6144 per HF config.json");
+        assert_eq!(
+            cfg.d_model, 1536,
+            "d_model = 1536 per AudioCraft medium model-scale config"
+        );
+        assert_eq!(cfg.num_layers, 48, "num_layers = 48 per medium config");
+        assert_eq!(cfg.n_heads, 24, "n_heads = 24 per medium config");
+        assert_eq!(cfg.ffn_dim, 6144, "ffn_dim = 4 * d_model per LM config");
         assert_eq!(
             cfg.vocab_size, 2048,
-            "vocab_size = 2048 per HF config.json + AudioCraft \
-             EncodecModel.quantizer.bins"
+            "vocab_size = 2048 per AudioCraft audiogen_lm card"
         );
         assert_eq!(
             cfg.num_codebooks, 4,
@@ -942,8 +1094,8 @@ mod tests {
             "codec_frame_rate_hz = 50 per AudioCraft EncodecModel.frame_rate"
         );
         assert_eq!(
-            cfg.sample_rate_hz, 32_000,
-            "sample_rate_hz = 32000 per AudioCraft EncodecModel.sample_rate"
+            cfg.sample_rate_hz, 16_000,
+            "sample_rate_hz = 16000 per AudioCraft audiogen_base_16khz solver config"
         );
 
         // AudioCraft family design invariant: `head_dim = 64` (a
@@ -976,7 +1128,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let ag = AudioGen::from_gguf(&file).expect("valid AudioGen GGUF must bind");
+        let ag = AudioGen::from_fixture(&file).expect("valid AudioGen fixture must bind");
         // Config round-trip — every stamped axis reads back into the
         // same AudioGenConfig value (converter follow-up sub-wave
         // path).
@@ -993,19 +1145,15 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 3. from_gguf falls back to primary-source defaults when chunk group
-    //    absent (converter's current stamp posture)
+    // 3. from_gguf falls back to primary-source defaults for a legacy
+    //    pre-stamp artifact
     // -----------------------------------------------------------------------
 
     #[test]
     fn from_gguf_falls_back_to_primary_source_defaults_when_chunk_group_absent() {
-        // The AudioGen converter does NOT currently stamp the
-        // `vokra.audiogen.*` chunk group (only arch / name / category /
-        // upstream_hf / provenance). An already-published GGUF must
-        // still load — the fallback path reads the primary-source
-        // constants transcribed from HF config.json.
-        // Mirror of MusicGenConfig::from_gguf + SortformerConfig::from_gguf
-        // fallback patterns.
+        // The already-published AudioGen GGUF predates the converter's
+        // `vokra.audiogen.*` topology stamps. It must still load through the
+        // same primary-source values now written by new conversions.
         let cfg = AudioGenConfig::primary_source_default();
         let file = audiogen_gguf(
             NAME,
@@ -1013,7 +1161,7 @@ mod tests {
             /*stamp_topology=*/ false,
             Some(LicenseClass::NonCommercial),
         );
-        let ag = AudioGen::from_gguf(&file).expect("chunk-free GGUF must bind via fallback");
+        let ag = AudioGen::from_fixture(&file).expect("chunk-free fixture must bind via fallback");
         // Every axis fell through to its primary-source default — the
         // loader returns the same values as primary_source_default().
         assert_eq!(ag.config().d_model, DEFAULT_D_MODEL);
@@ -1032,13 +1180,9 @@ mod tests {
 
     #[test]
     fn from_gguf_rejects_wrong_arch() {
-        // A `musicgen` GGUF handed to the AudioGen binder by mistake
-        // must fail loud with a specific message rather than silently
-        // mis-binding (FR-EX-08). MusicGen and AudioGen share the
-        // AR-LM-over-EnCodec-RVQ topology today but a future modality-
-        // specific head would silent-mis-bind under shared arch —
-        // Wave 6 audit follow-up 2026-08-14 retagged to distinct
-        // `audiogen` for exactly this dispatch safety reason.
+        // A generic `musicgen` GGUF does not qualify for the narrow public
+        // AudioGen legacy repair. It must carry exact AudioGen identity and
+        // provenance before the complete manifest check is even reached.
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, "musicgen");
         b.add_string(chunks::KEY_MODEL_NAME, NAME);
@@ -1049,18 +1193,16 @@ mod tests {
         match err {
             VokraError::ModelLoad(m) => {
                 assert!(
-                    m.contains("`musicgen`") && m.contains("`audiogen`"),
-                    "message must name both the got and expected arch tags, got `{m}`"
+                    m.contains(LEGACY_PUBLIC_ARCH) && m.contains(NAME),
+                    "message must name the legacy arch and authenticated name, got `{m}`"
                 );
                 assert!(
-                    m.contains("4-codebook delay pattern"),
-                    "message should disambiguate AudioGen's AR-LM + delay-pattern topology \
-                     to help the reader, got `{m}`"
+                    m.contains(KEY_PROVENANCE_UPSTREAM_HF) && m.contains(UPSTREAM_HF),
+                    "message must name the missing provenance discriminator, got `{m}`"
                 );
                 assert!(
-                    m.contains("Wave 6") && m.contains("retag"),
-                    "message must anchor the reader on the Wave 6 retag rationale so a \
-                     pre-Wave-6 GGUF (arch = `musicgen`) has a diagnostic path, got `{m}`"
+                    m.contains("FR-EX-08"),
+                    "message must retain the no-silent-alias contract, got `{m}`"
                 );
             }
             other => panic!("expected VokraError::ModelLoad, got {other:?}"),
@@ -1181,7 +1323,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let ag = AudioGen::from_gguf(&file).unwrap();
+        let ag = AudioGen::from_fixture(&file).unwrap();
         // A legitimate SFX prompt + duration — the loud-partial gate
         // must fire on the composition surface, not on pre-generate
         // arg validation.
@@ -1194,15 +1336,19 @@ mod tests {
                     m.contains("audiogen generate"),
                     "message must call out the audiogen generate surface, got `{m}`"
                 );
-                // The three deferred pieces MUST all be named so the
-                // follow-up wave has an unambiguous work anchor.
+                // The remaining companions and landed raw-code route MUST
+                // all be named so the follow-up wave is unambiguous.
                 assert!(
                     m.contains("T5"),
-                    "message must name the T5-base text encoder deferred piece, got `{m}`"
+                    "message must name the T5-large text encoder companion, got `{m}`"
                 );
                 assert!(
                     m.contains("delay pattern"),
-                    "message must name the AudioCraft delay pattern, got `{m}`"
+                    "message must name the landed AudioCraft delay pattern, got `{m}`"
+                );
+                assert!(
+                    m.contains("generate_codes"),
+                    "message must point to the landed raw-code API, got `{m}`"
                 );
                 assert!(
                     m.contains("encodec_rvq_decode"),
@@ -1245,7 +1391,7 @@ mod tests {
                     "codec_frame_rate_hz axis missing: {m}"
                 );
                 assert!(
-                    m.contains("sample_rate_hz=32000"),
+                    m.contains("sample_rate_hz=16000"),
                     "sample_rate_hz axis missing: {m}"
                 );
                 // The prompt length + duration must be echoed so a
@@ -1262,11 +1408,11 @@ mod tests {
                     "message must cite FR-EX-08 no-silent-fabrication clause, got `{m}`"
                 );
                 // Sibling mention — the follow-up wave anchor
-                // ("SHARED with the MusicGen sibling") is required so a
+                // ("shared with MusicGen") is required so a
                 // reader knows the fix unblocks both binders in one
                 // pass.
                 assert!(
-                    m.contains("SHARED with the MusicGen"),
+                    m.contains("shared with MusicGen"),
                     "message must anchor the reader on the shared MusicGen composition wave, \
                      got `{m}`"
                 );
@@ -1294,7 +1440,7 @@ mod tests {
             /*stamp_topology=*/ false,
             Some(LicenseClass::NonCommercial),
         );
-        let ag = AudioGen::from_gguf(&file).expect("bind");
+        let ag = AudioGen::from_fixture(&file).expect("bind");
         assert_eq!(
             ag.weight_license(),
             LicenseClass::NonCommercial,
@@ -1306,12 +1452,47 @@ mod tests {
         // fail-closed at the gate).
         let file_no_license = audiogen_gguf(NAME, cfg, /*stamp_topology=*/ false, None);
         let ag_no_license =
-            AudioGen::from_gguf(&file_no_license).expect("bind without license stamp");
+            AudioGen::from_fixture(&file_no_license).expect("bind without license stamp");
         assert_eq!(
             ag_no_license.weight_license(),
             LicenseClass::Unknown,
             "missing provenance stamp must fall back to Unknown (fail-closed)"
         );
+    }
+
+    #[test]
+    fn legacy_public_arch_requires_exact_identity_and_public_manifest() {
+        let mut builder = GgufBuilder::new();
+        builder.add_string(chunks::KEY_MODEL_ARCH, LEGACY_PUBLIC_ARCH);
+        builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+        builder.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+        builder
+            .add_tensor("emb.0.weight", GgmlType::F32, vec![1, 1], vec![0; 4])
+            .unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        let fixture = AudioGen::from_fixture(&file)
+            .expect("the exact legacy identity reaches manifest binding");
+        assert_eq!(
+            fixture.artifact_layout(),
+            AudioGenArtifactLayout::AudioCraftLm
+        );
+
+        let error = AudioGen::from_gguf(&file)
+            .expect_err("one tensor cannot impersonate the public 588-tensor GGUF");
+        let VokraError::ModelLoad(message) = error else {
+            panic!("expected ModelLoad, got {error:?}");
+        };
+        assert!(message.contains("tensor count 1"));
+        assert!(message.contains("expected 588"));
+
+        let mut unauthenticated = GgufBuilder::new();
+        unauthenticated.add_string(chunks::KEY_MODEL_ARCH, LEGACY_PUBLIC_ARCH);
+        unauthenticated.add_string(chunks::KEY_MODEL_NAME, NAME);
+        let file = GgufFile::parse(unauthenticated.to_bytes().unwrap()).unwrap();
+        let error = AudioGen::from_fixture(&file)
+            .expect_err("legacy arch without upstream provenance must fail");
+        assert!(error.to_string().contains(KEY_PROVENANCE_UPSTREAM_HF));
+        assert!(error.to_string().contains("FR-EX-08"));
     }
 
     // -----------------------------------------------------------------------
@@ -1339,7 +1520,7 @@ mod tests {
         assert_ne!(
             ARCH, "musicgen",
             "audiogen (text-to-SFX AR LM) and musicgen (text-to-music AR LM) share \
-             the AR-LM-over-EnCodec + T5-encoder-cross-attention topology today but \
+             the AR-LM-over-EnCodec + text-conditioning topology today but \
              MUST remain dispatch-separated for future modality-specific heads \
              (SFX-only conditioning stack, stereo output head, per-class embedding \
              table). Silent aliasing = mis-route (FR-EX-08). Wave 6 audit follow-up \
@@ -1457,7 +1638,7 @@ mod tests {
             /*stamp_topology=*/ true,
             Some(LicenseClass::NonCommercial),
         );
-        let ag = AudioGen::from_gguf(&file).unwrap();
+        let ag = AudioGen::from_fixture(&file).unwrap();
         assert!(
             ag.weights.matches_config(ag.config()),
             "at least one bound tensor must have an axis matching config.d_model"

@@ -37,6 +37,7 @@ extend-exclude = [
     "**/*.wav",
     "**/*.flac",
     "**/*.pcm",
+    "**/*.f32",
     "**/*.bin",
     "**/*.spv",
     "**/*.png",
@@ -97,6 +98,13 @@ extend-ignore-re = [
 #   [default.extend-words]
 #   theWord = "theWord"       # v1.48.0 flagged this as "theTypo"
 [default.extend-words]
+# Canary tokenizer abbreviations: PnC means punctuation/capitalization and
+# no-PnC is its explicit task-control token.
+Pn = "Pn"
+PnC = "PnC"
+# Upstream RMVPE's public Python API spells its threshold keyword `thred`.
+# The parity oracle must call that exact keyword rather than correcting it.
+thred = "thred"
 # "delocate" = macOS wheel の dynamic-library repair tool 名。
 # typos v1.49.0 は "deallocate" / "delicate" を提案するが、PyPI 上の
 # 正式 package / command 名なので原綴りを保持する。

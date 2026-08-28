@@ -8,15 +8,18 @@
 //! last upsample width 64) the generalization must reduce **exactly** to the
 //! former constants — i.e. produce **bit-identical** PCM.
 //!
-//! This test loads the real css10 GGUF and pins the synthesized PCM by a stable
-//! FNV-1a digest over its little-endian bytes plus the sample count and first /
-//! last samples. Proving Vokra-vs-Vokra bit-identity before and after the (A)
+//! This test loads the real css10 GGUF and, for the historical neutralspk
+//! regression artifact, pins the synthesized PCM by a stable FNV-1a digest over
+//! its little-endian bytes plus the sample count and first / last samples.
+//! Proving Vokra-vs-Vokra bit-identity before and after the (A)
 //! change is a *sufficient and stronger* proof that the real-weight-eval metric
 //! against onnxruntime (mel-L1 ≈ 0.0033–0.0035, ≤3 int16 LSB, `docs/bench-
 //! baselines/m1-real-weight-eval-2026-07-16/report.md` §4) is unchanged — that
-//! metric is a function of this exact PCM, so an unchanged PCM leaves it
-//! unchanged. It does **not** re-run onnxruntime (a separate, out-of-tree
-//! harness); the two vehicles are deliberately not conflated.
+//! metric is a function of that exact PCM, so an unchanged PCM leaves it
+//! unchanged. The unmodified public GGUF intentionally has no neutralspk MLP;
+//! its correctness is pinned separately against the independent official ONNX
+//! fixture by `piper_plus::parity`, rather than compared to a different
+//! augmented artifact here.
 //!
 //! Gated on `VOKRA_PIPER_CSS10_GGUF` (the voice GGUF is ~77 MB, uncommittable —
 //! `piper_plus/parity.rs` records the same rationale). It skips cleanly when
@@ -106,7 +109,11 @@ fn css10_decoder_geometry_regression() {
         digest.len, digest.fnv, digest.first_bits, digest.last_bits
     );
 
-    if let Some(baseline) = CSS10_BASELINE {
+    if voice.speaker_embedding_dim() == 0 {
+        eprintln!(
+            "css10 public legacy voice: neutralspk digest comparison is not applicable; official ONNX parity is the oracle"
+        );
+    } else if let Some(baseline) = CSS10_BASELINE {
         assert_eq!(
             digest, baseline,
             "css10 PCM changed vs the pre-(A) baseline — the per-stage \

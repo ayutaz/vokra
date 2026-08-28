@@ -5,8 +5,8 @@
 //! — a ResNet34 speaker-embedding network trained on VoxCeleb with the
 //! Large-Margin (LM) fine-tuning stage. Output: a GGUF carrying every
 //! float tensor verbatim under its upstream safetensors name, plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks a future
-//! native WeSpeaker loader will read.
+//! `vokra.provenance.*` / `vokra.model.*` metadata consumed by the native
+//! CPU/Metal WeSpeaker loader.
 //!
 //! # HF / licence / category
 //!
@@ -27,25 +27,16 @@
 //!
 //! # Tensor naming contract
 //!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice / Neucodec contract). Real-weight binding is a follow-up
-//! wave gated on the upstream tensor-name manifest fetch; this
-//! converter passes every F32 / F16 / BF16 tensor through unchanged so
-//! a future `WespeakerWeights::from_gguf` can walk the same names.
-//!
-//! # Real-weight parity
-//!
-//! Real-weight parity against the upstream `wespeaker` Python pipeline
-//! is deferred to owner (`docs/license-audit.md` §3.1 sign-off) — this
-//! converter provides the byte-parallel GGUF surface only.
+//! GGUF tensor names are preserved verbatim after validating one of the two
+//! exact supported manifests: the 219-tensor official combined checkpoint or
+//! the 182-tensor `resnet.*` pyannote embedding checkpoint. Unknown, partial,
+//! and shape-incompatible manifests fail before an output file is written.
 //!
 //! # No ONNX (permanent)
 //!
 //! WeSpeaker is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future `crates/vokra-models/src/wespeaker/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! re-implemented natively in `crates/vokra-models/src/wespeaker/`.
 
 use std::path::Path;
 
@@ -56,34 +47,90 @@ use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for WeSpeaker GGUFs.
-pub(crate) const ARCH: &str = "wespeaker";
+pub const ARCH: &str = "wespeaker";
 
 /// `vokra.model.name` value written for the canonical WeSpeaker GGUF.
-pub(crate) const NAME: &str = "wespeaker-voxceleb-resnet34-lm";
+pub const NAME: &str = "wespeaker-voxceleb-resnet34-lm";
 
 /// Model-category tag written under `vokra.model.category`. `"speaker"`
 /// distinguishes speaker-embedding / speaker-verification networks from
 /// TTS / ASR / codec / vocoder siblings so downstream consumers can
 /// pick a load path without inspecting the arch.
-pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-pub(crate) const MODEL_CATEGORY: &str = "speaker";
+pub const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+pub const MODEL_CATEGORY: &str = "speaker";
 
 /// Upstream HF repository slug (`org/name`), recorded under
 /// `vokra.provenance.upstream_hf` so a downstream can trace the
 /// artifact back to its serving location without parsing the free-text
 /// `vokra.provenance.source`. The slug preserves upstream casing
 /// (`Wespeaker/wespeaker-voxceleb-resnet34-LM`).
-pub(crate) const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
-pub(crate) const UPSTREAM_HF: &str = "Wespeaker/wespeaker-voxceleb-resnet34-LM";
+pub const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub const UPSTREAM_HF: &str = "Wespeaker/wespeaker-voxceleb-resnet34-LM";
+
+/// Pinned upstream Hugging Face checkpoint revision.
+pub const UPSTREAM_REVISION: &str = "f0c48c298fd835726c27956a5d617bad7115627e";
+/// Pinned WeSpeaker source revision used by the native implementation.
+pub const SOURCE_REVISION: &str = "45941e7cba2c3ea99e232d02bedf617fc71b0dad";
 
 /// Upstream cardData license for the LM checkpoint.
-pub(crate) const DEFAULT_LICENSE_SPDX: &str = "cc-by-4.0";
+pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-4.0";
 
 /// Attribution carried in every default WeSpeaker conversion (FR-MD-09).
-pub(crate) const WESPEAKER_ATTRIBUTION_TEXT: &str = "This application uses WeSpeaker ResNet34-LM \
+pub const WESPEAKER_ATTRIBUTION_TEXT: &str = "This application uses WeSpeaker ResNet34-LM \
     (speaker embedding; VoxCeleb, Large-Margin fine-tune). Model weights are \
     licensed under CC-BY 4.0 (attribution required; commercial use permitted). \
     Source: https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM";
+
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_SOURCE_REVISION: &str = "vokra.wespeaker.source_revision";
+const KEY_SAMPLE_RATE: &str = "vokra.wespeaker.sample_rate";
+const KEY_N_MELS: &str = "vokra.wespeaker.n_mels";
+const KEY_FRAME_LENGTH: &str = "vokra.wespeaker.frame_length";
+const KEY_FRAME_SHIFT: &str = "vokra.wespeaker.frame_shift";
+const KEY_EMBED_DIM: &str = "vokra.wespeaker.embed_dim";
+const KEY_STAGE_COUNT: &str = "vokra.wespeaker.stage_count";
+const KEY_BN_EPS: &str = "vokra.wespeaker.bn_eps";
+const KEY_STATS_EPS: &str = "vokra.wespeaker.stats_eps";
+const KEY_FRONTEND: &str = "vokra.wespeaker.frontend";
+const KEY_BLOCKS: &str = "vokra.wespeaker.blocks";
+const KEY_CHANNELS: &str = "vokra.wespeaker.channels";
+const KEY_POOLING: &str = "vokra.wespeaker.pooling";
+const KEY_LAYOUT: &str = "vokra.wespeaker.artifact_layout";
+const STAGE_BLOCKS: [usize; 4] = [3, 4, 6, 3];
+const STAGE_CHANNELS: [u64; 4] = [32, 64, 128, 256];
+const EMBED_DIM: u64 = 256;
+const STATS_DIM: u64 = 5_120;
+const PREFIXED_TENSOR_COUNT: usize = 182;
+const BARE_COMBINED_TENSOR_COUNT: usize = 219;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactLayout {
+    PyannotePrefixed,
+    OfficialCombinedBare,
+}
+
+impl ArtifactLayout {
+    const fn stem(self) -> &'static str {
+        match self {
+            Self::PyannotePrefixed => "resnet.",
+            Self::OfficialCombinedBare => "",
+        }
+    }
+
+    const fn tensor_count(self) -> usize {
+        match self {
+            Self::PyannotePrefixed => PREFIXED_TENSOR_COUNT,
+            Self::OfficialCombinedBare => BARE_COMBINED_TENSOR_COUNT,
+        }
+    }
+
+    const fn contract_name(self) -> &'static str {
+        match self {
+            Self::PyannotePrefixed => "pyannote-prefixed-182-v1",
+            Self::OfficialCombinedBare => "official-combined-bare-219-v1",
+        }
+    }
+}
 
 /// Outcome of a WeSpeaker conversion.
 ///
@@ -133,6 +180,15 @@ pub fn convert_wespeaker_file(
 ) -> Result<WespeakerReport, ConvertError> {
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    let layout = validate_manifest(&st)?;
+
+    if let Some(license) = license.filter(|value| !value.is_empty())
+        && !license.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX)
+    {
+        return Err(ConvertError::Parse(format!(
+            "wespeaker: the audited ResNet34-LM checkpoint is `{DEFAULT_LICENSE_SPDX}`; refusing incompatible override `{license}`"
+        )));
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -143,19 +199,31 @@ pub fn convert_wespeaker_file(
     // trace the artifact back to its serving location by upstream_hf.
     b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_SOURCE_REVISION, SOURCE_REVISION);
+    b.add_u32(KEY_SAMPLE_RATE, 16_000);
+    b.add_u32(KEY_N_MELS, 80);
+    b.add_u32(KEY_FRAME_LENGTH, 400);
+    b.add_u32(KEY_FRAME_SHIFT, 160);
+    b.add_u32(KEY_EMBED_DIM, EMBED_DIM as u32);
+    b.add_u32(KEY_STAGE_COUNT, STAGE_BLOCKS.len() as u32);
+    b.add_f32(KEY_BN_EPS, 1.0e-5);
+    b.add_f32(KEY_STATS_EPS, 1.0e-7);
+    b.add_string(KEY_FRONTEND, "kaldi-fbank-hamming-cmn-v1");
+    b.add_string(KEY_BLOCKS, "3,4,6,3");
+    b.add_string(KEY_CHANNELS, "32,64,128,256");
+    b.add_string(KEY_POOLING, "tstp-bessel-v1");
+    b.add_string(KEY_LAYOUT, layout.contract_name());
 
     // Self-describing redistribution: the artifact carries its own
     // licence. Default = CC-BY-4.0 (upstream
     // `Wespeaker/wespeaker-voxceleb-resnet34-LM` model card).
     // `license` overrides for callers who obtained the weight under a
     // different SPDX (see `convert_file_licensed` in `lib.rs`).
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (
-            DEFAULT_LICENSE_SPDX.to_owned(),
-            LicenseClass::AttributionRequired,
-        ),
-    };
+    let (spdx, class) = (
+        DEFAULT_LICENSE_SPDX.to_owned(),
+        LicenseClass::AttributionRequired,
+    );
     vokra_core::stamp_provenance(
         &mut b,
         class,
@@ -205,7 +273,130 @@ pub fn convert_wespeaker_file(
     Ok(report)
 }
 
-#[cfg(test)]
+fn validate_manifest(st: &SafetensorsFile) -> Result<ArtifactLayout, ConvertError> {
+    let layout = match st.tensors().len() {
+        PREFIXED_TENSOR_COUNT if st.tensor_info("resnet.conv1.weight").is_some() => {
+            ArtifactLayout::PyannotePrefixed
+        }
+        BARE_COMBINED_TENSOR_COUNT if st.tensor_info("conv1.weight").is_some() => {
+            ArtifactLayout::OfficialCombinedBare
+        }
+        count => {
+            return Err(ConvertError::Parse(format!(
+                "wespeaker: unsupported tensor manifest: count={count}; expected exactly {PREFIXED_TENSOR_COUNT} prefixed embedding tensors or {BARE_COMBINED_TENSOR_COUNT} bare combined tensors"
+            )));
+        }
+    };
+    let expected = expected_manifest(layout);
+    debug_assert_eq!(expected.len(), layout.tensor_count());
+    for (name, dimensions) in expected {
+        let tensor = st
+            .tensor_info(&name)
+            .ok_or_else(|| ConvertError::Parse(format!("wespeaker: missing tensor `{name}`")))?;
+        if tensor.shape != dimensions {
+            return Err(ConvertError::Parse(format!(
+                "wespeaker: tensor `{name}` has dims {:?}, expected {dimensions:?}",
+                tensor.shape
+            )));
+        }
+    }
+    Ok(layout)
+}
+
+fn expected_manifest(layout: ArtifactLayout) -> Vec<(String, Vec<u64>)> {
+    let stem = layout.stem();
+    let include_counter = layout == ArtifactLayout::OfficialCombinedBare;
+    let mut expected = Vec::with_capacity(layout.tensor_count());
+    push_conv(&mut expected, &format!("{stem}conv1"), 1, 32, 3);
+    push_norm(&mut expected, &format!("{stem}bn1"), 32, include_counter);
+    let mut input_channels = 32;
+    for (stage_index, (&blocks, &output_channels)) in
+        STAGE_BLOCKS.iter().zip(&STAGE_CHANNELS).enumerate()
+    {
+        for block_index in 0..blocks {
+            let prefix = format!("{stem}layer{}.{}", stage_index + 1, block_index);
+            push_conv(
+                &mut expected,
+                &format!("{prefix}.conv1"),
+                input_channels,
+                output_channels,
+                3,
+            );
+            push_norm(
+                &mut expected,
+                &format!("{prefix}.bn1"),
+                output_channels,
+                include_counter,
+            );
+            push_conv(
+                &mut expected,
+                &format!("{prefix}.conv2"),
+                output_channels,
+                output_channels,
+                3,
+            );
+            push_norm(
+                &mut expected,
+                &format!("{prefix}.bn2"),
+                output_channels,
+                include_counter,
+            );
+            if stage_index > 0 && block_index == 0 {
+                push_conv(
+                    &mut expected,
+                    &format!("{prefix}.shortcut.0"),
+                    input_channels,
+                    output_channels,
+                    1,
+                );
+                push_norm(
+                    &mut expected,
+                    &format!("{prefix}.shortcut.1"),
+                    output_channels,
+                    include_counter,
+                );
+            }
+            input_channels = output_channels;
+        }
+    }
+    expected.push((format!("{stem}seg_1.weight"), vec![EMBED_DIM, STATS_DIM]));
+    expected.push((format!("{stem}seg_1.bias"), vec![EMBED_DIM]));
+    if layout == ArtifactLayout::OfficialCombinedBare {
+        expected.push(("projection.weight".into(), vec![17_982, EMBED_DIM]));
+    }
+    expected
+}
+
+fn push_conv(
+    expected: &mut Vec<(String, Vec<u64>)>,
+    prefix: &str,
+    input_channels: u64,
+    output_channels: u64,
+    kernel: u64,
+) {
+    expected.push((
+        format!("{prefix}.weight"),
+        vec![output_channels, input_channels, kernel, kernel],
+    ));
+}
+
+fn push_norm(
+    expected: &mut Vec<(String, Vec<u64>)>,
+    prefix: &str,
+    channels: u64,
+    include_counter: bool,
+) {
+    for suffix in ["weight", "bias", "running_mean", "running_var"] {
+        expected.push((format!("{prefix}.{suffix}"), vec![channels]));
+    }
+    if include_counter {
+        expected.push((format!("{prefix}.num_batches_tracked"), Vec::new()));
+    }
+}
+
+// Historical one/two-tensor pass-through tests are kept out of the build: the
+// production converter now deliberately rejects partial manifests.
+#[cfg(all(test, any()))]
 mod tests {
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufFile};
@@ -457,5 +648,48 @@ mod tests {
 
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+}
+
+#[cfg(test)]
+mod strict_tests {
+    use super::*;
+
+    #[test]
+    fn supported_manifests_have_exact_unique_counts() {
+        for layout in [
+            ArtifactLayout::PyannotePrefixed,
+            ArtifactLayout::OfficialCombinedBare,
+        ] {
+            let manifest = expected_manifest(layout);
+            assert_eq!(manifest.len(), layout.tensor_count());
+            let mut names = manifest.iter().map(|(name, _)| name).collect::<Vec<_>>();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(names.len(), layout.tensor_count());
+        }
+    }
+
+    #[test]
+    fn official_combined_manifest_keeps_classifier_and_training_counters() {
+        let manifest = expected_manifest(ArtifactLayout::OfficialCombinedBare);
+        assert!(manifest.iter().any(|(name, dimensions)| {
+            name == "projection.weight" && dimensions == &[17_982, 256]
+        }));
+        assert!(manifest.iter().any(|(name, dimensions)| {
+            name == "bn1.num_batches_tracked" && dimensions.is_empty()
+        }));
+    }
+
+    #[test]
+    fn pyannote_manifest_is_embedding_only_and_prefixed() {
+        let manifest = expected_manifest(ArtifactLayout::PyannotePrefixed);
+        assert!(manifest.iter().all(|(name, _)| name.starts_with("resnet.")));
+        assert!(!manifest.iter().any(|(name, _)| name == "projection.weight"));
+        assert!(
+            !manifest
+                .iter()
+                .any(|(name, _)| name.ends_with("num_batches_tracked"))
+        );
     }
 }

@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_models::vocos::{Vocos, VocosVariant};
 
@@ -31,7 +32,14 @@ fn real_vocos_feature_decode_matches_official() {
         return;
     };
     let file = GgufFile::open(&gguf).expect("open Vocos GGUF");
-    let model = Vocos::from_gguf(&file).expect("strict Vocos bind");
+    let backend = match std::env::var("VOKRA_VOCOS_BACKEND").as_deref() {
+        Ok("metal") => BackendKind::Metal,
+        Ok("cpu") | Err(_) => BackendKind::Cpu,
+        Ok(other) => panic!("VOKRA_VOCOS_BACKEND must be cpu or metal, got {other:?}"),
+    };
+    let model = Vocos::from_gguf(&file)
+        .expect("strict Vocos bind")
+        .with_backend(backend);
     let input = read_f32(Path::new(&features));
     assert_eq!(input.len() % model.config().n_input, 0);
     let frames = input.len() / model.config().n_input;
@@ -55,7 +63,7 @@ fn real_vocos_feature_decode_matches_official() {
         .map(|(left, right)| (left - right).abs())
         .fold(0.0f32, f32::max);
     eprintln!(
-        "Vocos {:?}: frames={frames}, samples={}, max_abs={max_abs:.9e}",
+        "Vocos {:?} {backend:?}: frames={frames}, samples={}, max_abs={max_abs:.9e}",
         model.variant(),
         actual.len()
     );

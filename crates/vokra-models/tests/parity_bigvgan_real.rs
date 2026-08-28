@@ -55,4 +55,22 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         max_abs <= 2e-5,
         "BigVGAN base max |Δ| {max_abs:e} exceeds the 2e-5 FP32 bound"
     );
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    {
+        let metal = BigVGan::from_gguf(&file)
+            .expect("rebind BigVGAN for Metal")
+            .with_backend(vokra_core::BackendKind::Metal)
+            .decode(&mel, 1)
+            .expect("real BigVGAN Metal forward");
+        let gpu_max_abs = actual
+            .iter()
+            .zip(&metal)
+            .map(|(cpu, gpu)| (cpu - gpu).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            gpu_max_abs <= 0.01,
+            "BigVGAN CPU/Metal max |Δ| {gpu_max_abs:e} exceeds the established FP32 GPU gate"
+        );
+    }
 }

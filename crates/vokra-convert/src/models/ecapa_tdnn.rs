@@ -33,8 +33,9 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VibeVoice /
-//! VoxCPM contract). Real-weight parity is deferred to owner sign-off in
-//! `docs/license-audit.md §3.1`.
+//! VoxCPM contract), after validating the complete official 200-tensor
+//! manifest. Real-weight parity is pinned by
+//! `crates/vokra-models/tests/parity_ecapa_tdnn_real.rs`.
 //!
 //! # No ONNX (permanent)
 //!
@@ -68,6 +69,9 @@ pub const CATEGORY: &str = "speaker";
 /// source used by the model-card generator.
 pub const UPSTREAM_HF: &str = "speechbrain/spkrec-ecapa-voxceleb";
 
+/// Pinned upstream revision used by the independent parity oracle.
+pub const UPSTREAM_REVISION: &str = "0f99f2d0ebe89ac095bcc5903c4dd8f72b367286";
+
 /// Default upstream weight licence (SPDX).
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 
@@ -76,6 +80,32 @@ pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
 // the sibling converters use applies).
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_SAMPLE_RATE: &str = "vokra.ecapa.sample_rate";
+const KEY_N_MELS: &str = "vokra.ecapa.n_mels";
+const KEY_N_FFT: &str = "vokra.ecapa.n_fft";
+const KEY_WIN_LENGTH: &str = "vokra.ecapa.win_length";
+const KEY_HOP_LENGTH: &str = "vokra.ecapa.hop_length";
+const KEY_EMBED_DIM: &str = "vokra.ecapa.embed_dim";
+const KEY_TDNN_CHANNELS: &str = "vokra.ecapa.tdnn_channels";
+const KEY_MFA_CHANNELS: &str = "vokra.ecapa.mfa_channels";
+const KEY_ATTENTION_CHANNELS: &str = "vokra.ecapa.attention_channels";
+const KEY_RES2NET_SCALE: &str = "vokra.ecapa.res2net_scale";
+const KEY_BN_EPS: &str = "vokra.ecapa.bn_eps";
+const KEY_STATS_EPS: &str = "vokra.ecapa.stats_eps";
+const KEY_FRONTEND: &str = "vokra.ecapa.frontend";
+const KEY_PADDING: &str = "vokra.ecapa.padding";
+const KEY_LAYOUT: &str = "vokra.ecapa.artifact_layout";
+
+const INPUT_DIM: u64 = 80;
+const TDNN_CHANNELS: u64 = 1_024;
+const RES2NET_SCALE: usize = 8;
+const RES2NET_CHANNELS: u64 = TDNN_CHANNELS / RES2NET_SCALE as u64;
+const MFA_CHANNELS: u64 = 3_072;
+const ATTENTION_CHANNELS: u64 = 128;
+const STATS_CHANNELS: u64 = MFA_CHANNELS * 2;
+const EMBED_DIM: u64 = 192;
+const TENSOR_COUNT: usize = 200;
 
 /// Outcome of an ECAPA-TDNN conversion.
 ///
@@ -128,12 +158,13 @@ pub fn convert_ecapa_tdnn_file(
     license: Option<&str>,
 ) -> Result<EcapaTdnnReport, ConvertError> {
     // Load the whole checkpoint into memory: the ECAPA-TDNN release is
-    // ~15 MiB (192-d embedding backbone) — 1-2 orders of magnitude
+    // ~83 MiB (192-d embedding backbone) — comfortably below the
     // smaller than the streaming-mandated Moshi 14 GiB tier, so the
     // simple `std::fs::read` posture the sibling non-streaming
     // converters (qwen3_tts / vibevoice / voxcpm2) use applies.
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
+    validate_manifest(&st)?;
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -151,6 +182,22 @@ pub fn convert_ecapa_tdnn_file(
         Some("speechbrain/spkrec-ecapa-voxceleb (apache-2.0 end-to-end)"),
     );
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
+    b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    b.add_u32(KEY_SAMPLE_RATE, 16_000);
+    b.add_u32(KEY_N_MELS, INPUT_DIM as u32);
+    b.add_u32(KEY_N_FFT, 400);
+    b.add_u32(KEY_WIN_LENGTH, 400);
+    b.add_u32(KEY_HOP_LENGTH, 160);
+    b.add_u32(KEY_EMBED_DIM, EMBED_DIM as u32);
+    b.add_u32(KEY_TDNN_CHANNELS, TDNN_CHANNELS as u32);
+    b.add_u32(KEY_MFA_CHANNELS, MFA_CHANNELS as u32);
+    b.add_u32(KEY_ATTENTION_CHANNELS, ATTENTION_CHANNELS as u32);
+    b.add_u32(KEY_RES2NET_SCALE, RES2NET_SCALE as u32);
+    b.add_f32(KEY_BN_EPS, 1.0e-5);
+    b.add_f32(KEY_STATS_EPS, 1.0e-12);
+    b.add_string(KEY_FRONTEND, "speechbrain-fbank-v1");
+    b.add_string(KEY_PADDING, "reflect-same");
+    b.add_string(KEY_LAYOUT, "speechbrain-ecapa-200-v1");
 
     let mut report = EcapaTdnnReport::default();
     // Float tensors pass through **verbatim** — no convert-time widening.
@@ -204,152 +251,170 @@ pub fn convert_ecapa_tdnn_file(
     Ok(report)
 }
 
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "ecapa_tdnn: unsupported tensor manifest: count={}, expected exactly {TENSOR_COUNT}",
+            st.tensors().len()
+        )));
+    }
+    let expected = expected_manifest();
+    debug_assert_eq!(expected.len(), TENSOR_COUNT);
+    for (name, shape) in expected {
+        check_shape(st, &name, &shape)?;
+    }
+    for tensor in st.tensors() {
+        if !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+            return Err(ConvertError::Parse(format!(
+                "ecapa_tdnn: tensor `{}` uses unsupported dtype {:?}; every manifest tensor must be F32, F16, or BF16",
+                tensor.name, tensor.dtype
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn expected_manifest() -> Vec<(String, Vec<u64>)> {
+    let mut expected = Vec::with_capacity(TENSOR_COUNT);
+    push_tdnn(&mut expected, "blocks.0", INPUT_DIM, TDNN_CHANNELS, 5);
+    for block in 1..=3 {
+        let prefix = format!("blocks.{block}");
+        push_tdnn(
+            &mut expected,
+            &format!("{prefix}.tdnn1"),
+            TDNN_CHANNELS,
+            TDNN_CHANNELS,
+            1,
+        );
+        for inner in 0..RES2NET_SCALE - 1 {
+            push_tdnn(
+                &mut expected,
+                &format!("{prefix}.res2net_block.blocks.{inner}"),
+                RES2NET_CHANNELS,
+                RES2NET_CHANNELS,
+                3,
+            );
+        }
+        push_tdnn(
+            &mut expected,
+            &format!("{prefix}.tdnn2"),
+            TDNN_CHANNELS,
+            TDNN_CHANNELS,
+            1,
+        );
+        push_conv(
+            &mut expected,
+            &format!("{prefix}.se_block.conv1.conv"),
+            TDNN_CHANNELS,
+            ATTENTION_CHANNELS,
+            1,
+        );
+        push_conv(
+            &mut expected,
+            &format!("{prefix}.se_block.conv2.conv"),
+            ATTENTION_CHANNELS,
+            TDNN_CHANNELS,
+            1,
+        );
+    }
+    push_tdnn(&mut expected, "mfa", MFA_CHANNELS, MFA_CHANNELS, 1);
+    push_tdnn(
+        &mut expected,
+        "asp.tdnn",
+        MFA_CHANNELS * 3,
+        ATTENTION_CHANNELS,
+        1,
+    );
+    push_conv(
+        &mut expected,
+        "asp.conv.conv",
+        ATTENTION_CHANNELS,
+        MFA_CHANNELS,
+        1,
+    );
+    push_norm(&mut expected, "asp_bn.norm", STATS_CHANNELS);
+    push_conv(&mut expected, "fc.conv", STATS_CHANNELS, EMBED_DIM, 1);
+    expected
+}
+
+fn push_tdnn(
+    expected: &mut Vec<(String, Vec<u64>)>,
+    prefix: &str,
+    input_channels: u64,
+    output_channels: u64,
+    kernel: u64,
+) {
+    push_conv(
+        expected,
+        &format!("{prefix}.conv.conv"),
+        input_channels,
+        output_channels,
+        kernel,
+    );
+    push_norm(expected, &format!("{prefix}.norm.norm"), output_channels);
+}
+
+fn push_conv(
+    expected: &mut Vec<(String, Vec<u64>)>,
+    prefix: &str,
+    input_channels: u64,
+    output_channels: u64,
+    kernel: u64,
+) {
+    expected.push((
+        format!("{prefix}.weight"),
+        vec![output_channels, input_channels, kernel],
+    ));
+    expected.push((format!("{prefix}.bias"), vec![output_channels]));
+}
+
+fn push_norm(expected: &mut Vec<(String, Vec<u64>)>, prefix: &str, channels: u64) {
+    for suffix in ["weight", "bias", "running_mean", "running_var"] {
+        expected.push((format!("{prefix}.{suffix}"), vec![channels]));
+    }
+}
+
+fn check_shape(st: &SafetensorsFile, name: &str, expected: &[u64]) -> Result<(), ConvertError> {
+    let tensor = st.tensor_info(name).ok_or_else(|| {
+        ConvertError::Parse(format!("ecapa_tdnn: required tensor `{name}` is missing"))
+    })?;
+    if tensor.shape != expected {
+        return Err(ConvertError::Parse(format!(
+            "ecapa_tdnn: tensor `{name}` has shape {:?}, expected {expected:?}",
+            tensor.shape
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use vokra_core::gguf::GgufFile;
 
-    /// Per-test unique scratch path (PID + a suffix derived from the
-    /// caller — every test in this module uses a distinct `name` so
-    /// concurrent runs do not collide).
-    fn scratch_path(name: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-ecapa-tdnn-{name}-{}.tmp",
-            std::process::id()
-        ));
-        p
-    }
-
-    /// Builds a minimal single-BF16-tensor safetensors buffer and returns
-    /// `(safetensors_bytes, raw_bf16_payload)` so a downstream test can
-    /// assert byte-identity on the payload after the GGUF round-trip.
-    fn safetensors_one_bf16() -> (Vec<u8>, Vec<u8>) {
-        // Non-zero bit patterns so a silent widen / downcast could not
-        // round-trip trivially.
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16");
-        let header = r#"{"embedding_model.blocks.0.tdnn.conv.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut input = Vec::new();
-        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input.extend_from_slice(header.as_bytes());
-        input.extend_from_slice(&bf16);
-        (input, bf16)
-    }
-
-    /// Builds a mixed F32 + F16 safetensors buffer. Header layout:
-    ///   `embedding_model.a.weight` — F32, `[2,3]` → 24 bytes @ [0..24)
-    ///   `embedding_model.b.weight` — F16, `[2,3]` → 12 bytes @ [24..36)
-    fn safetensors_f32_and_f16() -> Vec<u8> {
-        let f32_vals: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        // Non-zero F16 half-precision bit patterns (1.0 = 0x3C00, 2.0 = 0x4000, …).
-        let f16_patterns: [u16; 6] = [0x3C00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|p| p.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 24);
-        assert_eq!(f16_bytes.len(), 12);
-        let header = r#"{"embedding_model.a.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"embedding_model.b.weight":{"dtype":"F16","shape":[2,3],"data_offsets":[24,36]}}"#;
-        let mut input = Vec::new();
-        input.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input.extend_from_slice(header.as_bytes());
-        input.extend_from_slice(&f32_bytes);
-        input.extend_from_slice(&f16_bytes);
-        input
-    }
-
-    /// Pins the BF16 pass-through end-to-end: the tensor survives the
-    /// converter's `convert_ecapa_tdnn_file` file → file round-trip with
-    /// its dtype preserved (`GgmlType::BF16`, GGUF type 30) and its
-    /// payload byte-identical. Mirrors
-    /// `qwen3_tts::tests::bf16_tensor_passes_through_verbatim` at the
-    /// file-oriented surface. A silent widen at convert time would
-    /// still round-trip _values_ (the BF16 → f32 widen is exact), so
-    /// this test asserts on the dtype AND the raw bytes — two concentric
-    /// fences.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (bytes, bf16_payload) = safetensors_one_bf16();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        // Cleanest posture even on early panic: overwrite / remove
-        // regardless of prior test state.
-        std::fs::write(&input, &bytes).expect("write input");
-
-        let report = convert_ecapa_tdnn_file(&input, &output, None).expect("convert");
-
-        let out_bytes = std::fs::read(&output).expect("read output");
-        // Best-effort cleanup — a failed test still surfaces the assert.
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-
-        assert_eq!(report.read, 1, "one input tensor surfaced");
-        assert_eq!(report.written, 1, "BF16 must reach the pass-through arm");
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 tensor must increment the observability counter"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("embedding_model.blocks.0.tdnn.conv.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input (no silent widen)"
-        );
+    fn manifest_is_exactly_the_canonical_200_tensor_checkpoint() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), TENSOR_COUNT);
+        let mut names = manifest.iter().map(|(name, _)| name).collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), TENSOR_COUNT);
+        assert!(manifest.iter().any(|(name, shape)| {
+            name == "asp.tdnn.conv.conv.weight" && shape == &[128, 9_216, 1]
+        }));
     }
 
-    /// Pins that F32 and F16 tensors both ride the pass-through arm in
-    /// the same conversion (mixed-dtype loops don't collapse to one
-    /// arm), and that the BF16 counter stays at its `Default 0` when no
-    /// BF16 tensor is present (additive-field regression guard).
     #[test]
-    fn f32_and_f16_tensors_pass_through() {
-        let bytes = safetensors_f32_and_f16();
-        let input = scratch_path("mixed-in");
-        let output = scratch_path("mixed-out");
-        std::fs::write(&input, &bytes).expect("write input");
-
-        let report = convert_ecapa_tdnn_file(&input, &output, None).expect("convert");
-
-        let out_bytes = std::fs::read(&output).expect("read output");
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-
-        assert_eq!(report.read, 2, "two input tensors surfaced");
-        assert_eq!(report.written, 2, "F32 + F16 both pass through");
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32-only + F16-only input must leave the BF16 counter at Default 0"
-        );
-        assert_eq!(report.skipped_non_float, 0);
-
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let a = file
-            .tensor_info("embedding_model.a.weight")
-            .expect("F32 tensor present");
-        assert_eq!(a.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(a.dimensions, vec![2, 3]);
-        let b = file
-            .tensor_info("embedding_model.b.weight")
-            .expect("F16 tensor present");
-        assert_eq!(b.dtype, GgmlType::F16, "F16 stays F16");
-        assert_eq!(b.dimensions, vec![2, 3]);
+    fn partial_checkpoint_is_rejected_before_any_output_is_written() {
+        let payload = [0u8; 12];
+        let header =
+            r#"{"blocks.0.conv.conv.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&payload);
+        let parsed = SafetensorsFile::parse(bytes).unwrap();
+        let error = validate_manifest(&parsed).unwrap_err();
+        assert!(error.to_string().contains("expected exactly 200"));
     }
 }

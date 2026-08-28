@@ -1,0 +1,16 @@
+[project]
+name = "vokra-pyannote-diarization-parity"
+version = "0.1.0"
+description = "Pinned independent pyannote.audio 3.1.1 speaker-diarization parity oracle"
+requires-python = "==3.12.*"
+dependencies = [
+    "gguf==0.19.0",
+    "huggingface-hub==0.23.4",
+    "numpy==1.26.4",
+    "pyannote-audio==3.1.1",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+]
+
+[tool.uv]
+package = false

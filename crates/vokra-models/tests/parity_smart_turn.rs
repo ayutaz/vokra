@@ -56,6 +56,27 @@ fn canonical_checkpoint_matches_official_endpoint_probability() {
         "SmartTurn probability exceeds the independent Transformers parity gate: \
          max_abs={max_abs:.9e}, atol={ATOL:.9e}"
     );
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    {
+        use vokra_core::BackendKind;
+
+        let metal = SmartTurn::from_path(Path::new(&path))
+            .expect("bind canonical SmartTurn GGUF for Metal")
+            .with_backend(BackendKind::Metal)
+            .predict_endpoint(&pcm, 16_000)
+            .expect("run complete SmartTurn Metal forward")
+            .completion_probability();
+        let cpu_metal_abs = (actual - metal).abs();
+        eprintln!(
+            "[parity_smart_turn] cpu={actual:.9e} metal={metal:.9e} \
+             max_abs={cpu_metal_abs:.9e}"
+        );
+        assert!(
+            cpu_metal_abs <= 0.01,
+            "SmartTurn CPU/Metal probability max_abs={cpu_metal_abs:.9e} exceeds 0.01"
+        );
+    }
 }
 
 #[test]

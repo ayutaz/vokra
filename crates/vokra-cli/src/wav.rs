@@ -1,10 +1,12 @@
-//! Minimal, dependency-free mono WAV reader + writer (M1-10a).
+//! Minimal, dependency-free WAV reader + writer (M1-10a).
 //!
 //! Just enough RIFF/WAVE to read a clip for `run`/`bench` input and to write the
 //! `run tts` output. No external crate and no GPL (NFR-DS-02 / NFR-LC-02);
-//! stereo, other bit depths and compressed formats are explicit errors. The
-//! reader mirrors the one in `vokra-eval` / `vokra-models` (kept duplicated so
-//! `vokra-cli` stays a lean leaf crate).
+//! the reader remains mono-only; the writer also accepts explicit interleaved
+//! multichannel PCM for native stereo codec outputs. Other bit depths and
+//! compressed formats are explicit errors. The reader mirrors the one in
+//! `vokra-eval` / `vokra-models` (kept duplicated so `vokra-cli` stays a lean
+//! leaf crate).
 
 /// Decoded mono PCM plus its declared sample rate.
 #[derive(Debug, Clone)]
@@ -27,15 +29,43 @@ pub(crate) fn write_wav(
     samples: &[f32],
     sample_rate: u32,
 ) -> Result<(), String> {
+    write_wav_channels(path, samples, sample_rate, 1)
+}
+
+/// Writes interleaved IEEE-float32 WAV samples with an explicit channel count.
+pub(crate) fn write_wav_channels(
+    path: impl AsRef<std::path::Path>,
+    samples: &[f32],
+    sample_rate: u32,
+    channels: usize,
+) -> Result<(), String> {
+    if channels == 0 || samples.len() % channels != 0 {
+        return Err(format!(
+            "WAV write shape mismatch: {} interleaved values for {channels} channels",
+            samples.len()
+        ));
+    }
     let bits: u16 = 32;
-    let channels: u16 = 1;
-    let block_align: u16 = channels * (bits / 8);
-    let byte_rate: u32 = sample_rate * u32::from(block_align);
-    let data_len: u32 = (samples.len() * 4) as u32;
+    let channels =
+        u16::try_from(channels).map_err(|_| format!("WAV channel count {channels} exceeds u16"))?;
+    let block_align = channels
+        .checked_mul(bits / 8)
+        .ok_or("WAV block alignment overflow")?;
+    let byte_rate = sample_rate
+        .checked_mul(u32::from(block_align))
+        .ok_or("WAV byte rate overflow")?;
+    let data_len = samples
+        .len()
+        .checked_mul(4)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or("WAV data length exceeds RIFF32")?;
+    let riff_len = 36u32
+        .checked_add(data_len)
+        .ok_or("WAV RIFF length exceeds RIFF32")?;
 
     let mut out = Vec::with_capacity(44 + samples.len() * 4);
     out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + data_len).to_le_bytes());
+    out.extend_from_slice(&riff_len.to_le_bytes());
     out.extend_from_slice(b"WAVE");
     out.extend_from_slice(b"fmt ");
     out.extend_from_slice(&16u32.to_le_bytes());
@@ -154,5 +184,21 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         bytes[22] = 2; // channels field
         assert!(parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn stereo_writer_emits_interleaved_float_header() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-cli-wav-stereo-write-{}.wav",
+            std::process::id()
+        ));
+        write_wav_channels(&path, &[0.1, -0.1, 0.2, -0.2], 48_000, 2).expect("write stereo");
+        let bytes = std::fs::read(&path).expect("read generated WAV");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(le_u16(&bytes, 22).expect("channels"), 2);
+        assert_eq!(le_u32(&bytes, 24).expect("sample rate"), 48_000);
+        assert_eq!(le_u16(&bytes, 32).expect("block align"), 8);
+        assert_eq!(le_u32(&bytes, 40).expect("data length"), 16);
     }
 }

@@ -26,10 +26,14 @@
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::VadStreamHandle;
 use vokra_core::{Result, VokraError};
 
-use vokra_vad_micro::{LstmState, SampleRate, SileroWeights, run_frame};
+use vokra_vad_micro::{LstmState, SampleRate, SileroWeights, run_frame, run_frame_with_ops};
+
+use super::{ComputeSileroOps, SILERO_HOT_OPS};
+use crate::compute::Compute;
 
 /// How PCM frames are presented to the subgraph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,22 +61,23 @@ pub(super) struct VadStream {
     context: Vec<f32>,
     /// Samples not yet forming a complete frame.
     pending: Vec<f32>,
+    backend: BackendKind,
 }
 
 impl VadStream {
     /// Creates a fresh official-mode stream (zeroed state, zero context) over
     /// the model's weights.
-    pub(super) fn new(weights: Arc<SileroWeights>) -> Self {
-        Self::with_mode(weights, ContextMode::Official)
+    pub(super) fn new(weights: Arc<SileroWeights>, backend: BackendKind) -> Self {
+        Self::with_mode(weights, ContextMode::Official, backend)
     }
 
     /// Creates a fresh raw-interface stream (parity use, test-gated).
     #[cfg(test)]
-    pub(super) fn new_raw(weights: Arc<SileroWeights>) -> Self {
-        Self::with_mode(weights, ContextMode::Raw)
+    pub(super) fn new_raw(weights: Arc<SileroWeights>, backend: BackendKind) -> Self {
+        Self::with_mode(weights, ContextMode::Raw, backend)
     }
 
-    fn with_mode(weights: Arc<SileroWeights>, mode: ContextMode) -> Self {
+    fn with_mode(weights: Arc<SileroWeights>, mode: ContextMode, backend: BackendKind) -> Self {
         Self {
             weights,
             mode,
@@ -80,6 +85,7 @@ impl VadStream {
             state: LstmState::zeros(),
             context: Vec::new(),
             pending: Vec::new(),
+            backend,
         }
     }
 }
@@ -115,13 +121,28 @@ impl VadStreamHandle for VadStream {
         let frame_len = rate.frame_len();
         let ctx_len = rate.context_len();
         self.pending.extend_from_slice(pcm);
+        let compute = if self.backend == BackendKind::Cpu {
+            None
+        } else {
+            Some(Compute::for_backend(self.backend, SILERO_HOT_OPS)?)
+        };
 
         let mut probs = Vec::new();
         let mut consumed = 0;
         while self.pending.len() - consumed >= frame_len {
             let frame = &self.pending[consumed..consumed + frame_len];
+            let mut execute = |input: &[f32]| match &compute {
+                None => Ok(run_frame(rate, w, input, &mut self.state)),
+                Some(compute) => run_frame_with_ops(
+                    rate,
+                    w,
+                    input,
+                    &mut self.state,
+                    &mut ComputeSileroOps { compute },
+                ),
+            };
             let prob = match self.mode {
-                ContextMode::Raw => run_frame(rate, w, frame, &mut self.state),
+                ContextMode::Raw => execute(frame)?,
                 ContextMode::Official => {
                     if self.context.is_empty() {
                         // Fresh stream (or just reset): the official wrapper
@@ -131,7 +152,7 @@ impl VadStreamHandle for VadStream {
                     let mut buf = Vec::with_capacity(ctx_len + frame_len);
                     buf.extend_from_slice(&self.context);
                     buf.extend_from_slice(frame);
-                    let p = run_frame(rate, w, &buf, &mut self.state);
+                    let p = execute(&buf)?;
                     // Carry the concatenated input's tail into the next step
                     // (== the frame's last ctx_len samples, as frame_len > ctx_len),
                     // exactly as the upstream wrapper keeps `x[..., -context_size:]`.

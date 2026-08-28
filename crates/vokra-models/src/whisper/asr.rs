@@ -34,6 +34,11 @@ use vokra_core::decode::{
     BeamHypothesis, BeamSearchConfig, SamplerConfig, beam_search, sample_sequence,
 };
 
+#[cfg(feature = "coreml")]
+use super::CoreMlArtifact;
+#[cfg(feature = "coreml")]
+use vokra_backend_coreml::CoreMlBackend;
+
 /// Whisper ASR engine: a loaded model plus an optional detokenizer.
 ///
 /// The model is held behind an [`Arc`] so a per-utterance [`DecoderState`] (and
@@ -47,6 +52,12 @@ pub struct WhisperAsr {
     /// backend, so it stays `Send + Sync`). A [`Compute`] is built from it at
     /// each transcribe entry (M2-01 Phase 3).
     backend_kind: BackendKind,
+    /// Verified portable descriptor for the complete CoreML Whisper encoder.
+    /// The live `MLModel` stays in the backend's thread-local cache so this
+    /// `AsrEngine` remains `Send + Sync` without claiming that raw Objective-C
+    /// objects are cross-thread safe.
+    #[cfg(feature = "coreml")]
+    coreml_artifact: Option<CoreMlArtifact>,
 }
 
 impl WhisperAsr {
@@ -78,6 +89,8 @@ impl WhisperAsr {
             model,
             tokenizer,
             backend_kind: BackendKind::Cpu,
+            #[cfg(feature = "coreml")]
+            coreml_artifact: None,
         })
     }
 
@@ -92,14 +105,43 @@ impl WhisperAsr {
     /// [`BackendKind::Cpu`]).
     ///
     /// Whisper needs softmax / layer-norm / GELU / conv1d / GEMV on the backend
-    /// as well as GEMM, which the Metal slice does not yet cover, so
-    /// `with_backend(BackendKind::Metal)` makes the transcribe entries an
-    /// explicit [`VokraError::UnsupportedOp`] until those Metal kernels land
-    /// (Phase 4) — never a silent CPU fall back (FR-EX-08).
+    /// as well as GEMM. The Metal backend covers that complete hot-op set;
+    /// greedy, beam, sampled, and word-alignment forwards all preserve this
+    /// selection rather than substituting a CPU decoder.
     #[must_use]
     pub fn with_backend(mut self, backend: BackendKind) -> Self {
         self.backend_kind = backend;
         self
+    }
+
+    /// Binds a verified whole-encoder CoreML sidecar to this engine.
+    ///
+    /// The artifact must have come from
+    /// [`CoreMlArtifact::from_whisper_sidecar`], and its exact input/output
+    /// shapes must match the loaded GGUF config. Direct, unverified
+    /// `.mlmodelc` handles are accepted only by the low-level backend fixture,
+    /// never by the production ASR path.
+    #[cfg(feature = "coreml")]
+    pub fn with_coreml_artifact(mut self, artifact: CoreMlArtifact) -> Result<Self> {
+        let config = self.model.config();
+        let expected_input = [1, config.n_mels, super::mel::N_FRAMES];
+        let expected_output = [1, config.n_audio_ctx, config.d_model];
+        if artifact.model_arch().is_none() {
+            return Err(VokraError::ModelLoad(
+                "CoreML Whisper ASR requires a manifest-verified sidecar artifact; direct .mlmodelc construction is test-only"
+                    .to_owned(),
+            ));
+        }
+        artifact.require_production_ane_precision()?;
+        if artifact.input_shape() != expected_input || artifact.output_shape() != expected_output {
+            return Err(VokraError::ModelLoad(format!(
+                "CoreML Whisper artifact shapes {:?} -> {:?} != loaded GGUF contract {expected_input:?} -> {expected_output:?}",
+                artifact.input_shape(),
+                artifact.output_shape()
+            )));
+        }
+        self.coreml_artifact = Some(artifact);
+        Ok(self)
     }
 
     /// The loaded model (encoder / decoder forwards, config).
@@ -107,19 +149,59 @@ impl WhisperAsr {
         &self.model
     }
 
+    /// Runs the encoder selected by `backend_kind`.
+    ///
+    /// CoreML is an explicit hybrid plan: the complete encoder is one ANE
+    /// delegate graph and autoregressive decoding remains the first-party Rust
+    /// CPU implementation. That CPU decoder is part of the declared plan, not
+    /// a fallback for an uncovered CoreML operator.
+    fn encode_selected(&self, pcm: &[f32]) -> Result<super::EncoderOutput> {
+        if self.backend_kind == BackendKind::CoreMl {
+            #[cfg(feature = "coreml")]
+            {
+                let artifact = self.coreml_artifact.as_ref().ok_or_else(|| {
+                    VokraError::ModelLoad(
+                        "CoreML backend selected but no verified <model.gguf>.coreml sidecar is bound; run tools/coreml/build_whisper_encoder.sh"
+                            .to_owned(),
+                    )
+                })?;
+                let features = self.model.log_mel(pcm);
+                return CoreMlBackend::with_thread_local_artifact(artifact, |delegate| {
+                    self.model
+                        .encode_with_delegate(delegate, &features, super::mel::N_FRAMES)
+                });
+            }
+            #[cfg(not(feature = "coreml"))]
+            {
+                return Err(VokraError::BackendUnavailable(
+                    "CoreML backend selected but vokra-models was built without the `coreml` feature"
+                        .to_owned(),
+                ));
+            }
+        }
+        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
+        self.model.encode_pcm_with(&compute, pcm)
+    }
+
+    fn decoder_backend(&self) -> BackendKind {
+        if self.backend_kind == BackendKind::CoreMl {
+            BackendKind::Cpu
+        } else {
+            self.backend_kind
+        }
+    }
+
     /// Transcribes `pcm` to the raw generated token id sequence (greedy),
     /// without detokenizing. Useful when no tokenizer is attached and for
     /// token-level parity tests.
     pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
-        // Build the backend dispatcher once at the entry (errors here for a
-        // backend that does not cover the Whisper op set — e.g. Metal, Phase 4),
-        // and run the encoder on it; the decoder steps rebuild it from the same
-        // backend selection. The CPU path is bit-identical to before the seam.
-        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
-        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        // Build the backend dispatcher once at the entry and run the encoder
+        // on it; the decoder steps rebuild it from the same backend selection.
+        // The CPU path is bit-identical to before the seam.
+        let encoder = self.encode_selected(pcm)?;
         let mut state = self
             .model
-            .decoder_with_backend(&encoder, self.backend_kind)?;
+            .decoder_with_backend(&encoder, self.decoder_backend())?;
         let cfg = self.model.config();
         greedy_decode(
             &mut state,
@@ -139,11 +221,10 @@ impl WhisperAsr {
         pcm: &[f32],
         adapter: Arc<ResidualSiluLogitsAdapter>,
     ) -> Result<Vec<u32>> {
-        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
-        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let encoder = self.encode_selected(pcm)?;
         let mut state = self
             .model
-            .decoder_with_backend(&encoder, self.backend_kind)?
+            .decoder_with_backend(&encoder, self.decoder_backend())?
             .with_output_adapter(adapter)?;
         let cfg = self.model.config();
         greedy_decode(
@@ -165,11 +246,10 @@ impl WhisperAsr {
                 "whisper output-adapter prefix logits require at least one token".into(),
             ));
         }
-        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
-        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let encoder = self.encode_selected(pcm)?;
         let mut state = self
             .model
-            .decoder_with_backend(&encoder, self.backend_kind)?
+            .decoder_with_backend(&encoder, self.decoder_backend())?
             .with_output_adapter(adapter)?;
         state.step_last(prefix)
     }
@@ -213,9 +293,9 @@ impl WhisperAsr {
     /// # Errors
     ///
     /// * [`VokraError::UnsupportedOp`] when the selected backend does not
-    ///   cover the Whisper op set (e.g. Metal today) — the same guard the
-    ///   greedy [`transcribe_tokens`](Self::transcribe_tokens) enforces
-    ///   (no silent CPU fall back, FR-EX-08).
+    ///   cover the Whisper op set — the same guard the greedy
+    ///   [`transcribe_tokens`](Self::transcribe_tokens) enforces (no silent
+    ///   CPU fall back, FR-EX-08).
     /// * Any error surfaced by
     ///   [`vokra_core::decode::beam_search()`] itself (empty
     ///   prefix, zero widths, `word_timestamps` enabled, …).
@@ -224,10 +304,8 @@ impl WhisperAsr {
         pcm: &[f32],
         config: &BeamSearchConfig<'_>,
     ) -> Result<Vec<BeamHypothesis>> {
-        // Metal is rejected here (Whisper op set uncovered until Phase 4); the
-        // scorer's per-step decoder runs on the CPU backend as before.
-        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
-        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
+        let encoder = self.encode_selected(pcm)?;
+        let decoder_backend = self.decoder_backend();
         let cfg = self.model.config();
         // The clip's TRUE (unpadded) audio-position count for the word-
         // timestamp alignment (openai timing.py:208 `weights[:, :, :
@@ -241,17 +319,22 @@ impl WhisperAsr {
         // each arm rather than unifying to a trait object.
         match &self.tokenizer {
             Some(tok) => {
-                let mut scorer = WhisperBeamScorer::with_tokenizer(
+                let mut scorer = WhisperBeamScorer::with_tokenizer_and_backend(
                     Arc::clone(&self.model),
                     &encoder,
                     tok,
                     n_valid_audio,
+                    decoder_backend,
                 )?;
                 beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
             }
             None => {
-                let mut scorer =
-                    WhisperBeamScorer::new(Arc::clone(&self.model), &encoder, n_valid_audio)?;
+                let mut scorer = WhisperBeamScorer::new_with_backend(
+                    Arc::clone(&self.model),
+                    &encoder,
+                    n_valid_audio,
+                    decoder_backend,
+                )?;
                 beam_search(&mut scorer, &cfg.decoder_start_ids, cfg.eot, config)
             }
         }
@@ -267,9 +350,12 @@ impl WhisperAsr {
         pcm: &[f32],
         config: &SamplerConfig,
     ) -> Result<Vec<u32>> {
-        let compute = Compute::for_backend(self.backend_kind, WHISPER_HOT_OPS)?;
-        let encoder = self.model.encode_pcm_with(&compute, pcm)?;
-        let mut source = WhisperLogitsSource::new(Arc::clone(&self.model), &encoder)?;
+        let encoder = self.encode_selected(pcm)?;
+        let mut source = WhisperLogitsSource::new_with_backend(
+            Arc::clone(&self.model),
+            &encoder,
+            self.decoder_backend(),
+        )?;
         let cfg = self.model.config();
         sample_sequence(
             &mut source,
@@ -322,6 +408,8 @@ impl WhisperAsr {
             model,
             tokenizer: None,
             backend_kind: BackendKind::Cpu,
+            #[cfg(feature = "coreml")]
+            coreml_artifact: None,
         }
     }
 }

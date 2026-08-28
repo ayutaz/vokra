@@ -29,7 +29,8 @@
 //!   1024`; `audio_tokenizer_sample_rate = 48_000`; language backbone
 //!   = a GPT-2 flavour with `hidden_size = 768` /
 //!   `gpt2_config.n_layer = 12` / `gpt2_config.n_head = 12` /
-//!   `gpt2_config.n_positions = 32_768` / vocab = 16_384;
+//!   `gpt2_config.n_positions = 32_768` / vocab = 16_384 / rotary
+//!   positions with base 10_000 / LayerNorm epsilon 1e-5;
 //!   `local_transformer_layers = 1`). Ships as a torch pickle
 //!   `pytorch_model.bin`, not safetensors — callers pre-bridge with
 //!   `tools/parity/bin_to_safetensors.py` (the OpenBMB VoxCPM
@@ -84,16 +85,23 @@
 //!
 //! MOSS-TTS is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future `crates/vokra-models/src/moss_tts/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! re-implemented natively in `crates/vokra-models/src/moss_tts/`.
+//!
+//! Corrected MOSS-Audio Instruct conversions additionally require the exact
+//! `vocab.json`, `merges.txt`, `tokenizer_config.json`,
+//! `chat_template.jinja`, `generation_config.json` and
+//! `processor_config.json` beside the merged safetensors input. Their bytes
+//! are authenticated against the selected immutable 4B/8B revision and
+//! embedded into the GGUF. Runtime text generation never downloads or trusts
+//! mutable tokenizer files from the host.
 //!
 //! # Vast.ai
 //!
 //! The Delay variants (`MOSS-TTS` + `MOSS-TTS-v1.5`, both ~17 GB BF16
 //! across 4 safetensors shards) and the Local variant (~9 GB BF16) all
-//! exceed the M1 iMac 16 GB dev machine's whole-file
-//! `std::fs::read` capacity per memory
-//! [[feedback-large-models-on-vast-ai]] (>8 GB safetensors → vast.ai).
+//! exceed the repository's 2 GB local-artifact ceiling and therefore belong
+//! on vast.ai. This non-streaming converter must not run on the maintainer Mac
+//! for those variants.
 //! The Nano variant fits locally but ships as a torch pickle
 //! `pytorch_model.bin` and needs a bridge pass first. Owner runs the
 //! actual conversion on vast.ai per the model-publish runbook
@@ -107,10 +115,13 @@
 // referenced from `lib.rs` and can be removed then. Kept for
 // safety while the `lib.rs` wiring is landing in parallel.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
-use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
+use vokra_core::{FrontendSpec, LicenseClass};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
@@ -125,6 +136,72 @@ use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for MOSS-TTS GGUFs.
 pub(crate) const ARCH: &str = "moss_tts";
+
+/// Dedicated architecture tag for the MOSS-Audio understanding models.
+///
+/// The historical public 4B/8B GGUFs were emitted through this MOSS-TTS
+/// converter and therefore carry `moss_tts`.  New conversions must use the
+/// upstream `model_type = "moss_audio"`; the runtime may admit the historical
+/// files only through their exact 901-tensor manifest hashes.
+pub(crate) const MOSS_AUDIO_ARCH: &str = "moss_audio";
+
+const MOSS_AUDIO_SOURCE_CODE_REVISION: &str = "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883";
+const MOSS_AUDIO_CONFIGURATION_SHA256: &str =
+    "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd";
+const MOSS_AUDIO_MODELING_SHA256: &str =
+    "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c";
+const MOSS_AUDIO_PROCESSING_SHA256: &str =
+    "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6";
+
+// -- Fixed-revision MOSS-Audio tokenizer / processor sidecars ------------
+
+const KEY_MOSS_AUDIO_TOKENIZER_VOCAB: &str = "vokra.moss_audio.tokenizer.vocab_json";
+const KEY_MOSS_AUDIO_TOKENIZER_MERGES: &str = "vokra.moss_audio.tokenizer.merges_txt";
+const KEY_MOSS_AUDIO_TOKENIZER_CONFIG: &str = "vokra.moss_audio.tokenizer.config_json";
+const KEY_MOSS_AUDIO_CHAT_TEMPLATE: &str = "vokra.moss_audio.tokenizer.chat_template_jinja";
+const KEY_MOSS_AUDIO_GENERATION_CONFIG: &str = "vokra.moss_audio.generation.config_json";
+const KEY_MOSS_AUDIO_PROCESSOR_CONFIG: &str = "vokra.moss_audio.processor.config_json";
+
+const MOSS_AUDIO_VOCAB_FILE: ExactSidecar = ExactSidecar {
+    name: "vocab.json",
+    bytes: 3_383_407,
+    sha256: "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+};
+const MOSS_AUDIO_MERGES_FILE: ExactSidecar = ExactSidecar {
+    name: "merges.txt",
+    bytes: 1_671_853,
+    sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+};
+const MOSS_AUDIO_CHAT_TEMPLATE_FILE: ExactSidecar = ExactSidecar {
+    name: "chat_template.jinja",
+    bytes: 4_116,
+    sha256: "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+};
+const MOSS_AUDIO_GENERATION_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "generation_config.json",
+    bytes: 121,
+    sha256: "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+};
+const MOSS_AUDIO_4B_TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 5_404,
+    sha256: "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+};
+const MOSS_AUDIO_8B_TOKENIZER_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "tokenizer_config.json",
+    bytes: 6_114,
+    sha256: "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
+};
+const MOSS_AUDIO_4B_PROCESSOR_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "processor_config.json",
+    bytes: 426,
+    sha256: "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+};
+const MOSS_AUDIO_8B_PROCESSOR_CONFIG_FILE: ExactSidecar = ExactSidecar {
+    name: "processor_config.json",
+    bytes: 427,
+    sha256: "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+};
 
 /// Model-category tag written under `vokra.model.category`. `"tts"`
 /// distinguishes MOSS-TTS from speaker / codec / ASR siblings so a
@@ -150,6 +227,9 @@ pub(crate) const UPSTREAM_HF_MOSS_TTS: &str = "OpenMOSS-Team/MOSS-TTS";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_V15: &str = "OpenMOSS-Team/MOSS-TTS-v1.5";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_NANO: &str = "OpenMOSS-Team/MOSS-TTS-Nano-100M";
 pub(crate) const UPSTREAM_HF_MOSS_TTS_LOCAL: &str = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5";
+/// VoiceGenerator is a smaller `moss_tts_delay` release.  It shares the
+/// generation algorithm with Delay, but not the 8B tensor axes.
+pub(crate) const UPSTREAM_HF_MOSS_VOICE_GENERATOR: &str = "OpenMOSS-Team/MOSS-VoiceGenerator";
 /// MOSS-Audio-4B-Instruct HF release slug
 /// (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`, apache-2.0). Distinct
 /// upstream sibling that shares the moss_tts family arch tag (this
@@ -174,6 +254,8 @@ pub(crate) const NAME_MOSS_TTS: &str = "moss-tts";
 pub(crate) const NAME_MOSS_TTS_V15: &str = "moss-tts-v1.5";
 pub(crate) const NAME_MOSS_TTS_NANO: &str = "moss-tts-nano-100m";
 pub(crate) const NAME_MOSS_TTS_LOCAL: &str = "moss-tts-local-transformer-v1.5";
+/// `vokra.model.name` for the distinct Qwen3-1.7B VoiceGenerator release.
+pub(crate) const NAME_MOSS_VOICE_GENERATOR: &str = "moss-voice-generator";
 /// `vokra.model.name` stamp for MOSS-Audio-4B-Instruct — the
 /// lower-cased HF slug tail, matching the sibling naming convention.
 pub(crate) const NAME_MOSS_AUDIO_4B_INSTRUCT: &str = "moss-audio-4b-instruct";
@@ -235,10 +317,9 @@ const KEY_MOSS_LLM_HEAD_DIM: &str = "vokra.moss_tts.llm.head_dim";
 const KEY_MOSS_LLM_VOCAB_SIZE: &str = "vokra.moss_tts.llm.vocab_size";
 
 /// Language backbone RoPE base θ (`rope_theta`). 1_000_000 for
-/// Delay + Local. GPT-2 (Nano) uses **learned** positional embeddings
-/// and therefore has no RoPE base; the Nano key is written as `0`
-/// sentinel so a runtime binder can tell "not applicable" apart from
-/// "silently defaulted" (FR-EX-08).
+/// Delay + Local. The custom GPT-2 implementation used by Nano also
+/// uses RoPE, with `gpt2_config.position_embedding_type = "rope"` and
+/// `gpt2_config.rope_base = 10_000`.
 const KEY_MOSS_LLM_ROPE_BASE: &str = "vokra.moss_tts.llm.rope_base";
 
 /// Language backbone RMSNorm ε (`rms_norm_eps`). 1e-6 for Delay +
@@ -252,6 +333,57 @@ const KEY_MOSS_LLM_RMS_NORM_EPS: &str = "vokra.moss_tts.llm.rms_norm_eps";
 /// without inspecting the arch label. `"qwen3"` for Delay + Local,
 /// `"gpt2"` for Nano.
 const KEY_MOSS_LLM_FAMILY: &str = "vokra.moss_tts.llm.family";
+
+/// Exact upstream revision used for corrected release contracts.
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+/// SHA-256 of the released Nano `pytorch_model.bin` LFS object.
+const KEY_PROVENANCE_CHECKPOINT_SHA256: &str = "vokra.provenance.checkpoint_sha256";
+/// SHA-256 of the pinned Nano `config.json`.
+const KEY_MOSS_CONFIG_SHA256: &str = "vokra.moss_tts.config_sha256";
+/// Positional encoding selected by the custom GPT-2 implementation.
+const KEY_MOSS_POSITION_EMBEDDING_TYPE: &str = "vokra.moss_tts.llm.position_embedding_type";
+/// GPT-2 LayerNorm epsilon. Distinct from the legacy RMSNorm-only key.
+const KEY_MOSS_LAYER_NORM_EPS: &str = "vokra.moss_tts.llm.layer_norm_eps";
+/// Maximum global sequence length.
+const KEY_MOSS_MAX_POSITION_EMBEDDINGS: &str = "vokra.moss_tts.llm.max_position_embeddings";
+/// Number of autoregressive per-frame local-transformer blocks.
+const KEY_MOSS_LOCAL_TRANSFORMER_LAYERS: &str = "vokra.moss_tts.local_transformer_layers";
+/// Text/prompt and audio framing token IDs required by Nano generation.
+const KEY_MOSS_PAD_TOKEN_ID: &str = "vokra.moss_tts.pad_token_id";
+const KEY_MOSS_IM_START_TOKEN_ID: &str = "vokra.moss_tts.im_start_token_id";
+const KEY_MOSS_IM_END_TOKEN_ID: &str = "vokra.moss_tts.im_end_token_id";
+const KEY_MOSS_AUDIO_START_TOKEN_ID: &str = "vokra.moss_tts.audio_start_token_id";
+const KEY_MOSS_AUDIO_END_TOKEN_ID: &str = "vokra.moss_tts.audio_end_token_id";
+const KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_user_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID: &str = "vokra.moss_tts.audio_assistant_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID: &str =
+    "vokra.moss_tts.audio_assistant_gen_slot_token_id";
+const KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID: &str =
+    "vokra.moss_tts.audio_assistant_delay_slot_token_id";
+const KEY_MOSS_AUDIO_PAD_TOKEN_ID: &str = "vokra.moss_tts.audio_pad_token_id";
+/// SHA-256 pins for custom model/processor source when the release requires it.
+const KEY_MOSS_MODELING_SOURCE_SHA256: &str = "vokra.moss_tts.modeling_source_sha256";
+const KEY_MOSS_PROCESSING_SOURCE_SHA256: &str = "vokra.moss_tts.processing_source_sha256";
+/// SHA-256 pins for the remaining fixed-revision Local custom-code files.
+const KEY_MOSS_CONFIGURATION_SOURCE_SHA256: &str = "vokra.moss_tts.configuration_source_sha256";
+const KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256: &str = "vokra.moss_tts.qwen3_decoder_source_sha256";
+const KEY_MOSS_GPT2_DECODER_SOURCE_SHA256: &str = "vokra.moss_tts.gpt2_decoder_source_sha256";
+const KEY_MOSS_PROCESSOR_CONFIG_SHA256: &str = "vokra.moss_tts.processor_config_sha256";
+/// Exact decoder companion selected by the release config.
+const KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM: &str = "vokra.moss_tts.audio_tokenizer_upstream_hf";
+/// Local GPT-2 decoder contract. These axes are deliberately distinct from
+/// the global Qwen3 `llm.*` keys above.
+const KEY_MOSS_LOCAL_HIDDEN_DIM: &str = "vokra.moss_tts.local_transformer.hidden_dim";
+const KEY_MOSS_LOCAL_FFN_DIM: &str = "vokra.moss_tts.local_transformer.ffn_dim";
+const KEY_MOSS_LOCAL_N_HEAD: &str = "vokra.moss_tts.local_transformer.n_head";
+const KEY_MOSS_LOCAL_HEAD_DIM: &str = "vokra.moss_tts.local_transformer.head_dim";
+const KEY_MOSS_LOCAL_POSITION_EMBEDDING_TYPE: &str =
+    "vokra.moss_tts.local_transformer.position_embedding_type";
+const KEY_MOSS_LOCAL_ROPE_BASE: &str = "vokra.moss_tts.local_transformer.rope_base";
+const KEY_MOSS_LOCAL_LAYER_NORM_EPS: &str = "vokra.moss_tts.local_transformer.layer_norm_eps";
+const KEY_MOSS_LOCAL_ACTIVATION: &str = "vokra.moss_tts.local_transformer.activation";
+const KEY_MOSS_LOCAL_TEXT_HEAD_MODE: &str = "vokra.moss_tts.local_text_head_mode";
+const KEY_MOSS_LOCAL_STATIC_KV_CACHE: &str = "vokra.moss_tts.local_transformer.use_static_kv_cache";
 
 // ─── Per-variant transcribed constants ───────────────────────────────
 
@@ -275,6 +407,43 @@ const DELAY_LLM_HEAD_DIM: u32 = 128;
 const DELAY_LLM_VOCAB: u32 = 155_648;
 const DELAY_LLM_ROPE_BASE: f32 = 1_000_000.0;
 const DELAY_LLM_RMS_NORM_EPS: f32 = 1e-6;
+
+/// MOSS-VoiceGenerator axes from the official `config.json` at revision
+/// `97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4` (fetched 2026-08-26).
+/// The upstream class is still `MossTTSDelayModel`, but the checkpoint is a
+/// Qwen3-1.7B / 16-codebook topology and must never inherit the 8B Delay
+/// constants merely because `model_type = "moss_tts_delay"` is shared.
+const VOICE_N_VQ: u32 = 16;
+const VOICE_AUDIO_VOCAB_SIZE: u32 = 1_024;
+const VOICE_SAMPLE_RATE: u32 = 24_000;
+const VOICE_LLM_HIDDEN: u32 = 2_048;
+const VOICE_LLM_FFN: u32 = 6_144;
+const VOICE_LLM_N_LAYER: u32 = 28;
+const VOICE_LLM_N_HEAD: u32 = 16;
+const VOICE_LLM_N_HEAD_KV: u32 = 8;
+const VOICE_LLM_HEAD_DIM: u32 = 128;
+const VOICE_LLM_VOCAB: u32 = 155_648;
+const VOICE_LLM_ROPE_BASE: f32 = 1_000_000.0;
+const VOICE_LLM_RMS_NORM_EPS: f32 = 1e-6;
+const VOICE_UPSTREAM_REVISION: &str = "97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4";
+const VOICE_CONFIG_SHA256: &str =
+    "5b6ccfbf309a5844c130d09c9b5fa8b9eef55db27f1b7072695483b6f5524685";
+const VOICE_MODELING_SOURCE_SHA256: &str =
+    "666d7320f93ce6b1c1f6ed4dba6fd4b9520a082a90fa7a17211efd83247d28a0";
+const VOICE_PROCESSING_SOURCE_SHA256: &str =
+    "16dda5233f9f752518d07a6b780d6555945b48547fba0b4e7faf6eb2c4ed0038";
+const VOICE_POSITION_EMBEDDING_TYPE: &str = "rope";
+const VOICE_MAX_POSITION_EMBEDDINGS: u32 = 40_960;
+const VOICE_PAD_TOKEN_ID: u32 = 151_643;
+const VOICE_IM_START_TOKEN_ID: u32 = 151_644;
+const VOICE_IM_END_TOKEN_ID: u32 = 151_645;
+const VOICE_AUDIO_START_TOKEN_ID: u32 = 151_652;
+const VOICE_AUDIO_END_TOKEN_ID: u32 = 151_653;
+const VOICE_AUDIO_USER_SLOT_TOKEN_ID: u32 = 151_654;
+const VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID: u32 = 151_656;
+const VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID: u32 = 151_662;
+const VOICE_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const VOICE_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
 
 /// Nano axes. GPT-2 backbone — no RoPE, no RMSNorm; sentinels written
 /// for those keys so the runtime binder can tell "not applicable"
@@ -300,12 +469,27 @@ const NANO_LLM_N_HEAD_KV: u32 = 12;
 /// `hidden_size / n_head = 768 / 12 = 64`.
 const NANO_LLM_HEAD_DIM: u32 = 64;
 const NANO_LLM_VOCAB: u32 = 16_384;
-/// GPT-2 uses learned positional embeddings — no RoPE base. Sentinel
-/// `0.0` so the runtime binder can tell "N/A" apart from "silently
-/// defaulted" (FR-EX-08).
-const NANO_LLM_ROPE_BASE: f32 = 0.0;
+/// Custom GPT-2 RoPE base from the pinned `config.json`.
+const NANO_LLM_ROPE_BASE: f32 = 10_000.0;
 /// GPT-2 uses LayerNorm — no RMSNorm ε. Sentinel `0.0`.
 const NANO_LLM_RMS_NORM_EPS: f32 = 0.0;
+const NANO_UPSTREAM_REVISION: &str = "44502f80dbf9743528fa921cc544d662c685ebec";
+const NANO_CHECKPOINT_SHA256: &str =
+    "24003f2f11ac8a2cbf70514db2d8f1c02fb451aa6b3c0bffc9da09f31cd7caa5";
+const NANO_CONFIG_SHA256: &str = "ba36b08c80d4ae0805a2bab32b6ac90ec0d1815d01d3854ba42811db1d5bde99";
+const NANO_POSITION_EMBEDDING_TYPE: &str = "rope";
+const NANO_LAYER_NORM_EPS: f32 = 1e-5;
+const NANO_MAX_POSITION_EMBEDDINGS: u32 = 32_768;
+const NANO_LOCAL_TRANSFORMER_LAYERS: u32 = 1;
+const NANO_PAD_TOKEN_ID: u32 = 3;
+const NANO_IM_START_TOKEN_ID: u32 = 4;
+const NANO_IM_END_TOKEN_ID: u32 = 5;
+const NANO_AUDIO_START_TOKEN_ID: u32 = 6;
+const NANO_AUDIO_END_TOKEN_ID: u32 = 7;
+const NANO_AUDIO_USER_SLOT_TOKEN_ID: u32 = 8;
+const NANO_AUDIO_ASSISTANT_SLOT_TOKEN_ID: u32 = 9;
+const NANO_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const NANO_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano";
 
 /// Local axes. Qwen3-flavour backbone at 2.5 B scale.
 ///
@@ -324,6 +508,42 @@ const LOCAL_LLM_HEAD_DIM: u32 = 128;
 const LOCAL_LLM_VOCAB: u32 = 151_936;
 const LOCAL_LLM_ROPE_BASE: f32 = 1_000_000.0;
 const LOCAL_LLM_RMS_NORM_EPS: f32 = 1e-6;
+const LOCAL_UPSTREAM_REVISION: &str = "be7766a6735b98bd793f7c79fb720b4d0f5d13b8";
+const LOCAL_CONFIG_SHA256: &str =
+    "826f81f163b1b557ad13f83c4f35008f4fee5a6cb6311b4316ff3dbb25149411";
+const LOCAL_CONFIGURATION_SOURCE_SHA256: &str =
+    "ab6debcb92032cb9dc91ae80aed77dbadd2e59848208baef2b062bd6def3f3be";
+const LOCAL_MODELING_SOURCE_SHA256: &str =
+    "b0a66211943ae580b087f3e71495fea2f455701a4f6c29b6d3562218f7668c5f";
+const LOCAL_PROCESSING_SOURCE_SHA256: &str =
+    "3fc5616b1ec3408162b7d859a7696725a40525313b20f9b31a06ee55c93bd7ad";
+const LOCAL_GPT2_DECODER_SOURCE_SHA256: &str =
+    "f2e877104669f1e6c7cd34680f0da1a8a159e032123ee56b660b63929b6c8989";
+const LOCAL_QWEN3_DECODER_SOURCE_SHA256: &str =
+    "100163bd7ecf31a59bafacc0b032ace9339edc992a3eb4cc80662502e04e46f0";
+const LOCAL_PROCESSOR_CONFIG_SHA256: &str =
+    "db574bfebad009e05193196a63a4eeecd353eeca177ccfff28b9379d595d88b7";
+const LOCAL_POSITION_EMBEDDING_TYPE: &str = "rope";
+const LOCAL_MAX_POSITION_EMBEDDINGS: u32 = 32_768;
+const LOCAL_TRANSFORMER_LAYERS: u32 = 1;
+const LOCAL_TRANSFORMER_HIDDEN: u32 = 2_560;
+const LOCAL_TRANSFORMER_FFN: u32 = 9_728;
+const LOCAL_TRANSFORMER_N_HEAD: u32 = 32;
+const LOCAL_TRANSFORMER_HEAD_DIM: u32 = 80;
+const LOCAL_TRANSFORMER_POSITION_EMBEDDING_TYPE: &str = "rope";
+const LOCAL_TRANSFORMER_ROPE_BASE: f32 = 1_000_000.0;
+const LOCAL_TRANSFORMER_LAYER_NORM_EPS: f32 = 1e-6;
+const LOCAL_TRANSFORMER_ACTIVATION: &str = "silu";
+const LOCAL_TEXT_HEAD_MODE: &str = "binary";
+const LOCAL_PAD_TOKEN_ID: u32 = 151_643;
+const LOCAL_IM_START_TOKEN_ID: u32 = 151_644;
+const LOCAL_IM_END_TOKEN_ID: u32 = 151_645;
+const LOCAL_AUDIO_START_TOKEN_ID: u32 = 151_669;
+const LOCAL_AUDIO_END_TOKEN_ID: u32 = 151_670;
+const LOCAL_AUDIO_USER_SLOT_TOKEN_ID: u32 = 151_654;
+const LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID: u32 = 151_656;
+const LOCAL_AUDIO_PAD_TOKEN_ID: u32 = 1_024;
+const LOCAL_AUDIO_TOKENIZER_UPSTREAM: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2";
 
 // ─── Variant enum + selectors ────────────────────────────────────────
 
@@ -348,65 +568,49 @@ pub(crate) enum MossTtsVariant {
     /// `moss_tts_local` release (Qwen3-flavour 2.5B + GPT-2 local
     /// head).
     Local,
-    /// `OpenMOSS-Team/MOSS-Audio-4B-Instruct` — a distinct 4B
-    /// **audio-LLM** sibling (custom `configuration_moss_audio.py`
-    /// module, `trust_remote_code=True`), reusing this converter per
-    /// the parent workflow's REUSE HINT rather than a fresh
-    /// `models/*.rs` module.
-    ///
-    /// **PLACEHOLDER HPARAMS**: The 4B model is not one of the four
-    /// `moss_tts_{delay,nano,local}` releases whose axes are
-    /// primary-source-transcribed here. The selector methods route
-    /// AudioInstruct4b to the sibling `Local` (Qwen3-flavour 2.5B)
-    /// axes as the closest-family placeholder while the parent-workflow
-    /// task discipline forbids downloading the ~8 GB safetensors + the
-    /// upstream `configuration_moss_audio.py` for transcription. A
-    /// follow-up wave must land the true axes (config.json +
-    /// `configuration_moss_audio.py` inspection) before any downstream
-    /// loader can trust the emitted hparams. The **provenance** stamp
-    /// (NAME + upstream_hf + license = apache-2.0 Permissive +
-    /// category = `s2s`) is faithful — only the axis hparams are
-    /// placeholder. The distinct `vokra.moss_tts.variant = "audio_4b"`
-    /// tag lets a runtime dispatcher recognise this artifact and
-    /// refuse to bind the placeholder axes until the follow-up lands.
+    /// `OpenMOSS-Team/MOSS-VoiceGenerator` — the Qwen3-1.7B
+    /// `moss_tts_delay` release with 28 layers and 16 audio codebooks.
+    /// It reuses Delay generation semantics, but has a distinct exact tensor
+    /// contract and provenance identity.
+    VoiceGenerator,
+    /// `OpenMOSS-Team/MOSS-Audio-4B-Instruct` — the 5.22B-parameter
+    /// audio-understanding model.  It uses a 32-layer Whisper-style audio
+    /// encoder, four GatedMLP adapters (one primary plus three DeepStack
+    /// injections), and a 36-layer Qwen3 text decoder with hidden size 2560.
+    /// The exact axes come from upstream revision
+    /// `6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d` and the official native
+    /// implementation pinned by `MOSS_AUDIO_SOURCE_CODE_REVISION`.
     AudioInstruct4b,
-    /// `OpenMOSS-Team/MOSS-Audio-8B-Instruct` — the larger 8B
-    /// **audio-LLM** sibling of [`Self::AudioInstruct4b`], same
-    /// custom-code family (`configuration_moss_audio.py`,
-    /// `trust_remote_code=True`, 4 shards ~9.05 GB BF16 per parent
-    /// workflow manifest 2026-08-02). Reuses this converter per the
-    /// parent workflow's REUSE HINT rather than a fresh `models/*.rs`
-    /// module.
-    ///
-    /// **PLACEHOLDER HPARAMS** — inherits the [`Self::AudioInstruct4b`]
-    /// posture (route to sibling `Local` Qwen3-flavour axes as the
-    /// closest-family placeholder) because the parent-workflow task
-    /// discipline forbids downloading the ~9 GB safetensors + the
-    /// upstream `configuration_moss_audio.py` for primary-source
-    /// transcription. A follow-up wave must land the true axes
-    /// (config.json + `configuration_moss_audio.py` inspection) before
-    /// any downstream loader can trust the emitted hparams. The
-    /// **provenance** stamp (NAME + upstream_hf + license = apache-2.0
-    /// Permissive + category = `s2s`) is faithful — only the axis
-    /// hparams are placeholder. The distinct
-    /// `vokra.moss_tts.variant = "audio_8b"` tag lets a runtime
-    /// dispatcher recognise this artifact and refuse to bind the
-    /// placeholder axes until the follow-up lands.
+    /// `OpenMOSS-Team/MOSS-Audio-8B-Instruct` — the 9.05B-parameter
+    /// sibling.  The audio tower and adapters are identical to the 4B
+    /// release; its Qwen3 decoder widens to hidden size 4096 and FFN size
+    /// 12288.  The exact axes come from upstream revision
+    /// `6521a39181b47a18f2d9f4b3acfb5bca7b76b57f`.
     AudioInstruct8b,
 }
 
 impl MossTtsVariant {
+    pub(crate) const fn arch(self) -> &'static str {
+        match self {
+            Self::AudioInstruct4b | Self::AudioInstruct8b => MOSS_AUDIO_ARCH,
+            _ => ARCH,
+        }
+    }
+
+    pub(crate) const fn is_audio_instruct(self) -> bool {
+        matches!(self, Self::AudioInstruct4b | Self::AudioInstruct8b)
+    }
+
     /// Sub-arch tag written under `vokra.moss_tts.variant`.
     pub(crate) const fn sub_arch(self) -> &'static str {
         match self {
             Self::Delay | Self::DelayV15 => "delay",
             Self::Nano => "nano",
             Self::Local => "local",
-            // Distinct tag so a runtime dispatcher can distinguish the
-            // audio-LLM sibling from the four `moss_tts_*` tts releases
-            // and refuse to bind placeholder axes.
-            Self::AudioInstruct4b => "audio_4b",
-            Self::AudioInstruct8b => "audio_8b",
+            Self::VoiceGenerator => "voice_generator",
+            // Dedicated release tag under the `vokra.moss_audio.*` group.
+            Self::AudioInstruct4b => "4b_instruct",
+            Self::AudioInstruct8b => "8b_instruct",
         }
     }
 
@@ -417,6 +621,7 @@ impl MossTtsVariant {
             Self::DelayV15 => NAME_MOSS_TTS_V15,
             Self::Nano => NAME_MOSS_TTS_NANO,
             Self::Local => NAME_MOSS_TTS_LOCAL,
+            Self::VoiceGenerator => NAME_MOSS_VOICE_GENERATOR,
             Self::AudioInstruct4b => NAME_MOSS_AUDIO_4B_INSTRUCT,
             Self::AudioInstruct8b => NAME_MOSS_AUDIO_8B_INSTRUCT,
         }
@@ -429,8 +634,65 @@ impl MossTtsVariant {
             Self::DelayV15 => UPSTREAM_HF_MOSS_TTS_V15,
             Self::Nano => UPSTREAM_HF_MOSS_TTS_NANO,
             Self::Local => UPSTREAM_HF_MOSS_TTS_LOCAL,
+            Self::VoiceGenerator => UPSTREAM_HF_MOSS_VOICE_GENERATOR,
             Self::AudioInstruct4b => UPSTREAM_HF_MOSS_AUDIO_4B_INSTRUCT,
             Self::AudioInstruct8b => UPSTREAM_HF_MOSS_AUDIO_8B_INSTRUCT,
+        }
+    }
+
+    pub(crate) const fn upstream_revision(self) -> Option<&'static str> {
+        match self {
+            Self::AudioInstruct4b => Some("6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d"),
+            Self::AudioInstruct8b => Some("6521a39181b47a18f2d9f4b3acfb5bca7b76b57f"),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn config_sha256(self) -> Option<&'static str> {
+        match self {
+            Self::AudioInstruct4b => {
+                Some("e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa")
+            }
+            Self::AudioInstruct8b => {
+                Some("535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536")
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn tensor_manifest_sha256(self) -> Option<&'static str> {
+        match self {
+            Self::AudioInstruct4b => {
+                Some("4db8bfa2a54b7541dc092b73919771fdefa952ea1b054ce10845e9d2bcd6fadc")
+            }
+            Self::AudioInstruct8b => {
+                Some("76c1275dabd9a3baf0189f5fc335a6c192c472e96bc363cc3a64ad2d37a5f83a")
+            }
+            _ => None,
+        }
+    }
+
+    const fn provenance_source(self) -> &'static str {
+        match self {
+            Self::Delay => "OpenMOSS-Team/MOSS-TTS (moss_tts_delay, Qwen3-8B backbone, apache-2.0)",
+            Self::DelayV15 => {
+                "OpenMOSS-Team/MOSS-TTS-v1.5 (moss_tts_delay, Qwen3-8B backbone, apache-2.0)"
+            }
+            Self::Nano => {
+                "OpenMOSS-Team/MOSS-TTS-Nano-100M (moss_tts_nano, GPT-2 backbone, apache-2.0)"
+            }
+            Self::Local => {
+                "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (moss_tts_local, Qwen3-2.5B backbone, apache-2.0)"
+            }
+            Self::VoiceGenerator => {
+                "OpenMOSS-Team/MOSS-VoiceGenerator (moss_tts_delay, Qwen3-1.7B backbone, apache-2.0)"
+            }
+            Self::AudioInstruct4b => {
+                "OpenMOSS-Team/MOSS-Audio-4B-Instruct@6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d (MossAudioModel, apache-2.0)"
+            }
+            Self::AudioInstruct8b => {
+                "OpenMOSS-Team/MOSS-Audio-8B-Instruct@6521a39181b47a18f2d9f4b3acfb5bca7b76b57f (MossAudioModel, apache-2.0)"
+            }
         }
     }
 
@@ -441,7 +703,9 @@ impl MossTtsVariant {
     /// `step_audio2_mini` already stamp).
     pub(crate) const fn category(self) -> &'static str {
         match self {
-            Self::Delay | Self::DelayV15 | Self::Nano | Self::Local => MODEL_CATEGORY,
+            Self::Delay | Self::DelayV15 | Self::Nano | Self::Local | Self::VoiceGenerator => {
+                MODEL_CATEGORY
+            }
             Self::AudioInstruct4b | Self::AudioInstruct8b => MODEL_CATEGORY_S2S,
         }
     }
@@ -452,6 +716,7 @@ impl MossTtsVariant {
             Self::Delay
             | Self::DelayV15
             | Self::Local
+            | Self::VoiceGenerator
             | Self::AudioInstruct4b
             | Self::AudioInstruct8b => "qwen3",
             Self::Nano => "gpt2",
@@ -467,6 +732,7 @@ impl MossTtsVariant {
     pub(crate) const fn n_vq(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_N_VQ,
+            Self::VoiceGenerator => VOICE_N_VQ,
             Self::Nano => NANO_N_VQ,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_N_VQ,
         }
@@ -474,6 +740,7 @@ impl MossTtsVariant {
     pub(crate) const fn audio_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_AUDIO_VOCAB_SIZE,
+            Self::VoiceGenerator => VOICE_AUDIO_VOCAB_SIZE,
             Self::Nano => NANO_AUDIO_VOCAB_SIZE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_AUDIO_VOCAB_SIZE,
         }
@@ -481,6 +748,7 @@ impl MossTtsVariant {
     pub(crate) const fn sample_rate(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_SAMPLE_RATE,
+            Self::VoiceGenerator => VOICE_SAMPLE_RATE,
             Self::Nano => NANO_SAMPLE_RATE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_SAMPLE_RATE,
         }
@@ -488,6 +756,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_hidden_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HIDDEN,
+            Self::VoiceGenerator => VOICE_LLM_HIDDEN,
             Self::Nano => NANO_LLM_HIDDEN,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HIDDEN,
         }
@@ -495,6 +764,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_ffn_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_FFN,
+            Self::VoiceGenerator => VOICE_LLM_FFN,
             Self::Nano => NANO_LLM_FFN,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_FFN,
         }
@@ -502,6 +772,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_layer(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_LAYER,
+            Self::VoiceGenerator => VOICE_LLM_N_LAYER,
             Self::Nano => NANO_LLM_N_LAYER,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_LAYER,
         }
@@ -509,6 +780,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_head(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD,
+            Self::VoiceGenerator => VOICE_LLM_N_HEAD,
             Self::Nano => NANO_LLM_N_HEAD,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD,
         }
@@ -516,6 +788,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_n_head_kv(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_N_HEAD_KV,
+            Self::VoiceGenerator => VOICE_LLM_N_HEAD_KV,
             Self::Nano => NANO_LLM_N_HEAD_KV,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_N_HEAD_KV,
         }
@@ -523,6 +796,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_head_dim(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_HEAD_DIM,
+            Self::VoiceGenerator => VOICE_LLM_HEAD_DIM,
             Self::Nano => NANO_LLM_HEAD_DIM,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_HEAD_DIM,
         }
@@ -530,6 +804,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_vocab_size(self) -> u32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_VOCAB,
+            Self::VoiceGenerator => VOICE_LLM_VOCAB,
             Self::Nano => NANO_LLM_VOCAB,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_VOCAB,
         }
@@ -537,6 +812,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_rope_base(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_ROPE_BASE,
+            Self::VoiceGenerator => VOICE_LLM_ROPE_BASE,
             Self::Nano => NANO_LLM_ROPE_BASE,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_ROPE_BASE,
         }
@@ -544,6 +820,7 @@ impl MossTtsVariant {
     pub(crate) const fn llm_rms_norm_eps(self) -> f32 {
         match self {
             Self::Delay | Self::DelayV15 => DELAY_LLM_RMS_NORM_EPS,
+            Self::VoiceGenerator => VOICE_LLM_RMS_NORM_EPS,
             Self::Nano => NANO_LLM_RMS_NORM_EPS,
             Self::Local | Self::AudioInstruct4b | Self::AudioInstruct8b => LOCAL_LLM_RMS_NORM_EPS,
         }
@@ -576,6 +853,135 @@ pub struct MossTtsReport {
     pub bf16_passthrough: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExactSidecar {
+    name: &'static str,
+    bytes: usize,
+    sha256: &'static str,
+}
+
+#[derive(Debug)]
+struct MossAudioTokenizerAssets {
+    vocab: Vec<u8>,
+    merges: Vec<u8>,
+    tokenizer_config: Vec<u8>,
+    chat_template: Vec<u8>,
+    generation_config: Vec<u8>,
+    processor_config: Vec<u8>,
+}
+
+impl MossAudioTokenizerAssets {
+    fn load(input: &Path, variant: MossTtsVariant) -> Result<Self, ConvertError> {
+        debug_assert!(variant.is_audio_instruct());
+        let directory = input.parent().unwrap_or_else(|| Path::new("."));
+        let (tokenizer_config, processor_config) = match variant {
+            MossTtsVariant::AudioInstruct4b => (
+                MOSS_AUDIO_4B_TOKENIZER_CONFIG_FILE,
+                MOSS_AUDIO_4B_PROCESSOR_CONFIG_FILE,
+            ),
+            MossTtsVariant::AudioInstruct8b => (
+                MOSS_AUDIO_8B_TOKENIZER_CONFIG_FILE,
+                MOSS_AUDIO_8B_PROCESSOR_CONFIG_FILE,
+            ),
+            _ => unreachable!("MOSS-Audio sidecars require an audio-instruct variant"),
+        };
+        Ok(Self {
+            vocab: read_exact_moss_audio_sidecar(directory, MOSS_AUDIO_VOCAB_FILE, variant)?,
+            merges: read_exact_moss_audio_sidecar(directory, MOSS_AUDIO_MERGES_FILE, variant)?,
+            tokenizer_config: read_exact_moss_audio_sidecar(directory, tokenizer_config, variant)?,
+            chat_template: read_exact_moss_audio_sidecar(
+                directory,
+                MOSS_AUDIO_CHAT_TEMPLATE_FILE,
+                variant,
+            )?,
+            generation_config: read_exact_moss_audio_sidecar(
+                directory,
+                MOSS_AUDIO_GENERATION_CONFIG_FILE,
+                variant,
+            )?,
+            processor_config: read_exact_moss_audio_sidecar(directory, processor_config, variant)?,
+        })
+    }
+
+    fn embed(&self, builder: &mut GgufBuilder) {
+        add_u8_array(builder, KEY_MOSS_AUDIO_TOKENIZER_VOCAB, &self.vocab);
+        add_u8_array(builder, KEY_MOSS_AUDIO_TOKENIZER_MERGES, &self.merges);
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_TOKENIZER_CONFIG,
+            &self.tokenizer_config,
+        );
+        add_u8_array(builder, KEY_MOSS_AUDIO_CHAT_TEMPLATE, &self.chat_template);
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_GENERATION_CONFIG,
+            &self.generation_config,
+        );
+        add_u8_array(
+            builder,
+            KEY_MOSS_AUDIO_PROCESSOR_CONFIG,
+            &self.processor_config,
+        );
+    }
+}
+
+fn read_exact_moss_audio_sidecar(
+    directory: &Path,
+    spec: ExactSidecar,
+    variant: MossTtsVariant,
+) -> Result<Vec<u8>, ConvertError> {
+    let path = directory.join(spec.name);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        ConvertError::Io(std::io::Error::new(
+            error.kind(),
+            format!(
+                "moss-audio: reading required {}@{} sidecar {}: {error}",
+                variant.upstream_hf(),
+                variant
+                    .upstream_revision()
+                    .expect("audio-instruct revision"),
+                path.display()
+            ),
+        ))
+    })?;
+    if bytes.len() != spec.bytes {
+        return Err(ConvertError::Parse(format!(
+            "{}@{} sidecar {} is {} bytes, expected exactly {}",
+            variant.upstream_hf(),
+            variant
+                .upstream_revision()
+                .expect("audio-instruct revision"),
+            spec.name,
+            bytes.len(),
+            spec.bytes
+        )));
+    }
+    let actual =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&bytes));
+    if actual != spec.sha256 {
+        return Err(ConvertError::Parse(format!(
+            "{}@{} sidecar {} SHA-256 {actual}, expected {}",
+            variant.upstream_hf(),
+            variant
+                .upstream_revision()
+                .expect("audio-instruct revision"),
+            spec.name,
+            spec.sha256
+        )));
+    }
+    Ok(bytes)
+}
+
+fn add_u8_array(builder: &mut GgufBuilder, key: &str, bytes: &[u8]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U8,
+            values: bytes.iter().copied().map(GgufMetadataValue::U8).collect(),
+        }),
+    );
+}
+
 // ─── convert / convert_variant / convert_moss_tts_file ───────────────
 
 /// Byte-based converter — used by tests and by the file-based helper.
@@ -586,47 +992,11 @@ pub(crate) fn convert_variant(
     variant: MossTtsVariant,
 ) -> Result<(GgufBuilder, MossTtsReport), ConvertError> {
     let st = SafetensorsFile::parse(bytes)?;
+    if variant.is_audio_instruct() {
+        validate_moss_audio_manifest(&st, variant)?;
+    }
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
-    b.add_string(KEY_MODEL_CATEGORY, variant.category());
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
-    write_hparams(&mut b, variant);
-    // Self-describing redistribution: the artifact carries its own
-    // licence. Every MOSS-TTS release ships `apache-2.0`
-    // (`huggingface.co/api/models/OpenMOSS-Team/MOSS-TTS[-v1.5|
-    // -Nano-100M|-Local-Transformer-v1.5]` `cardData.license =
-    // "apache-2.0"` fetched 2026-07-30 — CLAUDE.md
-    // 「ハルシネーション厳禁」).
-    let source = match variant {
-        MossTtsVariant::Delay => {
-            "OpenMOSS-Team/MOSS-TTS (moss_tts_delay, Qwen3-8B backbone, apache-2.0)"
-        }
-        MossTtsVariant::DelayV15 => {
-            "OpenMOSS-Team/MOSS-TTS-v1.5 (moss_tts_delay, Qwen3-8B backbone, apache-2.0)"
-        }
-        MossTtsVariant::Nano => {
-            "OpenMOSS-Team/MOSS-TTS-Nano-100M (moss_tts_nano, GPT-2 backbone, apache-2.0)"
-        }
-        MossTtsVariant::Local => {
-            "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 (moss_tts_local, Qwen3-2.5B backbone, apache-2.0)"
-        }
-        MossTtsVariant::AudioInstruct4b => {
-            "OpenMOSS-Team/MOSS-Audio-4B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
-        }
-        MossTtsVariant::AudioInstruct8b => {
-            "OpenMOSS-Team/MOSS-Audio-8B-Instruct (configuration_moss_audio.py custom-code audio-LLM, apache-2.0; placeholder axes = Local family)"
-        }
-    };
-    vokra_core::stamp_provenance(
-        &mut b,
-        LicenseClass::Permissive,
-        "apache-2.0",
-        Some(variant.name()),
-        Some(source),
-    );
-
+    let mut b = metadata_builder(variant);
     let mut report = MossTtsReport::default();
     for t in st.tensors() {
         report.read += 1;
@@ -651,6 +1021,23 @@ pub(crate) fn convert_variant(
     Ok((b, report))
 }
 
+pub(crate) fn metadata_builder(variant: MossTtsVariant) -> GgufBuilder {
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, variant.arch());
+    builder.add_string(chunks::KEY_MODEL_NAME, variant.name());
+    builder.add_string(KEY_MODEL_CATEGORY, variant.category());
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_HF, variant.upstream_hf());
+    write_hparams(&mut builder, variant);
+    vokra_core::stamp_provenance(
+        &mut builder,
+        LicenseClass::Permissive,
+        "apache-2.0",
+        Some(variant.name()),
+        Some(variant.provenance_source()),
+    );
+    builder
+}
+
 /// File-based MOSS-TTS converter (`vokra-cli convert --model moss-tts[-*]`).
 ///
 /// Reads `input`, writes a Vokra GGUF to `output`. `license` overrides
@@ -669,8 +1056,17 @@ pub fn convert_moss_tts_file(
     variant: MossTtsVariant,
     license: Option<&str>,
 ) -> Result<MossTtsReport, ConvertError> {
+    // Fail before reading a multi-gigabyte merged checkpoint when any exact
+    // release sidecar is missing or modified.
+    let tokenizer_assets = variant
+        .is_audio_instruct()
+        .then(|| MossAudioTokenizerAssets::load(input, variant))
+        .transpose()?;
     let bytes = std::fs::read(input)?;
     let (mut builder, report) = convert_variant(bytes, variant)?;
+    if let Some(tokenizer_assets) = tokenizer_assets {
+        tokenizer_assets.embed(&mut builder);
+    }
     // Apply the caller-supplied SPDX override on top of the built-in
     // apache-2.0 stamp (mirror of `convert_wespeaker_file`). We
     // re-stamp by writing the override provenance chunk over the
@@ -688,6 +1084,7 @@ pub fn convert_moss_tts_file(
                 MossTtsVariant::DelayV15 => "OpenMOSS-Team/MOSS-TTS-v1.5",
                 MossTtsVariant::Nano => "OpenMOSS-Team/MOSS-TTS-Nano-100M",
                 MossTtsVariant::Local => "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
+                MossTtsVariant::VoiceGenerator => "OpenMOSS-Team/MOSS-VoiceGenerator",
                 MossTtsVariant::AudioInstruct4b => "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
                 MossTtsVariant::AudioInstruct8b => "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
             }),
@@ -704,6 +1101,10 @@ pub fn convert_moss_tts_file(
 // ─── Internal: write hparams for the selected variant ────────────────
 
 fn write_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
+    if variant.is_audio_instruct() {
+        write_moss_audio_hparams(b, variant);
+        return;
+    }
     b.add_string(KEY_MOSS_VARIANT, variant.sub_arch());
     b.add_u32(KEY_MOSS_N_VQ, variant.n_vq());
     b.add_u32(KEY_MOSS_AUDIO_VOCAB_SIZE, variant.audio_vocab_size());
@@ -718,6 +1119,443 @@ fn write_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
     b.add_u32(KEY_MOSS_LLM_VOCAB_SIZE, variant.llm_vocab_size());
     b.add_f32(KEY_MOSS_LLM_ROPE_BASE, variant.llm_rope_base());
     b.add_f32(KEY_MOSS_LLM_RMS_NORM_EPS, variant.llm_rms_norm_eps());
+    if variant == MossTtsVariant::Nano {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, NANO_UPSTREAM_REVISION);
+        b.add_string(KEY_PROVENANCE_CHECKPOINT_SHA256, NANO_CHECKPOINT_SHA256);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, NANO_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            NANO_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_f32(KEY_MOSS_LAYER_NORM_EPS, NANO_LAYER_NORM_EPS);
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            NANO_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(
+            KEY_MOSS_LOCAL_TRANSFORMER_LAYERS,
+            NANO_LOCAL_TRANSFORMER_LAYERS,
+        );
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, NANO_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, NANO_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, NANO_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, NANO_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, NANO_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            NANO_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            NANO_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, NANO_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            NANO_AUDIO_TOKENIZER_UPSTREAM,
+        );
+    } else if variant == MossTtsVariant::Local {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, LOCAL_UPSTREAM_REVISION);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, LOCAL_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_CONFIGURATION_SOURCE_SHA256,
+            LOCAL_CONFIGURATION_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_MODELING_SOURCE_SHA256,
+            LOCAL_MODELING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSING_SOURCE_SHA256,
+            LOCAL_PROCESSING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256,
+            LOCAL_QWEN3_DECODER_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_GPT2_DECODER_SOURCE_SHA256,
+            LOCAL_GPT2_DECODER_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSOR_CONFIG_SHA256,
+            LOCAL_PROCESSOR_CONFIG_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            LOCAL_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            LOCAL_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(KEY_MOSS_LOCAL_TRANSFORMER_LAYERS, LOCAL_TRANSFORMER_LAYERS);
+        b.add_u32(KEY_MOSS_LOCAL_HIDDEN_DIM, LOCAL_TRANSFORMER_HIDDEN);
+        b.add_u32(KEY_MOSS_LOCAL_FFN_DIM, LOCAL_TRANSFORMER_FFN);
+        b.add_u32(KEY_MOSS_LOCAL_N_HEAD, LOCAL_TRANSFORMER_N_HEAD);
+        b.add_u32(KEY_MOSS_LOCAL_HEAD_DIM, LOCAL_TRANSFORMER_HEAD_DIM);
+        b.add_string(
+            KEY_MOSS_LOCAL_POSITION_EMBEDDING_TYPE,
+            LOCAL_TRANSFORMER_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_f32(KEY_MOSS_LOCAL_ROPE_BASE, LOCAL_TRANSFORMER_ROPE_BASE);
+        b.add_f32(
+            KEY_MOSS_LOCAL_LAYER_NORM_EPS,
+            LOCAL_TRANSFORMER_LAYER_NORM_EPS,
+        );
+        b.add_string(KEY_MOSS_LOCAL_ACTIVATION, LOCAL_TRANSFORMER_ACTIVATION);
+        b.add_string(KEY_MOSS_LOCAL_TEXT_HEAD_MODE, LOCAL_TEXT_HEAD_MODE);
+        b.add_bool(KEY_MOSS_LOCAL_STATIC_KV_CACHE, true);
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, LOCAL_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, LOCAL_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, LOCAL_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, LOCAL_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, LOCAL_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+            LOCAL_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, LOCAL_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            LOCAL_AUDIO_TOKENIZER_UPSTREAM,
+        );
+    } else if variant == MossTtsVariant::VoiceGenerator {
+        b.add_string(KEY_PROVENANCE_UPSTREAM_REVISION, VOICE_UPSTREAM_REVISION);
+        b.add_string(KEY_MOSS_CONFIG_SHA256, VOICE_CONFIG_SHA256);
+        b.add_string(
+            KEY_MOSS_MODELING_SOURCE_SHA256,
+            VOICE_MODELING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_PROCESSING_SOURCE_SHA256,
+            VOICE_PROCESSING_SOURCE_SHA256,
+        );
+        b.add_string(
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            VOICE_POSITION_EMBEDDING_TYPE,
+        );
+        b.add_u32(
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            VOICE_MAX_POSITION_EMBEDDINGS,
+        );
+        b.add_u32(KEY_MOSS_PAD_TOKEN_ID, VOICE_PAD_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_START_TOKEN_ID, VOICE_IM_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_IM_END_TOKEN_ID, VOICE_IM_END_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_START_TOKEN_ID, VOICE_AUDIO_START_TOKEN_ID);
+        b.add_u32(KEY_MOSS_AUDIO_END_TOKEN_ID, VOICE_AUDIO_END_TOKEN_ID);
+        b.add_u32(
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            VOICE_AUDIO_USER_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+            VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID,
+        );
+        b.add_u32(
+            KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID,
+            VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID,
+        );
+        b.add_u32(KEY_MOSS_AUDIO_PAD_TOKEN_ID, VOICE_AUDIO_PAD_TOKEN_ID);
+        b.add_string(
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
+            VOICE_AUDIO_TOKENIZER_UPSTREAM,
+        );
+    }
+}
+
+fn write_moss_audio_hparams(b: &mut GgufBuilder, variant: MossTtsVariant) {
+    let (text_hidden, text_ffn) = match variant {
+        MossTtsVariant::AudioInstruct4b => (2_560, 9_728),
+        MossTtsVariant::AudioInstruct8b => (4_096, 12_288),
+        _ => unreachable!("MOSS-Audio metadata requires an audio-instruct variant"),
+    };
+    let upstream_revision = variant
+        .upstream_revision()
+        .expect("audio-instruct variants pin an upstream revision");
+    let config_sha256 = variant
+        .config_sha256()
+        .expect("audio-instruct variants pin config.json");
+    let manifest_sha256 = variant
+        .tensor_manifest_sha256()
+        .expect("audio-instruct variants pin the public manifest");
+
+    b.add_string("vokra.provenance.upstream_revision", upstream_revision);
+    b.add_string("vokra.moss_audio.variant", variant.sub_arch());
+    b.add_string("vokra.moss_audio.source_revision", upstream_revision);
+    b.add_string(
+        "vokra.moss_audio.source_code_revision",
+        MOSS_AUDIO_SOURCE_CODE_REVISION,
+    );
+    b.add_string("vokra.moss_audio.config_sha256", config_sha256);
+    b.add_string(
+        "vokra.moss_audio.configuration_source_sha256",
+        MOSS_AUDIO_CONFIGURATION_SHA256,
+    );
+    b.add_string(
+        "vokra.moss_audio.modeling_source_sha256",
+        MOSS_AUDIO_MODELING_SHA256,
+    );
+    b.add_string(
+        "vokra.moss_audio.processing_source_sha256",
+        MOSS_AUDIO_PROCESSING_SHA256,
+    );
+    b.add_string("vokra.moss_audio.tensor_manifest_sha256", manifest_sha256);
+
+    b.add_u32("vokra.moss_audio.audio.d_model", 1_280);
+    b.add_u32("vokra.moss_audio.audio.output_dim", 1_280);
+    b.add_u32("vokra.moss_audio.audio.n_mels", 128);
+    b.add_u32("vokra.moss_audio.audio.n_layer", 32);
+    b.add_u32("vokra.moss_audio.audio.n_head", 20);
+    b.add_u32("vokra.moss_audio.audio.ffn_dim", 5_120);
+    b.add_u32("vokra.moss_audio.audio.downsample_rate", 8);
+    b.add_u32("vokra.moss_audio.audio.downsample_hidden_size", 480);
+    b.add_u32("vokra.moss_audio.audio.attention_window_size", 100);
+    b.add_u32("vokra.moss_audio.audio.max_source_positions", 1_500);
+    b.add_u32("vokra.moss_audio.audio.n_window", 200);
+    b.add_u32("vokra.moss_audio.audio.conv_chunksize", 64);
+    b.add_f32("vokra.moss_audio.audio.layer_norm_eps", 1.0e-5);
+    b.add_string("vokra.moss_audio.audio.activation", "gelu");
+    add_u32_array(
+        b,
+        "vokra.moss_audio.audio.deepstack_layer_indexes",
+        &[8, 16, 24],
+    );
+
+    b.add_u32("vokra.moss_audio.adapter_hidden_size", 8_192);
+    b.add_u32("vokra.moss_audio.deepstack_num_inject_layers", 3);
+    b.add_u32("vokra.moss_audio.text.hidden_size", text_hidden);
+    b.add_u32("vokra.moss_audio.text.ffn_dim", text_ffn);
+    b.add_u32("vokra.moss_audio.text.n_layer", 36);
+    b.add_u32("vokra.moss_audio.text.n_head", 32);
+    b.add_u32("vokra.moss_audio.text.n_head_kv", 8);
+    b.add_u32("vokra.moss_audio.text.head_dim", 128);
+    b.add_u32("vokra.moss_audio.text.max_position_embeddings", 40_960);
+    b.add_u32("vokra.moss_audio.text.vocab_size", 151_936);
+    b.add_f32("vokra.moss_audio.text.rope_theta", 1_000_000.0);
+    b.add_f32("vokra.moss_audio.text.rms_norm_eps", 1.0e-6);
+    b.add_bool("vokra.moss_audio.text.tie_word_embeddings", false);
+    b.add_bool("vokra.moss_audio.text.attention_bias", false);
+    b.add_u32("vokra.moss_audio.token.audio", 151_654);
+    b.add_u32("vokra.moss_audio.token.audio_start", 151_669);
+    b.add_u32("vokra.moss_audio.token.audio_end", 151_670);
+    b.add_u32("vokra.moss_audio.token.bos", 151_643);
+    b.add_u32("vokra.moss_audio.token.eos", 151_645);
+
+    moss_audio_frontend_spec().write_into(b);
+}
+
+fn moss_audio_frontend_spec() -> FrontendSpec {
+    FrontendSpec {
+        n_fft: 400,
+        hop: 160,
+        win_length: 400,
+        window_type: "hann".to_owned(),
+        mel_norm: "slaney".to_owned(),
+        htk_mode: false,
+        fmin: 0.0,
+        fmax: 8_000.0,
+        n_mels: 128,
+        pad_mode: "reflect".to_owned(),
+        dc_offset_removal: false,
+        pre_emphasis: 0.0,
+        sample_rate: 16_000,
+    }
+}
+
+fn add_u32_array(builder: &mut GgufBuilder, key: &str, values: &[u32]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: values.iter().copied().map(GgufMetadataValue::U32).collect(),
+        }),
+    );
+}
+
+pub(crate) fn expected_moss_audio_manifest(variant: MossTtsVariant) -> BTreeMap<String, Vec<u64>> {
+    let (text_hidden, text_ffn) = match variant {
+        MossTtsVariant::AudioInstruct4b => (2_560_u64, 9_728_u64),
+        MossTtsVariant::AudioInstruct8b => (4_096_u64, 12_288_u64),
+        _ => return BTreeMap::new(),
+    };
+    let audio_hidden = 1_280_u64;
+    let audio_ffn = 5_120_u64;
+    let adapter_hidden = 8_192_u64;
+    let query_width = 4_096_u64;
+    let key_value_width = 1_024_u64;
+    let mut tensors = BTreeMap::new();
+    let mut insert = |name: String, shape: &[u64]| {
+        let old = tensors.insert(name, shape.to_vec());
+        debug_assert!(old.is_none());
+    };
+
+    insert("audio_encoder.conv1.weight".into(), &[480, 1, 3, 3]);
+    insert("audio_encoder.conv1.bias".into(), &[480]);
+    for index in 2..=3 {
+        insert(
+            format!("audio_encoder.conv{index}.weight"),
+            &[480, 480, 3, 3],
+        );
+        insert(format!("audio_encoder.conv{index}.bias"), &[480]);
+    }
+    insert(
+        "audio_encoder.stem_proj.weight".into(),
+        &[audio_hidden, 7_680],
+    );
+    insert("audio_encoder.stem_proj.bias".into(), &[audio_hidden]);
+    for layer in 0..32 {
+        let prefix = format!("audio_encoder.layers.{layer}");
+        insert(
+            format!("{prefix}.self_attn_layer_norm.weight"),
+            &[audio_hidden],
+        );
+        insert(
+            format!("{prefix}.self_attn_layer_norm.bias"),
+            &[audio_hidden],
+        );
+        for projection in ["q_proj", "v_proj"] {
+            insert(
+                format!("{prefix}.self_attn.{projection}.weight"),
+                &[audio_hidden, audio_hidden],
+            );
+            insert(
+                format!("{prefix}.self_attn.{projection}.bias"),
+                &[audio_hidden],
+            );
+        }
+        insert(
+            format!("{prefix}.self_attn.k_proj.weight"),
+            &[audio_hidden, audio_hidden],
+        );
+        insert(
+            format!("{prefix}.self_attn.out_proj.weight"),
+            &[audio_hidden, audio_hidden],
+        );
+        insert(format!("{prefix}.self_attn.out_proj.bias"), &[audio_hidden]);
+        insert(format!("{prefix}.final_layer_norm.weight"), &[audio_hidden]);
+        insert(format!("{prefix}.final_layer_norm.bias"), &[audio_hidden]);
+        insert(format!("{prefix}.fc1.weight"), &[audio_ffn, audio_hidden]);
+        insert(format!("{prefix}.fc1.bias"), &[audio_ffn]);
+        insert(format!("{prefix}.fc2.weight"), &[audio_hidden, audio_ffn]);
+        insert(format!("{prefix}.fc2.bias"), &[audio_hidden]);
+    }
+    insert("audio_encoder.layer_norm.weight".into(), &[audio_hidden]);
+    insert("audio_encoder.layer_norm.bias".into(), &[audio_hidden]);
+
+    for prefix in std::iter::once("audio_adapter".to_owned())
+        .chain((0..3).map(|index| format!("deepstack_audio_merger_list.{index}")))
+    {
+        insert(
+            format!("{prefix}.gate_proj.weight"),
+            &[adapter_hidden, audio_hidden],
+        );
+        insert(
+            format!("{prefix}.up_proj.weight"),
+            &[adapter_hidden, audio_hidden],
+        );
+        insert(
+            format!("{prefix}.down_proj.weight"),
+            &[text_hidden, adapter_hidden],
+        );
+    }
+
+    insert(
+        "language_model.embed_tokens.weight".into(),
+        &[151_936, text_hidden],
+    );
+    for layer in 0..36 {
+        let prefix = format!("language_model.layers.{layer}");
+        insert(format!("{prefix}.input_layernorm.weight"), &[text_hidden]);
+        insert(
+            format!("{prefix}.self_attn.q_proj.weight"),
+            &[query_width, text_hidden],
+        );
+        insert(format!("{prefix}.self_attn.q_norm.weight"), &[128]);
+        insert(
+            format!("{prefix}.self_attn.k_proj.weight"),
+            &[key_value_width, text_hidden],
+        );
+        insert(format!("{prefix}.self_attn.k_norm.weight"), &[128]);
+        insert(
+            format!("{prefix}.self_attn.v_proj.weight"),
+            &[key_value_width, text_hidden],
+        );
+        insert(
+            format!("{prefix}.self_attn.o_proj.weight"),
+            &[text_hidden, query_width],
+        );
+        insert(
+            format!("{prefix}.post_attention_layernorm.weight"),
+            &[text_hidden],
+        );
+        insert(
+            format!("{prefix}.mlp.gate_proj.weight"),
+            &[text_ffn, text_hidden],
+        );
+        insert(
+            format!("{prefix}.mlp.up_proj.weight"),
+            &[text_ffn, text_hidden],
+        );
+        insert(
+            format!("{prefix}.mlp.down_proj.weight"),
+            &[text_hidden, text_ffn],
+        );
+    }
+    insert("language_model.norm.weight".into(), &[text_hidden]);
+    insert("lm_head.weight".into(), &[151_936, text_hidden]);
+    debug_assert_eq!(tensors.len(), 901);
+    tensors
+}
+
+fn validate_moss_audio_manifest(
+    checkpoint: &SafetensorsFile,
+    variant: MossTtsVariant,
+) -> Result<(), ConvertError> {
+    let expected = expected_moss_audio_manifest(variant);
+    let observed: BTreeMap<_, _> = checkpoint
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), tensor.shape.clone()))
+        .collect();
+    if observed == expected {
+        return Ok(());
+    }
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|name| !observed.contains_key(*name))
+        .take(5)
+        .cloned()
+        .collect();
+    let extra: Vec<_> = observed
+        .keys()
+        .filter(|name| !expected.contains_key(*name))
+        .take(5)
+        .cloned()
+        .collect();
+    let wrong_shape: Vec<_> = expected
+        .iter()
+        .filter_map(|(name, shape)| {
+            observed
+                .get(name)
+                .filter(|actual| *actual != shape)
+                .map(|actual| format!("{name}: {actual:?} != {shape:?}"))
+        })
+        .take(5)
+        .collect();
+    Err(ConvertError::Parse(format!(
+        "{}: strict MOSS-Audio manifest mismatch: found {} tensors, expected 901; missing={missing:?}, extra={extra:?}, wrong_shape={wrong_shape:?}",
+        variant.name(),
+        observed.len()
+    )))
 }
 
 #[cfg(test)]
@@ -776,7 +1614,28 @@ mod tests {
         }
     }
 
+    fn scratch_directory(label: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-moss-audio-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).expect("create scratch directory");
+        path
+    }
+
     fn round_trip(variant: MossTtsVariant) -> GgufFile {
+        if variant.is_audio_instruct() {
+            let mut builder = metadata_builder(variant);
+            builder
+                .add_tensor("embed.weight", GgmlType::F32, vec![2, 3], vec![0; 24])
+                .expect("synthetic metadata fixture");
+            return GgufFile::parse(builder.to_bytes().expect("serialize")).expect("parse");
+        }
         let (builder, report) =
             convert_variant(safetensors_one_f32("embed.weight"), variant).expect("convert_variant");
         assert_eq!(report.written, 1, "F32 tensor must land on written arm");
@@ -827,9 +1686,13 @@ mod tests {
         assert_eq!(NANO_LLM_N_HEAD_KV, 12); // MHA (== n_head)
         assert_eq!(NANO_LLM_HEAD_DIM, 64); // 768 / 12
         assert_eq!(NANO_LLM_VOCAB, 16_384);
-        // GPT-2 sentinels for RoPE + RMSNorm (learned pos + LayerNorm).
-        assert_eq!(NANO_LLM_ROPE_BASE, 0.0);
+        // The custom GPT-2 uses RoPE but retains LayerNorm.
+        assert_eq!(NANO_LLM_ROPE_BASE, 10_000.0);
         assert_eq!(NANO_LLM_RMS_NORM_EPS, 0.0);
+        assert_eq!(NANO_POSITION_EMBEDDING_TYPE, "rope");
+        assert!((NANO_LAYER_NORM_EPS - 1e-5).abs() < 1e-12);
+        assert_eq!(NANO_MAX_POSITION_EMBEDDINGS, 32_768);
+        assert_eq!(NANO_LOCAL_TRANSFORMER_LAYERS, 1);
     }
 
     #[test]
@@ -850,6 +1713,24 @@ mod tests {
         assert!((LOCAL_LLM_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
     }
 
+    #[test]
+    fn voice_generator_constants_match_primary_source() {
+        // OpenMOSS-Team/MOSS-VoiceGenerator config.json at
+        // 97521ec2b6f3ec5026ac1f5751f8fc302d82c2d4, fetched 2026-08-26.
+        assert_eq!(VOICE_N_VQ, 16);
+        assert_eq!(VOICE_AUDIO_VOCAB_SIZE, 1_024);
+        assert_eq!(VOICE_SAMPLE_RATE, 24_000);
+        assert_eq!(VOICE_LLM_HIDDEN, 2_048);
+        assert_eq!(VOICE_LLM_FFN, 6_144);
+        assert_eq!(VOICE_LLM_N_LAYER, 28);
+        assert_eq!(VOICE_LLM_N_HEAD, 16);
+        assert_eq!(VOICE_LLM_N_HEAD_KV, 8);
+        assert_eq!(VOICE_LLM_HEAD_DIM, 128);
+        assert_eq!(VOICE_LLM_VOCAB, 155_648);
+        assert_eq!(VOICE_LLM_ROPE_BASE, 1_000_000.0);
+        assert!((VOICE_LLM_RMS_NORM_EPS - 1e-6).abs() < 1e-12);
+    }
+
     // ─── Variant selectors ───────────────────────────────────────────
 
     #[test]
@@ -860,6 +1741,7 @@ mod tests {
         assert_eq!(MossTtsVariant::DelayV15.sub_arch(), "delay");
         assert_eq!(MossTtsVariant::Nano.sub_arch(), "nano");
         assert_eq!(MossTtsVariant::Local.sub_arch(), "local");
+        assert_eq!(MossTtsVariant::VoiceGenerator.sub_arch(), "voice_generator");
     }
 
     #[test]
@@ -876,21 +1758,24 @@ mod tests {
             MossTtsVariant::DelayV15.name(),
             MossTtsVariant::Nano.name(),
             MossTtsVariant::Local.name(),
+            MossTtsVariant::VoiceGenerator.name(),
             MossTtsVariant::AudioInstruct4b.name(),
             MossTtsVariant::AudioInstruct8b.name(),
         ];
         for n in names.iter() {
             assert_eq!(n.to_ascii_lowercase(), *n, "NAME must be lower-case: {n}");
             assert!(
-                n.starts_with("moss-tts") || n.starts_with("moss-audio-"),
-                "NAME must start with moss-tts or moss-audio-: {n}"
+                n.starts_with("moss-tts")
+                    || n.starts_with("moss-audio-")
+                    || n.starts_with("moss-voice-"),
+                "NAME must start with moss-tts, moss-audio-, or moss-voice-: {n}"
             );
         }
-        // Distinctness: 6 variants, 6 unique names.
+        // Distinctness: 7 variants, 7 unique names.
         let mut seen: Vec<&str> = names.to_vec();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), 6, "every variant must have a unique NAME");
+        assert_eq!(seen.len(), 7, "every variant must have a unique NAME");
     }
 
     #[test]
@@ -913,6 +1798,10 @@ mod tests {
             MossTtsVariant::Local.upstream_hf(),
             "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
         );
+        assert_eq!(
+            MossTtsVariant::VoiceGenerator.upstream_hf(),
+            "OpenMOSS-Team/MOSS-VoiceGenerator"
+        );
     }
 
     #[test]
@@ -921,6 +1810,7 @@ mod tests {
         assert_eq!(MossTtsVariant::DelayV15.llm_family(), "qwen3");
         assert_eq!(MossTtsVariant::Nano.llm_family(), "gpt2");
         assert_eq!(MossTtsVariant::Local.llm_family(), "qwen3");
+        assert_eq!(MossTtsVariant::VoiceGenerator.llm_family(), "qwen3");
     }
 
     #[test]
@@ -1018,9 +1908,28 @@ mod tests {
         assert_eq!(get_u32(&file, KEY_MOSS_N_VQ), NANO_N_VQ);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), NANO_LLM_HIDDEN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_N_LAYER), NANO_LLM_N_LAYER);
-        // GPT-2 sentinels for RoPE + RMSNorm.
-        assert_eq!(get_f32(&file, KEY_MOSS_LLM_ROPE_BASE), 0.0);
+        // Custom GPT-2 RoPE plus LayerNorm (not RMSNorm).
+        assert_eq!(get_f32(&file, KEY_MOSS_LLM_ROPE_BASE), 10_000.0);
         assert_eq!(get_f32(&file, KEY_MOSS_LLM_RMS_NORM_EPS), 0.0);
+        assert_eq!(
+            file.get(KEY_MOSS_POSITION_EMBEDDING_TYPE)
+                .and_then(|v| v.as_str()),
+            Some("rope")
+        );
+        assert!((get_f32(&file, KEY_MOSS_LAYER_NORM_EPS) - 1e-5).abs() < 1e-12);
+        assert_eq!(get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS), 32_768);
+        assert_eq!(get_u32(&file, KEY_MOSS_LOCAL_TRANSFORMER_LAYERS), 1);
+        assert_eq!(get_u32(&file, KEY_MOSS_AUDIO_PAD_TOKEN_ID), 1_024);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|v| v.as_str()),
+            Some(NANO_UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(|v| v.as_str()),
+            Some(NANO_AUDIO_TOKENIZER_UPSTREAM)
+        );
         // MHA — n_head == n_head_kv.
         assert_eq!(
             get_u32(&file, KEY_MOSS_LLM_N_HEAD),
@@ -1047,24 +1956,167 @@ mod tests {
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), LOCAL_LLM_HIDDEN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_FFN_DIM), LOCAL_LLM_FFN);
         assert_eq!(get_u32(&file, KEY_MOSS_LLM_VOCAB_SIZE), LOCAL_LLM_VOCAB);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_UPSTREAM_REVISION)
+        );
+        for (key, expected) in [
+            (KEY_MOSS_CONFIG_SHA256, LOCAL_CONFIG_SHA256),
+            (
+                KEY_MOSS_CONFIGURATION_SOURCE_SHA256,
+                LOCAL_CONFIGURATION_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_MODELING_SOURCE_SHA256,
+                LOCAL_MODELING_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_PROCESSING_SOURCE_SHA256,
+                LOCAL_PROCESSING_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_QWEN3_DECODER_SOURCE_SHA256,
+                LOCAL_QWEN3_DECODER_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_GPT2_DECODER_SOURCE_SHA256,
+                LOCAL_GPT2_DECODER_SOURCE_SHA256,
+            ),
+            (
+                KEY_MOSS_PROCESSOR_CONFIG_SHA256,
+                LOCAL_PROCESSOR_CONFIG_SHA256,
+            ),
+        ] {
+            assert_eq!(
+                file.get(key).and_then(GgufMetadataValue::as_str),
+                Some(expected),
+                "fixed Local provenance key {key}"
+            );
+        }
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS),
+            LOCAL_MAX_POSITION_EMBEDDINGS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_TRANSFORMER_LAYERS),
+            LOCAL_TRANSFORMER_LAYERS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_HIDDEN_DIM),
+            LOCAL_TRANSFORMER_HIDDEN
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_FFN_DIM),
+            LOCAL_TRANSFORMER_FFN
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_N_HEAD),
+            LOCAL_TRANSFORMER_N_HEAD
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_LOCAL_HEAD_DIM),
+            LOCAL_TRANSFORMER_HEAD_DIM
+        );
+        assert_eq!(
+            get_f32(&file, KEY_MOSS_LOCAL_ROPE_BASE),
+            LOCAL_TRANSFORMER_ROPE_BASE
+        );
+        assert_eq!(
+            get_f32(&file, KEY_MOSS_LOCAL_LAYER_NORM_EPS),
+            LOCAL_TRANSFORMER_LAYER_NORM_EPS
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_LOCAL_TEXT_HEAD_MODE)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_TEXT_HEAD_MODE)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_LOCAL_STATIC_KV_CACHE)
+                .and_then(GgufMetadataValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_START_TOKEN_ID),
+            LOCAL_AUDIO_START_TOKEN_ID
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_END_TOKEN_ID),
+            LOCAL_AUDIO_END_TOKEN_ID
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(GgufMetadataValue::as_str),
+            Some(LOCAL_AUDIO_TOKENIZER_UPSTREAM)
+        );
+    }
+
+    #[test]
+    fn voice_generator_round_trip_emits_1_7b_axes_and_identity() {
+        let file = round_trip(MossTtsVariant::VoiceGenerator);
+        assert_eq!(
+            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
+            Some(NAME_MOSS_VOICE_GENERATOR)
+        );
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_HF)
+                .and_then(|v| v.as_str()),
+            Some(UPSTREAM_HF_MOSS_VOICE_GENERATOR)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_VARIANT).and_then(|v| v.as_str()),
+            Some("voice_generator")
+        );
+        assert_eq!(get_u32(&file, KEY_MOSS_N_VQ), VOICE_N_VQ);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM), VOICE_LLM_HIDDEN);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_FFN_DIM), VOICE_LLM_FFN);
+        assert_eq!(get_u32(&file, KEY_MOSS_LLM_N_LAYER), VOICE_LLM_N_LAYER);
+        assert_eq!(
+            file.get(KEY_PROVENANCE_UPSTREAM_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_UPSTREAM_REVISION)
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_CONFIG_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_CONFIG_SHA256)
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_MAX_POSITION_EMBEDDINGS),
+            VOICE_MAX_POSITION_EMBEDDINGS
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID),
+            VOICE_AUDIO_ASSISTANT_GEN_SLOT_TOKEN_ID
+        );
+        assert_eq!(
+            get_u32(&file, KEY_MOSS_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID),
+            VOICE_AUDIO_ASSISTANT_DELAY_SLOT_TOKEN_ID
+        );
+        assert_eq!(
+            file.get(KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM)
+                .and_then(|value| value.as_str()),
+            Some(VOICE_AUDIO_TOKENIZER_UPSTREAM)
+        );
+        assert_ne!(
+            get_u32(&file, KEY_MOSS_LLM_HIDDEN_DIM),
+            DELAY_LLM_HIDDEN,
+            "VoiceGenerator must never inherit the 8B Delay axes"
+        );
     }
 
     #[test]
     fn audio_instruct_4b_round_trip_stamps_audio_llm_provenance() {
-        // MOSS-Audio-4B-Instruct reuses this converter per the parent
-        // workflow's REUSE HINT (`OpenMOSS-Team/MOSS-Audio-4B-Instruct`,
-        // apache-2.0, 3 shards ~8 GB BF16, custom_code=True via
-        // configuration_moss_audio.py — parent task manifest 2026-08-02).
+        // MOSS-Audio-4B-Instruct shares only the pass-through writer with
+        // MOSS-TTS; metadata and runtime topology stay on `moss_audio`.
         // The provenance triple (NAME + upstream_hf + license = Permissive)
-        // + category = `s2s` + `vokra.moss_tts.variant = "audio_4b"` sub-arch
-        // tag are the invariants a runtime dispatcher relies on to route
-        // this artifact away from the four `moss_tts_*` tts variants and
-        // refuse to bind the placeholder axes until the follow-up wave
-        // lands the primary-source hparam transcription.
+        // + category = `s2s` + the dedicated `moss_audio` metadata group are
+        // the invariants a runtime dispatcher relies on to route this
+        // artifact away from the MOSS-TTS family.
         let file = round_trip(MossTtsVariant::AudioInstruct4b);
         assert_eq!(
             file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
+            Some(MOSS_AUDIO_ARCH)
         );
         assert_eq!(
             file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
@@ -1085,13 +2137,17 @@ mod tests {
         // Distinct sub-arch tag lets a downstream dispatcher tell this
         // sibling apart from the four tts variants.
         assert_eq!(
-            file.get(KEY_MOSS_VARIANT).and_then(|v| v.as_str()),
-            Some("audio_4b")
+            file.get("vokra.moss_audio.variant")
+                .and_then(|v| v.as_str()),
+            Some("4b_instruct")
         );
         assert_eq!(
-            file.get(KEY_MOSS_LLM_FAMILY).and_then(|v| v.as_str()),
-            Some("qwen3")
+            file.get("vokra.moss_audio.source_revision")
+                .and_then(|v| v.as_str()),
+            Some("6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d")
         );
+        assert_eq!(get_u32(&file, "vokra.moss_audio.text.hidden_size"), 2_560);
+        assert_eq!(get_u32(&file, "vokra.moss_audio.audio.n_layer"), 32);
         // Provenance license: apache-2.0 Permissive.
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_LICENSE)
@@ -1109,6 +2165,7 @@ mod tests {
             MossTtsVariant::DelayV15,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
+            MossTtsVariant::VoiceGenerator,
         ] {
             let sibling = round_trip(tts_variant);
             assert_eq!(
@@ -1167,8 +2224,7 @@ mod tests {
             MossTtsVariant::DelayV15,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
-            MossTtsVariant::AudioInstruct4b,
-            MossTtsVariant::AudioInstruct8b,
+            MossTtsVariant::VoiceGenerator,
         ] {
             let (builder, report) = convert_variant(input.clone(), variant).expect("BF16 convert");
             assert_eq!(report.read, 1);
@@ -1223,8 +2279,7 @@ mod tests {
             MossTtsVariant::Delay,
             MossTtsVariant::Nano,
             MossTtsVariant::Local,
-            MossTtsVariant::AudioInstruct4b,
-            MossTtsVariant::AudioInstruct8b,
+            MossTtsVariant::VoiceGenerator,
         ] {
             let (_, report) = convert_variant(input.clone(), variant).expect("mixed convert");
             assert_eq!(
@@ -1235,6 +2290,70 @@ mod tests {
             assert_eq!(report.written, 3, "{variant:?}: three floats");
             assert_eq!(report.bf16_passthrough, 1, "{variant:?}: one BF16");
         }
+    }
+
+    #[test]
+    fn moss_audio_manifests_match_range_audited_public_headers() {
+        for variant in [
+            MossTtsVariant::AudioInstruct4b,
+            MossTtsVariant::AudioInstruct8b,
+        ] {
+            let manifest = expected_moss_audio_manifest(variant);
+            assert_eq!(manifest.len(), 901);
+            let digest = crate::models::canary_1b_flash::manifest_sha256(&manifest);
+            let digest = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert_eq!(digest, variant.tensor_manifest_sha256().unwrap());
+        }
+    }
+
+    #[test]
+    fn moss_audio_converter_rejects_a_count_only_placeholder() {
+        let input = safetensors_one_f32("embed.weight");
+        let error = convert_variant(input, MossTtsVariant::AudioInstruct4b)
+            .expect_err("MOSS-Audio requires the complete 901-tensor contract");
+        let ConvertError::Parse(message) = error else {
+            panic!("expected strict manifest parse error, got {error:?}");
+        };
+        assert!(message.contains("expected 901"));
+        assert!(message.contains("missing="));
+    }
+
+    #[test]
+    fn moss_audio_sidecar_reader_rejects_size_and_hash_drift() {
+        let directory = scratch_directory("sidecars");
+        let path = directory.join("asset.bin");
+        std::fs::write(&path, b"abc").expect("write exact sidecar");
+        let exact = ExactSidecar {
+            name: "asset.bin",
+            bytes: 3,
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        assert_eq!(
+            read_exact_moss_audio_sidecar(&directory, exact, MossTtsVariant::AudioInstruct4b)
+                .expect("exact sidecar"),
+            b"abc"
+        );
+        let short = ExactSidecar { bytes: 4, ..exact };
+        assert!(
+            read_exact_moss_audio_sidecar(&directory, short, MossTtsVariant::AudioInstruct4b)
+                .expect_err("size drift")
+                .to_string()
+                .contains("expected exactly 4")
+        );
+        let wrong_hash = ExactSidecar {
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+            ..exact
+        };
+        assert!(
+            read_exact_moss_audio_sidecar(&directory, wrong_hash, MossTtsVariant::AudioInstruct4b)
+                .expect_err("hash drift")
+                .to_string()
+                .contains("SHA-256")
+        );
+        std::fs::remove_dir_all(directory).expect("remove scratch directory");
     }
 
     // ─── Errors ─────────────────────────────────────────────────────
@@ -1272,6 +2391,20 @@ mod tests {
             KEY_MOSS_LLM_VOCAB_SIZE,
             KEY_MOSS_LLM_ROPE_BASE,
             KEY_MOSS_LLM_RMS_NORM_EPS,
+            KEY_MOSS_CONFIG_SHA256,
+            KEY_MOSS_POSITION_EMBEDDING_TYPE,
+            KEY_MOSS_LAYER_NORM_EPS,
+            KEY_MOSS_MAX_POSITION_EMBEDDINGS,
+            KEY_MOSS_LOCAL_TRANSFORMER_LAYERS,
+            KEY_MOSS_PAD_TOKEN_ID,
+            KEY_MOSS_IM_START_TOKEN_ID,
+            KEY_MOSS_IM_END_TOKEN_ID,
+            KEY_MOSS_AUDIO_START_TOKEN_ID,
+            KEY_MOSS_AUDIO_END_TOKEN_ID,
+            KEY_MOSS_AUDIO_USER_SLOT_TOKEN_ID,
+            KEY_MOSS_AUDIO_ASSISTANT_SLOT_TOKEN_ID,
+            KEY_MOSS_AUDIO_PAD_TOKEN_ID,
+            KEY_MOSS_AUDIO_TOKENIZER_UPSTREAM,
         ] {
             assert!(
                 key.starts_with("vokra.moss_tts."),

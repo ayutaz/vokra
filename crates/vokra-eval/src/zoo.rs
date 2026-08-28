@@ -521,13 +521,30 @@ mod tests {
         let gated = m.gated().count();
         let excluded = m.excluded().count();
         // 15 gated (1 vad + 5 whisper + piper + kokoro + cosyvoice2 + csm +
-        // moshi + voxtral + 3 codecs) / 11 excluded (xcodec2 + titanet +
-        // pyannote parity/runtime hold + 3 speaker/non-quality + 3 enhancement
-        // + audioseal + vocos). openWakeWord's official NC-SA weights are not
-        // an official-zoo record; only its user-supplied/custom-weight runtime
-        // path remains available.
+        // moshi + voxtral + 3 codecs) / 12 excluded (xcodec2 + AST classifier
+        // + titanet + pyannote parity/runtime hold + 3 speaker/non-quality +
+        // 3 enhancement + audioseal + vocos). openWakeWord's official NC-SA
+        // weights are not an official-zoo record; only its user-supplied/custom-
+        // weight runtime path remains available.
         assert_eq!(gated, 15, "gated count drifted");
-        assert_eq!(excluded, 11, "excluded count drifted");
+        assert_eq!(excluded, 12, "excluded count drifted");
+    }
+
+    #[test]
+    fn ast_classifier_is_catalogued_under_its_dedicated_parity_gate() {
+        let m = ZooManifest::builtin().unwrap();
+        let ast = m
+            .models
+            .iter()
+            .find(|record| record.name == "ast-finetuned-audioset")
+            .expect("the published AST classifier must not disappear from the zoo catalog");
+        match &ast.kind {
+            ZooKind::Excluded { reason } => assert!(
+                reason.contains("audio-classification"),
+                "unexpected AST exclusion reason: {reason}"
+            ),
+            other => panic!("AST requires its logits parity gate, got {other:?}"),
+        }
     }
 
     #[test]

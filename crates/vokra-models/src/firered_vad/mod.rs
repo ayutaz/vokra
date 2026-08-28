@@ -158,13 +158,19 @@
 
 use std::sync::Arc;
 
+use vokra_core::backend::BackendKind;
 use vokra_core::engines::{VadEngine, VadStreamHandle};
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::{
-    FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
-    FireredVadDfsmnWeights, KaldiFbankOpts, firered_vad_dfsmn_forward, kaldi_fbank,
+    FireredVadBackendOps, FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState,
+    FireredVadDfsmnWeights, KaldiFbankOpts, firered_vad_dfsmn_forward,
+    firered_vad_dfsmn_forward_with_ops, kaldi_fbank,
 };
+
+use crate::compute::{Compute, HotOp};
+
+const FIRERED_VAD_HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::GroupedConv1d];
 
 // ---------------------------------------------------------------------------
 // Contract constants — mirror of `crates/vokra-convert/src/models/firered_vad.rs`.
@@ -840,9 +846,158 @@ impl NativeFireredVad {
         })
     }
 
-    fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
+    fn forward_features(&self, features: &[f32], backend: BackendKind) -> Result<Vec<f32>> {
         let mut state = FireredVadDfsmnState::zeros(&self.cfg.dfsmn)?;
-        firered_vad_dfsmn_forward(&self.cfg.dfsmn, &self.weights, features, &mut state)
+        firered_forward_dispatch(
+            backend,
+            &self.cfg.dfsmn,
+            &self.weights,
+            features,
+            &mut state,
+        )
+    }
+}
+
+fn firered_forward_dispatch(
+    backend: BackendKind,
+    cfg: &FireredVadDfsmnConfig,
+    weights: &FireredVadDfsmnWeights,
+    features: &[f32],
+    state: &mut FireredVadDfsmnState,
+) -> Result<Vec<f32>> {
+    if backend == BackendKind::Cpu {
+        return firered_vad_dfsmn_forward(cfg, weights, features, state);
+    }
+    let compute = Compute::for_backend(backend, FIRERED_VAD_HOT_OPS)?;
+    firered_vad_dfsmn_forward_with_ops(
+        cfg,
+        weights,
+        features,
+        state,
+        &mut ComputeFireredVadOps { compute: &compute },
+    )
+}
+
+struct ComputeFireredVadOps<'a> {
+    compute: &'a Compute,
+}
+
+impl FireredVadBackendOps for ComputeFireredVadOps<'_> {
+    fn affine(
+        &mut self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+    ) -> Result<Vec<f32>> {
+        let input_len = rows.checked_mul(input_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("firered-vad affine input extent overflow".to_owned())
+        })?;
+        let weight_len = input_dim.checked_mul(output_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("firered-vad affine weight extent overflow".to_owned())
+        })?;
+        if input.len() != input_len
+            || weight.len() != weight_len
+            || bias.is_some_and(|values| values.len() != output_dim)
+        {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-vad affine shape mismatch: input={} expected={input_len}, weight={} expected={weight_len}, bias={} expected=0-or-{output_dim}",
+                input.len(),
+                weight.len(),
+                bias.map_or(0, <[f32]>::len)
+            )));
+        }
+        let output_len = rows.checked_mul(output_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("firered-vad affine output extent overflow".to_owned())
+        })?;
+        let mut output = vec![0.0f32; output_len];
+        self.compute.gemm_f32(
+            rows,
+            output_dim,
+            input_dim,
+            input,
+            weight,
+            bias,
+            &mut output,
+        )?;
+        Ok(output)
+    }
+
+    fn causal_memory(
+        &mut self,
+        input: &[f32],
+        frames: usize,
+        cfg: &FireredVadDfsmnConfig,
+        weight: &[f32],
+        history: &mut Vec<f32>,
+    ) -> Result<Vec<f32>> {
+        if cfg.memory_stride != 1 {
+            return Err(VokraError::UnsupportedOp(format!(
+                "firered-vad Metal causal memory requires the canonical stride=1 contract, got {}; no CPU fallback is performed",
+                cfg.memory_stride
+            )));
+        }
+        let cache_frames = cfg.cache_frames();
+        let input_len = frames.checked_mul(cfg.projection_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("firered-vad memory input extent overflow".to_owned())
+        })?;
+        let history_len = cache_frames
+            .checked_mul(cfg.projection_dim)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("firered-vad memory history extent overflow".to_owned())
+            })?;
+        let weight_len = cfg
+            .projection_dim
+            .checked_mul(cfg.memory_order)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("firered-vad memory weight extent overflow".to_owned())
+            })?;
+        if input.len() != input_len || history.len() != history_len || weight.len() != weight_len {
+            return Err(VokraError::InvalidArgument(format!(
+                "firered-vad memory shape mismatch: input={} expected={input_len}, history={} expected={history_len}, weight={} expected={weight_len}",
+                input.len(),
+                history.len(),
+                weight.len()
+            )));
+        }
+        let combined_frames = cache_frames + frames;
+        let mut combined = Vec::with_capacity((cache_frames + frames) * cfg.projection_dim);
+        combined.extend_from_slice(history);
+        combined.extend_from_slice(input);
+        let mut channel_major = vec![0.0f32; cfg.projection_dim * combined_frames];
+        for channel in 0..cfg.projection_dim {
+            for frame in 0..combined_frames {
+                channel_major[channel * combined_frames + frame] =
+                    combined[frame * cfg.projection_dim + channel];
+            }
+        }
+        let mut convolved = vec![0.0f32; cfg.projection_dim * frames];
+        self.compute.grouped_conv1d_f32(
+            &channel_major,
+            cfg.projection_dim,
+            combined_frames,
+            weight,
+            cfg.projection_dim,
+            cfg.memory_order,
+            None,
+            1,
+            0,
+            cfg.projection_dim,
+            &mut convolved,
+        )?;
+        let mut output = input.to_vec();
+        for frame in 0..frames {
+            for channel in 0..cfg.projection_dim {
+                output[frame * cfg.projection_dim + channel] += convolved[channel * frames + frame];
+            }
+        }
+        history.clear();
+        if history_len > 0 {
+            history.extend_from_slice(&combined[combined.len() - history_len..]);
+        }
+        Ok(output)
     }
 }
 
@@ -870,6 +1025,7 @@ pub struct FireredVad {
     native: Option<Arc<NativeFireredVad>>,
     weights: FireredVadWeights,
     weight_license: LicenseClass,
+    backend: BackendKind,
 }
 
 impl FireredVad {
@@ -972,6 +1128,7 @@ impl FireredVad {
             native,
             weights,
             weight_license,
+            backend: BackendKind::Cpu,
         })
     }
 
@@ -1005,13 +1162,28 @@ impl FireredVad {
         self.native.as_ref().map(|native| &native.cfg)
     }
 
+    /// Selects the backend for every canonical DFSMN affine and causal-memory
+    /// filter. Legacy loud-partial artifacts remain unsupported on all
+    /// backends; no CPU fallback is performed.
+    #[must_use]
+    pub fn with_backend(mut self, backend: BackendKind) -> Self {
+        self.backend = backend;
+        self
+    }
+
+    /// Returns the selected learned-op backend.
+    #[must_use]
+    pub const fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
     /// Runs the native DFSMN directly on CMVN-normalized fbank features.
     ///
     /// This bypasses PCM feature extraction for independent numerical-parity
     /// fixtures. Historical unstamped GGUFs remain a loud partial.
     pub fn forward_features(&self, features: &[f32]) -> Result<Vec<f32>> {
         match &self.native {
-            Some(native) => native.forward_features(features),
+            Some(native) => native.forward_features(features, self.backend),
             None => Err(forward_loud_partial(self.cfg.as_ref())),
         }
     }
@@ -1081,7 +1253,7 @@ impl FireredVad {
             if sample_rate != native.cfg.sample_rate {
                 return Err(native_sample_rate_error(&native.cfg, sample_rate));
             }
-            let mut stream = NativeFireredVadStream::new(Arc::clone(native))?;
+            let mut stream = NativeFireredVadStream::new(Arc::clone(native), self.backend)?;
             return stream.push_pcm(pcm, sample_rate);
         }
         check_sample_rate(self.cfg.as_ref(), sample_rate)?;
@@ -1093,7 +1265,7 @@ impl VadEngine for FireredVad {
     fn open_stream(&self) -> Box<dyn VadStreamHandle + Send> {
         let mode = match &self.native {
             Some(native) => FireredVadStreamMode::Native(
-                NativeFireredVadStream::new(Arc::clone(native))
+                NativeFireredVadStream::new(Arc::clone(native), self.backend)
                     .expect("native configuration was validated at load time"),
             ),
             None => FireredVadStreamMode::Legacy { cfg: self.cfg },
@@ -1125,10 +1297,11 @@ struct NativeFireredVadStream {
     state: FireredVadDfsmnState,
     fbank_opts: KaldiFbankOpts,
     pending_pcm: Vec<f32>,
+    backend: BackendKind,
 }
 
 impl NativeFireredVadStream {
-    fn new(model: Arc<NativeFireredVad>) -> Result<Self> {
+    fn new(model: Arc<NativeFireredVad>, backend: BackendKind) -> Result<Self> {
         let state = FireredVadDfsmnState::zeros(&model.cfg.dfsmn)?;
         let fbank_opts = KaldiFbankOpts {
             sample_rate: model.cfg.sample_rate,
@@ -1149,6 +1322,7 @@ impl NativeFireredVadStream {
             state,
             fbank_opts,
             pending_pcm: Vec::new(),
+            backend,
         })
     }
 
@@ -1182,7 +1356,8 @@ impl NativeFireredVadStream {
                     (*value - self.model.cmvn_mean[index]) * self.model.cmvn_inverse_std[index];
             }
         }
-        firered_vad_dfsmn_forward(
+        firered_forward_dispatch(
+            self.backend,
             &self.model.cfg.dfsmn,
             &self.model.weights,
             &features,

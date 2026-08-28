@@ -50,25 +50,13 @@ impl StrictCheckpoint {
                 spec.model_name_alias
             )));
         }
-        if file.tensors().len() != spec.tensor_count {
-            return Err(VokraError::ModelLoad(format!(
-                "{}: tensor count {}, expected {} for {:?}",
-                spec.label,
-                file.tensors().len(),
-                spec.tensor_count,
-                model_name
-            )));
-        }
-        let actual = manifest_sha256(file);
-        if actual != spec.manifest_sha256 {
-            return Err(VokraError::ModelLoad(format!(
-                "{}: complete tensor name/shape manifest SHA-256 {}, expected {} for {:?}",
-                spec.label,
-                hex(&actual),
-                hex(&spec.manifest_sha256),
-                model_name
-            )));
-        }
+        verify_tensor_manifest(
+            file,
+            spec.label,
+            spec.tensor_count,
+            spec.manifest_sha256,
+            model_name,
+        )?;
 
         let weight_license = file
             .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
@@ -93,6 +81,36 @@ impl StrictCheckpoint {
     pub(crate) const fn tensor_count(&self) -> usize {
         self.tensor_count
     }
+}
+
+/// Verify a complete sorted `(tensor name, dimensions)` manifest without
+/// imposing an arch/name metadata policy.
+///
+/// Composite families such as MusicGen have release-specific metadata and
+/// may need a narrowly authenticated legacy arch alias, but must still share
+/// the exact same fail-closed tensor contract as [`StrictCheckpoint`].
+pub(crate) fn verify_tensor_manifest(
+    file: &GgufFile,
+    label: &str,
+    tensor_count: usize,
+    expected_sha256: [u8; 32],
+    model_name: &str,
+) -> Result<()> {
+    if file.tensors().len() != tensor_count {
+        return Err(VokraError::ModelLoad(format!(
+            "{label}: tensor count {}, expected {tensor_count} for {model_name:?}",
+            file.tensors().len()
+        )));
+    }
+    let actual = manifest_sha256(file);
+    if actual != expected_sha256 {
+        return Err(VokraError::ModelLoad(format!(
+            "{label}: complete tensor name/shape manifest SHA-256 {}, expected {} for {model_name:?}",
+            hex(&actual),
+            hex(&expected_sha256)
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn load_tensor(
@@ -221,6 +239,13 @@ fn manifest_sha256(file: &GgufFile) -> [u8; 32] {
         }
     }
     sha256(&canonical)
+}
+
+/// Zero-dependency SHA-256 for authenticating small runtime sidecars whose
+/// bytes are not part of the GGUF tensor manifest (for example a decode-only
+/// tokenizer vocabulary).
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    sha256(bytes)
 }
 
 fn hex(bytes: &[u8; 32]) -> String {

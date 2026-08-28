@@ -1,4 +1,4 @@
-//! RMVPE numerical parity harness — env-gated (F0 tier, 2026-08-13).
+//! RMVPE numerical parity harness — env-gated (F0 tier, 2026-08-26).
 //!
 //! Sibling of `parity_cosyvoice2.rs` / `parity_kokoro.rs` /
 //! `parity_whisper.rs`: every test that needs a real RMVPE fixture is
@@ -11,12 +11,15 @@
 //!
 //! ## Path A — full end-to-end (`VOKRA_RMVPE_REAL_GGUF`)
 //!
-//! Point [`RMVPE::extract_real`] at a real upstream `yxlllc/RMVPE`
-//! checkpoint converted to Vokra GGUF:
+//! Point [`RMVPE::extract_real`] at the fixed `yxlllc/RMVPE` E2E0 checkpoint
+//! converted to a provenance-corrected Vokra GGUF. The historical public
+//! tensor payload may be restamped to `unknown` for this run; the public file's
+//! incorrect `MIT` / `permissive` header is rejected by design.
 //!
 //! ```text
-//! # 1. Fetch upstream `.pt` from github.com/yxlllc/RMVPE releases
-//! # 2. Flatten to safetensors (offline, in a venv):
+//! # Run these memory-heavy steps on VAST, never on the maintainer Mac.
+//! # 1. Fetch the pinned upstream `.pt`.
+//! # 2. Flatten to safetensors with the repository's uv-managed bridge:
 //! uv run python tools/parity/nemo_pt_to_safetensors.py \
 //!     --input  ~/rmvpe.pt \
 //!     --output ~/rmvpe.safetensors
@@ -29,21 +32,14 @@
 //! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 //! ```
 //!
-//! Path A runs the mel + CNN + BiGRU + head forward on a 1 s 440 Hz
-//! sine and asserts: the U-Net is discoverable (non-zero encoder AND
-//! decoder block counts — without this, a differently-named checkpoint
-//! would run with its CNN skipped and every other assertion here would
-//! still hold), the `frame_times()` frame-count contract, and that no
-//! frame carries a `NaN`.
+//! Path A runs the complete manifest-validated mel + five-stage skip U-Net +
+//! BiGRU + head forward on a 1 s 440 Hz sine. It asserts the exact topology,
+//! frame-count contract, and finite output.
 //!
 //! **What Path A does not establish.** It compares against no
-//! reference, so it cannot detect a wrong-but-plausible pitch track;
-//! that is Path B's job. Read the per-frame `hz ∈ [fmin, fmax]` and
-//! `confidence ∈ [0, 1]` assertions for what they are: `decode_class_to_hz`
-//! *clamps* both before returning, so those comparisons fail only on
-//! `NaN` and never on an out-of-band estimate. And the decoder chain
-//! omits upstream's skip-concat regardless (see `RMVPE::extract_real`),
-//! so even a clean Path A run is not evidence of upstream agreement.
+//! reference, so it cannot detect a wrong-but-plausible pitch track; that is
+//! Path B's job. Upstream does not clamp voiced Hz to `fmin`/`fmax`, so Path A
+//! checks only positivity/finiteness and confidence range.
 //!
 //! ## Path B — post-CNN hidden state (`VOKRA_RMVPE_REAL_HIDDEN`)
 //!
@@ -66,6 +62,7 @@
 //! # 2. Clone the upstream repo — the dumper imports the `nn.Module`
 //! #    from it at runtime (no upstream Python is vendored here):
 //! git clone https://github.com/yxlllc/RMVPE.git ~/rmvpe-upstream
+//! git -C ~/rmvpe-upstream checkout 0aabafba18289ca938a73af0b0297686abf4922d
 //! # 3. Run the reference dumper (uv-managed, Python 3.12):
 //! cd tools/parity/rmvpe && uv sync
 //! uv run python dump_reference.py \
@@ -80,16 +77,17 @@
 //! #    little-endian buffers with no `.npy` header, which is why the
 //! #    feature_dim env var is mandatory — the buffer carries no shape:
 //! export VOKRA_RMVPE_REAL_GGUF=~/rmvpe.gguf
+//! export VOKRA_RMVPE_REAL_PCM=~/rmvpe-fixtures/dump/pcm.f32
 //! export VOKRA_RMVPE_REAL_HIDDEN=~/rmvpe-fixtures/dump/hidden.f32
 //! export VOKRA_RMVPE_REAL_ARGMAX=~/rmvpe-fixtures/dump/argmax.u32
-//! export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=$(python3 -c \
+//! export VOKRA_RMVPE_REAL_F0=~/rmvpe-fixtures/dump/f0.f32
+//! export VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM=$(uv run --python 3.12 --no-project python -c \
 //!     'import json,os;print(json.load(open(os.path.expanduser(
 //!      "~/rmvpe-fixtures/dump/meta.json")))["feature_dim"])')
 //! cargo test -p vokra-models --test parity_rmvpe -- --nocapture
 //! ```
 //!
-//! The dumper echoes the three `export` lines it expects on stdout, so
-//! the `feature_dim` value can be copy-pasted instead of re-parsed.
+//! The dumper echoes the fixture exports on stdout.
 //!
 //! Path B binds the [`ARGMAX_MATCH_RATE_MIN`] gate (>= 99 % match at
 //! 20 cents / class == mean pitch |Δ| < 1 semitone). Path A alone
@@ -123,37 +121,59 @@ const HIDDEN_FEATURE_DIM_ENV: &str = "VOKRA_RMVPE_REAL_HIDDEN_FEATURE_DIM";
 /// `HIDDEN_ENV`; absent = Path B skips with a diagnostic.
 const ARGMAX_ENV: &str = "VOKRA_RMVPE_REAL_ARGMAX";
 
+/// Raw little-endian 16-kHz PCM emitted by the fixed-upstream dumper.
+const PCM_ENV: &str = "VOKRA_RMVPE_REAL_PCM";
+
+/// Raw little-endian upstream local-average F0 for full end-to-end parity.
+const F0_ENV: &str = "VOKRA_RMVPE_REAL_F0";
+
+/// `argmax.u32` sentinel for a frame below the upstream voiced threshold.
+const UNVOICED_CLASS: u32 = u32::MAX;
+
 /// Minimum argmax-match rate (real Vokra vs upstream RMVPE reference)
 /// the Path B parity gate enforces. 99 % at 20 cents / class ≈ mean
 /// pitch |Δ| well below a semitone — the "architectural bound"
 /// honest-atol pattern applied to a discrete classification head.
 const ARGMAX_MATCH_RATE_MIN: f32 = 0.99;
 
+fn read_raw_f32(path: &str, label: &str) -> Vec<f32> {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|error| panic!("failed to read {label} buffer {path}: {error:?}"));
+    assert_eq!(
+        bytes.len() % 4,
+        0,
+        "{label} buffer byte length {} is not divisible by four",
+        bytes.len()
+    );
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
+}
+
 /// FIXTURE-FREE: primary-source constants pin. Every hparam in
 /// [`RmvpeConfig::default`] is transcribed verbatim from the upstream
-/// RMVPE README (github.com/yxlllc/RMVPE, fetched 2026-07-30 per
-/// CLAUDE.md "ハルシネーション厳禁") — a silent drift in any of these
-/// would misalign the mel front-end / 360-class head against every
-/// upstream checkpoint.
+/// fixed `yxlllc/RMVPE` source commit named in the module documentation.
+/// Silent drift would misalign the frontend or 360-class head.
 #[test]
 fn rmvpe_config_default_constants_match_primary_source() {
     let c = RmvpeConfig::default();
     assert_eq!(c.hop, 160, "upstream RMVPE hop = 10 ms at 16 kHz");
     assert_eq!(c.sample_rate, 16_000, "upstream RMVPE is trained at 16 kHz");
     assert_eq!(c.n_mels, 128, "upstream RMVPE n_mels = 128");
-    assert_eq!(c.n_fft, 2048, "upstream RMVPE n_fft = 2048");
+    assert_eq!(
+        c.n_fft, 1024,
+        "fixed upstream RMVPE n_fft = win_length = 1024"
+    );
     assert_eq!(c.win_length, 1024, "upstream RMVPE win_length = 1024");
     assert_eq!(c.n_class, 360, "upstream RMVPE head = 360 pitch classes");
     assert!(
         (c.cents_per_class - 20.0).abs() < f32::EPSILON,
         "upstream RMVPE grid = 20 cents / class (12 classes / semitone)"
     );
-    // Class-0 anchor ≈ C1 (32.703 Hz) — pinning to a small window
-    // rather than a bit-exact float to survive the f32-vs-primary-
-    // source-decimal-string round-trip.
     assert!(
-        (c.base_hz - 32.703).abs() < 0.01,
-        "upstream RMVPE class-0 anchor ≈ C1 = 32.703 Hz, got {}",
+        (c.base_hz - 31.7).abs() < 1e-5,
+        "fixed upstream RMVPE class-0 anchor = 31.7 Hz, got {}",
         c.base_hz
     );
 }
@@ -175,9 +195,7 @@ fn decode_class_to_hz_matches_analytic_grid_over_full_span() {
     // continuous form, so Hz = base_hz * 2^(class * cents_per_class /
     // 1200) — the analytic reference.
     //
-    // Class 0 lies below fmin (default 30 Hz) so decode clamps up to
-    // fmin; skip it to keep the analytic bound clean.
-    let sample_classes = [30usize, 60, 120, 180, 240, 300, 359];
+    let sample_classes = [0usize, 30, 60, 120, 180, 240, 300, 359];
     for &c in &sample_classes {
         let mut probs = vec![0.0f32; cfg.n_class as usize];
         probs[c] = 1.0;
@@ -185,9 +203,9 @@ fn decode_class_to_hz_matches_analytic_grid_over_full_span() {
         assert!(voiced, "class {c} peak > threshold must be voiced");
         assert!((0.0..=1.0).contains(&conf), "conf must be a probability");
         let analytic_hz = cfg.base_hz * (2.0f32).powf(c as f32 * cfg.cents_per_class / 1200.0);
-        let expected = analytic_hz.clamp(cfg.fmin, cfg.fmax);
+        let expected = analytic_hz;
         // A spike-only vector has zero probability at the neighbours,
-        // so the 3-tap centroid collapses to the argmax's exact class
+        // so the nine-bin centroid collapses to the argmax's exact class
         // index. Tolerance = 0.5 Hz (well below the 20-cent grid
         // resolution's Hz-equivalent even at fmin).
         let delta = (hz - expected).abs();
@@ -258,7 +276,14 @@ fn path_b_recipe_names_a_dumper_that_exists() {
             "the documented recipe passes {flag}, but the dumper does not declare it"
         );
     }
-    for out in ["hidden.f32", "argmax.u32", "meta.json"] {
+    for out in [
+        "pcm.f32",
+        "hidden.f32",
+        "probabilities.f32",
+        "argmax.u32",
+        "f0.f32",
+        "meta.json",
+    ] {
         assert!(
             src.contains(out),
             "the documented recipe reads {out}, but the dumper does not write it"
@@ -270,6 +295,12 @@ fn path_b_recipe_names_a_dumper_that_exists() {
     assert!(
         src.contains("feature_dim"),
         "the dumper must echo feature_dim ({HIDDEN_FEATURE_DIM_ENV} has no other source)"
+    );
+    assert!(
+        src.contains("0aabafba18289ca938a73af0b0297686abf4922d")
+            && src.contains("src.inference")
+            && src.contains("predictor.model.fc[0].gru"),
+        "the dumper must import and hook the exact fixed upstream implementation"
     );
 }
 
@@ -320,43 +351,26 @@ fn parity_rmvpe_gguf_smoke() {
         "RMVPE head is fixed at 360 pitch classes; a different width \
          means the decoder-side log-Hz grid math is off"
     );
-
-    // Tensor manifest: a real upstream RMVPE checkpoint carries at
-    // least ~50 weight tensors across the U-Net + GRU + head; a
-    // one-tensor GGUF (as the from_gguf smoke fixture uses) would be
-    // accepted by from_gguf but is not a real checkpoint. This is a
-    // heuristic lower bound — the exact count depends on the fork and
-    // is not primary-source-transcribable, so we use a conservative
-    // floor that catches "1-tensor synthetic" and "empty header"
-    // regressions without becoming brittle to fork variance.
+    assert_eq!(
+        cfg.n_fft, 1024,
+        "the runtime must normalize the fixed frontend"
+    );
     assert!(
-        m.tensor_count() >= 10,
-        "real RMVPE checkpoint must carry >= 10 tensors (U-Net + GRU + \
-         head); got {} — refusing a synthesized-shape fixture (FR-EX-08)",
+        (cfg.base_hz - 31.7).abs() < 1e-5,
+        "the runtime must normalize the fixed 31.7-Hz class-zero grid"
+    );
+
+    // Exact fixed manifest: counters may be stripped, but every inference
+    // tensor is mandatory.
+    assert!(
+        matches!(m.tensor_count(), 623 | 741),
+        "fixed RMVPE checkpoint must bind 623 inference tensors, optionally \
+         plus 118 BatchNorm counters; got {} (FR-EX-08)",
         m.tensor_count()
     );
 
-    // The U-Net must be visible to the forward, not merely present in
-    // the file. `tensor_count` counts everything under any of the seven
-    // recognized prefixes — including fork conventions the forward
-    // cannot walk — so a checkpoint can clear the bound-tensor floor
-    // above and still run with its entire CNN skipped. Nothing in the
-    // returned track distinguishes that case (the frame count,
-    // finiteness and sigmoid-range assertions below all hold either
-    // way), which is exactly why the block counts are pinned here.
-    assert!(
-        m.encoder_block_count() > 0,
-        "real RMVPE checkpoint must expose its U-Net under the scheme the \
-         forward walks (`unet.encoder.block{{i}}.conv.weight`); found 0 \
-         encoder blocks across {} bound tensors, so this GGUF was converted \
-         under a different naming convention",
-        m.tensor_count()
-    );
-    assert!(
-        m.decoder_block_count() > 0,
-        "real RMVPE checkpoint must expose its U-Net decoder under \
-         `unet.decoder.block{{i}}.conv.weight`; found 0 decoder blocks"
-    );
+    assert_eq!(m.encoder_block_count(), 5, "fixed E2E0 encoder depth");
+    assert_eq!(m.decoder_block_count(), 5, "fixed E2E0 decoder depth");
 
     // Real mel front-end: a 1 s 440 Hz sine at 16 kHz sample rate has
     // strong periodic energy near the 5th mel band; the log-mel peak
@@ -406,21 +420,14 @@ fn parity_rmvpe_gguf_smoke() {
             f.confidence
         );
         if f.voiced {
-            assert!(
-                f.hz >= cfg.fmin && f.hz <= cfg.fmax,
-                "frame {i}: voiced hz {} outside [{}, {}]",
-                f.hz,
-                cfg.fmin,
-                cfg.fmax
-            );
+            assert!(f.hz > 0.0, "frame {i}: voiced hz {} must be positive", f.hz);
         }
     }
     eprintln!(
         "rmvpe GGUF loaded from {gguf_path}: sr={}, n_mels={}, n_class={}, \
          {} tensors bound, U-Net {}+{} blocks (encoder+decoder); extract_real \
          returned {} frames (shape / finite / sigmoid-range contract holds; \
-         argmax parity is Path B, and the decoder still omits upstream's \
-         skip-concat — see RMVPE::extract_real)",
+         numerical agreement is Path B)",
         cfg.sample_rate,
         cfg.n_mels,
         cfg.n_class,
@@ -429,6 +436,107 @@ fn parity_rmvpe_gguf_smoke() {
         m.decoder_block_count(),
         frames.len(),
     );
+}
+
+/// GATED: full fixed-upstream PCM -> F0 parity. The independent dumper emits
+/// the exact PCM presented to `src.inference.RMVPE` and its nine-bin decoded
+/// F0. Vokra intentionally exposes `floor(samples / hop)` frames while the
+/// upstream helper exposes one centered-STFT tail frame, so the comparison
+/// uses the common prefix and pins that one-frame relationship explicitly.
+#[test]
+fn parity_rmvpe_full_upstream_f0() {
+    let (Some(gguf_path), Some(pcm_path), Some(f0_path)) = (
+        env::var(GGUF_ENV).ok(),
+        env::var(PCM_ENV).ok(),
+        env::var(F0_ENV).ok(),
+    ) else {
+        eprintln!("full RMVPE parity skipped — requires {GGUF_ENV} + {PCM_ENV} + {F0_ENV}");
+        return;
+    };
+
+    let model = RMVPE::from_gguf(Path::new(&gguf_path))
+        .unwrap_or_else(|error| panic!("failed to load RMVPE GGUF {gguf_path}: {error:?}"));
+    let pcm = read_raw_f32(&pcm_path, "PCM");
+    let reference_f0 = read_raw_f32(&f0_path, "reference F0");
+    let hop = model.config().hop as usize;
+    assert_eq!(
+        reference_f0.len(),
+        pcm.len() / hop + 1,
+        "fixed upstream infer_from_audio frame count"
+    );
+    let frames = model
+        .extract_real(&pcm, model.config().sample_rate)
+        .unwrap_or_else(|error| panic!("full RMVPE forward failed: {error:?}"));
+    assert_eq!(frames.len(), pcm.len() / hop, "Vokra frame-count contract");
+
+    let mut voiced_agreement = 0usize;
+    let mut jointly_voiced = 0usize;
+    let mut pitch_within_one_class = 0usize;
+    for (actual, &expected_hz) in frames.iter().zip(&reference_f0) {
+        let expected_voiced = expected_hz > 0.0;
+        if actual.voiced == expected_voiced {
+            voiced_agreement += 1;
+        }
+        if actual.voiced && expected_voiced {
+            jointly_voiced += 1;
+            let cents = 1200.0 * (actual.hz / expected_hz).log2().abs();
+            if cents <= model.config().cents_per_class + 1e-4 {
+                pitch_within_one_class += 1;
+            }
+        }
+    }
+    assert!(
+        jointly_voiced > 0,
+        "reference fixture must exercise voiced frames"
+    );
+    let voiced_rate = voiced_agreement as f32 / frames.len() as f32;
+    let pitch_rate = pitch_within_one_class as f32 / jointly_voiced as f32;
+    eprintln!(
+        "full RMVPE parity: voiced agreement={voiced_rate:.4}, jointly voiced \
+         one-class pitch agreement={pitch_rate:.4} ({pitch_within_one_class}/{jointly_voiced})"
+    );
+    assert!(
+        voiced_rate >= ARGMAX_MATCH_RATE_MIN,
+        "full RMVPE voiced agreement {voiced_rate} < {ARGMAX_MATCH_RATE_MIN}"
+    );
+    assert!(
+        pitch_rate >= ARGMAX_MATCH_RATE_MIN,
+        "full RMVPE pitch agreement {pitch_rate} < {ARGMAX_MATCH_RATE_MIN} at the \
+         existing one-class architectural bound"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn parity_rmvpe_metal_matches_cpu_when_real_gguf_is_supplied() {
+    let Some(gguf_path) = env::var(GGUF_ENV).ok() else {
+        eprintln!("{GGUF_ENV} unset — skipping RMVPE Metal parity");
+        return;
+    };
+    let model = RMVPE::from_gguf(Path::new(&gguf_path)).expect("load real RMVPE GGUF");
+    let cfg = model.config().clone();
+    let pcm: Vec<f32> = (0..cfg.sample_rate as usize)
+        .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / cfg.sample_rate as f32).sin())
+        .collect();
+    let cpu = model
+        .extract_real(&pcm, cfg.sample_rate)
+        .expect("RMVPE CPU forward");
+    let model = model.with_backend(vokra_core::BackendKind::Metal);
+    let metal = model
+        .extract_real(&pcm, cfg.sample_rate)
+        .expect("RMVPE Metal forward");
+    assert_eq!(metal.len(), cpu.len());
+    for (index, (actual, expected)) in metal.iter().zip(&cpu).enumerate() {
+        assert_eq!(
+            actual.voiced, expected.voiced,
+            "frame {index}: Metal/CPU voiced decision"
+        );
+        assert!(
+            (actual.confidence - expected.confidence).abs() <= 0.01,
+            "frame {index}: Metal/CPU confidence diff {} > 0.01",
+            (actual.confidence - expected.confidence).abs()
+        );
+    }
 }
 
 /// GATED (Path B): opens the real RMVPE GGUF, feeds the dumped
@@ -524,12 +632,10 @@ fn parity_rmvpe_from_hidden_argmax_match_rate() {
     let mut match_count = 0usize;
     let mut compared = 0usize;
     for (t, f) in frames.iter().enumerate() {
-        // Reference class index (from dumper): frames where reference
-        // class is 0 are treated as unvoiced (matching the upstream
-        // dumper convention).
+        // Class zero is a valid 31.7-Hz bin. The dumper uses u32::MAX as an
+        // explicit sentinel for frames below the upstream threshold.
         let ref_class = reference_argmax[t];
-        if ref_class == 0 {
-            // Skip unvoiced reference frames from the match-rate.
+        if ref_class == UNVOICED_CLASS {
             continue;
         }
         compared += 1;

@@ -53,6 +53,7 @@ struct GemmDims {
     uint has_bias;
 };
 
+#pragma clang fp contract(off)
 kernel void vokra_gemm_f32(
     device const float*   A    [[buffer(0)]],
     device const float*   B    [[buffer(1)]],
@@ -66,13 +67,10 @@ kernel void vokra_gemm_f32(
     if (row >= dims.M || col >= dims.N) {
         return;
     }
-    float acc = 0.0f;
+    float acc = (dims.has_bias != 0u) ? bias[col] : 0.0f;
     const uint arow = row * dims.K;
     for (uint k = 0; k < dims.K; ++k) {
         acc += A[arow + k] * B[k * dims.N + col];
-    }
-    if (dims.has_bias != 0u) {
-        acc += bias[col];
     }
     C[row * dims.N + col] = acc;
 }
@@ -250,6 +248,66 @@ kernel void vokra_layer_norm_f32(
     }
 }
 
+// ---- one-group GroupNorm: channel-major [channels, positions] ---------------
+// SepFormer's mask network reduces 130k–384k values per group. A single long
+// FP32 left fold loses enough low bits for the dual-path stack to amplify, so
+// this kernel uses 256 strided partials and a fixed pairwise reduction tree.
+struct GroupNormDims {
+    uint channels;
+    uint positions;
+    float eps;
+};
+
+kernel void vokra_group_norm_f32(
+    device const float*     inp   [[buffer(0)]],
+    device const float*     gamma [[buffer(1)]],
+    device const float*     beta  [[buffer(2)]],
+    device float*           out   [[buffer(3)]],
+    constant GroupNormDims& d     [[buffer(4)]],
+    uint                    gid   [[thread_position_in_grid]])
+{
+    if (gid != 0u) {
+        return;
+    }
+    constexpr uint partial_count = 256u;
+    const uint total = d.channels * d.positions;
+    thread float partial[partial_count];
+    for (uint lane = 0u; lane < partial_count; ++lane) {
+        float sum = 0.0f;
+        for (uint index = lane; index < total; index += partial_count) {
+            sum += inp[index];
+        }
+        partial[lane] = sum;
+    }
+    for (uint width = partial_count / 2u; width > 0u; width /= 2u) {
+        for (uint index = 0u; index < width; ++index) {
+            partial[index] += partial[index + width];
+        }
+    }
+    const float mean = partial[0] / (float)total;
+
+    for (uint lane = 0u; lane < partial_count; ++lane) {
+        float sum = 0.0f;
+        for (uint index = lane; index < total; index += partial_count) {
+            const float delta = inp[index] - mean;
+            sum += delta * delta;
+        }
+        partial[lane] = sum;
+    }
+    for (uint width = partial_count / 2u; width > 0u; width /= 2u) {
+        for (uint index = 0u; index < width; ++index) {
+            partial[index] += partial[index + width];
+        }
+    }
+    const float inv_std = 1.0f / sqrt(partial[0] / (float)total + d.eps);
+    for (uint channel = 0u; channel < d.channels; ++channel) {
+        for (uint position = 0u; position < d.positions; ++position) {
+            const uint index = channel * d.positions + position;
+            out[index] = (inp[index] - mean) * inv_std * gamma[channel] + beta[channel];
+        }
+    }
+}
+
 // ---- gelu: exact (erf) form, out = 0.5·x·(1 + erf(x/√2)) ---------------------
 // MSL has no builtin `erf`, so we inline the *identical* Abramowitz & Stegun
 // 7.1.26 approximation (and constants, and Horner order) that
@@ -285,12 +343,85 @@ kernel void vokra_gelu_f32(
     out[i] = 0.5f * v * (1.0f + vokra_erf(v * 0.70710678118654752440f));
 }
 
+// ---- gelu_new: GPT-2 / Transformers tanh approximation --------------------
+// Kept distinct from the exact/erf kernel above. MOSS-TTS Nano's released
+// custom GPT-2 explicitly selects activation_function="gelu_new".
+kernel void vokra_gelu_new_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant GeluDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    const float v = x[i];
+    const float inner = 0.7978845608028654f * (v + 0.044715f * v * v * v);
+    out[i] = 0.5f * v * (1.0f + tanh(inner));
+}
+
+// ---- relu: exact element-wise max(x, 0) ------------------------------------
+struct ReluDims {
+    uint n;
+};
+
+kernel void vokra_relu_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant ReluDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    out[i] = max(x[i], 0.0f);
+}
+
+// ---- elu: Bark embedded EnCodec activation (alpha = 1) --------------------
+struct EluDims {
+    uint n;
+};
+
+kernel void vokra_elu_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant EluDims&   d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    const float v = x[i];
+    out[i] = v > 0.0f ? v : exp(v) - 1.0f;
+}
+
+// ---- tanh: SpeechT5 postnet activation ------------------------------------
+struct TanhDims {
+    uint n;
+};
+
+kernel void vokra_tanh_f32(
+    device const float* x   [[buffer(0)]],
+    device float*       out [[buffer(1)]],
+    constant TanhDims&  d   [[buffer(2)]],
+    uint                gid [[thread_position_in_grid]])
+{
+    const uint i = gid;
+    if (i >= d.n) {
+        return;
+    }
+    out[i] = tanh(x[i]);
+}
+
 // ---- conv1d: direct convolution (im2col + GEMM equivalent) -------------------
 // `kernel` is an MSL reserved word, so the tap count is `kernel_size`. The (c
 // outer, kk inner) accumulation order equals the im2col+GEMM reduction the CPU
 // runs, so the two agree within the FP32 bound; bias is added after, as on CPU.
 struct Conv1dDims {
-    uint in_ch;
+    uint in_per_group;
     uint in_len;
     uint out_ch;
     uint kernel_size;
@@ -298,6 +429,7 @@ struct Conv1dDims {
     uint stride;
     uint padding;
     uint has_bias;
+    uint out_per_group;
 };
 
 kernel void vokra_conv1d_f32(
@@ -313,12 +445,13 @@ kernel void vokra_conv1d_f32(
     if (t >= d.out_len || oc >= d.out_ch) {
         return;
     }
-    const uint k     = d.in_ch * d.kernel_size;
+    const uint group = oc / d.out_per_group;
+    const uint k     = d.in_per_group * d.kernel_size;
     const uint wbase = oc * k;
     float acc = 0.0f;
-    for (uint c = 0; c < d.in_ch; ++c) {
+    for (uint c = 0; c < d.in_per_group; ++c) {
         const uint wc    = wbase + c * d.kernel_size;
-        const uint ibase = c * d.in_len;
+        const uint ibase = (group * d.in_per_group + c) * d.in_len;
         for (uint kk = 0; kk < d.kernel_size; ++kk) {
             const uint pos = t * d.stride + kk;
             if (pos >= d.padding && pos < d.padding + d.in_len) {
@@ -681,6 +814,40 @@ kernel void vokra_rms_norm_f32(
     const float inv = 1.0f / sqrt(ss / (float)d.cols + d.eps);
     for (uint c = 0; c < d.cols; ++c) {
         out[base + c] = inp[base + c] * inv * gamma[c];
+    }
+}
+
+// ---- scale_norm: released MossFormer2 ScaleNorm -----------------------------
+// out[r,c] = inp[r,c] / max(sqrt(sum(inp[r,:]^2))*scale, eps) * gain.
+// `scale = cols^-0.5` is computed once on the Rust host and passed as f32 so
+// the CPU and Metal paths consume the identical rounded constant.
+struct ScaleNormDims {
+    uint  rows;
+    uint  cols;
+    float scale;
+    float eps;
+    float gain;
+};
+
+kernel void vokra_scale_norm_f32(
+    device const float*     inp [[buffer(0)]],
+    device float*           out [[buffer(1)]],
+    constant ScaleNormDims& d   [[buffer(2)]],
+    uint                    gid [[thread_position_in_grid]])
+{
+    const uint r = gid;
+    if (r >= d.rows) {
+        return;
+    }
+    const uint base = r * d.cols;
+    float ss = 0.0f;
+    for (uint c = 0; c < d.cols; ++c) {
+        const float v = inp[base + c];
+        ss += v * v;
+    }
+    const float denominator = max(sqrt(ss) * d.scale, d.eps);
+    for (uint c = 0; c < d.cols; ++c) {
+        out[base + c] = inp[base + c] / denominator * d.gain;
     }
 }
 
@@ -1057,7 +1224,7 @@ kernel void vokra_xcodec2_fsq_decode_f32(
 // upstream `ResidualVectorQuantize.from_codes` algorithm, `hubertsiuzdak/snac
 // /blob/main/snac/vq.py` L61-71):
 //
-//     For each stage s in 0..3:
+//     For each active stage s:
 //       z_p_s = codebooks[s].row(codes[s][t_stage])                # embed lookup
 //       z_q_s = W_s @ z_p_s + b_s                                   # WNConv1d(codebook_dim → d_model)
 //       z_q_s = repeat_interleave(z_q_s, stride=strides[s], dim=-1) # temporal upsample
@@ -1106,19 +1273,20 @@ kernel void vokra_xcodec2_fsq_decode_f32(
 // Threadgroup 16x16 (the `grid_2d` default); the ragged tail is guarded
 // against both bounds.
 //
-// The 3-stage loop is unrolled by fixing `const uint N_STAGES = 3` (SNAC's
-// architecture pins exactly three quantizers; upstream `snac/vq.py` L15-25).
+// The published family has three stages at 24 kHz and four at 44.1 kHz. The
+// ABI reserves four slots and `n_stages` selects the active prefix.
 struct SnacDecodeDims {
     uint d_model;
     uint codebook_dim;
     uint codebook_size;
     uint t_expanded;
+    uint n_stages;
     // Per-stage temporal strides (SNAC 24 kHz canonical = [4, 2, 1]).
-    uint strides[3];
+    uint strides[4];
     // Start of each stage in the flat `codes` buffer. `codes[stage_offsets[s]
     // + t_stage]` for stage `s`. stage_offsets[0] is always 0; stage_offsets[1]
     // = len(codes[0]); stage_offsets[2] = len(codes[0]) + len(codes[1]).
-    uint stage_offsets[3];
+    uint stage_offsets[4];
 };
 
 kernel void vokra_snac_decode_f32(
@@ -1142,7 +1310,7 @@ kernel void vokra_snac_decode_f32(
     // GEMV over `codebook_dim`, so the parity bound is FP32 GEMV-scale
     // rather than bit-for-bit.
     float acc = 0.0f;
-    for (uint s = 0; s < 3u; ++s) {
+    for (uint s = 0; s < d.n_stages; ++s) {
         const uint stride_s = d.strides[s];
         const uint t_stage  = t_out / stride_s;
         const uint idx      = codes[d.stage_offsets[s] + t_stage];
@@ -1633,10 +1801,41 @@ struct LayerNormDims {
     eps: f32,
 }
 
+/// One-group GroupNorm dims (`setBytes:` index 4). Mirrors the MSL
+/// `struct GroupNormDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GroupNormDims {
+    channels: u32,
+    positions: u32,
+    eps: f32,
+}
+
 /// GELU dims (`setBytes:` index 2). Mirrors the MSL `struct GeluDims`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct GeluDims {
+    n: u32,
+}
+
+/// ReLU dims (`setBytes:` index 2). Mirrors the MSL `struct ReluDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ReluDims {
+    n: u32,
+}
+
+/// ELU dims (`setBytes:` index 2). Mirrors the MSL `struct EluDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EluDims {
+    n: u32,
+}
+
+/// Tanh dims (`setBytes:` index 2). Mirrors the MSL `struct TanhDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TanhDims {
     n: u32,
 }
 
@@ -1657,7 +1856,7 @@ struct DequantGemvDims {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Conv1dDims {
-    in_ch: u32,
+    in_per_group: u32,
     in_len: u32,
     out_ch: u32,
     kernel_size: u32,
@@ -1665,6 +1864,7 @@ struct Conv1dDims {
     stride: u32,
     padding: u32,
     has_bias: u32,
+    out_per_group: u32,
 }
 
 /// `col_gather` dims (`setBytes:` index 2). Field order / widths mirror the MSL
@@ -1720,6 +1920,18 @@ struct RmsNormDims {
     rows: u32,
     cols: u32,
     eps: f32,
+}
+
+/// MossFormer2 ScaleNorm dims (`setBytes:` index 2). Field order and widths
+/// mirror the MSL `ScaleNormDims`; all members are four-byte scalars.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ScaleNormDims {
+    rows: u32,
+    cols: u32,
+    scale: f32,
+    eps: f32,
+    gain: f32,
 }
 
 /// Adjacent-pair RoPE dims (`setBytes:` index 3). Mirrors the MSL `struct
@@ -1932,8 +2144,9 @@ struct SnacDecodeDims {
     codebook_dim: u32,
     codebook_size: u32,
     t_expanded: u32,
-    strides: [u32; 3],
-    stage_offsets: [u32; 3],
+    n_stages: u32,
+    strides: [u32; 4],
+    stage_offsets: [u32; 4],
 }
 
 /// Vocoder Metal wave WF5 qwen3_tts_codec dims (`setBytes:` index 4). Field
@@ -2208,7 +2421,12 @@ pub struct MetalContext {
     softmax_pipeline: Id,
     softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
+    group_norm_pipeline: Id,
     gelu_pipeline: Id,
+    gelu_new_pipeline: Id,
+    relu_pipeline: Id,
+    elu_pipeline: Id,
+    tanh_pipeline: Id,
     conv1d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
@@ -2227,11 +2445,11 @@ pub struct MetalContext {
     dequant_gemv_q4_0_pipeline: Id,
     dequant_gemv_q5_0_pipeline: Id,
     dequant_gemv_q8_0_pipeline: Id,
-    /// M4-05/06 Llama-family decode primitives: gamma-only RMSNorm,
-    /// adjacent-pair RoPE, elementwise SiLU, and the fused SwiGLU FFN
-    /// activation. Each is the GPU implementation of the matching CSM / Moshi
-    /// CPU op (module docs on `KERNELS_MSL`); share the Phase-4/5 library.
+    /// M4-05/06 Llama-family decode primitives plus MossFormer2 ScaleNorm.
+    /// Each is the GPU implementation of its matching CPU equation (module
+    /// docs on `KERNELS_MSL`) and shares the Phase-4/5 library.
     rms_norm_pipeline: Id,
+    scale_norm_pipeline: Id,
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
@@ -2432,7 +2650,18 @@ impl MetalContext {
         let layer_norm_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_layer_norm_f32") }?;
         // SAFETY: as above.
+        let group_norm_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_f32") }?;
+        // SAFETY: as above.
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
+        // SAFETY: as above.
+        let gelu_new_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_new_f32") }?;
+        // SAFETY: as above.
+        let relu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_relu_f32") }?;
+        // SAFETY: as above.
+        let elu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_elu_f32") }?;
+        // SAFETY: as above.
+        let tanh_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_tanh_f32") }?;
         // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
         // The three Phase-5 attention column-mover kernels share the same library.
@@ -2468,6 +2697,10 @@ impl MetalContext {
         // M4-05/06 Llama-family decode primitives; share the same library.
         // SAFETY: as above.
         let rms_norm_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_rms_norm_f32") }?;
+        // MossFormer2 FLASH ScaleNorm; exact clamp-after-norm equation.
+        // SAFETY: as above.
+        let scale_norm_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_scale_norm_f32") }?;
         // SAFETY: as above.
         let rope_adjacent_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_rope_adjacent_f32") }?;
@@ -2546,7 +2779,12 @@ impl MetalContext {
             softmax_pipeline: softmax_pipeline.into_raw(),
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
+            group_norm_pipeline: group_norm_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
+            gelu_new_pipeline: gelu_new_pipeline.into_raw(),
+            relu_pipeline: relu_pipeline.into_raw(),
+            elu_pipeline: elu_pipeline.into_raw(),
+            tanh_pipeline: tanh_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
@@ -2558,6 +2796,7 @@ impl MetalContext {
             dequant_gemv_q5_0_pipeline: dequant_gemv_q5_0_pipeline.into_raw(),
             dequant_gemv_q8_0_pipeline: dequant_gemv_q8_0_pipeline.into_raw(),
             rms_norm_pipeline: rms_norm_pipeline.into_raw(),
+            scale_norm_pipeline: scale_norm_pipeline.into_raw(),
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
@@ -3152,6 +3391,62 @@ impl MetalContext {
         read_back(&out_buf, out)
     }
 
+    /// Affine GroupNorm with one group over channel-major
+    /// `[channels, positions]`, using the same 256-partial pairwise reduction
+    /// as the CPU kernel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        validate_group_norm(input, out, channels, positions, gamma, beta)?;
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_group_norm(input, out, channels, positions, gamma, beta, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_group_norm(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let gamma_buf = self.new_buffer_from_slice(gamma)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = GroupNormDims {
+            channels: channels as u32,
+            positions: positions as u32,
+            eps,
+        };
+        let (grid, tg) = grid_1d(1);
+        self.dispatch_compute(
+            self.group_norm_pipeline,
+            &[&in_buf, &gamma_buf, &beta_buf, &out_buf],
+            (&dims as *const GroupNormDims).cast::<c_void>(),
+            size_of::<GroupNormDims>(),
+            grid,
+            tg,
+            "group_norm",
+        )?;
+        read_back(&out_buf, out)
+    }
+
     /// Element-wise exact (erf) GELU (`x` and `out` equal length) — the contract
     /// of `vokra_backend_cpu::kernels::gelu_f32`. Uses MSL's precise `erf`; the
     /// CPU uses the A&S 7.1.26 approximation, so the two agree far inside the FP32
@@ -3189,6 +3484,160 @@ impl MetalContext {
             grid,
             tg,
             "gelu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn gelu_new_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_gelu_new(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    fn run_gelu_new(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = GeluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.gelu_new_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const GeluDims).cast::<c_void>(),
+            size_of::<GeluDims>(),
+            grid,
+            tg,
+            "gelu_new",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise ReLU (`out = max(x, 0)`). This is the Metal half of the
+    /// T5-base feed-forward activation used by MusicGen-family text encoders.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn relu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_relu(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_relu(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = ReluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.relu_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const ReluDims).cast::<c_void>(),
+            size_of::<ReluDims>(),
+            grid,
+            tg,
+            "relu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise ELU with the EnCodec/Bark default `alpha = 1`.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn elu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_elu(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_elu(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = EluDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.elu_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const EluDims).cast::<c_void>(),
+            size_of::<EluDims>(),
+            grid,
+            tg,
+            "elu",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    /// Element-wise hyperbolic tangent. This is the Metal half of
+    /// SpeechT5's activated postnet convolution blocks.
+    ///
+    /// # Errors
+    ///
+    /// [`VokraError::InvalidArgument`] on a length mismatch;
+    /// [`VokraError::BackendUnavailable`] on a Metal failure.
+    pub fn tanh_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        validate_unary(x, out)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_tanh(x, out);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_tanh(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
+        let x_buf = self.new_buffer_from_slice(x)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = TanhDims {
+            n: out.len() as u32,
+        };
+        let (grid, tg) = grid_1d(out.len());
+        self.dispatch_compute(
+            self.tanh_pipeline,
+            &[&x_buf, &out_buf],
+            (&dims as *const TanhDims).cast::<c_void>(),
+            size_of::<TanhDims>(),
+            grid,
+            tg,
+            "tanh",
         )?;
         read_back(&out_buf, out)
     }
@@ -3258,6 +3707,62 @@ impl MetalContext {
             "rms_norm",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Released MossFormer2 ScaleNorm applied row-wise:
+    /// `out[r,c] = input[r,c] / max(||row||₂ · cols⁻¹ᐟ², eps) · gain`.
+    ///
+    /// ScaleNorm is not an RMSNorm alias: its epsilon clamps the completed
+    /// norm instead of being added inside the square root. This dedicated
+    /// kernel keeps the FLASH projection normalization on Metal and prevents
+    /// a silent host reduction.
+    pub fn scale_norm_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        validate_scale_norm(input, out, rows, cols, gain, eps)?;
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_scale_norm(input, out, rows, cols, gain, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    fn run_scale_norm(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gain: f32,
+        eps: f32,
+    ) -> Result<()> {
+        let input_buffer = self.new_buffer_from_slice(input)?;
+        let output_buffer = self.new_buffer_output(out.len())?;
+        let dims = ScaleNormDims {
+            rows: rows as u32,
+            cols: cols as u32,
+            scale: (cols as f64).sqrt().recip() as f32,
+            eps,
+            gain,
+        };
+        let (grid, threads) = grid_1d(rows);
+        self.dispatch_compute(
+            self.scale_norm_pipeline,
+            &[&input_buffer, &output_buffer],
+            (&dims as *const ScaleNormDims).cast::<c_void>(),
+            size_of::<ScaleNormDims>(),
+            grid,
+            threads,
+            "scale_norm",
+        )?;
+        read_back(&output_buffer, out)
     }
 
     /// Adjacent-pair RoPE over `input = [seq_len, head_dim]` row-major, writing
@@ -3852,8 +4357,9 @@ impl MetalContext {
     pub fn snac_decode_f32(
         &self,
         codes_flat: &[u32],
-        stage_offsets: [u32; 3],
-        strides: [u32; 3],
+        stage_offsets: [u32; 4],
+        strides: [u32; 4],
+        n_stages: usize,
         codebooks_flat: &[f32],
         proj_weights_flat: &[f32],
         proj_biases_flat: &[f32],
@@ -3872,7 +4378,12 @@ impl MetalContext {
                  codebook_size={codebook_size} codebook_dim={codebook_dim} d_model={d_model}"
             )));
         }
-        for (s, &stride) in strides.iter().enumerate() {
+        if !(1..=4).contains(&n_stages) {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: n_stages {n_stages} is outside 1..=4"
+            )));
+        }
+        for (s, &stride) in strides[..n_stages].iter().enumerate() {
             if stride == 0 {
                 return Err(VokraError::InvalidArgument(format!(
                     "snac_decode_f32: strides[{s}] = 0 (would divide base frame rate by zero; \
@@ -3881,23 +4392,24 @@ impl MetalContext {
             }
         }
         // Codebook / projection buffer size checks (per-stage sizes multiplied
-        // by 3 stages).
+        // by the active stage count).
         let per_stage_cb = codebook_size.checked_mul(codebook_dim).ok_or_else(|| {
             VokraError::InvalidArgument(format!(
                 "snac_decode_f32: codebook_size * codebook_dim overflows usize \
                          (codebook_size={codebook_size} codebook_dim={codebook_dim})"
             ))
         })?;
-        let expected_cb = per_stage_cb.checked_mul(3).ok_or_else(|| {
+        let expected_cb = per_stage_cb.checked_mul(n_stages).ok_or_else(|| {
             VokraError::InvalidArgument(
-                "snac_decode_f32: 3 * codebook_size * codebook_dim overflows usize".to_owned(),
+                "snac_decode_f32: n_stages * codebook_size * codebook_dim overflows usize"
+                    .to_owned(),
             )
         })?;
         if codebooks_flat.len() != expected_cb {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: codebooks_flat.len() {} != 3 * codebook_size * codebook_dim \
-                 {expected_cb}",
-                codebooks_flat.len()
+                "snac_decode_f32: codebooks_flat.len() {} != n_stages ({n_stages}) * \
+                 codebook_size * codebook_dim = {expected_cb}",
+                codebooks_flat.len(),
             )));
         }
         let per_stage_w = d_model.checked_mul(codebook_dim).ok_or_else(|| {
@@ -3906,60 +4418,61 @@ impl MetalContext {
                  (d_model={d_model} codebook_dim={codebook_dim})"
             ))
         })?;
-        let expected_w = per_stage_w.checked_mul(3).ok_or_else(|| {
+        let expected_w = per_stage_w.checked_mul(n_stages).ok_or_else(|| {
             VokraError::InvalidArgument(
-                "snac_decode_f32: 3 * d_model * codebook_dim overflows usize".to_owned(),
+                "snac_decode_f32: n_stages * d_model * codebook_dim overflows usize".to_owned(),
             )
         })?;
         if proj_weights_flat.len() != expected_w {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: proj_weights_flat.len() {} != 3 * d_model * codebook_dim \
-                 {expected_w}",
-                proj_weights_flat.len()
+                "snac_decode_f32: proj_weights_flat.len() {} != n_stages ({n_stages}) * \
+                 d_model * codebook_dim = {expected_w}",
+                proj_weights_flat.len(),
             )));
         }
-        let expected_b = d_model.checked_mul(3).ok_or_else(|| {
-            VokraError::InvalidArgument("snac_decode_f32: 3 * d_model overflows usize".to_owned())
+        let expected_b = d_model.checked_mul(n_stages).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "snac_decode_f32: n_stages * d_model overflows usize".to_owned(),
+            )
         })?;
         if proj_biases_flat.len() != expected_b {
             return Err(VokraError::InvalidArgument(format!(
-                "snac_decode_f32: proj_biases_flat.len() {} != 3 * d_model {expected_b}",
-                proj_biases_flat.len()
+                "snac_decode_f32: proj_biases_flat.len() {} != n_stages ({n_stages}) * \
+                 d_model = {expected_b}",
+                proj_biases_flat.len(),
             )));
         }
         // Per-stage code count check: `codes[s].len() * strides[s]` must
         // equal `t_expanded` for every stage (SnacDecoder::check_and_measure
         // invariant). We reconstruct `codes[s].len()` from
         // `stage_offsets` + `codes_flat.len()`.
-        let stage_lens: [usize; 3] = [
-            (stage_offsets[1] as usize)
-                .checked_sub(stage_offsets[0] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: stage_offsets[1] {} < stage_offsets[0] {}",
-                        stage_offsets[1], stage_offsets[0]
-                    ))
-                })?,
-            (stage_offsets[2] as usize)
-                .checked_sub(stage_offsets[1] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: stage_offsets[2] {} < stage_offsets[1] {}",
-                        stage_offsets[2], stage_offsets[1]
-                    ))
-                })?,
-            codes_flat
-                .len()
-                .checked_sub(stage_offsets[2] as usize)
-                .ok_or_else(|| {
-                    VokraError::InvalidArgument(format!(
-                        "snac_decode_f32: codes_flat.len() {} < stage_offsets[2] {}",
-                        codes_flat.len(),
-                        stage_offsets[2]
-                    ))
-                })?,
-        ];
-        for (s, &len) in stage_lens.iter().enumerate() {
+        if stage_offsets[0] != 0 {
+            return Err(VokraError::InvalidArgument(format!(
+                "snac_decode_f32: stage_offsets[0] must be 0, got {}",
+                stage_offsets[0]
+            )));
+        }
+        let mut stage_lens = [0usize; 4];
+        for s in 0..n_stages {
+            let start = stage_offsets[s] as usize;
+            let end = if s + 1 < n_stages {
+                stage_offsets[s + 1] as usize
+            } else {
+                codes_flat.len()
+            };
+            stage_lens[s] = end.checked_sub(start).ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage end {end} < stage_offsets[{s}] {start}"
+                ))
+            })?;
+            if end > codes_flat.len() {
+                return Err(VokraError::InvalidArgument(format!(
+                    "snac_decode_f32: stage {s} end {end} exceeds codes_flat.len() {}",
+                    codes_flat.len()
+                )));
+            }
+        }
+        for (s, &len) in stage_lens[..n_stages].iter().enumerate() {
             let expanded = len.checked_mul(strides[s] as usize).ok_or_else(|| {
                 VokraError::InvalidArgument(format!(
                     "snac_decode_f32: stage {s} codes.len() ({len}) * strides[{s}] ({}) \
@@ -3999,6 +4512,7 @@ impl MetalContext {
             codes_flat,
             stage_offsets,
             strides,
+            n_stages,
             codebooks_flat,
             proj_weights_flat,
             proj_biases_flat,
@@ -4016,8 +4530,9 @@ impl MetalContext {
     fn run_snac_decode(
         &self,
         codes_flat: &[u32],
-        stage_offsets: [u32; 3],
-        strides: [u32; 3],
+        stage_offsets: [u32; 4],
+        strides: [u32; 4],
+        n_stages: usize,
         codebooks_flat: &[f32],
         proj_weights_flat: &[f32],
         proj_biases_flat: &[f32],
@@ -4048,6 +4563,7 @@ impl MetalContext {
             codebook_dim: codebook_dim as u32,
             codebook_size: codebook_size as u32,
             t_expanded: t_expanded as u32,
+            n_stages: n_stages as u32,
             strides,
             stage_offsets,
         };
@@ -5208,15 +5724,23 @@ impl MetalContext {
         // SAFETY: token consumed by the matching pop below.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let r = self.run_conv1d(
-            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out_len, out,
+            input, in_len, weight, out_ch, kernel, bias, stride, padding, out_len, in_ch, out_ch,
+            out,
         );
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
     }
 
-    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
-    fn run_conv1d(
+    /// Grouped 1-D convolution with PyTorch-compatible weight layout
+    /// `[out_ch, in_ch / groups, kernel]`.
+    ///
+    /// `groups == in_ch == out_ch` is the depthwise form used by Vocos'
+    /// ConvNeXt blocks. The same Metal pipeline as [`Self::conv1d_f32`] is
+    /// used; group-local input indexing is performed by the shader, so no
+    /// dense diagonal weight expansion or CPU convolution is hidden here.
+    #[allow(clippy::too_many_arguments)]
+    pub fn grouped_conv1d_f32(
         &self,
         input: &[f32],
         in_ch: usize,
@@ -5227,7 +5751,50 @@ impl MetalContext {
         bias: Option<&[f32]>,
         stride: usize,
         padding: usize,
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_grouped_conv1d(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, groups, out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let r = self.run_conv1d(
+            input,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            out_len,
+            in_ch / groups,
+            out_ch / groups,
+            out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+    fn run_conv1d(
+        &self,
+        input: &[f32],
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
         out_len: usize,
+        in_per_group: usize,
+        out_per_group: usize,
         out: &mut [f32],
     ) -> Result<()> {
         let in_buf = self.new_buffer_from_slice(input)?;
@@ -5236,7 +5803,7 @@ impl MetalContext {
         let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
         let out_buf = self.new_buffer_output(out.len())?;
         let dims = Conv1dDims {
-            in_ch: in_ch as u32,
+            in_per_group: in_per_group as u32,
             in_len: in_len as u32,
             out_ch: out_ch as u32,
             kernel_size: kernel as u32,
@@ -5244,6 +5811,7 @@ impl MetalContext {
             stride: stride as u32,
             padding: padding as u32,
             has_bias: u32::from(bias.is_some()),
+            out_per_group: out_per_group as u32,
         };
         let (grid, tg) = grid_2d(out_len, out_ch);
         self.dispatch_compute(
@@ -7143,6 +7711,7 @@ impl Drop for MetalContext {
             release(self.swiglu_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);
+            release(self.scale_norm_pipeline);
             release(self.rms_norm_pipeline);
             release(self.dequant_gemv_q8_0_pipeline);
             release(self.dequant_gemv_q5_0_pipeline);
@@ -7154,7 +7723,12 @@ impl Drop for MetalContext {
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
             release(self.conv1d_pipeline);
+            release(self.tanh_pipeline);
+            release(self.elu_pipeline);
+            release(self.relu_pipeline);
+            release(self.gelu_new_pipeline);
             release(self.gelu_pipeline);
+            release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);
             release(self.softmax_causal_pipeline);
             release(self.softmax_pipeline);
@@ -8169,6 +8743,26 @@ fn validate_layer_norm(
     expect_len("layer_norm beta", beta.len(), cols)
 }
 
+fn validate_group_norm(
+    input: &[f32],
+    out: &[f32],
+    channels: usize,
+    positions: usize,
+    gamma: &[f32],
+    beta: &[f32],
+) -> Result<()> {
+    if channels == 0 || positions == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm channels and positions must be non-zero, got {channels}x{positions}"
+        )));
+    }
+    let total = checked_mul(channels, positions, "group_norm channels*positions")?;
+    expect_len("group_norm input", input.len(), total)?;
+    expect_len("group_norm out", out.len(), total)?;
+    expect_len("group_norm gamma", gamma.len(), channels)?;
+    expect_len("group_norm beta", beta.len(), channels)
+}
+
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {
     expect_len("unary out", out.len(), x.len())
 }
@@ -8182,6 +8776,27 @@ fn validate_rms_norm(
 ) -> Result<()> {
     validate_rows_cols(input, out, rows, cols)?;
     expect_len("rms_norm gamma", gamma.len(), cols)
+}
+
+fn validate_scale_norm(
+    input: &[f32],
+    out: &[f32],
+    rows: usize,
+    cols: usize,
+    gain: f32,
+    eps: f32,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm rows and cols must be non-zero, got {rows}x{cols}"
+        )));
+    }
+    if !gain.is_finite() || !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm gain must be finite and eps positive, got gain={gain}, eps={eps}"
+        )));
+    }
+    validate_rows_cols(input, out, rows, cols)
 }
 
 /// Validates the adjacent-pair RoPE shapes: `input`/`out` are `seq_len ×
@@ -8264,6 +8879,75 @@ fn validate_conv1d(
     )?;
     if let Some(bias) = bias {
         expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+    Ok(out_len)
+}
+
+/// Validates the grouped-convolution extension of [`validate_conv1d`].
+#[allow(clippy::too_many_arguments)]
+fn validate_grouped_conv1d(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    groups: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if groups == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d groups must be >= 1".to_owned(),
+        ));
+    }
+    if in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "grouped_conv1d in_ch {in_ch} and out_ch {out_ch} must both be divisible by groups {groups}"
+        )));
+    }
+    if stride == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d stride must be >= 1".to_owned(),
+        ));
+    }
+    if kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "grouped_conv1d kernel must be >= 1".to_owned(),
+        ));
+    }
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "grouped_conv1d 2*padding")?)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("grouped_conv1d padded length overflow".to_owned())
+        })?;
+    if padded < kernel {
+        return Err(VokraError::InvalidArgument(format!(
+            "grouped_conv1d padded length {padded} is smaller than kernel {kernel}"
+        )));
+    }
+    let out_len = (padded - kernel) / stride + 1;
+    expect_len(
+        "grouped_conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "grouped_conv1d in_ch*in_len")?,
+    )?;
+    let in_per = in_ch / groups;
+    let k = checked_mul(in_per, kernel, "grouped_conv1d in_per*kernel")?;
+    expect_len(
+        "grouped_conv1d weight",
+        weight.len(),
+        checked_mul(out_ch, k, "grouped_conv1d out_ch*k")?,
+    )?;
+    expect_len(
+        "grouped_conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "grouped_conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("grouped_conv1d bias", bias.len(), out_ch)?;
     }
     Ok(out_len)
 }

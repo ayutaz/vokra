@@ -14,11 +14,14 @@
 //! | [`gemv_f32`] (bias = per-row) | yes | tied logits head `token_emb[v,d] @ h[d]` (the `gemm` `n=1` scalar-tail case, M1) |
 //! | [`add_f32`] / [`mul_f32`] | yes | residual add, gating |
 //! | [`relu_f32`] | yes | Silero VAD conv stack |
+//! | [`elu_f32`] | scalar | Bark's embedded EnCodec decoder (`alpha = 1`) |
 //! | [`sigmoid_f32`] | scalar-backed; SIMD under `simd-transcendental` | VAD output / LSTM gate; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`tanh_f32`] | scalar-backed; SIMD under `simd-transcendental` | LSTM cell; exp-bound (`vexp`, M1-05-EXP) |
 //! | [`gelu_f32`] | scalar-backed; SIMD under `simd-transcendental` | Whisper MLP (exact/erf form); exp-bound (`vexp`, M1-05-EXP) |
+//! | [`gelu_new_f32`] | scalar | GPT-2 / Transformers tanh-approximation GELU |
 //! | [`softmax_f32`] | yes (exp scalar; SIMD under `simd-transcendental`) | Whisper attention |
 //! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
+//! | [`scale_norm_f32`] | scalar reduction | MossFormer2 FLASH projections |
 //! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
 //!
 //! **Deliberately not SIMD kernels here** (memory-bound / structural, left to
@@ -41,7 +44,7 @@
 //! # Function boundary for M0-06
 //!
 //! M0-06's encoder / decoder call these safe wrappers directly:
-//! [`gemm_f32`], [`add_f32`], [`mul_f32`], [`relu_f32`], [`sigmoid_f32`],
+//! [`gemm_f32`], [`add_f32`], [`mul_f32`], [`relu_f32`], [`elu_f32`], [`sigmoid_f32`],
 //! [`tanh_f32`], [`gelu_f32`], [`softmax_f32`], [`layer_norm_f32`],
 //! [`conv1d_f32`], plus [`crate::active_isa`] for the demo's ISA log. Each
 //! validates its shapes at the boundary and returns
@@ -472,6 +475,18 @@ unary_wrapper!(
     relu,
     "Element-wise ReLU `out = max(0, x)`."
 );
+
+/// Element-wise ELU with the EnCodec/Bark default `alpha = 1`.
+///
+/// `out = x` for positive inputs and `out = exp(x) - 1` otherwise. This
+/// scalar implementation is the portable CPU reference for the dedicated
+/// Metal kernel; the public boundary rejects shape mismatches explicitly.
+pub fn elu_f32(x: &[f32], out: &mut [f32]) -> Result<()> {
+    validate_unary(x, out)?;
+    scalar::elu(x, out);
+    Ok(())
+}
+
 unary_wrapper!(
     sigmoid_f32,
     sigmoid_f32_on,
@@ -490,6 +505,17 @@ unary_wrapper!(
     gelu,
     "Element-wise exact (erf-based) GELU, matching Whisper's `nn.GELU()`."
 );
+
+/// Element-wise GPT-2 / Transformers `gelu_new` tanh approximation.
+///
+/// Kept separate from [`gelu_f32`] because substituting exact/erf GELU changes
+/// the released model numerics. The scalar kernel is the portable CPU
+/// reference; Metal has a matching dedicated kernel.
+pub fn gelu_new_f32(x: &[f32], out: &mut [f32]) -> Result<()> {
+    validate_unary(x, out)?;
+    scalar::gelu_new(x, out);
+    Ok(())
+}
 
 // ---- softmax (M0-08-T07) ----
 
@@ -563,6 +589,122 @@ pub fn layer_norm_f32_on(
 ) -> Result<()> {
     validate_layer_norm(input, out, rows, cols, gamma, beta)?;
     (dispatch::table_for(isa)?.layer_norm)(input, out, rows, cols, gamma, beta, eps);
+    Ok(())
+}
+
+// ---- one-group GroupNorm (SepFormer mask network) ---------------------------
+
+/// Affine GroupNorm with one group over channel-major `[channels, positions]`.
+///
+/// The reduction uses 256 strided partial sums followed by a fixed pairwise
+/// tree.  This avoids feeding SepFormer's 130k–384k-element group through the
+/// ordinary one-row LayerNorm accumulator, whose long FP32 left fold loses
+/// enough precision to be amplified by the dual-path stack.  The Metal sibling
+/// uses the same reduction topology.
+#[allow(clippy::too_many_arguments)]
+pub fn group_norm_f32(
+    input: &[f32],
+    out: &mut [f32],
+    channels: usize,
+    positions: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    const PARTIALS: usize = 256;
+
+    if channels == 0 || positions == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm channels and positions must be non-zero, got {channels}x{positions}"
+        )));
+    }
+    let total = checked_mul(channels, positions, "group_norm channels*positions")?;
+    expect_len("group_norm input", input.len(), total)?;
+    expect_len("group_norm out", out.len(), total)?;
+    expect_len("group_norm gamma", gamma.len(), channels)?;
+    expect_len("group_norm beta", beta.len(), channels)?;
+
+    let mut partial = [0.0f32; PARTIALS];
+    for (lane, lane_sum) in partial.iter_mut().enumerate() {
+        let mut index = lane;
+        while index < total {
+            *lane_sum += input[index];
+            index += PARTIALS;
+        }
+    }
+    let mut width = PARTIALS / 2;
+    while width > 0 {
+        for index in 0..width {
+            partial[index] += partial[index + width];
+        }
+        width /= 2;
+    }
+    let mean = partial[0] / total as f32;
+
+    partial.fill(0.0);
+    for (lane, lane_sum) in partial.iter_mut().enumerate() {
+        let mut index = lane;
+        while index < total {
+            let delta = input[index] - mean;
+            *lane_sum += delta * delta;
+            index += PARTIALS;
+        }
+    }
+    let mut width = PARTIALS / 2;
+    while width > 0 {
+        for index in 0..width {
+            partial[index] += partial[index + width];
+        }
+        width /= 2;
+    }
+    let inv_std = 1.0 / (partial[0] / total as f32 + eps).sqrt();
+    for channel in 0..channels {
+        for position in 0..positions {
+            let index = channel * positions + position;
+            out[index] = (input[index] - mean) * inv_std * gamma[channel] + beta[channel];
+        }
+    }
+    Ok(())
+}
+
+// ---- ScaleNorm (MossFormer2 FLASH projections) -----------------------------
+
+/// Row-wise ScaleNorm:
+/// `out[r,c] = input[r,c] / max(||row||₂ · cols⁻¹ᐟ², eps) · gain`.
+///
+/// This is deliberately distinct from RMSNorm. ScaleNorm clamps the completed
+/// norm to `eps`, whereas RMSNorm adds epsilon inside the square root. Keeping
+/// a separate kernel preserves the released ClearerVoice-Studio equation and
+/// lets the Metal backend execute the reduction without a host fallback.
+pub fn scale_norm_f32(
+    input: &[f32],
+    out: &mut [f32],
+    rows: usize,
+    cols: usize,
+    gain: f32,
+    eps: f32,
+) -> Result<()> {
+    if rows == 0 || cols == 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm rows and cols must be non-zero, got {rows}x{cols}"
+        )));
+    }
+    if !gain.is_finite() || !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "scale_norm gain must be finite and eps positive, got gain={gain}, eps={eps}"
+        )));
+    }
+    validate_rows_cols(input, out, rows, cols)?;
+    let dimension_scale = (cols as f64).sqrt().recip() as f32;
+    for row in 0..rows {
+        let start = row * cols;
+        let source = &input[start..start + cols];
+        let squared_norm = source.iter().map(|value| value * value).sum::<f32>();
+        let denominator = (squared_norm.sqrt() * dimension_scale).max(eps);
+        for col in 0..cols {
+            out[start + col] = source[col] / denominator * gain;
+        }
+    }
     Ok(())
 }
 
@@ -900,6 +1042,23 @@ mod tests {
         assert!(add_f32(&[1.0, 2.0], &[1.0], &mut out2).is_err());
         let mut out1 = [0.0; 1];
         assert!(relu_f32(&[1.0, 2.0], &mut out1).is_err());
+        assert!(elu_f32(&[1.0, 2.0], &mut out1).is_err());
+    }
+
+    #[test]
+    fn elu_matches_transformers_alpha_one_points() {
+        let x = [f32::NEG_INFINITY, -4.0, -1.0, -0.0, 0.0, 0.5, 8.0];
+        let mut out = [f32::NAN; 7];
+        elu_f32(&x, &mut out).expect("valid ELU shape");
+
+        for (index, (&input, &actual)) in x.iter().zip(&out).enumerate() {
+            let expected = if input > 0.0 {
+                input
+            } else {
+                input.exp() - 1.0
+            };
+            assert_eq!(actual.to_bits(), expected.to_bits(), "index {index}");
+        }
     }
 
     #[test]
@@ -1047,6 +1206,51 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn group_norm_one_group_matches_hand_fixture() {
+        let input = [1.0, 2.0, 3.0, 4.0];
+        let gamma = [2.0, 0.5];
+        let beta = [1.0, -1.0];
+        let mut out = [0.0; 4];
+        group_norm_f32(&input, &mut out, 2, 2, &gamma, &beta, 0.0).unwrap();
+        let inv_std = 1.0 / 1.25f32.sqrt();
+        let expected = [
+            (1.0 - 2.5) * inv_std * 2.0 + 1.0,
+            (2.0 - 2.5) * inv_std * 2.0 + 1.0,
+            (3.0 - 2.5) * inv_std * 0.5 - 1.0,
+            (4.0 - 2.5) * inv_std * 0.5 - 1.0,
+        ];
+        for (actual, expected) in out.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1e-6);
+        }
+    }
+
+    #[test]
+    fn group_norm_rejects_invalid_shapes() {
+        assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 0, 2, &[], &[], 1e-8).is_err());
+        assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 2, 2, &[1.0], &[0.0; 2], 1e-8,).is_err());
+    }
+
+    #[test]
+    fn scale_norm_matches_released_equation_and_clamp() {
+        let input = [3.0f32, 4.0, 0.0, 0.0];
+        let mut out = [f32::NAN; 4];
+        scale_norm_f32(&input, &mut out, 2, 2, 1.5, 1.0e-5).unwrap();
+        let denominator = 5.0 * (2.0f64).sqrt().recip() as f32;
+        assert!((out[0] - 3.0 / denominator * 1.5).abs() <= f32::EPSILON);
+        assert!((out[1] - 4.0 / denominator * 1.5).abs() <= f32::EPSILON);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[3], 0.0);
+    }
+
+    #[test]
+    fn scale_norm_rejects_invalid_contract() {
+        assert!(scale_norm_f32(&[], &mut [], 0, 2, 1.0, 1.0e-5).is_err());
+        assert!(scale_norm_f32(&[1.0], &mut [0.0], 1, 1, f32::NAN, 1.0e-5).is_err());
+        assert!(scale_norm_f32(&[1.0], &mut [0.0], 1, 1, 1.0, 0.0).is_err());
+        assert!(scale_norm_f32(&[1.0; 2], &mut [0.0; 1], 1, 2, 1.0, 1.0e-5).is_err());
     }
 
     #[test]

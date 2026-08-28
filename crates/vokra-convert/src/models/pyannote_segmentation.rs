@@ -1,14 +1,13 @@
 //! **pyannote/segmentation-3.0** (Bredin, CNRS, MIT): safetensors → GGUF
 //! conversion (VAD / speaker-segmentation tier, 2026-07-30).
 //!
-//! Input: an offline `.bin` → safetensors flattening of the upstream
-//! `pyannote/segmentation-3.0` `pytorch_model.bin` (via
-//! `tools/parity/bin_to_safetensors.py` — the existing bridge; owner
-//! runs after `huggingface-cli login` + HF UI gate accept because the
-//! HF repo has `gated: auto`). Output: a GGUF carrying every float
-//! tensor verbatim under its upstream state_dict name, plus the
-//! `vokra.pyannote.*` metadata chunk group a future native PyanNet
-//! binder (`crates/vokra-models/src/pyannote/`) will read.
+//! Input: an offline `.bin` → safetensors flattening of the immutable
+//! upstream `pyannote/segmentation-3.0` checkpoint. Output: a GGUF carrying
+//! the exact 54-tensor F32 inference manifest under the upstream state-dict
+//! names, plus a `vokra.pyannote.*` contract consumed by the native PyanNet
+//! binder in `crates/vokra-models/src/pyannote/`. Foreign, incomplete, or
+//! dtype-drifted checkpoints fail closed instead of producing a plausible
+//! but unrunnable artifact.
 //!
 //! # HF / licence / category
 //!
@@ -27,10 +26,11 @@
 //!
 //! # PyanNet architecture (primary source: MIT LICENSE)
 //!
-//! Source: `github.com/pyannote/pyannote-audio/develop/src/pyannote/`
-//! `audio/models/segmentation/PyanNet.py` (CC 直接 fetch 2026-07-30、
-//! MIT LICENSE header + full class definition = Copyright (c) 2020
-//! CNRS)。**推定は含まない**。
+//! Source: `github.com/pyannote/pyannote-audio/blob/3.0.0/pyannote/`
+//! `audio/models/segmentation/PyanNet.py` (MIT). The class default is two
+//! recurrent layers, while this exact release overrides it to four. Both the
+//! preserved model config and the `lstm.*_l0..l3{,_reverse}` tensor manifest
+//! independently pin that release-specific override.
 //!
 //! ```text
 //! waveforms (batch, channel=1, samples)  # 16 kHz mono PCM
@@ -39,8 +39,8 @@
 //!      - sample_rate=16000
 //!      - output: (batch, 60, num_frames)
 //!   -> rearrange "batch feature frame -> batch frame feature"
-//!   -> LSTM (monolithic=True default, LSTM_DEFAULTS)
-//!      - nn.LSTM(input_size=60, hidden_size=128, num_layers=2,
+//!   -> LSTM (monolithic=True, release config override)
+//!      - nn.LSTM(input_size=60, hidden_size=128, num_layers=4,
 //!                bidirectional=True, batch_first=True)
 //!      - output: (batch, num_frames, 256)  # 2 * 128 bidirectional
 //!   -> Linear stack (LINEAR_DEFAULTS, num_layers=2, hidden_size=128)
@@ -54,24 +54,19 @@
 //!
 //! # Wiring status
 //!
-//! BF16 pass-through skeleton (mirror `wespeaker` / `ecapa_tdnn` /
-//! `titanet` / `rmvpe` pattern). Every F32 / F16 / BF16 tensor passes
-//! through verbatim under its upstream state_dict name. The
-//! `vokra.pyannote.*` chunk group pins hparams from PyanNet.py primary
-//! source constants so a future runtime binder can bring the graph up
-//! without a side-car config lookup.
+//! Strict release converter. Exactly 54 F32 tensors with the immutable public
+//! shape manifest are accepted and copied byte-for-byte. The
+//! `vokra.pyannote.*` group records the release topology, upstream source tag,
+//! public Vokra artifact identity, and manifest digest so the runtime can
+//! distinguish this checkpoint from superficially similar PyanNet variants.
 //!
 //! # Runtime binder / real forward
 //!
-//! The runtime module scaffold (`crates/vokra-models/src/pyannote/`)
-//! is Wave 2 in `docs/handoff/pyannote-implementation-plan-2026-07-30.md`
-//! — it carries a real `from_gguf` (missing / mis-shaped tensor → loud
-//! `vokra_core::VokraError::ModelLoad` per FR-EX-08) but the inner
-//! forward returns `VokraError::UnsupportedOp` until Wave 3 lands the
-//! SincNet primitive + real forward (SincNet is a Vokra-new op, not
-//! covered by the existing conv1d / LSTM / Linear primitives). This
-//! loud-partial posture mirrors RMVPE (weights are bound, kernel
-//! binding pending) — honest, not fake-complete.
+//! The runtime contains the native SincNet, four-layer bidirectional LSTM,
+//! two-layer projection, and powerset classifier. Execution is default-on for
+//! CPU and Metal after this exact manifest binds; unsupported backends fail
+//! explicitly. Independent upstream probability parity remains a separate
+//! VAST gate and is not implied by the synthetic converter tests.
 //!
 //! # No ONNX (permanent)
 //!
@@ -80,6 +75,7 @@
 //! safetensors bridge lives in `tools/parity/bin_to_safetensors.py`
 //! (an offline side-car tool, not part of the runtime).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
@@ -114,11 +110,30 @@ pub const CATEGORY: &str = "vad";
 /// `vokra.provenance.upstream_hf`. Preserves upstream casing.
 pub const UPSTREAM_HF: &str = "pyannote/segmentation-3.0";
 
-/// Canonical weight license SPDX (`mit`). Overrides via the
-/// [`convert_pyannote_segmentation_file`] `license` parameter — the
-/// standing mechanism for "implementation is clean-room MIT but the
-/// upstream distributed checkpoint is another license" scenarios
-/// (mirror of `convert_file_licensed` in `lib.rs`).
+/// Immutable upstream model revision reported by the official HF API.
+pub const UPSTREAM_REVISION: &str = "e66f3d3b9eb0873085418a7b813d3b369bf160bb";
+/// Official pyannote.audio source tag used to train and load this release.
+pub const PYANNOTE_AUDIO_VERSION: &str = "3.0.0";
+/// Peeled official `3.0.0` source tag revision.
+pub const PYANNOTE_AUDIO_REVISION: &str = "795b92ab265888c58d160f90ae4d91b7bcc6aa2c";
+/// Exact historical public Vokra artifact repository.
+pub const PUBLIC_HF: &str = "vokra/pyannote-segmentation-3.0";
+/// Immutable public Vokra artifact revision.
+pub const PUBLIC_REVISION: &str = "50bf4e510e0c689668384aec0f866f02e0fcaea8";
+/// Exact public GGUF filename.
+pub const PUBLIC_FILE: &str = "pyannote-seg.gguf";
+/// Exact public GGUF byte size.
+pub const PUBLIC_BYTES: u32 = 5_898_272;
+/// Exact public GGUF SHA-256.
+pub const PUBLIC_SHA256: &str = "22ff05fddf19e69c8d9aac8daa6d99014e6718bcd8d8c527d26da677d00c63f1";
+/// Complete sorted `(tensor name, shape)` manifest SHA-256.
+pub const MANIFEST_SHA256: &str =
+    "a1c783d4df253742ad5e0e796402310930f52b1a80597420f79a6eba830670d8";
+/// Exact inference tensor count.
+pub const TENSOR_COUNT: usize = 54;
+
+/// Canonical weight license SPDX (`mit`). A matching explicit value is
+/// accepted for CLI compatibility; conflicting overrides fail closed.
 pub const DEFAULT_LICENSE: &str = "mit";
 
 /// Ad-hoc metadata key for the model category. Same key that
@@ -138,25 +153,25 @@ pub(crate) const KEY_LSTM_MONOLITHIC: &str = "vokra.pyannote.lstm.monolithic";
 pub(crate) const KEY_LINEAR_HIDDEN_SIZE: &str = "vokra.pyannote.linear.hidden_size";
 pub(crate) const KEY_LINEAR_NUM_LAYERS: &str = "vokra.pyannote.linear.num_layers";
 pub(crate) const KEY_NUM_POWERSET_CLASSES: &str = "vokra.pyannote.num_powerset_classes";
+pub(crate) const KEY_UPSTREAM_REVISION: &str = "vokra.pyannote.upstream_revision";
+pub(crate) const KEY_PYANNOTE_AUDIO_VERSION: &str = "vokra.pyannote.pyannote_audio_version";
+pub(crate) const KEY_PYANNOTE_AUDIO_REVISION: &str = "vokra.pyannote.pyannote_audio_revision";
+pub(crate) const KEY_MANIFEST_SHA256: &str = "vokra.pyannote.tensor_manifest_sha256";
+pub(crate) const KEY_PUBLIC_HF: &str = "vokra.pyannote.public_hf";
+pub(crate) const KEY_PUBLIC_REVISION: &str = "vokra.pyannote.public_revision";
+pub(crate) const KEY_PUBLIC_FILE: &str = "vokra.pyannote.public_file";
+pub(crate) const KEY_PUBLIC_BYTES: &str = "vokra.pyannote.public_bytes";
+pub(crate) const KEY_PUBLIC_SHA256: &str = "vokra.pyannote.public_sha256";
 
-// Canonical hparam values transcribed from PyanNet.py primary source
-// (SINCNET_DEFAULTS / LSTM_DEFAULTS / LINEAR_DEFAULTS, github.com/
-// pyannote/pyannote-audio/develop/src/pyannote/audio/models/
-// segmentation/PyanNet.py — fetched 2026-07-30, MIT LICENSE Copyright
-// (c) 2020 CNRS). Kept here as converter-side compile-time constants
-// so a GGUF that never had a `vokra.pyannote.*` chunk written (e.g. an
-// emergency hand-crafted checkpoint) still round-trips through the
-// runtime binder's default fallback.
-//
-// segmentation-3.0 specifically: the config.yaml uses
-// `num_powerset_classes = 7` (3 speakers × 2 overlap slots per
-// PyanNet.py dimension property + powerset multiclass encoding). Owner
-// verifies against actual config.yaml after HF gate accept per Wave 1
-// owner tasks in `docs/handoff/pyannote-implementation-plan-2026-07-30.md`.
+// Canonical release hparams. Most values equal the PyanNet 3.0.0 class
+// defaults; `lstm.num_layers = 4` is the exact checkpoint config override and
+// is independently proven by the l0..l3 state-dict tensors. The seven output
+// classes are the released three-speaker powerset encoding. These values are
+// an identity contract, not permissive fallbacks for hand-crafted files.
 pub const DEFAULT_SAMPLE_RATE: u32 = 16000;
 pub const DEFAULT_SINCNET_STRIDE: u32 = 10;
 pub const DEFAULT_LSTM_HIDDEN_SIZE: u32 = 128;
-pub const DEFAULT_LSTM_NUM_LAYERS: u32 = 2;
+pub const DEFAULT_LSTM_NUM_LAYERS: u32 = 4;
 pub const DEFAULT_LSTM_BIDIRECTIONAL: bool = true;
 pub const DEFAULT_LSTM_MONOLITHIC: bool = true;
 pub const DEFAULT_LINEAR_HIDDEN_SIZE: u32 = 128;
@@ -165,35 +180,25 @@ pub const DEFAULT_NUM_POWERSET_CLASSES: u32 = 7;
 
 /// Outcome of a pyannote-segmentation conversion.
 ///
-/// Mirrors the sibling `rmvpe` / `wespeaker` / `titanet` reports:
-/// `read` pins the total budget the safetensors reader surfaced,
-/// `written` counts float pass-through, `bf16_passthrough` is a subset
-/// of `written` for the BF16 tensors, `skipped_non_float` is a
-/// defensive counter (the safetensors reader rejects unknown dtypes
-/// at parse time, so any tensor reaching this arm signals an upstream
-/// reader change).
+/// A successful conversion always reports the exact 54 F32 tensors. The two
+/// legacy counters remain for API compatibility and are always zero.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PyannoteSegmentationReport {
-    /// Total tensors seen in the upstream safetensors header
-    /// (`written + skipped_non_float`).
+    /// Total tensors seen in the validated safetensors header.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Canonical F32 tensors written verbatim.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter).
+    /// Always zero after a successful strict conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset
-    /// counter). Emits GGUF type 30 verbatim; runtime widens BF16 →
-    /// f32 losslessly via `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16`
-    /// is exact).
+    /// Always zero because the canonical checkpoint is F32-only.
     pub bf16_passthrough: usize,
 }
 
 /// Reads a safetensors checkpoint at `input` and writes a
 /// pyannote-segmentation GGUF to `output`.
 ///
-/// Every F32 / F16 / BF16 tensor is emitted verbatim under its
-/// upstream state_dict name; the `vokra.provenance.*` +
+/// The exact 54-tensor F32 manifest is emitted verbatim under its upstream
+/// state-dict names; the `vokra.provenance.*` +
 /// `vokra.model.*` + `vokra.pyannote.*` chunk groups pin the upstream
 /// repo, weight license, model category and PyanNet hparams so the
 /// runtime binder (`crates/vokra-models/src/pyannote/`) can bring the
@@ -201,40 +206,62 @@ pub struct PyannoteSegmentationReport {
 /// `PyanNetConfig::from_gguf`, `PyanNetWeights::from_gguf` and
 /// `PyanNet::from_gguf` all read these chunks for real.
 ///
-/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
-/// mechanism `lib.rs::convert_file_licensed` uses when the
-/// implementation is clean-room but the redistributed checkpoint
-/// carries a different SPDX.
+/// `license` may be absent or match `DEFAULT_LICENSE` (`"mit"`). Any
+/// conflicting value is rejected before the input is parsed.
 ///
 /// # Errors
 ///
-/// [`ConvertError::Io`] for I/O failures reading `input` or writing
-/// `output`; [`ConvertError::Parse`] for malformed safetensors input.
+/// [`ConvertError::Io`] for I/O failures reading `input` or writing `output`;
+/// [`ConvertError::Parse`] for malformed or non-canonical safetensors input;
+/// [`ConvertError::Usage`] for a conflicting license override.
 pub fn convert_pyannote_segmentation_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<PyannoteSegmentationReport, ConvertError> {
-    // Whole-file read: a segmentation-3.0 checkpoint is ~5.7 MB — no
-    // streaming needed (Moshi / Voxtral GB-scale converters use the
-    // streaming path). Even a hypothetical scaled variant stays well
-    // under the streaming threshold.
+    if let Some(value) = license
+        && !value.eq_ignore_ascii_case(DEFAULT_LICENSE)
+    {
+        return Err(ConvertError::Usage(format!(
+            "pyannote-segmentation: canonical {UPSTREAM_HF}@{UPSTREAM_REVISION} has pinned MIT weights; refusing conflicting --license {value:?}"
+        )));
+    }
+
     let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
     let st = SafetensorsFile::parse(bytes)?;
+    validate_manifest(&st)?;
 
     let mut b = GgufBuilder::new();
+    stamp_metadata(&mut b);
+
+    let mut report = PyannoteSegmentationReport {
+        read: st.tensors().len(),
+        ..PyannoteSegmentationReport::default()
+    };
+    for t in st.tensors() {
+        b.add_tensor(
+            &t.name,
+            t.dtype,
+            t.shape.clone(),
+            st.tensor_bytes(t).to_vec(),
+        )?;
+        report.written += 1;
+    }
+
+    let out_bytes = b
+        .to_bytes()
+        .map_err(|e| ConvertError::Parse(e.to_string()))?;
+    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
+    Ok(report)
+}
+
+fn stamp_metadata(b: &mut GgufBuilder) {
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
 
-    // PyanNet hparam chunk group — every value is a primary-source
-    // constant transcribed from PyanNet.py (SINCNET_DEFAULTS /
-    // LSTM_DEFAULTS / LINEAR_DEFAULTS, github.com/pyannote/pyannote-
-    // audio/develop/src/pyannote/audio/models/segmentation/PyanNet.py,
-    // fetched 2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
-    // The runtime binder's `from_gguf` falls back to the same
-    // constants when a key is absent, so a checkpoint that never
-    // carried a `vokra.pyannote.*` chunk still loads.
+    // Exact release contract: the class default has two recurrent layers,
+    // but segmentation-3.0 config + state dict both pin four.
     b.add_u32(KEY_SAMPLE_RATE, DEFAULT_SAMPLE_RATE);
     b.add_u32(KEY_SINCNET_STRIDE, DEFAULT_SINCNET_STRIDE);
     b.add_u32(KEY_LSTM_HIDDEN_SIZE, DEFAULT_LSTM_HIDDEN_SIZE);
@@ -244,55 +271,118 @@ pub fn convert_pyannote_segmentation_file(
     b.add_u32(KEY_LINEAR_HIDDEN_SIZE, DEFAULT_LINEAR_HIDDEN_SIZE);
     b.add_u32(KEY_LINEAR_NUM_LAYERS, DEFAULT_LINEAR_NUM_LAYERS);
     b.add_u32(KEY_NUM_POWERSET_CLASSES, DEFAULT_NUM_POWERSET_CLASSES);
+    b.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_REVISION);
+    b.add_string(KEY_PYANNOTE_AUDIO_VERSION, PYANNOTE_AUDIO_VERSION);
+    b.add_string(KEY_PYANNOTE_AUDIO_REVISION, PYANNOTE_AUDIO_REVISION);
+    b.add_string(KEY_MANIFEST_SHA256, MANIFEST_SHA256);
+    b.add_string(KEY_PUBLIC_HF, PUBLIC_HF);
+    b.add_string(KEY_PUBLIC_REVISION, PUBLIC_REVISION);
+    b.add_string(KEY_PUBLIC_FILE, PUBLIC_FILE);
+    b.add_u32(KEY_PUBLIC_BYTES, PUBLIC_BYTES);
+    b.add_string(KEY_PUBLIC_SHA256, PUBLIC_SHA256);
 
-    // Self-describing redistribution: the artifact carries its own
-    // licence. pyannote ships MIT end-to-end (upstream `pyannote/
-    // pyannote-audio` LICENSE = MIT Copyright (c) 2020 CNRS, HF
-    // cardData `license: mit`, fetched 2026-07-30). The `license`
-    // override lets a downstream repackager stamp a different SPDX
-    // if they redistribute under stricter terms.
-    let effective_license = license.unwrap_or(DEFAULT_LICENSE);
+    // Self-describing redistribution: pyannote ships MIT end-to-end
+    // (upstream source LICENSE and official HF cardData both say MIT).
     vokra_core::stamp_provenance(
-        &mut b,
+        b,
         LicenseClass::Permissive,
-        effective_license,
+        DEFAULT_LICENSE,
         Some(NAME),
-        Some(UPSTREAM_HF),
+        Some(&format!(
+            "{UPSTREAM_HF}@{UPSTREAM_REVISION} exact {TENSOR_COUNT}-F32-tensor inference manifest"
+        )),
     );
+    b.add_string("vokra.provenance.upstream_hf", UPSTREAM_HF);
+    b.add_string("vokra.provenance.upstream_revision", UPSTREAM_REVISION);
+}
 
-    let mut report = PyannoteSegmentationReport::default();
-    // Float tensors pass through **verbatim** — no convert-time
-    // widening. BF16 stays GGUF `BF16` (type 30) per the accepted
-    // ADR (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough); the
-    // runtime widens BF16 → f32 exactly at load via
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
-    // `rmvpe::convert_rmvpe_file` / `wespeaker::convert_wespeaker_file`.
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let observed = st
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), (tensor.dtype, tensor.shape.clone())))
+        .collect::<BTreeMap<_, _>>();
+    validate_observed_manifest(&observed)
+}
+
+fn validate_observed_manifest(
+    observed: &BTreeMap<String, (GgmlType, Vec<u64>)>,
+) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    if observed.len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "pyannote-segmentation: checkpoint has {} tensors, expected exactly {TENSOR_COUNT}",
+            observed.len()
+        )));
+    }
+    for (name, (dtype, shape)) in observed {
+        let wanted = expected.get(name).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "pyannote-segmentation: unexpected tensor {name:?}; refusing strict conversion"
+            ))
+        })?;
+        if *dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "pyannote-segmentation: tensor {name:?} has {dtype:?}, expected canonical F32"
+            )));
+        }
+        if shape != wanted {
+            return Err(ConvertError::Parse(format!(
+                "pyannote-segmentation: tensor {name:?} shape {shape:?}, expected {wanted:?}"
+            )));
+        }
+    }
+    for name in expected.keys() {
+        if !observed.contains_key(name) {
+            return Err(ConvertError::Parse(format!(
+                "pyannote-segmentation: required tensor {name:?} is missing"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut tensors = BTreeMap::new();
+    tensors.insert("classifier.bias".to_owned(), vec![7]);
+    tensors.insert("classifier.weight".to_owned(), vec![7, 128]);
+    tensors.insert("linear.0.bias".to_owned(), vec![128]);
+    tensors.insert("linear.0.weight".to_owned(), vec![128, 256]);
+    tensors.insert("linear.1.bias".to_owned(), vec![128]);
+    tensors.insert("linear.1.weight".to_owned(), vec![128, 128]);
+
+    for layer in 0..DEFAULT_LSTM_NUM_LAYERS {
+        let input = if layer == 0 { 60 } else { 256 };
+        for suffix in ["", "_reverse"] {
+            tensors.insert(format!("lstm.bias_hh_l{layer}{suffix}"), vec![512]);
+            tensors.insert(format!("lstm.bias_ih_l{layer}{suffix}"), vec![512]);
+            tensors.insert(format!("lstm.weight_hh_l{layer}{suffix}"), vec![512, 128]);
+            tensors.insert(format!("lstm.weight_ih_l{layer}{suffix}"), vec![512, input]);
         }
     }
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Parse(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
-    Ok(report)
+    for (name, shape) in [
+        ("sincnet.conv1d.0.filterbank.band_hz_", vec![40, 1]),
+        ("sincnet.conv1d.0.filterbank.low_hz_", vec![40, 1]),
+        ("sincnet.conv1d.0.filterbank.n_", vec![1, 125]),
+        ("sincnet.conv1d.0.filterbank.window_", vec![125]),
+        ("sincnet.conv1d.1.bias", vec![60]),
+        ("sincnet.conv1d.1.weight", vec![60, 80, 5]),
+        ("sincnet.conv1d.2.bias", vec![60]),
+        ("sincnet.conv1d.2.weight", vec![60, 60, 5]),
+        ("sincnet.norm1d.0.bias", vec![80]),
+        ("sincnet.norm1d.0.weight", vec![80]),
+        ("sincnet.norm1d.1.bias", vec![60]),
+        ("sincnet.norm1d.1.weight", vec![60]),
+        ("sincnet.norm1d.2.bias", vec![60]),
+        ("sincnet.norm1d.2.weight", vec![60]),
+        ("sincnet.wav_norm1d.bias", vec![1]),
+        ("sincnet.wav_norm1d.weight", vec![1]),
+    ] {
+        tensors.insert(name.to_owned(), shape);
+    }
+    debug_assert_eq!(tensors.len(), TENSOR_COUNT);
+    tensors
 }
 
 #[cfg(test)]
@@ -319,12 +409,8 @@ mod tests {
         p
     }
 
-    /// Builds a synthetic safetensors buffer with a single BF16
-    /// tensor — a byte-identity assert catches any silent widen /
-    /// downcast attempt. Uses a PyanNet-plausible tensor name
-    /// (`sincnet.conv1d.0.weight`) so the fixture matches the
-    /// upstream state_dict naming convention documented in
-    /// PyanNet.py.
+    /// Builds the old loose one-tensor BF16 probe so the regression test can
+    /// prove that the strict release converter now rejects it.
     fn synthetic_bf16_safetensors() -> (Vec<u8>, Vec<u8>) {
         let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
         let bf16: Vec<u8> = values
@@ -341,154 +427,147 @@ mod tests {
         (buf, bf16)
     }
 
-    /// STEP 1 (BF16 pass-through): the upstream BF16 checkpoint
-    /// must survive the file-based converter round-trip with its
-    /// dtype preserved (GGUF type 30 = `GgmlType::BF16`) and its
-    /// payload byte-identical to the input. Mirror of rmvpe /
-    /// wespeaker / titanet / emotion2vec.
+    /// Builds an exact-shape, zero-valued copy of the 54-tensor release
+    /// manifest. The values are synthetic, so this exercises serialization
+    /// and identity gates only; independent numerical parity uses the real
+    /// public checkpoint on VAST.
+    fn synthetic_canonical_safetensors() -> Vec<u8> {
+        let manifest = expected_manifest();
+        let mut entries = Vec::with_capacity(manifest.len());
+        let mut data_len = 0usize;
+        for (name, shape) in manifest {
+            let elements = shape.iter().copied().product::<u64>() as usize;
+            let byte_len = elements.checked_mul(4).expect("synthetic tensor bytes");
+            let end = data_len
+                .checked_add(byte_len)
+                .expect("synthetic checkpoint bytes");
+            let dims = shape
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            entries.push(format!(
+                "\"{name}\":{{\"dtype\":\"F32\",\"shape\":[{dims}],\"data_offsets\":[{data_len},{end}]}}"
+            ));
+            data_len = end;
+        }
+        let header = format!("{{{}}}", entries.join(","));
+        let mut bytes = Vec::with_capacity(8 + header.len() + data_len);
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.resize(bytes.len() + data_len, 0);
+        bytes
+    }
+
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synthetic_bf16_safetensors();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
+    fn canonical_checkpoint_roundtrips_all_identity_metadata() {
+        let input = scratch_path("canonical-in");
+        let output = scratch_path("canonical-out");
+        std::fs::write(&input, synthetic_canonical_safetensors())
+            .expect("write canonical safetensors");
 
-        let report = convert_pyannote_segmentation_file(&input, &output, None).expect("convert");
+        let report = convert_pyannote_segmentation_file(&input, &output, Some("MIT"))
+            .expect("convert canonical manifest");
+        assert_eq!(report.read, TENSOR_COUNT);
+        assert_eq!(report.written, TENSOR_COUNT);
+        assert_eq!(report.skipped_non_float, 0);
+        assert_eq!(report.bf16_passthrough, 0);
 
-        assert_eq!(report.read, 1, "one tensor visible in safetensors header");
+        let file = GgufFile::parse(std::fs::read(&output).expect("read output"))
+            .expect("parse output GGUF");
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of rmvpe / wespeaker)"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let info = file
-            .tensor_info("sincnet.conv1d.0.weight")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input"
-        );
-
-        // Provenance + category chunks pinned on the artifact itself.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            file.get(chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str()),
             Some(ARCH)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            file.get(KEY_LSTM_NUM_LAYERS)
+                .and_then(|value| value.as_u64()),
+            Some(4)
         );
         assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-
-        // PyanNet hparam chunk group — every key from
-        // SINCNET_DEFAULTS / LSTM_DEFAULTS / LINEAR_DEFAULTS +
-        // segmentation-3.0 powerset class count must be present with
-        // the primary-source constant value. Guards the runtime
-        // binder's fallback path (a GGUF without a chunk still loads
-        // via the same constant).
-        assert_eq!(
-            file.get(KEY_SAMPLE_RATE).and_then(|v| v.as_u64()),
-            Some(DEFAULT_SAMPLE_RATE as u64)
+            file.get(KEY_MANIFEST_SHA256)
+                .and_then(|value| value.as_str()),
+            Some(MANIFEST_SHA256)
         );
         assert_eq!(
-            file.get(KEY_SINCNET_STRIDE).and_then(|v| v.as_u64()),
-            Some(DEFAULT_SINCNET_STRIDE as u64)
+            file.get(KEY_UPSTREAM_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(UPSTREAM_REVISION)
         );
         assert_eq!(
-            file.get(KEY_LSTM_HIDDEN_SIZE).and_then(|v| v.as_u64()),
-            Some(DEFAULT_LSTM_HIDDEN_SIZE as u64)
+            file.get(KEY_PYANNOTE_AUDIO_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(PYANNOTE_AUDIO_REVISION)
         );
         assert_eq!(
-            file.get(KEY_LSTM_NUM_LAYERS).and_then(|v| v.as_u64()),
-            Some(DEFAULT_LSTM_NUM_LAYERS as u64)
+            file.get(KEY_PUBLIC_REVISION)
+                .and_then(|value| value.as_str()),
+            Some(PUBLIC_REVISION)
         );
         assert_eq!(
-            file.get(KEY_LSTM_BIDIRECTIONAL).and_then(|v| v.as_bool()),
-            Some(DEFAULT_LSTM_BIDIRECTIONAL)
+            file.get(KEY_PUBLIC_BYTES).and_then(|value| value.as_u64()),
+            Some(PUBLIC_BYTES as u64)
         );
         assert_eq!(
-            file.get(KEY_LSTM_MONOLITHIC).and_then(|v| v.as_bool()),
-            Some(DEFAULT_LSTM_MONOLITHIC)
+            file.get(KEY_PUBLIC_SHA256).and_then(|value| value.as_str()),
+            Some(PUBLIC_SHA256)
         );
         assert_eq!(
-            file.get(KEY_LINEAR_HIDDEN_SIZE).and_then(|v| v.as_u64()),
-            Some(DEFAULT_LINEAR_HIDDEN_SIZE as u64)
+            file.get("vokra.provenance.weight_license")
+                .and_then(|value| value.as_str()),
+            Some("permissive")
         );
         assert_eq!(
-            file.get(KEY_LINEAR_NUM_LAYERS).and_then(|v| v.as_u64()),
-            Some(DEFAULT_LINEAR_NUM_LAYERS as u64)
-        );
-        assert_eq!(
-            file.get(KEY_NUM_POWERSET_CLASSES).and_then(|v| v.as_u64()),
-            Some(DEFAULT_NUM_POWERSET_CLASSES as u64)
+            file.get("vokra.provenance.license")
+                .and_then(|value| value.as_str()),
+            Some(DEFAULT_LICENSE)
         );
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }
 
-    /// License override path: a caller who obtained the weight under
-    /// a different SPDX (unlikely for pyannote which is MIT
-    /// end-to-end, but the mechanism exists for all converters via
-    /// `convert_file_licensed` in `lib.rs`) can stamp that SPDX
-    /// through the `license` parameter. Guards against silent
-    /// override / SPDX drift.
+    /// A loose one-tensor BF16 probe used to convert successfully. The exact
+    /// release is 54 F32 tensors, so the same input must now fail closed.
     #[test]
-    fn license_override_stamps_supplied_spdx() {
+    fn loose_bf16_probe_fails_closed() {
+        let (input_bytes, _) = synthetic_bf16_safetensors();
+        let input = scratch_path("bf16-in");
+        let output = scratch_path("bf16-out");
+        std::fs::write(&input, &input_bytes).expect("write safetensors input");
+
+        let error = convert_pyannote_segmentation_file(&input, &output, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("1 tensors"));
+        assert!(error.contains("expected exactly 54"));
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    /// The canonical release cannot be silently restamped under another SPDX.
+    #[test]
+    fn conflicting_license_override_fails_before_input_parse() {
         let (input_bytes, _) = synthetic_bf16_safetensors();
         let input = scratch_path("license-in");
         let output = scratch_path("license-out");
         std::fs::write(&input, &input_bytes).expect("write safetensors input");
 
-        // Hypothetical downstream override — apache-2.0 instead of
-        // upstream MIT (both permissive, both round-trip through
-        // `stamp_provenance` cleanly).
-        let report = convert_pyannote_segmentation_file(&input, &output, Some("apache-2.0"))
-            .expect("convert");
-        assert_eq!(report.written, 1);
-
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        // The provenance license chunk must reflect the override, not
-        // the DEFAULT_LICENSE constant.
-        assert_eq!(
-            file.get("vokra.provenance.license")
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0"),
-            "license override must reach the provenance chunk"
-        );
+        let error = convert_pyannote_segmentation_file(&input, &output, Some("apache-2.0"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refusing conflicting --license"));
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }
 
-    /// Zero-tensor safetensors (empty header): must produce an empty
-    /// report (no crash, no silent success masking a truncated input).
-    /// Zero-tensor is a legitimate corner case — a probe tool that
-    /// exercises the converter contract can pass an empty header
-    /// deliberately.
+    /// An empty header is a truncated/foreign checkpoint, never a model.
     #[test]
-    fn zero_tensor_input_returns_empty_report() {
+    fn zero_tensor_input_fails_closed() {
         let header = "{}";
         let mut buf = Vec::new();
         buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
@@ -498,52 +577,93 @@ mod tests {
         let output = scratch_path("zero-out");
         std::fs::write(&input, &buf).expect("write empty safetensors");
 
-        let report = convert_pyannote_segmentation_file(&input, &output, None).expect("convert");
-        assert_eq!(report.read, 0);
-        assert_eq!(report.written, 0);
-        assert_eq!(report.bf16_passthrough, 0);
-        assert_eq!(report.skipped_non_float, 0);
-
-        // Even with zero tensors the provenance / hparam chunks are
-        // still stamped — an empty-body GGUF is still a well-formed
-        // Vokra artifact.
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(KEY_NUM_POWERSET_CLASSES).and_then(|v| v.as_u64()),
-            Some(DEFAULT_NUM_POWERSET_CLASSES as u64)
-        );
+        let error = convert_pyannote_segmentation_file(&input, &output, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("0 tensors"));
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }
 
-    /// Constant pin: primary-source values from PyanNet.py must not
-    /// silently drift. A future edit that changes a default must also
-    /// bump the corresponding upstream reference (or the CC-verified
-    /// row in `docs/license-audit.md`), not sneak past a stale check.
+    /// Release constants must not silently drift from the pinned source,
+    /// config, and public state-dict manifest.
     #[test]
+    #[allow(clippy::assertions_on_constants)] // Compile-time drift guards are intentional.
     fn primary_source_constants_do_not_drift() {
         // From SINCNET_DEFAULTS in PyanNet.py (verified 2026-07-30):
         assert_eq!(DEFAULT_SINCNET_STRIDE, 10);
-        // From LSTM_DEFAULTS:
+        // Hidden size is the class default; four layers are the release
+        // config override independently visible as l0..l3 tensors.
         assert_eq!(DEFAULT_LSTM_HIDDEN_SIZE, 128);
-        assert_eq!(DEFAULT_LSTM_NUM_LAYERS, 2);
+        assert_eq!(DEFAULT_LSTM_NUM_LAYERS, 4);
         const { assert!(DEFAULT_LSTM_BIDIRECTIONAL) };
         const { assert!(DEFAULT_LSTM_MONOLITHIC) };
         // From LINEAR_DEFAULTS:
         assert_eq!(DEFAULT_LINEAR_HIDDEN_SIZE, 128);
         assert_eq!(DEFAULT_LINEAR_NUM_LAYERS, 2);
-        // From segmentation-3.0 specifically (3 speakers × 2 overlap
-        // = 7 powerset classes; owner verifies against actual
-        // config.yaml per Wave 1 owner tasks in
-        // `docs/handoff/pyannote-implementation-plan-2026-07-30.md`):
+        // segmentation-3.0 specifically: three speakers, maximum overlap two,
+        // giving seven powerset classes.
         assert_eq!(DEFAULT_NUM_POWERSET_CLASSES, 7);
         // Sample rate is fixed at 16 kHz by PyanNet default:
         assert_eq!(DEFAULT_SAMPLE_RATE, 16000);
+    }
+
+    fn observed_manifest() -> BTreeMap<String, (GgmlType, Vec<u64>)> {
+        expected_manifest()
+            .into_iter()
+            .map(|(name, shape)| (name, (GgmlType::F32, shape)))
+            .collect()
+    }
+
+    #[test]
+    fn canonical_manifest_matches_the_public_header() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), 54);
+        assert_eq!(manifest["lstm.weight_ih_l0"], vec![512, 60]);
+        assert_eq!(manifest["lstm.weight_ih_l3_reverse"], vec![512, 256]);
+        assert_eq!(manifest["sincnet.conv1d.1.weight"], vec![60, 80, 5]);
+        assert_eq!(manifest["classifier.weight"], vec![7, 128]);
+        validate_observed_manifest(&observed_manifest()).unwrap();
+    }
+
+    #[test]
+    fn missing_extra_wrong_shape_and_dtype_fail_closed() {
+        let mut missing = observed_manifest();
+        missing.remove("classifier.bias");
+        assert!(
+            validate_observed_manifest(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("53 tensors")
+        );
+
+        let mut extra = observed_manifest();
+        extra.remove("classifier.bias");
+        extra.insert("fabricated.weight".to_owned(), (GgmlType::F32, vec![7]));
+        assert!(
+            validate_observed_manifest(&extra)
+                .unwrap_err()
+                .to_string()
+                .contains("unexpected tensor")
+        );
+
+        let mut wrong_shape = observed_manifest();
+        wrong_shape.get_mut("classifier.weight").unwrap().1 = vec![2, 128];
+        assert!(
+            validate_observed_manifest(&wrong_shape)
+                .unwrap_err()
+                .to_string()
+                .contains("shape")
+        );
+
+        let mut wrong_dtype = observed_manifest();
+        wrong_dtype.get_mut("classifier.weight").unwrap().0 = GgmlType::BF16;
+        assert!(
+            validate_observed_manifest(&wrong_dtype)
+                .unwrap_err()
+                .to_string()
+                .contains("expected canonical F32")
+        );
     }
 }

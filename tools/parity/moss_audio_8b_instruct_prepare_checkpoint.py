@@ -72,9 +72,14 @@ Upstream weight license is ``apache-2.0`` — see ``docs/license-audit.md``
     uv run --project tools/parity python \\
         tools/parity/moss_audio_8b_instruct_prepare_checkpoint.py \\
         --input-dir /vast/snapshots/moss-audio-8b-instruct \\
-        --output /vast/staging/moss-audio-8b-instruct.safetensors
+        --output /vast/snapshots/moss-audio-8b-instruct/model.merged.safetensors
 
-    # self-test (no HF snapshot required):
+The merged input intentionally remains inside the fixed-revision snapshot so
+the Rust converter can authenticate and embed the adjacent tokenizer, chat,
+generation and processor sidecars before reading the multi-gigabyte weights.
+
+Self-test (no HF snapshot required)::
+
     uv run --project tools/parity python \\
         tools/parity/moss_audio_8b_instruct_prepare_checkpoint.py \\
         --self-test

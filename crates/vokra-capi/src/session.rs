@@ -13,11 +13,21 @@ use std::sync::Arc;
 use vokra_core::gguf::{AsBytes, GgufFile};
 use vokra_core::{BackendKind, CompliancePolicy, Session, VokraError};
 use vokra_models::codec::{MimiStreamingCodec, NanoCodecStreamingCodec};
+use vokra_models::conv_tasnet::ConvTasnet;
+use vokra_models::data2vec_audio::Data2VecAudioCtc;
+use vokra_models::ecapa_tdnn::EcapaTdnn;
+use vokra_models::hubert::HubertCtc;
 use vokra_models::moshi::MoshiEngine;
 use vokra_models::piper_plus::PiperPlusTts;
+use vokra_models::reazonspeech_nemo_v2::{KEY_TOKENIZER_VOCAB, ReazonSpeechNemoV2};
+use vokra_models::sepformer::SepFormer;
 use vokra_models::silero_vad::SileroVadV5;
 use vokra_models::speaker::SpeakerEncoder;
+use vokra_models::titanet::TitaNet;
+use vokra_models::wav2vec2_ctc::Wav2Vec2Ctc;
+use vokra_models::wespeaker::WeSpeaker;
 use vokra_models::whisper::WhisperAsr;
+use vokra_models::xvector::XVector;
 
 use crate::error::vokra_status_t;
 use crate::handle::{self, vokra_session_t};
@@ -39,6 +49,26 @@ const ARCH_NANOCODEC: &str = "nanocodec";
 /// CAM++ speaker encoder (`crates/vokra-convert/src/models/campplus.rs`), the
 /// `speaker_encode` model behind `vokra_speaker_embed`.
 const ARCH_CAMPLUS: &str = "campplus";
+/// SpeechBrain X-vector speaker encoder.
+const ARCH_XVECTOR: &str = "xvector";
+/// SpeechBrain ECAPA-TDNN speaker encoder.
+const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
+/// WeSpeaker ResNet34-LM speaker encoder.
+const ARCH_WESPEAKER: &str = "wespeaker";
+/// NVIDIA TitaNet-L speaker encoder.
+const ARCH_TITANET: &str = "titanet-large";
+/// Meta Wav2Vec2 raw-waveform encoder with optional CTC head.
+const ARCH_WAV2VEC2_CTC: &str = "wav2vec2_ctc";
+/// Corrected Data2Vec Audio arch tag.
+const ARCH_DATA2VEC_AUDIO: &str = "data2vec_audio";
+/// Meta HuBERT-Large-LS960 raw-waveform CTC model.
+const ARCH_HUBERT: &str = "hubert";
+/// SpeechBrain SepFormer source separation and enhancement family.
+const ARCH_SEPFORMER: &str = "sepformer";
+/// Asteroid Conv-TasNet Libri1Mix speech enhancement.
+const ARCH_CONV_TASNET: &str = "conv_tasnet";
+/// ReazonSpeech NeMo v2 Japanese FastConformer-Longformer + RNN-T ASR.
+const ARCH_REAZONSPEECH_NEMO_V2: &str = "reazonspeech_nemo_v2";
 
 /// One model buffer shared between the session's `GgufFile` and the
 /// piper-plus engine's second parse (M4-02): a cheap-clone [`AsBytes`] source
@@ -56,13 +86,9 @@ impl AsBytes for SharedBytes {
 /// Rejects a non-CPU `backend` for an arch whose engine is not
 /// backend-parameterised.
 ///
-/// Silero VAD, piper-plus TTS and Moshi bind their concrete engine *without*
-/// `.with_backend(...)`, so they run on the CPU no matter what the session was
-/// built with. Handing back such a session for a GPU request would be the
-/// silent CPU fall back FR-EX-08 forbids: the model would run on the CPU while
-/// the caller believes the GPU is in use. `vokra-cli`'s `cpu_only_engine_label`
-/// guard (`crates/vokra-cli/src/run.rs`) makes the identical call for the
-/// identical set of arches — keep the two in lock-step.
+/// Engines that bind without `.with_backend(...)` run on the CPU no matter
+/// what the session requested. Handing back such a session for a GPU request
+/// would be the silent CPU fall back FR-EX-08 forbids.
 ///
 /// The status class is `UnsupportedOp`, not `BackendUnavailable`: the backend
 /// itself is fine (availability was already probed), it is *this model's*
@@ -136,29 +162,86 @@ fn inject_engine(
             let encoder = SpeakerEncoder::from_gguf(session.gguf())?.with_backend(backend);
             Ok(session.with_speaker_engine(Arc::new(encoder)))
         }
+        ARCH_XVECTOR => {
+            let encoder = XVector::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_speaker_engine(Arc::new(encoder)))
+        }
+        ARCH_ECAPA_TDNN => {
+            let encoder = EcapaTdnn::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_speaker_engine(Arc::new(encoder)))
+        }
+        ARCH_WESPEAKER => {
+            let encoder = WeSpeaker::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_speaker_engine(Arc::new(encoder)))
+        }
+        ARCH_TITANET => {
+            let encoder = TitaNet::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_speaker_engine(Arc::new(encoder)))
+        }
         ARCH_SILERO_VAD => {
-            reject_cpu_only_backend(backend, "VAD (Silero)")?;
-            let vad = SileroVadV5::from_gguf(session.gguf())?;
+            let vad = SileroVadV5::from_gguf(session.gguf())?.with_backend(backend);
             Ok(session.with_vad_engine(Arc::new(vad)))
         }
+        ARCH_WAV2VEC2_CTC => {
+            if session
+                .gguf()
+                .get("vokra.provenance.model_id")
+                .and_then(|value| value.as_str())
+                == Some("data2vec-audio-base-960h")
+            {
+                let model = Data2VecAudioCtc::from_file(session.gguf())?.with_backend(backend);
+                return Ok(session.with_asr_engine(Arc::new(model)));
+            }
+            let model = Wav2Vec2Ctc::from_file(session.gguf())?.with_backend(backend);
+            if !model.config().has_ctc_head {
+                return Err(VokraError::UnsupportedOp(
+                    "wav2vec2_ctc: the loaded XLSR-53 checkpoint is encoder-only. The Rust `Wav2Vec2Ctc::encode_features` and CLI `run --output <features.f32>` surfaces are complete, but the C ABI has no offline feature-tensor handle; refusing to masquerade it as ASR."
+                        .to_owned(),
+                ));
+            }
+            Ok(session.with_asr_engine(Arc::new(model)))
+        }
+        ARCH_DATA2VEC_AUDIO => {
+            let model = Data2VecAudioCtc::from_file(session.gguf())?.with_backend(backend);
+            Ok(session.with_asr_engine(Arc::new(model)))
+        }
+        ARCH_HUBERT => {
+            let model = HubertCtc::from_file(session.gguf())?.with_backend(backend);
+            Ok(session.with_asr_engine(Arc::new(model)))
+        }
+        ARCH_REAZONSPEECH_NEMO_V2 => {
+            if session.gguf().get(KEY_TOKENIZER_VOCAB).is_none() {
+                return Err(VokraError::ModelLoad(format!(
+                    "ReazonSpeech-NeMo-v2 GGUF has no `{KEY_TOKENIZER_VOCAB}`; reconvert the pinned official checkpoint with `vokra-convert --model reazonspeech-nemo-v2 --tokenizer tokenizer.vocab`. The legacy public artifact is token-level only and cannot satisfy the C ASR text contract"
+                )));
+            }
+            let model = ReazonSpeechNemoV2::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_asr_engine(Arc::new(model)))
+        }
+        ARCH_SEPFORMER => {
+            let model = SepFormer::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_separation_engine(Arc::new(model)))
+        }
+        ARCH_CONV_TASNET => {
+            let model = ConvTasnet::from_gguf(session.gguf())?.with_backend(backend);
+            Ok(session.with_separation_engine(Arc::new(model)))
+        }
         ARCH_PIPER_PLUS => {
-            reject_cpu_only_backend(backend, "piper-plus TTS")?;
             // `PiperPlusTts::from_gguf` consumes a `GgufFile`, but the session
             // already owns one (lent by reference only), so re-parse from the
             // source. This double-parses the voice GGUF; a shared-GGUF
             // constructor is a spike-level followup (ADR-0003 §2).
-            let tts = reparse_for_piper()?;
+            let tts = reparse_for_piper()?.with_backend(backend);
             Ok(session.with_tts_engine(Arc::new(tts)))
         }
         ARCH_MOSHI => {
-            reject_cpu_only_backend(backend, "Moshi full-duplex speech-to-speech")?;
             // Moshi (M4-06, full-duplex S2S — FR-MD-09). The engine wires a
             // default AEC recipe derived from the model's frame hop so
             // `vokra_s2s_duplex_open` runs the canceller out of the box;
             // the batch S2s facade keeps the recorded-input bypass. The
             // attribution surface resolves onto the session for
             // `vokra_model_attribution` (T24).
-            let engine = load_moshi()?;
+            let engine = load_moshi()?.with_backend(backend);
             let sample_rate = engine.mimi_config().sample_rate;
             let hop = engine.mimi_config().frame_hop_samples()?;
             let frame_size = [128usize, 64, 32, 16, 8, 4, 2, 1]
@@ -199,7 +282,9 @@ fn inject_engine(
         other => Err(VokraError::InvalidArgument(format!(
             "unsupported model arch `{other}` (supported: `{ARCH_WHISPER}` / \
              `{ARCH_SILERO_VAD}` / `{ARCH_PIPER_PLUS}` / `{ARCH_MOSHI}` / `{ARCH_MIMI}` / \
-             `{ARCH_NANOCODEC}` / `{ARCH_CAMPLUS}`)"
+             `{ARCH_NANOCODEC}` / `{ARCH_CAMPLUS}` / `{ARCH_XVECTOR}` / `{ARCH_ECAPA_TDNN}` / `{ARCH_WESPEAKER}` / `{ARCH_TITANET}` / `{ARCH_WAV2VEC2_CTC}` / \
+             `{ARCH_DATA2VEC_AUDIO}` / `{ARCH_HUBERT}` / `{ARCH_SEPFORMER}` / \
+             `{ARCH_CONV_TASNET}` / `{ARCH_REAZONSPEECH_NEMO_V2}`)"
         ))),
     }
 }
@@ -584,19 +669,12 @@ mod tests {
         ));
     }
 
-    /// FR-EX-08 on the loader: a GPU request for a CPU-only arch must never
-    /// produce a session.
-    ///
-    /// Silero VAD binds its engine without `.with_backend(...)`, so a Metal /
-    /// CUDA / Vulkan / WebGPU session would run on the CPU while the caller
-    /// believes otherwise. Which error fires depends on the build: without the
-    /// backend feature (or without the device) the availability probe rejects
-    /// first with `BackendUnavailable`; with the feature *and* a real device —
-    /// e.g. `--features metal` on an Apple machine — the probe passes and
-    /// `reject_cpu_only_backend` fires with `UnsupportedOp`. Both are loud;
-    /// `Ok` is the one outcome that must be impossible, in every configuration.
+    /// A non-CPU selection is injected into Silero instead of being rejected
+    /// as CPU-only. Builds without the requested backend still fail at the
+    /// availability probe; a built backend either executes the learned ops or
+    /// returns the model's explicit coverage error on first inference.
     #[test]
-    fn build_session_never_returns_a_cpu_only_arch_on_a_gpu_backend() {
+    fn build_session_routes_non_cpu_backend_into_silero() {
         let path = silero_fixture();
         for backend in [
             BackendKind::Metal,
@@ -606,10 +684,16 @@ mod tests {
         ] {
             let result = build_session(path.to_str().unwrap(), backend);
             match result {
-                Ok(_) => panic!(
-                    "build_session({backend:?}) returned a session for the CPU-only Silero \
-                     arch — that is the silent CPU fall back FR-EX-08 forbids"
-                ),
+                Ok(session) => {
+                    let mut stream = session.open_vad_stream().expect("Silero VAD stream");
+                    match stream.push_pcm(&[0.0; 512], 16_000) {
+                        Ok(probabilities) => assert_eq!(probabilities.len(), 1),
+                        Err(VokraError::UnsupportedOp(_) | VokraError::BackendUnavailable(_)) => {}
+                        Err(other) => panic!(
+                            "Silero {backend:?} inference failed outside the backend contract: {other:?}"
+                        ),
+                    }
+                }
                 Err(VokraError::BackendUnavailable(_)) => {
                     // The backend is not in this build / has no device.
                     assert!(
@@ -617,17 +701,8 @@ mod tests {
                         "{backend:?} reported BackendUnavailable while make_backend succeeds"
                     );
                 }
-                Err(VokraError::UnsupportedOp(_)) => {
-                    // The backend is real here, but this arch has no path onto
-                    // it — only reachable when the probe passed.
-                    assert!(
-                        vokra_models::make_backend(backend).is_ok(),
-                        "{backend:?} reported UnsupportedOp while make_backend fails"
-                    );
-                }
                 Err(other) => panic!(
-                    "build_session({backend:?}) failed with {other:?}; expected \
-                     BackendUnavailable or UnsupportedOp (design §5)"
+                    "build_session({backend:?}) failed before Silero inference with {other:?}"
                 ),
             }
         }
@@ -662,20 +737,20 @@ mod tests {
     /// refusal names the engine so the message is actionable.
     #[test]
     fn reject_cpu_only_backend_passes_cpu_and_refuses_gpus() {
-        assert!(reject_cpu_only_backend(BackendKind::Cpu, "VAD (Silero)").is_ok());
+        assert!(reject_cpu_only_backend(BackendKind::Cpu, "NanoCodec decoder").is_ok());
         for backend in [
             BackendKind::Metal,
             BackendKind::Cuda,
             BackendKind::Vulkan,
             BackendKind::WebGpu,
         ] {
-            let err = reject_cpu_only_backend(backend, "VAD (Silero)")
+            let err = reject_cpu_only_backend(backend, "NanoCodec decoder")
                 .expect_err("a GPU backend must be refused for a CPU-only engine");
             let VokraError::UnsupportedOp(message) = &err else {
                 panic!("expected UnsupportedOp for {backend:?}, got {err:?}");
             };
             assert!(
-                message.contains("VAD (Silero)") && message.contains("FR-EX-08"),
+                message.contains("NanoCodec decoder") && message.contains("FR-EX-08"),
                 "unhelpful refusal for {backend:?}: {message}"
             );
         }
@@ -709,6 +784,27 @@ mod tests {
         let result = build_session(path.to_str().unwrap(), CPU);
         let _ = std::fs::remove_file(&path);
         assert!(matches!(result, Err(VokraError::InvalidArgument(_))));
+    }
+
+    #[test]
+    fn build_session_rejects_legacy_reazonspeech_before_weight_decode() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string("vokra.model.arch", ARCH_REAZONSPEECH_NEMO_V2);
+        let bytes = builder.to_bytes().expect("serialize GGUF");
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "vokra-capi-reazonspeech-no-tokenizer-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write fixture");
+        let error = build_session(path.to_str().expect("UTF-8 path"), CPU)
+            .expect_err("legacy tokenizer-less artifact must fail");
+        let _ = std::fs::remove_file(&path);
+        let VokraError::ModelLoad(message) = error else {
+            panic!("expected ModelLoad, got {error:?}");
+        };
+        assert!(message.contains(KEY_TOKENIZER_VOCAB), "{message}");
+        assert!(message.contains("legacy public artifact"), "{message}");
     }
 
     #[test]
@@ -880,6 +976,81 @@ mod tests {
             Err(_) => eprintln!("skipping campplus leg: set VOKRA_CAMPLUS_GGUF to run"),
         }
 
+        match std::env::var("VOKRA_XVECTOR_GGUF") {
+            Ok(model) => {
+                let session =
+                    build_session(&model, CPU).expect("X-vector session builds on the CPU");
+                assert_eq!(
+                    session.speaker().backend(),
+                    CPU,
+                    "the CPU selection must reach the X-vector encoder"
+                );
+                for gpu in GPUS {
+                    if ensure_backend_available(gpu).is_err() {
+                        continue;
+                    }
+                    let session = build_session(&model, gpu)
+                        .expect("X-vector session builds on an available GPU");
+                    assert_eq!(
+                        session.speaker().backend(),
+                        gpu,
+                        "the {gpu:?} selection must reach the X-vector encoder"
+                    );
+                }
+            }
+            Err(_) => eprintln!("skipping X-vector leg: set VOKRA_XVECTOR_GGUF to run"),
+        }
+
+        match std::env::var("VOKRA_WESPEAKER_GGUF") {
+            Ok(model) => {
+                let session =
+                    build_session(&model, CPU).expect("WeSpeaker session builds on the CPU");
+                assert_eq!(
+                    session.speaker().backend(),
+                    CPU,
+                    "the CPU selection must reach the WeSpeaker encoder"
+                );
+                for gpu in GPUS {
+                    if ensure_backend_available(gpu).is_err() {
+                        continue;
+                    }
+                    let session = build_session(&model, gpu)
+                        .expect("WeSpeaker session builds on an available GPU");
+                    assert_eq!(
+                        session.speaker().backend(),
+                        gpu,
+                        "the {gpu:?} selection must reach the WeSpeaker encoder"
+                    );
+                }
+            }
+            Err(_) => eprintln!("skipping WeSpeaker leg: set VOKRA_WESPEAKER_GGUF to run"),
+        }
+
+        match std::env::var("VOKRA_TITANET_GGUF") {
+            Ok(model) => {
+                let session =
+                    build_session(&model, CPU).expect("TitaNet session builds on the CPU");
+                assert_eq!(
+                    session.speaker().backend(),
+                    CPU,
+                    "the CPU selection must reach the TitaNet encoder"
+                );
+                for gpu in GPUS {
+                    if ensure_backend_available(gpu).is_err() {
+                        continue;
+                    }
+                    let session = build_session(&model, gpu)
+                        .expect("TitaNet session builds on an available covered GPU");
+                    assert_eq!(
+                        session.speaker().backend(),
+                        gpu,
+                        "the {gpu:?} selection must reach the TitaNet encoder"
+                    );
+                }
+            }
+            Err(_) => eprintln!("skipping TitaNet leg: set VOKRA_TITANET_GGUF to run"),
+        }
+
         match std::env::var("VOKRA_WHISPER_GGUF") {
             Ok(model) => {
                 let session =
@@ -903,6 +1074,31 @@ mod tests {
                 }
             }
             Err(_) => eprintln!("skipping whisper leg: set VOKRA_WHISPER_GGUF to run"),
+        }
+
+        match std::env::var("VOKRA_PIPER_V7_GGUF") {
+            Ok(model) => {
+                let session =
+                    build_session(&model, CPU).expect("piper-plus session builds on the CPU");
+                assert_eq!(
+                    session.tts().backend(),
+                    CPU,
+                    "the CPU selection must reach the piper-plus engine"
+                );
+                for gpu in GPUS {
+                    if ensure_backend_available(gpu).is_err() {
+                        continue;
+                    }
+                    let session = build_session(&model, gpu)
+                        .expect("piper-plus session builds on an available GPU");
+                    assert_eq!(
+                        session.tts().backend(),
+                        gpu,
+                        "the {gpu:?} selection must reach the piper-plus engine"
+                    );
+                }
+            }
+            Err(_) => eprintln!("skipping piper-plus leg: set VOKRA_PIPER_V7_GGUF to run"),
         }
     }
 }

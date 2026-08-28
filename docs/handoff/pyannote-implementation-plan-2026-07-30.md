@@ -1,17 +1,25 @@
 # pyannote 実装計画 handoff (2026-07-30)
 
-> **2026-08-18 status review:** This is the original implementation plan, not
-> a live list of missing files. The segmentation and weightless-pipeline
-> converters, `vokra.pyannote{,_pipeline}.*` metadata, native PyanNet
-> SincNet/BiLSTM/linear/classifier path, diarization scaffolding, CLI segment
-> dispatch, and env-gated real-GGUF harness have landed. The real forward is
-> deliberately not the default: it requires
-> `VOKRA_PYANNET_ENABLE_FORWARD=1` until an upstream-independent probability
-> dump pins numerical parity. Full default-on diarization and publication
-> therefore remain pending. Treat the wave/file lists below as dated design
-> provenance; use `crates/vokra-models/src/pyannote/` and
-> `crates/vokra-models/tests/parity_pyannote_segmentation.rs` for current
-> behavior.
+> **2026-08-26 live correction:** This is the original implementation plan,
+> not a live list of missing files. The exact 54-F32-tensor release now binds
+> strictly and its SincNet/four-layer-BiLSTM/projection/classifier forward runs
+> by default on CPU or Metal. CLI run/bench preflight the chosen backend; an
+> unsupported or unavailable backend fails explicitly without CPU fallback.
+> The old `VOKRA_PYANNET_ENABLE_FORWARD` opt-in is ignored and retained only
+> as a deprecated source-compatibility constant. The independent official
+> pyannote.audio probability dumper, dedicated lock, VAST worker and Rust gate
+> are staged; their VAST execution and Apple real-device measurement remain
+> pending. Treat the wave/file lists below as dated design
+> provenance; current behavior lives in `crates/vokra-models/src/pyannote/`
+> and `crates/vokra-models/tests/parity_pyannote_segmentation.rs`.
+
+> **2026-08-26 artifact correction:** The immutable public
+> `vokra/pyannote-segmentation-3.0@50bf4e510e0c689668384aec0f866f02e0fcaea8`
+> header contains 54 F32 tensors and recurrent tensors l0 through l3 in both
+> directions. The preserved release config also sets `lstm.num_layers: 4`.
+> Therefore the older two-layer/BF16-pass-through blueprint below was a
+> pre-artifact class-default assumption and is superseded by the strict
+> four-layer release contract.
 
 ## 背景 — なぜ本 handoff か
 
@@ -159,7 +167,7 @@ PY
     - `vokra.pyannote.sample_rate` = 16000
     - `vokra.pyannote.sincnet.stride` = 10
     - `vokra.pyannote.lstm.hidden_size` = 128
-    - `vokra.pyannote.lstm.num_layers` = 2
+    - `vokra.pyannote.lstm.num_layers` = 4 (2026-08-26 exact-release correction)
     - `vokra.pyannote.lstm.bidirectional` = true
     - `vokra.pyannote.linear.hidden_size` = 128
     - `vokra.pyannote.linear.num_layers` = 2
@@ -167,7 +175,7 @@ PY
     - `vokra.provenance.license` = "mit"
     - `vokra.provenance.upstream_hf` = "pyannote/segmentation-3.0"
     - `vokra.provenance.upstream_revision` = <HF revision SHA>
-- BF16 pass-through pattern (mirror `wespeaker.rs` / `ecapa_tdnn.rs`)
+- Strict 54-tensor F32 manifest; foreign dtypes/topologies fail closed
 - `ModelKind::PyannoteSegmentation` + CLI dispatch in `crates/vokra-convert/src/main.rs`
 - `crates/vokra-cli/src/convert.rs` help text update
 
@@ -234,9 +242,12 @@ pyannote pipeline の Python 版に依存せず、Vokra native の diarization p
 1. **HF gate accept** for `pyannote/segmentation-3.0` + `pyannote/speaker-diarization-3.1` (HF UI で非拘束 advisory の accept ボタンをクリック、Vokra 配布側は Meta Llama tokenizer と同じ non-bundle 方式 = consumer 側 accept)
 2. **pytorch_model.bin download** (~5.7 MB、gate accept 後は誰でも DL 可)
 3. **Tensor manifest verify** (実 checkpoint で上記 Expected pattern を確認、drift があれば本 handoff 更新)
-4. **Real weight parity harness owner run** — VAST で
-   `PARITY_PYANNOTE_REAL_GGUF=<path> VOKRA_PYANNET_ENABLE_FORWARD=1 cargo test -p vokra-models --test parity_pyannote_segmentation -- --nocapture`
-   を実行し、upstream-independent probability dump との parity を判定
+4. **Real weight parity harness owner run** — credential rotation 後の VAST で
+   `scripts/publish/vast-ai/run-pyannote-segmentation-parity.sh`
+   を実行する。worker は exact public GGUF と固定 official source を取得し、
+   upstream-independent probability dump、strict CPU smoke、0.01-bound Rust
+   comparison を一括して fail-closed 実行する。旧
+   `VOKRA_PYANNET_ENABLE_FORWARD` は不要で無視される
 5. **§3.1 publish sign-off** — pyannote weight を `huggingface.co/vokra/pyannote-segmentation-3.0` へ mirror publish するか (weight license MIT clean、Vokra converter output GGUF の再配布)、mirror でなく consumer-side download で済ませるか (Meta Llama tokenizer 前例と同じ non-bundle)
 
 ## verify (本 handoff の primary source claim)

@@ -1,0 +1,73 @@
+{
+  "checkpoint_sha256": "b0a676cbdc8d1cc53186f6d777bc956fb7932ceacdc657a4c3741646e9e7ead0",
+  "code_shapes": [
+    [
+      1,
+      4
+    ],
+    [
+      1,
+      8
+    ],
+    [
+      1,
+      16
+    ],
+    [
+      1,
+      32
+    ]
+  ],
+  "config_sha256": "4c98973dd6b4278f6352cedbadc9922a2fa3e4b97619e1769e304e2836c099df",
+  "feature_shape": [
+    1,
+    1024,
+    32
+  ],
+  "files": {
+    "codes_0.u32": "c339b0f2ff5c19cf6e69c24d6edb396838158356444c14486a4a96e474653dec",
+    "codes_1.u32": "dfd1896cdbf3fa1c0122487655e27ae32da77abc755c4a602f58ee03b225ef77",
+    "codes_2.u32": "f53bdea83ddb8fe2c3a1a1a94dffe6c2eef05c530739175de7d1b8cafcea282c",
+    "codes_3.u32": "f38858ea38f4c82b9379cdaec6a7d938f246dc9f52224b04fe2bba14cb16195c",
+    "decoded_features_time_major.f32": "1ade21cd6a47fd20418666db3e0a7311e22259bd0cdf4eae85b34fbfd1913ecb",
+    "decoded_pcm.f32": "2bf6b17b7370bce77fbe8def7cfdcadd727100e585b15d038ce95b92bdb391e3",
+    "encoded_features.f32": "0101b98975e64026a909f0a99a34105ea64ac0a204617821a7b39ae1e602e0cd",
+    "noise_0.f32": "3efed382b14aeef4e799b4e3b28e5ac36954785f39439cafaf4214404baf7fb1",
+    "noise_1.f32": "e6474bde48e368ebebaf5872f0a17b00841a0e1086a82d9351d55557af2acb90",
+    "noise_2.f32": "eddc0e5da1fdf7a45f1b460063512a6da39911b2f3780cf239ed50c9bc1d5787",
+    "noise_3.f32": "4c4fdf40b32894b5eec8dcd2570e1acd5a38558b19662ba047a323eb903d3cca",
+    "pcm.f32": "10332145f5c906fe2d4da1632a7b6f585323228edd66e4c9238388b6c123985a"
+  },
+  "format": "vokra-snac-reference-v1",
+  "noise_shapes": [
+    [
+      1,
+      1,
+      256
+    ],
+    [
+      1,
+      1,
+      2048
+    ],
+    [
+      1,
+      1,
+      6144
+    ],
+    [
+      1,
+      1,
+      12288
+    ]
+  ],
+  "num_samples": 5003,
+  "oracle": "snac.SNAC.from_pretrained/encode/decode",
+  "padded_samples": 12288,
+  "sample_rate": 44100,
+  "snac_version": "1.2.1",
+  "source_revision": "8f79a718f1ad71f94f79999f0071348227aff22e",
+  "torch": "2.13.0+cu130",
+  "upstream_hf": "hubertsiuzdak/snac_44khz",
+  "upstream_revision": "873ebef9718b89660340c6f55a2b515e98cfa1d9"
+}

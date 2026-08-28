@@ -591,6 +591,10 @@ impl TtsEngine for CosyVoice2Tts {
              follow-up)",
         ))
     }
+
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
+    }
 }
 
 /// [`ApplyProsody`] adapter for CosyVoice2 (M3-17 unified prosody control /

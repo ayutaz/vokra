@@ -1,119 +1,312 @@
-//! **Deepfake audio detection** (WavLM-based binary classifier):
-//! safetensors → GGUF conversion (TIER 1 F wave, 2026-07-30).
+//! Strict conversion contract for the canonical deepfake-audio detector.
 //!
-//! Input: the upstream `MelodyMachine/Deepfake-audio-detection-V2`
-//! release — a WavLM-based binary classifier (real vs synthetic
-//! speech) fine-tuned for audio deepfake detection. Output: a GGUF
-//! carrying every F32 / F16 / BF16 tensor verbatim plus the
-//! `vokra.provenance.*` / `vokra.model.*` metadata chunks a future
-//! `vokra-models::deepfake_detection::*` loader will read.
-//!
-//! # Provenance
-//!
-//! - **HF path**: `MelodyMachine/Deepfake-audio-detection-V2` (fetched
-//!   2026-07-30 — CLAUDE.md「ハルシネーション厳禁」).
-//! - **SPDX**: `apache-2.0` (`LicenseClass::Permissive`) — per model
-//!   card front-matter.
-//! - **Category**: `classification` (binary classifier — real /
-//!   synthetic; recorded under `vokra.model.category`).
-//!
-//! # BF16 pass-through
-//!
-//! Mirror of `wespeaker` / `neucodec` / `ecapa_tdnn` / `clap`.
-//!
-//! # Note on deployment posture
-//!
-//! Deepfake detection sits in the EU AI Act Article 50 / SB-942
-//! compliance surface (see `docs/legal-compliance.md`); this
-//! converter's job is byte-parallel GGUF emission only — the actual
-//! deployment decision (which threshold to trust, whether to expose it
-//! as an end-user warning) is downstream policy, not runtime.
+//! The public release is
+//! `MelodyMachine/Deepfake-audio-detection-V2@de3cde5a29c449bb5268814e421b46bf6ebdcd72`.
+//! Contrary to the historical Vokra scaffold, the checkpoint is not WavLM:
+//! its pinned `config.json` declares `Wav2Vec2ForSequenceClassification` and
+//! `model_type = "wav2vec2"`. This converter therefore accepts exactly the
+//! 215 F32 tensors in that release and stamps the complete inference contract.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` — first `"deepfake_detection"` in the converter
-/// tree. Distinct from every sibling arch tag.
 pub const ARCH: &str = "deepfake_detection";
-
 pub const NAME: &str = "deepfake-audio-detection-v2";
 pub const CATEGORY: &str = "classification";
 pub const UPSTREAM_HF: &str = "MelodyMachine/Deepfake-audio-detection-V2";
+pub const UPSTREAM_REVISION: &str = "de3cde5a29c449bb5268814e421b46bf6ebdcd72";
+pub const CHECKPOINT_FILE: &str = "model.safetensors";
+pub const CHECKPOINT_SHA256: &str =
+    "997d9ce59e63151d5e444a6fa7c863986d0e56d515f67321bd705ac3b01bc38c";
+pub const CONFIG_SHA256: &str = "a7ff31ca7ba4dc7fb5c4847d6dff0cb8daa1f0ec512e6ff8190664874c5b2806";
+pub const PREPROCESSOR_SHA256: &str =
+    "8cdfd65ff4115423185a1512bdae100e2e0cd744f5b322417429944aaafd0827";
 pub const DEFAULT_LICENSE_SPDX: &str = "apache-2.0";
+pub const TENSOR_COUNT: usize = 215;
 
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const HIDDEN_SIZE: u32 = 768;
+pub const NUM_HIDDEN_LAYERS: u32 = 12;
+pub const NUM_ATTENTION_HEADS: u32 = 12;
+pub const INTERMEDIATE_SIZE: u32 = 3_072;
+pub const CLASSIFIER_PROJ_SIZE: u32 = 256;
+pub const NUM_CLASSES: u32 = 2;
+pub const LAYER_NORM_EPS: f32 = 1.0e-5;
+pub const NUM_CONV_POS_EMBEDDINGS: u32 = 128;
+pub const NUM_CONV_POS_EMBEDDING_GROUPS: u32 = 16;
+pub const CLASS_LABELS: [&str; 2] = ["fake", "real"];
+
+const KEY_CATEGORY: &str = "vokra.model.category";
+const PREFIX: &str = "vokra.deepfake";
+const CONV_DIM: [u32; 7] = [512; 7];
+const CONV_KERNEL: [u32; 7] = [10, 3, 3, 3, 3, 2, 2];
+const CONV_STRIDE: [u32; 7] = [5, 2, 2, 2, 2, 2, 2];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Conversion counters for the canonical Wav2Vec2 sequence classifier.
 pub struct DeepfakeDetectionReport {
     pub read: usize,
     pub written: usize,
+    /// Always zero after a successful strict conversion.
     pub skipped_non_float: usize,
+    /// Always zero because the canonical checkpoint is F32-only.
     pub bf16_passthrough: usize,
 }
 
+/// Converts the exact canonical checkpoint into a self-describing GGUF.
 pub fn convert_deepfake_detection_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<DeepfakeDetectionReport, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-
-    let (spdx, class) = match license {
-        Some(s) if !s.is_empty() => (s.to_owned(), LicenseClass::from_license_str(s)),
-        _ => (DEFAULT_LICENSE_SPDX.to_owned(), LicenseClass::Permissive),
-    };
-    vokra_core::stamp_provenance(
-        &mut b,
-        class,
-        &spdx,
-        Some(NAME),
-        Some(
-            "MelodyMachine/Deepfake-audio-detection-V2 (WavLM binary classifier for \
-             audio deepfake detection, apache-2.0)",
-        ),
-    );
-    b.add_string(KEY_PROVENANCE_UPSTREAM_HF, UPSTREAM_HF);
-
-    let mut report = DeepfakeDetectionReport::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )
-                .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
+    if let Some(value) = license
+        && !value.eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX)
+    {
+        return Err(ConvertError::Usage(format!(
+            "deepfake_detection: canonical {UPSTREAM_HF}@{UPSTREAM_REVISION} has pinned Apache-2.0 weights; refusing conflicting --license {value:?}"
+        )));
     }
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Gguf(e.to_string()))?;
-    std::fs::write(output, out_bytes)?;
+    let safetensors = SafetensorsFile::parse(std::fs::read(input)?)?;
+    validate_manifest(&safetensors)?;
+
+    let mut builder = GgufBuilder::new();
+    stamp_metadata(&mut builder);
+    let mut report = DeepfakeDetectionReport {
+        read: safetensors.tensors().len(),
+        ..DeepfakeDetectionReport::default()
+    };
+    for tensor in safetensors.tensors() {
+        builder.add_tensor(
+            &tensor.name,
+            tensor.dtype,
+            tensor.shape.clone(),
+            safetensors.tensor_bytes(tensor).to_vec(),
+        )?;
+        report.written += 1;
+    }
+    std::fs::write(output, builder.to_bytes()?)?;
     Ok(report)
+}
+
+fn stamp_metadata(builder: &mut GgufBuilder) {
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_CATEGORY, CATEGORY);
+    vokra_core::stamp_provenance(
+        builder,
+        LicenseClass::Permissive,
+        DEFAULT_LICENSE_SPDX,
+        Some(NAME),
+        Some(&format!(
+            "{UPSTREAM_HF}@{UPSTREAM_REVISION}/{CHECKPOINT_FILE} sha256:{CHECKPOINT_SHA256}"
+        )),
+    );
+    builder.add_string("vokra.provenance.upstream_hf", UPSTREAM_HF);
+    builder.add_string("vokra.provenance.upstream_revision", UPSTREAM_REVISION);
+    builder.add_string("vokra.provenance.checkpoint_file", CHECKPOINT_FILE);
+    builder.add_string("vokra.provenance.checkpoint_sha256", CHECKPOINT_SHA256);
+    builder.add_string("vokra.provenance.config_sha256", CONFIG_SHA256);
+    builder.add_string("vokra.provenance.preprocessor_sha256", PREPROCESSOR_SHA256);
+
+    builder.add_string(
+        &format!("{PREFIX}.architecture"),
+        "Wav2Vec2ForSequenceClassification",
+    );
+    builder.add_string(&format!("{PREFIX}.model_type"), "wav2vec2");
+    builder.add_u32(&format!("{PREFIX}.sample_rate"), SAMPLE_RATE);
+    builder.add_bool(&format!("{PREFIX}.normalize"), true);
+    builder.add_bool(&format!("{PREFIX}.return_attention_mask"), false);
+    builder.add_u32(&format!("{PREFIX}.hidden_size"), HIDDEN_SIZE);
+    builder.add_u32(&format!("{PREFIX}.num_hidden_layers"), NUM_HIDDEN_LAYERS);
+    builder.add_u32(
+        &format!("{PREFIX}.num_attention_heads"),
+        NUM_ATTENTION_HEADS,
+    );
+    builder.add_u32(&format!("{PREFIX}.intermediate_size"), INTERMEDIATE_SIZE);
+    builder.add_u32(
+        &format!("{PREFIX}.classifier_proj_size"),
+        CLASSIFIER_PROJ_SIZE,
+    );
+    builder.add_u32(&format!("{PREFIX}.num_classes"), NUM_CLASSES);
+    builder.add_f32(&format!("{PREFIX}.layer_norm_eps"), LAYER_NORM_EPS);
+    builder.add_string(&format!("{PREFIX}.feat_extract_norm"), "group");
+    builder.add_bool(&format!("{PREFIX}.do_stable_layer_norm"), false);
+    builder.add_string(&format!("{PREFIX}.hidden_act"), "gelu");
+    builder.add_u32(
+        &format!("{PREFIX}.num_conv_pos_embeddings"),
+        NUM_CONV_POS_EMBEDDINGS,
+    );
+    builder.add_u32(
+        &format!("{PREFIX}.num_conv_pos_embedding_groups"),
+        NUM_CONV_POS_EMBEDDING_GROUPS,
+    );
+    builder.add_bool(&format!("{PREFIX}.use_weighted_layer_sum"), false);
+    add_u32_array(builder, &format!("{PREFIX}.conv_dim"), &CONV_DIM);
+    add_u32_array(builder, &format!("{PREFIX}.conv_kernel"), &CONV_KERNEL);
+    add_u32_array(builder, &format!("{PREFIX}.conv_stride"), &CONV_STRIDE);
+    add_string_array(builder, &format!("{PREFIX}.id2label"), &CLASS_LABELS);
+}
+
+fn validate_manifest(safetensors: &SafetensorsFile) -> Result<(), ConvertError> {
+    let observed = safetensors
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), (tensor.dtype, tensor.shape.clone())))
+        .collect::<BTreeMap<_, _>>();
+    validate_observed_manifest(&observed)
+}
+
+fn validate_observed_manifest(
+    observed: &BTreeMap<String, (GgmlType, Vec<u64>)>,
+) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    if observed.len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "deepfake_detection: checkpoint has {} tensors, expected exactly {TENSOR_COUNT}",
+            observed.len()
+        )));
+    }
+    for (name, (dtype, shape)) in observed {
+        let wanted = expected.get(name).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "deepfake_detection: unexpected tensor {name:?}; refusing pass-through conversion"
+            ))
+        })?;
+        if *dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "deepfake_detection: tensor {name:?} has {dtype:?}, expected canonical F32"
+            )));
+        }
+        if shape != wanted {
+            return Err(ConvertError::Parse(format!(
+                "deepfake_detection: tensor {name:?} shape {shape:?}, expected {wanted:?}"
+            )));
+        }
+    }
+    for name in expected.keys() {
+        if !observed.contains_key(name) {
+            return Err(ConvertError::Parse(format!(
+                "deepfake_detection: required tensor {name:?} is missing"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut tensors = BTreeMap::new();
+    tensors.insert("classifier.bias".to_owned(), vec![2]);
+    tensors.insert("classifier.weight".to_owned(), vec![2, 256]);
+    tensors.insert("projector.bias".to_owned(), vec![256]);
+    tensors.insert("projector.weight".to_owned(), vec![256, 768]);
+
+    tensors.insert("wav2vec2.encoder.layer_norm.bias".to_owned(), vec![768]);
+    tensors.insert("wav2vec2.encoder.layer_norm.weight".to_owned(), vec![768]);
+    for layer in 0..NUM_HIDDEN_LAYERS {
+        insert_encoder_block(&mut tensors, &format!("wav2vec2.encoder.layers.{layer}"));
+    }
+    tensors.insert(
+        "wav2vec2.encoder.pos_conv_embed.conv.bias".to_owned(),
+        vec![768],
+    );
+    tensors.insert(
+        "wav2vec2.encoder.pos_conv_embed.conv.parametrizations.weight.original0".to_owned(),
+        vec![1, 1, 128],
+    );
+    tensors.insert(
+        "wav2vec2.encoder.pos_conv_embed.conv.parametrizations.weight.original1".to_owned(),
+        vec![768, 48, 128],
+    );
+
+    for (layer, &kernel) in CONV_KERNEL.iter().enumerate() {
+        let input = if layer == 0 { 1 } else { 512 };
+        tensors.insert(
+            format!("wav2vec2.feature_extractor.conv_layers.{layer}.conv.weight"),
+            vec![512, input, u64::from(kernel)],
+        );
+    }
+    tensors.insert(
+        "wav2vec2.feature_extractor.conv_layers.0.layer_norm.bias".to_owned(),
+        vec![512],
+    );
+    tensors.insert(
+        "wav2vec2.feature_extractor.conv_layers.0.layer_norm.weight".to_owned(),
+        vec![512],
+    );
+    tensors.insert(
+        "wav2vec2.feature_projection.layer_norm.bias".to_owned(),
+        vec![512],
+    );
+    tensors.insert(
+        "wav2vec2.feature_projection.layer_norm.weight".to_owned(),
+        vec![512],
+    );
+    tensors.insert(
+        "wav2vec2.feature_projection.projection.bias".to_owned(),
+        vec![768],
+    );
+    tensors.insert(
+        "wav2vec2.feature_projection.projection.weight".to_owned(),
+        vec![768, 512],
+    );
+    tensors.insert("wav2vec2.masked_spec_embed".to_owned(), vec![768]);
+    debug_assert_eq!(tensors.len(), TENSOR_COUNT);
+    tensors
+}
+
+fn insert_encoder_block(tensors: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    for (suffix, shape) in [
+        ("attention.k_proj.bias", vec![768]),
+        ("attention.k_proj.weight", vec![768, 768]),
+        ("attention.out_proj.bias", vec![768]),
+        ("attention.out_proj.weight", vec![768, 768]),
+        ("attention.q_proj.bias", vec![768]),
+        ("attention.q_proj.weight", vec![768, 768]),
+        ("attention.v_proj.bias", vec![768]),
+        ("attention.v_proj.weight", vec![768, 768]),
+        ("feed_forward.intermediate_dense.bias", vec![3_072]),
+        ("feed_forward.intermediate_dense.weight", vec![3_072, 768]),
+        ("feed_forward.output_dense.bias", vec![768]),
+        ("feed_forward.output_dense.weight", vec![768, 3_072]),
+        ("final_layer_norm.bias", vec![768]),
+        ("final_layer_norm.weight", vec![768]),
+        ("layer_norm.bias", vec![768]),
+        ("layer_norm.weight", vec![768]),
+    ] {
+        tensors.insert(format!("{prefix}.{suffix}"), shape);
+    }
+}
+
+fn add_u32_array(builder: &mut GgufBuilder, key: &str, values: &[u32]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: values.iter().copied().map(GgufMetadataValue::U32).collect(),
+        }),
+    );
+}
+
+fn add_string_array(builder: &mut GgufBuilder, key: &str, values: &[&str]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: values
+                .iter()
+                .map(|value| GgufMetadataValue::String((*value).to_owned()))
+                .collect(),
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -121,91 +314,103 @@ mod tests {
     use super::*;
     use vokra_core::gguf::GgufFile;
 
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-deepfake-detection-{tag}-{}-{}.bin",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
-        p
-    }
-
-    fn safetensors_one_bf16(name: &str, shape: &[u64], bf16_bytes: &[u8]) -> Vec<u8> {
-        let elems: u64 = shape.iter().product();
-        assert_eq!(bf16_bytes.len(), elems as usize * 2);
-        let shape_str = shape
-            .iter()
-            .map(|d| d.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let header = format!(
-            r#"{{"{name}":{{"dtype":"BF16","shape":[{shape_str}],"data_offsets":[0,{}]}}}}"#,
-            bf16_bytes.len()
-        );
-        let mut out = Vec::new();
-        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        out.extend_from_slice(header.as_bytes());
-        out.extend_from_slice(bf16_bytes);
-        out
+    fn observed() -> BTreeMap<String, (GgmlType, Vec<u64>)> {
+        expected_manifest()
+            .into_iter()
+            .map(|(name, shape)| (name, (GgmlType::F32, shape)))
+            .collect()
     }
 
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        // Realistic WavLM-derived tensor name.
-        let input_bytes = safetensors_one_bf16(
-            "wavlm.encoder.layers.0.attention.q_proj.weight",
-            &[2, 3],
-            &bf16,
-        );
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write");
-
-        let report = convert_deepfake_detection_file(&input, &output, None).expect("convert");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.bf16_passthrough, 1);
-
-        let out = std::fs::read(&output).expect("read");
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
-        let file = GgufFile::parse(out).expect("parse");
-        let info = file
-            .tensor_info("wavlm.encoder.layers.0.attention.q_proj.weight")
-            .expect("tensor present");
-        assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(file.tensor_bytes(info), bf16.as_slice());
-
+    fn canonical_manifest_matches_the_pinned_header() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), 215);
+        assert_eq!(manifest["projector.weight"], vec![256, 768]);
+        assert_eq!(manifest["classifier.weight"], vec![2, 256]);
         assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            manifest["wav2vec2.encoder.pos_conv_embed.conv.parametrizations.weight.original1"],
+            vec![768, 48, 128]
+        );
+        assert_eq!(
+            manifest["wav2vec2.encoder.layers.11.feed_forward.intermediate_dense.weight"],
+            vec![3_072, 768]
+        );
+        validate_observed_manifest(&observed()).unwrap();
+    }
+
+    #[test]
+    fn metadata_pins_wav2vec2_frontend_and_class_order() {
+        let mut builder = GgufBuilder::new();
+        stamp_metadata(&mut builder);
+        let gguf = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            gguf.get(chunks::KEY_MODEL_ARCH)
+                .and_then(GgufMetadataValue::as_str),
             Some(ARCH)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            gguf.get("vokra.provenance.upstream_revision")
+                .and_then(GgufMetadataValue::as_str),
+            Some(UPSTREAM_REVISION)
         );
         assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
+            gguf.get("vokra.deepfake.architecture")
+                .and_then(GgufMetadataValue::as_str),
+            Some("Wav2Vec2ForSequenceClassification")
         );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_HF)
+        let labels = gguf
+            .get("vokra.deepfake.id2label")
+            .and_then(GgufMetadataValue::as_array)
+            .unwrap();
+        assert_eq!(labels.values[0].as_str(), Some("fake"));
+        assert_eq!(labels.values[1].as_str(), Some("real"));
+    }
+
+    #[test]
+    fn missing_extra_wrong_shape_and_dtype_fail_closed() {
+        let mut missing = observed();
+        missing.remove("classifier.bias");
+        assert!(
+            validate_observed_manifest(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("214 tensors")
         );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
+
+        let mut extra = observed();
+        extra.remove("classifier.bias");
+        extra.insert("fabricated.weight".to_owned(), (GgmlType::F32, vec![2]));
+        assert!(
+            validate_observed_manifest(&extra)
+                .unwrap_err()
+                .to_string()
+                .contains("unexpected tensor")
         );
+
+        let mut wrong_shape = observed();
+        wrong_shape.get_mut("classifier.weight").unwrap().1 = vec![2, 768];
+        let error = validate_observed_manifest(&wrong_shape)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("classifier.weight"));
+        assert!(error.contains("expected [2, 256]"));
+
+        let mut wrong_dtype = observed();
+        wrong_dtype.get_mut("classifier.bias").unwrap().0 = GgmlType::F16;
+        assert!(
+            validate_observed_manifest(&wrong_dtype)
+                .unwrap_err()
+                .to_string()
+                .contains("expected canonical F32")
+        );
+    }
+
+    #[test]
+    fn conflicting_license_fails_before_io() {
+        let missing = Path::new("does-not-exist");
+        let error = convert_deepfake_detection_file(missing, missing, Some("mit"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("conflicting --license"));
     }
 }

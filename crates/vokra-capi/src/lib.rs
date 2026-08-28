@@ -26,6 +26,8 @@
 //!   CPU fall back (FR-EX-08).
 //! - **Speaker** (`speaker`): `vokra_speaker_embed` (PCM → embedding, FR-OP-80)
 //!   and `vokra_speaker_verify` (cosine similarity, FR-OP-81).
+//! - **Separation** (`separation`): `vokra_separate` returns stream-major
+//!   separated/enhanced PCM from a backend-selected SepFormer session.
 //! - **ASR** (`asr`): `vokra_asr_transcribe` + `vokra_string_free`.
 //! - **Speech features** (`feature`): `vokra_feat_open` / `_push_pcm` /
 //!   `_pull` / metadata queries / `_reset` / `_destroy` over one native
@@ -73,6 +75,7 @@ mod handle;
 // carries it (GPU backend selection from C).
 mod options;
 mod s2s;
+mod separation;
 mod session;
 // 2026-08-14: vokra_speaker_embed / vokra_speaker_verify (FR-OP-80 / FR-OP-81).
 mod speaker;

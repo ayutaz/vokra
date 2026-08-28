@@ -20,8 +20,8 @@
 //!
 //! Output: a GGUF carrying every float tensor verbatim under its
 //! upstream state-dict name, plus the `vokra.provenance.*` /
-//! `vokra.model.*` metadata chunks a future native WavTokenizer loader
-//! will read.
+//! `vokra.model.*` metadata chunks consumed by the strict native
+//! `vokra_models::wavtokenizer::WavTokenizer` loader.
 //!
 //! # Provenance
 //!
@@ -96,22 +96,20 @@
 //! is responsible for extracting `state_dict` from the Lightning
 //! `.ckpt` wrapper (strip the `optimizer_states` / `hparams` /
 //! `pytorch-lightning_version` shells) and re-emitting the tensors
-//! under their bare module names. Real-weight parity vs the upstream
-//! `WavTokenizer` Python reference (encode → codes → decode) is deferred
-//! to owner (`docs/license-audit.md` §3.1 sign-off queue); the M4-16
-//! op-side (`wavtokenizer_vq`, `crates/vokra-ops/src/fsq_codec.rs`) already
-//! runs the FSQ decode on a synthetic projection.
+//! under their bare module names. Token-to-waveform parity is pinned by
+//! `tools/parity/wavtokenizer/dump_reference.py`, which executes the official
+//! upstream `codes_to_features` + `decode` methods at source commit
+//! `5cf440d91ac420ca338f117b7003a77450d64730`. Waveform-to-token encoding
+//! remains deliberately unclaimed until an independent encode fixture lands.
 //!
 //! # No ONNX / no pickle in runtime (permanent)
 //!
 //! WavTokenizer ships PyTorch Lightning pickle `.ckpt`; this converter
 //! **never** touches ONNX (FR-LD-05) and **never** touches pickle
-//! (NFR-DS-02 zero-dep). The pipeline is re-implemented natively in a
-//! future `crates/vokra-models/src/wavtokenizer/` module (whisper.cpp
-//! 型 self re-implementation, CLAUDE.md 設計判断 4). Between now and
-//! that landing, the runtime consumer walks the emitted tensor names
-//! and either succeeds or fails loudly per FR-EX-08 — today's converter
-//! surface is byte-exact provenance + tensor-name preservation only.
+//! (NFR-DS-02 zero-dep). Token-to-waveform inference is re-implemented
+//! natively in `crates/vokra-models/src/wavtokenizer/` (whisper.cpp-style
+//! self re-implementation). The released public manifests are strict-bound;
+//! incomplete or unknown layouts fail loudly per FR-EX-08.
 
 use std::path::Path;
 

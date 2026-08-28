@@ -1,12 +1,13 @@
 //! **NeuTTS Air** (`neuphonic/neutts-air`, apache-2.0):
-//! safetensors → GGUF conversion (SoTA plan candidate wave,
-//! 2026-08-04).
+//! safetensors → GGUF conversion and exact native-runtime contract
+//! (re-audited 2026-08-27).
 //!
 //! Input: the upstream `neuphonic/neutts-air` release
 //! (`huggingface.co/neuphonic/neutts-air`) — a **single-file BF16
 //! safetensors** (~1.40 GB / 747,930,496 BF16 params, HF API
-//! primary-source verified 2026-08-04) Qwen2-family 0.5B LLM
-//! backbone (Qwen2 hidden_size=896 / intermediate_size=4864 /
+//! primary-source verified 2026-08-04) Qwen2-family LLM backbone
+//! (released training documentation identifies Qwen2.5-0.5B;
+//! `model_type=qwen2`, hidden_size=896 / intermediate_size=4864 /
 //! 24 layers / 14 attention heads / 2 KV heads / RoPE θ=1e6 /
 //! vocab_size=217652) fine-tuned to emit NeuCodec audio tokens
 //! after text tokens — the LM half of an on-device instant-voice-
@@ -15,7 +16,7 @@
 //! (`neuphonic/neucodec`) codec that already ships in the Vokra
 //! catalog. Output: a Vokra GGUF carrying every float tensor
 //! plus the `vokra.model.*` / `vokra.provenance.*` metadata
-//! chunks the future native NeuTTS Air runtime side will read.
+//! chunks the native NeuTTS Air runtime side reads strictly.
 //!
 //! # Model card
 //!
@@ -23,9 +24,10 @@
 //! - **License SPDX**: `apache-2.0` (weight + code, end-to-end;
 //!   Neuphonic ships both under the same permissive tag per HF
 //!   cardData primary source 2026-08-04)
-//! - **Not gated**: `gated: False` / `private: False` per HF API
-//!   `https://huggingface.co/api/models/neuphonic/neutts-air`
-//!   (2026-08-04) — no acknowledgement flow required.
+//! - **Access state**: upstream HF changed from `gated: false` on
+//!   2026-08-04 to `gated: "auto"` on 2026-08-27 while remaining
+//!   `private: false`. This does not change the Apache-2.0 license;
+//!   offline conversion must still obey the current Hub access flow.
 //! - **Category**: `tts` — NeuTTS Air is a text-to-speech LM
 //!   backbone (Qwen2 causal-LM emitting NeuCodec audio tokens
 //!   conditioned on text + a short reference audio prompt for
@@ -33,8 +35,11 @@
 //!   piper-plus / CosyVoice2 / CSM TTS stack; sibling audio
 //!   codec is `super::neucodec` (already published as
 //!   `vokra/neucodec`).
-//! - **Base model**: Qwen2 0.5B (with vocab extended from 151,936
-//!   to 217,652 to carry the NeuCodec audio-token space) —
+//! - **Base model**: Qwen2-family 0.5B (Qwen2.5 per released
+//!   training documentation) with vocabulary 217,652. The official
+//!   ungated ONNX tokenizer independently fixes control IDs
+//!   151,665..=151,670 and the contiguous 65,536-code NeuCodec
+//!   interval 151,671..=217,206 —
 //!   `config.architectures = ["Qwen2ForCausalLM"]`
 //!   / `model_type = "qwen2"` per upstream `config.json`
 //!   primary source 2026-08-04.
@@ -72,22 +77,18 @@
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the neucodec / bicodec / focalcodec / xcodec2 / miocodec /
 //! kokoro / cosyvoice2 / chatterbox / qwen3-tts / voxcpm2 /
-//! vibevoice contract). Real-weight binding is a follow-up wave
-//! gated on the upstream tensor-name manifest fetch; this
-//! converter passes every F32 / F16 / BF16 tensor through unchanged
-//! so a future `NeuTtsAirWeights::from_gguf` can walk the same
-//! names.
+//! vibevoice contract). The strict runtime binder now pins the exact
+//! 291-tensor public manifest and walks these names through a bounded-memory
+//! mapped loader. This converter continues to preserve every F32 / F16 /
+//! BF16 tensor unchanged so regenerated artifacts satisfy the same contract.
 //!
 //! # Real-weight parity
 //!
-//! Deferred to the owner sign-off queue (`docs/license-audit.md`
-//! §3.1). This converter is a native-side skeleton that pins the
-//! metadata contract (arch / name / category / upstream-HF /
-//! license) plus the BF16 pass-through invariant so a future
-//! `NeuTtsAir::from_gguf` can bind against the same upstream
-//! tensor names once real weights are audited. Loud-partial
-//! landing pattern per RMVPE / Charsiu / MOSS-Audio-Tokenizer /
-//! MioCodec precedent.
+//! The native binder and explicit NeuCodec composition route are implemented;
+//! real-weight CPU numerical comparison remains a VAST-only gate and real
+//! Metal parity remains an external Apple-Silicon gate. Source reachability
+//! therefore must not be reported as a numerical pass. No upload or artifact
+//! replacement is implied by either gate.
 //!
 //! # Upstream-GGUF sibling exclusion (FR-LD-05)
 //!
@@ -109,22 +110,19 @@
 //!
 //! NeuTTS Air ships `model.safetensors` + `config.json` +
 //! `tokenizer.*` + a foreign `neutss-air-BF16.gguf` sibling
-//! directly (no ONNX mirror on the upstream repo). This
-//! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in a future
-//! `crates/vokra-models/src/neutts_air/` module (whisper.cpp 型
-//! self re-implementation, CLAUDE.md 設計判断 4). Tokenizer
-//! embedding, config-side hparams (RoPE θ / KV head split /
-//! sliding-window flag), and NeuCodec-token vocab-slot mapping
-//! land in that follow-up wave alongside the runtime binder.
+//! directly. This converter **never** touches ONNX (FR-LD-05); the
+//! learned LM and codec pipeline is re-implemented natively in
+//! `crates/vokra-models/src/neutts_air/`. The GGUF intentionally does not
+//! embed the tokenizer, phonemizer or reference-audio encoder, so callers
+//! provide an exact pre-tokenized official prompt and an explicit NeuCodec
+//! companion rather than receiving a guessed frontend.
 
 // Skeleton-only allowance: the public API (`convert_neutts_air_file`,
 // `NeuTtsAirReport`, `KEY_*` / `MODEL_CATEGORY` / `UPSTREAM_HF` /
 // `DEFAULT_LICENSE_SPDX`) is exercised by the in-module tests +
 // lib.rs `convert_file` dispatch; this attribute is removed once
-// the runtime `NeuTtsAirWeights::from_gguf` binding lands and
-// starts consuming the constants directly (miocodec / neucodec /
-// bicodec / focalcodec skeleton precedent).
+// the converter module's constants gain an intra-crate consumer (the runtime
+// binder lives in the separate `vokra-models` crate).
 #![allow(dead_code)]
 
 use std::path::Path;

@@ -165,7 +165,7 @@ pub use gguf::{GgmlType, GgufError, GgufFile, GgufTensorInfo};
 pub use gguf::{FieldMismatch, FrontendPolicy, FrontendSpec, GgufBuilder};
 
 #[cfg(feature = "std")]
-pub use backend::{Backend, BackendKind};
+pub use backend::{Backend, BackendKind, DelegateBackend, DelegateSubmodel};
 #[cfg(feature = "std")]
 pub use cache::KvCache;
 #[cfg(feature = "std")]

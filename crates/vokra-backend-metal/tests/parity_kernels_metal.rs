@@ -1,8 +1,8 @@
 //! Metal numerical parity for the Phase-4 kernels (M2-01 T09-T13): the FP32 GPU
-//! `gemv` / `softmax` / `layer_norm` / `gelu` / `conv1d` vs the `vokra-backend-cpu`
-//! kernels (M0-08) that are the same differential oracle the scalar⇔SIMD harness
-//! uses. Ceiling is the NFR-QL-01 FP32 bound `atol = 0.01` (the observed error is
-//! far smaller and logged per shape).
+//! `gemv` / `softmax` / `layer_norm` / `gelu` / `relu` / `tanh` / `conv1d` vs
+//! the `vokra-backend-cpu` kernels (M0-08) that are the same differential oracle
+//! the scalar⇔SIMD harness uses. Ceiling is the NFR-QL-01 FP32 bound
+//! `atol = 0.01` (the observed error is far smaller and logged per shape).
 //!
 //! Like the GEMM parity suite, this runs only where a Metal device is available:
 //! [`MetalContext::new`] gates each test, so a non-Apple / Metal-less host skips
@@ -186,6 +186,44 @@ fn layer_norm_metal_matches_cpu() {
 }
 
 #[test]
+fn group_norm_metal_matches_cpu_on_sepformer_shapes() {
+    let ctx = ctx_or_skip!("group_norm");
+    let eps = 1e-8;
+    let shapes = [(2usize, 4usize), (256, 511), (256, 1_500)];
+    let mut worst = 0.0f32;
+    for &(channels, positions) in &shapes {
+        let input = rand_vec(
+            0x6A09 ^ ((channels * 89 + positions) as u64),
+            channels * positions,
+        );
+        let gamma = rand_vec(0x6A11 ^ (channels as u64), channels);
+        let beta = rand_vec(0xBE7A ^ (channels as u64), channels);
+        let mut gpu = vec![f32::NAN; input.len()];
+        ctx.group_norm_f32(&input, &mut gpu, channels, positions, &gamma, &beta, eps)
+            .expect("metal group_norm");
+        let mut cpu_out = vec![0.0f32; input.len()];
+        cpu::group_norm_f32(
+            &input,
+            &mut cpu_out,
+            channels,
+            positions,
+            &gamma,
+            &beta,
+            eps,
+        )
+        .expect("cpu group_norm");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("group_norm channels={channels:<4} positions={positions:<5} max|Δ|={delta:.3e}");
+        assert!(
+            delta <= 1e-5,
+            "group_norm channels={channels} positions={positions}: {delta} > 1e-5"
+        );
+        worst = worst.max(delta);
+    }
+    eprintln!("group_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol 1e-5)");
+}
+
+#[test]
 fn gelu_metal_matches_cpu() {
     let ctx = ctx_or_skip!("gelu");
     // Element-wise; a few sizes plus a wide-range input to stress erf.
@@ -207,6 +245,98 @@ fn gelu_metal_matches_cpu() {
         worst = worst.max(d);
     }
     eprintln!("gelu Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+#[test]
+fn gelu_new_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("gelu_new");
+    let lens = [1usize, 7, 63, 1000, 4 * 3072];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let x: Vec<f32> = rand_vec(0x6E57 ^ (n as u64), n)
+            .into_iter()
+            .map(|v| v * 8.0)
+            .collect();
+        let mut gpu = vec![f32::NAN; n];
+        ctx.gelu_new_f32(&x, &mut gpu).expect("metal gelu_new");
+        let mut cpu_out = vec![0.0f32; n];
+        cpu::gelu_new_f32(&x, &mut cpu_out).expect("cpu gelu_new");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("gelu_new n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "gelu_new n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("gelu_new Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
+}
+
+#[test]
+fn relu_metal_matches_cpu_bit_exactly() {
+    let ctx = ctx_or_skip!("relu");
+    for &n in &[1usize, 7, 63, 1000, 4 * 3072] {
+        let mut x = rand_vec(0x5E1A ^ n as u64, n);
+        if n >= 3 {
+            x[0] = -0.0;
+            x[1] = 0.0;
+            x[2] = -3.5;
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.relu_f32(&x, &mut gpu).expect("metal relu");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::relu_f32(&x, &mut cpu_out).expect("cpu relu");
+        let gpu_bits: Vec<u32> = gpu.iter().map(|value| value.to_bits()).collect();
+        let cpu_bits: Vec<u32> = cpu_out.iter().map(|value| value.to_bits()).collect();
+        assert_eq!(gpu_bits, cpu_bits, "relu n={n} must be bit exact");
+    }
+}
+
+#[test]
+fn elu_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("elu");
+    let lens = [1usize, 7, 63, 1000, 5 * 512];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let mut x: Vec<f32> = rand_vec(0xE1A0 ^ n as u64, n)
+            .into_iter()
+            .map(|value| value * 8.0)
+            .collect();
+        if n >= 7 {
+            x[..7].copy_from_slice(&[f32::NEG_INFINITY, -20.0, -1.0, -0.0, 0.0, 1.0, 20.0]);
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.elu_f32(&x, &mut gpu).expect("metal elu");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::elu_f32(&x, &mut cpu_out).expect("cpu elu");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("elu n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "elu n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("elu Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
+}
+
+#[test]
+fn tanh_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("tanh");
+    let lens = [1usize, 7, 63, 1000, 5 * 512];
+    let mut worst = 0.0f32;
+    for &n in &lens {
+        let mut x: Vec<f32> = rand_vec(0x7A4A ^ n as u64, n)
+            .into_iter()
+            .map(|value| value * 8.0)
+            .collect();
+        if n >= 5 {
+            x[..5].copy_from_slice(&[-20.0, -0.0, 0.0, 1.0, 20.0]);
+        }
+        let mut gpu = vec![f32::NAN; n];
+        ctx.tanh_f32(&x, &mut gpu).expect("metal tanh");
+        let mut cpu_out = vec![f32::NAN; n];
+        cpu::tanh_f32(&x, &mut cpu_out).expect("cpu tanh");
+        let delta = max_abs_diff(&gpu, &cpu_out);
+        eprintln!("tanh n={n:<6} max|Δ|={delta:.3e}");
+        assert!(delta <= 2e-6, "tanh n={n}: {delta} > 2e-6");
+        worst = worst.max(delta);
+    }
+    eprintln!("tanh Metal vs CPU: global max|Δ| = {worst:.3e} (atol 2e-6)");
 }
 
 #[test]
@@ -267,6 +397,65 @@ fn conv1d_metal_matches_cpu() {
     eprintln!("conv1d Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
 }
 
+#[test]
+fn grouped_conv1d_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("grouped-conv1d");
+    // Includes groups=1, a two-group convolution, and Vocos' depthwise shape.
+    let cases = [
+        (2usize, 9usize, 4usize, 3usize, 1usize, 1usize, 1usize),
+        (4, 11, 6, 5, 2, 2, 2),
+        (7, 13, 7, 7, 1, 3, 7),
+        (64, 17, 64, 7, 1, 3, 64),
+    ];
+    let mut worst = 0.0f32;
+    for &(in_ch, in_len, out_ch, kernel, stride, padding, groups) in &cases {
+        let out_len = (in_len + 2 * padding - kernel) / stride + 1;
+        let input = rand_vec(0x6A01 ^ ((in_ch * 131 + in_len) as u64), in_ch * in_len);
+        let weight = rand_vec(
+            0x6A02 ^ ((out_ch * 17 + kernel) as u64),
+            out_ch * (in_ch / groups) * kernel,
+        );
+        let bias = rand_vec(0x6A03 ^ out_ch as u64, out_ch);
+        let mut gpu = vec![f32::NAN; out_ch * out_len];
+        ctx.grouped_conv1d_f32(
+            &input,
+            in_ch,
+            in_len,
+            &weight,
+            out_ch,
+            kernel,
+            Some(&bias),
+            stride,
+            padding,
+            groups,
+            &mut gpu,
+        )
+        .expect("metal grouped conv1d");
+        let mut cpu_out = vec![0.0f32; out_ch * out_len];
+        cpu::grouped_conv1d_f32(
+            &input,
+            in_ch,
+            in_len,
+            &weight,
+            out_ch,
+            kernel,
+            Some(&bias),
+            stride,
+            padding,
+            groups,
+            &mut cpu_out,
+        )
+        .expect("cpu grouped conv1d");
+        let d = max_abs_diff(&gpu, &cpu_out);
+        eprintln!(
+            "grouped_conv1d in_ch={in_ch:<3} out_ch={out_ch:<3} groups={groups:<3} k={kernel} max|Δ|={d:.3e}"
+        );
+        assert!(d <= ATOL, "grouped conv1d max|Δ| {d} > {ATOL}");
+        worst = worst.max(d);
+    }
+    eprintln!("grouped conv1d Metal vs CPU: global max|Δ| = {worst:.3e}");
+}
+
 /// Shape mismatches are explicit `InvalidArgument`, not a GPU fault (mirrors the
 /// GEMM shape-validation test).
 #[test]
@@ -286,6 +475,12 @@ fn kernels_reject_bad_shapes_explicitly() {
     );
     // gelu: out length must equal x length.
     assert!(ctx.gelu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // relu: out length must equal x length.
+    assert!(ctx.relu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // elu: out length must equal x length.
+    assert!(ctx.elu_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
+    // tanh: out length must equal x length.
+    assert!(ctx.tanh_f32(&[0.0; 4], &mut [0.0; 3]).is_err());
     // conv1d: zero stride is rejected before any GPU work.
     assert!(
         ctx.conv1d_f32(&[1.0, 2.0], 1, 2, &[1.0], 1, 1, None, 0, 0, &mut [0.0; 1])
@@ -304,6 +499,23 @@ fn kernels_reject_bad_shapes_explicitly() {
             1,
             0,
             &mut [0.0; 1]
+        )
+        .is_err()
+    );
+    // grouped conv1d: zero groups and indivisible channels are explicit.
+    assert!(
+        ctx.grouped_conv1d_f32(
+            &[1.0, 2.0],
+            1,
+            2,
+            &[1.0],
+            1,
+            1,
+            None,
+            1,
+            0,
+            0,
+            &mut [0.0; 2],
         )
         .is_err()
     );
@@ -1760,6 +1972,32 @@ fn rms_norm_metal_matches_cpu() {
     eprintln!("rms_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
 }
 
+#[test]
+fn scale_norm_metal_matches_cpu() {
+    let ctx = ctx_or_skip!("scale_norm");
+    let eps = 1.0e-5f32;
+    let gain = 0.83f32;
+    let shapes = [(1usize, 2usize), (17, 128), (511, 512), (511, 1_024)];
+    let mut worst = 0.0f32;
+    for &(rows, cols) in &shapes {
+        let input = rand_vec(0x5CA1E ^ ((rows * 97 + cols) as u64), rows * cols);
+        let mut cpu_output = vec![f32::NAN; input.len()];
+        cpu::scale_norm_f32(&input, &mut cpu_output, rows, cols, gain, eps)
+            .expect("CPU scale_norm");
+        let mut metal_output = vec![f32::NAN; input.len()];
+        ctx.scale_norm_f32(&input, &mut metal_output, rows, cols, gain, eps)
+            .expect("Metal scale_norm");
+        let difference = max_abs_diff(&metal_output, &cpu_output);
+        eprintln!("scale_norm rows={rows:<4} cols={cols:<4} max|Δ|={difference:.3e}");
+        assert!(
+            difference <= ATOL,
+            "scale_norm rows={rows} cols={cols}: {difference} > {ATOL}"
+        );
+        worst = worst.max(difference);
+    }
+    eprintln!("scale_norm Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
 /// Standard RoPE frequencies `freq_j = base^(-2j/head_dim)` for `j = 0..half`
 /// (the unscaled `llama3_inv_freqs`; the kernel is scale-agnostic, so plain
 /// frequencies exercise it just as well).
@@ -1936,6 +2174,11 @@ fn llama_primitives_reject_bad_shapes_explicitly() {
         ctx.rms_norm_f32(&[1.0; 6], &mut out, 2, 3, &[1.0; 2], 1e-5)
             .is_err(),
         "rms_norm short gamma must be rejected"
+    );
+    assert!(
+        ctx.scale_norm_f32(&[1.0; 6], &mut out, 2, 3, 1.0, 0.0)
+            .is_err(),
+        "scale_norm non-positive epsilon must be rejected"
     );
     // rope: odd head_dim is a loud error.
     let mut ro = vec![0.0f32; 6];

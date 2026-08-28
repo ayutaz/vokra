@@ -12,19 +12,12 @@
 //!         front-end math; the wire-up onto MT3's exact mel spec
 //!         lands with the T5 encoder-decoder forward wave.)
 //!   -> T5-small encoder (12 layers × MHA + FFN)      ← **loud-partial**
-//!        (T5 relative-attention-bias multi-head attention needs a
-//!         `t5_relative_attention_bias` primitive that does NOT exist
-//!         in `vokra-ops` today — every Transformer model in the
-//!         tree (whisper / canary / voxtral) re-implements attention
-//!         from `softmax` + `GEMM` + `LayerNorm`, but T5's
-//!         *relative* attention-bias bucketing (Raffel et al. 2020
-//!         §2.1, distinct from DeBERTa's `make_log_bucket_position`
-//!         used by `vokra-bert`) is a T5-specific primitive that no
-//!         sibling supplies. First landing of this primitive is
-//!         out-of-scope for this WP.)
+//!        (`vokra_ops::t5_relative_position` and the shared native
+//!         `crate::t5_encoder` body have landed. MT3 still needs the
+//!         exact T5X tensor-name binder and log-mel composition.)
 //!   -> T5-small decoder (12 layers, autoregressive)  ← **loud-partial**
-//!        (Same T5 relative-attention-bias gap on the decoder side +
-//!         cross-attention to encoder output.)
+//!        (Causal decoder state/cache + cross-attention to encoder
+//!         output are not implemented by the encoder-only helper.)
 //!   -> MIDI event token stream                       ← **loud-partial**
 //!        (Post-processing via a Rust port of `mt3/event_codec.py`
 //!         maps decoder tokens → `MidiEvent` variants covering
@@ -52,8 +45,8 @@
 //!   MIDI event token stream MT3 emits, license-class surfacing.
 //! - **Loud-partial (this WP)**: [`Mt3::transcribe`] returns
 //!   [`VokraError::UnsupportedOp`] naming the two exact missing
-//!   pieces (T5 `t5_relative_attention_bias` primitive absent from
-//!   `vokra-ops` + MIDI event codec Rust port not yet written) and
+//!   pieces (the MT3 T5X encoder-decoder binder/forward + MIDI event
+//!   codec Rust port not yet written) and
 //!   citing the primary source URLs so a reader diagnosing this gap
 //!   has exactly two places to walk.
 //!
@@ -61,10 +54,10 @@
 //! beat_this Wave 1 precedent, CLAUDE.md 教訓 (a)): the surrounding
 //! scaffold + `from_gguf` chunk-group validation + `MidiEvent` enum
 //! surface + FR-EX-08 loud-fails land today so a follow-up wave can
-//! flip the switch by (i) landing the T5 relative-attention-bias
-//! primitive in `vokra-ops` (distinct from `vokra-bert`'s DeBERTa
-//! log-bucket bucketing per Raffel et al. 2020 §2.1) plus (ii)
-//! porting `mt3/event_codec.py` to Rust and writing the T5X
+//! flip the switch by (i) composing the landed T5 relative-position
+//! and encoder pieces with MT3's exact T5X tensor layout, then adding
+//! the causal decoder/cross-attention body, plus (ii) porting
+//! `mt3/event_codec.py` to Rust and writing the T5X
 //! checkpoint flattener — a future
 //! `tools/parity/mt3_prepare_checkpoint.py` (not yet written;
 //! uv-managed Python 3.12 sidecar per memory
@@ -154,9 +147,9 @@ pub const GGUF_KEY_REL_ATTN_NUM_BUCKETS: &str = "vokra.mt3.rel_attn_num_buckets"
 /// `vokra.mt3.rel_attn_max_distance` — T5 relative-attention max distance.
 pub const GGUF_KEY_REL_ATTN_MAX_DISTANCE: &str = "vokra.mt3.rel_attn_max_distance";
 
-/// Primary-source anchor for the T5 relative-attention-bias primitive
-/// gap. Cited in the loud-partial error so a reader diagnosing this
-/// gap knows the T5 reference implementation to walk.
+/// Primary-source anchor for the remaining MT3 T5X encoder-decoder
+/// composition. Cited in the loud-partial error so a reader diagnosing
+/// the gap knows the exact reference implementation to walk.
 const PRIMARY_SOURCE_T5_NETWORK: &str = "github.com/magenta/mt3/blob/main/mt3/network.py";
 /// Primary-source anchor for the MIDI event codec gap. Cited in the
 /// loud-partial error so a reader diagnosing this gap knows the event
@@ -574,16 +567,11 @@ impl Mt3 {
     ///
     /// # Loud-partial (this WP)
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — the MT3 T5-small
-    /// **encoder-decoder forward** requires a
-    /// `t5_relative_attention_bias` primitive that does NOT exist in
-    /// `vokra-ops` today (every Transformer model in the tree —
-    /// `whisper` / `canary` / `voxtral` — re-implements attention
-    /// from `softmax` + `GEMM` + `LayerNorm`, but T5's *relative*
-    /// attention-bias bucketing (Raffel et al. 2020 §2.1, distinct
-    /// from DeBERTa's `make_log_bucket_position` used by
-    /// `vokra-bert`) is a T5-specific primitive that no sibling
-    /// supplies). In addition the **MIDI event codec Rust port** of
+    /// Returns [`VokraError::UnsupportedOp`] — the T5 relative bucket
+    /// and shared encoder pieces have landed, but MT3 still needs its
+    /// exact T5X tensor binder, log-mel-to-encoder composition, causal
+    /// decoder state/cache, and encoder cross-attention. In addition
+    /// the **MIDI event codec Rust port** of
     /// `github.com/magenta/mt3/blob/main/mt3/event_codec.py` has
     /// not been written — the decoder token stream cannot become a
     /// `Vec<MidiEvent>` without it. The error message names both
@@ -605,9 +593,8 @@ impl Mt3 {
 }
 
 /// Constructs the loud-partial [`VokraError::UnsupportedOp`]
-/// returned by [`Mt3::transcribe`] until the T5
-/// relative-attention-bias primitive lands + the MIDI event codec
-/// Rust port lands.
+/// returned by [`Mt3::transcribe`] until the MT3-specific T5X
+/// encoder-decoder composition + MIDI event codec Rust port land.
 ///
 /// Names **both** primary source URLs (T5 network reference +
 /// event codec reference) so a reader diagnosing the gap has
@@ -617,12 +604,11 @@ impl Mt3 {
 fn transcribe_forward_loud_partial(cfg: &Mt3Config) -> VokraError {
     VokraError::UnsupportedOp(format!(
         "mt3 transcribe: T5 encoder-decoder forward + MIDI event codec Rust port \
-         pending — no `t5_relative_attention_bias` primitive in vokra-ops (T5's \
-         relative attention-bias bucketing per Raffel et al. 2020 §2.1 is distinct \
-         from DeBERTa's `make_log_bucket_position` used by vokra-bert, and every \
-         Transformer model in the tree — whisper / canary / voxtral — re-implements \
-         attention from softmax + GEMM + LayerNorm without a shared T5 primitive), \
-         and `mt3/event_codec.py` has not been ported to Rust so the decoder token \
+         pending — `vokra_ops::t5_relative_position` and \
+         `crate::t5_encoder::T5Encoder` have landed, but the MT3-specific T5X tensor \
+         binder, log-mel encoder composition, causal decoder state/cache and encoder \
+         cross-attention have not. `mt3/event_codec.py` has not been ported to Rust, \
+         so the decoder token \
          stream cannot become MidiEvent variants. Config: num_enc_layers={enc}, \
          num_dec_layers={dec}, d_model={d_model}, d_ff={d_ff}, n_heads={n_heads}, \
          d_kv={d_kv}, music_vocab_size={vocab}, rel_attn_num_buckets={buckets}, \
@@ -659,9 +645,8 @@ mod tests {
     //!
     //! The task spec asks for 5+ unit tests. On real PCM this would
     //! be `transcribe(...)` returning real MIDI event streams, but
-    //! the T5 relative-attention-bias primitive does not exist in
-    //! `vokra-ops` today and the MIDI event codec Rust port has not
-    //! been written (see the module doc + [`Mt3::transcribe`]
+    //! the MT3-specific T5X encoder-decoder composition and MIDI event
+    //! codec Rust port have not been written (see the module doc + [`Mt3::transcribe`]
     //! rustdoc). Fabricating a real-PCM output would violate
     //! CLAUDE.md 教訓 (a) ("loud-partial は fake-complete より
     //! honest").
@@ -820,9 +805,9 @@ mod tests {
                     "message must call out the mt3 transcribe surface, got `{m}`"
                 );
                 assert!(
-                    m.contains("t5_relative_attention_bias"),
-                    "message must name the missing T5 primitive by exact identifier \
-                     so the follow-up wave knows what to add to vokra-ops, got `{m}`"
+                    m.contains("t5_relative_position") && m.contains("have landed"),
+                    "message must acknowledge the landed shared T5 primitive and name \
+                     the remaining MT3 composition boundary, got `{m}`"
                 );
                 assert!(
                     m.contains("event_codec.py"),

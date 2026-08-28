@@ -8,6 +8,7 @@ use super::MoonshineConfig;
 use super::weights::{Attention, DecoderLayer, EncoderLayer, Linear, MoonshineWeights};
 
 pub(super) const HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
     HotOp::Gemv,
     HotOp::Softmax,
     HotOp::LayerNorm,
@@ -31,11 +32,6 @@ pub(super) fn generate_with_limit(
     pcm: &[f32],
     max_positions: usize,
 ) -> Result<Vec<u32>> {
-    if backend != BackendKind::Cpu {
-        return Err(VokraError::UnsupportedOp(format!(
-            "moonshine: backend {backend:?} is not wired for the composed attention path; CPU is required (no silent CPU fallback)"
-        )));
-    }
     let compute = Compute::for_backend(backend, HOT_OPS)?;
     let (encoder, encoder_len) = encode(weights, config, &compute, pcm)?;
     let mut ids = vec![config.decoder_start_token_id];
@@ -326,23 +322,64 @@ fn attention(
     }
     let mut context = vec![0.0; query_rows * d];
     let scale = (head_dim as f32).sqrt().recip();
-    for query in 0..query_rows {
-        let visible = if causal { query + 1 } else { key_rows };
-        for head in 0..heads {
-            let q_base = query * d + head * head_dim;
-            let mut scores = vec![0.0; visible];
-            for (key, score) in scores.iter_mut().enumerate() {
-                let k_base = key * d + head * head_dim;
-                *score = dot(&q[q_base..q_base + head_dim], &k[k_base..k_base + head_dim]) * scale;
-            }
-            let mut probabilities = vec![0.0; visible];
-            compute.softmax_f32(&scores, &mut probabilities, 1, visible)?;
+    if causal && query_rows != key_rows {
+        return Err(VokraError::InvalidArgument(format!(
+            "moonshine: causal attention requires equal query/key rows, got {query_rows}/{key_rows}"
+        )));
+    }
+    for head in 0..heads {
+        // The model stores Q/K/V as [time, head, dim]. Pack one head into
+        // row-major matrices so both Q*K^T and attention*V go through the
+        // backend GEMM. The old scalar dot/value loops made a non-CPU
+        // selection a partial host execution even though every projection and
+        // softmax was already backend-dispatched.
+        let mut q_head = vec![0.0; query_rows * head_dim];
+        let mut k_head_t = vec![0.0; head_dim * key_rows];
+        let mut v_head = vec![0.0; key_rows * head_dim];
+        for query in 0..query_rows {
             for dim in 0..head_dim {
-                let mut sum = 0.0;
-                for key in 0..visible {
-                    sum += probabilities[key] * v[key * d + head * head_dim + dim];
-                }
-                context[q_base + dim] = sum;
+                q_head[query * head_dim + dim] = q[query * d + head * head_dim + dim] * scale;
+            }
+        }
+        for key in 0..key_rows {
+            for dim in 0..head_dim {
+                k_head_t[dim * key_rows + key] = k[key * d + head * head_dim + dim];
+                v_head[key * head_dim + dim] = v[key * d + head * head_dim + dim];
+            }
+        }
+
+        let mut scores = vec![0.0; query_rows * key_rows];
+        compute.gemm_f32(
+            query_rows,
+            key_rows,
+            head_dim,
+            &q_head,
+            &k_head_t,
+            None,
+            &mut scores,
+        )?;
+        if causal {
+            for query in 0..query_rows {
+                scores[query * key_rows + query + 1..(query + 1) * key_rows]
+                    .fill(f32::NEG_INFINITY);
+            }
+        }
+
+        let mut probabilities = vec![0.0; scores.len()];
+        compute.softmax_f32(&scores, &mut probabilities, query_rows, key_rows)?;
+        let mut head_context = vec![0.0; query_rows * head_dim];
+        compute.gemm_f32(
+            query_rows,
+            head_dim,
+            key_rows,
+            &probabilities,
+            &v_head,
+            None,
+            &mut head_context,
+        )?;
+        for query in 0..query_rows {
+            for dim in 0..head_dim {
+                context[query * d + head * head_dim + dim] = head_context[query * head_dim + dim];
             }
         }
     }
@@ -443,16 +480,45 @@ fn residual_add(left: &mut [f32], right: &[f32]) {
     }
 }
 
-fn dot(left: &[f32], right: &[f32]) -> f32 {
-    left.iter()
-        .zip(right)
-        .map(|(left, right)| left * right)
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn identity_linear(width: usize) -> Linear {
+        let mut w = vec![0.0; width * width];
+        for index in 0..width {
+            w[index * width + index] = 1.0;
+        }
+        Linear { w, b: None }
+    }
+
+    fn attention_fixture() -> (MoonshineConfig, Attention) {
+        let config = MoonshineConfig {
+            variant: super::super::MoonshineVariant::Tiny,
+            hidden_size: 2,
+            intermediate_size: 4,
+            encoder_layers: 1,
+            decoder_layers: 1,
+            attention_heads: 1,
+            rotary_dim: 2,
+            rope_theta: 10_000.0,
+            max_positions: 4,
+            vocab_size: 4,
+            decoder_start_token_id: 1,
+            eos_token_id: 2,
+            sample_rate: 16_000,
+        };
+        let linear = identity_linear(2);
+        (
+            config,
+            Attention {
+                q: linear.clone(),
+                k: linear.clone(),
+                v: linear.clone(),
+                o: linear,
+            },
+        )
+    }
 
     #[test]
     fn convolution_lengths_match_reference_formula() {
@@ -466,5 +532,191 @@ mod tests {
         let mut values = vec![1.0, 0.0, 3.0, 4.0];
         apply_rope(&mut values, 1, 1, 4, 2, 10_000.0);
         assert_eq!(values, vec![1.0, 0.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn composed_attention_routes_qk_and_value_fold_through_gemm() {
+        let (config, weights) = attention_fixture();
+        let input = [1.0, 0.0, 0.0, 1.0];
+        let compute = Compute::cpu();
+        let actual = attention(
+            &compute, &config, &weights, &input, 2, &input, 2, false, false,
+        )
+        .unwrap();
+
+        // Independent closed-form result for softmax([1/sqrt(2), 0]).
+        let high = (1.0_f32 / 2.0_f32.sqrt()).exp() / ((1.0_f32 / 2.0_f32.sqrt()).exp() + 1.0);
+        let low = 1.0 - high;
+        let expected = [high, low, low, high];
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() <= 1e-6),
+            "actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    #[test]
+    fn composed_attention_applies_the_causal_mask_before_softmax() {
+        let (config, weights) = attention_fixture();
+        let input = [1.0, 0.0, 0.0, 1.0];
+        let actual = attention(
+            &Compute::cpu(),
+            &config,
+            &weights,
+            &input,
+            2,
+            &input,
+            2,
+            true,
+            false,
+        )
+        .unwrap();
+        let high = (1.0_f32 / 2.0_f32.sqrt()).exp() / ((1.0_f32 / 2.0_f32.sqrt()).exp() + 1.0);
+        let low = 1.0 - high;
+        let expected = [1.0, 0.0, low, high];
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() <= 1e-6),
+            "actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    /// Real-weight CPU/Metal parity for both public Moonshine variants.
+    ///
+    /// The CPU path is already checked against the independent pinned
+    /// Transformers fixture in `moonshine::tests`; this test treats that path
+    /// as the oracle and verifies the newly composed Metal attention path at
+    /// the encoder, decoder, tied-logit, and generated-token boundaries. It
+    /// skips only when neither public artifact is supplied:
+    ///
+    /// ```text
+    /// VOKRA_MOONSHINE_TINY_GGUF=moonshine-tiny.gguf \
+    /// VOKRA_MOONSHINE_BASE_GGUF=moonshine-base.gguf \
+    ///   cargo test -p vokra-models --features metal \
+    ///     moonshine_real_weights_metal_match_cpu -- --nocapture
+    /// ```
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn moonshine_real_weights_metal_match_cpu() {
+        const ATOL: f32 = 0.01;
+
+        fn max_abs(left: &[f32], right: &[f32]) -> f32 {
+            assert_eq!(left.len(), right.len());
+            left.iter()
+                .zip(right)
+                .map(|(left, right)| (left - right).abs())
+                .fold(0.0, f32::max)
+        }
+
+        let paths = [
+            ("tiny", std::env::var("VOKRA_MOONSHINE_TINY_GGUF")),
+            ("base", std::env::var("VOKRA_MOONSHINE_BASE_GGUF")),
+        ];
+        let mut ran = 0usize;
+        for (variant, path) in paths {
+            let Ok(path) = path else { continue };
+            ran += 1;
+            let file = vokra_core::gguf::GgufFile::open(path).expect("open Moonshine GGUF");
+            let model = super::super::Moonshine::from_gguf(&file).expect("bind Moonshine GGUF");
+            let pcm = (0..16_000)
+                .map(|index| {
+                    let x = index as f32;
+                    0.08 * (x * 0.013).sin() + 0.03 * (x * 0.0037).cos()
+                })
+                .collect::<Vec<_>>();
+            let cpu = Compute::for_backend(BackendKind::Cpu, HOT_OPS).expect("CPU compute");
+            let metal = match Compute::for_backend(BackendKind::Metal, HOT_OPS) {
+                Ok(compute) => compute,
+                Err(VokraError::BackendUnavailable(error)) => {
+                    eprintln!("skip Moonshine Metal parity: {error}");
+                    return;
+                }
+                Err(error) => panic!("Moonshine Metal hot-op coverage is incomplete: {error}"),
+            };
+
+            let (cpu_encoder, cpu_rows) =
+                encode(&model.weights, &model.config, &cpu, &pcm).expect("CPU encoder");
+            let (metal_encoder, metal_rows) =
+                encode(&model.weights, &model.config, &metal, &pcm).expect("Metal encoder");
+            assert_eq!(cpu_rows, metal_rows);
+            let encoder_error = max_abs(&cpu_encoder, &metal_encoder);
+            assert!(
+                encoder_error <= ATOL,
+                "{variant} encoder CPU/Metal max_abs={encoder_error:e} > {ATOL}"
+            );
+
+            let ids = [model.config.decoder_start_token_id, 1_939, 29_889];
+            let cpu_decoder = decode(
+                &model.weights,
+                &model.config,
+                &cpu,
+                &ids,
+                &cpu_encoder,
+                cpu_rows,
+            )
+            .expect("CPU decoder");
+            let metal_decoder = decode(
+                &model.weights,
+                &model.config,
+                &metal,
+                &ids,
+                &metal_encoder,
+                metal_rows,
+            )
+            .expect("Metal decoder");
+            let decoder_error = max_abs(&cpu_decoder, &metal_decoder);
+            assert!(
+                decoder_error <= ATOL,
+                "{variant} decoder CPU/Metal max_abs={decoder_error:e} > {ATOL}"
+            );
+
+            let d = model.config.hidden_size;
+            let mut cpu_logits = vec![0.0; model.config.vocab_size];
+            let mut metal_logits = vec![0.0; model.config.vocab_size];
+            cpu.gemv_f32(
+                model.config.vocab_size,
+                d,
+                &model.weights.embedding,
+                &cpu_decoder[cpu_decoder.len() - d..],
+                None,
+                &mut cpu_logits,
+            )
+            .expect("CPU logits");
+            metal
+                .gemv_f32(
+                    model.config.vocab_size,
+                    d,
+                    &model.weights.embedding,
+                    &metal_decoder[metal_decoder.len() - d..],
+                    None,
+                    &mut metal_logits,
+                )
+                .expect("Metal logits");
+            let logit_error = max_abs(&cpu_logits, &metal_logits);
+            assert!(
+                logit_error <= ATOL,
+                "{variant} logits CPU/Metal max_abs={logit_error:e} > {ATOL}"
+            );
+
+            let cpu_ids =
+                generate_with_limit(&model.weights, &model.config, BackendKind::Cpu, &pcm, 5)
+                    .expect("CPU generation");
+            let metal_ids =
+                generate_with_limit(&model.weights, &model.config, BackendKind::Metal, &pcm, 5)
+                    .expect("Metal generation");
+            assert_eq!(cpu_ids, metal_ids, "{variant} generated token mismatch");
+            eprintln!(
+                "Moonshine {variant} CPU/Metal: encoder={encoder_error:e} decoder={decoder_error:e} logits={logit_error:e}"
+            );
+        }
+        if ran == 0 {
+            eprintln!(
+                "skip Moonshine Metal real-weight parity: set VOKRA_MOONSHINE_TINY_GGUF and/or VOKRA_MOONSHINE_BASE_GGUF"
+            );
+        }
     }
 }

@@ -20,9 +20,11 @@ mod bench;
 mod convert;
 mod engine;
 mod f0;
+mod npu_bakeoff;
 mod report;
 mod run;
 mod runtime_contracts;
+mod utmos_runtime;
 mod wav;
 
 use std::process::ExitCode;
@@ -31,16 +33,18 @@ const USAGE: &str = "\
 vokra-cli — Vokra speech runtime CLI (M1-10a)
 
 USAGE:
-    vokra-cli <run|convert|bench|f0> [options]
+    vokra-cli <run|convert|bench|f0|npu-bakeoff> [options]
 
 SUBCOMMANDS:
     run       load a GGUF and run its task (VAD probs / ASR text / TTS audio,
-              incl. SBV2 multi-GGUF / speaker embedding + cosine compare)
+              incl. SBV2 multi-GGUF / speaker embedding / spoken-language ID)
     convert   convert an upstream checkpoint to a Vokra GGUF (offline tool,
               incl. --model sbv2 / deberta-v2 / deberta-v3)
     bench     measure RTF / TTFA / jitter / p50-p95-p99, optional regression gate
     f0        checkpoint-free pitch extraction (YIN / PyIN — no --model, no
               weights; the neural rmvpe / fcpe / crepe route is `run`)
+    npu-bakeoff
+              same-session Whisper encoder CPU/delegate parity + 2x gate
 
 Run `vokra-cli <subcommand> --help` for that subcommand's options.
 ";
@@ -63,6 +67,7 @@ fn main() -> ExitCode {
         // Its own subcommand, not a `run --task`: `run` requires a `--model`
         // GGUF, and YIN / PyIN carry no weights at all. See the module docs.
         "f0" => f0::main(rest),
+        "npu-bakeoff" => npu_bakeoff::main(rest),
         other => {
             eprintln!("error: unknown subcommand `{other}`\n\n{USAGE}");
             return ExitCode::from(2);

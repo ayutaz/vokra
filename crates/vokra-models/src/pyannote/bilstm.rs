@@ -2,15 +2,17 @@
 //!
 //! # Primary source
 //!
-//! PyanNet.py L98 declares
+//! PyanNet.py declares a monolithic bidirectional `nn.LSTM`. Its class default
+//! is two layers, while the immutable segmentation-3.0 model config overrides
+//! it to four:
 //!
 //! ```python
-//! self.lstm = nn.LSTM(60, hidden_size=128, num_layers=2,
+//! self.lstm = nn.LSTM(60, hidden_size=128, num_layers=4,
 //!                     bidirectional=True, batch_first=True, dropout=0.0)
 //! ```
 //!
-//! — a single monolithic multi-layer bidirectional PyTorch `nn.LSTM`.
-//! The `state_dict` layout is the standard PyTorch one:
+//! The released `state_dict` independently proves layers `l0..l3` in both
+//! directions. Its layout is the standard PyTorch one:
 //!
 //! ```text
 //! lstm.weight_ih_l0        (4·H, I)          # forward,  layer 0
@@ -21,14 +23,14 @@
 //! lstm.weight_hh_l0_reverse(4·H, H)
 //! lstm.bias_ih_l0_reverse  (4·H,)
 //! lstm.bias_hh_l0_reverse  (4·H,)
-//! lstm.weight_ih_l1        (4·H, 2·H)        # forward,  layer 1 (2·H because layer 0 is bidirectional)
-//! lstm.weight_hh_l1        (4·H, H)
-//! lstm.bias_ih_l1          (4·H,)
-//! lstm.bias_hh_l1          (4·H,)
-//! lstm.weight_ih_l1_reverse(4·H, 2·H)        # backward, layer 1
-//! lstm.weight_hh_l1_reverse(4·H, H)
-//! lstm.bias_ih_l1_reverse  (4·H,)
-//! lstm.bias_hh_l1_reverse  (4·H,)
+//! lstm.weight_ih_lN        (4·H, 2·H)        # forward,  layers N=1..3
+//! lstm.weight_hh_lN        (4·H, H)
+//! lstm.bias_ih_lN          (4·H,)
+//! lstm.bias_hh_lN          (4·H,)
+//! lstm.weight_ih_lN_reverse(4·H, 2·H)        # backward, layers N=1..3
+//! lstm.weight_hh_lN_reverse(4·H, H)
+//! lstm.bias_ih_lN_reverse  (4·H,)
+//! lstm.bias_hh_lN_reverse  (4·H,)
 //! ```
 //!
 //! Gate order in each row-major weight: `i | f | g | o` at
@@ -55,6 +57,8 @@
 //! `f32::tanh`, no BLAS, no crates.io addition.
 
 use vokra_core::{Result, VokraError};
+
+use crate::compute::Compute;
 
 use super::PyanNetWeights;
 
@@ -143,6 +147,7 @@ impl BiLstmLayer {
     /// Forward direction's `h_t` occupies columns `[0, hidden_dim)`;
     /// reverse direction's `h_t` occupies `[hidden_dim, 2·hidden_dim)`
     /// — matching `nn.LSTM(batch_first=True, bidirectional=True)`.
+    #[cfg(test)]
     fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
         debug_assert_eq!(input.len(), seq_len * self.input_dim);
         let h = self.hidden_dim;
@@ -170,6 +175,36 @@ impl BiLstmLayer {
         output
     }
 
+    fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(input.len(), seq_len * self.input_dim);
+        let hidden = self.hidden_dim;
+        let mut output = vec![0.0f32; seq_len * 2 * hidden];
+        if seq_len == 0 {
+            return Ok(output);
+        }
+        let mut state = vec![0.0f32; hidden];
+        let mut cell = vec![0.0f32; hidden];
+        let mut gates = vec![0.0f32; 4 * hidden];
+        for time in 0..seq_len {
+            let input = &input[time * self.input_dim..(time + 1) * self.input_dim];
+            self.step_with_compute(0, input, &mut state, &mut cell, &mut gates, compute)?;
+            output[time * 2 * hidden..time * 2 * hidden + hidden].copy_from_slice(&state);
+        }
+        state.fill(0.0);
+        cell.fill(0.0);
+        for time in (0..seq_len).rev() {
+            let input = &input[time * self.input_dim..(time + 1) * self.input_dim];
+            self.step_with_compute(1, input, &mut state, &mut cell, &mut gates, compute)?;
+            output[time * 2 * hidden + hidden..(time + 1) * 2 * hidden].copy_from_slice(&state);
+        }
+        Ok(output)
+    }
+
     /// One `nn.LSTMCell` step for a given direction; mutates `h` / `c`
     /// in place. Formula (PyTorch, no peephole):
     ///
@@ -181,6 +216,7 @@ impl BiLstmLayer {
     /// c' = f·c + i·g
     /// h' = o·tanh(c')
     /// ```
+    #[cfg(test)]
     fn step(&self, dir: usize, x: &[f32], h: &mut [f32], c: &mut [f32], gates: &mut [f32]) {
         let hd = self.hidden_dim;
         let idim = self.input_dim;
@@ -211,6 +247,50 @@ impl BiLstmLayer {
             h[j] = new_h;
         }
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn step_with_compute(
+        &self,
+        direction: usize,
+        input: &[f32],
+        state: &mut [f32],
+        cell: &mut [f32],
+        gates: &mut [f32],
+        compute: &Compute,
+    ) -> Result<()> {
+        let hidden = self.hidden_dim;
+        let rows = 4 * hidden;
+        compute.gemv_f32(
+            rows,
+            self.input_dim,
+            &self.w_ih[direction],
+            input,
+            Some(&self.b_ih[direction]),
+            gates,
+        )?;
+        let mut recurrent = vec![0.0f32; rows];
+        compute.gemv_f32(
+            rows,
+            hidden,
+            &self.w_hh[direction],
+            state,
+            Some(&self.b_hh[direction]),
+            &mut recurrent,
+        )?;
+        for (gate, recurrent) in gates.iter_mut().zip(recurrent) {
+            *gate += recurrent;
+        }
+        for index in 0..hidden {
+            let input_gate = sigmoid(gates[index]);
+            let forget_gate = sigmoid(gates[hidden + index]);
+            let candidate = gates[2 * hidden + index].tanh();
+            let output_gate = sigmoid(gates[3 * hidden + index]);
+            let next_cell = forget_gate * cell[index] + input_gate * candidate;
+            cell[index] = next_cell;
+            state[index] = output_gate * next_cell.tanh();
+        }
+        Ok(())
+    }
 }
 
 fn check_len(
@@ -238,14 +318,14 @@ fn sigmoid(x: f32) -> f32 {
 // Monolithic multi-layer BiLSTM stack
 // ---------------------------------------------------------------------------
 
-/// Two-layer monolithic bidirectional LSTM stack, matching PyanNet's
-/// `nn.LSTM(60, hidden_size=128, num_layers=2, bidirectional=True,
+/// Released four-layer monolithic bidirectional LSTM stack, matching
+/// segmentation-3.0's `nn.LSTM(60, hidden_size=128, num_layers=4, bidirectional=True,
 /// batch_first=True, dropout=0.0)`.
 ///
 /// Layer indexing follows PyTorch's `_lN` suffix (l0 = first layer,
-/// l1 = second layer). Layer `l1`'s input dim is `2·hidden_dim` because
-/// the layer 0 output is a concatenation of forward + reverse hidden
-/// states.
+/// l1..l3 = subsequent layers). Every layer after `l0` consumes
+/// `2·hidden_dim` because the preceding output concatenates forward and
+/// reverse hidden states.
 #[derive(Debug)]
 pub(crate) struct MonoLithicBiLstmStack {
     layers: Vec<BiLstmLayer>,
@@ -310,15 +390,19 @@ impl MonoLithicBiLstmStack {
         Ok(Self { layers })
     }
 
-    /// Sequential forward through every layer. `input` is
-    /// `[seq_len · input_dim]` row-major (batch_first=True); output is
-    /// `[seq_len · (2·hidden_dim)]` row-major.
-    pub fn forward(&self, input: &[f32], seq_len: usize) -> Vec<f32> {
-        let mut buf = input.to_vec();
+    /// Runs every layer with backend-dispatched learned input and recurrent
+    /// GEMV projections.
+    pub fn forward_with_compute(
+        &self,
+        input: &[f32],
+        seq_len: usize,
+        compute: &Compute,
+    ) -> Result<Vec<f32>> {
+        let mut buffer = input.to_vec();
         for layer in &self.layers {
-            buf = layer.forward(&buf, seq_len);
+            buffer = layer.forward_with_compute(&buffer, seq_len, compute)?;
         }
-        buf
+        Ok(buffer)
     }
 }
 
@@ -446,6 +530,15 @@ mod tests {
             .map(|i| ((i as f32) - 4.0) * 0.1)
             .collect();
         let out = layer.forward(&input, 4);
+        let dispatched = layer
+            .forward_with_compute(&input, 4, &Compute::cpu())
+            .expect("Compute BiLSTM");
+        let max_abs = out
+            .iter()
+            .zip(&dispatched)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_abs <= 1e-5, "BiLSTM Compute max_abs={max_abs}");
         for &v in &out {
             assert!(v.is_finite(), "output contains non-finite: {v}");
         }

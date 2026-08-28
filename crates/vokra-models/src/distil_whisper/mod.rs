@@ -108,6 +108,9 @@ use vokra_core::{BackendKind, Result, VokraError};
 
 use crate::whisper::{WhisperAsr, WhisperTokenizer};
 
+#[cfg(feature = "coreml")]
+use crate::whisper::CoreMlArtifact;
+
 /// `vokra.model.arch` a distil-whisper GGUF must carry. Written by
 /// `vokra-convert::models::distil_whisper::ARCH`; the compliance registry
 /// (`vokra_core::compliance`) knows `distil-whisper` / `distil-large-v3` /
@@ -788,6 +791,25 @@ impl DistilWhisperAsr {
             self.kind = DistilWhisperAsrKind::Delegate(asr.with_backend(backend));
         }
         self
+    }
+
+    /// Binds the verified whole-encoder CoreML sidecar to the shared Whisper
+    /// delegate path. The config-only scaffold has no executable model and
+    /// therefore rejects the artifact instead of dropping it silently.
+    #[cfg(feature = "coreml")]
+    pub fn with_coreml_artifact(mut self, artifact: CoreMlArtifact) -> Result<Self> {
+        self.kind = match self.kind {
+            DistilWhisperAsrKind::Delegate(asr) => {
+                DistilWhisperAsrKind::Delegate(asr.with_coreml_artifact(artifact)?)
+            }
+            DistilWhisperAsrKind::Scaffold(_) => {
+                return Err(VokraError::UnsupportedOp(
+                    "distil-whisper CoreML artifact requires from_gguf; the config-only scaffold has no executable weights"
+                        .to_owned(),
+                ));
+            }
+        };
+        Ok(self)
     }
 
     /// The resolved configuration.

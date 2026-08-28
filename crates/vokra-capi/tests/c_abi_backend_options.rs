@@ -599,9 +599,16 @@ fn t2_options_cpu_matches_legacy_create_from_bytes() {
 /// eagerly, or the loader may validate at creation — but it must happen at one
 /// of them. In the default build (no GPU features on `vokra-capi`) all four GPU
 /// backends take the unavailable branch.
+///
+/// A backend that *is* available takes the second branch: an arch whose engine
+/// honors the selection must produce real output on it, and an arch whose
+/// engine cannot run every hot op it needs must be refused with
+/// `VOKRA_ERROR_UNSUPPORTED_OP`. Either way, a session that quietly evaluated
+/// on the CPU is a failure.
 #[test]
 fn t3_unavailable_backend_never_falls_back_to_cpu() {
     let path = silero_path_cstring();
+    let reference_len = legacy_file_probs().len();
     let mut checked_unavailable = 0usize;
     let mut checked_available = 0usize;
 
@@ -672,45 +679,79 @@ fn t3_unavailable_backend_never_falls_back_to_cpu() {
                 );
             }
         } else {
-            // The backend exists on this machine — and the fixture is Silero
-            // VAD, whose engine is not backend-parameterised. Handing back a
-            // session here would run the model on the CPU while the caller
-            // believes the GPU is in use, which is exactly the silent fall
-            // back FR-EX-08 forbids, so VOKRA_OK is a *failure*, not one of
-            // several acceptable outcomes.
+            // The backend exists on this machine. Which outcome is correct
+            // depends on whether *this arch's* engine is backend-parameterised:
             //
-            // The earlier version of this assertion accepted VOKRA_OK. The
-            // 2026-08-14 review showed that made the branch a rubber stamp:
-            // deleting the `reject_cpu_only_backend(backend, "VAD (Silero)")`
-            // guard from `inject_engine` left this test green on a Metal
-            // build.
+            //   - Silero VAD became backend-honoring in this branch
+            //     (`SileroVadV5::with_backend`, `Compute::for_backend` over
+            //     `SILERO_HOT_OPS`), so a backend that covers `Conv1d` and
+            //     `Gemv` really does run the forward — VOKRA_OK is correct and
+            //     the session must actually produce probabilities.
+            //   - A backend that does not cover every hot op must be refused
+            //     with UNSUPPORTED_OP, never handed back as a CPU session.
+            //
+            // The 2026-08-14 review is why the VOKRA_OK arm still drives the
+            // session instead of accepting the status alone: a branch that
+            // only looked at the status code stayed green when the CPU-only
+            // guard was deleted. Engines that are *not* backend-parameterised
+            // (Mimi, NanoCodec) keep that guard, and
+            // `session::tests::reject_cpu_only_backend_passes_cpu_and_refuses_gpus`
+            // covers it directly.
             checked_available += 1;
             let mut session: *mut c_void = ptr::null_mut();
             // SAFETY: valid path, live options handle, writable out-slot.
             let st = unsafe {
                 vokra_session_create_from_file_with_options(path.as_ptr(), opts, &mut session)
             };
-            assert_eq!(
-                st,
-                VOKRA_ERROR_UNSUPPORTED_OP,
-                "create_from_file_with_options({}) returned {} for an available \
-                 backend over a CPU-only arch (Silero VAD) — it must be refused \
-                 with UNSUPPORTED_OP; VOKRA_OK here is the silent CPU fall back \
-                 FR-EX-08 forbids",
-                backend_name(backend),
-                status_name(st)
-            );
-            assert!(
-                session.is_null(),
-                "out_session was written on the reject path for {}",
-                backend_name(backend)
-            );
-            assert!(
-                last_error().is_some(),
-                "rejecting {} over a CPU-only arch recorded no message for \
-                 vokra_last_error()",
-                backend_name(backend)
-            );
+            if st == VOKRA_OK {
+                assert!(
+                    !session.is_null(),
+                    "create_from_file_with_options({}) returned VOKRA_OK without \
+                     writing a session handle",
+                    backend_name(backend)
+                );
+                let probs = vad_probs(session);
+                // SAFETY: handle freshly created, destroyed exactly once.
+                unsafe { vokra_session_destroy(session) };
+                assert_eq!(
+                    probs.len(),
+                    reference_len,
+                    "{} produced {} probabilities for the shared fixture; the CPU \
+                     reference produced {}",
+                    backend_name(backend),
+                    probs.len(),
+                    reference_len
+                );
+                assert!(
+                    probs
+                        .iter()
+                        .all(|p| p.is_finite() && (0.0..=1.0).contains(p)),
+                    "{} produced a non-finite or out-of-range probability: {:?}",
+                    backend_name(backend),
+                    probs
+                );
+            } else {
+                assert_eq!(
+                    st,
+                    VOKRA_ERROR_UNSUPPORTED_OP,
+                    "create_from_file_with_options({}) returned {} for an available \
+                     backend — a backend that cannot run every hot op this arch \
+                     needs is refused with UNSUPPORTED_OP (design §5), never with \
+                     a session that quietly ran on the CPU (FR-EX-08)",
+                    backend_name(backend),
+                    status_name(st)
+                );
+                assert!(
+                    session.is_null(),
+                    "out_session was written on the reject path for {}",
+                    backend_name(backend)
+                );
+                assert!(
+                    last_error().is_some(),
+                    "rejecting {} recorded no message for vokra_last_error()",
+                    backend_name(backend)
+                );
+            }
         }
 
         // SAFETY: freshly created options handle, destroyed exactly once.
@@ -730,7 +771,7 @@ fn t3_unavailable_backend_never_falls_back_to_cpu() {
     println!(
         "t3: {checked_unavailable}/{} GPU backends were unavailable in this build \
          and took the no-fallback branch; {checked_available} were available and \
-         took the CPU-only-arch refusal branch",
+         were driven through the accept-or-refuse branch",
         GPU_BACKENDS.len()
     );
 }

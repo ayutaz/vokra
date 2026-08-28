@@ -1,0 +1,30 @@
+{
+  "checkpoint_sha256": "9d96cafa0ede1a84799b67dc9b5645f31f5b7d094e7e4775e5d5c12547883a93",
+  "embedding_shape": [
+    1,
+    1,
+    512
+  ],
+  "feature_shape": [
+    1,
+    101,
+    24
+  ],
+  "format": "vokra-xvector-reference-v1",
+  "model_id": "speechbrain/spkrec-xvect-voxceleb",
+  "numpy": "2.3.5",
+  "pcm_samples": 16000,
+  "python": "3.12.7",
+  "raw_feature_shape": [
+    1,
+    101,
+    24
+  ],
+  "revision": "56895a2df401be4150a159f3a1c653f00051d477",
+  "sample_rate": 16000,
+  "source": "speechbrain/spkrec-xvect-voxceleb",
+  "speechbrain": "1.0.3",
+  "statistics_pool_noise_seed": 1234,
+  "torch": "2.13.0",
+  "torchaudio": "2.11.0"
+}

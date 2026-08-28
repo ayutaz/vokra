@@ -749,6 +749,174 @@ impl HifiGanSpectralChecker {
 // FP32 / FP16 forward
 // ---------------------------------------------------------------------------
 
+/// Backend seam for the learned convolution stack of a HiFi-GAN generator.
+///
+/// The established scalar forward implements this trait internally and stays
+/// the CPU numerical oracle. Imperative model runtimes may supply an adapter
+/// that dispatches the same Conv1D and ConvTranspose1D contracts to a selected
+/// device. Padding, dilation and transposed-convolution semantics are explicit
+/// here so an adapter cannot silently substitute a plain convolution.
+pub trait HifiGanBackendOps {
+    /// Conv1D with optional dilation and the requested boundary mode.
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        padding_mode: HifiGanConvPadding,
+    ) -> Result<Vec<f32>>;
+
+    /// PyTorch-layout ConvTranspose1D (`weight = [in_ch, out_ch, kernel]`).
+    #[allow(clippy::too_many_arguments)]
+    fn conv_transpose1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// PyTorch-layout ConvTranspose1D with explicit `output_padding`.
+    /// Existing backends retain their old contract through the default arm;
+    /// a non-zero value must be implemented explicitly and never falls back
+    /// to a different device or silently changes the output extent.
+    #[allow(clippy::too_many_arguments)]
+    fn conv_transpose1d_with_output_padding(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<Vec<f32>> {
+        if output_padding == 0 {
+            self.conv_transpose1d(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding,
+            )
+        } else {
+            Err(VokraError::UnsupportedOp(format!(
+                "ConvTranspose1D output_padding={output_padding} is not implemented by this \
+                 backend (no silent fallback)"
+            )))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScalarHifiGanBackendOps;
+
+impl HifiGanBackendOps for ScalarHifiGanBackendOps {
+    fn conv1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        padding_mode: HifiGanConvPadding,
+    ) -> Result<Vec<f32>> {
+        if dilation == 1 {
+            conv1d_scalar_with_padding_mode(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                stride,
+                padding,
+                padding_mode,
+            )
+        } else if stride == 1 {
+            dilated_conv1d_scalar(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                dilation,
+                padding,
+                padding_mode,
+            )
+        } else {
+            Err(VokraError::UnsupportedOp(
+                "HiFi-GAN scalar backend does not define simultaneous stride > 1 and dilation > 1"
+                    .to_owned(),
+            ))
+        }
+    }
+
+    fn conv_transpose1d(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        transposed_conv1d_scalar(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding,
+        )
+    }
+
+    fn conv_transpose1d_with_output_padding(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+    ) -> Result<Vec<f32>> {
+        transposed_conv1d_scalar_with_output_padding(
+            input,
+            in_ch,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            output_padding,
+        )
+    }
+}
+
 /// Runs the HiFi-GAN generator forward pass.
 ///
 /// See the module doc for the op contract. Every convolution / MRF stage is
@@ -798,6 +966,61 @@ pub fn hifigan_generator_with_conv_padding(
     conv_padding: HifiGanConvPadding,
 ) -> Result<Vec<f32>> {
     hifigan_generator_internal(mel, n_frames, weights, attrs, config, None, conv_padding)
+}
+
+/// Runs an unconditioned HiFi-GAN through a caller-supplied learned-op
+/// backend. The scalar preprocessing, activations, residual additions and
+/// terminal tanh remain identical to [`hifigan_generator_with_conv_padding`].
+/// Every learned convolution, including the transposed upsample stages,
+/// reaches `ops`.
+pub fn hifigan_generator_with_backend_ops<O: HifiGanBackendOps>(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    conv_padding: HifiGanConvPadding,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal_with_ops(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        None,
+        conv_padding,
+        ops,
+    )
+}
+
+/// Runs a speaker-conditioned HiFi-GAN through a caller-supplied learned-op
+/// backend. This is the backend-dispatched counterpart of
+/// [`hifigan_generator_conditioned`]: every convolution, including the
+/// conditioning projection and transposed upsample stages, reaches `ops`.
+/// Scalar activations, residual additions and terminal tanh retain the shared
+/// generator implementation.
+#[allow(clippy::too_many_arguments)]
+pub fn hifigan_generator_conditioned_with_backend_ops<O: HifiGanBackendOps>(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    g: &[f32],
+    conv_padding: HifiGanConvPadding,
+    ops: &O,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal_with_ops(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        Some(g),
+        conv_padding,
+        ops,
+    )
 }
 
 /// HGAN-05-GIN-COND (2026-08-09): HiFi-GAN generator with optional
@@ -858,6 +1081,29 @@ fn hifigan_generator_internal(
     config: &HifiGanConfig,
     g: Option<&[f32]>,
     conv_padding: HifiGanConvPadding,
+) -> Result<Vec<f32>> {
+    hifigan_generator_internal_with_ops(
+        mel,
+        n_frames,
+        weights,
+        attrs,
+        config,
+        g,
+        conv_padding,
+        &ScalarHifiGanBackendOps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hifigan_generator_internal_with_ops<O: HifiGanBackendOps>(
+    mel: &[f32],
+    n_frames: usize,
+    weights: &HifiGanWeights,
+    attrs: &HifiGanAttrs,
+    config: &HifiGanConfig,
+    g: Option<&[f32]>,
+    conv_padding: HifiGanConvPadding,
+    ops: &O,
 ) -> Result<Vec<f32>> {
     attrs.validate_shape()?;
     config.validate()?;
@@ -924,7 +1170,7 @@ fn hifigan_generator_internal(
     }
 
     // --- Stage 0: initial conv1d [n_mels, n_frames] → [initial_channel, n_frames] ---
-    let mut h = conv1d_scalar_with_padding_mode(
+    let mut h = ops.conv1d(
         mel,
         attrs.n_mels,
         n_frames,
@@ -933,6 +1179,7 @@ fn hifigan_generator_internal(
         weights.conv_pre_kernel,
         Some(&weights.conv_pre_bias),
         1,                           // stride
+        1,                           // dilation
         weights.conv_pre_kernel / 2, // "same" padding
         conv_padding,
     )?;
@@ -959,15 +1206,19 @@ fn hifigan_generator_internal(
         // 1×1 conv: `cond_out[c] = Σ_i cond_weight[c, i] * g[i] + cond_bias[c]`.
         // Weight is `[initial_channel, gin_channels, 1]` = `[initial_channel, gin_channels]`
         // when kernel is 1 (contiguous).
-        let mut cond_out = vec![0.0_f32; attrs.initial_channel];
-        for (c, out_c) in cond_out.iter_mut().enumerate() {
-            let row = &cond.weight[c * cond.gin_channels..(c + 1) * cond.gin_channels];
-            let mut acc = 0.0_f32;
-            for (&w, &g_val) in row.iter().zip(g_vec.iter()) {
-                acc += w * g_val;
-            }
-            *out_c = acc + cond.bias[c];
-        }
+        let cond_out = ops.conv1d(
+            g_vec,
+            cond.gin_channels,
+            1,
+            &cond.weight,
+            attrs.initial_channel,
+            1,
+            Some(&cond.bias),
+            1,
+            1,
+            0,
+            HifiGanConvPadding::Zero,
+        )?;
         // Broadcast-add across every time step. Chunk `h` into
         // per-channel rows (`[cur_channels=initial_channel, n_frames]`
         // layout — every row is `n_frames` samples wide).
@@ -994,7 +1245,7 @@ fn hifigan_generator_internal(
         let up = &weights.upsample_weights[stage];
         let padding = (up.kernel.saturating_sub(up.stride)) / 2;
         let out_time = (cur_time - 1) * up.stride + up.kernel - 2 * padding;
-        let up_out = transposed_conv1d_scalar(
+        let up_out = ops.conv_transpose1d(
             &h,
             up.in_ch,
             cur_time,
@@ -1009,7 +1260,7 @@ fn hifigan_generator_internal(
         let mrf_stage = &weights.mrf_stage_weights[stage];
         let mut mrf_acc = vec![0.0_f32; up.out_ch * out_time];
         for branch in mrf_stage {
-            let branch_out = mrf_branch_forward(
+            let branch_out = mrf_branch_forward_with_ops(
                 &up_out,
                 up.out_ch,
                 out_time,
@@ -1017,6 +1268,7 @@ fn hifigan_generator_internal(
                 attrs.leaky_relu_slope,
                 attrs.res_block_type,
                 conv_padding,
+                ops,
             )?;
             for (a, b) in mrf_acc.iter_mut().zip(branch_out.iter()) {
                 *a += *b;
@@ -1055,7 +1307,7 @@ fn hifigan_generator_internal(
     } else {
         Some(&weights.conv_post_bias)
     };
-    let final_out = conv1d_scalar_with_padding_mode(
+    let final_out = ops.conv1d(
         &h,
         cur_channels,
         cur_time,
@@ -1063,6 +1315,7 @@ fn hifigan_generator_internal(
         1,
         weights.conv_post_kernel,
         conv_post_bias_slot,
+        1,
         1,
         weights.conv_post_kernel / 2,
         conv_padding,
@@ -1208,6 +1461,24 @@ fn transposed_conv1d_scalar(
     stride: usize,
     padding: usize,
 ) -> Result<Vec<f32>> {
+    transposed_conv1d_scalar_with_output_padding(
+        input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, 0,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
+fn transposed_conv1d_scalar_with_output_padding(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+) -> Result<Vec<f32>> {
     if stride == 0 {
         return Err(VokraError::InvalidArgument(
             "transposed_conv1d: stride must be >= 1".to_owned(),
@@ -1217,6 +1488,16 @@ fn transposed_conv1d_scalar(
         return Err(VokraError::InvalidArgument(
             "transposed_conv1d: kernel must be >= 1".to_owned(),
         ));
+    }
+    if in_len == 0 {
+        return Err(VokraError::InvalidArgument(
+            "transposed_conv1d: in_len must be >= 1".to_owned(),
+        ));
+    }
+    if output_padding >= stride {
+        return Err(VokraError::InvalidArgument(format!(
+            "transposed_conv1d: output_padding {output_padding} must be < stride {stride}"
+        )));
     }
     if input.len() != in_ch * in_len {
         return Err(VokraError::InvalidArgument(format!(
@@ -1241,7 +1522,15 @@ fn transposed_conv1d_scalar(
             out_ch
         )));
     }
-    let full_out = (in_len - 1) * stride + kernel;
+    let full_out = (in_len - 1)
+        .checked_mul(stride)
+        .and_then(|v| v.checked_add(kernel))
+        .and_then(|v| v.checked_add(output_padding))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "transposed_conv1d: output length arithmetic overflow".to_owned(),
+            )
+        })?;
     if full_out < 2 * padding {
         return Err(VokraError::InvalidArgument(format!(
             "transposed_conv1d: 2*padding {} exceeds naive output {full_out}",
@@ -1318,6 +1607,7 @@ fn transposed_conv1d_scalar(
 /// - V1 requires `layer.weight_c2 + layer.bias_c2 == Some` on every
 ///   layer; V2 requires them both `None`. Partial mixing is a converter
 ///   bug (loud `InvalidArgument`, FR-EX-08).
+#[cfg(test)]
 fn mrf_branch_forward(
     input: &[f32],
     channels: usize,
@@ -1326,6 +1616,29 @@ fn mrf_branch_forward(
     leaky_slope: f32,
     res_block_type: ResBlockType,
     padding_mode: HifiGanConvPadding,
+) -> Result<Vec<f32>> {
+    mrf_branch_forward_with_ops(
+        input,
+        channels,
+        time,
+        branch,
+        leaky_slope,
+        res_block_type,
+        padding_mode,
+        &ScalarHifiGanBackendOps,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mrf_branch_forward_with_ops<O: HifiGanBackendOps>(
+    input: &[f32],
+    channels: usize,
+    time: usize,
+    branch: &MrfBranchWeights,
+    leaky_slope: f32,
+    res_block_type: ResBlockType,
+    padding_mode: HifiGanConvPadding,
+    ops: &O,
 ) -> Result<Vec<f32>> {
     if input.len() != channels * time {
         return Err(VokraError::InvalidArgument(format!(
@@ -1353,7 +1666,7 @@ fn mrf_branch_forward(
         let mut xt = x.clone();
         leaky_relu_inplace(&mut xt, leaky_slope);
         let padding_c1 = layer.dilation * (layer.kernel - 1) / 2;
-        xt = dilated_conv1d_scalar(
+        xt = ops.conv1d(
             &xt,
             channels,
             time,
@@ -1361,6 +1674,7 @@ fn mrf_branch_forward(
             channels,
             layer.kernel,
             Some(&layer.bias),
+            1,
             layer.dilation,
             padding_c1,
             padding_mode,
@@ -1388,7 +1702,7 @@ fn mrf_branch_forward(
                 // upstream `ResBlock1.__init__` — see
                 // `tools/parity/vendor/vits/modules.py:244-251`.
                 let padding_c2 = (layer.kernel - 1) / 2;
-                xt = dilated_conv1d_scalar(
+                xt = ops.conv1d(
                     &xt,
                     channels,
                     time,
@@ -1396,6 +1710,7 @@ fn mrf_branch_forward(
                     channels,
                     layer.kernel,
                     Some(bias_c2),
+                    1,
                     1, // dilation
                     padding_c2,
                     padding_mode,
@@ -1718,6 +2033,36 @@ fn validate_weights(w: &HifiGanWeights, attrs: &HifiGanAttrs) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn conv_transpose_output_padding_extends_and_computes_tail() {
+        // PyTorch shape: (2-1)*3 - 2*2 + (4-1) + 1 + 1 = 4.
+        // The extra tail is a real convolution value (2*weight[2] = 6),
+        // not a zero-filled placeholder.
+        let got = ScalarHifiGanBackendOps
+            .conv_transpose1d_with_output_padding(
+                &[1.0, 2.0],
+                1,
+                2,
+                &[1.0, 2.0, 3.0, 4.0],
+                1,
+                4,
+                None,
+                3,
+                2,
+                1,
+            )
+            .unwrap();
+        assert_eq!(got, [3.0, 6.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn conv_transpose_rejects_output_padding_not_less_than_stride() {
+        let err = ScalarHifiGanBackendOps
+            .conv_transpose1d_with_output_padding(&[1.0], 1, 1, &[1.0, 2.0], 1, 2, None, 2, 0, 2)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
     /// Tiny attrs shape used across tests — big enough to exercise the
     /// upsample stack + MRF branch average, small enough to reason about.
     ///
@@ -1940,6 +2285,45 @@ mod tests {
             }
         }
         w
+    }
+
+    #[test]
+    fn conditioned_backend_entry_matches_scalar_entry() {
+        let attrs = tiny_attrs_v1();
+        let mut weights = tiny_weights_v1(&attrs);
+        weights.cond = Some(GinCondition {
+            weight: (0..attrs.initial_channel * 3)
+                .map(|index| index as f32 * 0.002 - 0.01)
+                .collect(),
+            bias: vec![0.003; attrs.initial_channel],
+            gin_channels: 3,
+        });
+        let frames = 3;
+        let mel: Vec<f32> = (0..attrs.n_mels * frames)
+            .map(|index| index as f32 * 0.01 - 0.04)
+            .collect();
+        let conditioning = [0.2, -0.3, 0.5];
+        let reference = hifigan_generator_conditioned(
+            &mel,
+            frames,
+            &weights,
+            &attrs,
+            &HifiGanConfig::fp32(),
+            Some(&conditioning),
+        )
+        .unwrap();
+        let actual = hifigan_generator_conditioned_with_backend_ops(
+            &mel,
+            frames,
+            &weights,
+            &attrs,
+            &HifiGanConfig::fp32(),
+            &conditioning,
+            HifiGanConvPadding::Zero,
+            &ScalarHifiGanBackendOps,
+        )
+        .unwrap();
+        assert_eq!(actual, reference);
     }
 
     // ---- T02: attrs validate ---------------------------------------------

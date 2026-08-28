@@ -252,6 +252,45 @@ fn parity_nkf_aec_erle_floor() {
     }
 }
 
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn parity_nkf_aec_cpu_metal_real_pair() {
+    let (Some(gguf_path), Some(mic_path), Some(farend_path)) = (
+        env::var(GGUF_ENV).ok(),
+        env::var(MIC_ENV).ok(),
+        env::var(FAREND_ENV).ok(),
+    ) else {
+        eprintln!("set {GGUF_ENV}, {MIC_ENV}, and {FAREND_ENV} for NKF CPU/Metal parity");
+        return;
+    };
+    let cpu = NkfAec::open(Path::new(&gguf_path)).expect("bind NKF CPU");
+    let metal = NkfAec::open(Path::new(&gguf_path))
+        .expect("bind NKF Metal")
+        .with_backend(vokra_core::BackendKind::Metal);
+    assert_eq!(cpu.backend(), vokra_core::BackendKind::Cpu);
+    assert_eq!(metal.backend(), vokra_core::BackendKind::Metal);
+    let mic = load_mono_16k_wav(&mic_path);
+    let farend = load_mono_16k_wav(&farend_path);
+    assert_eq!(mic.len(), farend.len());
+    let samples = mic.len().min(SAMPLE_RATE as usize);
+    let mut cpu_stream = cpu.open_stream(SAMPLE_RATE).unwrap();
+    let mut metal_stream = metal.open_stream(SAMPLE_RATE).unwrap();
+    let cpu_output = cpu_stream
+        .push_paired(&mic[..samples], &farend[..samples])
+        .unwrap();
+    let metal_output = metal_stream
+        .push_paired(&mic[..samples], &farend[..samples])
+        .unwrap();
+    assert_eq!(metal_output.len(), cpu_output.len());
+    let max_abs = metal_output
+        .iter()
+        .zip(&cpu_output)
+        .map(|(&metal, &cpu)| (metal - cpu).abs())
+        .fold(0.0f32, f32::max);
+    eprintln!("NKF-AEC real CPU/Metal max_abs={max_abs:e}");
+    assert!(max_abs <= 1e-2);
+}
+
 /// GATED: verifies FR-EX-08 sample-rate refusal on a real GGUF (an
 /// engine bound at 16 kHz refuses `open_stream(8000)` loudly).
 #[test]

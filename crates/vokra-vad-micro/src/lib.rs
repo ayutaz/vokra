@@ -63,7 +63,8 @@ mod weights;
 
 pub use encoder::{EncoderOut, encode};
 pub use lstm::LstmState;
+pub use math::SileroBackendOps;
 pub use pseudo_stft::{Magnitude, pseudo_stft, stft_conv};
-pub use vad::{SampleRate, run_frame};
+pub use vad::{SampleRate, run_frame, run_frame_with_ops};
 pub use vokra_core::gguf::silero::SileroVariant;
 pub use weights::{RateWeights, SileroWeights};

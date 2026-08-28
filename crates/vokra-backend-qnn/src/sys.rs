@@ -31,14 +31,11 @@
 //! # ⚠ Nothing here is verified against a QNN SDK header
 //!
 //! No Qualcomm AI Engine Direct SDK is on the authoring host. The library
-//! candidate names, the interface entry symbol name, and the placeholder struct
-//! layout below are **from the WP instruction, not first-hand verified**. The
-//! compile-time layout assert is a *self-consistency guard* (sum of the
-//! hand-written field sizes), **not** a real-header check — owner T11 confirms
-//! the values against the SDK header (see `docs/handoff/m5-02.md`). The scaffold
+//! candidate names and the interface entry symbol name are **not first-hand
+//! verified against the installed SDK**. No QNN struct or function signature is
+//! declared here until owner T11 supplies the exact SDK headers. The scaffold
 //! probe therefore only checks that the library loads and a representative
-//! symbol *resolves* — it never calls a QNN entry point (which would require a
-//! verified signature and struct layout that do not exist yet).
+//! symbol *resolves* — it never calls a QNN entry point.
 
 // `c_int` is used only inside the platform `dl` submodules (each imports it
 // itself); the top level needs just `c_char` (dlopen name casts) and `c_void`
@@ -282,39 +279,3 @@ pub(crate) fn load_qnn_library() -> Result<DynLib> {
             .to_owned(),
     ))
 }
-
-// ---------------------------------------------------------------------------
-// Placeholder struct layout + compile-time self-consistency guard (M5-02-T04).
-//
-// ⚠ NOT a real-header transcription. No QNN SDK is on the authoring host, so the
-// field set below is a PLACEHOLDER that only demonstrates the compile-time
-// layout-assert mechanism (the M3-11 GDExtension pattern). The asserted size /
-// align are the sum of the hand-written fields — a self-consistency guard that
-// catches an accidental field-set edit, NOT proof that the layout matches the
-// SDK. Owner T11 verifies the real `Qnn_Version_t` (and every other struct the
-// graph-construction re-issue wave needs) against the header and corrects these
-// values, exactly as M3-11 probed the Godot header with `clang -m64`.
-//
-// `allow(dead_code)`: the fields are never read (only `size_of` / `align_of` are
-// taken by the assert) — a real read appears in the re-issue wave once the
-// struct is actually passed to a QNN entry point with a verified signature.
-// ---------------------------------------------------------------------------
-
-/// **PLACEHOLDER, UNVERIFIED** QNN API-version struct skeleton (a common
-/// version-triple convention — *not* a claim about the SDK's real layout).
-#[cfg(target_pointer_width = "64")]
-#[repr(C)]
-#[allow(dead_code)]
-pub(crate) struct Qnn_Version_t {
-    major: u32,
-    minor: u32,
-    patch: u32,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = {
-    // 3 × u32 = 12 bytes, 4-byte aligned. Self-consistency guard only (owner
-    // T11 replaces with the SDK-verified value).
-    assert!(core::mem::size_of::<Qnn_Version_t>() == 12);
-    assert!(core::mem::align_of::<Qnn_Version_t>() == 4);
-};

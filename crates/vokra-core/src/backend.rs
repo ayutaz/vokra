@@ -9,6 +9,38 @@ use crate::error::{Result, VokraError};
 use crate::ir::{AudioGraph, OpKind};
 use crate::runtime::Tensor;
 
+/// A model-owned execution unit delegated as one indivisible graph.
+///
+/// Delegate backends execute one of these declared boundaries in full. They do
+/// not use [`Backend::supports`] to auto-partition individual operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DelegateSubmodel {
+    /// Whisper's complete audio encoder: log-mel input to encoder hidden state.
+    WhisperEncoder,
+}
+
+/// Data-carrying execution surface for graph/submodel delegates.
+///
+/// This is intentionally separate from [`Backend`]. The latter is the uniform
+/// per-op graph surface, whereas this trait accepts only an explicitly declared
+/// whole-submodel boundary. A delegate must return an error for an unsupported
+/// boundary and must never run that boundary on the Vokra CPU backend.
+pub trait DelegateBackend {
+    /// Human-readable delegate name (for example `"coreml"` or `"qnn"`).
+    fn delegate_name(&self) -> &str;
+
+    /// Whether this delegate can execute the complete declared submodel.
+    fn supports_submodel(&self, submodel: DelegateSubmodel) -> bool;
+
+    /// Executes one complete declared submodel.
+    fn execute_submodel(
+        &self,
+        submodel: DelegateSubmodel,
+        inputs: &[&Tensor],
+    ) -> Result<Vec<Tensor>>;
+}
+
 /// Abstraction implemented by every compute backend.
 ///
 /// # Uniform op coverage (FR-EX-08, permanent constraint)
@@ -148,9 +180,10 @@ pub enum BackendKind {
     /// (which the [`Backend`] trait's "same op coverage" rule forbids) and not
     /// a silent fallback.
     ///
-    /// **Scaffold status (M5-01):** the op-execution path lands after the
-    /// model-supply ADR (M5-01-T02) is ratified, so every hot op is currently
-    /// reported as
+    /// **Whole-submodel status (M5-01):** the complete Whisper audio encoder is
+    /// executable through [`DelegateBackend`] and a validated, hash-bound
+    /// CoreML sidecar. Ordinary per-op [`Backend`] coverage remains empty by
+    /// design, so every individual hot op is reported as
     /// [`VokraError::UnsupportedOp`]. A host
     /// with no reachable Apple Neural Engine (an Intel Mac, or any non-Apple
     /// target where the backend is compiled out) is an explicit
@@ -160,8 +193,10 @@ pub enum BackendKind {
     /// A **C-level** selector for this delegate is intentionally *not* exported
     /// during the v1.0-rc window; that is an M5-13 decision after the
     /// real-hardware NPU bakeoff (`include/vokra.h`, `docs/handoff/m4-12.md`).
-    /// The Rust-side surface (`with_backend` / `vokra-cli --backend coreml`) is
-    /// the only way to select it for now.
+    /// The opt-in Rust-side surface (`with_backend` / `vokra-cli --backend
+    /// coreml`) is the only way to select it for now. The 2026-08-24 M1
+    /// bakeoff passed ANE placement but failed parity and 2x speed, so this is
+    /// not a C-export candidate.
     CoreMl,
     /// QNN delegate backend (Qualcomm Hexagon NPU, FR-BE-06). Implemented in
     /// `vokra-backend-qnn` (M5-02) with raw QNN (Qualcomm AI Engine Direct SDK)
@@ -241,5 +276,39 @@ mod tests {
         let b = NullBackend;
         let err = b.eval_op(&OpKind::MatMul, &[]).unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)));
+    }
+
+    struct NullDelegate;
+
+    impl DelegateBackend for NullDelegate {
+        fn delegate_name(&self) -> &str {
+            "null-delegate"
+        }
+
+        fn supports_submodel(&self, _submodel: DelegateSubmodel) -> bool {
+            false
+        }
+
+        fn execute_submodel(
+            &self,
+            submodel: DelegateSubmodel,
+            _inputs: &[&Tensor],
+        ) -> Result<Vec<Tensor>> {
+            Err(VokraError::UnsupportedOp(format!(
+                "{} does not support {submodel:?}",
+                self.delegate_name()
+            )))
+        }
+    }
+
+    #[test]
+    fn delegate_trait_is_object_safe_and_fail_loud() {
+        let delegate: Box<dyn DelegateBackend> = Box::new(NullDelegate);
+        assert_eq!(delegate.delegate_name(), "null-delegate");
+        assert!(!delegate.supports_submodel(DelegateSubmodel::WhisperEncoder));
+        assert!(matches!(
+            delegate.execute_submodel(DelegateSubmodel::WhisperEncoder, &[]),
+            Err(VokraError::UnsupportedOp(_))
+        ));
     }
 }

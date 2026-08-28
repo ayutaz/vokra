@@ -13,6 +13,9 @@ weight-map (~6.6 GB total, verified 2026-08-01 via HF cardData API
 The sibling ``OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano`` ships as **1
 sharded safetensors** (``model-00001-of-00001.safetensors``) with the same
 ``model.safetensors.index.json`` weight-map layout (~88 MB total).
+``OpenMOSS-Team/MOSS-Audio-Tokenizer-v2`` ships as **3 shards** containing
+8,494,804,992 F32 tensor bytes. It must be prepared on vast.ai, pinned to
+revision ``f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169``.
 
 Vokra's Rust converter (``crates/vokra-convert/src/models/moss_audio_tokenizer.rs``)
 consumes **single-file safetensors** by design — the runtime never grows
@@ -68,6 +71,12 @@ tensor bytes verbatim without invoking the modeling code.
         --hf-repo OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano \\
         --output /tmp/moss-audio-tokenizer-nano.safetensors
 
+    uv run --project tools/parity python \\
+        tools/parity/moss_audio_tokenizer_prepare_checkpoint.py \\
+        --hf-repo OpenMOSS-Team/MOSS-Audio-Tokenizer-v2 \\
+        --revision f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169 \\
+        --output /tmp/moss-audio-tokenizer-v2.safetensors
+
 The optional ``--local-dir`` argument accepts a pre-downloaded checkpoint
 directory (skips the HF download); useful when the operator has already
 snapshotted the release for reproducibility.
@@ -82,6 +91,28 @@ import sys
 from pathlib import Path
 
 LOG_PREFIX = "moss_audio_tokenizer_prepare_checkpoint:"
+V2_REPO = "openmoss-team/moss-audio-tokenizer-v2"
+V2_REVISION = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"
+V2_FILE_SHA256 = {
+    "LICENSE": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a",
+    "config.json": "aeb9a0e9d88c74bf9fbaa81ee54443d463e09b5f335b3306bb798e282a10e564",
+    "configuration_moss_audio_tokenizer.py": "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529",
+    "model.safetensors.index.json": "912f52f053e04ff7e9abc8f05aa75dfbb40b31c86a0f4ad5c5a36e4aa28a624f",
+    "modeling_moss_audio_tokenizer.py": "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9",
+    "model-00001-of-00003.safetensors": "2d9f9182f17b143a23937feb87c63c08221bd28e685e4bc2fa55dcdce17fcde7",
+    "model-00002-of-00003.safetensors": "d4e48106d0254fe3b00ea0707e88fc6aee076993825e108dd9cef847f9db236e",
+    "model-00003-of-00003.safetensors": "d0449fe1b0ef1f6045946867148d8166b9a91a58d0feca4a18b641494d0b22da",
+}
+V2_FILE_BYTES = {
+    "LICENSE": 11_324,
+    "config.json": 10_166,
+    "configuration_moss_audio_tokenizer.py": 19_772,
+    "model.safetensors.index.json": 191_718,
+    "modeling_moss_audio_tokenizer.py": 105_970,
+    "model-00001-of-00003.safetensors": 3_978_639_168,
+    "model-00002-of-00003.safetensors": 3_992_738_352,
+    "model-00003-of-00003.safetensors": 523_681_336,
+}
 
 # Files the downstream Vokra converter needs. We deliberately fetch the
 # custom-code Python files too so an owner-side parity dumper (see the
@@ -92,6 +123,7 @@ HF_ALLOW_PATTERNS = [
     "config.json",
     "configuration_moss_audio_tokenizer.py",
     "modeling_moss_audio_tokenizer.py",
+    "LICENSE",
     "*.md",
 ]
 
@@ -155,13 +187,14 @@ def _load_shard(path: Path) -> dict:
     return sd
 
 
-def _download_repo(repo: str, out_dir: Path) -> Path:
+def _download_repo(repo: str, revision: str | None, out_dir: Path) -> Path:
     """Fetch the HF repo into ``out_dir`` via ``huggingface_hub.snapshot_download``."""
     from huggingface_hub import snapshot_download
 
     try:
         local_dir = snapshot_download(
             repo_id=repo,
+            revision=revision,
             local_dir=str(out_dir),
             allow_patterns=HF_ALLOW_PATTERNS,
         )
@@ -176,6 +209,28 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _validate_v2_contract(src_dir: Path) -> None:
+    """Fail closed unless every fixed-revision source and shard matches."""
+    for relative, expected in V2_FILE_SHA256.items():
+        path = src_dir / relative
+        if not path.is_file():
+            sys.exit(f"{LOG_PREFIX} v2 contract file is missing: {path}")
+        actual_bytes = path.stat().st_size
+        expected_bytes = V2_FILE_BYTES[relative]
+        if actual_bytes != expected_bytes:
+            sys.exit(
+                f"{LOG_PREFIX} v2 contract size mismatch for {relative}: "
+                f"got {actual_bytes}, expected {expected_bytes} at revision "
+                f"{V2_REVISION}"
+            )
+        actual = _sha256_file(path)
+        if actual != expected:
+            sys.exit(
+                f"{LOG_PREFIX} v2 contract hash mismatch for {relative}: "
+                f"got {actual}, expected {expected} at revision {V2_REVISION}"
+            )
 
 
 def main() -> int:
@@ -212,6 +267,14 @@ def main() -> int:
         help="destination .safetensors path (parent will be mkdir'd).",
     )
     ap.add_argument(
+        "--revision",
+        default=None,
+        help=(
+            "immutable HF revision to download. Required for v2; use "
+            "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169."
+        ),
+    )
+    ap.add_argument(
         "--download-dir",
         type=Path,
         default=None,
@@ -228,6 +291,17 @@ def main() -> int:
 
     if args.hf_repo is None and args.local_dir is None:
         print("either --hf-repo or --local-dir is required", file=sys.stderr)
+        return 2
+    if (
+        args.hf_repo is not None
+        and args.hf_repo.lower() == V2_REPO
+        and args.revision != V2_REVISION
+    ):
+        print(
+            f"{LOG_PREFIX} v2 requires --revision "
+            "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -256,7 +330,23 @@ def main() -> int:
             f"{LOG_PREFIX} downloading {args.hf_repo} → {download_dir}",
             file=sys.stderr,
         )
-        src_dir = _download_repo(args.hf_repo, download_dir)
+        src_dir = _download_repo(args.hf_repo, args.revision, download_dir)
+
+    v2_config = src_dir / "config.json"
+    is_v2 = (
+        args.hf_repo is not None and args.hf_repo.lower() == V2_REPO
+    ) or (
+        v2_config.is_file()
+        and _sha256_file(v2_config) == V2_FILE_SHA256["config.json"]
+    )
+    if is_v2 and args.revision != V2_REVISION:
+        print(
+            f"{LOG_PREFIX} v2 local input also requires --revision {V2_REVISION}",
+            file=sys.stderr,
+        )
+        return 2
+    if is_v2:
+        _validate_v2_contract(src_dir)
 
     # Locate the weight-map.
     index_path = src_dir / "model.safetensors.index.json"

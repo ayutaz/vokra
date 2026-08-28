@@ -5,8 +5,7 @@
 //! Input: an upstream Parler-TTS release — both variants ship
 //! `model.safetensors` directly (no torch-pickle prepare step). Output:
 //! a GGUF carrying every float tensor plus the `vokra.provenance.*` /
-//! `vokra.model.*` metadata chunks a future native Parler-TTS loader
-//! will read.
+//! `vokra.model.*` metadata chunks the native Parler-TTS loader reads.
 //!
 //! # Architecture (primary source, 2026-07-30 CC fetch)
 //!
@@ -15,7 +14,7 @@
 //! description ("A female speaker with a clear voice speaks slowly…").
 //! The pipeline: text description → T5 encoder (`text_encoder.*`) →
 //! cross-attention into Parler decoder (`decoder.*`) → 9 parallel
-//! DAC codebooks (24 kHz DAC, delay-shifted pattern) → DAC decoder
+//! DAC codebooks (delay-shifted pattern) → embedded DAC decoder
 //! → 44.1 kHz PCM.
 //!
 //! Every hparam below is transcribed verbatim from `huggingface.co/
@@ -26,7 +25,7 @@
 //! - `architectures = ["ParlerTTSForConditionalGeneration"]`
 //! - **Text encoder** (T5-family): `d_model=1024`, `num_layers=24`,
 //!   `num_heads=16`, `d_ff=2816`, `vocab_size=32128`
-//! - **Audio encoder** (DAC, external, referenced only): `model_type="dac"`,
+//! - **Audio encoder** (DAC, embedded in `model.safetensors`): `model_type="dac"`,
 //!   `codebook_size=1024`, `sampling_rate=44100`
 //! - **Decoder** (Parler-specific): `hidden_size=1024`,
 //!   `num_hidden_layers=24`, `num_attention_heads=16`,
@@ -45,17 +44,20 @@
 //!
 //! **Variant axis (mini-v1)** — the original English-only Mini release
 //! (`parler-tts/parler-tts-mini-v1`, Wave 4 land 2026-08-01) shares the
-//! tensor topology end-to-end with the multilingual variant. The **only
-//! primary hparam that differs is the top-level `vocab_size`**: 32128
+//! same T5/decoder geometry with the multilingual variant. The **config
+//! hparam that differs is the top-level `vocab_size`**: 32128
 //! (equal to the T5 text-encoder vocabulary, no audio-code alphabet
 //! merged in — English-only) vs the multilingual's 90714 (description
 //! tokenizer merged with the decoder's audio-code alphabet). Verbatim
 //! from `huggingface.co/parler-tts/parler-tts-mini-v1/raw/main/
 //! config.json` (fetched 2026-08-01 — CLAUDE.md「ハルシネーション厳禁」).
-//! Every T5 / decoder / audio-encoder hparam above is unchanged. Because
-//! only the top-level vocab_size differs, `ParlerVariant::vocab_size_top`
-//! per-variant dispatches the value while the other 14 `pub(crate)`
-//! constants stay shared.
+//! Every T5 / decoder / audio-encoder geometry hparam above is unchanged.
+//! The serialized tensor topology is nevertheless release-specific: English
+//! Mini uses nine separate LM heads plus weight-normalized
+//! `audio_encoder.model.*`; multilingual v1.1 uses a fused LM head plus plain
+//! Transformers `audio_encoder.*`. The runtime pins both complete manifests.
+//! `ParlerVariant::vocab_size_top` dispatches the metadata value while the
+//! other 14 geometry constants stay shared.
 //!
 //! # BF16 pass-through
 //!
@@ -65,28 +67,24 @@
 //! f32 losslessly via the shared choke point
 //! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`.
 //!
-//! # DAC dependency (external)
+//! # Embedded DAC
 //!
-//! Parler-TTS emits 9-codebook DAC token streams; the audio decoder
-//! itself is the standalone `descript/dac_44khz` release the runtime
-//! consumes via the shared `crate::models::dac` converter path
-//! (`ModelKind::Dac`, `crates/vokra-convert/src/models/dac.rs`). This
-//! converter therefore emits **only** the Parler LM + T5 tensor pack;
-//! the caller wires a separate DAC GGUF at runtime bind time (mirror
-//! of the CosyVoice2 split — that converter likewise emits only the
-//! upstream LLM pack, not the terminal HiFTNet vocoder shipped as a
-//! separate `hift.pt`).
+//! Both upstream `model.safetensors` releases include their complete 9-codebook
+//! DAC and this pass-through converter preserves those `audio_encoder.*`
+//! tensors in the same GGUF. The native runtime reuses the shared DAC math but
+//! does not require, fetch, or silently substitute a separate DAC GGUF.
 //!
 //! # Real-weight parity
 //!
-//! Real-weight parity vs the upstream Parler-TTS Python pipeline is
-//! deferred to owner (`docs/license-audit.md` §3.1 sign-off).
+//! Real-weight parity vs the pinned upstream Parler-TTS Python pipeline runs
+//! through the VAST harness; publication remains separately gated by
+//! `docs/license-audit.md` §3.1.
 //!
 //! # No ONNX (permanent)
 //!
 //! Both Parler variants ship safetensors directly; this converter
 //! **never** touches ONNX (FR-LD-05); the pipeline is re-implemented
-//! natively in a future `crates/vokra-models/src/parler/` module
+//! natively in `crates/vokra-models/src/parler/`
 //! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
 
 use std::path::Path;
@@ -186,7 +184,7 @@ pub(crate) const TEXT_ENCODER_NUM_HEADS: u32 = 16;
 pub(crate) const TEXT_ENCODER_D_FF: u32 = 2_816;
 pub(crate) const TEXT_ENCODER_VOCAB_SIZE: u32 = 32_128;
 
-// Audio encoder (DAC, external — recorded for provenance completeness):
+// Embedded audio encoder (DAC) geometry:
 pub(crate) const AUDIO_ENCODER_CODEBOOK_SIZE: u32 = 1_024;
 pub(crate) const AUDIO_ENCODER_SAMPLING_RATE: u32 = 44_100;
 
@@ -287,7 +285,7 @@ pub fn convert_parler_file(
     b.add_u32(KEY_TEXT_ENCODER_D_FF, TEXT_ENCODER_D_FF);
     b.add_u32(KEY_TEXT_ENCODER_VOCAB_SIZE, TEXT_ENCODER_VOCAB_SIZE);
 
-    // Audio encoder (external DAC) provenance axes.
+    // Embedded audio encoder geometry axes.
     b.add_u32(KEY_AUDIO_ENCODER_CODEBOOK_SIZE, AUDIO_ENCODER_CODEBOOK_SIZE);
     b.add_u32(KEY_AUDIO_ENCODER_SAMPLING_RATE, AUDIO_ENCODER_SAMPLING_RATE);
 

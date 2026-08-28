@@ -28,8 +28,8 @@ tree, no multi-file reader). This script bridges the two: for a
 caller-selected ``--variant`` it loads the corresponding sub-parts,
 prefixes every key with its role (``codec.`` / ``semantic.`` /
 ``decoder.`` for xcodec-mini; bare ``backbone.`` / ``head.`` for
-upsampler because there is only one sub-module) so a future
-``YueXcodecMini::from_gguf`` can locate sub-modules, and writes a
+upsampler because there is only one sub-module) so the native
+``YueXcodecMini::from_gguf`` binder can locate sub-modules, and writes a
 single ``.safetensors`` the caller feeds to
 ``vokra-cli convert --model {yue-upsampler,yue-xcodec-mini}``.
 
@@ -52,7 +52,7 @@ cousin — same shape, same INT-dtype filter, same
         --output /tmp/yue-upsampler.safetensors \\
         [--allow-strip-any]
 
-    # Codec bundle (~1.88 GB unique weights)
+    # Codec bundle (~1.81 GB selected weights; source repo total >2 GB)
     uv run --project tools/parity python \\
         tools/parity/yue_bundle_prepare_checkpoint.py \\
         --ckpt-dir /path/to/m-a-p--xcodec_mini_infer \\
@@ -61,9 +61,10 @@ cousin — same shape, same INT-dtype filter, same
         --output /tmp/yue-xcodec-mini.safetensors \\
         [--allow-strip-any]
 
-Both variants comfortably fit on an M1 iMac 16 GB — vast.ai is NOT
-required (per memory ``[[feedback-large-models-on-vast-ai]]`` the
-≥8 GB threshold does not fire; total unique weights = 1.88 GB).
+The upsampler is small enough for local metadata work.  The xcodec-mini
+source set is larger than the repository's 2 GB aggregate-artifact guard,
+so preparation, conversion, validation, and publication MUST run through
+the documented vast.ai workflow rather than on the maintainer Mac.
 
 # Snapshot selection (131k vs 151k)
 
@@ -86,8 +87,9 @@ for fixed key ordering).
 # Sub-tree skip list (xcodec-mini)
 
 The upstream ``m-a-p/xcodec_mini_infer`` repo ships full source-tree
-copies of RepCodec (ByteDance/Chutong Meng, MIT) and Descript-Audio-
-Codec (MIT) at ``RepCodec/`` and ``descriptaudiocodec/dac/``. These
+copies of RepCodec and Descript-Audio-Codec at ``RepCodec/`` and
+``descriptaudiocodec/dac/``. The bundled RepCodec license material is
+mixed (MIT text plus CC-BY-NC-4.0 text/source headers), while DAC is MIT. These
 are inference-tree artefacts of the upstream release process — they
 are **not** loaded weights and this bridge does NOT recurse into them.
 NOTICE credit is preserved (their code informed the YuE codec
@@ -96,16 +98,18 @@ design), but no tensors are lifted from them. Same policy for the
 
 # Redistribution
 
-Both variants ship apache-2.0 end-to-end — see
+The two weight repositories declare apache-2.0 — see
 ``docs/license-audit.md`` §3.1 rows "YuE-upsampler" and
-"YuE xcodec-mini", both ☑ Commercial as of 2026-08-01. Upstream YuE
-code at ``github.com/multimodal-art-projection/YuE`` LICENSE is also
-apache-2.0.
+"YuE xcodec-mini". Upstream YuE code at
+``github.com/multimodal-art-projection/YuE`` is also apache-2.0. This bridge
+loads only the three fixed weight files; it neither imports nor redistributes
+the bundled RepCodec/DAC source trees.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -128,8 +132,9 @@ VARIANT_SUBSETS: dict[str, list[tuple[str, str]]] = {
         ("decoder_{snapshot}.pth", ""),  # bare backbone.* / head.* names
     ],
     "xcodec-mini": [
-        # SoundStream RVQ codec generator (Lightning wrapper — the
-        # loader unwraps `state_dict` / `generator` below if present).
+        # SoundStream/XCodec checkpoint. The public wrapper uses the exact
+        # top-level key `codec_model`; optimizer_g/optimizer_d are training
+        # artefacts and must never enter a fresh conversion.
         ("final_ckpt/ckpt_00360000.pth", "codec"),
         # HuBERT-base semantic encoder (HF-transformers pickle).
         ("semantic_ckpts/hf_1_325000/pytorch_model.bin", "semantic"),
@@ -153,14 +158,115 @@ INT_DTYPES = {
 }
 KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
 
+UPSAMPLER_REVISION = "c6d7494a60555672be09ca809a40be400d682a53"
+UPSAMPLER_CHECKPOINT_FILE = "decoder_151000.pth"
+UPSAMPLER_CHECKPOINT_BYTES = 72_610_550
+UPSAMPLER_CHECKPOINT_SHA256 = (
+    "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998"
+)
+UPSAMPLER_TENSOR_COUNT = 81
+
+XCODEC_REVISION = "fe781a67815ab47b4a3a5fce1e8d0a692da7e4e5"
+XCODEC_FIXED_FILES: dict[str, tuple[int, str]] = {
+    "final_ckpt/ckpt_00360000.pth": (
+        1_360_444_883,
+        "c8c379ea2d3cbde1c8ba1b9717975220e79ba3f556bb161766fd5e4585dcd59c",
+    ),
+    "semantic_ckpts/hf_1_325000/pytorch_model.bin": (
+        377_555_286,
+        "c5ddbd7fa2468483cb9b2aa53117813471543dd278e65870333a56c54305f527",
+    ),
+    "decoders/decoder_151000.pth": (
+        72_610_550,
+        "8af97a29d3483f9d4a3755992837501bd7d6caa1a69382ed16e64039e0ea0998",
+    ),
+}
+
+
+def _upsampler_manifest() -> dict[str, list[int]]:
+    out = {
+        "backbone.embed.weight": [512, 1024, 7],
+        "backbone.embed.bias": [512],
+        "backbone.norm.weight": [512],
+        "backbone.norm.bias": [512],
+        "backbone.final_layer_norm.weight": [512],
+        "backbone.final_layer_norm.bias": [512],
+        "head.istft.window": [3528],
+        "head.out.weight": [3530, 512],
+        "head.out.bias": [3530],
+    }
+    for layer in range(8):
+        prefix = f"backbone.convnext.{layer}"
+        out.update(
+            {
+                f"{prefix}.dwconv.weight": [512, 1, 7],
+                f"{prefix}.dwconv.bias": [512],
+                f"{prefix}.norm.weight": [512],
+                f"{prefix}.norm.bias": [512],
+                f"{prefix}.pwconv1.weight": [1536, 512],
+                f"{prefix}.pwconv1.bias": [1536],
+                f"{prefix}.pwconv2.weight": [512, 1536],
+                f"{prefix}.pwconv2.bias": [512],
+                f"{prefix}.gamma": [512],
+            }
+        )
+    assert len(out) == UPSAMPLER_TENSOR_COUNT
+    return out
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_official_upsampler(path: Path) -> None:
+    if path.name != UPSAMPLER_CHECKPOINT_FILE:
+        sys.exit(
+            f"YuE-upsampler public contract requires {UPSAMPLER_CHECKPOINT_FILE}, "
+            f"got {path.name}"
+        )
+    size = path.stat().st_size
+    if size != UPSAMPLER_CHECKPOINT_BYTES:
+        sys.exit(
+            f"{path} has {size} bytes; expected {UPSAMPLER_CHECKPOINT_BYTES} "
+            f"from m-a-p/YuE-upsampler@{UPSAMPLER_REVISION}"
+        )
+    actual = _sha256_file(path)
+    if actual != UPSAMPLER_CHECKPOINT_SHA256:
+        sys.exit(
+            f"{path} SHA-256 {actual}; expected {UPSAMPLER_CHECKPOINT_SHA256}"
+        )
+
+
+def _verify_official_xcodec(path: Path, relative_path: str) -> None:
+    """Authenticate every fixed 151k xcodec-mini source payload."""
+    expected = XCODEC_FIXED_FILES.get(relative_path)
+    if expected is None:
+        # The converter still exposes the upstream 131k decoder selector, but
+        # it is not the pinned canonical/public runtime identity.
+        return
+    expected_bytes, expected_sha256 = expected
+    size = path.stat().st_size
+    if size != expected_bytes:
+        sys.exit(
+            f"{path} has {size} bytes; expected {expected_bytes} "
+            f"from m-a-p/xcodec_mini_infer@{XCODEC_REVISION}"
+        )
+    actual = _sha256_file(path)
+    if actual != expected_sha256:
+        sys.exit(f"{path} SHA-256 {actual}; expected {expected_sha256}")
+
 
 def _flatten(prefix: str, obj: Any) -> dict:
     """Flatten a nested dict into dotted-key ``{name: Tensor}``.
 
     The upstream files carry mostly-flat state dicts, but the
-    SoundStream ``ckpt_00360000.pth`` file is Lightning-wrapped (it
-    contains ``generator`` / ``discriminator`` / ``optimizer_states``
-    top-level keys); the caller-visible unwrap happens in ``_load_one``
+    SoundStream ``ckpt_00360000.pth`` file is training-wrapped (it
+    contains ``codec_model`` / ``optimizer_g`` / ``optimizer_d`` top-level
+    keys); the caller-visible unwrap happens in ``_load_one``
     before this walk is invoked, but this recursive flatten still
     protects against any residual nesting.
     """
@@ -188,13 +294,11 @@ def _load_one(path: Path, role: str) -> dict:
     is the classic "silent partial" trap this project bans, mirror of the
     sepformer / facodec / dfn3 posture).
 
-    Handles Lightning wrappers by walking a fixed list of known outer
-    keys (``state_dict`` / ``model_state_dict`` / ``model`` / ``module`` /
-    ``generator``) — the SoundStream ``ckpt_00360000.pth`` in
-    xcodec_mini_infer specifically wraps its generator under
-    ``{"generator": {...}, "discriminator": {...}, "optimizer_states":
-    [...], ...}`` and we want the generator half only (discriminator +
-    optimizer state are training artefacts inference does not use).
+    The xcodec-mini SoundStream file has a stricter contract: role ``codec``
+    MUST unwrap the exact non-empty ``codec_model`` mapping. Its sibling
+    ``optimizer_g`` / ``optimizer_d`` mappings are training artefacts. A
+    missing/renamed inference wrapper is an error rather than permission to
+    recursively flatten the entire checkpoint.
     """
     import torch
 
@@ -215,12 +319,21 @@ def _load_one(path: Path, role: str) -> dict:
         except Exception as exc:  # noqa: BLE001
             sys.exit(f"torch.load({path!s}) failed: {exc}")
 
-    # Common Lightning-style wrapper unwrap. We walk in priority order —
-    # `generator` first because the SoundStream ckpt is our known
-    # "please lift only the generator, ignore discriminator + optimizer"
-    # case. The other wrapper names are defense against upstream forks.
-    if isinstance(raw, dict):
-        for wrapper in ("generator", "state_dict", "model_state_dict", "model", "module"):
+    if role == "codec":
+        if not isinstance(raw, dict):
+            sys.exit(f"{path!s} codec payload is not a mapping")
+        inner = raw.get("codec_model")
+        if not isinstance(inner, dict) or not inner:
+            sys.exit(
+                f"{path!s} is missing the non-empty `codec_model` mapping; "
+                "refusing to flatten optimizer_g/optimizer_d training state"
+            )
+        print(f"  {path.name}: unwrapped ['codec_model']; optimizer state excluded")
+        raw = inner
+    elif isinstance(raw, dict):
+        # Common wrappers for the HuBERT and Vocos files. These roles have no
+        # optimizer-bearing special case, but still unwrap only a tensor map.
+        for wrapper in ("state_dict", "model_state_dict", "model", "module"):
             inner = raw.get(wrapper)
             if isinstance(inner, dict) and inner:
                 sample = next(iter(inner.values()), None)
@@ -235,12 +348,12 @@ def _load_one(path: Path, role: str) -> dict:
             f"{path!s} yielded no tensors — expected an m-a-p YuE bundle "
             f"state_dict (see github.com/multimodal-art-projection/YuE)."
         )
-    # Namespace under the role prefix so a future ``YueXcodecMini::from_gguf``
+    # Namespace under the role prefix so ``YueXcodecMini::from_gguf``
     # can locate the sub-module a tensor belongs to (``codec.encoder.conv.weight``
     # vs. ``semantic.encoder.layer_norm.weight`` vs. ``decoder.head.out.weight``).
     # For the upsampler variant the role is empty ("") = bare backbone.* /
     # head.* names (matches the sibling Charactr AI Vocos tensor-name
-    # contract so a future runtime binder can share the loader path).
+    # contract so the native runtime binder can share the loader path).
     if role:
         prefixed = {f"{role}.{k}": v for k, v in flat_local.items()}
     else:
@@ -317,6 +430,12 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    if args.variant == "upsampler" and args.snapshot != "151000":
+        ap.error(
+            "the strict public yue-upsampler contract pins snapshot 151000; "
+            "snapshot 131000 is not published under the canonical runtime identity"
+        )
+
     try:
         from safetensors.torch import save_file
         import torch  # noqa: F401
@@ -346,6 +465,10 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
+        if args.variant == "upsampler":
+            _verify_official_upsampler(f_path)
+        else:
+            _verify_official_xcodec(f_path, rel)
         role_suffix = f" as role {role!r}" if role else " (no role prefix)"
         print(
             f"  loading {rel} ({f_path.stat().st_size:,} bytes){role_suffix}"
@@ -369,6 +492,32 @@ def main() -> int:
 
     kept, dropped, unknown = _partition(merged, args.allow_strip_any)
 
+    if args.variant == "upsampler":
+        expected = _upsampler_manifest()
+        if len(kept) != UPSAMPLER_TENSOR_COUNT:
+            print(
+                f"strict YuE-upsampler checkpoint has {len(kept)} float tensors; "
+                f"expected exactly {UPSAMPLER_TENSOR_COUNT}",
+                file=sys.stderr,
+            )
+            return 3
+        actual_names = set(kept)
+        expected_names = set(expected)
+        wrong_shapes = [
+            (name, list(kept[name].shape), expected[name])
+            for name in sorted(actual_names & expected_names)
+            if list(kept[name].shape) != expected[name]
+        ]
+        if actual_names != expected_names or wrong_shapes:
+            print(
+                "strict YuE-upsampler manifest mismatch: "
+                f"missing={sorted(expected_names - actual_names)[:5]}, "
+                f"extra={sorted(actual_names - expected_names)[:5]}, "
+                f"wrong_shapes={wrong_shapes[:3]}",
+                file=sys.stderr,
+            )
+            return 3
+
     if unknown and not args.allow_strip_any:
         first = [(n, d, s) for n, d, s in unknown[:3]]
         print(
@@ -386,6 +535,12 @@ def main() -> int:
         "input_dir": str(ckpt_dir),
         "variant": args.variant,
         "snapshot": args.snapshot,
+        "upstream_revision": (
+            UPSAMPLER_REVISION if args.variant == "upsampler" else None
+        ),
+        "checkpoint_sha256": (
+            UPSAMPLER_CHECKPOINT_SHA256 if args.variant == "upsampler" else None
+        ),
         "output": str(args.output),
         "kept_count": len(kept),
         "dropped_count": len(dropped),

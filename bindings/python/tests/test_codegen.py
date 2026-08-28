@@ -36,7 +36,7 @@ def test_every_current_header_function_has_one_prototype() -> None:
     parsed_names = [name for name, _, _ in parsed]
     discovered_names = generator.discover_function_names(source)
 
-    assert len(parsed_names) == 56
+    assert len(parsed_names) == 57
     assert len(parsed_names) == len(set(parsed_names))
     assert parsed_names == discovered_names
     assert set(bindings.PROTOTYPES) == set(parsed_names)
@@ -69,6 +69,19 @@ def test_current_wide_and_pointer_prototypes_are_exact() -> None:
             ctypes.c_size_t,
             ctypes.c_uint64,
             ctypes.POINTER(ctypes.c_size_t),
+        ),
+    )
+    assert bindings.PROTOTYPES["vokra_separate"] == (
+        ctypes.c_int,
+        (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t,
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_float)),
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_size_t),
+            ctypes.POINTER(ctypes.c_int32),
         ),
     )
     assert bindings.PROTOTYPES["vokra_session_create_from_bytes"][1][0] == ctypes.POINTER(

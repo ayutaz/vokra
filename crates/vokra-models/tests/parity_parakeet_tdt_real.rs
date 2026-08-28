@@ -112,6 +112,49 @@ fn real_parakeet_tdt_head_step_matches_official() {
     );
 }
 
+/// Public-artifact CPU smoke that needs no generated TDT reference directory.
+///
+/// This is deliberately not called parity: the independent upstream encoder
+/// and token gates below remain the numerical authority. It proves that the
+/// multi-gigabyte Hub file strictly binds and executes the learned raw-PCM
+/// encoder plus one real prediction-LSTM/joint-head step. The independently
+/// calibrated test below remains the authority for the complete token loop.
+#[test]
+fn real_parakeet_tdt_public_artifact_cpu_smoke() {
+    let Ok(gguf) = std::env::var("VOKRA_PARAKEET_TDT_GGUF") else {
+        eprintln!("skipping Parakeet-TDT public-artifact smoke: set VOKRA_PARAKEET_TDT_GGUF");
+        return;
+    };
+    let pcm_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parakeet_ctc/pcm.f32");
+    let pcm = read_f32(&pcm_path);
+    let file = GgufFile::open(&gguf).expect("open public Parakeet-TDT GGUF");
+    let model = ParakeetAsr::from_gguf(&file).expect("strict public Parakeet-TDT bind");
+    assert_eq!(model.tensor_count(), 699);
+
+    let (encoder, frames) = model.encode_pcm(&pcm).expect("public TDT CPU encoder");
+    assert!(frames > 0);
+    assert_eq!(encoder.len(), frames * model.config().encoder.d_model);
+    assert!(encoder.iter().all(|value| value.is_finite()));
+
+    let logits = model
+        .tdt_head_step(
+            &encoder[..model.config().encoder.d_model],
+            model.config().joint.blank_token_id,
+        )
+        .expect("public TDT prediction/joint step");
+    assert_eq!(
+        logits.len(),
+        model.config().joint.vocab_size + model.config().joint.durations.len()
+    );
+    assert!(logits.iter().all(|value| value.is_finite()));
+    if !model.has_tokenizer() {
+        eprintln!(
+            "Parakeet-TDT public artifact has no embedded tokenizer; learned PCM/head path passed, CLI text requires gated replacement"
+        );
+    }
+}
+
 #[test]
 fn real_parakeet_tdt_pcm_encoder_and_tokens_match_official() {
     let (Ok(gguf), Ok(reference_dir)) = (
@@ -164,8 +207,44 @@ fn real_parakeet_tdt_pcm_encoder_and_tokens_match_official() {
     let tokenizer = ParakeetTokenizer::from_gguf(&file, 8193).expect("embedded tokenizer");
     assert_eq!(
         tokenizer
-            .decode(&actual_tokens, 8192, 2, 3)
+            .decode(&actual_tokens, 8192, 2, Some(3))
             .expect("native tokenizer decode"),
         "Oh"
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[test]
+fn real_parakeet_tdt_metal_matches_cpu() {
+    let (Ok(gguf), Ok(reference_dir)) = (
+        std::env::var("VOKRA_PARAKEET_TDT_GGUF"),
+        std::env::var("VOKRA_PARAKEET_TDT_PCM_REFERENCE_DIR"),
+    ) else {
+        eprintln!(
+            "skipping Parakeet-TDT Metal parity: set VOKRA_PARAKEET_TDT_GGUF and VOKRA_PARAKEET_TDT_PCM_REFERENCE_DIR"
+        );
+        return;
+    };
+    let file = GgufFile::open(gguf).expect("open Parakeet-TDT GGUF");
+    let model = ParakeetAsr::from_gguf(&file).expect("strict Parakeet-TDT bind");
+    let pcm = read_f32(&Path::new(&reference_dir).join("pcm.f32"));
+    let (cpu_encoder, cpu_frames) = model.encode_pcm(&pcm).expect("CPU encoder");
+    let cpu_tokens = model.transcribe(&pcm).expect("CPU tokens");
+    let model = model.with_backend(vokra_core::BackendKind::Metal);
+    let (metal_encoder, metal_frames) = model.encode_pcm(&pcm).expect("Metal encoder");
+    assert_eq!(metal_frames, cpu_frames);
+    let max_abs = metal_encoder
+        .iter()
+        .zip(&cpu_encoder)
+        .map(|(metal, cpu)| (metal - cpu).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        max_abs <= 0.01,
+        "Parakeet-TDT Metal encoder max_abs {max_abs} > 0.01"
+    );
+    assert_eq!(
+        model.transcribe(&pcm).expect("Metal tokens"),
+        cpu_tokens,
+        "Metal TDT token sequence must match CPU"
     );
 }

@@ -44,7 +44,8 @@ use std::io;
 use std::path::Path;
 use std::slice;
 
-use vokra_core::gguf::{AsBytes, GgufError, GgufFile};
+use vokra_core::gguf::{AsBytes, GgmlType, GgufError, GgufFile};
+use vokra_core::{Result as VokraResult, VokraError};
 
 /// A read-only memory mapping of a whole file.
 ///
@@ -167,6 +168,78 @@ impl std::fmt::Debug for Mmap {
 pub fn open_gguf(path: impl AsRef<Path>) -> Result<GgufFile, GgufError> {
     let mmap = Mmap::open(path).map_err(GgufError::Io)?;
     GgufFile::from_external(Box::new(mmap))
+}
+
+/// Borrows an `F32` tensor directly from a GGUF backing buffer without copying.
+///
+/// This accessor is intended for large, mmap-backed checkpoints whose dense
+/// weights would otherwise be duplicated by [`GgufFile::tensor_f32`]. It is a
+/// deliberately narrow view: only on-disk [`GgmlType::F32`] payloads are
+/// accepted. `F16`, `BF16`, and quantized tensors require decoding and return
+/// an explicit error instead of allocating or silently changing precision.
+///
+/// GGUF stores floating-point payloads little-endian. A direct native `f32`
+/// view is therefore available only on little-endian targets, and only when
+/// the payload address is aligned for `f32`. Normal GGUF files use at least
+/// 32-byte tensor alignment, and OS mappings are page-aligned, so a valid
+/// mmap-backed file satisfies the alignment check. The check remains mandatory
+/// because [`GgufFile`] can also be backed by an arbitrary [`AsBytes`] source.
+pub fn tensor_f32_view<'a>(file: &'a GgufFile, name: &str) -> VokraResult<&'a [f32]> {
+    let info = file
+        .tensor_info(name)
+        .ok_or_else(|| VokraError::ModelLoad(format!("GGUF tensor `{name}` is missing")))?;
+    if info.dtype != GgmlType::F32 {
+        return Err(VokraError::ModelLoad(format!(
+            "GGUF tensor `{name}` has dtype {:?}; zero-copy f32 view requires F32",
+            info.dtype
+        )));
+    }
+
+    let elements = usize::try_from(info.element_count().map_err(|error| {
+        VokraError::ModelLoad(format!(
+            "GGUF tensor `{name}` has an invalid element count: {error}"
+        ))
+    })?)
+    .map_err(|_| {
+        VokraError::ModelLoad(format!(
+            "GGUF tensor `{name}` is too large for this address space"
+        ))
+    })?;
+    let expected_bytes = elements.checked_mul(size_of::<f32>()).ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "GGUF tensor `{name}` byte length overflows this address space"
+        ))
+    })?;
+    let bytes = file.tensor_bytes(info);
+    if bytes.len() != expected_bytes {
+        return Err(VokraError::ModelLoad(format!(
+            "GGUF tensor `{name}` has {} payload bytes; expected {expected_bytes} for {elements} F32 elements",
+            bytes.len()
+        )));
+    }
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        let _ = bytes;
+        return Err(VokraError::UnsupportedOp(format!(
+            "zero-copy F32 GGUF tensor view for `{name}` requires a little-endian target"
+        )));
+    }
+
+    #[cfg(target_endian = "little")]
+    {
+        if !bytes.as_ptr().is_aligned() {
+            return Err(VokraError::ModelLoad(format!(
+                "GGUF tensor `{name}` payload is not aligned for a zero-copy f32 view"
+            )));
+        }
+        // SAFETY: the GGUF parser bounds-checked `bytes`; the dtype and exact
+        // byte length were checked above; little-endian payload bits are native
+        // `f32` bits on this target; and `is_aligned` proves the pointer meets
+        // `f32` alignment. The returned slice borrows `file`, which owns the
+        // immutable backing mapping/buffer, so it cannot outlive or mutate it.
+        Ok(unsafe { slice::from_raw_parts(bytes.as_ptr().cast::<f32>(), elements) })
+    }
 }
 
 #[cfg(all(unix, not(target_os = "emscripten")))]

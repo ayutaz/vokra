@@ -1,40 +1,9 @@
-//! **NISQA v2** (`gabrielmittag/NISQA`, **cc-by-nc-sa-4.0**):
-//! safetensors → GGUF conversion (coverage-audit-2026-08-03 Wave D T4).
+//! Strict offline conversion for the public NISQA v2 multidimensional weights.
 //!
-//! Non-intrusive speech quality assessment model (Mittag et al. 2021
-//! "NISQA: A Deep CNN-Self-Attention Model for Multidimensional Speech
-//! Quality Prediction with Crowdsourced Datasets", arXiv:2104.09494).
-//! Predicts P.808-style MOS + 4 dimensions (Noisiness / Coloration /
-//! Discontinuity / Loudness) from a single-channel audio stream.
-//! Distributed via GitHub only (`github.com/gabrielmittag/NISQA`) — no
-//! HF mirror, so provenance rides `vokra.provenance.upstream_url` (the
-//! NKF-AEC / RNNoise / NSNet2 GitHub-native precedent). Weight license
-//! is **cc-by-nc-sa-4.0** (research-only + share-alike, T4 tier), so
-//! publish requires `--allow-noncommercial` AND downstream artefacts
-//! inherit the SA cascade.
-//!
-//! # BF16 pass-through (mirror of nkf_aec / sensevoicesmall / dnsmos)
-//!
-//! F32 / F16 / BF16 all ride the verbatim pass-through arm — no
-//! convert-time widening. BF16 stays GGUF type 30
-//! ([`GgmlType::BF16`]); the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point
-//! `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream torch state-dict keys
-//! verbatim** — the `.tar` bundle is pre-flattened offline to
-//! safetensors and this converter accepts safetensors only (the DFN3 /
-//! DAC / DNSMOS precedent — pickles never enter the runtime,
-//! FR-LD-05). A future
-//! `tools/parity/nisqa_v2_weight_prepare_checkpoint.py` would do that
-//! flattening; it is **not yet written**, so the step is manual today.
-//!
-//! # No ONNX (permanent)
-//!
-//! The upstream release ships torch pickle only; this converter
-//! **never** touches ONNX (FR-LD-05).
+//! The trusted prepare sidecar flattens upstream `weights/nisqa.tar` to F32
+//! safetensors. This converter accepts only the exact 94-tensor release, stamps
+//! checkpoint-derived front-end/topology values, and keeps the upstream
+//! CC-BY-NC-SA-4.0 license fail-closed. Pickle and ONNX never enter the runtime.
 
 use std::path::Path;
 
@@ -44,303 +13,328 @@ use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` value for NISQA v2 weight GGUFs. Distinct from
-/// every sibling eval / MOS predictor family — silently sharing an
-/// arch tag with `dnsmos` (Microsoft) or `utmos` (SaruLab) would
-/// mis-route the runtime dispatch (each is a distinct topology).
 pub const ARCH: &str = "nisqa_v2_weight";
-
-/// `vokra.model.name` value written for the canonical
-/// `gabrielmittag/NISQA` release.
 pub const NAME: &str = "nisqa_v2_weight";
-
-/// `vokra.model.category` value written for every NISQA v2 GGUF.
-/// Sibling of DNSMOS / UTMOS22-strong (`eval` family — non-intrusive
-/// MOS predictors).
 pub const CATEGORY: &str = "eval";
-
-/// Primary redistribution source (author's GitHub repository — there is
-/// no HF mirror). Written under [`KEY_PROVENANCE_UPSTREAM_URL`].
 pub const UPSTREAM_URL: &str = "github.com/gabrielmittag/NISQA";
-
-/// Default upstream weight licence (SPDX). Verified against the
-/// upstream repo — CC-BY-NC-SA-4.0 (research-only + share-alike,
-/// T4 tier).
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
+pub const TENSOR_COUNT: usize = 94;
 
-/// `vokra.model.category` metadata key. Local per the established
-/// sensevoicesmall / nkf_aec / funcodec convention.
 pub(crate) const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
-
-/// `vokra.provenance.upstream_url` — the primary redistribution source
-/// URL for GitHub-only releases (parallel to the HF-hosted
-/// `vokra.provenance.upstream_hf` key). Same convention as NKF-AEC /
-/// RNNoise / NSNet2 / DNSMOS.
 pub(crate) const KEY_PROVENANCE_UPSTREAM_URL: &str = "vokra.provenance.upstream_url";
 
-/// Outcome of a NISQA v2 weight conversion. Mirrors the sibling
-/// BF16-passthrough converters' counter shape.
+const SOURCE_REVISION: &str = "fe84f0f252abec382b24367d5b22498a7ce34dbb";
+const SOURCE_MODEL_DEF_SHA256: &str =
+    "f3ace1c00e21ae06e5d0fed9710f4e988c13685b2316a3b3ded46607fb25b71e";
+const SOURCE_CONFIG_SHA256: &str =
+    "afa752835c45f5d052787c024b10eab26eba980e0bde85632e674dbe557ec764";
+const SOURCE_WEIGHT_LICENSE_SHA256: &str =
+    "5b8e7938e1b5e0a675869ffe429cc8e7cc187d76a7c6ea1e0546c412782a43da";
+const SOURCE_CHECKPOINT_SHA256: &str =
+    "7ec4cf937514dd3f8860b21e66fabd8ca87a168572675ef8d979c4c4ad2e805c";
+const PUBLIC_HF: &str = "vokra/nisqa-v2-weight";
+const PUBLIC_REVISION: &str = "89718b026e17d3d048aa394ef8c8ddd14fee9cd8";
+const PUBLIC_GGUF_SHA256: &str = "a2cacbe6f81ea2e8255eb0e2137d70d245823758e1cc4bb180c6b7cccc131e07";
+const MANIFEST_SHA256: &str = "4845124c35587de7417acecac877e0f7bb131183d4aace79e47f361b7dc673f4";
+
+const KEY_SOURCE_REVISION: &str = "vokra.nisqa.source_revision";
+const KEY_SOURCE_MODEL_DEF_SHA256: &str = "vokra.nisqa.source_model_def_sha256";
+const KEY_SOURCE_CONFIG_SHA256: &str = "vokra.nisqa.source_config_sha256";
+const KEY_SOURCE_WEIGHT_LICENSE_SHA256: &str = "vokra.nisqa.source_weight_license_sha256";
+const KEY_SOURCE_CHECKPOINT_SHA256: &str = "vokra.nisqa.source_checkpoint_sha256";
+const KEY_PUBLIC_HF: &str = "vokra.nisqa.public_hf";
+const KEY_PUBLIC_REVISION: &str = "vokra.nisqa.public_revision";
+const KEY_PUBLIC_GGUF_SHA256: &str = "vokra.nisqa.public_gguf_sha256";
+const KEY_MANIFEST_SHA256: &str = "vokra.nisqa.manifest_sha256";
+
+const KEY_SAMPLE_RATE: &str = "vokra.nisqa.sample_rate";
+const KEY_N_FFT: &str = "vokra.nisqa.n_fft";
+const KEY_HOP_LENGTH_SEC: &str = "vokra.nisqa.hop_length_sec";
+const KEY_WIN_LENGTH_SEC: &str = "vokra.nisqa.win_length_sec";
+const KEY_N_MELS: &str = "vokra.nisqa.n_mels";
+const KEY_FMAX: &str = "vokra.nisqa.fmax";
+const KEY_SEG_LENGTH: &str = "vokra.nisqa.seg_length";
+const KEY_SEG_HOP_LENGTH: &str = "vokra.nisqa.seg_hop_length";
+const KEY_MAX_SEGMENTS: &str = "vokra.nisqa.max_segments";
+const KEY_POOL_1_H: &str = "vokra.nisqa.cnn_pool_1_h";
+const KEY_POOL_1_W: &str = "vokra.nisqa.cnn_pool_1_w";
+const KEY_POOL_2_H: &str = "vokra.nisqa.cnn_pool_2_h";
+const KEY_POOL_2_W: &str = "vokra.nisqa.cnn_pool_2_w";
+const KEY_POOL_3_H: &str = "vokra.nisqa.cnn_pool_3_h";
+const KEY_POOL_3_W: &str = "vokra.nisqa.cnn_pool_3_w";
+const KEY_TD_SA_NHEAD: &str = "vokra.nisqa.td_sa_nhead";
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Counters from one strict NISQA conversion.
 pub struct NisqaV2WeightReport {
-    /// Total tensor entries observed on the safetensors input side.
+    /// Tensor entries validated on the safetensors input side.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16).
+    /// Exact F32 tensors written to GGUF.
     pub written: usize,
-    /// Non-float tensors skipped (defensive counter).
+    /// Retained for API compatibility; strict conversion never skips tensors.
     pub skipped_non_float: usize,
-    /// Of the tensors in [`Self::written`], how many were BF16 (subset
-    /// counter).
+    /// Retained for API compatibility; the exact release is F32-only.
     pub bf16_passthrough: usize,
 }
 
-/// Converts a NISQA v2 safetensors checkpoint at `input`
-/// (pre-flattened from the upstream torch `.tar` pickle — a future
-/// `tools/parity/nisqa_v2_weight_prepare_checkpoint.py` is not yet
-/// written, so that flattening is an owner-side step today) into a
-/// Vokra-native GGUF at `output`, returning a [`NisqaV2WeightReport`].
+/// Converts the exact prepared NISQA multidimensional checkpoint to GGUF.
 ///
-/// `license` optionally overrides the stamped weight license (raw SPDX
-/// string). The default is `DEFAULT_LICENSE_SPDX`
-/// (`"cc-by-nc-sa-4.0"`) which resolves to
-/// [`LicenseClass::NonCommercialShareAlike`] (T4 fail-closed).
-///
-/// # Errors
-///
-/// - [`ConvertError::Io`] on read/write failure.
-/// - [`ConvertError::Parse`] on malformed safetensors input.
-/// - [`ConvertError::Gguf`] on GGUF assembly failure.
+/// A `license` argument is accepted for shared CLI compatibility, but it may
+/// only repeat the canonical CC-BY-NC-SA-4.0 identifier. Relicensing the
+/// canonical weights is rejected before any output is written.
 pub fn convert_nisqa_v2_weight_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<NisqaV2WeightReport, ConvertError> {
-    let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
+    if license.is_some_and(|value| !value.trim().eq_ignore_ascii_case(DEFAULT_LICENSE_SPDX)) {
+        return Err(ConvertError::Parse(format!(
+            "nisqa-v2-weight: the canonical weights are {DEFAULT_LICENSE_SPDX}; a conflicting --license override is not permitted"
+        )));
+    }
+    let st = SafetensorsFile::parse(std::fs::read(input)?)?;
+    validate_manifest(&st)?;
 
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-    b.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
-
-    let effective_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
-    let effective_class = LicenseClass::from_license_str(effective_spdx);
+    let mut builder = GgufBuilder::new();
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_MODEL_CATEGORY, CATEGORY);
+    builder.add_string(KEY_PROVENANCE_UPSTREAM_URL, UPSTREAM_URL);
     vokra_core::stamp_provenance(
-        &mut b,
-        effective_class,
-        effective_spdx,
+        &mut builder,
+        LicenseClass::NonCommercialShareAlike,
+        DEFAULT_LICENSE_SPDX,
         Some(NAME),
         Some(
-            "github.com/gabrielmittag/NISQA (non-intrusive speech quality \
-             assessment CNN + self-attention, Mittag et al. 2021 arXiv:2104.09494, \
-             CC-BY-NC-SA-4.0 — owner §3.1 sign-off required, publish requires \
-             --allow-noncommercial + SA cascade obligation)",
+            "github.com/gabrielmittag/NISQA (NISQA_DIM, weights/nisqa.tar, \
+             CC-BY-NC-SA-4.0; publish requires --allow-noncommercial and \
+             share-alike preservation)",
         ),
     );
+    stamp_contract(&mut builder);
 
-    let mut report = NisqaV2WeightReport::default();
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
+    for tensor in st.tensors() {
+        builder.add_tensor(
+            &tensor.name,
+            tensor.dtype,
+            tensor.shape.clone(),
+            st.tensor_bytes(tensor).to_vec(),
+        )?;
+    }
+    std::fs::write(output, builder.to_bytes()?)?;
+    Ok(NisqaV2WeightReport {
+        read: TENSOR_COUNT,
+        written: TENSOR_COUNT,
+        skipped_non_float: 0,
+        bf16_passthrough: 0,
+    })
+}
+
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    if st.tensors().len() != expected.len() {
+        return Err(ConvertError::Parse(format!(
+            "nisqa-v2-weight: tensor count {}, expected {} for the exact NISQA_DIM release",
+            st.tensors().len(),
+            expected.len()
+        )));
+    }
+    for (name, shape) in &expected {
+        let tensor = st
+            .tensors()
+            .iter()
+            .find(|tensor| tensor.name == *name)
+            .ok_or_else(|| ConvertError::Parse(format!("nisqa-v2-weight: missing `{name}`")))?;
+        if tensor.dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "nisqa-v2-weight: `{name}` is {:?}, expected exact upstream F32",
+                tensor.dtype
+            )));
+        }
+        if tensor.shape != *shape {
+            return Err(ConvertError::Parse(format!(
+                "nisqa-v2-weight: `{name}` shape {:?}, expected {shape:?}",
+                tensor.shape
+            )));
         }
     }
+    Ok(())
+}
 
-    let out_bytes = b.to_bytes()?;
-    std::fs::write(output, &out_bytes)?;
-    Ok(report)
+fn stamp_contract(builder: &mut GgufBuilder) {
+    for (key, value) in [
+        (KEY_SOURCE_REVISION, SOURCE_REVISION),
+        (KEY_SOURCE_MODEL_DEF_SHA256, SOURCE_MODEL_DEF_SHA256),
+        (KEY_SOURCE_CONFIG_SHA256, SOURCE_CONFIG_SHA256),
+        (
+            KEY_SOURCE_WEIGHT_LICENSE_SHA256,
+            SOURCE_WEIGHT_LICENSE_SHA256,
+        ),
+        (KEY_SOURCE_CHECKPOINT_SHA256, SOURCE_CHECKPOINT_SHA256),
+        (KEY_PUBLIC_HF, PUBLIC_HF),
+        (KEY_PUBLIC_REVISION, PUBLIC_REVISION),
+        (KEY_PUBLIC_GGUF_SHA256, PUBLIC_GGUF_SHA256),
+        (KEY_MANIFEST_SHA256, MANIFEST_SHA256),
+    ] {
+        builder.add_string(key, value);
+    }
+    builder.add_u32(KEY_SAMPLE_RATE, 0);
+    builder.add_u32(KEY_N_FFT, 4096);
+    builder.add_f32(KEY_HOP_LENGTH_SEC, 0.01);
+    builder.add_f32(KEY_WIN_LENGTH_SEC, 0.02);
+    builder.add_u32(KEY_N_MELS, 48);
+    builder.add_f32(KEY_FMAX, 20_000.0);
+    builder.add_u32(KEY_SEG_LENGTH, 15);
+    builder.add_u32(KEY_SEG_HOP_LENGTH, 4);
+    builder.add_u32(KEY_MAX_SEGMENTS, 1300);
+    builder.add_u32(KEY_POOL_1_H, 24);
+    builder.add_u32(KEY_POOL_1_W, 7);
+    builder.add_u32(KEY_POOL_2_H, 12);
+    builder.add_u32(KEY_POOL_2_W, 5);
+    builder.add_u32(KEY_POOL_3_H, 6);
+    builder.add_u32(KEY_POOL_3_W, 3);
+    builder.add_u32(KEY_TD_SA_NHEAD, 1);
+}
+
+fn expected_manifest() -> Vec<(String, Vec<u64>)> {
+    let mut tensors = Vec::with_capacity(TENSOR_COUNT);
+    let channels = [1u64, 16, 32, 64, 64, 64, 64];
+    for layer in 1..=6 {
+        let output = channels[layer];
+        for suffix in ["bias", "running_mean", "running_var", "weight"] {
+            tensors.push((format!("cnn.model.bn{layer}.{suffix}"), vec![output]));
+        }
+        tensors.push((format!("cnn.model.conv{layer}.bias"), vec![output]));
+        tensors.push((
+            format!("cnn.model.conv{layer}.weight"),
+            vec![output, channels[layer - 1], 3, 3],
+        ));
+    }
+    for head in 0..5 {
+        let prefix = format!("pool_layers.{head}.model");
+        for (suffix, shape) in [
+            ("linear1.bias", vec![128]),
+            ("linear1.weight", vec![128, 64]),
+            ("linear2.bias", vec![1]),
+            ("linear2.weight", vec![1, 128]),
+            ("linear3.bias", vec![1]),
+            ("linear3.weight", vec![1, 64]),
+        ] {
+            tensors.push((format!("{prefix}.{suffix}"), shape));
+        }
+    }
+    for layer in 0..2 {
+        let prefix = format!("time_dependency.model.layers.{layer}");
+        for (suffix, shape) in [
+            ("linear1.bias", vec![64]),
+            ("linear1.weight", vec![64, 64]),
+            ("linear2.bias", vec![64]),
+            ("linear2.weight", vec![64, 64]),
+            ("norm1.bias", vec![64]),
+            ("norm1.weight", vec![64]),
+            ("norm2.bias", vec![64]),
+            ("norm2.weight", vec![64]),
+            ("self_attn.in_proj_bias", vec![192]),
+            ("self_attn.in_proj_weight", vec![192, 64]),
+            ("self_attn.out_proj.bias", vec![64]),
+            ("self_attn.out_proj.weight", vec![64, 64]),
+        ] {
+            tensors.push((format!("{prefix}.{suffix}"), shape));
+        }
+    }
+    for (name, shape) in [
+        ("time_dependency.model.linear.bias", vec![64]),
+        ("time_dependency.model.linear.weight", vec![64, 384]),
+        ("time_dependency.model.norm1.bias", vec![64]),
+        ("time_dependency.model.norm1.weight", vec![64]),
+    ] {
+        tensors.push((name.to_owned(), shape));
+    }
+    debug_assert_eq!(tensors.len(), TENSOR_COUNT);
+    tensors
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::path::PathBuf;
     use vokra_core::gguf::GgufFile;
 
-    fn scratch_path(tag: &str, ext: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-nisqa-v2-weight-{tag}-{}-{}.{ext}",
+    fn scratch(tag: &str, extension: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "vokra-nisqa-{tag}-{}-{}.{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        p
+                .expect("clock")
+                .as_nanos(),
+            extension
+        ))
     }
 
-    struct TempFileGuard(PathBuf);
-    impl Drop for TempFileGuard {
+    struct Guard(PathBuf);
+    impl Drop for Guard {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
     }
 
-    fn bf16_bytes(values: &[f32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect()
+    fn write_fixture(path: &Path) {
+        let manifest = expected_manifest();
+        let mut header = String::from("{");
+        let mut offset = 0usize;
+        for (index, (name, shape)) in manifest.iter().enumerate() {
+            if index != 0 {
+                header.push(',');
+            }
+            let elements: u64 = shape.iter().product();
+            let end = offset + elements as usize * 4;
+            write!(
+                header,
+                "\"{name}\":{{\"dtype\":\"F32\",\"shape\":{shape:?},\"data_offsets\":[{offset},{end}]}}"
+            )
+            .expect("header");
+            offset = end;
+        }
+        header.push('}');
+        let mut bytes = Vec::with_capacity(8 + header.len() + offset);
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.resize(8 + header.len() + offset, 0);
+        std::fs::write(path, bytes).expect("fixture");
     }
 
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let payload = bf16_bytes(&values);
-        assert_eq!(payload.len(), 12, "6 elements × 2 bytes BF16");
-        let header =
-            r#"{"mos_head.linear.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&payload);
+    fn exact_manifest_converts_and_stamps_checkpoint_args() {
+        let input = scratch("input", "safetensors");
+        let output = scratch("output", "gguf");
+        let _input_guard = Guard(input.clone());
+        let _output_guard = Guard(output.clone());
+        write_fixture(&input);
 
-        let input_path = scratch_path("bf16-in", "safetensors");
-        let output_path = scratch_path("bf16-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report =
-            convert_nisqa_v2_weight_file(&input_path, &output_path, None).expect("convert BF16");
-        assert_eq!(report.read, 1, "one BF16 tensor observed");
+        let report = convert_nisqa_v2_weight_file(&input, &output, None).expect("convert");
+        assert_eq!(report.written, TENSOR_COUNT);
+        let file = GgufFile::open(&output).expect("GGUF");
+        assert_eq!(file.tensors().len(), TENSOR_COUNT);
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of nkf_aec / sensevoicesmall)"
-        );
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let info = file
-            .tensor_info("mos_head.linear.weight")
-            .expect("BF16 tensor present in output");
-        assert_eq!(info.dtype, GgmlType::BF16);
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(info), payload.as_slice());
-    }
-
-    #[test]
-    fn f32_and_f16_tensors_pass_through_and_default_license_is_fail_closed() {
-        let f32_vals: [f32; 2] = [7.0, -8.25];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let f16_patterns: [u16; 2] = [0x3C00, 0x4000];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 8);
-        assert_eq!(f16_bytes.len(), 4);
-
-        let header = format!(
-            r#"{{"cnn.stack.0.weight":{{"dtype":"F32","shape":[1,2],"data_offsets":[0,{}]}},"attn.qkv.bias":{{"dtype":"F16","shape":[2],"data_offsets":[{},{}]}}}}"#,
-            f32_bytes.len(),
-            f32_bytes.len(),
-            f32_bytes.len() + f16_bytes.len(),
-        );
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-        input_bytes.extend_from_slice(&f16_bytes);
-
-        let input_path = scratch_path("mixed-in", "safetensors");
-        let output_path = scratch_path("mixed-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_nisqa_v2_weight_file(&input_path, &output_path, None)
-            .expect("convert F32 + F16 mixed");
-        assert_eq!(report.read, 2);
-        assert_eq!(report.written, 2, "F32 and F16 must both pass through");
-        assert_eq!(report.skipped_non_float, 0);
-        assert_eq!(report.bf16_passthrough, 0);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        let f32_info = file.tensor_info("cnn.stack.0.weight").expect("F32 tensor");
-        assert_eq!(f32_info.dtype, GgmlType::F32);
-        let f16_info = file.tensor_info("attn.qkv.bias").expect("F16 tensor");
-        assert_eq!(f16_info.dtype, GgmlType::F16);
-
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY)
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_URL)
-                .and_then(|v| v.as_str()),
-            Some(UPSTREAM_URL)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE_SPDX)
-        );
-        // cc-by-nc-sa-4.0 resolves to NonCommercialShareAlike
-        // (fail-closed T4 tier + SA cascade obligation).
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::NonCommercialShareAlike.as_str()),
-            "cc-by-nc-sa-4.0 must resolve to NonCommercialShareAlike (T4 + SA cascade)"
-        );
-    }
-
-    #[test]
-    fn license_override_replaces_default() {
-        let f32_bytes: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
-        let header =
-            r#"{"mos_head.linear.weight":{"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
-        let mut input_bytes = Vec::new();
-        input_bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        input_bytes.extend_from_slice(header.as_bytes());
-        input_bytes.extend_from_slice(&f32_bytes);
-
-        let input_path = scratch_path("lic-in", "safetensors");
-        let output_path = scratch_path("lic-out", "gguf");
-        std::fs::write(&input_path, &input_bytes).expect("write input");
-        let _in_guard = TempFileGuard(input_path.clone());
-        let _out_guard = TempFileGuard(output_path.clone());
-
-        let report = convert_nisqa_v2_weight_file(&input_path, &output_path, Some("apache-2.0"))
-            .expect("convert with override");
-        assert_eq!(report.written, 1);
-
-        let out_bytes = std::fs::read(&output_path).expect("read output GGUF");
-        let file = GgufFile::parse(out_bytes).expect("parse GGUF");
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("apache-2.0"),
+            file.get(KEY_N_FFT).and_then(|value| value.as_u64()),
+            Some(4096)
         );
         assert_eq!(
             file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str()),
-            "apache-2.0 reclassifies away from the NonCommercialShareAlike default"
+                .and_then(|value| value.as_str()),
+            Some(LicenseClass::NonCommercialShareAlike.as_str())
         );
+    }
+
+    #[test]
+    fn conflicting_license_override_is_rejected_before_output() {
+        let input = scratch("missing", "safetensors");
+        let output = scratch("not-written", "gguf");
+        let error = convert_nisqa_v2_weight_file(&input, &output, Some("apache-2.0"))
+            .expect_err("relicensing must fail");
+        assert!(matches!(error, ConvertError::Parse(message) if message.contains("not permitted")));
+        assert!(!output.exists());
     }
 }

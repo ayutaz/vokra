@@ -1,0 +1,32 @@
+{
+  "code_count": 4,
+  "decoded_shape": [
+    1,
+    1,
+    1920
+  ],
+  "feature_shape": [
+    1,
+    1024,
+    4
+  ],
+  "files": {
+    "codes.u32le": "3bab5738a2c63b11352ad1211664346c1f1ff19de67bd750e1b8a61408c353ea",
+    "decoded_pcm.f32": "b843c9b0bedcf08740eeb865cc8cb92d447928378c9c3c0d5b1f7f1dc84d73fe",
+    "features.f32": "2f58111ec62192b9cf979c0c2a401561129a6defb0a8d9f0d41eb4aa73cee679"
+  },
+  "format": "vokra-neucodec-reference-v1",
+  "gguf_sha256": "b71d9d7867a4c244562caa2d735e93c9b744c70110c346f3f65e0862e41163fc",
+  "official_defaulted_deterministic_buffers": [
+    "head.istft.window"
+  ],
+  "official_state_tensors_loaded": 116,
+  "oracle": "official CodecDecoderVocos FSQ + forward",
+  "source_commit": "ed3e6cd1bdc374ce14a21355e5eee66a777149ce",
+  "source_repository": "https://github.com/neuphonic/neucodec",
+  "torch": "2.13.0+cu130",
+  "torchtune": "0.3.1",
+  "torchtune_rope_sha256": "8d79a03e1334fe6ecaff14b1e6a2d554e7e6209c95db058846973de013f92b80",
+  "variant": "base",
+  "vector_quantize_pytorch": "1.17.8"
+}

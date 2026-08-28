@@ -40,6 +40,9 @@ use crate::window::{povey, window as sample_window};
 pub enum KaldiFbankWindow {
     /// Kaldi's default Hann^0.85 window (CAM++ / CosyVoice).
     Povey,
+    /// Symmetric Hann window selected by TorchAudio's `window_type="hanning"`
+    /// and used by the official Hugging Face AST feature extractor.
+    Hanning,
     /// Symmetric Hamming window used by the released FunASR FSMN-VAD.
     Hamming,
 }
@@ -99,6 +102,28 @@ impl KaldiFbankOpts {
             round_to_power_of_two: true,
         }
     }
+
+    /// Official Hugging Face AST / TorchAudio Kaldi-fbank configuration:
+    /// 16 kHz, 128 bins, 25 ms / 10 ms frames, DC removal, 0.97
+    /// pre-emphasis, 20 Hz to Nyquist, power + natural log, no CMN, and
+    /// power-of-two FFT padding. The caller must select
+    /// [`KaldiFbankWindow::Hanning`].
+    pub fn ast_audioset() -> Self {
+        Self {
+            sample_rate: 16_000,
+            num_mel_bins: 128,
+            frame_length: 400,
+            frame_shift: 160,
+            remove_dc_offset: true,
+            preemph_coeff: 0.97,
+            low_freq: 20.0,
+            high_freq: 0.0,
+            use_power: true,
+            use_log: true,
+            subtract_mean: false,
+            round_to_power_of_two: true,
+        }
+    }
 }
 
 /// Computes Kaldi fbank features from mono PCM at `opts.sample_rate`.
@@ -119,7 +144,8 @@ pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usiz
 ///
 /// This is the same checked frontend as [`kaldi_fbank`]; only the window is
 /// selectable. Existing callers retain Povey through [`kaldi_fbank`], while
-/// FunASR FSMN-VAD selects the Hamming contract stamped by its `config.yaml`.
+/// AST selects symmetric Hann and FunASR FSMN-VAD selects the Hamming
+/// contract stamped by its `config.yaml`.
 pub fn kaldi_fbank_with_window(
     pcm: &[f32],
     opts: &KaldiFbankOpts,
@@ -155,6 +181,7 @@ pub fn kaldi_fbank_with_window(
     // Analysis window, FFT plan and mel bank are frame-invariant: build once.
     let win = match window {
         KaldiFbankWindow::Povey => povey(flen),
+        KaldiFbankWindow::Hanning => sample_window(Window::Hann, flen, WindowSymmetry::Symmetric),
         KaldiFbankWindow::Hamming => {
             sample_window(Window::Hamming, flen, WindowSymmetry::Symmetric)
         }
@@ -370,5 +397,20 @@ mod tests {
         assert_eq!(frames, hamming_frames);
         assert!(hamming_features.iter().all(|value| value.is_finite()));
         assert_ne!(povey_features, hamming_features);
+    }
+
+    #[test]
+    fn ast_audioset_contract_uses_hanning_without_cmn() {
+        let opts = KaldiFbankOpts::ast_audioset();
+        assert_eq!(opts.sample_rate, 16_000);
+        assert_eq!(opts.num_mel_bins, 128);
+        assert_eq!((opts.frame_length, opts.frame_shift), (400, 160));
+        assert!(!opts.subtract_mean);
+
+        let pcm = signal(4_000);
+        let (features, frames) =
+            kaldi_fbank_with_window(&pcm, &opts, KaldiFbankWindow::Hanning).unwrap();
+        assert_eq!(features.len(), frames * 128);
+        assert!(features.iter().all(|value| value.is_finite()));
     }
 }

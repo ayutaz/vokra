@@ -1,75 +1,26 @@
 #!/usr/bin/env python3
-"""Flatten an FRCRN torch checkpoint → safetensors (coverage-audit wave-a, 2026-08-03).
+"""Prepare the exact official FRCRN-SE-16K checkpoint for conversion.
 
-Offline sidecar tool (FR-LD-05: no Python / PyTorch ever enters the runtime).
-The upstream FRCRN release ships torch pickle ``.pt`` / ``.pth`` files under
-two distribution paths:
+This offline, VAST-only sidecar verifies the pinned Hugging Face checkpoint,
+safe-loads its inference state, drops only BatchNorm tracking counters, and
+writes the exact 812-tensor F32 safetensors manifest consumed by
+``vokra-convert``. It never falls back to unsafe pickle loading and never
+accepts a merely shape-compatible substitute.
 
-* ``github.com/alibabasglab/FRCRN`` — the original author's repository (a
-  ``pretrained_model/`` folder with the DNS Challenge 2022 checkpoint), and
-* ``github.com/modelscope/ClearerVoice-Studio`` — the ClearerVoice-Studio
-  umbrella that pulls the same checkpoint via ModelScope hub.
+Pinned inputs:
 
-The Rust converter (``crates/vokra-convert/src/models/frcrn.rs``) consumes
-safetensors only, so this script bridges the two:
+* weights: ``alibabasglab/FRCRN_SE_16K`` at revision
+  ``3766e6a64b0d8cb58f08d913d617bf129f11ed53``;
+* file: ``last_best_checkpoint.pt`` (161,053,751 bytes, SHA-256 below);
+* source: ``modelscope/ClearerVoice-Studio`` at revision
+  ``6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61``.
 
-* Loads the ``.pt`` / ``.pth`` with ``torch.load(..., weights_only=True)``
-  first (the release checkpoints are expected to load cleanly under the
-  safe loader). A checkpoint that does not load under ``weights_only=True``
-  is refused with a loud error rather than silently falling back to unsafe
-  unpickling — same posture as ``dfn3_prepare_checkpoint.py`` /
-  ``dac_prepare_checkpoint.py``.
-* Unwraps the state dict from common upstream wrappers: (a) a top-level
-  flat ``OrderedDict`` (used by the standalone FRCRN release), (b) a
-  ClearerVoice-Studio ``{"state_dict": …}`` wrapper (used by the CVS
-  pipeline), (c) a Lightning-style ``{"model": …}`` wrapper (some
-  ModelScope mirrors). Any other top-level shape is a hard error.
-* De-duplicates shared-storage tensors (mirror of the memory
-  ``reference-safetensors-shared-tensor-dedup`` pattern used by
-  ``bark`` / ``xtts-v2`` / ``moss`` variants). Two names pointing at
-  the same underlying storage are recorded in the audit trail
-  ``<output>.shared_pairs.json`` next to the safetensors so the runtime
-  side can re-tie them on load without silent divergence.
-* Writes the flat state dict (dotted upstream keys preserved:
-  ``encoder.complex_conv0.weight`` / ``rnn.weight_ih_l0`` / … — the exact
-  FRCRN topology the Rust converter round-trips via BF16 pass-through)
-  using ``safetensors.torch.save_file`` when the ``safetensors`` package
-  is available, else falling back to a hand-rolled writer (stdlib
-  ``json`` + raw bytes — the same fallback DFN3 uses so the offline
-  venv needs no extra package).
-* F32 / F16 / BF16 tensors are written as-is (verbatim dtype
-  preservation — the ``vokra-convert::models::frcrn`` pass-through
-  contract). Non-float tensors are DROPPED with an explicit line per
-  drop (BatchNorm ``*.num_batches_tracked`` I64 counters, integer
-  buffer indices — none have inference roles and vokra-core's
-  safetensors parser is float-only by design). Any *other* anomaly
-  (non-tensor entry, unknown dtype) is a hard error, never a silent
-  drop (FR-EX-08 posture).
-* Prints a sha256 manifest line for the output for the fixture /
-  workflow logs.
-
-Fails loudly on any anomaly rather than masking it — FR-EX-08 posture.
-
-# Environment (memory: [[feedback-python-uses-uv]] / [[feedback-python-3-12]])
-
-This script is designed for the ``tools/parity`` uv-managed venv (Python
-3.12). The parent ``pyproject.toml`` in ``tools/parity/`` pins the torch
-dependency; run via:
-
-::
+Run only through the repository uv environment, for example on VAST:
 
     cd tools/parity
-    uv run python frcrn_prepare_checkpoint.py \\
-        --ckpt ~/checkpoints/frcrn/ckpt/model.pth \\
-        --output ~/checkpoints/frcrn/model.safetensors
-
-Then (from the repo root, after ``cargo build --release -p vokra-cli``):
-
-::
-
-    ./target/release/vokra-cli convert --model frcrn \\
-        --input ~/checkpoints/frcrn/model.safetensors \\
-        --output ~/gguf/frcrn.gguf
+    uv run python frcrn_prepare_checkpoint.py \
+      --checkpoint /workspace/FRCRN_SE_16K/last_best_checkpoint.pt \
+      --output /workspace/frcrn.safetensors
 """
 
 from __future__ import annotations
@@ -77,224 +28,309 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import struct
-import sys
 from collections import OrderedDict
 from pathlib import Path
-
-import torch
-
-
-# safetensors dtype tag map for the hand-rolled writer fallback (used only
-# when the `safetensors` package is unavailable — the DFN3 posture).
-DTYPE_TAG = {
-    torch.float32: "F32",
-    torch.float16: "F16",
-    torch.bfloat16: "BF16",
-}
-
-# torch dtype → element byte width for the hand-rolled writer's payload
-# copies (must match the on-disk layout the vokra-core safetensors reader
-# expects). F32 = 4, F16 / BF16 = 2 — a superset of DTYPE_TAG so the
-# widths stay a single source of truth if a future dtype is added.
-DTYPE_BYTES = {
-    torch.float32: 4,
-    torch.float16: 2,
-    torch.bfloat16: 2,
-}
+from typing import Any, Mapping
 
 
-def _unwrap_state_dict(obj: object, path: str) -> "OrderedDict[str, torch.Tensor]":
-    """Extract the flat state dict from the loaded checkpoint object.
-
-    Handles three known upstream wrapper shapes:
-
-    * Flat ``OrderedDict[str, Tensor]`` (author-repo release).
-    * ``{"state_dict": OrderedDict, ...}`` (ClearerVoice-Studio / most
-      Lightning checkpoints).
-    * ``{"model": OrderedDict, ...}`` (some ModelScope mirrors).
-
-    Any other shape is a loud error (FR-EX-08 posture).
-    """
-    if isinstance(obj, (OrderedDict, dict)):
-        # Flat state dict? Every value is a tensor.
-        if obj and all(isinstance(v, torch.Tensor) for v in obj.values()):
-            return OrderedDict(obj)
-        # Wrapped state dict — walk two known keys.
-        for key in ("state_dict", "model"):
-            if key in obj and isinstance(obj[key], (OrderedDict, dict)):
-                inner = obj[key]
-                if all(isinstance(v, torch.Tensor) for v in inner.values()):
-                    return OrderedDict(inner)
-                raise SystemExit(
-                    f"{path}: checkpoint['{key}'] contains non-tensor entries "
-                    f"(first offender: "
-                    f"{next(k for k, v in inner.items() if not isinstance(v, torch.Tensor))!r})"
-                )
-        raise SystemExit(
-            f"{path}: checkpoint top-level dict has neither a 'state_dict' nor a "
-            f"'model' key, and its own values are not all tensors "
-            f"(keys={list(obj)[:8]}{'...' if len(obj) > 8 else ''})"
-        )
-    raise SystemExit(
-        f"{path}: checkpoint top level is {type(obj).__name__}, expected a dict / OrderedDict"
-    )
+UPSTREAM_HF = "alibabasglab/FRCRN_SE_16K"
+UPSTREAM_REVISION = "3766e6a64b0d8cb58f08d913d617bf129f11ed53"
+SOURCE_REVISION = "6b3774dc79c46ae8bed2a4fa5f706f0ac8c75c61"
+CHECKPOINT_SHA256 = "b22256adbb91b68cf5a3db8f6657a4fb17066eecd5f069803e59c186c1cf3ebb"
+CHECKPOINT_BYTES = 161_053_751
+TENSOR_MANIFEST_SHA256 = "ca71dad1ae5293d3d63628b71127c0efdf004cec684e5a341ab376ce3e2851b7"
+TENSOR_COUNT = 812
+PARAMETER_COUNT = 14_387_164
 
 
-def _dedup_shared_storage(
-    state: "OrderedDict[str, torch.Tensor]",
-) -> tuple["OrderedDict[str, torch.Tensor]", list[tuple[str, str]]]:
-    """Drop duplicate references to the same underlying storage.
-
-    Two safetensors entries pointing at the same ``data_ptr`` fail the
-    writer (mirror memory [[reference-safetensors-shared-tensor-dedup]] —
-    ``safetensors.torch.save_file`` raises RuntimeError). Keep the FIRST
-    seen name; record every subsequent alias as a ``(alias, primary)``
-    pair the caller writes out as an audit trail so the runtime side
-    can re-tie them on load. Contiguous clone is issued so a downstream
-    ``.numpy()`` cannot depend on a shared-storage layout the alias
-    map has already discarded.
-    """
-    seen: dict[int, str] = {}
-    kept: "OrderedDict[str, torch.Tensor]" = OrderedDict()
-    aliases: list[tuple[str, str]] = []
-    for name, t in state.items():
-        ptr = t.data_ptr()
-        if ptr in seen:
-            aliases.append((name, seen[ptr]))
-            continue
-        seen[ptr] = name
-        kept[name] = t.detach().contiguous()
-    return kept, aliases
+def _insert(out: dict[str, tuple[int, ...]], name: str, shape: tuple[int, ...]) -> None:
+    if name in out:
+        raise AssertionError(f"duplicate FRCRN manifest entry: {name}")
+    out[name] = shape
 
 
-def _write_safetensors_stdlib(
-    path: Path, tensors: "OrderedDict[str, torch.Tensor]"
+def _add_complex_conv(
+    out: dict[str, tuple[int, ...]],
+    prefix: str,
+    stem: str,
+    weight_shape: tuple[int, ...],
+    bias: int,
 ) -> None:
-    """Hand-rolled safetensors writer (stdlib only).
+    for component in ("re", "im"):
+        _insert(out, f"{prefix}.{stem}_{component}.weight", weight_shape)
+        _insert(out, f"{prefix}.{stem}_{component}.bias", (bias,))
 
-    Header layout: 8-byte little-endian header length + UTF-8 JSON header
-    + contiguous little-endian tensor data. BF16 is emitted as raw
-    little-endian bytes — same as ``F16``, just tagged ``BF16`` in the
-    header so a vokra-core parser identifies it correctly. Runtime widens
-    BF16 → f32 losslessly via ``crates/vokra-core/src/gguf/quant/mod.rs
-    decode_bf16`` (``bits << 16``).
-    """
-    header: dict = {}
-    blobs: list[bytes] = []
-    offset = 0
-    for name, t in tensors.items():
-        if t.dtype not in DTYPE_TAG:
-            raise SystemExit(f"unsupported dtype {t.dtype} for tensor {name!r}")
-        # `.numpy()` refuses BF16 (numpy has no bf16 dtype); use a raw
-        # `.view(torch.uint8)` cast for a byte-identical serialization
-        # of the underlying storage. For F32 / F16 the `.numpy().tobytes()`
-        # path is byte-identical to `.view(torch.uint8)` on a
-        # little-endian host, so the raw path works everywhere.
-        raw = t.detach().contiguous().cpu().view(torch.uint8).numpy().tobytes()
-        expected = t.numel() * DTYPE_BYTES[t.dtype]
-        if len(raw) != expected:
+
+def _add_complex_bn(
+    out: dict[str, tuple[int, ...]], prefix: str, channels: int
+) -> None:
+    for component in ("re", "im"):
+        for field in ("weight", "bias", "running_mean", "running_var"):
+            _insert(out, f"{prefix}.bn_{component}.{field}", (channels,))
+
+
+def _add_real_fsmn(out: dict[str, tuple[int, ...]], prefix: str) -> None:
+    _insert(out, f"{prefix}.linear.weight", (128, 128))
+    _insert(out, f"{prefix}.linear.bias", (128,))
+    _insert(out, f"{prefix}.project.weight", (128, 128))
+    _insert(out, f"{prefix}.conv1.weight", (128, 1, 20, 1))
+
+
+def _add_l1_fsmn(out: dict[str, tuple[int, ...]], prefix: str) -> None:
+    for component in ("re", "im"):
+        _add_real_fsmn(out, f"{prefix}.fsmn_{component}_L1")
+
+
+def _add_central_fsmn(out: dict[str, tuple[int, ...]], prefix: str) -> None:
+    for component in ("re", "im"):
+        for level in ("L1", "L2"):
+            _add_real_fsmn(out, f"{prefix}.fsmn_{component}_{level}")
+
+
+def _add_se(out: dict[str, tuple[int, ...]], prefix: str) -> None:
+    for component in ("r", "i"):
+        _insert(out, f"{prefix}.fc_{component}.0.weight", (16, 128))
+        _insert(out, f"{prefix}.fc_{component}.0.bias", (16,))
+        _insert(out, f"{prefix}.fc_{component}.2.weight", (128, 16))
+        _insert(out, f"{prefix}.fc_{component}.2.bias", (128,))
+
+
+def _add_unet(out: dict[str, tuple[int, ...]], root: str) -> None:
+    for layer in range(7):
+        in_channels = 1 if layer == 0 else 128
+        kernel_h = 2 if layer == 6 else 5
+        prefix = f"{root}.encoder{layer}"
+        _add_complex_conv(
+            out,
+            f"{prefix}.conv",
+            "conv",
+            (128, in_channels, kernel_h, 2),
+            128,
+        )
+        _add_complex_bn(out, f"{prefix}.bn", 128)
+
+    decoder_geometry = (
+        (128, 128, 2),
+        (256, 128, 5),
+        (256, 128, 5),
+        (256, 128, 5),
+        (256, 128, 6),
+        (256, 128, 5),
+        (256, 1, 5),
+    )
+    for layer, (in_channels, out_channels, kernel_h) in enumerate(
+        decoder_geometry
+    ):
+        prefix = f"{root}.decoder{layer}"
+        _add_complex_conv(
+            out,
+            f"{prefix}.transconv",
+            "tconv",
+            (in_channels, out_channels, kernel_h, 2),
+            out_channels,
+        )
+        _add_complex_bn(out, f"{prefix}.bn", out_channels)
+
+    _add_central_fsmn(out, f"{root}.fsmn")
+    for layer in range(7):
+        _add_l1_fsmn(out, f"{root}.fsmn_enc{layer}")
+        _add_l1_fsmn(out, f"{root}.fsmn_dec{layer}")
+        _add_se(out, f"{root}.se_layer_enc{layer}")
+        if layer < 6:
+            _add_se(out, f"{root}.se_layer_dec{layer}")
+    _add_complex_conv(out, f"{root}.linear", "conv", (1, 1, 1, 1), 1)
+
+
+def expected_manifest() -> dict[str, tuple[int, ...]]:
+    out: dict[str, tuple[int, ...]] = {}
+    _insert(out, "stft.weight", (642, 1, 640))
+    _insert(out, "istft.weight", (642, 1, 640))
+    _insert(out, "istft.window", (1, 640, 1))
+    _insert(out, "istft.enframe", (640, 1, 640))
+    _add_unet(out, "unet")
+    _add_unet(out, "unet2")
+    if len(out) != TENSOR_COUNT:
+        raise AssertionError(f"internal manifest count {len(out)} != {TENSOR_COUNT}")
+    if sum(math.prod(shape) for shape in out.values()) != PARAMETER_COUNT:
+        raise AssertionError("internal FRCRN parameter count drift")
+    if manifest_sha256(out) != TENSOR_MANIFEST_SHA256:
+        raise AssertionError("internal FRCRN manifest digest drift")
+    return out
+
+
+def manifest_sha256(manifest: Mapping[str, tuple[int, ...]]) -> str:
+    canonical = bytearray()
+    for name in sorted(manifest):
+        shape = manifest[name]
+        canonical.extend(name.encode("utf-8"))
+        canonical.append(0)
+        canonical.extend(struct.pack("<Q", len(shape)))
+        for dimension in shape:
+            canonical.extend(struct.pack("<Q", dimension))
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def unwrap_official_state(obj: object, checkpoint: Path) -> OrderedDict[str, Any]:
+    import torch
+
+    if not isinstance(obj, dict):
+        raise SystemExit(
+            f"{checkpoint}: top level is {type(obj).__name__}, expected official dict"
+        )
+    candidate: object = obj.get("model", obj)
+    if not isinstance(candidate, dict) or not candidate:
+        raise SystemExit(f"{checkpoint}: official `model` state dict is absent or empty")
+    if not all(isinstance(name, str) for name in candidate):
+        raise SystemExit(f"{checkpoint}: state dict contains a non-string key")
+    if not all(isinstance(value, torch.Tensor) for value in candidate.values()):
+        offender = next(
+            name
+            for name, value in candidate.items()
+            if not isinstance(value, torch.Tensor)
+        )
+        raise SystemExit(f"{checkpoint}: model[{offender!r}] is not a tensor")
+
+    state = OrderedDict(candidate)
+    prefixed = [name.startswith("module.") for name in state]
+    if any(prefixed):
+        if not all(prefixed):
+            raise SystemExit(f"{checkpoint}: mixed `module.` prefix state is refused")
+        state = OrderedDict((name[7:], value) for name, value in state.items())
+    return state
+
+
+def prepare_state(
+    state: OrderedDict[str, Any], checkpoint: Path
+) -> tuple[OrderedDict[str, Any], list[str]]:
+    import torch
+
+    expected = expected_manifest()
+    kept: OrderedDict[str, torch.Tensor] = OrderedDict()
+    dropped: list[str] = []
+    for name, tensor in state.items():
+        if name.endswith(".num_batches_tracked"):
+            if tensor.dtype not in (torch.int32, torch.int64):
+                raise SystemExit(
+                    f"{checkpoint}: {name} is {tensor.dtype}, expected an integer BN counter"
+                )
+            dropped.append(name)
+            continue
+        if tensor.dtype != torch.float32:
             raise SystemExit(
-                f"tensor {name!r}: raw payload {len(raw)} B "
-                f"disagrees with numel × width {expected} B"
+                f"{checkpoint}: inference tensor {name!r} is {tensor.dtype}, expected torch.float32"
             )
-        header[name] = {
-            "dtype": DTYPE_TAG[t.dtype],
-            "shape": list(t.shape),
-            "data_offsets": [offset, offset + len(raw)],
-        }
-        blobs.append(raw)
-        offset += len(raw)
-    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    with path.open("wb") as f:
-        f.write(struct.pack("<Q", len(header_bytes)))
-        f.write(header_bytes)
-        for b in blobs:
-            f.write(b)
+        kept[name] = tensor.detach().cpu().contiguous()
+
+    actual_names = set(kept)
+    expected_names = set(expected)
+    missing = sorted(expected_names - actual_names)
+    extra = sorted(actual_names - expected_names)
+    wrong = [
+        (name, tuple(kept[name].shape), expected[name])
+        for name in sorted(actual_names & expected_names)
+        if tuple(kept[name].shape) != expected[name]
+    ]
+    if missing or extra or wrong:
+        raise SystemExit(
+            f"{checkpoint}: FRCRN manifest mismatch; missing={missing[:8]} "
+            f"extra={extra[:8]} wrong_shape={wrong[:8]}"
+        )
+    if len(kept) != TENSOR_COUNT:
+        raise SystemExit(f"{checkpoint}: kept {len(kept)} tensors, expected {TENSOR_COUNT}")
+    return kept, dropped
 
 
-def _write_safetensors(
-    path: Path, tensors: "OrderedDict[str, torch.Tensor]"
-) -> str:
-    """Save via ``safetensors.torch.save_file`` when available, else fall
-    back to the hand-rolled stdlib writer. Returns the writer used."""
-    try:
-        from safetensors.torch import save_file  # type: ignore
-    except ImportError:
-        _write_safetensors_stdlib(path, tensors)
-        return "stdlib"
-    save_file(tensors, str(path))
-    return "safetensors.torch"
+def self_test() -> None:
+    manifest = expected_manifest()
+    assert len(manifest) == 812
+    assert manifest["stft.weight"] == (642, 1, 640)
+    assert manifest["unet.encoder0.conv.conv_re.weight"] == (128, 1, 5, 2)
+    assert manifest["unet2.decoder4.transconv.tconv_im.weight"] == (
+        256,
+        128,
+        6,
+        2,
+    )
+    print("frcrn_prepare_checkpoint self-test: ok")
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--ckpt",
-        "--input",
-        required=True,
-        dest="ckpt",
-        help="FRCRN torch checkpoint (.pt or .pth)",
-    )
-    ap.add_argument(
-        "--output",
-        required=True,
-        help="output .safetensors path",
-    )
-    args = ap.parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", "--ckpt", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
 
-    ckpt = Path(args.ckpt)
-    out = Path(args.output)
-    if not ckpt.is_file():
-        raise SystemExit(f"--ckpt does not exist or is not a file: {ckpt}")
-    out.parent.mkdir(parents=True, exist_ok=True)
+    if args.self_test:
+        if args.checkpoint is not None or args.output is not None:
+            parser.error("--self-test does not accept --checkpoint/--output")
+        self_test()
+        return 0
+    if args.checkpoint is None or args.output is None:
+        parser.error("--checkpoint and --output are required outside --self-test")
 
-    obj = torch.load(str(ckpt), map_location="cpu", weights_only=True)
-    state = _unwrap_state_dict(obj, str(ckpt))
+    checkpoint: Path = args.checkpoint
+    output: Path = args.output
+    import torch
+    from safetensors.torch import save_file
 
-    # Drop non-float tensors up front (BatchNorm counters, integer
-    # buffer indices). Report every drop so a downstream owner can spot
-    # a legitimate float tensor that was mis-classified as non-inference.
-    dropped: list[str] = []
-    kept_floats: "OrderedDict[str, torch.Tensor]" = OrderedDict()
-    for name, t in state.items():
-        if not isinstance(t, torch.Tensor):
-            raise SystemExit(
-                f"state[{name!r}] is not a tensor: got {type(t).__name__}"
-            )
-        if t.dtype in DTYPE_TAG:
-            kept_floats[name] = t
-        else:
-            dropped.append(f"{name}\t{t.dtype}")
+    if not checkpoint.is_file():
+        raise SystemExit(f"--checkpoint is not a file: {checkpoint}")
+    if checkpoint.stat().st_size != CHECKPOINT_BYTES:
+        raise SystemExit(
+            f"{checkpoint}: {checkpoint.stat().st_size} bytes, expected {CHECKPOINT_BYTES}"
+        )
+    actual_sha = sha256_file(checkpoint)
+    if actual_sha != CHECKPOINT_SHA256:
+        raise SystemExit(
+            f"{checkpoint}: SHA-256 {actual_sha}, expected {CHECKPOINT_SHA256}"
+        )
 
-    # De-duplicate shared-storage tensors before writing.
-    unique, aliases = _dedup_shared_storage(kept_floats)
+    obj = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    state = unwrap_official_state(obj, checkpoint)
+    prepared, dropped = prepare_state(state, checkpoint)
 
-    # Contiguous cast is applied inside `_dedup_shared_storage`; the
-    # writer sees uncorrupted tensors regardless of whether upstream
-    # weight tying handed us a view.
-    writer = _write_safetensors(out, unique)
-
-    # Aliases audit trail — the runtime side re-ties them on load. Emit
-    # even when empty so the file's presence proves the dedup pass ran.
-    aliases_path = out.with_suffix(out.suffix + ".shared_pairs.json")
-    aliases_path.write_text(
-        json.dumps({"aliases": aliases}, indent=2, sort_keys=True),
+    output.parent.mkdir(parents=True, exist_ok=True)
+    save_file(prepared, str(output))
+    output_sha = sha256_file(output)
+    manifest_path = output.with_suffix(output.suffix + ".manifest.json")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "checkpoint_bytes": CHECKPOINT_BYTES,
+                "checkpoint_sha256": CHECKPOINT_SHA256,
+                "dropped_batch_norm_counters": dropped,
+                "output_bytes": output.stat().st_size,
+                "output_sha256": output_sha,
+                "parameter_count": PARAMETER_COUNT,
+                "source_revision": SOURCE_REVISION,
+                "tensor_count": TENSOR_COUNT,
+                "tensor_manifest_sha256": TENSOR_MANIFEST_SHA256,
+                "upstream_hf": UPSTREAM_HF,
+                "upstream_revision": UPSTREAM_REVISION,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
-
-    n_params = sum(int(t.numel()) for t in unique.values())
-    sha = hashlib.sha256(out.read_bytes()).hexdigest()
-
-    for name in dropped:
-        print(f"dropped (non-float): {name}")
-    for alias, primary in aliases:
-        print(f"aliased: {alias} -> {primary} (dropped duplicate storage)")
-    print(f"{sha}  {out}")
-    print(f"tensors={len(unique)} params={n_params} writer={writer}")
-    print(f"aliases_json={aliases_path}")
+    print(f"prepared {TENSOR_COUNT} F32 tensors ({PARAMETER_COUNT} values)")
+    print(f"dropped_batch_norm_counters={len(dropped)}")
+    print(f"sha256={output_sha}  {output}")
+    print(f"manifest={manifest_path}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

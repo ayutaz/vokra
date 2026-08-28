@@ -176,3 +176,42 @@ fn firered_vad_official_feature_and_pcm_parity() {
     }
     assert_probabilities(&streamed, &reference.probabilities, "streaming-pcm-forward");
 }
+
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+#[test]
+fn firered_vad_official_cpu_metal_parity() {
+    let Some(gguf) = std::env::var_os(GGUF_ENV) else {
+        eprintln!("skip: set {GGUF_ENV}, {REFERENCE_ENV}, and {WAV_ENV}");
+        return;
+    };
+    let reference_path = std::env::var_os(REFERENCE_ENV)
+        .unwrap_or_else(|| panic!("{REFERENCE_ENV} is required when {GGUF_ENV} is set"));
+    let wav_path = std::env::var_os(WAV_ENV)
+        .unwrap_or_else(|| panic!("{WAV_ENV} is required when {GGUF_ENV} is set"));
+    let reference = parse_reference(Path::new(&reference_path));
+    let cpu = FireredVad::from_path(&gguf).expect("bind FireRedVAD CPU");
+    let metal = FireredVad::from_path(&gguf)
+        .expect("bind FireRedVAD Metal")
+        .with_backend(vokra_core::BackendKind::Metal);
+
+    let cpu_features = cpu.forward_features(&reference.features).unwrap();
+    let metal_features = metal.forward_features(&reference.features).unwrap();
+    assert_probabilities(
+        &cpu_features,
+        &reference.probabilities,
+        "CPU feature-forward",
+    );
+    assert_probabilities(
+        &metal_features,
+        &reference.probabilities,
+        "Metal feature-forward",
+    );
+    assert_probabilities(&metal_features, &cpu_features, "CPU/Metal feature-forward");
+
+    let (pcm, sample_rate) = read_pcm16_wav(Path::new(&wav_path));
+    let cpu_pcm = cpu.speech_probabilities(&pcm, sample_rate).unwrap();
+    let metal_pcm = metal.speech_probabilities(&pcm, sample_rate).unwrap();
+    assert_probabilities(&cpu_pcm, &reference.probabilities, "CPU PCM");
+    assert_probabilities(&metal_pcm, &reference.probabilities, "Metal PCM");
+    assert_probabilities(&metal_pcm, &cpu_pcm, "CPU/Metal PCM");
+}

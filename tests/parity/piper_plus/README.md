@@ -1,7 +1,7 @@
 # piper-plus MB-iSTFT-VITS2 parity fixtures (M0-07-T21)
 
 Numerical-parity reference for the native piper-plus TTS (`vokra-models`
-`piper_plus`), generated **offline** from the distributed piper-plus voice via
+`piper_plus`), generated **offline** from the official public CSS10 ONNX via
 onnxruntime. onnxruntime is used only here, never in the runtime or CI
 (FR-LD-05); the fixtures are committed so the parity tests need no ONNX.
 
@@ -30,24 +30,28 @@ native implementation at the FP32 parity bound (NFR-QL-01 `atol = 0.01`).
 ## Regenerating
 
 ```sh
-uv run --no-project --python 3.12 \
-  --with-requirements tests/parity/parity-requirements.txt \
+uv run --project tools/parity --frozen --with onnxruntime==1.23.2 \
   python tests/parity/piper_plus/gen_reference.py \
-  <tsukuyomi-6lang-fp16.onnx> <config.json> tests/parity/piper_plus
+  <css10-ja-6lang-fp16.onnx> <config.json> tests/parity/piper_plus \
+  ayousanz/piper-plus-css10-ja-6lang \
+  bf70fae2e21f9670456ebb40e8df131f146f1821
 ```
 
 The voice model itself is **not committed** (~40 MB FP16 / ~77 MB FP32 GGUF).
 The native parity tests (`crates/vokra-models/src/piper_plus/parity.rs`) are
-gated on `$VOKRA_PIPER_GGUF` and skip cleanly when it is unset (e.g. in CI),
+gated on `$VOKRA_PIPER_CSS10_GGUF` and skip cleanly when it is unset (e.g. in CI),
 mirroring the Whisper parity tests (`$VOKRA_WHISPER_GGUF`). Because this test
 compiles `vokra-models`, maintainers run the conversion and test on VAST rather
 than on the memory-constrained development Mac:
 
 ```sh
 cargo run -p vokra-convert -- --model piper-plus \
-    --input tsukuyomi-6lang-fp16.onnx --config config.json --output voice.gguf
-VOKRA_PIPER_GGUF=voice.gguf cargo test -p vokra-models piper
+    --input css10-ja-6lang-fp16.onnx --config config.json --output voice.gguf
+VOKRA_PIPER_CSS10_GGUF=voice.gguf \
+  cargo test -p vokra-models piper_plus::parity
 ```
 
-The voice: `ayousanz/piper-plus-tsukuyomi-chan` (6-language multilingual medium,
-MB-iSTFT-VITS2, `piper_version` 1.11.0), MIT.
+The voice: `ayousanz/piper-plus-css10-ja-6lang` at revision
+`bf70fae2e21f9670456ebb40e8df131f146f1821` (6-language multilingual medium,
+MB-iSTFT-VITS2, `piper_version` 1.11.0), MIT. Exact ONNX/config hashes and the
+onnxruntime version are recorded in `manifest.txt`.

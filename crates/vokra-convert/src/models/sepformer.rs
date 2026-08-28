@@ -2,7 +2,7 @@
 //! safetensors → GGUF conversion for the Transformer-based dual-path
 //! source-separation / enhancement family.
 //!
-//! # Family (6 variants share this converter)
+//! # Family (7 variants share this converter)
 //!
 //! - **`speechbrain/sepformer-wsj02mix`** — 2-speaker source
 //!   separation trained on WSJ0-2mix.
@@ -25,19 +25,20 @@
 //!   speech enhancement (WHAM! 16 kHz).
 //!   [`SepformerVariant::Wham16kEnhancement`]. `vokra.model.category = "enhancement"`.
 //!   `vokra.sepformer.n_out = 1`.
-//! - **`speechbrain/sepformer-whamr16k`** — joint dereverb + denoise
-//!   (WHAMR! 16 kHz).
-//!   [`SepformerVariant::Whamr16k`]. `vokra.model.category = "enhancement"`.
-//!   `vokra.sepformer.n_out = 1`.
-//! - **`speechbrain/sepformer-whamr`** — joint dereverb + denoise
+//! - **`speechbrain/sepformer-whamr16k`** — 2-speaker source
+//!   separation with noise and reverberation (WHAMR! 16 kHz).
+//!   [`SepformerVariant::Whamr16k`]. `vokra.model.category = "separation"`.
+//!   `vokra.sepformer.n_out = 2`.
+//! - **`speechbrain/sepformer-whamr`** — 2-speaker source separation
+//!   with noise and reverberation
 //!   (WHAMR! **8 kHz** — the base-sample-rate sibling of the 16 kHz
 //!   variant above; same reverberant conditioning + masker head, only
 //!   the sample rate differs). [`SepformerVariant::Whamr8k`].
-//!   `vokra.model.category = "enhancement"`. `vokra.sepformer.n_out = 1`.
+//!   `vokra.model.category = "separation"`. `vokra.sepformer.n_out = 2`.
 //! - **`speechbrain/sepformer-dns4-16k-enhancement`** — single-speaker
 //!   speech enhancement (Microsoft DNS-4 challenge corpus, 16 kHz).
-//!   Distinct training corpus from the WHAM! / WHAMR! enhancement
-//!   siblings (Microsoft Deep Noise Suppression Challenge 4 rather
+//!   Distinct training corpus from the WHAM! enhancement and WHAMR!
+//!   separation siblings (Microsoft Deep Noise Suppression Challenge 4 rather
 //!   than WSJ0-derived WHAM! / WHAMR!) with the same SepFormer
 //!   topology and single-output masker head.
 //!   [`SepformerVariant::Dns4Enhancement`].
@@ -51,7 +52,7 @@
 //! emitted GGUF's `vokra.model.name`, `vokra.provenance.upstream_hf`,
 //! `vokra.model.category`, `vokra.sepformer.variant`, and
 //! `vokra.sepformer.n_out` stamps reflect the specific release, while
-//! `vokra.model.arch = "sepformer"` is shared across all six (silently
+//! `vokra.model.arch = "sepformer"` is shared across all seven (silently
 //! sharing would misroute a downstream loader if the family ever
 //! diverged in tensor topology — today they do not, but the shared
 //! arch tag + explicit variant tag + explicit output-count tag is the
@@ -59,7 +60,7 @@
 //!
 //! # Provenance
 //!
-//! - **License (SPDX)**: `apache-2.0` for all three variants per HF
+//! - **License (SPDX)**: `apache-2.0` for all seven variants per HF
 //!   model-card `cardData.license` (SpeechBrain ships Apache-2.0
 //!   end-to-end — `github.com/speechbrain/speechbrain/blob/develop/LICENSE`).
 //!   Class = `Permissive`.
@@ -75,11 +76,9 @@
 //! # Tensor naming contract
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**.
-//! Real-weight parity + a native `SepFormer::from_gguf` forward path
-//! are deferred to owner sign-off (`docs/license-audit.md` §3.1) — this
-//! converter provides the byte-parallel GGUF surface only. The internal
-//! dual-path Transformer topology is intentionally NOT re-implemented
-//! on this pass (`loud-partial` sibling wave).
+//! The native runtime binds this exact upstream naming scheme and executes
+//! the complete dual-path Transformer. Independent official parity fixtures
+//! cover the encoder and final enhanced waveform.
 //!
 //! # No ONNX (permanent)
 //!
@@ -117,10 +116,10 @@ pub const KEY_SEPFORMER_VARIANT: &str = "vokra.sepformer.variant";
 /// masker head emits — the shape-load axis a downstream binder needs to
 /// pre-allocate the output tensor bank.
 ///
-/// - `1` for the enhancement family (single-speaker dereverb / denoise:
-///   `wham16k-enhancement`, `whamr16k`, `whamr8k`).
+/// - `1` for the single-stream enhancement variants
+///   (`wham16k-enhancement`, `dns4-16k-enhancement`).
 /// - `2` for the standard 2-speaker separation task
-///   (`wsj02mix`, `libri2mix`).
+///   (`wsj02mix`, `libri2mix`, `whamr16k`, `whamr8k`).
 /// - `3` for the LibriMix 3-speaker cocktail-party separation head
 ///   (`libri3mix`).
 ///
@@ -167,15 +166,16 @@ pub enum SepformerVariant {
     /// speech enhancement (WHAM! 16 kHz). Category = `enhancement`,
     /// `vokra.sepformer.variant = "wham16k-enhancement"`, `n_out = 1`.
     Wham16kEnhancement,
-    /// `speechbrain/sepformer-whamr16k`: joint dereverb + denoise
-    /// (WHAMR! 16 kHz). Category = `enhancement`,
-    /// `vokra.sepformer.variant = "whamr16k"`, `n_out = 1`.
+    /// `speechbrain/sepformer-whamr16k`: 2-speaker source separation
+    /// with noise and reverberation (WHAMR! 16 kHz). Category =
+    /// `separation`, `vokra.sepformer.variant = "whamr16k"`, `n_out = 2`.
     Whamr16k,
-    /// `speechbrain/sepformer-whamr`: joint dereverb + denoise
+    /// `speechbrain/sepformer-whamr`: 2-speaker source separation with
+    /// noise and reverberation
     /// (WHAMR! **8 kHz** — the base-sample-rate sibling of
-    /// [`Self::Whamr16k`]; same reverberant conditioning + masker head,
-    /// only the sample rate differs). Category = `enhancement`,
-    /// `vokra.sepformer.variant = "whamr8k"`, `n_out = 1`. The distinct
+    /// [`Self::Whamr16k`]; same reverberant conditioning + 2-speaker masker
+    /// head, only the sample rate differs). Category = `separation`,
+    /// `vokra.sepformer.variant = "whamr8k"`, `n_out = 2`. The distinct
     /// enum arm ensures the artifact does NOT silently inherit the
     /// 16 kHz sibling's `vokra.provenance.upstream_hf` = wrong CDN
     /// attribution.
@@ -185,15 +185,13 @@ pub enum SepformerVariant {
     /// Noise Suppression Challenge 4) corpus at 16 kHz. Same
     /// SepFormer topology (encoder + dual-path Transformer masker +
     /// decoder — Subakan et al. 2021) and same single-output masker
-    /// head as the WHAM! / WHAMR! enhancement siblings
-    /// ([`Self::Wham16kEnhancement`] / [`Self::Whamr16k`] /
-    /// [`Self::Whamr8k`]); the sole difference is the training corpus
+    /// head as the WHAM! enhancement sibling; the sole difference is the training corpus
     /// (Microsoft DNS-4 vs WSJ0-derived WHAM! / WHAMR!). Category =
     /// `enhancement`, `vokra.sepformer.variant = "dns4-16k-enhancement"`,
     /// `n_out = 1`. The distinct enum arm ensures the artifact does
-    /// NOT silently inherit any sibling enhancement variant's
-    /// `vokra.provenance.upstream_hf` = wrong CDN attribution (all
-    /// enhancement siblings share `n_out = 1`, so silent misrouting
+    /// NOT silently inherit any sibling variant's
+    /// `vokra.provenance.upstream_hf` = wrong CDN attribution (the
+    /// single-stream enhancement siblings share `n_out = 1`, so silent misrouting
     /// would not fail loudly at the binder — the distinct provenance
     /// stamp is the honest posture).
     Dns4Enhancement,
@@ -239,21 +237,19 @@ impl SepformerVariant {
         }
     }
 
-    /// The `vokra.model.category` value. Wsj02mix, Libri2Mix, and
-    /// Libri3Mix are pure **source-separation** tasks (N speakers out
+    /// The `vokra.model.category` value. Wsj02mix, LibriMix, and both
+    /// WHAMR variants are **source-separation** tasks (N speakers out
     /// of 1 mixture — Libri2Mix / Wsj02mix differ only in training
     /// corpus; Libri3Mix uses the same LibriMix corpus family but a
-    /// 3-stream output head instead of 2); the WHAM / WHAMR variants
-    /// (both 16 kHz and the 8 kHz WHAMR sibling) plus the Microsoft
-    /// DNS-4 16 kHz sibling are single-output **enhancement** tasks
-    /// (dereverb / denoise), so a downstream that speaks either API
+    /// 3-stream output head instead of 2); WHAM! and Microsoft DNS-4
+    /// are single-output **enhancement** tasks, so a downstream that speaks either API
     /// can pick the correct load path from this alone.
     pub const fn category(self) -> &'static str {
         match self {
-            Self::Wsj02mix | Self::Libri2Mix | Self::Libri3Mix => "separation",
-            Self::Wham16kEnhancement | Self::Whamr16k | Self::Whamr8k | Self::Dns4Enhancement => {
-                "enhancement"
+            Self::Wsj02mix | Self::Libri2Mix | Self::Libri3Mix | Self::Whamr16k | Self::Whamr8k => {
+                "separation"
             }
+            Self::Wham16kEnhancement | Self::Dns4Enhancement => "enhancement",
         }
     }
 
@@ -262,16 +258,15 @@ impl SepformerVariant {
     /// its output tensor bank. Stamped into
     /// [`KEY_SEPFORMER_N_OUT`] on the artifact.
     ///
-    /// - `1` for every enhancement variant (single-speaker dereverb /
-    ///   denoise).
+    /// - `1` for the WHAM! and DNS4 single-stream enhancement variants.
     /// - `2` for the standard 2-speaker separation task
-    ///   ([`Self::Wsj02mix`] / [`Self::Libri2Mix`]).
+    ///   ([`Self::Wsj02mix`] / [`Self::Libri2Mix`] / both WHAMR variants).
     /// - `3` for the LibriMix 3-speaker cocktail-party head
     ///   ([`Self::Libri3Mix`]).
     pub const fn n_out(self) -> u32 {
         match self {
-            Self::Wham16kEnhancement | Self::Whamr16k | Self::Whamr8k | Self::Dns4Enhancement => 1,
-            Self::Wsj02mix | Self::Libri2Mix => 2,
+            Self::Wham16kEnhancement | Self::Dns4Enhancement => 1,
+            Self::Wsj02mix | Self::Libri2Mix | Self::Whamr16k | Self::Whamr8k => 2,
             Self::Libri3Mix => 3,
         }
     }
@@ -293,10 +288,10 @@ impl SepformerVariant {
                 "speechbrain/sepformer-wham16k-enhancement (SepFormer speech enhancement, WHAM! 16 kHz, apache-2.0)"
             }
             Self::Whamr16k => {
-                "speechbrain/sepformer-whamr16k (SepFormer dereverb + denoise, WHAMR! 16 kHz, apache-2.0)"
+                "speechbrain/sepformer-whamr16k (SepFormer 2-speaker separation with noise and reverberation, WHAMR! 16 kHz, apache-2.0)"
             }
             Self::Whamr8k => {
-                "speechbrain/sepformer-whamr (SepFormer dereverb + denoise, WHAMR! 8 kHz, apache-2.0)"
+                "speechbrain/sepformer-whamr (SepFormer 2-speaker separation with noise and reverberation, WHAMR! 8 kHz, apache-2.0)"
             }
             Self::Dns4Enhancement => {
                 "speechbrain/sepformer-dns4-16k-enhancement (SepFormer speech enhancement, Microsoft DNS-4 16 kHz, apache-2.0)"
@@ -641,8 +636,8 @@ mod tests {
             (SepformerVariant::Libri2Mix, 2),
             (SepformerVariant::Libri3Mix, 3),
             (SepformerVariant::Wham16kEnhancement, 1),
-            (SepformerVariant::Whamr16k, 1),
-            (SepformerVariant::Whamr8k, 1),
+            (SepformerVariant::Whamr16k, 2),
+            (SepformerVariant::Whamr8k, 2),
             (SepformerVariant::Dns4Enhancement, 1),
         ];
         // Reused 2-value BF16 tensor keeps the fixture cheap.
@@ -716,10 +711,10 @@ mod tests {
         std::fs::remove_file(&output).ok();
     }
 
-    /// Whamr16k variant carries `enhancement` category (dereverb +
-    /// denoise = single-output enhancement task).
+    /// Whamr16k carries `separation` and two outputs, matching the official
+    /// `num_spks: 2` topology and model card.
     #[test]
-    fn whamr16k_carries_enhancement_category() {
+    fn whamr16k_carries_separation_category_and_two_outputs() {
         let values: [f32; 2] = [1.0, -1.0];
         let bf16: Vec<u8> = values
             .iter()
@@ -736,7 +731,11 @@ mod tests {
         let file = GgufFile::parse(out_bytes).expect("parse GGUF");
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some("enhancement")
+            Some("separation")
+        );
+        assert_eq!(
+            file.get(KEY_SEPFORMER_N_OUT).and_then(|v| v.as_u64()),
+            Some(2)
         );
         assert_eq!(
             file.get(KEY_SEPFORMER_VARIANT).and_then(|v| v.as_str()),
@@ -752,7 +751,7 @@ mod tests {
     }
 
     /// Whamr8k variant (8 kHz WHAMR! sibling of Whamr16k) carries
-    /// `enhancement` category, its own model.name / upstream_hf, and
+    /// `separation` category, two outputs, its own model.name / upstream_hf, and
     /// the distinct `whamr8k` tag — the artifact must NOT silently
     /// inherit the 16 kHz sibling's provenance stamps.
     #[test]
@@ -776,8 +775,13 @@ mod tests {
         let file = GgufFile::parse(out_bytes).expect("parse GGUF");
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some("enhancement"),
-            "Whamr8k must emit `enhancement`, matching the WHAMR family posture"
+            Some("separation"),
+            "Whamr8k must emit source separation, matching the official model card"
+        );
+        assert_eq!(
+            file.get(KEY_SEPFORMER_N_OUT).and_then(|v| v.as_u64()),
+            Some(2),
+            "Whamr8k must emit the official two speaker streams"
         );
         assert_eq!(
             file.get(KEY_SEPFORMER_VARIANT).and_then(|v| v.as_str()),
@@ -808,11 +812,11 @@ mod tests {
     }
 
     /// Dns4Enhancement variant (Microsoft DNS-4 16 kHz sibling of the
-    /// WHAM! / WHAMR! enhancement family) carries `enhancement`
+    /// WHAM! enhancement model) carries `enhancement`
     /// category, its own model.name / upstream_hf, and the distinct
     /// `dns4-16k-enhancement` tag — the artifact must NOT silently
-    /// inherit any WHAM / WHAMR sibling's provenance stamps. Both
-    /// share `n_out = 1`, so the distinct provenance tag is the only
+    /// inherit any WHAM / WHAMR sibling's provenance stamps. The two
+    /// single-stream enhancement models share `n_out = 1`, so provenance is the
     /// signal that would surface a routing mistake at load time.
     #[test]
     fn dns4_enhancement_carries_distinct_provenance_from_wham_family() {
@@ -837,7 +841,7 @@ mod tests {
         assert_eq!(
             file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
             Some("enhancement"),
-            "Dns4Enhancement must emit `enhancement`, matching the enhancement family posture"
+            "Dns4Enhancement must emit `enhancement`"
         );
         assert_eq!(
             file.get(KEY_SEPFORMER_VARIANT).and_then(|v| v.as_str()),
@@ -854,10 +858,8 @@ mod tests {
             Some("speechbrain/sepformer-dns4-16k-enhancement"),
             "upstream_hf must point at the DNS-4 repo, NOT any WHAM / WHAMR sibling"
         );
-        // n_out is 1 (single-output enhancement head), same as every
-        // WHAM / WHAMR sibling — the distinct provenance stamps are
-        // what surface a routing mistake since n_out itself does not
-        // discriminate.
+        // n_out is 1 (single-output enhancement head), unlike WHAMR's
+        // two-speaker separation head.
         assert_eq!(
             file.get(KEY_SEPFORMER_N_OUT).and_then(|v| v.as_u64()),
             Some(1),

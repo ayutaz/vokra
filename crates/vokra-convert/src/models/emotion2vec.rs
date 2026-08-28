@@ -1,216 +1,290 @@
-//! **emotion2vec+ Large**: safetensors checkpoint → GGUF conversion
-//! (SoTA plan Phase 5 emotion tier, 2026-07-25).
+//! Strict emotion2vec+ Large checkpoint conversion.
 //!
-//! Input: the upstream `emotion2vec/emotion2vec_plus_large` release —
-//! `model.safetensors`. Output: a GGUF carrying every float tensor plus
-//! the `vokra.provenance.*` / `vokra.model.*` / `vokra.schema.*` metadata
-//! chunks a future native `vokra-models::emotion2vec::*` implementation
-//! will read.
-//!
-//! # Model class
-//!
-//! emotion2vec+ is a 9-class emotion **SSL pretrain** (ACL 2024,
-//! `arXiv:2312.15185`): a self-supervised speech representation model
-//! whose downstream head is a 9-way emotion classifier (Angry /
-//! Disgusted / Fearful / Happy / Neutral / Other / Sad / Surprised /
-//! `<unk>`). This is Vokra's first `category = "emotion"` model — an
-//! audio-input SSL checkpoint the runtime will consume through the
-//! shared feature-extraction ops (STFT / mel filterbank) into a
-//! wav2vec 2.0-style encoder + emotion classification head.
-//!
-//! # License
-//!
-//! Both code and weights ship **MIT** end-to-end
-//! (huggingface.co/emotion2vec/emotion2vec_plus_large model card
-//! `license: mit`, fetched 2026-07-25 — CLAUDE.md「ハルシネーション厳禁」).
-//! MIT is a `Permissive` license class — same commercial verdict as
-//! apache-2.0 (no runtime-side attribution obligation).
-//!
-//! # BF16 posture
-//!
-//! Every F32 / F16 / BF16 tensor passes through **verbatim** as the
-//! matching GGUF type (BF16 emits type 30 = `GgmlType::BF16`, no
-//! convert-time widening — the runtime widens BF16 → f32 losslessly at
-//! load via the single choke point `crates/vokra-core/src/gguf/quant/
-//! mod.rs decode_bf16`). Mirror of `qwen3_tts` / `vibevoice` /
-//! `voxcpm2` / `moshi` / `voxtral` — the landed sibling posture that
-//! keeps the CI cache footprint at the smallest tensor payload while
-//! preserving the exact upstream bit pattern.
-//!
-//! # Tensor naming contract
-//!
-//! GGUF tensor names are the **upstream safetensors names verbatim**
-//! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice contract). Real-weight parity binding is a follow-up wave
-//! gated on the upstream tensor-name manifest fetch + license §3.1
-//! sign-off (`docs/license-audit.md`); this converter passes every
-//! float tensor through unchanged so a future
-//! `Emotion2vecWeights::from_gguf` can walk the same names.
-//!
-//! # No ONNX (permanent)
-//!
-//! emotion2vec+ is distributed as safetensors + a Python / FunASR
-//! pipeline; this converter **never** touches ONNX (FR-LD-05); the
-//! pipeline will be re-implemented natively when a
-//! `crates/vokra-models/src/emotion2vec/` lands (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
+//! The canonical release is `emotion2vec/emotion2vec_plus_large` at
+//! revision `6c303ba987b86b93193de93e34bb2b077a6bedc4`. Its `model.pt`
+//! payload is prepared offline into one F32 safetensors file; this converter
+//! requires the complete 185-tensor inference manifest before writing GGUF.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use vokra_core::LicenseClass;
-use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
+use vokra_core::gguf::{
+    GgmlType, GgufArray, GgufBuilder, GgufMetadataValue, GgufValueType, chunks,
+};
 
 use crate::ConvertError;
 use crate::safetensors::SafetensorsFile;
 
-/// `vokra.model.arch` for emotion2vec+ GGUFs. Distinct from every
-/// sibling arch tag because emotion2vec is the first
-/// `category = "emotion"` SSL pretrain — silently sharing an arch tag
-/// would misroute the runtime dispatch (an ASR / TTS backbone would try
-/// to interpret the 9-class classifier head).
 pub const ARCH: &str = "emotion2vec";
-
-/// `vokra.model.name` value written for the canonical emotion2vec+ Large
-/// GGUF.
 pub const NAME: &str = "emotion2vec-plus-large";
-
-/// `vokra.model.category` value — the first `"emotion"` in the
-/// converter tree. Consumed by the model-card generator + zoo manifest
-/// tier gate so an emotion classifier is not accidentally advertised as
-/// an ASR / TTS release.
 pub const CATEGORY: &str = "emotion";
-
-/// `vokra.provenance.upstream_hf` value — the HuggingFace path the
-/// release ships from. Recorded so a downstream consumer can re-fetch /
-/// re-verify without a separate manifest lookup.
 pub const UPSTREAM_HF: &str = "emotion2vec/emotion2vec_plus_large";
-
-/// Canonical weight license SPDX (`mit`). Overrides via the
-/// [`convert_emotion2vec_file`] `license` parameter — the standing
-/// mechanism for "implementation is clean-room MIT but the upstream
-/// distributed checkpoint is another license" scenarios (mirror of
-/// `convert_file_licensed` in `lib.rs`).
+pub const UPSTREAM_REVISION: &str = "6c303ba987b86b93193de93e34bb2b077a6bedc4";
+pub const CHECKPOINT_FILE: &str = "model.pt";
+pub const CHECKPOINT_SHA256: &str =
+    "be501a01f26fcdc7663a062dff86af839afbaef7c4de32f5e42d7e1ad2784da4";
 pub const DEFAULT_LICENSE: &str = "mit";
+pub const TENSOR_COUNT: usize = 185;
+pub const SAMPLE_RATE: u32 = 16_000;
+pub const EMBED_DIM: u32 = 1_024;
+pub const DEPTH: u32 = 8;
+pub const PRENET_DEPTH: u32 = 4;
+pub const NUM_HEADS: u32 = 16;
+pub const MLP_DIM: u32 = 4_096;
+pub const NUM_EXTRA_TOKENS: u32 = 10;
+pub const NUM_CLASSES: u32 = 9;
+pub const CONV_POS_DEPTH: u32 = 5;
+pub const CONV_POS_KERNEL: u32 = 19;
+pub const CONV_POS_GROUPS: u32 = 16;
+pub const LAYER_NORM_EPS: f32 = 1.0e-5;
 
-/// Ad-hoc metadata key for the model category. Kept as a converter-side
-/// constant (not a `chunks::KEY_*` alias) until a sibling `category`
-/// consumer lands in `vokra-core`.
-const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+pub const CLASS_LABELS: [&str; 9] = [
+    "生气/angry",
+    "厌恶/disgusted",
+    "恐惧/fearful",
+    "开心/happy",
+    "中立/neutral",
+    "其他/other",
+    "难过/sad",
+    "吃惊/surprised",
+    "<unk>",
+];
 
-/// Outcome of an emotion2vec+ conversion.
-///
-/// All counters are additive and default to zero — a zero-tensor
-/// checkpoint returns `Emotion2vecReport::default()` and the caller
-/// remains responsible for surfacing the "no float tensors" loud note
-/// (mirror of the qwen3_tts / vibevoice / voxcpm2 `Report` pattern with
-/// an added `read` counter that pins the total tensor budget the
-/// safetensors reader surfaced).
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+const KEY_CATEGORY: &str = "vokra.model.category";
+const PREFIX: &str = "vokra.emotion2vec";
+const CONV_DIM: [u32; 7] = [512; 7];
+const CONV_KERNEL: [u32; 7] = [10, 3, 3, 3, 3, 2, 2];
+const CONV_STRIDE: [u32; 7] = [5, 2, 2, 2, 2, 2, 2];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// Conversion counters for the canonical emotion2vec+ Large checkpoint.
 pub struct Emotion2vecReport {
-    /// Total tensors seen in the upstream safetensors header (the sum
-    /// of `written + skipped_non_float`). Additive over
-    /// `qwen3_tts::Qwen3TtsReport` — pins the budget so a truncated
-    /// header cannot silently drop tensors without the caller noticing.
+    /// Tensor descriptors read from the prepared safetensors header.
     pub read: usize,
-    /// Float tensors written verbatim (F32 / F16 / BF16 all go through
-    /// the same byte-copy path since the BF16 pass-through landed
-    /// 2026-07-25).
+    /// Canonical F32 tensors written to GGUF.
     pub written: usize,
-    /// Non-F32 / F16 / BF16 tensors skipped (defensive counter — the
-    /// safetensors reader rejects unknown dtypes at parse time; anything
-    /// that reaches this arm is a quantized dtype the runtime is not
-    /// expected to consume).
+    /// Always zero for a successful strict conversion.
     pub skipped_non_float: usize,
-    /// Of the tensors in `written`, how many were BF16 (subset counter).
-    /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
-    /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
-    /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
+    /// Always zero because the canonical prepared checkpoint is F32-only.
     pub bf16_passthrough: usize,
 }
 
-/// Reads a safetensors checkpoint at `input` and writes an emotion2vec+
-/// GGUF to `output`.
+/// Converts the prepared canonical F32 checkpoint.
 ///
-/// Every F32 / F16 / BF16 tensor is emitted verbatim under its upstream
-/// name; the `vokra.provenance.*` + `vokra.model.*` chunk groups pin the
-/// upstream HF path, weight license, and model category so the zoo
-/// manifest + model-card generator can gate on the artifact alone (no
-/// side-car lookup). `vokra.schema.*` is written unconditionally by the
-/// GGUF writer.
-///
-/// `license` overrides `DEFAULT_LICENSE` (`"mit"`) — the same
-/// mechanism `lib.rs::convert_file_licensed` uses when the implementation
-/// is clean-room but the redistributed checkpoint carries a different
-/// SPDX (e.g. `cc-by-4.0`).
+/// The source weight license has already been owner-signed as MIT in
+/// `docs/license-audit.md`; a conflicting override fails closed.
 pub fn convert_emotion2vec_file(
     input: &Path,
     output: &Path,
     license: Option<&str>,
 ) -> Result<Emotion2vecReport, ConvertError> {
-    // Whole-file read: emotion2vec+ Large ships as a single small
-    // `model.safetensors` (order of MB, not GB) — no need for the
-    // streaming path the Moshi 15 GB / Voxtral 8.7 GB converters run.
-    // Any future 7B-scale emotion sibling would swap this call for
-    // `SafetensorsFileReader::open` + `GgufStreamWriter::begin` per the
-    // moshi.rs / qwen3_tts.rs ADR (docs/adr/qwen3-tts-bf16.md, strategy
-    // A_passthrough).
-    let bytes = std::fs::read(input).map_err(ConvertError::Io)?;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    b.add_string(KEY_MODEL_CATEGORY, CATEGORY);
-
-    // Self-describing redistribution: the artifact carries its own
-    // licence. emotion2vec+ Large ships MIT end-to-end
-    // (huggingface.co/emotion2vec/emotion2vec_plus_large model card
-    // `license: mit`, fetched 2026-07-25 — CLAUDE.md「ハルシネーション厳禁」).
-    // The `license` override lets a downstream repackager stamp a
-    // different SPDX if they redistribute under stricter terms (the
-    // same knob `convert_file_licensed` exposes in `lib.rs`).
-    let effective_license = license.unwrap_or(DEFAULT_LICENSE);
-    vokra_core::stamp_provenance(
-        &mut b,
-        LicenseClass::Permissive,
-        effective_license,
-        Some(NAME),
-        Some(UPSTREAM_HF),
-    );
-
-    let mut report = Emotion2vecReport::default();
-    // Float tensors pass through **verbatim** — no convert-time
-    // widening. BF16 stays GGUF `BF16` (type 30) per the accepted ADR
-    // (docs/adr/qwen3-tts-bf16.md, strategy A_passthrough); the runtime
-    // widens BF16 → f32 exactly at load via the single choke point
-    // `crates/vokra-core/src/gguf/quant/mod.rs decode_bf16`. Mirrors
-    // `qwen3_tts::convert` / `vibevoice::convert` / `voxcpm2::convert`.
-    for t in st.tensors() {
-        report.read += 1;
-        match t.dtype {
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
+    if let Some(value) = license
+        && !value.eq_ignore_ascii_case(DEFAULT_LICENSE)
+    {
+        return Err(ConvertError::Usage(format!(
+            "emotion2vec: canonical {UPSTREAM_HF}@{UPSTREAM_REVISION} has pinned MIT weights; refusing conflicting --license {value:?}"
+        )));
     }
 
-    let out_bytes = b
-        .to_bytes()
-        .map_err(|e| ConvertError::Parse(e.to_string()))?;
-    std::fs::write(output, out_bytes).map_err(ConvertError::Io)?;
+    let st = SafetensorsFile::parse(std::fs::read(input)?)?;
+    validate_manifest(&st)?;
+
+    let mut builder = GgufBuilder::new();
+    stamp_metadata(&mut builder);
+    let mut report = Emotion2vecReport {
+        read: st.tensors().len(),
+        ..Emotion2vecReport::default()
+    };
+    for tensor in st.tensors() {
+        builder.add_tensor(
+            &tensor.name,
+            tensor.dtype,
+            tensor.shape.clone(),
+            st.tensor_bytes(tensor).to_vec(),
+        )?;
+        report.written += 1;
+    }
+    std::fs::write(output, builder.to_bytes()?)?;
     Ok(report)
+}
+
+fn stamp_metadata(builder: &mut GgufBuilder) {
+    builder.add_string(chunks::KEY_MODEL_ARCH, ARCH);
+    builder.add_string(chunks::KEY_MODEL_NAME, NAME);
+    builder.add_string(KEY_CATEGORY, CATEGORY);
+    vokra_core::stamp_provenance(
+        builder,
+        LicenseClass::Permissive,
+        DEFAULT_LICENSE,
+        Some(NAME),
+        Some(&format!(
+            "{UPSTREAM_HF}@{UPSTREAM_REVISION}/{CHECKPOINT_FILE} sha256:{CHECKPOINT_SHA256}"
+        )),
+    );
+    builder.add_string("vokra.provenance.upstream_hf", UPSTREAM_HF);
+    builder.add_string("vokra.provenance.upstream_revision", UPSTREAM_REVISION);
+    builder.add_string("vokra.provenance.checkpoint_file", CHECKPOINT_FILE);
+    builder.add_string("vokra.provenance.checkpoint_sha256", CHECKPOINT_SHA256);
+    builder.add_u32(&format!("{PREFIX}.sample_rate"), SAMPLE_RATE);
+    builder.add_u32(&format!("{PREFIX}.embed_dim"), EMBED_DIM);
+    builder.add_u32(&format!("{PREFIX}.depth"), DEPTH);
+    builder.add_u32(&format!("{PREFIX}.prenet_depth"), PRENET_DEPTH);
+    builder.add_u32(&format!("{PREFIX}.num_heads"), NUM_HEADS);
+    builder.add_u32(&format!("{PREFIX}.mlp_dim"), MLP_DIM);
+    builder.add_u32(&format!("{PREFIX}.num_extra_tokens"), NUM_EXTRA_TOKENS);
+    builder.add_u32(&format!("{PREFIX}.num_classes"), NUM_CLASSES);
+    builder.add_u32(&format!("{PREFIX}.conv_pos_depth"), CONV_POS_DEPTH);
+    builder.add_u32(&format!("{PREFIX}.conv_pos_kernel"), CONV_POS_KERNEL);
+    builder.add_u32(&format!("{PREFIX}.conv_pos_groups"), CONV_POS_GROUPS);
+    builder.add_f32(&format!("{PREFIX}.layer_norm_eps"), LAYER_NORM_EPS);
+    builder.add_bool(&format!("{PREFIX}.normalize"), true);
+    add_u32_array(builder, &format!("{PREFIX}.conv_dim"), &CONV_DIM);
+    add_u32_array(builder, &format!("{PREFIX}.conv_kernel"), &CONV_KERNEL);
+    add_u32_array(builder, &format!("{PREFIX}.conv_stride"), &CONV_STRIDE);
+    add_string_array(builder, &format!("{PREFIX}.class_labels"), &CLASS_LABELS);
+}
+
+fn validate_manifest(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    let observed = st
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), (tensor.dtype, tensor.shape.clone())))
+        .collect::<BTreeMap<_, _>>();
+    validate_observed_manifest(&observed)
+}
+
+fn validate_observed_manifest(
+    observed: &BTreeMap<String, (GgmlType, Vec<u64>)>,
+) -> Result<(), ConvertError> {
+    let expected = expected_manifest();
+    if observed.len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "emotion2vec: prepared checkpoint has {} tensors, expected exactly {TENSOR_COUNT}",
+            observed.len()
+        )));
+    }
+    for (name, (dtype, shape)) in observed {
+        let wanted = expected.get(name).ok_or_else(|| {
+            ConvertError::Parse(format!(
+                "emotion2vec: unexpected tensor {name:?}; refusing pass-through conversion"
+            ))
+        })?;
+        if *dtype != GgmlType::F32 {
+            return Err(ConvertError::Parse(format!(
+                "emotion2vec: tensor {name:?} has {dtype:?}, expected canonical F32"
+            )));
+        }
+        if shape != wanted {
+            return Err(ConvertError::Parse(format!(
+                "emotion2vec: tensor {name:?} shape {shape:?}, expected {wanted:?}"
+            )));
+        }
+    }
+    for name in expected.keys() {
+        if !observed.contains_key(name) {
+            return Err(ConvertError::Parse(format!(
+                "emotion2vec: required tensor {name:?} is missing"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn expected_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut tensors = BTreeMap::new();
+    for layer in 0..DEPTH {
+        insert_block(&mut tensors, &format!("d2v_model.blocks.{layer}"));
+    }
+    let audio = "d2v_model.modality_encoders.AUDIO";
+    tensors.insert(format!("{audio}.alibi_scale"), vec![16]);
+    for layer in 0..PRENET_DEPTH {
+        insert_block(
+            &mut tensors,
+            &format!("{audio}.context_encoder.blocks.{layer}"),
+        );
+    }
+    tensors.insert(format!("{audio}.context_encoder.norm.bias"), vec![1_024]);
+    tensors.insert(format!("{audio}.context_encoder.norm.weight"), vec![1_024]);
+    tensors.insert(format!("{audio}.extra_tokens"), vec![1, 10, 1_024]);
+    for (layer, &kernel) in CONV_KERNEL.iter().enumerate() {
+        let input = if layer == 0 { 1 } else { 512 };
+        tensors.insert(
+            format!("{audio}.local_encoder.conv_layers.{layer}.0.weight"),
+            vec![512, input, u64::from(kernel)],
+        );
+        tensors.insert(
+            format!("{audio}.local_encoder.conv_layers.{layer}.2.1.bias"),
+            vec![512],
+        );
+        tensors.insert(
+            format!("{audio}.local_encoder.conv_layers.{layer}.2.1.weight"),
+            vec![512],
+        );
+    }
+    tensors.insert(format!("{audio}.project_features.1.bias"), vec![512]);
+    tensors.insert(format!("{audio}.project_features.1.weight"), vec![512]);
+    tensors.insert(format!("{audio}.project_features.2.bias"), vec![1_024]);
+    tensors.insert(
+        format!("{audio}.project_features.2.weight"),
+        vec![1_024, 512],
+    );
+    for layer in 1..=CONV_POS_DEPTH {
+        tensors.insert(
+            format!("{audio}.relative_positional_encoder.{layer}.0.bias"),
+            vec![1_024],
+        );
+        tensors.insert(
+            format!("{audio}.relative_positional_encoder.{layer}.0.weight"),
+            vec![1_024, 64, 19],
+        );
+    }
+    tensors.insert("proj.bias".to_owned(), vec![9]);
+    tensors.insert("proj.weight".to_owned(), vec![9, 1_024]);
+    debug_assert_eq!(tensors.len(), TENSOR_COUNT);
+    tensors
+}
+
+fn insert_block(tensors: &mut BTreeMap<String, Vec<u64>>, prefix: &str) {
+    for (suffix, shape) in [
+        ("attn.proj.bias", vec![1_024]),
+        ("attn.proj.weight", vec![1_024, 1_024]),
+        ("attn.qkv.bias", vec![3_072]),
+        ("attn.qkv.weight", vec![3_072, 1_024]),
+        ("mlp.fc1.bias", vec![4_096]),
+        ("mlp.fc1.weight", vec![4_096, 1_024]),
+        ("mlp.fc2.bias", vec![1_024]),
+        ("mlp.fc2.weight", vec![1_024, 4_096]),
+        ("norm1.bias", vec![1_024]),
+        ("norm1.weight", vec![1_024]),
+        ("norm2.bias", vec![1_024]),
+        ("norm2.weight", vec![1_024]),
+    ] {
+        tensors.insert(format!("{prefix}.{suffix}"), shape);
+    }
+}
+
+fn add_u32_array(builder: &mut GgufBuilder, key: &str, values: &[u32]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::U32,
+            values: values.iter().copied().map(GgufMetadataValue::U32).collect(),
+        }),
+    );
+}
+
+fn add_string_array(builder: &mut GgufBuilder, key: &str, values: &[&str]) {
+    builder.add_metadata(
+        key,
+        GgufMetadataValue::Array(GgufArray {
+            element_type: GgufValueType::String,
+            values: values
+                .iter()
+                .map(|value| GgufMetadataValue::String((*value).to_owned()))
+                .collect(),
+        }),
+    );
 }
 
 #[cfg(test)]
@@ -218,200 +292,94 @@ mod tests {
     use super::*;
     use vokra_core::gguf::GgufFile;
 
-    /// Per-process, per-test scratch path in the system temp dir
-    /// (moshi test pattern — no external `tempfile` dep, preserving
-    /// zero-dep NFR-DS-02). The nanosecond suffix separates the two
-    /// tests in this module so a parallel `cargo test` run cannot
-    /// clobber files across them.
-    fn scratch_path(tag: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "vokra-emotion2vec-{}-{}-{}.bin",
-            tag,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default(),
-        ));
-        p
+    fn observed() -> BTreeMap<String, (GgmlType, Vec<u64>)> {
+        expected_manifest()
+            .into_iter()
+            .map(|(name, shape)| (name, (GgmlType::F32, shape)))
+            .collect()
     }
 
-    /// Builds a synthetic safetensors buffer with a single BF16 tensor.
-    ///
-    /// The payload is chosen from a known set of non-zero BF16 bit
-    /// patterns (`1.0`, `-2.5`, `0.15625`, `3.5`, `-0.5`, `42.0`) so a
-    /// byte-identity assert catches any silent widen / downcast attempt
-    /// — the raw zeroed payload would round-trip trivially through
-    /// F32 / F16 widen and defeat the pin.
-    fn synthetic_bf16_safetensors() -> (Vec<u8>, Vec<u8>) {
-        let values: [f32; 6] = [1.0, -2.5, 0.15625, 3.5, -0.5, 42.0];
-        let bf16: Vec<u8> = values
-            .iter()
-            .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
-            .collect();
-        assert_eq!(bf16.len(), 12, "6 elements × 2 bytes BF16 payload");
-        let header = r#"{"encoder.embed_tokens.weight":{"dtype":"BF16","shape":[2,3],"data_offsets":[0,12]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&bf16);
-        (buf, bf16)
-    }
-
-    /// Builds a synthetic safetensors buffer with one F32 tensor
-    /// (`shape=[2,3]`, 24 B) followed by one F16 tensor
-    /// (`shape=[1,4]`, 8 B). The offsets are chosen so the tensors are
-    /// contiguous in the data region.
-    fn synthetic_f32_and_f16_safetensors() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        // F32 payload: 6 non-zero floats so a silent widen would flip a
-        // fence rather than trivially round-trip a zero buffer.
-        let f32_vals: [f32; 6] = [1.0, -2.0, 3.5, -0.25, 100.0, 0.001];
-        let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-        assert_eq!(f32_bytes.len(), 24, "6 elements × 4 bytes F32 payload");
-        // F16 payload: 4 half-floats with known non-zero bit patterns.
-        let f16_patterns: [u16; 4] = [0x3C00, 0xC000, 0x4200, 0x0001];
-        let f16_bytes: Vec<u8> = f16_patterns.iter().flat_map(|p| p.to_le_bytes()).collect();
-        assert_eq!(f16_bytes.len(), 8, "4 elements × 2 bytes F16 payload");
-        // Header declares F32 first, then F16 in the data region.
-        let header = r#"{"encoder.layer0.weight":{"dtype":"F32","shape":[2,3],"data_offsets":[0,24]},"encoder.layer1.weight":{"dtype":"F16","shape":[1,4],"data_offsets":[24,32]}}"#;
-        let mut buf = Vec::new();
-        buf.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(&f32_bytes);
-        buf.extend_from_slice(&f16_bytes);
-        (buf, f32_bytes, f16_bytes)
-    }
-
-    /// STEP 1 RED (BF16 pass-through): the upstream BF16 checkpoint
-    /// must survive the file-based converter round-trip with its dtype
-    /// preserved (GGUF type 30 = `GgmlType::BF16`) and its payload
-    /// byte-identical to the input. Mirrors qwen3_tts / vibevoice /
-    /// voxcpm2 / moshi / voxtral. Fails today with `unimplemented!()`.
     #[test]
-    fn bf16_tensor_passes_through_verbatim() {
-        let (input_bytes, bf16_payload) = synthetic_bf16_safetensors();
-        let input = scratch_path("bf16-in");
-        let output = scratch_path("bf16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
+    fn canonical_manifest_is_complete() {
+        let manifest = expected_manifest();
+        assert_eq!(manifest.len(), 185);
+        assert_eq!(
+            manifest["d2v_model.blocks.7.attn.qkv.weight"],
+            vec![3_072, 1_024]
+        );
+        assert_eq!(
+            manifest["d2v_model.modality_encoders.AUDIO.relative_positional_encoder.5.0.weight"],
+            vec![1_024, 64, 19]
+        );
+        assert_eq!(manifest["proj.weight"], vec![9, 1_024]);
+        validate_observed_manifest(&observed()).unwrap();
+    }
 
-        let report = convert_emotion2vec_file(&input, &output, None).expect("convert");
-
-        // Counters: single BF16 tensor read + written + BF16 subset.
-        assert_eq!(report.read, 1, "one tensor visible in safetensors header");
+    #[test]
+    fn metadata_pins_topology_and_bilingual_labels() {
+        let mut builder = GgufBuilder::new();
+        stamp_metadata(&mut builder);
+        let gguf = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
         assert_eq!(
-            report.written, 1,
-            "BF16 must reach the pass-through arm (mirror of qwen3_tts)"
-        );
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "BF16 must not land in the skipped counter"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 1,
-            "BF16 subset counter must record the pass-through"
-        );
-
-        // Round-trip: dtype preserved, payload byte-identical (no silent widen).
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let info = file
-            .tensor_info("encoder.embed_tokens.weight")
-            .expect("BF16 tensor present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening — BF16 stays BF16 (GGUF type 30)"
-        );
-        assert_eq!(info.dimensions, vec![2, 3]);
-        assert_eq!(
-            file.tensor_bytes(info),
-            bf16_payload.as_slice(),
-            "BF16 payload must be byte-identical to input"
-        );
-
-        // Provenance + category chunks pinned on the artifact itself.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
+            gguf.get(chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str()),
             Some(ARCH)
         );
         assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some(NAME)
+            gguf.get("vokra.emotion2vec.embed_dim")
+                .and_then(|value| value.as_u64()),
+            Some(1_024)
         );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(DEFAULT_LICENSE)
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(CATEGORY),
-            "category chunk pins the first `emotion` model in the converter tree"
-        );
-        // Schema stamp is written unconditionally by the GGUF writer.
-        assert!(
-            file.get(chunks::KEY_SCHEMA_VERSION).is_some(),
-            "vokra.schema.version must be stamped"
-        );
-        assert!(
-            file.get(chunks::KEY_SCHEMA_PRODUCER).is_some(),
-            "vokra.schema.producer must be stamped"
-        );
-
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+        let labels = gguf
+            .get("vokra.emotion2vec.class_labels")
+            .and_then(|value| value.as_array())
+            .unwrap();
+        assert_eq!(labels.values.len(), 9);
+        assert_eq!(labels.values[0].as_str(), Some("生气/angry"));
     }
 
-    /// STEP 1 RED (F32 + F16 pass-through): two float tensors of
-    /// distinct dtypes in the same input must both reach the
-    /// pass-through arm without collapsing into a single dtype branch,
-    /// and the BF16 counter must remain 0 (default). Guards against a
-    /// naive `if bf16 { ... } else` refactor.
     #[test]
-    fn f32_and_f16_tensors_pass_through() {
-        let (input_bytes, f32_payload, f16_payload) = synthetic_f32_and_f16_safetensors();
-        let input = scratch_path("f32f16-in");
-        let output = scratch_path("f32f16-out");
-        std::fs::write(&input, &input_bytes).expect("write safetensors input");
-
-        let report = convert_emotion2vec_file(&input, &output, None).expect("convert");
-
-        assert_eq!(report.read, 2, "two tensors visible in header");
-        assert_eq!(report.written, 2, "both F32 and F16 must pass through");
-        assert_eq!(
-            report.skipped_non_float, 0,
-            "no tensor may reach the skipped arm"
-        );
-        assert_eq!(
-            report.bf16_passthrough, 0,
-            "F32+F16-only input must leave the BF16 subset counter at the Default 0"
+    fn missing_extra_and_wrong_shape_fail_closed() {
+        let mut missing = observed();
+        missing.remove("proj.bias");
+        assert!(
+            validate_observed_manifest(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("184 tensors")
         );
 
-        // Both tensors survive the round-trip with their upstream names
-        // and dtypes preserved.
-        let out_bytes = std::fs::read(&output).expect("read gguf output");
-        let file = GgufFile::parse(out_bytes).expect("parse gguf");
-        let f32_info = file
-            .tensor_info("encoder.layer0.weight")
-            .expect("F32 tensor present");
-        assert_eq!(f32_info.dtype, GgmlType::F32, "F32 stays F32");
-        assert_eq!(f32_info.dimensions, vec![2, 3]);
-        assert_eq!(file.tensor_bytes(f32_info), f32_payload.as_slice());
+        let mut extra = observed();
+        extra.remove("proj.bias");
+        extra.insert("fabricated.weight".to_owned(), (GgmlType::F32, vec![9]));
+        assert!(
+            validate_observed_manifest(&extra)
+                .unwrap_err()
+                .to_string()
+                .contains("unexpected tensor")
+        );
 
-        let f16_info = file
-            .tensor_info("encoder.layer1.weight")
-            .expect("F16 tensor present");
-        assert_eq!(f16_info.dtype, GgmlType::F16, "F16 stays F16");
-        assert_eq!(f16_info.dimensions, vec![1, 4]);
-        assert_eq!(file.tensor_bytes(f16_info), f16_payload.as_slice());
+        let mut wrong = observed();
+        wrong.get_mut("proj.weight").unwrap().1 = vec![8, 1_024];
+        let error = validate_observed_manifest(&wrong).unwrap_err().to_string();
+        assert!(error.contains("proj.weight"));
+        assert!(error.contains("expected [9, 1024]"));
+    }
 
-        std::fs::remove_file(&input).ok();
-        std::fs::remove_file(&output).ok();
+    #[test]
+    fn non_f32_and_conflicting_license_fail_closed() {
+        let mut wrong = observed();
+        wrong.get_mut("proj.bias").unwrap().0 = GgmlType::F16;
+        assert!(
+            validate_observed_manifest(&wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("expected canonical F32")
+        );
+        let missing = std::path::Path::new("does-not-exist");
+        let error = convert_emotion2vec_file(missing, missing, Some("apache-2.0"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("conflicting --license"));
     }
 }

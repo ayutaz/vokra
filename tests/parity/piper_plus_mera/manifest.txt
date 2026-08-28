@@ -1,0 +1,19 @@
+# piper-plus official-ONNX parity fixture (M0-07-T21)
+# Generated offline by gen_reference.py via onnxruntime (deterministic).
+piper_version = 1.7.0
+phoneme_ids = 1 32 0 14 0 25 0 57 0 11 0 38 0 11 0 63 0 10 0 2
+lid = 0
+noise_scale = 0.0
+length_scale = 1.0
+noise_w = 0.0
+hidden = 192
+t_phonemes = 20
+t_frames = 71
+pcm_len = 18176
+sample_rate = 22050
+onnx_file = mera-multilingual.onnx
+onnx_sha256 = 97952c17fd60d47c4db2a6bf3903184df2054b6fa97396c971102bc60a9f135f
+config_sha256 = 26dfa6f0e82ad64c3334b0e34d765cca29ddd20f23df22ac33748fff0ea3e17f
+reference_engine = onnxruntime 1.23.2
+upstream_repo = kizuna-intelligence/piper-plus-mera-multilingual
+upstream_revision = d5ed57f04a1fd1cada7940ecd79a51d523b83462

@@ -22,7 +22,7 @@ use vokra_core::decode::word_timing::{
     merge_punctuations, token_alignment, words_from_alignment,
 };
 use vokra_core::decode::{BeamScorer, LogitsSource};
-use vokra_core::{Result, VokraError};
+use vokra_core::{BackendKind, Result, VokraError};
 
 use super::WhisperModel;
 use super::decoder::DecoderState;
@@ -84,9 +84,21 @@ pub struct WhisperLogitsSource {
 
 impl WhisperLogitsSource {
     /// Builds a source for `encoder`'s audio (precomputes cross-attention K/V).
+    #[cfg(test)]
     pub(crate) fn new(model: Arc<WhisperModel>, encoder: &EncoderOutput) -> Result<Self> {
+        Self::new_with_backend(model, encoder, BackendKind::Cpu)
+    }
+
+    /// Builds a source on `backend` for `encoder`'s audio. The selected
+    /// backend is preserved for every reset/replay decoder step; search never
+    /// substitutes the CPU decoder for a non-CPU encoder.
+    pub(crate) fn new_with_backend(
+        model: Arc<WhisperModel>,
+        encoder: &EncoderOutput,
+        backend: BackendKind,
+    ) -> Result<Self> {
         let vocab = model.config().n_vocab;
-        let state = model.decoder(encoder)?;
+        let state = model.decoder_with_backend(encoder, backend)?;
         Ok(Self {
             state,
             vocab,
@@ -169,13 +181,24 @@ impl WhisperBeamScorer<'static> {
     /// with **no** tokenizer — `align_words` yields per-token timings.
     /// `n_valid_audio` is the clip's valid (non-padding) audio-position count
     /// ([`valid_audio_positions`]).
+    #[cfg(test)]
     pub(crate) fn new(
         model: Arc<WhisperModel>,
         encoder: &EncoderOutput,
         n_valid_audio: usize,
     ) -> Result<Self> {
+        Self::new_with_backend(model, encoder, n_valid_audio, BackendKind::Cpu)
+    }
+
+    /// [`new`](Self::new) on an explicit decoder backend.
+    pub(crate) fn new_with_backend(
+        model: Arc<WhisperModel>,
+        encoder: &EncoderOutput,
+        n_valid_audio: usize,
+        backend: BackendKind,
+    ) -> Result<Self> {
         Ok(Self {
-            source: WhisperLogitsSource::new(model, encoder)?,
+            source: WhisperLogitsSource::new_with_backend(model, encoder, backend)?,
             tokenizer: None,
             n_valid_audio,
         })
@@ -186,15 +209,28 @@ impl<'t> WhisperBeamScorer<'t> {
     /// Builds a scorer that merges subword timings into word timings using
     /// `tokenizer` (M4-20, FR-OP-40). `align_words` then returns one
     /// [`WordTiming`] per word. `n_valid_audio` as in
-    /// [`new`](WhisperBeamScorer::new).
+    /// [`new_with_backend`](WhisperBeamScorer::new_with_backend).
+    #[cfg(test)]
     pub(crate) fn with_tokenizer(
         model: Arc<WhisperModel>,
         encoder: &EncoderOutput,
         tokenizer: &'t WhisperTokenizer,
         n_valid_audio: usize,
     ) -> Result<Self> {
+        Self::with_tokenizer_and_backend(model, encoder, tokenizer, n_valid_audio, BackendKind::Cpu)
+    }
+
+    /// [`with_tokenizer`](Self::with_tokenizer) on an explicit decoder
+    /// backend.
+    pub(crate) fn with_tokenizer_and_backend(
+        model: Arc<WhisperModel>,
+        encoder: &EncoderOutput,
+        tokenizer: &'t WhisperTokenizer,
+        n_valid_audio: usize,
+        backend: BackendKind,
+    ) -> Result<Self> {
         Ok(Self {
-            source: WhisperLogitsSource::new(model, encoder)?,
+            source: WhisperLogitsSource::new_with_backend(model, encoder, backend)?,
             tokenizer: Some(tokenizer),
             n_valid_audio,
         })

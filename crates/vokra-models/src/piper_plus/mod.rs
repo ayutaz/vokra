@@ -123,8 +123,8 @@ pub struct PiperIntermediates {
 /// assembled here from the loaded weights (M0-07-T11..T20).
 pub struct PiperPlusTts {
     config: PiperConfig,
-    /// Global speaker/language conditioning `g = spk_proj(speaker) + emb_lang`
-    /// (M1 zero-shot v7): the single source of the vector shared by the encoder,
+    /// Global language conditioning, optionally augmented by the M1 zero-shot
+    /// v7 `spk_proj`: the single source of the vector shared by the encoder,
     /// duration predictor, flow and decoder.
     conditioning: Conditioning,
     encoder: TextEncoder,
@@ -319,11 +319,12 @@ impl PiperPlusTts {
     }
 
     /// The external speaker-embedding width this voice's `spk_proj` expects —
-    /// 192 (the CAM++ output) for the zero-shot v7 voice. Any embedding handed
-    /// to a request via [`SynthesisRequest::speaker_embedding`] must have this
-    /// length (a shorter/longer one falls back to the zero vector).
+    /// 192 (the CAM++ output) for the zero-shot v7 voice, or `0` for a legacy
+    /// language-conditioned voice without speaker projection. Any supplied
+    /// embedding must have the exact non-zero width; unsupported or mismatched
+    /// embeddings return an explicit error.
     pub fn speaker_embedding_dim(&self) -> usize {
-        self.conditioning.spk_emb_dim()
+        self.conditioning.spk_emb_dim().unwrap_or(0)
     }
 
     /// Turns reference audio into the speaker embedding that drives zero-shot
@@ -351,9 +352,15 @@ impl PiperPlusTts {
         sample_rate: u32,
     ) -> Result<Vec<f32>> {
         let opts = KaldiFbankOpts::camplus();
-        // The CAM++ encoder emits EMBED_DIM (192); reject a voice whose spk_proj
-        // was trained on a different width before doing any work.
-        let want = self.speaker_embedding_dim();
+        // The CAM++ encoder emits EMBED_DIM (192); reject a legacy voice with
+        // no projection, or a zero-shot voice trained on a different width,
+        // before doing any work.
+        let Some(want) = self.conditioning.spk_emb_dim() else {
+            return Err(VokraError::InvalidArgument(
+                "piper TTS: this legacy voice has no spk_proj; reference-audio embedding is unsupported"
+                    .into(),
+            ));
+        };
         if crate::speaker::EMBED_DIM != want {
             return Err(VokraError::InvalidArgument(format!(
                 "piper TTS: CAM++ embedding dim {} != voice speaker_embedding_dim {want}",
@@ -383,9 +390,11 @@ impl PiperPlusTts {
     /// MB-iSTFT-VITS2 path (encoder → duration predictor → length regulation →
     /// flow → decoder), M0-07-T20.
     ///
-    /// The zero-shot conditioning inputs are `speaker_embedding`
-    /// (`speaker_embedding_dim` floats; `None` → the zero vector, which the
-    /// speaker projection still maps to a non-zero contribution) and
+    /// A zero-shot voice accepts `speaker_embedding` (`speaker_embedding_dim`
+    /// floats; `None` → the zero vector, which the speaker projection still
+    /// maps to a non-zero contribution). A legacy voice has no `spk_proj` and
+    /// uses language conditioning only; supplying an embedding is an error.
+    /// The other conditioning input is
     /// `prosody_features` (the flattened `[T_phonemes · 3]` `(A1, A2, A3)`
     /// triples for the JA prosody feed; `None` → the bias-only channels). They
     /// compose the global conditioning `g` shared by every stage.
@@ -422,7 +431,7 @@ impl PiperPlusTts {
         // `&Compute` through every stage; the `!Send` Metal context lives only
         // for this call, so the engine stays `Send + Sync` (M2-01 Phase 3).
         let compute = self.compute()?;
-        let g = self.conditioning.g(speaker_embedding, lid);
+        let g = self.conditioning.g(speaker_embedding, lid)?;
         let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(prosody_features, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
@@ -487,7 +496,7 @@ impl PiperPlusTts {
         // Build a fresh dispatcher for the caller-selected backend — the
         // `!Send` Metal / CUDA context lives only for this call.
         let compute = Compute::for_backend(backend, PIPER_HOT_OPS)?;
-        let g = self.conditioning.g(speaker_embedding, lid);
+        let g = self.conditioning.g(speaker_embedding, lid)?;
         let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let m_p = enc.m_p.clone();
         let logs_p = enc.logs_p.clone();
@@ -796,14 +805,14 @@ impl PiperPlusTts {
     /// (component boundary used by the M0-07-T13 parity test).
     #[cfg(test)]
     pub(crate) fn encode(&self, phoneme_ids: &[i64], lid: i64) -> Result<text_encoder::EncoderOut> {
-        let g = self.conditioning.g(None, lid);
+        let g = self.conditioning.g(None, lid)?;
         self.encoder.forward(&Compute::cpu(), phoneme_ids, &g)
     }
 
     /// The global conditioning `g = spk_proj(speaker) + emb_lang[lid]` `[gin]`
     /// (component boundary for the v7 parity test; `None` speaker = zeros).
     #[cfg(test)]
-    pub(crate) fn global_g(&self, speaker_embedding: Option<&[f32]>, lid: i64) -> Vec<f32> {
+    pub(crate) fn global_g(&self, speaker_embedding: Option<&[f32]>, lid: i64) -> Result<Vec<f32>> {
         self.conditioning.g(speaker_embedding, lid)
     }
 
@@ -812,7 +821,7 @@ impl PiperPlusTts {
     /// test: reference latent → PCM).
     #[cfg(test)]
     pub(crate) fn decode(&self, z: &[f32], t_frames: usize, lid: i64) -> Result<Vec<f32>> {
-        let g = self.conditioning.g(None, lid);
+        let g = self.conditioning.g(None, lid)?;
         self.decoder.forward(&Compute::cpu(), z, t_frames, &g)
     }
 
@@ -829,7 +838,7 @@ impl PiperPlusTts {
         length_scale: f32,
     ) -> Result<Vec<f32>> {
         let compute = Compute::cpu();
-        let g = self.conditioning.g(None, lid);
+        let g = self.conditioning.g(None, lid)?;
         let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(None, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
@@ -844,7 +853,7 @@ impl PiperPlusTts {
     #[cfg(test)]
     pub(crate) fn sdp_body(&self, phoneme_ids: &[i64], lid: i64) -> Result<(Vec<f32>, usize)> {
         let compute = Compute::cpu();
-        let g = self.conditioning.g(None, lid);
+        let g = self.conditioning.g(None, lid)?;
         let enc = self.encoder.forward(&compute, phoneme_ids, &g)?;
         let prosody = self.prosody_proj.channels(None, lid, enc.t);
         let x_dp = build_x_dp(&enc.x, &prosody, enc.t);
@@ -861,11 +870,11 @@ impl PiperPlusTts {
         t_phonemes: usize,
         w_ceil: &[usize],
         lid: i64,
-    ) -> (Vec<f32>, usize) {
+    ) -> Result<(Vec<f32>, usize)> {
         let (z_p, t_frames) = length_regulate(m_p, HIDDEN, t_phonemes, w_ceil);
-        let g = self.conditioning.g(None, lid);
+        let g = self.conditioning.g(None, lid)?;
         let z = self.flow.reverse(&Compute::cpu(), &z_p, t_frames, &g);
-        (z, t_frames)
+        Ok((z, t_frames))
     }
 }
 
@@ -956,6 +965,10 @@ impl TtsEngine for PiperPlusTts {
             self.config.length_scale,
             noise_w,
         )
+    }
+
+    fn backend(&self) -> BackendKind {
+        self.backend_kind
     }
 
     /// Overrides the default `synthesize_stream` (which loudly refuses per

@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use vokra_core::BackendKind;
+use vokra_core::engines::SeparationEngine;
 use vokra_core::quant::{
     DegradationReport, QuantPolicy, verify_hifigan_int8 as core_verify_hifigan_int8,
 };
@@ -38,23 +39,51 @@ const DEFAULT_BENCH_TEXT: &str = "the quick brown fox jumps over the lazy dog";
 enum DenoiseBenchModel {
     Nsnet2(vokra_models::nsnet2::Nsnet2V1),
     Rnnoise(vokra_models::rnnoise::RnnoiseV02),
+    DeepFilterNet3(Box<vokra_models::deepfilternet3::DeepFilterNet3>),
+    MetricGanPlus(vokra_models::metricgan_plus::MetricGanPlus),
+    MpSenet(Box<vokra_models::mp_senet::MpSenet>),
+    FacebookDenoiser(vokra_models::facebook_denoiser::FbDenoiser),
+    Frcrn(vokra_models::frcrn::Frcrn),
 }
 
 impl DenoiseBenchModel {
-    fn bind(gguf: &vokra_core::gguf::GgufFile) -> Result<Self, String> {
+    fn bind(gguf: &vokra_core::gguf::GgufFile, backend: BackendKind) -> Result<Self, String> {
         let arch = gguf
             .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
             .and_then(|value| value.as_str())
             .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
         match arch {
             "nsnet2" => vokra_models::nsnet2::Nsnet2V1::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
                 .map(Self::Nsnet2)
                 .map_err(|error| error.to_string()),
             "rnnoise" => vokra_models::rnnoise::RnnoiseV02::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
                 .map(Self::Rnnoise)
                 .map_err(|error| error.to_string()),
+            "denoise" => vokra_models::deepfilternet3::DeepFilterNet3::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
+                .map(Box::new)
+                .map(Self::DeepFilterNet3)
+                .map_err(|error| error.to_string()),
+            "metricgan_plus" => vokra_models::metricgan_plus::MetricGanPlus::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
+                .map(Self::MetricGanPlus)
+                .map_err(|error| error.to_string()),
+            "mp_senet" => vokra_models::mp_senet::MpSenet::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
+                .map(Box::new)
+                .map(Self::MpSenet)
+                .map_err(|error| error.to_string()),
+            "facebook_denoiser" => vokra_models::facebook_denoiser::FbDenoiser::from_gguf(gguf)
+                .map(|model| model.with_backend(backend))
+                .map(Self::FacebookDenoiser)
+                .map_err(|error| error.to_string()),
+            "frcrn" => vokra_models::frcrn::Frcrn::from_gguf_with_backend(gguf, backend)
+                .map(Self::Frcrn)
+                .map_err(|error| error.to_string()),
             other => Err(format!(
-                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2 or rnnoise"
+                "bench (denoise): internal dispatch error: arch `{other}` is not nsnet2, rnnoise, denoise, metricgan_plus, mp_senet, facebook_denoiser, or frcrn"
             )),
         }
     }
@@ -63,6 +92,11 @@ impl DenoiseBenchModel {
         match self {
             Self::Nsnet2(model) => model.config().sample_rate,
             Self::Rnnoise(_) => vokra_models::rnnoise::SAMPLE_RATE,
+            Self::DeepFilterNet3(model) => model.config().sample_rate,
+            Self::MetricGanPlus(_) => vokra_models::metricgan_plus::SAMPLE_RATE,
+            Self::MpSenet(_) => vokra_models::mp_senet::SAMPLE_RATE,
+            Self::FacebookDenoiser(_) => vokra_models::facebook_denoiser::SAMPLE_RATE,
+            Self::Frcrn(_) => vokra_models::frcrn::SAMPLE_RATE,
         }
     }
 
@@ -70,6 +104,11 @@ impl DenoiseBenchModel {
         match self {
             Self::Nsnet2(model) => model.denoise_pcm(pcm),
             Self::Rnnoise(model) => model.denoise_pcm(pcm),
+            Self::DeepFilterNet3(model) => model.enhance(pcm),
+            Self::MetricGanPlus(model) => model.enhance(pcm),
+            Self::MpSenet(model) => model.enhance(pcm),
+            Self::FacebookDenoiser(model) => model.denoise(pcm),
+            Self::Frcrn(model) => model.enhance(pcm),
         }
         .map_err(|error| error.to_string())
     }
@@ -92,6 +131,10 @@ struct BenchArgs {
     /// large-v3 all use 80). Keeping the CLI self-contained lets the CI
     /// `bench-regression` job run without shipping a Whisper GGUF fixture.
     model: Option<String>,
+    /// pyannote-diarization-only PyanNet dependency GGUF.
+    segmentation_model: Option<String>,
+    /// pyannote-diarization-only WeSpeaker dependency GGUF.
+    embedding_model: Option<String>,
     input: Option<String>,
     text: Option<String>,
     /// `--style <path>` — kokoro only (X-06-T24): a raw little-endian f32 style
@@ -256,6 +299,10 @@ USAGE:
 
 IN-PROCESS OPTIONS:
     --model <path>       GGUF model file (arch selects VAD / ASR / TTS)
+    --segmentation-model <path>
+                         pyannote-speaker-diarization only, REQUIRED PyanNet GGUF
+    --embedding-model <path>
+                         pyannote-speaker-diarization only, REQUIRED WeSpeaker GGUF
     --input <path>       mono WAV input (required for VAD and ASR)
     --text <string>      text to synthesize (TTS; defaults to a fixed phrase).
                          For kokoro this is misaki IPA phonemes (or a raw-id
@@ -301,6 +348,8 @@ HTTP-BOUNDARY OPTIONS (M3-15-T11):
 
 fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     let mut model: Option<String> = None;
+    let mut segmentation_model: Option<String> = None;
+    let mut embedding_model: Option<String> = None;
     let mut input: Option<String> = None;
     let mut text: Option<String> = None;
     let mut style: Option<String> = None;
@@ -323,6 +372,22 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
         match args[i].as_str() {
             "--model" => {
                 model = Some(args.get(i + 1).ok_or("--model requires a value")?.clone());
+                i += 2;
+            }
+            "--segmentation-model" => {
+                segmentation_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--segmentation-model requires a GGUF path")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            "--embedding-model" => {
+                embedding_model = Some(
+                    args.get(i + 1)
+                        .ok_or("--embedding-model requires a GGUF path")?
+                        .clone(),
+                );
                 i += 2;
             }
             "--input" => {
@@ -460,6 +525,13 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
                 .to_owned(),
         );
     }
+    if server.is_some() && (segmentation_model.is_some() || embedding_model.is_some()) {
+        return Err(
+            "--segmentation-model / --embedding-model belong to the in-process pyannote \
+             diarization bench and cannot be combined with --server"
+                .to_owned(),
+        );
+    }
 
     // `--model` is required for every task except the self-contained bench
     // tasks (`mel-frontend`, `cosyvoice2-synthetic`) OR when `--server`
@@ -474,6 +546,8 @@ fn parse_args(args: &[String]) -> Result<BenchArgs, String> {
     }
     Ok(BenchArgs {
         model,
+        segmentation_model,
+        embedding_model,
         input,
         text,
         style,
@@ -545,6 +619,16 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
     let (session, task) =
         engine::load_session_with_backend(model_path, args.backend, args.task_hint)?;
 
+    if (args.segmentation_model.is_some() || args.embedding_model.is_some())
+        && task != ModelTask::DiarizationPyannote
+    {
+        return Err(
+            "bench: --segmentation-model / --embedding-model are only supported for the \
+             pyannote-speaker-diarization arch"
+                .to_owned(),
+        );
+    }
+
     // M2-08-T12: HiFi-GAN INT8 opt-in verify gate. `None` policy short-circuits
     // (the `vokra.quant.*` chunk reader is a T05 landing pad — see
     // `vokra_core::quant::chunk`). When T05 lands this reads
@@ -578,6 +662,35 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::AsrQwen3 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Qwen3-ASR): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::qwen3_asr::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Qwen3-ASR): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::qwen3_asr::SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::qwen3_asr::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::qwen3_asr::Qwen3Asr::open_mapped(
+                args.model.as_deref().expect("model path is present"),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe(&pcm, vokra_models::qwen3_asr::SAMPLE_RATE)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-qwen3", audio_seconds, samples)
+        }
         // Same posture for the Moshi duplex (M4-06): per-frame latency
         // reference numbers ride the duplex demo + owner track (T26/T30).
         ModelTask::S2sDuplex => {
@@ -588,17 +701,133 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
-        // Speaker embedding (CAM++): no bench task is defined — the run-side
+        // Speaker embedding: no bench task is defined — the run-side
         // Speaker arm prints the embedding L2-norm / cosine, but a timing
         // harness needs a settled fbank+embed window definition first.
         // Reject rather than fabricate a measurement (FR-EX-08).
         ModelTask::Speaker => {
-            return Err(
-                "bench: arch `campplus` (speaker embedding) has no bench task yet — \
-                 use `vokra-cli run --model <campplus.gguf> --input <a.wav>` for the \
+            return Err("bench: speaker-embedding arches have no bench task yet — \
+                 use `vokra-cli run --model <speaker.gguf> --input <a.wav>` for the \
                  embedding itself (FR-EX-08: refusing to fabricate a measurement)"
+                .to_owned());
+        }
+        ModelTask::LangId => {
+            return Err(
+                "bench: arch `lang_id_ecapa` has no settled benchmark task yet — use `vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav>` for the complete CPU/Metal forward"
                     .to_owned(),
             );
+        }
+        ModelTask::AudioQualityAudiobox => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Audiobox Aesthetics): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::audiobox_aesthetics::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (Audiobox Aesthetics): {path} is {} Hz, expected {rate} Hz — resample explicitly before scoring (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::audiobox_aesthetics::AudioboxAesthetics::from_file(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let scores = model
+                    .score_pcm(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(scores);
+                Ok(())
+            })?;
+            ("audiobox-aesthetics", audio_seconds, samples)
+        }
+        ModelTask::EmotionClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (emotion2vec): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::emotion2vec::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (emotion2vec): {path} is {} Hz, expected {rate} Hz — resample explicitly before classification (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::emotion2vec::Emotion2Vec::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let scores = model
+                    .classify_scores(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(scores);
+                Ok(())
+            })?;
+            ("emotion2vec", audio_seconds, samples)
+        }
+        ModelTask::DeepfakeClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (deepfake detection): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::deepfake_detection::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (deepfake detection): {path} is {} Hz, expected {rate} Hz — resample explicitly before classification (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::deepfake_detection::DeepfakeDetection::from_gguf_with_backend(
+                    session.gguf(),
+                    args.backend,
+                )
+                .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model
+                    .score_pcm(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("deepfake-detection", audio_seconds, samples)
+        }
+        ModelTask::WatermarkAudioseal => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (AudioSeal detect): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::audioseal::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (AudioSeal detect): {path} is {} Hz, expected {rate} Hz — resample explicitly before detection (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::audioseal::Audioseal::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let detection = model
+                    .detect_pcm(&pcm, rate, vokra_models::audioseal::AudiosealVariant::Base)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(detection);
+                Ok(())
+            })?;
+            ("audioseal-detect-base", audio_seconds, samples)
         }
         // SBV2 (Task 38): the `run` arm needs the `--bert-ja` / `--bert-en`
         // side-car GGUFs `bench`'s generic `--model`-only dispatch has no
@@ -611,6 +840,62 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 "bench: arch `sbv2` has no bench task yet — use `vokra-cli run --model \
                  <sbv2.gguf> --bert-ja <bert_ja.gguf> --bert-en <bert_en.gguf> --text \
                  <string>` (FR-EX-08: refusing to fabricate a measurement)"
+                    .to_owned(),
+            );
+        }
+        // MeloTTS consumes a versioned feature bundle rather than timed input
+        // audio. A meaningful RTF denominator needs the same explicit bundle
+        // contract in bench; the generic bench parser does not expose it yet.
+        ModelTask::TtsMelo => {
+            return Err(
+                "bench: arch `melotts` has no bench task yet — use `vokra-cli run --model \
+                 <melotts.gguf> --input <features.vmf> [--backend cpu|metal]` \
+                 (FR-EX-08: refusing to fabricate a feature-to-audio denominator)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TextEncoder => {
+            return Err(
+                "bench: standalone BERT-family encoders have no audio-time denominator; use `vokra-cli run --model <bert.gguf> --token-ids <u32,u32,...> [--output hidden.f32]` (FR-EX-08: refusing to report a fabricated RTF)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::MusicGeneration => {
+            return Err(
+                "bench: arch `musicgen` needs explicit conditional/null T5 token ids and a \
+                 generated-frame denominator; use `vokra-cli run --model <musicgen-small.gguf> \
+                 --token-ids <ids> --music-unconditional-token-ids <ids> --music-frames <N>` \
+                 (FR-EX-08: refusing to fabricate prompt or duration inputs)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsBark => {
+            return Err(
+                "bench: arch `bark` needs explicit text token ids and has content-dependent semantic/coarse duration; use `vokra-cli run --model <bark-small.gguf> --token-ids <ids> [--bark-max-semantic-tokens <N>] [--bark-seed <u64>] --output <out.wav>` (FR-EX-08: refusing to fabricate a tokenizer prompt or fixed audio denominator)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsParler => {
+            return Err(
+                "bench: arch `parler_tts` needs two explicit tokenizer outputs and has content-dependent delayed generation; use `vokra-cli run --model <parler-mini.gguf> --parler-description-token-ids <ids> --parler-prompt-token-ids <ids> [--parler-max-frames <N>] [--parler-seed <u64>] --output <out.wav>` (FR-EX-08: refusing to fabricate either prompt or a duration denominator)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsNeuTtsAir => {
+            return Err(
+                "bench: arch `neutts-air` needs an exact pre-tokenized phoneme/reference-code prompt plus an explicit NeuCodec companion; use `vokra-cli run --model <neutts-air.gguf> --neutts-companion <neucodec.gguf> --token-ids <official-prompt-ids> [--neutts-greedy] --output <out.wav>` (FR-EX-08: refusing to fabricate tokenizer, phonemizer, reference audio, or duration inputs)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::AudioLlmUltravox => {
+            return Err(
+                "bench: arch `ultravox` needs a separately licensed Llama companion, exact expanded prompt/audio span/stop IDs, and content-dependent generation length; use `vokra-cli run --model <ultravox-audio.gguf> --ultravox-companion <llama.gguf> --input <16k-mono.wav> --token-ids <expanded-prompt-ids> --ultravox-audio-start <N> --ultravox-stop-token-ids <ids>` (FR-EX-08: refusing to fabricate tokenizer, chat template, gated weights, or a duration denominator)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::AudioLlmMossAudio => {
+            return Err(
+                "bench: arch `moss_audio` has content-dependent autoregressive response length and bench exposes no prompt/token cap contract; use `vokra-cli run --model <moss-audio-instruct.gguf> --input <16k-mono.wav> [--text <question>] [--moss-audio-max-new-tokens <N>]` (FR-EX-08: refusing to report an undefined response RTF)"
                     .to_owned(),
             );
         }
@@ -632,6 +917,130 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("smart-turn", audio_seconds, samples)
+        }
+        ModelTask::AudioClassificationAst => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (AST): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::ast::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (AST): {path} is {} Hz, expected {} Hz — resample explicitly before inference (FR-EX-08)",
+                    clip.sample_rate,
+                    vokra_models::ast::SAMPLE_RATE
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::ast::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::ast::AstAudioSet::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let logits = model
+                    .classify_pcm(&pcm, vokra_models::ast::SAMPLE_RATE)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(logits);
+                Ok(())
+            })?;
+            ("ast-audioset", audio_seconds, samples)
+        }
+        ModelTask::Utmos => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (UTMOS22-strong): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let sample_rate = clip.sample_rate;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(sample_rate);
+            let pcm = clip.samples;
+            let runtime =
+                crate::utmos_runtime::UtmosRuntime::from_gguf(session.gguf(), args.backend)
+                    .map_err(|error| format!("bench (UTMOS22-strong): {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = runtime
+                    .score(&pcm, sample_rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("utmos", audio_seconds, samples)
+        }
+        ModelTask::Dnsmos => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (DNSMOS): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::dnsmos_p808_p835::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (DNSMOS): {path} is {} Hz, expected {} Hz — resample explicitly before scoring (FR-EX-08)",
+                    clip.sample_rate,
+                    vokra_models::dnsmos_p808_p835::SAMPLE_RATE
+                ));
+            }
+            let audio_seconds =
+                clip.samples.len() as f64 / f64::from(vokra_models::dnsmos_p808_p835::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf_with_backend(
+                session.gguf(),
+                args.backend,
+            )
+            .map_err(|error| format!("bench (DNSMOS): {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model.score_all(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("dnsmos", audio_seconds, samples)
+        }
+        ModelTask::Nisqa => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (NISQA): --input <mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let sample_rate = clip.sample_rate;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(sample_rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::nisqa::Nisqa::from_gguf_with_backend(session.gguf(), args.backend)
+                    .map_err(|error| format!("bench (NISQA): {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let score = model
+                    .score_at_sample_rate(&pcm, sample_rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(score);
+                Ok(())
+            })?;
+            ("nisqa", audio_seconds, samples)
+        }
+        ModelTask::SpeechFeaturesWav2Vec2 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Wav2Vec2 features): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != 16_000 {
+                return Err(format!(
+                    "bench (Wav2Vec2 features): {path} is {} Hz, expected 16000 Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / 16_000.0;
+            let pcm = clip.samples;
+            let model = vokra_models::wav2vec2_ctc::Wav2Vec2Ctc::from_file(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let features = model
+                    .encode_features(&pcm)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(features);
+                Ok(())
+            })?;
+            ("wav2vec2-features", audio_seconds, samples)
         }
         // Wave G (2026-08-15): FSMN-VAD shares this arm verbatim — its binder
         // implements the same `VadEngine` trait Silero does and is injected
@@ -667,7 +1076,7 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
                 .and_then(|value| value.as_str())
                 .ok_or("bench (denoise): GGUF is missing `vokra.model.arch`")?;
-            let model = DenoiseBenchModel::bind(session.gguf())?;
+            let model = DenoiseBenchModel::bind(session.gguf(), args.backend)?;
             let rate = model.sample_rate();
             if clip.sample_rate != rate {
                 return Err(format!(
@@ -683,21 +1092,137 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("denoise", audio_seconds, samples)
         }
-        // pyannote's forward is real but sits behind the binder's own
-        // `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (its BiLSTM stack has not been
-        // byte-compared against PyTorch cuDNN yet). Timing a numeric path that
-        // is not yet validated would publish an RTF for a result nobody has
-        // signed off on, so reject and point at `run` — which surfaces the
-        // binder's own explanation (FR-EX-08).
+        ModelTask::Separation => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (separation): --input <mixture.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let arch = session
+                .gguf()
+                .get(vokra_core::gguf::chunks::KEY_MODEL_ARCH)
+                .and_then(|value| value.as_str())
+                .ok_or("bench (separation): GGUF is missing `vokra.model.arch`")?;
+            let (label, model): (&str, Box<dyn SeparationEngine>) = match arch {
+                "sepformer" => (
+                    "sepformer",
+                    Box::new(
+                        vokra_models::sepformer::SepFormer::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
+                "conv_tasnet" => (
+                    "conv-tasnet",
+                    Box::new(
+                        vokra_models::conv_tasnet::ConvTasnet::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
+                "tiger_separator" => (
+                    "tiger",
+                    Box::new(
+                        vokra_models::tiger::TigerSeparator::from_gguf(session.gguf())
+                            .map_err(|error| error.to_string())?
+                            .with_backend(args.backend),
+                    ),
+                ),
+                "mossformer2_ss_16k" => (
+                    "mossformer2-ss-16k",
+                    Box::new(
+                        vokra_models::mossformer2_ss_16k::Mossformer2Ss16k::from_gguf(
+                            session.gguf(),
+                        )
+                        .map_err(|error| error.to_string())?
+                        .with_backend(args.backend),
+                    ),
+                ),
+                other => {
+                    return Err(format!(
+                        "bench (separation): internal dispatch error: arch `{other}` is not sepformer, conv_tasnet, tiger_separator, or mossformer2_ss_16k"
+                    ));
+                }
+            };
+            let rate = model.sample_rate();
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (separation): {path} is {} Hz, but arch `{arch}` requires {rate} Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let outputs = model.separate(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(outputs);
+                Ok(())
+            })?;
+            (label, audio_seconds, samples)
+        }
         ModelTask::Segment => {
-            return Err(
-                "bench: arch `pyannote-segmentation` has no bench task — its forward is \
-                 still behind the binder's `VOKRA_PYANNET_ENABLE_FORWARD` opt-in (the \
-                 BiLSTM stack is not byte-compared against PyTorch cuDNN yet), and an RTF \
-                 for an unvalidated numeric path would be a misleading number. Use \
-                 `vokra-cli run --model <pyannote.gguf> --input <in.wav>`"
-                    .to_owned(),
-            );
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (segment): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let model = vokra_models::pyannote::PyanNet::from_gguf_with_backend(
+                std::path::Path::new(model_path),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let rate = model.config().sample_rate;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (segment): {path} is {} Hz, but pyannote-segmentation requires {rate} Hz — resample offline first (FR-EX-08: never a silent resample)",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let probabilities = model.segment(&pcm).map_err(|error| error.to_string())?;
+                std::hint::black_box(probabilities);
+                Ok(())
+            })?;
+            ("pyannote-segmentation", audio_seconds, samples)
+        }
+        ModelTask::DiarizationPyannote => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (pyannote diarization): --input <16k-mono.wav> is required")?;
+            let segmentation = args.segmentation_model.as_deref().ok_or(
+                "bench (pyannote diarization): --segmentation-model <pyannote-segmentation.gguf> is required",
+            )?;
+            let embedding = args.embedding_model.as_deref().ok_or(
+                "bench (pyannote diarization): --embedding-model <pyannote-wespeaker.gguf> is required",
+            )?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::pyannote::diarization::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (pyannote diarization): {path} is {} Hz, expected {rate} Hz — resample offline first (FR-EX-08)",
+                    clip.sample_rate
+                ));
+            }
+            let model = vokra_models::pyannote::diarization::PyannoteSpeakerDiarization31::open(
+                model_path,
+                segmentation,
+                embedding,
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let samples = time_iters(args.warmup, args.iters, || {
+                let turns = model
+                    .diarize(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(turns);
+                Ok(())
+            })?;
+            ("pyannote-diarization-3.1", audio_seconds, samples)
         }
         // RMVPE runs for real through `run`, but a pitch-track RTF needs a
         // settled window definition (hop vs. centered-STFT frame count) before
@@ -756,6 +1281,102 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::DacCodec => {
+            return Err(
+                "bench: arch `dac` consumes discrete code frames rather than timed PCM; use `vokra-cli run --model <dac.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::WavTokenizerCodec => {
+            return Err(
+                "bench: arch `wavtokenizer` consumes discrete 75 Hz code frames rather than timed PCM; use `vokra-cli run --model <wavtokenizer.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::NeuCodec => {
+            return Err(
+                "bench: arch `neucodec` consumes discrete 50 Hz code frames rather than timed PCM; use `vokra-cli run --model <neucodec.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::XCodec2 => {
+            return Err(
+                "bench: arch `xcodec2` consumes discrete 50 Hz code frames rather than timed PCM; use `vokra-cli run --model <xcodec2.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::FunCodec => {
+            return Err(
+                "bench: arch `funcodec` consumes a caller-sized 50 Hz residual-VQ code matrix rather than timed PCM; use `vokra-cli run --model <funcodec.gguf> --codec-mode decode --num-quantizers <N> --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::YueXcodecMini => {
+            return Err(
+                "bench: arch `yue_xcodec_mini` consumes a fixed [frames,12] 50 Hz residual-VQ code matrix rather than timed PCM; use `vokra-cli run --model <yue-xcodec-mini.gguf> --codec-mode decode --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::SpeechTokenizer => {
+            return Err(
+                "bench: arch `speechtokenizer` consumes a caller-sized 50 Hz residual-VQ code matrix rather than timed PCM; use `vokra-cli run --model <speechtokenizer.gguf> --codec-mode decode --num-quantizers <N> --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::Qwen3TtsTokenizer12HzCodec => {
+            return Err(
+                "bench: arch `qwen3_tts_tokenizer_12hz` consumes a fixed [frames,16] code matrix rather than timed PCM; use `vokra-cli run --model <qwen3-tts-tokenizer-12hz.gguf> --codec-mode decode --input <16cb-codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::MioCodec => {
+            return Err(
+                "bench: arch `miocodec` consumes a VKRMIO01 token/global-embedding container rather than timed PCM; use `vokra-cli run --model <miocodec.gguf> --codec-mode decode --input <tokens.vmi> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::SnacCodec => {
+            return Err(
+                "bench: arch `snac` uses hierarchical stage rates and explicit encode/decode modes; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <snac.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::FocalCodec => {
+            return Err(
+                "bench: arch `focalcodec` uses explicit encode/decode modes and a versioned BSQ token container; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <focalcodec.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::Facodec => {
+            return Err(
+                "bench: arch `facodec` uses explicit encode/decode modes and a versioned six-codebook plus speaker-embedding container; no standalone codec benchmark contract is defined yet — use `vokra-cli run --model <facodec.gguf> --codec-mode encode|decode ...`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::MossAudioTokenizerCodec => {
+            return Err(
+                "bench: arch `moss_audio_tokenizer` consumes a caller-sized residual-LFQ code matrix rather than timed PCM; use `vokra-cli run --model <moss-audio-tokenizer.gguf> --codec-mode decode --num-quantizers <N> --input <codes.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsMossNano => {
+            return Err(
+                "bench: arch `moss_tts` requires an explicit 17-column prompt-token matrix and MOSS Audio Tokenizer Nano sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-tts-nano.gguf> --audio-tokenizer <moss-audio-tokenizer-nano.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsMossDelay => {
+            return Err(
+                "bench: MOSS-TTS Base/v1.5 requires an explicit 33-column prompt matrix and Full Audio Tokenizer sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-tts-v1.5.gguf> --audio-tokenizer <moss-audio-tokenizer-full.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsMossVoiceGenerator => {
+            return Err(
+                "bench: MOSS-VoiceGenerator requires an explicit 17-column prompt matrix and Full Audio Tokenizer sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-voice-generator.gguf> --audio-tokenizer <moss-audio-tokenizer-full.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::VocoderBigVgan => {
             return Err(
                 "bench: arch `bigvgan` consumes mel frames rather than timed PCM; no mel-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <bigvgan.gguf> --input <mel.f32> [--output <out.wav>]`"
@@ -770,7 +1391,7 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
         }
         ModelTask::VocoderVocos => {
             return Err(
-                "bench: arch `vocos` consumes feature frames rather than timed PCM; no feature-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <vocos.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]`"
+                "bench: Vocos-family arches (`vocos` / `yue_upsampler`) consume feature frames rather than timed PCM; no feature-to-audio benchmark denominator is defined yet — use `vokra-cli run --model <model.gguf> --input <features.f32> [--bandwidth-id <0..3>] [--output <out.wav>]`"
                     .to_owned(),
             );
         }
@@ -788,6 +1409,114 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr", audio_seconds, samples)
         }
+        ModelTask::AsrCanary1bFlash => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Canary-1B-Flash): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::canary_1b_flash::CANARY_1B_FLASH_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Canary-1B-Flash): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::canary_1b_flash::CANARY_1B_FLASH_SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::canary_1b_flash::Canary1bFlashAsr::from_gguf_with_backend(
+                session.gguf(),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.transcribe(&pcm).map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-canary-1b-flash", audio_seconds, samples)
+        }
+        ModelTask::AsrCanary1bV2 => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Canary-1B-v2): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::canary::CANARY_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Canary-1B-v2): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::canary::CANARY_SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::canary::CanaryAsr::from_gguf_with_backend(
+                session.gguf(),
+                args.backend,
+            )
+            .map_err(|error| error.to_string())?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.transcribe(&pcm).map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-canary-1b-v2", audio_seconds, samples)
+        }
+        ModelTask::AsrNemotron => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Nemotron ASR): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::nemotron_asr_streaming::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Nemotron ASR): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::nemotron_asr_streaming::SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::nemotron_asr_streaming::NemotronAsr::from_gguf(session.gguf())
+                    .map_err(|error| error.to_string())?
+                    .with_backend(args.backend);
+            // Text detokenization is outside the timed learned-op path and
+            // the published legacy GGUF has no embedded tokenizer. Benchmark
+            // the complete PCM -> RNN-T token route directly.
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe_tokens(&pcm)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-nemotron", audio_seconds, samples)
+        }
+        ModelTask::AsrParakeetTdt11b => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (Parakeet-TDT-1.1B): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::parakeet_tdt_1_1b::PARAKEET_TDT_1_1B_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (Parakeet-TDT-1.1B): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::parakeet_tdt_1_1b::PARAKEET_TDT_1_1B_SAMPLE_RATE,
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(clip.sample_rate);
+            let pcm = clip.samples;
+            let model = vokra_models::parakeet_tdt_1_1b::ParakeetTdt11b::from_gguf(session.gguf())
+                .map_err(|error| error.to_string())?
+                .with_backend(args.backend);
+            // Benchmark the full learned PCM -> token route; rendering the
+            // tiny plaintext vocabulary is intentionally outside the timer.
+            let samples = time_iters(args.warmup, args.iters, || {
+                model.transcribe(&pcm).map_err(|error| error.to_string())?;
+                Ok(())
+            })?;
+            ("asr-parakeet-tdt-1.1b", audio_seconds, samples)
+        }
         ModelTask::Tts => {
             let text = args.text.as_deref().unwrap_or(DEFAULT_BENCH_TEXT);
             // One synth up front to learn the output length (RTF denominator).
@@ -798,6 +1527,18 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("tts", audio_seconds, samples)
+        }
+        ModelTask::TtsSpeechT5 => {
+            return Err(
+                "bench: arch `speecht5` requires both a strict SpeechT5 HiFi-GAN GGUF and a caller-supplied 512-value x-vector; the generic bench surface has neither sidecar input. Use `vokra-cli run --model <speecht5.gguf> --vocoder <speecht5-hifigan.gguf> --speaker-embedding <xvector-512.f32> --text <string> [--backend cpu|metal]` (FR-EX-08: refusing to fabricate a speaker or vocoder)"
+                    .to_owned(),
+            );
+        }
+        ModelTask::TtsQwen3 => {
+            return Err(
+                "bench: arch `qwen3_tts` requires an explicit official 12-Hz decoder companion plus variant-specific voice input; the generic bench surface does not accept that complete contract. Use `vokra-cli run --model <qwen3-tts-main.gguf> --qwen3-tts-decoder <qwen3-tts-tokenizer-12hz.gguf> --text <string> [--speaker-embedding <xvector.f32> | --qwen3-tts-speaker <name>] [--backend cpu|metal]` (FR-EX-08: refusing to fabricate a decoder or voice)"
+                    .to_owned(),
+            );
         }
         ModelTask::MelFrontend => {
             // M2-04-T11: bench the Whisper log-mel front-end alone. Running
@@ -1299,6 +2040,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_pyannote_dependency_models() {
+        let parsed = parse_args(&args(&[
+            "--model",
+            "pipeline.gguf",
+            "--segmentation-model",
+            "segmentation.gguf",
+            "--embedding-model",
+            "wespeaker.gguf",
+            "--input",
+            "meeting.wav",
+        ]))
+        .expect("pyannote bench flags parse");
+        assert_eq!(
+            parsed.segmentation_model.as_deref(),
+            Some("segmentation.gguf")
+        );
+        assert_eq!(parsed.embedding_model.as_deref(), Some("wespeaker.gguf"));
+    }
+
     // ----- M2-08-T12: HiFi-GAN INT8 opt-in verify gate --------------------
 
     fn opt_in_policy() -> QuantPolicy {
@@ -1667,6 +2428,8 @@ mod tests {
         // report well-formed RTF / latency stats.
         let a = BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -1719,6 +2482,8 @@ mod tests {
         wav::write_wav(&wav_path, &vec![0.5f32; 24_000], 24_000).expect("write wav");
         let a = BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,
@@ -1749,6 +2514,8 @@ mod tests {
         // differ (CPU scheduling), but the audio window is fixed.
         let mk = || BenchArgs {
             model: None,
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -1818,6 +2585,8 @@ mod tests {
 
         let a = BenchArgs {
             model: Some(gguf_path.to_string_lossy().into_owned()),
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,
@@ -1852,6 +2621,8 @@ mod tests {
         // (FR-EX-08: no silent fallback to VAD).
         let a = BenchArgs {
             model: Some(silero_fixture()),
+            segmentation_model: None,
+            embedding_model: None,
             input: None,
             text: None,
             style: None,
@@ -1887,6 +2658,8 @@ mod tests {
 
         let a = BenchArgs {
             model: Some(silero_fixture()),
+            segmentation_model: None,
+            embedding_model: None,
             input: Some(wav_path.to_string_lossy().into_owned()),
             text: None,
             style: None,

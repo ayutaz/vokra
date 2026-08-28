@@ -970,6 +970,7 @@ pub(super) fn run_istft_head(
         normalization: Normalization::Backward,
         real_input: true,
         length: None,
+        normalize_window: true,
     };
     istft(&spec, &attrs)
 }

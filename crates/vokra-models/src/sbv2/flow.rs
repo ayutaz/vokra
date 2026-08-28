@@ -55,7 +55,13 @@
 //! `SbV2CouplingLayer` and `piper_plus::flow::Coupling` both follow — the
 //! forward direction is a training-side operation this crate never runs.
 
+use vokra_core::Result;
+
+use crate::compute::Compute;
+
 use super::text_encoder::SbV2TransformerBlock;
+
+const PRE_STACK_CONDITIONING: u8 = u8::MAX;
 
 // -----------------------------------------------------------------------
 // Flow-layer enum
@@ -103,7 +109,7 @@ pub struct Flip;
 /// ```text
 ///     z_a, z_b = split_halves(z)                      # each [T, half_d_z]
 ///     h = pre(z_a)                                    # [T, d_hidden] (1×1 Conv1d + bias)
-///     h += spk_emb_linear(g).broadcast(T)             # per-block additive conditioning
+///     h += spk_emb_linear(g).broadcast(T)             # at the configured stack boundary
 ///     h = encoder_stack(h)                            # in-place SbV2TransformerBlock chain
 ///     m = post(h)                                     # [T, half_d_z] (1×1 Conv1d + bias, mean_only=True)
 ///     z_b -= m                                        # reverse-direction affine, logs = 0
@@ -186,6 +192,11 @@ pub struct SbV2TransformerCouplingLayer {
     /// Per-utterance conditioning vector width (upstream `gin_channels`,
     /// = 512 on the SBV2 v2 base).
     gin_channels: usize,
+    /// Transformer block index immediately before which speaker conditioning
+    /// is injected. The private sentinel preserves the original SBV2
+    /// pre-stack behavior; MeloTTS uses block two, matching its official
+    /// `Encoder.cond_layer_idx`.
+    conditioning_layer: u8,
     /// Whether `post` emits only the mean statistic (`half_d_z` output
     /// channels) or both mean and log-scale (`2 * half_d_z` output
     /// channels). `true` on the SBV2 v2 base — see
@@ -278,8 +289,25 @@ impl SbV2TransformerCouplingLayer {
             half_d_z,
             d_hidden,
             gin_channels,
+            conditioning_layer: PRE_STACK_CONDITIONING,
             mean_only,
         }
+    }
+
+    /// Injects projected speaker conditioning immediately before `layer`.
+    ///
+    /// The default constructor behavior injects before the entire stack.
+    /// This override exists for compatible VITS2 variants such as MeloTTS,
+    /// whose released graph injects at `cond_layer_idx = 2`.
+    #[must_use]
+    pub(crate) fn with_conditioning_layer(mut self, layer: usize) -> Self {
+        debug_assert!(
+            layer < self.encoder_stack.len() && layer < usize::from(PRE_STACK_CONDITIONING),
+            "conditioning layer {layer} is outside a {}-block encoder stack",
+            self.encoder_stack.len()
+        );
+        self.conditioning_layer = layer as u8;
+        self
     }
 
     /// Runs one inverse-direction pass on `(z_a, z_b)` in place on `z_b`
@@ -338,16 +366,17 @@ impl SbV2TransformerCouplingLayer {
         } else {
             linear_g(&self.spk_emb_weight, &self.spk_emb_bias, g, self.d_hidden)
         };
-        for row in h.chunks_exact_mut(self.d_hidden) {
-            for (o, &s) in row.iter_mut().zip(spk.iter()) {
-                *o += s;
-            }
+        if self.conditioning_layer == PRE_STACK_CONDITIONING {
+            add_conditioning(&mut h, self.d_hidden, &spk);
         }
 
         // 3. encoder_stack.forward(h) — in-place SbV2TransformerBlock chain.
         //    Each block reads/writes h under the same layout as the text
         //    encoder's own transformer stack (see text_encoder.rs).
-        for block in &self.encoder_stack {
+        for (layer, block) in self.encoder_stack.iter().enumerate() {
+            if usize::from(self.conditioning_layer) == layer {
+                add_conditioning(&mut h, self.d_hidden, &spk);
+            }
             block.forward(&mut h, mel_seq_len);
         }
 
@@ -387,6 +416,74 @@ impl SbV2TransformerCouplingLayer {
                 }
             }
         }
+    }
+
+    fn inverse_with_compute(
+        &self,
+        compute: &Compute,
+        z_a: &[f32],
+        z_b: &mut [f32],
+        mel_seq_len: usize,
+        g: &[f32],
+    ) -> Result<()> {
+        let half = self.half_d_z;
+        debug_assert_eq!(z_a.len(), mel_seq_len * half);
+        debug_assert_eq!(z_b.len(), mel_seq_len * half);
+        debug_assert_eq!(g.len(), self.gin_channels);
+
+        let mut hidden = linear_rows_with_compute(
+            compute,
+            z_a,
+            half,
+            &self.pre_weight,
+            &self.pre_bias,
+            self.d_hidden,
+        )?;
+        let speaker = if self.gin_channels == 0 {
+            self.spk_emb_bias.clone()
+        } else {
+            linear_rows_with_compute(
+                compute,
+                g,
+                self.gin_channels,
+                &self.spk_emb_weight,
+                &self.spk_emb_bias,
+                self.d_hidden,
+            )?
+        };
+        if self.conditioning_layer == PRE_STACK_CONDITIONING {
+            add_conditioning(&mut hidden, self.d_hidden, &speaker);
+        }
+        for (layer, block) in self.encoder_stack.iter().enumerate() {
+            if usize::from(self.conditioning_layer) == layer {
+                add_conditioning(&mut hidden, self.d_hidden, &speaker);
+            }
+            block.forward_with_compute(compute, &mut hidden, mel_seq_len)?;
+        }
+        let post_out = if self.mean_only { half } else { 2 * half };
+        let stats = linear_rows_with_compute(
+            compute,
+            &hidden,
+            self.d_hidden,
+            &self.post_weight,
+            &self.post_bias,
+            post_out,
+        )?;
+        if self.mean_only {
+            for (values, means) in z_b.chunks_exact_mut(half).zip(stats.chunks_exact(half)) {
+                for (value, mean) in values.iter_mut().zip(means) {
+                    *value -= mean;
+                }
+            }
+        } else {
+            for (values, row) in z_b.chunks_exact_mut(half).zip(stats.chunks_exact(post_out)) {
+                let (means, log_scales) = row.split_at(half);
+                for ((value, mean), log_scale) in values.iter_mut().zip(means).zip(log_scales) {
+                    *value = (*value - mean) * vokra_math::exp(-log_scale);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -533,6 +630,34 @@ impl SbV2Flow {
         }
         merge_halves(&z_a, &z_b, half)
     }
+
+    /// Backend-dispatched inverse flow. Learned linear projections and every
+    /// inner Transformer block use `compute`; channel flips and affine glue
+    /// stay host-side.
+    pub fn inverse_with_compute(
+        &self,
+        compute: &Compute,
+        z: &[f32],
+        mel_seq_len: usize,
+        g: &[f32],
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(z.len(), mel_seq_len * self.d_z);
+        let half = self.d_z / 2;
+        let (mut z_a, mut z_b) = split_halves(z, self.d_z, half);
+        for layer in self.layers.iter().rev() {
+            match layer {
+                FlowLayer::Flip => {
+                    reverse_rows_inplace(&mut z_a, half);
+                    reverse_rows_inplace(&mut z_b, half);
+                    std::mem::swap(&mut z_a, &mut z_b);
+                }
+                FlowLayer::Coupling(coupling) => {
+                    coupling.inverse_with_compute(compute, &z_a, &mut z_b, mel_seq_len, g)?
+                }
+            }
+        }
+        Ok(merge_halves(&z_a, &z_b, half))
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -566,6 +691,15 @@ fn merge_halves(z_a: &[f32], z_b: &[f32], half: usize) -> Vec<f32> {
         out.extend_from_slice(b_row);
     }
     out
+}
+
+fn add_conditioning(hidden: &mut [f32], width: usize, conditioning: &[f32]) {
+    debug_assert_eq!(conditioning.len(), width);
+    for row in hidden.chunks_exact_mut(width) {
+        for (value, conditioning) in row.iter_mut().zip(conditioning) {
+            *value += conditioning;
+        }
+    }
 }
 
 /// Reverses each `stride`-wide row of `buf` in place — used by
@@ -611,6 +745,35 @@ fn linear_g(w: &[f32], b: &[f32], g: &[f32], out_dim: usize) -> Vec<f32> {
         *o = wrow.iter().zip(g).map(|(a, b)| a * b).sum::<f32>() + bi;
     }
     out
+}
+
+fn linear_rows_with_compute(
+    compute: &Compute,
+    input: &[f32],
+    input_width: usize,
+    weight_out_in: &[f32],
+    bias: &[f32],
+    output_width: usize,
+) -> Result<Vec<f32>> {
+    let rows = input.len() / input_width;
+    let mut weight_in_out = vec![0.0; weight_out_in.len()];
+    for output in 0..output_width {
+        for inner in 0..input_width {
+            weight_in_out[inner * output_width + output] =
+                weight_out_in[output * input_width + inner];
+        }
+    }
+    let mut result = vec![0.0; rows * output_width];
+    compute.gemm_f32(
+        rows,
+        output_width,
+        input_width,
+        input,
+        &weight_in_out,
+        Some(bias),
+        &mut result,
+    )?;
+    Ok(result)
 }
 
 // =====================================================================
@@ -738,6 +901,41 @@ mod tests {
         assert!((z_b[1] - 198.0).abs() < 1e-5);
         assert!((z_b[2] - 299.0).abs() < 1e-5);
         assert!((z_b[3] - 398.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn compute_flow_matches_scalar_reference() {
+        let half = 2;
+        let hidden = 3;
+        let gin = 2;
+        let coupling = make_tcl(
+            half,
+            hidden,
+            gin,
+            vec![0.2, -0.3, 0.4, 0.1, -0.5, 0.7],
+            vec![0.1, -0.2, 0.05],
+            vec![0.3, -0.1, -0.2, 0.4, 0.6, 0.2],
+            vec![0.0, 0.05, -0.1],
+            vec![0.5, -0.25, 0.1, -0.4, 0.3, 0.2],
+            vec![0.01, -0.02],
+            true,
+        );
+        let flow = SbV2Flow::from_layers(
+            vec![FlowLayer::Coupling(coupling), FlowLayer::Flip],
+            2 * half,
+        );
+        let latent = vec![0.3, -0.4, 0.8, 0.1, -0.2, 0.7, -0.5, 0.9];
+        let global = vec![0.2, -0.6];
+        let reference = flow.inverse(&latent, 2, &global);
+        let actual = flow
+            .inverse_with_compute(&Compute::cpu(), &latent, 2, &global)
+            .unwrap();
+        for (index, (actual, reference)) in actual.iter().zip(&reference).enumerate() {
+            assert!(
+                (actual - reference).abs() <= 1e-6,
+                "flow mismatch at {index}: actual={actual}, reference={reference}"
+            );
+        }
     }
 
     /// A coupling layer with `spk_emb_weight` nonzero and pre = 0

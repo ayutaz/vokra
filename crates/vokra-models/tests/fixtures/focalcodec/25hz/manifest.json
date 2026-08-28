@@ -1,0 +1,65 @@
+{
+  "checkpoint_sha256": "07a5ca4b92fb1fdc0499e761df6373d5b0811b8b950335fc40bcf6dc4f300441",
+  "config_sha256": "55726d1e36824656868f38ccff3caf416dff0bc3adbbb6a38d26058505a5275d",
+  "environment": {
+    "logical_cpus": 192,
+    "machine": "x86_64",
+    "platform": "Linux-5.15.0-179-generic-x86_64-with-glibc2.35",
+    "processor": "x86_64",
+    "torch": "2.13.0+cu130",
+    "torch_cpu_capability": "AVX2",
+    "torch_threads": 1
+  },
+  "files": {
+    "codes.f32": "cf8d4cadb8728d872b3b34e2e49c56590ebc82681d7d387d8d7f11657408f64f",
+    "decoded_pcm.f32": "dbc1817f61af62a9b28ec41eae952f95fa151a6adc3e34fb850a6e9b9c93e82b",
+    "features.f32": "9f01493495d5320d3a9c69e4a142f9d2d994b9d03fae6214ea55657187663ba3",
+    "latents.f32": "979a92aacda88c81531f9868b4746b847de02418e7784f70b3fc943e56415ce3",
+    "pcm.f32": "77a226a7e4b63828677b9ebb4154d22acc5c4fed0a83d8ab4e7ff99ab08db05f",
+    "quantized_features.f32": "5c91f5f989f9de30251057128eee2d7aa31a891e745e9c7542d72e12eb21e6a5",
+    "tokens.u32": "53aebd218682c0d18a0b48d76404c1486ff25d4d66196dc6ff26133c65e24611"
+  },
+  "focalcodec_version": "0.0.2",
+  "format": "vokra-focalcodec-reference-v1",
+  "num_samples": 3200,
+  "oracle": "focalcodec.FocalCodec.from_pretrained public methods",
+  "sample_rate": 16000,
+  "shapes": {
+    "codes": [
+      1,
+      5,
+      13
+    ],
+    "decoded_pcm": [
+      1,
+      3200
+    ],
+    "features": [
+      1,
+      9,
+      1024
+    ],
+    "latents": [
+      1,
+      5,
+      13
+    ],
+    "pcm": [
+      3200
+    ],
+    "quantized_features": [
+      1,
+      10,
+      1024
+    ],
+    "tokens": [
+      1,
+      5
+    ]
+  },
+  "source_commit": "912b7f2c0cd43d54a8aed296bbcc925dec7d4ea3",
+  "source_url": "https://github.com/lucadellalib/focalcodec.git",
+  "upstream_hf": "lucadellalib/focalcodec_25hz",
+  "upstream_revision": "581aa401901b4985fbbdd3569d80a5a191740c1f",
+  "variant": "25hz"
+}

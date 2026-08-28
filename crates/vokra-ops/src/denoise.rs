@@ -338,6 +338,121 @@ fn linspace(start: f32, end: f32, n: usize) -> Vec<f32> {
 }
 
 // ---------------------------------------------------------------------------
+// Backend seam
+// ---------------------------------------------------------------------------
+
+/// Backend-dispatched learned reductions used by [`DenoiseModel`].
+///
+/// DeepFilterNet3 keeps its Vorbis-window STFT/iSTFT, ERB feature state,
+/// activations, residual additions and complex deep-filter assembly on the
+/// host. Every learned convolution, grouped/dense projection and recurrent
+/// GRU projection is represented by this trait. Higher layers can therefore
+/// lower those reductions to a selected device without introducing a reverse
+/// dependency from `vokra-ops` to `vokra-models` or a backend crate.
+///
+/// The established [`DenoiseModel::enhance`] entry point does not use this
+/// seam and remains the bit-identical scalar CPU oracle. A caller selecting a
+/// non-CPU backend must use [`DenoiseModel::enhance_with_backend_ops`]; errors
+/// from the backend propagate and are never replaced by scalar work.
+pub trait DenoiseBackendOps {
+    /// Grouped causal Conv2D over channel-major `[C, T, F]` data. `weight` is
+    /// PyTorch `[out_ch, in_ch / groups, kernel_t, kernel_f]` layout.
+    #[allow(clippy::too_many_arguments)]
+    fn conv2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        t_len: usize,
+        f_in: usize,
+        weight: &[f32],
+        out_ch: usize,
+        groups: usize,
+        kernel_t: usize,
+        kernel_f: usize,
+        stride_f: usize,
+        padding_f: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Grouped frequency-axis ConvTranspose2D over `[C, T, F]`. `weight` is
+    /// PyTorch `[in_ch, out_ch / groups, 1, kernel_f]` layout.
+    #[allow(clippy::too_many_arguments)]
+    fn conv_transpose2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        t_len: usize,
+        f_in: usize,
+        weight: &[f32],
+        out_ch: usize,
+        groups: usize,
+        kernel_f: usize,
+        stride_f: usize,
+        padding_f: usize,
+        output_padding_f: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Pointwise 1×1 convolution over channel-major `[C, T, F]` data.
+    /// `weight` is `[out_ch, in_ch]`.
+    #[allow(clippy::too_many_arguments)]
+    fn pointwise_conv2d_f32(
+        &self,
+        input: &[f32],
+        channels: usize,
+        t_len: usize,
+        f_len: usize,
+        weight: &[f32],
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Grouped linear projection. Input/output are row-major `[rows, dim]`;
+    /// weight is upstream `[groups, in / groups, out / groups]` layout.
+    #[allow(clippy::too_many_arguments)]
+    fn grouped_linear_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        rows: usize,
+        in_dim: usize,
+        out_dim: usize,
+        groups: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Dense linear projection. Input/output are row-major `[rows, dim]`;
+    /// weight is PyTorch `[out_dim, in_dim]` and bias is `[out_dim]`.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        bias: &[f32],
+        rows: usize,
+        in_dim: usize,
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// One zero-state PyTorch GRU layer over `[rows, input_dim]`. Gate order
+    /// is `[r, z, n]`; both weight matrices are pre-transposed to
+    /// `[input_dim|hidden_dim, 3 * hidden_dim]` at bind time.
+    #[allow(clippy::too_many_arguments)]
+    fn gru_f32(
+        &self,
+        input: &[f32],
+        rows: usize,
+        input_dim: usize,
+        hidden_dim: usize,
+        weight_ih_t: &[f32],
+        weight_hh_t: &[f32],
+        bias_ih: &[f32],
+        bias_hh: &[f32],
+        output: &mut [f32],
+    ) -> Result<()>;
+}
+
+// ---------------------------------------------------------------------------
 // NN primitives (weights are checkpoint tensors, layouts cited per struct)
 // ---------------------------------------------------------------------------
 
@@ -467,6 +582,26 @@ impl Conv2d {
         }
         y
     }
+
+    fn forward_with_backend(&self, x: &Act3, backend: &dyn DenoiseBackendOps) -> Result<Act3> {
+        debug_assert_eq!(x.ch, self.in_ch);
+        let mut y = Act3::zeros(self.out_ch, x.t, self.out_f(x.f));
+        backend.conv2d_f32(
+            &x.data,
+            self.in_ch,
+            x.t,
+            x.f,
+            &self.w,
+            self.out_ch,
+            self.groups,
+            self.kt,
+            self.kf,
+            self.fstride,
+            self.fpad,
+            &mut y.data,
+        )?;
+        Ok(y)
+    }
 }
 
 /// Grouped `ConvTranspose2d` with time kernel 1 (frequency upsampling only —
@@ -532,6 +667,26 @@ impl ConvT2dF {
         }
         y
     }
+
+    fn forward_with_backend(&self, x: &Act3, backend: &dyn DenoiseBackendOps) -> Result<Act3> {
+        debug_assert_eq!(x.ch, self.in_ch);
+        let mut y = Act3::zeros(self.out_ch, x.t, self.out_f(x.f));
+        backend.conv_transpose2d_f32(
+            &x.data,
+            self.in_ch,
+            x.t,
+            x.f,
+            &self.w,
+            self.out_ch,
+            self.groups,
+            self.kf,
+            self.fstride,
+            self.fpad,
+            self.out_pad,
+            &mut y.data,
+        )?;
+        Ok(y)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -554,23 +709,39 @@ struct ConvBlock {
 }
 
 impl ConvBlock {
+    #[cfg(test)]
     fn forward(&self, x: &Act3) -> Act3 {
-        let mid = match &self.conv {
-            ConvUnit::Std(c) => c.forward(x),
-            ConvUnit::Transposed(c) => c.forward(x),
+        self.forward_dispatched(x, None)
+            .expect("scalar DeepFilterNet convolution is infallible")
+    }
+
+    fn forward_dispatched(
+        &self,
+        x: &Act3,
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<Act3> {
+        let mid = match (&self.conv, backend) {
+            (ConvUnit::Std(c), Some(ops)) => c.forward_with_backend(x, ops)?,
+            (ConvUnit::Transposed(c), Some(ops)) => c.forward_with_backend(x, ops)?,
+            (ConvUnit::Std(c), None) => c.forward(x),
+            (ConvUnit::Transposed(c), None) => c.forward(x),
         };
         let mut y = match &self.pointwise {
             Some(w) => {
-                // 1×1 conv: per (t, f) channel matmul.
                 let mut y = Act3::zeros(mid.ch, mid.t, mid.f);
-                let plane = mid.t * mid.f;
-                for o in 0..mid.ch {
-                    let w_row = &w[o * mid.ch..(o + 1) * mid.ch];
-                    let y_plane = &mut y.data[o * plane..(o + 1) * plane];
-                    for (ic, &wv) in w_row.iter().enumerate() {
-                        let x_plane = &mid.data[ic * plane..(ic + 1) * plane];
-                        for (yv, &xv) in y_plane.iter_mut().zip(x_plane) {
-                            *yv += wv * xv;
+                if let Some(ops) = backend {
+                    ops.pointwise_conv2d_f32(&mid.data, mid.ch, mid.t, mid.f, w, &mut y.data)?;
+                } else {
+                    // 1×1 conv: per (t, f) channel matmul.
+                    let plane = mid.t * mid.f;
+                    for o in 0..mid.ch {
+                        let w_row = &w[o * mid.ch..(o + 1) * mid.ch];
+                        let y_plane = &mut y.data[o * plane..(o + 1) * plane];
+                        for (ic, &wv) in w_row.iter().enumerate() {
+                            let x_plane = &mid.data[ic * plane..(ic + 1) * plane];
+                            for (yv, &xv) in y_plane.iter_mut().zip(x_plane) {
+                                *yv += wv * xv;
+                            }
                         }
                     }
                 }
@@ -589,7 +760,7 @@ impl ConvBlock {
                 };
             }
         }
-        y
+        Ok(y)
     }
 }
 
@@ -632,6 +803,28 @@ impl GroupedLinear {
             );
         }
         out
+    }
+
+    fn forward_seq_dispatched(
+        &self,
+        x: &[f32],
+        t_len: usize,
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<Vec<f32>> {
+        let Some(ops) = backend else {
+            return Ok(self.forward_seq(x, t_len));
+        };
+        let mut out = vec![0.0; t_len * self.out_dim];
+        ops.grouped_linear_f32(
+            x,
+            &self.w,
+            t_len,
+            self.in_dim,
+            self.out_dim,
+            self.groups,
+            &mut out,
+        )?;
+        Ok(out)
     }
 }
 
@@ -755,6 +948,30 @@ impl GruLayer {
         out
     }
 
+    fn forward_seq_dispatched(
+        &self,
+        x: &[f32],
+        t_len: usize,
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<Vec<f32>> {
+        let Some(ops) = backend else {
+            return Ok(self.forward_seq(x, t_len));
+        };
+        let mut out = vec![0.0; t_len * self.hidden];
+        ops.gru_f32(
+            x,
+            t_len,
+            self.input,
+            self.hidden,
+            &self.w_ih_t,
+            &self.w_hh_t,
+            &self.b_ih,
+            &self.b_hh,
+            &mut out,
+        )?;
+        Ok(out)
+    }
+
     /// The pre-rework scalar-reduction forward — kept as the bit-identity
     /// reference oracle for the transposed formulation (test-only).
     #[cfg(test)]
@@ -808,21 +1025,32 @@ struct SqueezedGru {
 
 impl SqueezedGru {
     /// `[T, in] → [T, out]`.
+    #[cfg(test)]
     fn forward(&self, x: &[f32], t_len: usize) -> Vec<f32> {
-        let mut cur = self.linear_in.forward_seq(x, t_len);
+        self.forward_dispatched(x, t_len, None)
+            .expect("scalar DeepFilterNet GRU is infallible")
+    }
+
+    fn forward_dispatched(
+        &self,
+        x: &[f32],
+        t_len: usize,
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<Vec<f32>> {
+        let mut cur = self.linear_in.forward_seq_dispatched(x, t_len, backend)?;
         for v in &mut cur {
             *v = v.max(0.0);
         }
         for layer in &self.layers {
-            cur = layer.forward_seq(&cur, t_len);
+            cur = layer.forward_seq_dispatched(&cur, t_len, backend)?;
         }
         if let Some(lo) = &self.linear_out {
-            cur = lo.forward_seq(&cur, t_len);
+            cur = lo.forward_seq_dispatched(&cur, t_len, backend)?;
             for v in &mut cur {
                 *v = v.max(0.0);
             }
         }
-        cur
+        Ok(cur)
     }
 }
 
@@ -845,6 +1073,27 @@ impl Linear {
             }
             *ov = acc;
         }
+    }
+
+    fn forward_seq_dispatched(
+        &self,
+        x: &[f32],
+        rows: usize,
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<Vec<f32>> {
+        let out_dim = self.b.len();
+        let mut out = vec![0.0; rows * out_dim];
+        if let Some(ops) = backend {
+            ops.linear_f32(x, &self.w, &self.b, rows, self.in_dim, out_dim, &mut out)?;
+        } else {
+            for row in 0..rows {
+                self.forward_frame(
+                    &x[row * self.in_dim..(row + 1) * self.in_dim],
+                    &mut out[row * out_dim..(row + 1) * out_dim],
+                );
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -1523,7 +1772,22 @@ impl DenoiseModel {
     ///
     /// [`VokraError::InvalidArgument`] for an empty or non-finite input.
     pub fn enhance(&self, noisy: &[f32]) -> Result<Vec<f32>> {
-        Ok(self.enhance_impl(noisy, false)?.0)
+        Ok(self.enhance_impl(noisy, false, None)?.0)
+    }
+
+    /// Enhances `noisy` while dispatching every learned reduction through
+    /// `backend`. Frontend/synthesis DSP, nonlinearities and layout glue stay
+    /// host-side; a backend error is propagated without scalar fallback.
+    ///
+    /// # Errors
+    ///
+    /// Propagates input validation and [`DenoiseBackendOps`] failures.
+    pub fn enhance_with_backend_ops(
+        &self,
+        noisy: &[f32],
+        backend: &dyn DenoiseBackendOps,
+    ) -> Result<Vec<f32>> {
+        Ok(self.enhance_impl(noisy, false, Some(backend))?.0)
     }
 
     /// [`DenoiseModel::enhance`] + per-stage diagnostic taps (parity
@@ -1533,7 +1797,22 @@ impl DenoiseModel {
     ///
     /// [`VokraError::InvalidArgument`] for an empty or non-finite input.
     pub fn enhance_with_taps(&self, noisy: &[f32]) -> Result<(Vec<f32>, DenoiseTaps)> {
-        let (out, taps) = self.enhance_impl(noisy, true)?;
+        let (out, taps) = self.enhance_impl(noisy, true, None)?;
+        Ok((out, taps.expect("taps requested")))
+    }
+
+    /// Backend-dispatched counterpart of [`Self::enhance_with_taps`], used by
+    /// CPU/device parity harnesses to locate any lowering drift by stage.
+    ///
+    /// # Errors
+    ///
+    /// Propagates input validation and [`DenoiseBackendOps`] failures.
+    pub fn enhance_with_backend_ops_and_taps(
+        &self,
+        noisy: &[f32],
+        backend: &dyn DenoiseBackendOps,
+    ) -> Result<(Vec<f32>, DenoiseTaps)> {
+        let (out, taps) = self.enhance_impl(noisy, true, Some(backend))?;
         Ok((out, taps.expect("taps requested")))
     }
 
@@ -1541,6 +1820,7 @@ impl DenoiseModel {
         &self,
         noisy: &[f32],
         want_taps: bool,
+        backend: Option<&dyn DenoiseBackendOps>,
     ) -> Result<(Vec<f32>, Option<DenoiseTaps>)> {
         if noisy.is_empty() {
             return Err(VokraError::InvalidArgument("denoise: empty input".into()));
@@ -1557,7 +1837,7 @@ impl DenoiseModel {
         padded.resize(noisy.len() + cfg.n_fft, 0.0);
 
         let spec = self.analysis(&padded);
-        let (spec_e, taps) = self.forward_spec(&spec, want_taps);
+        let (spec_e, taps) = self.forward_spec(&spec, want_taps, backend)?;
         let full = self.synthesis(&spec_e);
         // Delay trim (df/enhance.py L241-248): d = n_fft − hop.
         let d = cfg.n_fft - cfg.hop;
@@ -1723,7 +2003,8 @@ impl DenoiseModel {
         &self,
         spec: &Spectrogram,
         want_taps: bool,
-    ) -> (Spectrogram, Option<DenoiseTaps>) {
+        backend: Option<&dyn DenoiseBackendOps>,
+    ) -> Result<(Spectrogram, Option<DenoiseTaps>)> {
         let cfg = &self.cfg;
         let t_len = spec.frames;
         let n_erb = cfg.n_erb;
@@ -1755,15 +2036,17 @@ impl DenoiseModel {
         let mut x_spec = Act3::zeros(2, t_len, nb_df);
         x_spec.data[..t_len * nb_df].copy_from_slice(&fsr);
         x_spec.data[t_len * nb_df..].copy_from_slice(&fsi);
-        let e0 = self.erb_conv0.forward(&x_erb);
-        let e1 = self.erb_conv1.forward(&e0);
-        let e2 = self.erb_conv2.forward(&e1);
-        let e3 = self.erb_conv3.forward(&e2);
-        let c0 = self.df_conv0.forward(&x_spec);
-        let c1 = self.df_conv1.forward(&c0);
+        let e0 = self.erb_conv0.forward_dispatched(&x_erb, backend)?;
+        let e1 = self.erb_conv1.forward_dispatched(&e0, backend)?;
+        let e2 = self.erb_conv2.forward_dispatched(&e1, backend)?;
+        let e3 = self.erb_conv3.forward_dispatched(&e2, backend)?;
+        let c0 = self.df_conv0.forward_dispatched(&x_spec, backend)?;
+        let c1 = self.df_conv1.forward_dispatched(&c0, backend)?;
         // cemb = df_fc_emb(flatten(c1, permute(0,2,3,1))): x[t, f·ch + c].
         let cemb_in = flatten_tfc(&c1);
-        let mut cemb = self.df_fc_emb.forward_seq(&cemb_in, t_len);
+        let mut cemb = self
+            .df_fc_emb
+            .forward_seq_dispatched(&cemb_in, t_len, backend)?;
         for v in &mut cemb {
             *v = v.max(0.0);
         }
@@ -1772,17 +2055,16 @@ impl DenoiseModel {
         for (a, &b) in emb_in.iter_mut().zip(&cemb) {
             *a += b;
         }
-        let emb = self.enc_emb_gru.forward(&emb_in, t_len);
-        let mut lsnr = vec![0.0f32; t_len];
-        let mut one = [0.0f32; 1];
-        for (t, l) in lsnr.iter_mut().enumerate() {
-            self.lsnr_fc
-                .forward_frame(&emb[t * emb_dim..(t + 1) * emb_dim], &mut one);
-            *l = sigmoid(one[0]) * (cfg.lsnr_max - cfg.lsnr_min) + cfg.lsnr_min;
+        let emb = self
+            .enc_emb_gru
+            .forward_dispatched(&emb_in, t_len, backend)?;
+        let mut lsnr = self.lsnr_fc.forward_seq_dispatched(&emb, t_len, backend)?;
+        for value in &mut lsnr {
+            *value = sigmoid(*value) * (cfg.lsnr_max - cfg.lsnr_min) + cfg.lsnr_min;
         }
 
         // ERB decoder (ErbDecoder.forward L245-254).
-        let emb2 = self.dec_emb_gru.forward(&emb, t_len);
+        let emb2 = self.dec_emb_gru.forward_dispatched(&emb, t_len, backend)?;
         let f8 = n_erb / 4;
         let mut emb2r = Act3::zeros(ch, t_len, f8);
         for t in 0..t_len {
@@ -1793,41 +2075,41 @@ impl DenoiseModel {
                 }
             }
         }
-        let mut d3 = self.conv3p.forward(&e3);
+        let mut d3 = self.conv3p.forward_dispatched(&e3, backend)?;
         add_assign(&mut d3.data, &emb2r.data);
-        let d3 = self.convt3.forward(&d3);
-        let mut d2 = self.conv2p.forward(&e2);
+        let d3 = self.convt3.forward_dispatched(&d3, backend)?;
+        let mut d2 = self.conv2p.forward_dispatched(&e2, backend)?;
         add_assign(&mut d2.data, &d3.data);
-        let d2 = self.convt2.forward(&d2);
-        let mut d1 = self.conv1p.forward(&e1);
+        let d2 = self.convt2.forward_dispatched(&d2, backend)?;
+        let mut d1 = self.conv1p.forward_dispatched(&e1, backend)?;
         add_assign(&mut d1.data, &d2.data);
-        let d1 = self.convt1.forward(&d1);
-        let mut d0 = self.conv0p.forward(&e0);
+        let d1 = self.convt1.forward_dispatched(&d1, backend)?;
+        let mut d0 = self.conv0p.forward_dispatched(&e0, backend)?;
         add_assign(&mut d0.data, &d1.data);
-        let m = self.conv0_out.forward(&d0); // [1, T, n_erb], sigmoid
+        let m = self.conv0_out.forward_dispatched(&d0, backend)?; // [1, T, n_erb], sigmoid
 
         // DF decoder (DfDecoder.forward L323-331).
-        let mut c = self.df_gru.forward(&emb, t_len);
+        let mut c = self.df_gru.forward_dispatched(&emb, t_len, backend)?;
         let dh = cfg.df_hidden;
         {
-            let mut skip = vec![0.0f32; dh];
+            let skip = self.df_skip.forward_seq_dispatched(&emb, t_len, backend)?;
             for t in 0..t_len {
-                self.df_skip
-                    .forward_frame(&emb[t * emb_dim..(t + 1) * emb_dim], &mut skip);
-                for (cv, &sv) in c[t * dh..(t + 1) * dh].iter_mut().zip(&skip) {
+                for (cv, &sv) in c[t * dh..(t + 1) * dh]
+                    .iter_mut()
+                    .zip(&skip[t * dh..(t + 1) * dh])
+                {
                     *cv += sv;
                 }
             }
         }
-        let c0p = self.df_convp.forward(&c0); // [order·2, T, nb_df]
+        let c0p = self.df_convp.forward_dispatched(&c0, backend)?; // [order·2, T, nb_df]
         let od2 = cfg.df_order * 2;
         let out_dim = cfg.df_out_dim();
         let mut coefs = vec![0.0f32; t_len * out_dim];
         {
-            let mut frame = vec![0.0f32; out_dim];
+            let frames = self.df_out.forward_seq_dispatched(&c, t_len, backend)?;
             for t in 0..t_len {
-                self.df_out
-                    .forward_frame(&c[t * dh..(t + 1) * dh], &mut frame);
+                let frame = &frames[t * out_dim..(t + 1) * out_dim];
                 let row = &mut coefs[t * out_dim..(t + 1) * out_dim];
                 for (f, chunk) in row.chunks_exact_mut(od2).enumerate() {
                     for (o, v) in chunk.iter_mut().enumerate() {
@@ -1917,7 +2199,7 @@ impl DenoiseModel {
             spec_e_re: out.re.clone(),
             spec_e_im: out.im.clone(),
         });
-        (out, taps)
+        Ok((out, taps))
     }
 }
 

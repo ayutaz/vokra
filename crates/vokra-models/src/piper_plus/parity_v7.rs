@@ -132,7 +132,7 @@ fn v7_global_g_parity() {
         eprintln!("skipping piper v7 g parity: set VOKRA_PIPER_V7_GGUF to run");
         return;
     };
-    let g = voice.global_g(None, LID);
+    let g = voice.global_g(None, LID).expect("global conditioning");
     let ref_g = read_f32("g.f32");
     let d = max_abs_diff(&g, &ref_g);
     eprintln!("v7 g parity: max|Δg|={d:.6}, len={} (atol={ATOL})", g.len());
@@ -239,7 +239,9 @@ fn v7_flow_latent_parity() {
         "flow_z shape [HIDDEN, T_FRAMES]"
     );
 
-    let (z, frames) = voice.expand_and_flow(&ref_m_p, t_phonemes, &w_ceil, LID);
+    let (z, frames) = voice
+        .expand_and_flow(&ref_m_p, t_phonemes, &w_ceil, LID)
+        .expect("expand and reverse flow");
     assert_eq!(frames, T_FRAMES, "flow output frame count");
     assert_eq!(z.len(), ref_flow_z.len(), "flow output shape");
     let d = max_abs_diff(&z, &ref_flow_z);

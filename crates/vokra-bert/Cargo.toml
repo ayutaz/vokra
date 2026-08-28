@@ -1,6 +1,6 @@
 [package]
 name = "vokra-bert"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "BERT-family encoder + tokenizer for Vokra (clean-room Apache-2.0)."

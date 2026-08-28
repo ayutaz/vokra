@@ -5,18 +5,25 @@
 //! particular, the real checkpoint has bias-free attention with per-head
 //! Q/K RMSNorm, one talker codec embedding, and fifteen code-predictor
 //! embedding/head pairs.  This module is the production contract: it checks
-//! all 478 tensors in the official 0.6B/1.7B layout without eagerly decoding
+//! the exact 402/404/478/480-tensor released layouts without eagerly decoding
 //! the complete checkpoint, and decodes one transformer block on demand.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::Arc;
 
 use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
 use vokra_core::{LicenseClass, Result, VokraError};
 
+use super::tokenizer::Qwen3TtsTokenizer;
+use super::weights::Qwen3TtsMappedDescriptors;
 use super::{Qwen3TtsCodePredictorConfig, Qwen3TtsConfig, Qwen3TtsTalkerConfig};
 
 const KEY_SAMPLE_RATE: &str = "vokra.qwen3_tts.sample_rate";
 const KEY_SPEAKER_EMBED_DIM: &str = "vokra.qwen3_tts.speaker_embed_dim";
+const KEY_HAS_SPEAKER_ENCODER: &str = "vokra.qwen3_tts.has_speaker_encoder";
+const KEY_TTS_MODEL_SIZE: &str = "vokra.qwen3_tts.tts_model_size";
+const KEY_TTS_MODEL_TYPE: &str = "vokra.qwen3_tts.tts_model_type";
 const KEY_TALKER_HIDDEN_DIM: &str = "vokra.qwen3_tts.talker.hidden_dim";
 const KEY_TALKER_N_LAYER: &str = "vokra.qwen3_tts.talker.n_layer";
 const KEY_TALKER_N_HEAD: &str = "vokra.qwen3_tts.talker.n_head";
@@ -38,9 +45,80 @@ const KEY_CP_N_HEAD_KV: &str = "vokra.qwen3_tts.code_predictor.n_head_kv";
 const KEY_CP_HEAD_DIM: &str = "vokra.qwen3_tts.code_predictor.head_dim";
 const KEY_CP_FFN_DIM: &str = "vokra.qwen3_tts.code_predictor.ffn_dim";
 const KEY_CP_VOCAB_SIZE: &str = "vokra.qwen3_tts.code_predictor.vocab_size";
+const KEY_CP_MAX_POSITIONS: &str = "vokra.qwen3_tts.code_predictor.max_position_embeddings";
 const KEY_CP_ROPE_BASE: &str = "vokra.qwen3_tts.code_predictor.rope_base";
 const KEY_CP_RMS_NORM_EPS: &str = "vokra.qwen3_tts.code_predictor.rms_norm_eps";
 const KEY_CP_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.code_predictor.num_code_groups";
+
+/// Exact released checkpoint contract selected by `vokra.model.name`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Qwen3TtsCheckpointVariant {
+    /// 0.6B Base, including its 1024-wide speaker encoder.
+    Base0_6B,
+    /// 0.6B CustomVoice, with fixed speaker ids and no speaker encoder.
+    CustomVoice0_6B,
+    /// 1.7B Base, including its 2048-wide speaker encoder.
+    Base1_7B,
+    /// 1.7B CustomVoice, with fixed speaker ids and no speaker encoder.
+    CustomVoice1_7B,
+    /// 1.7B VoiceDesign, with no speaker encoder.
+    VoiceDesign1_7B,
+}
+
+impl Qwen3TtsCheckpointVariant {
+    fn from_model_name(name: &str) -> Option<Self> {
+        match name {
+            "qwen3-tts-12hz-0.6b-base" => Some(Self::Base0_6B),
+            "qwen3-tts-12hz-0.6b-customvoice" => Some(Self::CustomVoice0_6B),
+            "qwen3-tts-12hz-1.7b-base" => Some(Self::Base1_7B),
+            "qwen3-tts-12hz-1.7b-customvoice" => Some(Self::CustomVoice1_7B),
+            "qwen3-tts-12hz-1.7b-voicedesign" => Some(Self::VoiceDesign1_7B),
+            _ => None,
+        }
+    }
+
+    const fn model_size(self) -> &'static str {
+        match self {
+            Self::Base0_6B | Self::CustomVoice0_6B => "0b6",
+            Self::Base1_7B | Self::CustomVoice1_7B | Self::VoiceDesign1_7B => "1b7",
+        }
+    }
+
+    const fn model_type(self) -> &'static str {
+        match self {
+            Self::Base0_6B | Self::Base1_7B => "base",
+            Self::CustomVoice0_6B | Self::CustomVoice1_7B => "custom_voice",
+            Self::VoiceDesign1_7B => "voice_design",
+        }
+    }
+
+    const fn has_speaker_encoder(self) -> bool {
+        matches!(self, Self::Base0_6B | Self::Base1_7B)
+    }
+
+    fn expected_config(self) -> Qwen3TtsConfig {
+        let mut config = match self {
+            Self::Base0_6B | Self::CustomVoice0_6B => Qwen3TtsConfig::qwen3_tts_0_6b_base(),
+            Self::Base1_7B | Self::CustomVoice1_7B | Self::VoiceDesign1_7B => {
+                Qwen3TtsConfig::qwen3_tts_1_7b_base()
+            }
+        };
+        if !self.has_speaker_encoder() {
+            config.speaker_embed_dim = 0;
+            config.has_speaker_encoder = false;
+        }
+        config
+    }
+
+    const fn tensor_count(self) -> usize {
+        match self {
+            Self::Base0_6B => 478,
+            Self::CustomVoice0_6B => 402,
+            Self::Base1_7B => 480,
+            Self::CustomVoice1_7B | Self::VoiceDesign1_7B => 404,
+        }
+    }
+}
 
 /// A strictly validated Qwen3-TTS main-model checkpoint.
 ///
@@ -51,14 +129,44 @@ const KEY_CP_NUM_CODE_GROUPS: &str = "vokra.qwen3_tts.code_predictor.num_code_gr
 #[derive(Debug, Clone)]
 pub struct Qwen3TtsCheckpoint {
     config: Qwen3TtsConfig,
+    variant: Qwen3TtsCheckpointVariant,
     model_name: String,
     weight_license: LicenseClass,
     tensor_count: usize,
+    mapped: Option<Arc<Qwen3TtsMappedDescriptors>>,
+    embedded_tokenizer: Option<Arc<Qwen3TtsTokenizer>>,
 }
 
 impl Qwen3TtsCheckpoint {
-    /// Validates the arch, every topology metadata key, and the exact official
-    /// 478-tensor name/shape manifest.
+    /// Opens the exact main GGUF through mmap and binds every generation
+    /// descriptor without widening tensor payloads.
+    pub fn open_mapped(path: impl AsRef<Path>) -> Result<Self> {
+        let file = vokra_mmap::open_gguf(path.as_ref()).map_err(VokraError::from)?;
+        Self::from_gguf_mapped(Arc::new(file))
+    }
+
+    /// Strictly binds an already mmap-backed GGUF for bounded-memory
+    /// execution. Normal callers should prefer [`Self::open_mapped`].
+    pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
+        let mut checkpoint = Self::from_gguf(&file)?;
+        if checkpoint.weight_license != LicenseClass::Permissive {
+            return Err(VokraError::ModelLoad(format!(
+                "qwen3_tts: mapped execution requires the pinned Apache-2.0 release to classify as permissive, got {:?}",
+                checkpoint.weight_license
+            )));
+        }
+        let tokenizer = Arc::new(Qwen3TtsTokenizer::from_gguf(&file, checkpoint.variant)?);
+        let mapped = Arc::new(Qwen3TtsMappedDescriptors::bind(
+            file,
+            checkpoint.config.clone(),
+        )?);
+        checkpoint.mapped = Some(mapped);
+        checkpoint.embedded_tokenizer = Some(tokenizer);
+        Ok(checkpoint)
+    }
+
+    /// Validates the arch, every variant/topology metadata key, and the exact
+    /// released name/shape manifest.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let arch = required_string(file, chunks::KEY_MODEL_ARCH)?;
         if arch != super::EXPECTED_ARCH {
@@ -69,20 +177,40 @@ impl Qwen3TtsCheckpoint {
             )));
         }
         let model_name = required_string(file, chunks::KEY_MODEL_NAME)?.to_owned();
-        if model_name != "qwen3-tts-12hz-0.6b-base" {
-            return Err(VokraError::ModelLoad(format!(
-                "qwen3_tts: unsupported `{}`={model_name:?}; this strict manifest is pinned to the official 12Hz 0.6B-Base release. The 1.7B code predictor adds a small-to-MTP projection and widens its embedding input axis, so it must not be admitted under the 0.6B tensor contract",
+        let variant = Qwen3TtsCheckpointVariant::from_model_name(&model_name).ok_or_else(|| {
+            VokraError::ModelLoad(format!(
+                "qwen3_tts: unsupported `{}`={model_name:?}; expected an exact released 0.6B/1.7B Base, CustomVoice or VoiceDesign name",
                 chunks::KEY_MODEL_NAME
+            ))
+        })?;
+        let stamped_size = required_string(file, KEY_TTS_MODEL_SIZE)?;
+        let stamped_type = required_string(file, KEY_TTS_MODEL_TYPE)?;
+        let stamped_speaker = required_bool(file, KEY_HAS_SPEAKER_ENCODER)?;
+        if stamped_size != variant.model_size()
+            || stamped_type != variant.model_type()
+            || stamped_speaker != variant.has_speaker_encoder()
+        {
+            return Err(VokraError::ModelLoad(format!(
+                "qwen3_tts: variant metadata disagrees with model name {model_name:?}: size={stamped_size:?}, type={stamped_type:?}, has_speaker_encoder={stamped_speaker}; expected size={:?}, type={:?}, has_speaker_encoder={}",
+                variant.model_size(),
+                variant.model_type(),
+                variant.has_speaker_encoder()
             )));
         }
 
         let config = config_from_gguf(file)?;
+        let expected_config = variant.expected_config();
+        if config != expected_config {
+            return Err(VokraError::ModelLoad(format!(
+                "qwen3_tts: stamped topology for {model_name:?} does not match the pinned official config: found {config:?}, expected {expected_config:?}"
+            )));
+        }
         config.validate_for_forward().map_err(|error| {
             VokraError::ModelLoad(format!(
                 "qwen3_tts: stamped topology is not forward-safe: {error}"
             ))
         })?;
-        validate_manifest(file, &config)?;
+        validate_manifest(file, &config, variant)?;
 
         let weight_license = file
             .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
@@ -92,9 +220,12 @@ impl Qwen3TtsCheckpoint {
 
         Ok(Self {
             config,
+            variant,
             model_name,
             weight_license,
             tensor_count: file.tensors().len(),
+            mapped: None,
+            embedded_tokenizer: None,
         })
     }
 
@@ -102,6 +233,12 @@ impl Qwen3TtsCheckpoint {
     /// Returns the topology parsed from the GGUF metadata.
     pub fn config(&self) -> &Qwen3TtsConfig {
         &self.config
+    }
+
+    /// Returns the exact released checkpoint contract admitted by the binder.
+    #[must_use]
+    pub const fn variant(&self) -> Qwen3TtsCheckpointVariant {
+        self.variant
     }
 
     #[must_use]
@@ -122,12 +259,42 @@ impl Qwen3TtsCheckpoint {
         self.tensor_count
     }
 
+    /// Whether this checkpoint retains a mapped payload for execution.
+    #[must_use]
+    pub const fn is_mapped(&self) -> bool {
+        self.mapped.is_some()
+    }
+
+    pub(super) fn mapped(&self) -> Result<&Qwen3TtsMappedDescriptors> {
+        self.mapped.as_deref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_tts: executable generation requires Qwen3TtsCheckpoint::open_mapped or from_gguf_mapped; from_gguf is descriptor-only"
+                    .to_owned(),
+            )
+        })
+    }
+
+    pub(super) fn embedded_tokenizer(&self) -> Result<&Arc<Qwen3TtsTokenizer>> {
+        self.embedded_tokenizer.as_ref().ok_or_else(|| {
+            VokraError::ModelLoad(
+                "qwen3_tts: executable generation requires the exact embedded fixed-revision tokenizer assets"
+                    .to_owned(),
+            )
+        })
+    }
+
+    /// Authenticates the fixed-revision embedded config/tokenizer/generation
+    /// sidecars and returns the exact Qwen2 byte-BPE prompt builder.
+    pub fn tokenizer(&self, file: &GgufFile) -> Result<Qwen3TtsTokenizer> {
+        Qwen3TtsTokenizer::from_gguf(file, self.variant)
+    }
+
     /// Primary text-to-PCM entry point for a bound real checkpoint.
     ///
     /// Loading and individual talker/code-predictor blocks are real.  Full
-    /// synthesis remains loud until the Qwen2 BPE sidecars, autoregressive
-    /// generation loop, and separate 12-Hz neural speech-tokenizer decoder
-    /// are bound.  The RVQ table fold alone is not a waveform decoder.
+    /// synthesis remains loud until the mapped autoregressive generation loop
+    /// and separately supplied 12-Hz neural speech-tokenizer decoder are
+    /// joined. The Qwen2 BPE sidecars are authenticated by [`Self::tokenizer`].
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -135,7 +302,7 @@ impl Qwen3TtsCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "qwen3_tts synthesize: the real 478-tensor main checkpoint is bound and the native talker/code-predictor decoder block is available, but end-to-end PCM still requires three independently gated pieces: embedded Qwen2 BPE vocab+merges, the multi-codebook autoregressive generation loop, and the separate Qwen3-TTS-Tokenizer-12Hz neural decoder (682 MB sibling artifact). vokra_ops::qwen3_tts_codec only folds RVQ tables to codec features and is not substituted for that neural waveform decoder.",
+            "qwen3_tts synthesize: the exact main checkpoint and fixed-revision Qwen2 BPE sidecars are bindable, and the separate Qwen3-TTS-Tokenizer-12Hz decoder has a native CPU/Metal path; end-to-end PCM still requires the mapped multi-codebook autoregressive talker/code-predictor generation loop and an API that joins the two authenticated GGUF artifacts. No CPU fallback or RVQ-only waveform substitute is used.",
         ))
     }
 
@@ -577,6 +744,7 @@ fn config_from_gguf(file: &GgufFile) -> Result<Qwen3TtsConfig> {
     Ok(Qwen3TtsConfig {
         sample_rate: required_u32(file, KEY_SAMPLE_RATE)?,
         speaker_embed_dim: required_u32(file, KEY_SPEAKER_EMBED_DIM)?,
+        has_speaker_encoder: required_bool(file, KEY_HAS_SPEAKER_ENCODER)?,
         talker: Qwen3TtsTalkerConfig {
             hidden_dim: required_u32(file, KEY_TALKER_HIDDEN_DIM)?,
             n_layer: required_u32(file, KEY_TALKER_N_LAYER)?,
@@ -601,6 +769,7 @@ fn config_from_gguf(file: &GgufFile) -> Result<Qwen3TtsConfig> {
             head_dim: required_u32(file, KEY_CP_HEAD_DIM)?,
             ffn_dim: required_u32(file, KEY_CP_FFN_DIM)?,
             vocab_size: required_u32(file, KEY_CP_VOCAB_SIZE)?,
+            max_position_embeddings: required_u32(file, KEY_CP_MAX_POSITIONS)?,
             rope_base: required_f32(file, KEY_CP_ROPE_BASE)?,
             rms_norm_eps: required_f32(file, KEY_CP_RMS_NORM_EPS)?,
             num_code_groups: required_u32(file, KEY_CP_NUM_CODE_GROUPS)?,
@@ -634,8 +803,21 @@ fn required_f32(file: &GgufFile, key: &str) -> Result<f32> {
     }
 }
 
-fn validate_manifest(file: &GgufFile, cfg: &Qwen3TtsConfig) -> Result<()> {
-    let expected = expected_manifest(cfg);
+fn required_bool(file: &GgufFile, key: &str) -> Result<bool> {
+    match file.get(key) {
+        Some(GgufMetadataValue::Bool(value)) => Ok(*value),
+        _ => Err(VokraError::ModelLoad(format!(
+            "qwen3_tts: missing/non-bool metadata `{key}`"
+        ))),
+    }
+}
+
+fn validate_manifest(
+    file: &GgufFile,
+    cfg: &Qwen3TtsConfig,
+    variant: Qwen3TtsCheckpointVariant,
+) -> Result<()> {
+    let expected = expected_manifest(cfg, variant);
     let actual: BTreeMap<String, Vec<usize>> = file
         .tensors()
         .iter()
@@ -676,9 +858,14 @@ fn validate_manifest(file: &GgufFile, cfg: &Qwen3TtsConfig) -> Result<()> {
     Ok(())
 }
 
-fn expected_manifest(cfg: &Qwen3TtsConfig) -> BTreeMap<String, Vec<usize>> {
+fn expected_manifest(
+    cfg: &Qwen3TtsConfig,
+    variant: Qwen3TtsCheckpointVariant,
+) -> BTreeMap<String, Vec<usize>> {
     let mut out = BTreeMap::new();
-    add_speaker_manifest(&mut out, cfg.speaker_embed_dim as usize);
+    if variant.has_speaker_encoder() {
+        add_speaker_manifest(&mut out, cfg.speaker_embed_dim as usize);
+    }
     add_stack_manifest(
         &mut out,
         "talker.model",
@@ -733,13 +920,24 @@ fn expected_manifest(cfg: &Qwen3TtsConfig) -> BTreeMap<String, Vec<usize>> {
     for group in 0..cp.num_code_groups.saturating_sub(1) as usize {
         out.insert(
             format!("talker.code_predictor.model.codec_embedding.{group}.weight"),
-            vec![cp.vocab_size as usize, cp.hidden_dim as usize],
+            vec![cp.vocab_size as usize, t.hidden_dim as usize],
         );
         out.insert(
             format!("talker.code_predictor.lm_head.{group}.weight"),
             vec![cp.vocab_size as usize, cp.hidden_dim as usize],
         );
     }
+    if t.hidden_dim != cp.hidden_dim {
+        out.insert(
+            "talker.code_predictor.small_to_mtp_projection.weight".into(),
+            vec![cp.hidden_dim as usize, t.hidden_dim as usize],
+        );
+        out.insert(
+            "talker.code_predictor.small_to_mtp_projection.bias".into(),
+            vec![cp.hidden_dim as usize],
+        );
+    }
+    debug_assert_eq!(out.len(), variant.tensor_count());
     out
 }
 
@@ -844,7 +1042,10 @@ mod tests {
 
     #[test]
     fn canonical_manifest_has_all_478_official_tensors() {
-        let manifest = expected_manifest(&Qwen3TtsConfig::qwen3_tts_0_6b_base());
+        let manifest = expected_manifest(
+            &Qwen3TtsConfig::qwen3_tts_0_6b_base(),
+            Qwen3TtsCheckpointVariant::Base0_6B,
+        );
         assert_eq!(manifest.len(), 478);
         assert_eq!(
             manifest["talker.model.text_embedding.weight"],
@@ -859,6 +1060,44 @@ mod tests {
             [2048, 1024]
         );
         assert!(!manifest.contains_key("talker.model.layers.0.self_attn.q_proj.bias"));
+    }
+
+    #[test]
+    fn released_variant_manifests_pin_speaker_and_projection_forks() {
+        for (variant, count) in [
+            (Qwen3TtsCheckpointVariant::Base0_6B, 478),
+            (Qwen3TtsCheckpointVariant::CustomVoice0_6B, 402),
+            (Qwen3TtsCheckpointVariant::Base1_7B, 480),
+            (Qwen3TtsCheckpointVariant::CustomVoice1_7B, 404),
+            (Qwen3TtsCheckpointVariant::VoiceDesign1_7B, 404),
+        ] {
+            let config = variant.expected_config();
+            let manifest = expected_manifest(&config, variant);
+            assert_eq!(manifest.len(), count, "{variant:?}");
+            assert_eq!(
+                manifest.contains_key("speaker_encoder.fc.weight"),
+                variant.has_speaker_encoder(),
+                "{variant:?}"
+            );
+        }
+
+        let base_17 = expected_manifest(
+            &Qwen3TtsCheckpointVariant::Base1_7B.expected_config(),
+            Qwen3TtsCheckpointVariant::Base1_7B,
+        );
+        assert_eq!(base_17["speaker_encoder.fc.weight"], [2048, 3072, 1]);
+        assert_eq!(
+            base_17["talker.code_predictor.model.codec_embedding.0.weight"],
+            [2048, 2048]
+        );
+        assert_eq!(
+            base_17["talker.code_predictor.small_to_mtp_projection.weight"],
+            [1024, 2048]
+        );
+        assert_eq!(
+            base_17["talker.code_predictor.small_to_mtp_projection.bias"],
+            [1024]
+        );
     }
 
     #[test]

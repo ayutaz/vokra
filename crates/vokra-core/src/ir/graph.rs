@@ -52,6 +52,10 @@ use super::tensor::{Dim, TensorDesc, TensorId};
 pub enum Window {
     /// Hann (raised-cosine) window.
     Hann,
+    /// Square-root Hann window. Applying it in both analysis and synthesis
+    /// yields an ordinary Hann overlap product; this is the fixed Microsoft
+    /// NSNet2 frontend contract.
+    SqrtHann,
     /// Hamming window.
     Hamming,
     /// Four-term Blackman-Harris window.
@@ -223,6 +227,10 @@ pub struct IstftAttrs {
     pub real_input: bool,
     /// Target output length in samples; `None` infers it from the frame count.
     pub length: Option<usize>,
+    /// Divide overlap-add samples by the running sum of synthesis-window
+    /// squares. Standard iSTFT enables this; references such as NSNet2 that
+    /// define raw overlap-add disable it explicitly.
+    pub normalize_window: bool,
 }
 
 impl IstftAttrs {
@@ -238,6 +246,7 @@ impl IstftAttrs {
             normalization: Normalization::Backward,
             real_input: true,
             length: None,
+            normalize_window: true,
         }
     }
 }

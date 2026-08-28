@@ -28,20 +28,18 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM
-//! contract). Real-weight parity + a native
-//! `MetricganPlus::from_gguf` forward path are deferred to owner
-//! sign-off (`docs/license-audit.md` §3.1) — this converter provides the
-//! byte-parallel GGUF surface only. The internal generator topology
-//! (LSTM stack + spectral-mask head over log-magnitude STFT) is
-//! intentionally NOT re-implemented on this pass: transcribing that
-//! from the SpeechBrain source is a `loud-partial` sibling wave.
+//! contract). `vokra-models::metricgan_plus` now strictly binds the exact
+//! 21-tensor public manifest and runs the native SpeechBrain spectral-mask
+//! pipeline. Independent real-weight parity is generated only by importing
+//! the official SpeechBrain inference package; this converter remains a
+//! byte-parallel offline surface and defines no competing model semantics.
 //!
 //! # No ONNX (permanent)
 //!
 //! MetricGAN+ ships PyTorch checkpoints (safetensors); this converter
 //! **never** touches ONNX (FR-LD-05); the pipeline is re-implemented
-//! natively in a future `crates/vokra-models/src/metricgan_plus/`
-//! module (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! natively in `crates/vokra-models/src/metricgan_plus.rs`
+//! (whisper.cpp 型 self re-implementation, AGENTS.md project invariants).
 
 use std::path::Path;
 
@@ -205,10 +203,9 @@ mod tests {
             .iter()
             .flat_map(|v| ((v.to_bits() >> 16) as u16).to_le_bytes())
             .collect();
-        // Real MetricGAN+ generator names live under `enhance_model.*` in
-        // the SpeechBrain checkpoint — use a realistic prefix so a
-        // future `from_gguf` walk can be tested against the same shape.
-        let input_bytes = safetensors_one_bf16("enhance_model.blstm.weight_ih_l0", &[2, 3], &bf16);
+        // The checkpoint preparation strips SpeechBrain's loadable prefix;
+        // the released 21-tensor GGUF uses this exact namespace.
+        let input_bytes = safetensors_one_bf16("blstm.rnn.weight_ih_l0", &[2, 3], &bf16);
         let input = write_temp("bf16-in", &input_bytes);
         let output = write_temp("bf16-out", &[]);
 
@@ -222,7 +219,7 @@ mod tests {
         let out_bytes = std::fs::read(&output).expect("read output");
         let file = GgufFile::parse(out_bytes).expect("parse GGUF");
         let info = file
-            .tensor_info("enhance_model.blstm.weight_ih_l0")
+            .tensor_info("blstm.rnn.weight_ih_l0")
             .expect("BF16 tensor present");
         assert_eq!(info.dtype, GgmlType::BF16);
         assert_eq!(info.dimensions, vec![2, 3]);

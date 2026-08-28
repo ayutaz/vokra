@@ -115,6 +115,7 @@ CONST vokra-ops::itn::token::EN_TN_ORDERS|pub const EN_TN_ORDERS: &[(&str, &[&st
 CONST vokra-ops::itn::token::ITN_ORDERS|pub const ITN_ORDERS: &[(&str, &[&str])] = &[
 CONST vokra-ops::itn::token::JA_TN_ORDERS|pub const JA_TN_ORDERS: &[(&str, &[&str])] = &[
 CONST vokra-ops::itn::token::ZH_TN_ORDERS|pub const ZH_TN_ORDERS: &[(&str, &[&str])] = &[
+CONST vokra-ops::musicgen_delay_pattern::MUSICGEN_PREDICT_TOKEN|pub const MUSICGEN_PREDICT_TOKEN: i64 = -1;
 CONST vokra-ops::resample::DEFAULT_QUALITY|pub const DEFAULT_QUALITY: u8 = 5;
 CONST vokra-ops::rnnoise::BARK_BAND_EDGES|pub const BARK_BAND_EDGES: [u16; 23] = [
 CONST vokra-ops::rnnoise::FRAME_HOP|pub const FRAME_HOP: usize = 240;
@@ -127,6 +128,8 @@ CONST vokra-ops::rnnoise::N_PITCH_BANDS|pub const N_PITCH_BANDS: usize = 6;
 CONST vokra-ops::rnnoise::N_STFT_BINS|pub const N_STFT_BINS: usize = 241;
 CONST vokra-ops::rnnoise::PITCH_BUF_SIZE|pub const PITCH_BUF_SIZE: usize = 720;
 CONST vokra-ops::rnnoise::SAMPLE_RATE|pub const SAMPLE_RATE: u32 = 48_000;
+CONST vokra-ops::snac_decode::MAX_SNAC_STAGES|pub const MAX_SNAC_STAGES: usize = 4;
+CONST vokra-ops::t5_relative_position::T5_BASE|pub const T5_BASE: Self = Self {
 CONST vokra-ops::ten_vad::CONTEXT_FRAMES|pub const CONTEXT_FRAMES: usize = 3;
 CONST vokra-ops::ten_vad::CONV_CHANNELS|pub const CONV_CHANNELS: usize = 16;
 CONST vokra-ops::ten_vad::FFT_SIZE|pub const FFT_SIZE: usize = 1024;
@@ -146,6 +149,7 @@ ENUM vokra-capi::error::vokra_status_t|pub enum vokra_status_t {
 ENUM vokra-capi::options::vokra_backend_t|pub enum vokra_backend_t {
 ENUM vokra-capi::stream::vokra_event_kind_t|pub enum vokra_event_kind_t {
 ENUM vokra-core::backend::BackendKind|pub enum BackendKind {
+ENUM vokra-core::backend::DelegateSubmodel|pub enum DelegateSubmodel {
 ENUM vokra-core::cache::paged::BlockSize|pub enum BlockSize {
 ENUM vokra-core::cache::paged_quant::AnyBlock|pub enum AnyBlock {
 ENUM vokra-core::compliance::ResolutionSource|pub enum ResolutionSource {
@@ -261,6 +265,7 @@ FN vokra-capi::s2s::vokra_s2s_pull_audio|pub unsafe extern "C" fn vokra_s2s_pull
 FN vokra-capi::s2s::vokra_s2s_push_mic|pub unsafe extern "C" fn vokra_s2s_push_mic(
 FN vokra-capi::s2s::vokra_s2s_sample_rate|pub unsafe extern "C" fn vokra_s2s_sample_rate(
 FN vokra-capi::s2s::vokra_s2s_text|pub unsafe extern "C" fn vokra_s2s_text(
+FN vokra-capi::separation::vokra_separate|pub unsafe extern "C" fn vokra_separate(
 FN vokra-capi::session::vokra_session_create_from_bytes_with_options|pub unsafe extern "C" fn vokra_session_create_from_bytes_with_options(
 FN vokra-capi::session::vokra_session_create_from_bytes|pub unsafe extern "C" fn vokra_session_create_from_bytes(
 FN vokra-capi::session::vokra_session_create_from_file_with_options|pub unsafe extern "C" fn vokra_session_create_from_file_with_options(
@@ -675,12 +680,17 @@ FN vokra-core::session::backend_kind|pub fn backend_kind(&self) -> BackendKind {
 FN vokra-core::session::build|pub fn build(self) -> Result<Session> {
 FN vokra-core::session::from_file|pub fn from_file(path: impl AsRef<Path>) -> SessionBuilder {
 FN vokra-core::session::from_gguf|pub fn from_gguf(gguf: GgufFile) -> SessionBuilder {
+FN vokra-core::session::gguf_arc|pub fn gguf_arc(&self) -> Arc<GgufFile> {
 FN vokra-core::session::gguf|pub fn gguf(&self) -> &GgufFile {
 FN vokra-core::session::kv_quant|pub fn kv_quant(&self) -> KvQuant {
 FN vokra-core::session::model_path|pub fn model_path(&self) -> &Path {
-FN vokra-core::session::open_speech_feature_stream|pub fn open_speech_feature_stream(&self) -> Result<Box<dyn SpeechFeatureStream + Send>> {
 FN vokra-core::session::open_codec_decoder|pub fn open_codec_decoder(&self) -> Result<Box<dyn CodecDecoderHandle + Send>> {
+FN vokra-core::session::open_speech_feature_stream|pub fn open_speech_feature_stream(&self) -> Result<Box<dyn SpeechFeatureStream + Send>> {
 FN vokra-core::session::open_vad_stream|pub fn open_vad_stream(&self) -> Result<Box<dyn VadStreamHandle + Send>> {
+FN vokra-core::session::separate_audio|pub fn separate_audio(&self, pcm: &[f32]) -> Result<Vec<Vec<f32>>> {
+FN vokra-core::session::separation_backend|pub fn separation_backend(&self) -> Result<BackendKind> {
+FN vokra-core::session::separation_output_streams|pub fn separation_output_streams(&self) -> Result<usize> {
+FN vokra-core::session::separation_sample_rate|pub fn separation_sample_rate(&self) -> Result<u32> {
 FN vokra-core::session::with_asr_engine|pub fn with_asr_engine(mut self, engine: Arc<dyn AsrEngine>) -> Self {
 FN vokra-core::session::with_attribution|pub fn with_attribution(mut self, attribution: AttributionInfo) -> Self {
 FN vokra-core::session::with_backend|pub fn with_backend(mut self, backend: BackendKind) -> Result<Session> {
@@ -688,6 +698,7 @@ FN vokra-core::session::with_codec_decoder_engine|pub fn with_codec_decoder_engi
 FN vokra-core::session::with_kv_quant|pub fn with_kv_quant(mut self, kv_quant: KvQuant) -> Self {
 FN vokra-core::session::with_s2s_duplex_engine|pub fn with_s2s_duplex_engine(mut self, engine: Arc<dyn S2sDuplexEngine>) -> Self {
 FN vokra-core::session::with_s2s_engine|pub fn with_s2s_engine(mut self, engine: Arc<dyn S2sEngine>) -> Self {
+FN vokra-core::session::with_separation_engine|pub fn with_separation_engine(mut self, engine: Arc<dyn SeparationEngine>) -> Self {
 FN vokra-core::session::with_speaker_engine|pub fn with_speaker_engine(mut self, engine: Arc<dyn SpeakerEngine>) -> Self {
 FN vokra-core::session::with_speech_feature_engine|pub fn with_speech_feature_engine(mut self, engine: Arc<dyn SpeechFeatureEngine>) -> Self {
 FN vokra-core::session::with_tts_engine|pub fn with_tts_engine(mut self, engine: Arc<dyn TtsEngine>) -> Self {
@@ -766,8 +777,10 @@ FN vokra-ops::agc::speech_default|pub fn speech_default() -> Self {
 FN vokra-ops::anti_aliased_upsample::anti_aliased_upsample_f32|pub fn anti_aliased_upsample_f32(
 FN vokra-ops::bigvgan_generator::channels|pub fn channels(&self) -> usize {
 FN vokra-ops::bigvgan_generator::config|pub fn config(&self) -> &BigVGanConfig {
+FN vokra-ops::bigvgan_generator::effective_parameters|pub fn effective_parameters(&self) -> (Vec<f32>, Vec<f32>) {
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
+FN vokra-ops::bigvgan_generator::forward_with_backend_ops|pub fn forward_with_backend_ops<O: BigVganBackendOps>(
 FN vokra-ops::bigvgan_generator::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::bigvgan_generator::new|pub fn new(
 FN vokra-ops::bigvgan_generator::new|pub fn new(alpha: Vec<f32>, beta: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
@@ -776,6 +789,7 @@ FN vokra-ops::bigvgan_generator::num_kernels|pub fn num_kernels(&self) -> usize 
 FN vokra-ops::bigvgan_generator::num_upsamples|pub fn num_upsamples(&self) -> usize {
 FN vokra-ops::bigvgan_generator::output_channels_at|pub fn output_channels_at(&self, stage: usize) -> u32 {
 FN vokra-ops::bigvgan_generator::total_upsample_factor|pub fn total_upsample_factor(&self) -> u32 {
+FN vokra-ops::clustering::cluster_with_min_cluster_size|pub fn cluster_with_min_cluster_size(
 FN vokra-ops::clustering::cluster|pub fn cluster(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
 FN vokra-ops::conformer::config|pub fn config(&self) -> &ConformerConfig {
 FN vokra-ops::conformer::factor|pub fn factor(&self) -> usize {
@@ -808,6 +822,8 @@ FN vokra-ops::denoise::denoise_synthesized_tensors|pub fn denoise_synthesized_te
 FN vokra-ops::denoise::denoise_tensor_manifest|pub fn denoise_tensor_manifest(cfg: &DeepFilterNetConfig) -> Vec<TensorSpec> {
 FN vokra-ops::denoise::denoise|pub fn denoise(noisy: &[f32], model: &DenoiseModel) -> Result<Vec<f32>> {
 FN vokra-ops::denoise::emb_dim|pub fn emb_dim(&self) -> usize {
+FN vokra-ops::denoise::enhance_with_backend_ops_and_taps|pub fn enhance_with_backend_ops_and_taps(
+FN vokra-ops::denoise::enhance_with_backend_ops|pub fn enhance_with_backend_ops(
 FN vokra-ops::denoise::enhance_with_taps|pub fn enhance_with_taps(&self, noisy: &[f32]) -> Result<(Vec<f32>, DenoiseTaps)> {
 FN vokra-ops::denoise::enhance|pub fn enhance(&self, noisy: &[f32]) -> Result<Vec<f32>> {
 FN vokra-ops::denoise::erb_widths|pub fn erb_widths(&self) -> Result<Vec<usize>> {
@@ -846,6 +862,7 @@ FN vokra-ops::fft::real::len|pub fn len(&self) -> usize {
 FN vokra-ops::fft::real::new|pub fn new(n: usize) -> Self {
 FN vokra-ops::fft::real::num_bins|pub fn num_bins(&self) -> usize {
 FN vokra-ops::firered_vad::cache_frames|pub const fn cache_frames(&self) -> usize {
+FN vokra-ops::firered_vad::firered_vad_dfsmn_forward_with_ops|pub fn firered_vad_dfsmn_forward_with_ops<O: FireredVadBackendOps>(
 FN vokra-ops::firered_vad::firered_vad_dfsmn_forward|pub fn firered_vad_dfsmn_forward(
 FN vokra-ops::firered_vad::matches|pub fn matches(&self, cfg: &FireredVadDfsmnConfig) -> bool {
 FN vokra-ops::firered_vad::official|pub const fn official() -> Self {
@@ -861,6 +878,7 @@ FN vokra-ops::flow_sampler::new|pub fn new(shape: impl Into<Vec<usize>>, data: i
 FN vokra-ops::flow_sampler::timesteps|pub fn timesteps(&self, nfe: usize) -> Result<Vec<f32>> {
 FN vokra-ops::frontend::mel_attrs_from_spec|pub fn mel_attrs_from_spec(spec: &FrontendSpec) -> Result<MelAttrs> {
 FN vokra-ops::frontend::stft_attrs_from_spec|pub fn stft_attrs_from_spec(spec: &FrontendSpec) -> Result<StftAttrs> {
+FN vokra-ops::fsmn_vad::fsmn_vad_forward_with_ops|pub fn fsmn_vad_forward_with_ops<O: FsmnBackendOps>(
 FN vokra-ops::fsmn_vad::fsmn_vad_forward|pub fn fsmn_vad_forward(
 FN vokra-ops::fsmn_vad::is_zero|pub fn is_zero(&self) -> bool {
 FN vokra-ops::fsmn_vad::left_history_frames|pub fn left_history_frames(&self) -> usize {
@@ -888,7 +906,9 @@ FN vokra-ops::hifigan::check|pub fn check(&self, fp32: &[f32], int8: &[f32]) -> 
 FN vokra-ops::hifigan::delta|pub fn delta(&self) -> f32 {
 FN vokra-ops::hifigan::fp16|pub fn fp16() -> Self {
 FN vokra-ops::hifigan::fp32|pub fn fp32() -> Self {
+FN vokra-ops::hifigan::hifigan_generator_conditioned_with_backend_ops|pub fn hifigan_generator_conditioned_with_backend_ops<O: HifiGanBackendOps>(
 FN vokra-ops::hifigan::hifigan_generator_conditioned|pub fn hifigan_generator_conditioned(
+FN vokra-ops::hifigan::hifigan_generator_with_backend_ops|pub fn hifigan_generator_with_backend_ops<O: HifiGanBackendOps>(
 FN vokra-ops::hifigan::hifigan_generator_with_conv_padding|pub fn hifigan_generator_with_conv_padding(
 FN vokra-ops::hifigan::hifigan_generator|pub fn hifigan_generator(
 FN vokra-ops::hifigan::is_passed|pub fn is_passed(&self) -> bool {
@@ -902,6 +922,7 @@ FN vokra-ops::hiftnet::channels|pub fn channels(&self) -> usize {
 FN vokra-ops::hiftnet::config|pub fn config(&self) -> &F0PredictorConfig {
 FN vokra-ops::hiftnet::config|pub fn config(&self) -> &HiFTGeneratorConfig {
 FN vokra-ops::hiftnet::config|pub fn config(&self) -> &ResBlockConfig {
+FN vokra-ops::hiftnet::effective_alpha|pub fn effective_alpha(&self) -> Vec<f32> {
 FN vokra-ops::hiftnet::f0_predictor_forward|pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
@@ -967,6 +988,7 @@ FN vokra-ops::itn::token::parse_tokens|pub fn parse_tokens(input: &str) -> Resul
 FN vokra-ops::itn::token::prefix|pub const fn prefix(self) -> &'static str {
 FN vokra-ops::itn::token::render|pub fn render(&self, orders: &[(&str, &[&str])]) -> String {
 FN vokra-ops::itn::token::reorder|pub fn reorder(input: &str, parse_type: ItnParseType) -> Result<String> {
+FN vokra-ops::kaldi_fbank::ast_audioset|pub fn ast_audioset() -> Self {
 FN vokra-ops::kaldi_fbank::camplus|pub fn camplus() -> Self {
 FN vokra-ops::kaldi_fbank::kaldi_fbank_with_window|pub fn kaldi_fbank_with_window(
 FN vokra-ops::kaldi_fbank::kaldi_fbank|pub fn kaldi_fbank(pcm: &[f32], opts: &KaldiFbankOpts) -> Result<(Vec<f32>, usize)> {
@@ -1004,6 +1026,8 @@ FN vokra-ops::moe_dispatch::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::moe_expert_gemm::moe_expert_gemm|pub fn moe_expert_gemm(
 FN vokra-ops::moe_expert_gemm::num_experts|pub fn num_experts(&self) -> usize {
 FN vokra-ops::moe_expert_gemm::validate|pub fn validate(&self) -> Result<()> {
+FN vokra-ops::musicgen_delay_pattern::apply_musicgen_delay_pattern|pub fn apply_musicgen_delay_pattern(
+FN vokra-ops::musicgen_delay_pattern::build_musicgen_delay_pattern|pub fn build_musicgen_delay_pattern(
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SineGenConfig {
 FN vokra-ops::nsf::config|pub fn config(&self) -> &SourceModuleHnNSFConfig {
 FN vokra-ops::nsf::forward|pub fn forward(&self, f0: &[f32], entropy: NsfEntropy) -> Result<SineGenOutput> {
@@ -1054,20 +1078,30 @@ FN vokra-ops::rnnt_decode::beam|pub fn beam(num_timesteps: usize, vocab_size: us
 FN vokra-ops::rnnt_decode::greedy|pub fn greedy(num_timesteps: usize, vocab_size: usize) -> Self {
 FN vokra-ops::rnnt_decode::rnnt_decode|pub fn rnnt_decode(encoder_out: &[f32], attrs: &RnntAttrs) -> Result<Vec<RnntHypothesis>> {
 FN vokra-ops::rnnt_decode::tdt|pub fn tdt(num_timesteps: usize, vocab_size: usize, duration_bins: Vec<u32>) -> Self {
+FN vokra-ops::snac_decode::active_vq_strides|pub fn active_vq_strides(&self) -> &[u32] {
 FN vokra-ops::snac_decode::codebook_dim|pub const fn codebook_dim(&self) -> usize {
 FN vokra-ops::snac_decode::codebook_size|pub const fn codebook_size(&self) -> usize {
 FN vokra-ops::snac_decode::config|pub const fn config(&self) -> &SnacConfig {
 FN vokra-ops::snac_decode::d_model|pub const fn d_model(&self) -> usize {
-FN vokra-ops::snac_decode::decode|pub fn decode(&self, codes: &[Vec<u32>; 3]) -> Result<Vec<f32>> {
+FN vokra-ops::snac_decode::decode|pub fn decode(&self, codes: &[Vec<u32>]) -> Result<Vec<f32>> {
 FN vokra-ops::snac_decode::new|pub fn new(config: SnacConfig, weights: SnacWeights) -> Result<Self> {
 FN vokra-ops::snac_decode::snac_24khz|pub const fn snac_24khz() -> Self {
+FN vokra-ops::snac_decode::snac_44khz|pub const fn snac_44khz() -> Self {
 FN vokra-ops::snake::snake_activation_f32|pub fn snake_activation_f32(
 FN vokra-ops::snake::snake_beta_f32|pub fn snake_beta_f32(
+FN vokra-ops::speechbrain_fbank::ecapa_voxceleb|pub fn ecapa_voxceleb() -> Self {
+FN vokra-ops::speechbrain_fbank::speechbrain_fbank|pub fn speechbrain_fbank(pcm: &[f32], attrs: &SpeechbrainFbankAttrs) -> Result<(Vec<f32>, usize)> {
+FN vokra-ops::speechbrain_fbank::xvector_voxceleb|pub fn xvector_voxceleb() -> Self {
 FN vokra-ops::stft::from_interleaved|pub fn from_interleaved(frames: usize, bins: usize, data: &[f32]) -> Result<Self> {
 FN vokra-ops::stft::magnitude|pub fn magnitude(&self) -> Vec<f32> {
 FN vokra-ops::stft::power|pub fn power(&self) -> Vec<f32> {
 FN vokra-ops::stft::stft|pub fn stft(signal: &[f32], attrs: &StftAttrs) -> Result<Spectrogram> {
 FN vokra-ops::stft::to_interleaved|pub fn to_interleaved(&self) -> Vec<f32> {
+FN vokra-ops::t5_relative_position::t5_relative_attention_bias|pub fn t5_relative_attention_bias(
+FN vokra-ops::t5_relative_position::t5_relative_position_buckets|pub fn t5_relative_position_buckets(
+FN vokra-ops::t5_relative_position::t5_relative_position_bucket|pub fn t5_relative_position_bucket(
+FN vokra-ops::t5_relative_position::validate|pub fn validate(self) -> Result<()> {
+FN vokra-ops::ten_vad::network_forward_with_ops|pub fn network_forward_with_ops<O: TenVadBackendOps>(
 FN vokra-ops::ten_vad::network_forward|pub fn network_forward(
 FN vokra-ops::ten_vad::new|pub fn new() -> Self {
 FN vokra-ops::ten_vad::process_frame|pub fn process_frame(&mut self, pcm: &[f32]) -> Result<&[f32]> {
@@ -1091,7 +1125,9 @@ FN vokra-ops::vae_continuous::voxcpm2_2b|pub fn voxcpm2_2b() -> Self {
 FN vokra-ops::vae_continuous::voxcpm_0_5b|pub fn voxcpm_0_5b() -> Self {
 FN vokra-ops::vit::add_pos_embed|pub fn add_pos_embed(&self, tokens: &mut [f32], grid: &PatchGrid) -> Result<()> {
 FN vokra-ops::vit::attrs|pub fn attrs(&self) -> &ViTAttrs {
+FN vokra-ops::vit::encode_tokens_with_backend|pub fn encode_tokens_with_backend(
 FN vokra-ops::vit::encode_tokens|pub fn encode_tokens(&self, tokens: &[f32], n_tokens: usize) -> Result<Vec<f32>> {
+FN vokra-ops::vit::forward_with_backend|pub fn forward_with_backend(
 FN vokra-ops::vit::forward|pub fn forward(
 FN vokra-ops::vit::head_dim|pub fn head_dim(&self) -> usize {
 FN vokra-ops::vit::mlp_dim|pub fn mlp_dim(&self) -> usize {
@@ -1107,6 +1143,8 @@ FN vokra-ops::vit::vit_pool|pub fn vit_pool(
 FN vokra-ops::vit::weights|pub fn weights(&self) -> &ViTWeights {
 FN vokra-ops::vocos::validate|pub fn validate(&self) -> Result<()> {
 FN vokra-ops::vocos::validate|pub fn validate(&self, attrs: &VocosAttrs) -> Result<()> {
+FN vokra-ops::vocos::vocos_decode_from_embedded_with_ops|pub fn vocos_decode_from_embedded_with_ops<O: VocosBackendOps>(
+FN vokra-ops::vocos::vocos_decode_with_ops|pub fn vocos_decode_with_ops<O: VocosBackendOps>(
 FN vokra-ops::vocos::vocos_decode|pub fn vocos_decode(
 FN vokra-ops::voice_ref::fixed_voice|pub fn fixed_voice(name: impl Into<String>) -> Self {
 FN vokra-ops::voice_ref::reference_audio|pub fn reference_audio(pcm: Vec<f32>, sample_rate: u32) -> Result<Self> {
@@ -1244,6 +1282,7 @@ MOD vokra-ops::mfcc|pub mod mfcc;
 MOD vokra-ops::mimi_rvq|pub mod mimi_rvq;
 MOD vokra-ops::moe_dispatch|pub mod moe_dispatch;
 MOD vokra-ops::moe_expert_gemm|pub mod moe_expert_gemm;
+MOD vokra-ops::musicgen_delay_pattern|pub mod musicgen_delay_pattern;
 MOD vokra-ops::nsf|pub mod nsf;
 MOD vokra-ops::openwakeword|pub mod openwakeword;
 MOD vokra-ops::preprocess|pub mod preprocess;
@@ -1254,7 +1293,9 @@ MOD vokra-ops::rnnoise|pub mod rnnoise;
 MOD vokra-ops::rnnt_decode|pub mod rnnt_decode;
 MOD vokra-ops::snac_decode|pub mod snac_decode;
 MOD vokra-ops::snake|pub mod snake;
+MOD vokra-ops::speechbrain_fbank|pub mod speechbrain_fbank;
 MOD vokra-ops::stft|pub mod stft;
+MOD vokra-ops::t5_relative_position|pub mod t5_relative_position;
 MOD vokra-ops::ten_vad|pub mod ten_vad;
 MOD vokra-ops::vae_continuous|pub mod vae_continuous;
 MOD vokra-ops::vit|pub mod vit;
@@ -1267,8 +1308,8 @@ MOD vokra-ops::zipformer|pub mod zipformer;
 STRUCT vokra-capi::aec::vokra_aec_config_t|pub struct vokra_aec_config_t {
 STRUCT vokra-capi::aec::vokra_aec_ref_writer_t|pub struct vokra_aec_ref_writer_t {
 STRUCT vokra-capi::aec::vokra_aec_t|pub struct vokra_aec_t {
-STRUCT vokra-capi::handle::vokra_feat_t|pub struct vokra_feat_t {
 STRUCT vokra-capi::codec::vokra_codec_decoder_t|pub struct vokra_codec_decoder_t {
+STRUCT vokra-capi::handle::vokra_feat_t|pub struct vokra_feat_t {
 STRUCT vokra-capi::handle::vokra_session_t|pub struct vokra_session_t {
 STRUCT vokra-capi::handle::vokra_stream_t|pub struct vokra_stream_t {
 STRUCT vokra-capi::options::vokra_session_options_t|pub struct vokra_session_options_t {
@@ -1492,6 +1533,8 @@ STRUCT vokra-ops::moe_dispatch::MoeAssignment|pub struct MoeAssignment {
 STRUCT vokra-ops::moe_dispatch::MoeDispatchAttrs|pub struct MoeDispatchAttrs {
 STRUCT vokra-ops::moe_dispatch::MoeDispatchPlan|pub struct MoeDispatchPlan {
 STRUCT vokra-ops::moe_expert_gemm::MoeExpertWeights|pub struct MoeExpertWeights {
+STRUCT vokra-ops::musicgen_delay_pattern::MusicGenDelayPatternAttrs|pub struct MusicGenDelayPatternAttrs {
+STRUCT vokra-ops::musicgen_delay_pattern::MusicGenDelayPattern|pub struct MusicGenDelayPattern {
 STRUCT vokra-ops::nsf::SineGenConfig|pub struct SineGenConfig {
 STRUCT vokra-ops::nsf::SineGenOutput|pub struct SineGenOutput {
 STRUCT vokra-ops::nsf::SineGen|pub struct SineGen {
@@ -1515,7 +1558,9 @@ STRUCT vokra-ops::rnnt_decode::RnntHypothesis|pub struct RnntHypothesis {
 STRUCT vokra-ops::snac_decode::SnacConfig|pub struct SnacConfig {
 STRUCT vokra-ops::snac_decode::SnacDecoder|pub struct SnacDecoder {
 STRUCT vokra-ops::snac_decode::SnacWeights|pub struct SnacWeights {
+STRUCT vokra-ops::speechbrain_fbank::SpeechbrainFbankAttrs|pub struct SpeechbrainFbankAttrs {
 STRUCT vokra-ops::stft::Spectrogram|pub struct Spectrogram {
+STRUCT vokra-ops::t5_relative_position::T5RelativePositionAttrs|pub struct T5RelativePositionAttrs {
 STRUCT vokra-ops::ten_vad::LstmWeights|pub struct LstmWeights {
 STRUCT vokra-ops::ten_vad::SeparableConvWeights|pub struct SeparableConvWeights {
 STRUCT vokra-ops::ten_vad::TenVadFrontend|pub struct TenVadFrontend {
@@ -1552,6 +1597,7 @@ STRUCT vokra-ops::zipformer::ZipformerStackWeights|pub struct ZipformerStackWeig
 STRUCT vokra-ops::zipformer::ZipformerStemWeights|pub struct ZipformerStemWeights {
 STRUCT vokra-ops::zipformer::ZipformerWeights|pub struct ZipformerWeights {
 TRAIT vokra-core::backend::Backend|pub trait Backend {
+TRAIT vokra-core::backend::DelegateBackend|pub trait DelegateBackend {
 TRAIT vokra-core::cache::paged::GpuPagedKvCacheOps|pub trait GpuPagedKvCacheOps {
 TRAIT vokra-core::cache::paged::KvElement|pub trait KvElement: Copy + Send + Sync + 'static {
 TRAIT vokra-core::decode::LogitsSource|pub trait LogitsSource {
@@ -1570,6 +1616,7 @@ TRAIT vokra-core::engines::MosScorerEngine|pub trait MosScorerEngine: Send + Syn
 TRAIT vokra-core::engines::S2sDuplexEngine|pub trait S2sDuplexEngine: Send + Sync {
 TRAIT vokra-core::engines::S2sDuplexHandle|pub trait S2sDuplexHandle {
 TRAIT vokra-core::engines::S2sEngine|pub trait S2sEngine: Send + Sync {
+TRAIT vokra-core::engines::SeparationEngine|pub trait SeparationEngine: Send + Sync {
 TRAIT vokra-core::engines::SpeakerEngine|pub trait SpeakerEngine: Send + Sync {
 TRAIT vokra-core::engines::SpeechFeatureEngine|pub trait SpeechFeatureEngine: Send + Sync {
 TRAIT vokra-core::engines::SpeechFeatureStream|pub trait SpeechFeatureStream {
@@ -1583,7 +1630,15 @@ TRAIT vokra-core::kv_quant::gpu_ops::KvQuantDequantGemvOps|pub trait KvQuantDequ
 TRAIT vokra-core::rng::NormalSource|pub trait NormalSource {
 TRAIT vokra-core::stream::event::EventSink|pub trait EventSink {
 TRAIT vokra-core::stream::step::StreamStep|pub trait StreamStep: Send {
+TRAIT vokra-ops::bigvgan_generator::BigVganBackendOps|pub trait BigVganBackendOps: HifiGanBackendOps {
+TRAIT vokra-ops::denoise::DenoiseBackendOps|pub trait DenoiseBackendOps {
+TRAIT vokra-ops::firered_vad::FireredVadBackendOps|pub trait FireredVadBackendOps {
+TRAIT vokra-ops::fsmn_vad::FsmnBackendOps|pub trait FsmnBackendOps {
+TRAIT vokra-ops::hifigan::HifiGanBackendOps|pub trait HifiGanBackendOps {
 TRAIT vokra-ops::prosody::ApplyProsody|pub trait ApplyProsody {
+TRAIT vokra-ops::ten_vad::TenVadBackendOps|pub trait TenVadBackendOps {
+TRAIT vokra-ops::vit::ViTBackendOps|pub trait ViTBackendOps {
+TRAIT vokra-ops::vocos::VocosBackendOps|pub trait VocosBackendOps {
 TRAIT vokra-ops::voice_ref::VoiceRefSource|pub trait VoiceRefSource {
 TYPE vokra-core::decode::wfst::fst::Label|pub type Label = u32;
 TYPE vokra-core::decode::wfst::fst::StateId|pub type StateId = u32;
@@ -1591,7 +1646,7 @@ TYPE vokra-core::error::Result|pub type Result<T> = core::result::Result<T, Vokr
 TYPE vokra-ops::ctc_decode::CtcLmScoreFn|pub type CtcLmScoreFn = dyn Fn(&[u32], u32) -> f32;
 TYPE vokra-ops::hybrid_ctc_attention::AttnNextStepFn|pub type AttnNextStepFn<'a> = dyn Fn(&[u32]) -> Vec<f32> + 'a;
 TYPE vokra-ops::hybrid_ctc_attention::LmScoreFn|pub type LmScoreFn<'a> = dyn Fn(&[u32], u32) -> f32 + 'a;
-USE vokra-core::backend::{Backend, BackendKind}|pub use backend::{Backend, BackendKind};
+USE vokra-core::backend::{Backend, BackendKind, DelegateBackend, DelegateSubmodel}|pub use backend::{Backend, BackendKind, DelegateBackend, DelegateSubmodel};
 USE vokra-core::cache::KvCache|pub use cache::KvCache;
 USE vokra-core::cache::kv::KvCache|pub use kv::KvCache;
 USE vokra-core::cache::paged::{ AllocatorSnapshot, BlockSize, GpuPagedKvCacheOps, KvDims, KvElement, KvSlot, PageId, PagedKvCache, TimeRangeIter, }|pub use cache::paged::{ AllocatorSnapshot, BlockSize, GpuPagedKvCacheOps, KvDims, KvElement, KvSlot, PageId, PagedKvCache, TimeRangeIter, };
@@ -1683,10 +1738,10 @@ USE vokra-ops::f0::{PyinFrame, pyin, pyin_detailed, yin}|pub use f0::{PyinFrame,
 USE vokra-ops::fft::plan::FftPlan|pub use plan::FftPlan;
 USE vokra-ops::fft::real::RealFftPlan|pub use real::RealFftPlan;
 USE vokra-ops::fft::vokra_core::Complex32|pub use vokra_core::Complex32;
-USE vokra-ops::firered_vad::{ FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, }|pub use firered_vad::{ FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, };
+USE vokra-ops::firered_vad::{ FireredVadBackendOps, FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, firered_vad_dfsmn_forward_with_ops, }|pub use firered_vad::{ FireredVadBackendOps, FireredVadDfsmnBlockWeights, FireredVadDfsmnConfig, FireredVadDfsmnState, FireredVadDfsmnWeights, firered_vad_dfsmn_forward, firered_vad_dfsmn_forward_with_ops, };
 USE vokra-ops::flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, }|pub use flow_sampler::{ CfgMode, CfgScaleProfile, FlowSamplerConfig, FlowSamplerState, ForwardPass, OdeSolver, Schedule, flow_sample, };
 USE vokra-ops::frontend::{mel_attrs_from_spec, stft_attrs_from_spec}|pub use frontend::{mel_attrs_from_spec, stft_attrs_from_spec};
-USE vokra-ops::fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, softmax_last_axis, };
+USE vokra-ops::fsmn_vad::{ FsmnBackendOps, FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, fsmn_vad_forward_with_ops, softmax_last_axis, }|pub use fsmn_vad::{ FsmnBackendOps, FsmnBlockWeights, FsmnEncoderConfig, FsmnStreamState, FsmnVadWeights, fsmn_vad_forward, fsmn_vad_forward_with_ops, softmax_last_axis, };
 USE vokra-ops::fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, }|pub use fsq_codec::{ FsqOutProj, WavTokenizerVqAttrs, Xcodec2FsqAttrs, fsq_index_to_grid_codes, group_fsq_decode, group_fsq_decode_into, wavtokenizer_vq_decode, xcodec2_fsq_decode, };
 USE vokra-ops::fused_logmel::fused_log_mel_scalar|pub use fused_logmel::fused_log_mel_scalar;
 USE vokra-ops::hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, }|pub use hifigan::{ CalibrationStrategy, CalibrationTable, GinCondition, HifiGanCalibrator, HifiGanConfig, HifiGanPrecision, HifiGanSpectralChecker, HifiGanWeights, MrfBranchWeights, ResBlockLayer, SPECTRAL_CHECK_THRESHOLD, SpectralCheckResult, UpsampleStageWeights, hifigan_generator, hifigan_generator_conditioned, };
@@ -1714,12 +1769,13 @@ USE vokra-ops::qwen3_tts_codec::{Qwen3TtsCodec, Qwen3TtsCodecConfig, qwen3_tts_c
 USE vokra-ops::resample::{StreamingResampler, resample}|pub use resample::{StreamingResampler, resample};
 USE vokra-ops::rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, }|pub use rnnoise::{ Activation as RnnoiseActivation, BARK_BAND_EDGES, FRAME_HOP, FRAME_SIZE, N_BARK_BANDS, N_FEATURES, N_PITCH_BANDS, N_STFT_BINS, PITCH_BUF_SIZE, PitchState, bark_dct, bark_filterbank, dense_forward as rnnoise_dense_forward, gru_forward as rnnoise_gru_forward, interp_bark_gains, pack_features as rnnoise_pack_features, pitch_analysis, vorbis_window as rnnoise_vorbis_window, zero_pitch_features as rnnoise_zero_pitch_features, };
 USE vokra-ops::rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode}|pub use rnnt_decode::{RnntAttrs, RnntDecoderKind, RnntHypothesis, rnnt_decode};
-USE vokra-ops::snac_decode::{SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{SnacConfig, SnacDecoder, SnacWeights};
+USE vokra-ops::snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights}|pub use snac_decode::{MAX_SNAC_STAGES, SnacConfig, SnacDecoder, SnacWeights};
 USE vokra-ops::snake::snake_activation_f32|pub use snake::snake_activation_f32;
 USE vokra-ops::snake::snake_beta_f32|pub use snake::snake_beta_f32;
+USE vokra-ops::speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank}|pub use speechbrain_fbank::{SpeechbrainFbankAttrs, speechbrain_fbank};
 USE vokra-ops::stft::{Spectrogram, stft}|pub use stft::{Spectrogram, stft};
 USE vokra-ops::vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, }|pub use vae_continuous::{ ContinuousVaeConfig, ContinuousVaeDecoder, ContinuousVaeDecoderWeights, ContinuousVaeEncoder, ContinuousVaeEncoderWeights, continuous_vae_decode, continuous_vae_encode, };
-USE vokra-ops::vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, }|pub use vocos::{ VocosAttrs, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, };
+USE vokra-ops::vocos::{ VocosAttrs, VocosBackendOps, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, vocos_decode_with_ops, }|pub use vocos::{ VocosAttrs, VocosBackendOps, VocosBlockWeights, VocosIstftPadding, VocosNormWeights, VocosWeights, vocos_decode, vocos_decode_with_ops, };
 USE vokra-ops::voice_ref::{VoiceRef, VoiceRefSource}|pub use voice_ref::{VoiceRef, VoiceRefSource};
 USE vokra-ops::vokra_core::Complex32|pub use vokra_core::Complex32;
 USE vokra-ops::waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, waveform_frontend_with_right_padding, }|pub use waveform_frontend::{ ConvLayerAttrs, ConvLayerWeights, Norm, WaveformFrontendAttrs, WaveformFrontendWeights, waveform_frontend, waveform_frontend_with_right_padding, };

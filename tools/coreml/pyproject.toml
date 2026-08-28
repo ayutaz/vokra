@@ -1,0 +1,12 @@
+[project]
+name = "vokra-coreml-tools"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+  "coremltools==9.0",
+  "gguf==0.17.1",
+  "numpy==2.3.2",
+]
+
+[tool.uv]
+package = false

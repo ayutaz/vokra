@@ -1,82 +1,10 @@
 #!/usr/bin/env python3
-"""Flatten Microsoft DNSMOS's two ONNX checkpoints into a single merged
-safetensors bundle (coverage-audit Wave A ticket ``dnsmos-p808-p835``,
-2026-08-03).
+"""Prepare the exact Microsoft DNSMOS P.808 + P.835 checkpoint bundle.
 
-Offline sidecar tool (FR-LD-05: no Python / ONNX ever enters the runtime).
-DNSMOS ships as two ONNX files inside
-``github.com/microsoft/DNS-Challenge/tree/master/DNSMOS/``:
-
-* ``model_v8.onnx``     — the P.808 predictor (single overall MOS scalar,
-                           ITU-T P.808 scale).
-* ``sig_bak_ovr.onnx``  — the P.835 predictor (three scalars: signal /
-                           background / overall, ITU-T P.835 scale).
-
-Vokra's Rust converter (``crates/vokra-convert/src/models/dnsmos.rs``)
-consumes safetensors only, so this script bridges the two by walking
-each ONNX graph's ``initializer`` list (the constant tensors that carry
-the model weights), prefixing every tensor name with the sub-model tag
-(``p808.<upstream_name>`` / ``p835.<upstream_name>``), and emitting a
-single merged safetensors alongside a sha256 manifest.
-
-The prefixing scheme is what the Rust converter's ``bundle_variants``
-detection walks; the runtime binder
-``vokra_models::dnsmos_p808_p835::Dnsmos::from_gguf`` (landed 2026-08-05)
-consumes the prefix to route each tensor to the right sub-model. It landed
-in ``vokra-models``, not ``vokra-eval`` — there is no ``vokra_eval::dnsmos``
-module, for the same layering reason its ``squim`` sibling gives:
-``vokra-models`` binds GGUF-backed neural models, ``vokra-eval`` holds the
-``Metric`` traits and the weight-free algorithmic metrics.
-
-# License
-
-MIT (Microsoft DNS-Challenge, ``LICENSE`` in the repo root, verified
-2026-08-03). Every ONNX initializer is a plain array of floating-point
-weights — no code is executed at parse time (see the ``onnx.load``
-posture below).
-
-# Design decisions
-
-* **ONNX parser**: uses the ``onnx`` Python package (Apache-2.0). It
-  parses the protobuf schema and never executes model code — the load
-  is data-only, matching FR-LD-05's spirit even though this tool is
-  offline. We deliberately avoid ``onnxruntime`` (which would drag in a
-  full runtime) and hand-write nothing that would risk pickle-style
-  code execution.
-
-* **Dtype policy**: F32 / F16 / BF16 pass through verbatim. Any other
-  dtype (INT8 quantized weights in a future DNSMOS revision, for
-  instance) is a hard error rather than a silent drop (FR-EX-08).
-  DNSMOS as of 2026-08-03 ships F32 end-to-end.
-
-* **Name policy**: initializer names are preserved verbatim after the
-  ``p808.`` / ``p835.`` prefix. ONNX sometimes suffixes initializer
-  names with a serial (``…_0``) or omits the leading module path; we do
-  not rewrite these because the Rust binder walks whatever names the
-  prep script emits and any mangling would need to travel with the
-  binder to stay consistent.
-
-* **Partial bundle**: passing only one of ``--p808`` / ``--p835`` is
-  allowed — the Rust converter's ``bundle_variants`` detection
-  faithfully advertises the truthful subset in the emitted GGUF. Both
-  are recommended for the canonical Vokra publication (the two scores
-  make sense together).
-
-# Usage
-
-::
-
-    uv add onnx safetensors numpy
-    uv run python tools/parity/dnsmos_prepare_checkpoint.py \\
-        --p808 ~/checkpoints/dnsmos/model_v8.onnx \\
-        --p835 ~/checkpoints/dnsmos/sig_bak_ovr.onnx \\
-        --output ~/checkpoints/dnsmos/model.safetensors
-
-Then::
-
-    vokra-cli convert --model dnsmos-p808-p835 \\
-        --input ~/checkpoints/dnsmos/model.safetensors \\
-        --output ~/gguf/dnsmos-p808-p835.gguf
+This is an offline ONNX parser, not a runtime dependency. It accepts only the
+two audited official graphs at ``SOURCE_REVISION``, verifies their complete
+file hashes and graph signatures, and emits the 38 F32 initializers consumed by
+the strict Rust converter. No ONNX graph is executed here.
 """
 
 from __future__ import annotations
@@ -88,251 +16,199 @@ import struct
 import sys
 from pathlib import Path
 
-LOG_PREFIX = "dnsmos_prepare_checkpoint:"
+SOURCE_REVISION = "591184a9fcb2cbdec02520fed81a32bbbf9d73ff"
+P808_SHA256 = "9246480c58567bc6affd4200938e77eef49468c8bc7ed3776d109c07456f6e91"
+P835_SHA256 = "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"
 
+P808_OPS = (
+    "Unsqueeze", "Transpose", "Conv", "Relu", "MaxPool", "Conv", "Relu",
+    "MaxPool", "Conv", "Relu", "Conv", "Relu", "MaxPool", "Conv", "Relu",
+    "Transpose", "ReduceMax", "MatMul", "Add", "Relu", "MatMul", "Add",
+    "Relu", "MatMul", "Add",
+)
+P835_OPS = (
+    "Slice", "Slice", "Reshape", "Reshape", "Concat", "Transpose", "Transpose",
+    "Conv", "Conv", "Transpose", "Transpose", "Mul", "Mul", "Add", "Sqrt",
+    "Pow", "Max", "Log", "Div", "Unsqueeze", "Transpose", "Conv", "Relu",
+    "Conv", "Relu", "Conv", "Relu", "Conv", "Relu", "MaxPool", "Conv",
+    "Relu", "MaxPool", "Conv", "Relu", "MaxPool", "Conv", "Relu",
+    "Transpose", "ReduceMax", "MatMul", "Add", "Relu", "MatMul", "Add",
+    "Relu", "MatMul", "Add",
+)
 
-def _log(msg: str) -> None:
-    print(f"{LOG_PREFIX} {msg}", file=sys.stderr)
-
-
-# ONNX TensorProto.DataType → safetensors dtype string. See
-# https://github.com/onnx/onnx/blob/main/onnx/onnx.proto3 (TensorProto.DataType).
-ONNX_DTYPE_TO_ST = {
-    1: "F32",   # FLOAT
-    10: "F16",  # FLOAT16
-    16: "BF16", # BFLOAT16
+EXPECTED: dict[str, list[int]] = {
+    "p808.conv2d_5/kernel:0": [32, 1, 3, 3],
+    "p808.conv2d_5/bias:0": [32],
+    "p808.conv2d_6/kernel:0": [32, 32, 3, 3],
+    "p808.conv2d_6/bias:0": [32],
+    "p808.conv2d_7/kernel:0": [32, 32, 3, 3],
+    "p808.conv2d_7/bias:0": [32],
+    "p808.conv2d_8/kernel:0": [32, 32, 3, 3],
+    "p808.conv2d_8/bias:0": [32],
+    "p808.conv2d_9/kernel:0": [64, 32, 3, 3],
+    "p808.conv2d_9/bias:0": [64],
+    "p808.mos_estimator_small_1/dense_3/MatMul/ReadVariableOp/resource:0": [64, 64],
+    "p808.mos_estimator_small_1/dense_3/BiasAdd/ReadVariableOp/resource:0": [64],
+    "p808.mos_estimator_small_1/dense_4/MatMul/ReadVariableOp/resource:0": [64, 64],
+    "p808.mos_estimator_small_1/dense_4/BiasAdd/ReadVariableOp/resource:0": [64],
+    "p808.mos_estimator_small_1/dense_5/MatMul/ReadVariableOp/resource:0": [64, 1],
+    "p808.mos_estimator_small_1/dense_5/BiasAdd/ReadVariableOp/resource:0": [1],
+    "p835.time2freq/stft-real/kernel:0": [161, 320, 1],
+    "p835.time2freq/stft-imag/kernel:0": [161, 320, 1],
+    "p835.conv2d/kernel:0": [128, 1, 3, 3],
+    "p835.conv2d/bias:0": [128],
+    "p835.conv2d_1/kernel:0": [64, 128, 3, 3],
+    "p835.conv2d_1/bias:0": [64],
+    "p835.conv2d_2/kernel:0": [64, 64, 3, 3],
+    "p835.conv2d_2/bias:0": [64],
+    "p835.conv2d_3/kernel:0": [32, 64, 3, 3],
+    "p835.conv2d_3/bias:0": [32],
+    "p835.conv2d_4/kernel:0": [32, 32, 3, 3],
+    "p835.conv2d_4/bias:0": [32],
+    "p835.conv2d_5/kernel:0": [32, 32, 3, 3],
+    "p835.conv2d_5/bias:0": [32],
+    "p835.conv2d_6/kernel:0": [64, 32, 3, 3],
+    "p835.conv2d_6/bias:0": [64],
+    "p835.mos_estimator_logpow/dense/MatMul/ReadVariableOp/resource:0": [64, 128],
+    "p835.mos_estimator_logpow/dense/BiasAdd/ReadVariableOp/resource:0": [128],
+    "p835.mos_estimator_logpow/dense_1/MatMul/ReadVariableOp/resource:0": [128, 64],
+    "p835.mos_estimator_logpow/dense_1/BiasAdd/ReadVariableOp/resource:0": [64],
+    "p835.mos_estimator_logpow/dense_3/MatMul/ReadVariableOp/resource:0": [64, 3],
+    "p835.mos_estimator_logpow/dense_3/BiasAdd/ReadVariableOp/resource:0": [3],
 }
 
 
-def _initializer_bytes(tensor):
-    """Extract an ONNX initializer's raw little-endian bytes.
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    ONNX initializers store their payload in one of two ways:
 
-    * ``raw_data``: little-endian byte string (the common path since
-      ONNX 1.3+; every F32/F16 initializer in DNSMOS lands here).
-    * per-dtype typed lists (``float_data`` / ``int32_data`` / …): a
-      fallback the ONNX exporter uses when the raw_data field is empty.
-
-    We prefer raw_data (byte-identical to what the safetensors writer
-    below needs) and fall back to numpy conversion only when raw_data
-    is empty.
-    """
-    if tensor.raw_data:
-        return tensor.raw_data
-    # Fallback: DNSMOS as of 2026-08-03 does not exercise this path
-    # (both ONNX files use raw_data end-to-end), but keeping the branch
-    # means a future DNSMOS revision that changes emit style will still
-    # convert rather than silently produce an empty payload.
-    import numpy as np
-
-    dtype = tensor.data_type
-    if dtype == 1:  # FLOAT
-        arr = np.asarray(list(tensor.float_data), dtype=np.float32)
-    elif dtype == 10:  # FLOAT16
-        arr = np.asarray(list(tensor.int32_data), dtype=np.uint16).view(np.float16)
-    elif dtype == 16:  # BFLOAT16
-        # BF16 is packed into int32_data as the raw u16 bit pattern.
-        arr = np.asarray(list(tensor.int32_data), dtype=np.uint32).astype(np.uint16)
-    else:
+def require_hash(path: Path, expected: str) -> None:
+    actual = sha256(path)
+    if actual != expected:
         raise SystemExit(
-            f"{LOG_PREFIX} initializer {tensor.name!r} has no raw_data and dtype "
-            f"{dtype} is not a supported fallback (F32=1 / F16=10 / BF16=16 only)"
+            f"dnsmos_prepare_checkpoint: {path} sha256={actual}, expected {expected} "
+            f"from microsoft/DNS-Challenge@{SOURCE_REVISION}"
         )
-    return arr.tobytes()
 
 
-def _extract_initializers(onnx_path: Path, prefix: str):
-    """Walk one ONNX file's initializer list and return an ordered dict
-    of ``{prefix + name: (dtype_str, shape, bytes)}``.
+def graph_signature(model, label: str, expected_ops: tuple[str, ...]) -> None:
+    opsets = [(entry.domain, entry.version) for entry in model.opset_import]
+    actual_ops = tuple(node.op_type for node in model.graph.node)
+    if model.ir_version != 7 or opsets != [("", 12)] or actual_ops != expected_ops:
+        raise SystemExit(
+            "dnsmos_prepare_checkpoint: "
+            f"{label} graph signature drift: ir={model.ir_version}, "
+            f"opsets={opsets}, ops={actual_ops}"
+        )
 
-    * ``prefix`` — the bundle tag (``"p808."`` / ``"p835."``); every
-      initializer name is prefixed so the Rust binder can route each
-      tensor to the right sub-model without a graph load.
-    * Dtype policy: only F32 / F16 / BF16 are accepted; any other dtype
-      raises SystemExit (FR-EX-08 posture — never a silent skip).
-    """
+
+def extract(path: Path, prefix: str, expected_hash: str, expected_ops: tuple[str, ...]):
     try:
-        import onnx  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover — dev env sanity check
+        import numpy as np
+        import onnx
+        from onnx import numpy_helper
+    except ImportError as error:
         raise SystemExit(
-            f"{LOG_PREFIX} `onnx` package not installed. Run "
-            f"`uv add onnx` in tools/parity/ first."
-        ) from exc
+            "dnsmos_prepare_checkpoint: run with `uv run --project tools/parity python ...`"
+        ) from error
 
-    _log(f"reading {onnx_path}")
-    model = onnx.load(str(onnx_path), load_external_data=False)
-    initializers = list(model.graph.initializer)
-    if not initializers:
-        raise SystemExit(
-            f"{LOG_PREFIX} {onnx_path} carries no initializers — the ONNX file "
-            f"is empty or references external weights (not supported)"
-        )
-
-    # Integer dtypes that are always graph-topology / shape / index
-    # constants in a floating-point network (never trainable weights).
-    # DNSMOS is entirely F32 (documented in the module docstring), so
-    # any INT32/INT64 initializer must be a TF-export reshape target
-    # or similar graph metadata — safe to drop with a warning. Kept
-    # narrow (32/64-bit integers only) so that a hypothetical future
-    # INT8-quantized DNSMOS variant would still loud-fail (FR-EX-08).
-    INTEGER_GRAPH_TOPOLOGY_DTYPES = {6, 7}  # INT32, INT64
-    out = {}
-    seen_names = set()
-    for t in initializers:
-        if t.data_type not in ONNX_DTYPE_TO_ST:
-            if t.data_type in INTEGER_GRAPH_TOPOLOGY_DTYPES:
-                shape_desc = list(t.dims) if t.dims else "scalar"
-                _log(
-                    f"  SKIP integer initializer {t.name!r} in "
-                    f"{onnx_path.name} (dtype={t.data_type}, "
-                    f"shape={shape_desc}, TF-export graph-topology "
-                    f"constant — not a weight)"
-                )
-                continue
+    require_hash(path, expected_hash)
+    model = onnx.load(str(path), load_external_data=False)
+    graph_signature(model, prefix.rstrip("."), expected_ops)
+    tensors: dict[str, tuple[str, list[int], bytes]] = {}
+    for initializer in model.graph.initializer:
+        name = prefix + initializer.name
+        if name not in EXPECTED:
+            continue
+        array = numpy_helper.to_array(initializer)
+        if array.dtype != np.float32:
             raise SystemExit(
-                f"{LOG_PREFIX} initializer {t.name!r} in {onnx_path.name} has "
-                f"dtype {t.data_type} which is not F32 / F16 / BF16 — refusing "
-                f"to silently skip (FR-EX-08)"
+                f"dnsmos_prepare_checkpoint: {name} is {array.dtype}, expected float32"
             )
-        dtype_str = ONNX_DTYPE_TO_ST[t.data_type]
-        shape = list(t.dims)
-        if not shape:
-            # TF-export truediv / constant scalar (empty shape) — safe to
-            # drop as it is an inlined graph constant, not a weight. Only
-            # skip if it's a plain F32/F16/BF16 scalar (single element);
-            # other empty-shape cases remain hard-fail (FR-EX-08).
-            # Observed in DNSMOS P.835 (`sig_bak_ovr.onnx`) as
-            # ``mos_estimator_logpow/truediv/y:0`` — a TF-graph constant
-            # inlined by the ONNX exporter that carries no trainable
-            # weight but persists in the initializer list.
-            if dtype_str in ("F32", "F16", "BF16"):
-                _log(
-                    f"  SKIP scalar constant {t.name!r} in {onnx_path.name} "
-                    f"(empty shape, dtype={dtype_str}, TF-export inlined)"
-                )
-                continue
+        shape = list(array.shape)
+        if shape != EXPECTED[name]:
             raise SystemExit(
-                f"{LOG_PREFIX} initializer {t.name!r} in {onnx_path.name} has "
-                f"an empty shape with dtype {dtype_str} — refusing to emit a "
-                f"scalar weight (FR-EX-08)"
+                f"dnsmos_prepare_checkpoint: {name} shape={shape}, expected={EXPECTED[name]}"
             )
-        data = _initializer_bytes(t)
-        # Sanity: byte count must match the shape × elem-size.
-        elem_size = {"F32": 4, "F16": 2, "BF16": 2}[dtype_str]
-        expected = elem_size
-        for d in shape:
-            expected *= int(d)
-        if len(data) != expected:
-            raise SystemExit(
-                f"{LOG_PREFIX} initializer {t.name!r} in {onnx_path.name}: "
-                f"payload is {len(data)} bytes but shape {shape} × {dtype_str} "
-                f"({elem_size} B/elem) expects {expected} bytes"
-            )
-        prefixed = f"{prefix}{t.name}"
-        if prefixed in seen_names:
-            raise SystemExit(
-                f"{LOG_PREFIX} duplicate initializer name after prefixing: "
-                f"{prefixed!r} — refusing to emit an ambiguous bundle"
-            )
-        seen_names.add(prefixed)
-        out[prefixed] = (dtype_str, shape, data)
-    _log(f"  extracted {len(out)} initializers (prefix={prefix!r})")
-    return out
+        tensors[name] = ("F32", shape, array.tobytes(order="C"))
+    return tensors
 
 
-def _write_safetensors(path: Path, tensors) -> None:
-    """Minimal safetensors writer (stdlib only): 8-byte LE header length
-    + JSON header + contiguous little-endian tensor data.
-
-    Mirrors the writer in ``dfn3_prepare_checkpoint.py`` — kept inline so
-    the prep script has zero non-``onnx`` runtime dependencies (no
-    ``safetensors`` Python package required at execute time).
-    """
-    header = {}
-    blobs = []
+def write_safetensors(path: Path, tensors) -> None:
+    header: dict[str, dict[str, object]] = {}
+    payloads: list[bytes] = []
     offset = 0
-    for name, (dtype_str, shape, data) in tensors.items():
+    for name in sorted(tensors):
+        dtype, shape, payload = tensors[name]
         header[name] = {
-            "dtype": dtype_str,
-            "shape": list(shape),
-            "data_offsets": [offset, offset + len(data)],
+            "dtype": dtype,
+            "shape": shape,
+            "data_offsets": [offset, offset + len(payload)],
         }
-        blobs.append(data)
-        offset += len(data)
-    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    with open(path, "wb") as f:
-        f.write(struct.pack("<Q", len(header_bytes)))
-        f.write(header_bytes)
-        for b in blobs:
-            f.write(b)
+        payloads.append(payload)
+        offset += len(payload)
+    encoded = json.dumps(header, separators=(",", ":"), sort_keys=True).encode()
+    with path.open("wb") as handle:
+        handle.write(struct.pack("<Q", len(encoded)))
+        handle.write(encoded)
+        for payload in payloads:
+            handle.write(payload)
 
 
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def self_test() -> None:
+    assert len(P808_OPS) == 25
+    assert len(P835_OPS) == 48
+    assert len(EXPECTED) == 38
+    assert sum(name.startswith("p808.") for name in EXPECTED) == 16
+    assert sum(name.startswith("p835.") for name in EXPECTED) == 22
+    assert all(len(value) == 64 for value in (P808_SHA256, P835_SHA256))
+    print("dnsmos_prepare_checkpoint: self-test OK")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--p808", type=Path)
+    parser.add_argument("--p835", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--self-test", action="store_true")
+    return parser.parse_args()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Flatten Microsoft DNSMOS's two ONNX checkpoints into a single "
-            "merged safetensors bundle for vokra-convert."
-        ),
-    )
-    parser.add_argument(
-        "--p808",
-        type=Path,
-        default=None,
-        help="Path to model_v8.onnx (P.808 predictor). Optional — "
-        "omitting it produces a P.835-only partial bundle.",
-    )
-    parser.add_argument(
-        "--p835",
-        type=Path,
-        default=None,
-        help="Path to sig_bak_ovr.onnx (P.835 predictor). Optional — "
-        "omitting it produces a P.808-only partial bundle.",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="Output safetensors path (merged bundle).",
-    )
-    args = parser.parse_args()
-
-    if args.p808 is None and args.p835 is None:
-        _log("ERROR: at least one of --p808 / --p835 is required")
-        return 2
-
-    tensors = {}
-    if args.p808 is not None:
-        if not args.p808.exists():
-            _log(f"ERROR: --p808 not found: {args.p808}")
-            return 2
-        tensors.update(_extract_initializers(args.p808, prefix="p808."))
-    if args.p835 is not None:
-        if not args.p835.exists():
-            _log(f"ERROR: --p835 not found: {args.p835}")
-            return 2
-        tensors.update(_extract_initializers(args.p835, prefix="p835."))
-
-    if not tensors:
-        _log("ERROR: no initializers were extracted (empty ONNX inputs?)")
-        return 2
-
-    _log(f"writing {len(tensors)} tensors to {args.output}")
+    args = parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.p808 is None or args.p835 is None or args.output is None:
+        raise SystemExit(
+            "dnsmos_prepare_checkpoint: --p808, --p835, and --output are all required"
+        )
+    tensors = extract(args.p808, "p808.", P808_SHA256, P808_OPS)
+    tensors.update(extract(args.p835, "p835.", P835_SHA256, P835_OPS))
+    if set(tensors) != set(EXPECTED):
+        missing = sorted(set(EXPECTED) - set(tensors))
+        extra = sorted(set(tensors) - set(EXPECTED))
+        raise SystemExit(
+            f"dnsmos_prepare_checkpoint: manifest mismatch missing={missing}, extra={extra}"
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    _write_safetensors(args.output, tensors)
-    sha = _sha256(args.output)
-    _log(f"done: {args.output} sha256={sha}")
-    # Manifest line for CI logs / fixture pipelines (matches the
-    # dfn3_prepare_checkpoint.py format).
-    print(f"{args.output.name} {sha}")
+    write_safetensors(args.output, tensors)
+    output_sha = sha256(args.output)
+    manifest_path = args.manifest or args.output.with_suffix(args.output.suffix + ".manifest.json")
+    manifest = {
+        "source_revision": SOURCE_REVISION,
+        "p808_onnx_sha256": P808_SHA256,
+        "p835_onnx_sha256": P835_SHA256,
+        "tensor_count": len(tensors),
+        "safetensors_sha256": output_sha,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    print(f"{args.output.name} {output_sha}")
     return 0
 
 

@@ -17,7 +17,9 @@
 use alloc::{vec, vec::Vec};
 
 use crate::encoder::EncoderOut;
-use crate::math::{matvec, sigmoid};
+#[cfg(test)]
+use crate::math::ScalarSileroOps;
+use crate::math::{SileroBackendOps, sigmoid};
 use crate::scalar;
 use crate::weights::{HIDDEN, RateWeights};
 
@@ -40,7 +42,18 @@ impl LstmState {
 
 /// Advances the LSTM over every frame of the encoder output, mutating `state`,
 /// and returns the final hidden vector `[128]`.
+#[cfg(test)]
 pub(crate) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmState) -> Vec<f32> {
+    lstm_forward_with_ops(w, enc, state, &mut ScalarSileroOps)
+        .expect("the scalar Silero backend is infallible")
+}
+
+pub(crate) fn lstm_forward_with_ops<O: SileroBackendOps>(
+    w: &RateWeights,
+    enc: &EncoderOut,
+    state: &mut LstmState,
+    ops: &mut O,
+) -> vokra_core::Result<Vec<f32>> {
     let t_len = enc.frames;
     let mut x = vec![0.0f32; enc.channels];
     for t in 0..t_len {
@@ -48,8 +61,8 @@ pub(crate) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmSt
         for (c, xc) in x.iter_mut().enumerate() {
             *xc = enc.data[c * t_len + t];
         }
-        let gih = matvec(&w.lstm_wih, 4 * HIDDEN, HIDDEN, &x);
-        let ghh = matvec(&w.lstm_whh, 4 * HIDDEN, HIDDEN, &state.h);
+        let gih = ops.gemv(&x, &w.lstm_wih, None, 4 * HIDDEN, HIDDEN)?;
+        let ghh = ops.gemv(&state.h, &w.lstm_whh, None, 4 * HIDDEN, HIDDEN)?;
         for j in 0..HIDDEN {
             // ifgo gate slices.
             let i = sigmoid(gih[j] + w.lstm_bih[j] + ghh[j] + w.lstm_bhh[j]);
@@ -73,22 +86,33 @@ pub(crate) fn lstm_forward(w: &RateWeights, enc: &EncoderOut, state: &mut LstmSt
             state.h[j] = o * scalar::tanh(c_new);
         }
     }
-    state.h.clone()
+    Ok(state.h.clone())
 }
 
 /// Decoder head: `ReLU -> Conv1d(128, 1, k=1) -> Sigmoid`, producing the frame's
 /// speech probability. (The head runs on the single collapsed time frame, so
 /// the ONNX `ReduceMean` over time is a no-op here.)
+#[cfg(test)]
 pub(crate) fn head_probability(w: &RateWeights, hidden: &[f32]) -> f32 {
+    head_probability_with_ops(w, hidden, &mut ScalarSileroOps)
+        .expect("the scalar Silero backend is infallible")
+}
+
+pub(crate) fn head_probability_with_ops<O: SileroBackendOps>(
+    w: &RateWeights,
+    hidden: &[f32],
+    ops: &mut O,
+) -> vokra_core::Result<f32> {
     debug_assert_eq!(hidden.len(), HIDDEN);
     debug_assert_eq!(w.head.c_out, 1);
     debug_assert_eq!(w.head.c_in, HIDDEN);
     // k = 1, so the head weight [1, 128, 1] is a plain [128] dot product.
-    let mut acc = w.head.bias[0];
-    for (&wc, &hc) in w.head.weight.iter().zip(hidden) {
-        acc += wc * hc.max(0.0);
-    }
-    sigmoid(acc)
+    let relu = hidden
+        .iter()
+        .map(|value| value.max(0.0))
+        .collect::<Vec<_>>();
+    let output = ops.gemv(&relu, &w.head.weight, Some(&w.head.bias), 1, HIDDEN)?;
+    Ok(sigmoid(output[0]))
 }
 
 #[cfg(test)]

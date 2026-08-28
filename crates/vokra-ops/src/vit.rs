@@ -462,6 +462,159 @@ pub struct ViTWeights {
 }
 
 // ---------------------------------------------------------------------------
+// Backend seam
+// ---------------------------------------------------------------------------
+
+/// Backend-dispatched learned operations used by [`ViTEncoder`].
+///
+/// The public trait lives in `vokra-ops` so higher layers can route the same
+/// validated ViT topology through CPU or GPU kernels without adding a reverse
+/// dependency from `vokra-ops` onto a model crate. Tensor gathering,
+/// transposes, positional addition and residual addition remain host-side
+/// layout glue; every learned reduction is represented here.
+pub trait ViTBackendOps {
+    /// PyTorch-style linear: `weight` is row-major `[out_dim, in_dim]`.
+    #[allow(clippy::too_many_arguments)]
+    fn linear_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        rows: usize,
+        in_dim: usize,
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Row-major matrix multiplication: `[m, k] * [k, n] -> [m, n]`.
+    #[allow(clippy::too_many_arguments)]
+    fn matmul_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        left: &[f32],
+        right: &[f32],
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Row-wise softmax over a `[rows, cols]` matrix.
+    fn softmax_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()>;
+
+    /// Affine LayerNorm over the innermost dimension.
+    #[allow(clippy::too_many_arguments)]
+    fn layer_norm_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()>;
+
+    /// Element-wise GELU in the explicitly selected formulation.
+    fn gelu_f32(&self, kind: GeluKind, input: &[f32], output: &mut [f32]) -> Result<()>;
+}
+
+/// Scalar reference backend used by the original CPU entry points.
+#[derive(Debug, Clone, Copy)]
+struct ScalarViTBackend;
+
+impl ViTBackendOps for ScalarViTBackend {
+    fn linear_f32(
+        &self,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        rows: usize,
+        in_dim: usize,
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        for row in 0..rows {
+            linear_row(
+                &input[row * in_dim..(row + 1) * in_dim],
+                weight,
+                bias,
+                out_dim,
+                in_dim,
+                &mut output[row * out_dim..(row + 1) * out_dim],
+            );
+        }
+        Ok(())
+    }
+
+    fn matmul_f32(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        left: &[f32],
+        right: &[f32],
+        output: &mut [f32],
+    ) -> Result<()> {
+        for row in 0..m {
+            for col in 0..n {
+                let mut sum = 0.0f32;
+                for inner in 0..k {
+                    sum += left[row * k + inner] * right[inner * n + col];
+                }
+                output[row * n + col] = sum;
+            }
+        }
+        Ok(())
+    }
+
+    fn softmax_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        for row in 0..rows {
+            softmax_row(
+                &input[row * cols..(row + 1) * cols],
+                &mut output[row * cols..(row + 1) * cols],
+            );
+        }
+        Ok(())
+    }
+
+    fn layer_norm_f32(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        output.copy_from_slice(input);
+        for row in output.chunks_mut(cols).take(rows) {
+            layer_norm_row(row, gamma, beta, eps);
+        }
+        Ok(())
+    }
+
+    fn gelu_f32(&self, kind: GeluKind, input: &[f32], output: &mut [f32]) -> Result<()> {
+        for (slot, &value) in output.iter_mut().zip(input) {
+            *slot = gelu(value, kind);
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Encoder
 // ---------------------------------------------------------------------------
 
@@ -607,12 +760,28 @@ impl ViTEncoder {
         n_mels: usize,
         n_frames: usize,
     ) -> Result<(Vec<f32>, PatchGrid)> {
-        let (patch_tokens, grid) = vit_patch_embed(
+        self.forward_with_backend(mel, n_mels, n_frames, &ScalarViTBackend)
+    }
+
+    /// Backend-selectable twin of [`Self::forward`].
+    ///
+    /// All learned projections, attention matrix products, softmaxes,
+    /// normalizations and GELUs are delegated to `backend`. Host work is
+    /// limited to shape/layout transforms, positional addition and residuals.
+    pub fn forward_with_backend(
+        &self,
+        mel: &[f32],
+        n_mels: usize,
+        n_frames: usize,
+        backend: &dyn ViTBackendOps,
+    ) -> Result<(Vec<f32>, PatchGrid)> {
+        let (patch_tokens, grid) = vit_patch_embed_with_backend(
             mel,
             n_mels,
             n_frames,
             &self.attrs,
             &self.weights.patch_embed,
+            backend,
         )?;
         let d = self.attrs.embed_dim;
         let n_prepended = self.attrs.n_prepended_tokens;
@@ -631,7 +800,7 @@ impl ViTEncoder {
             self.attrs.pos_embed_policy,
         )?;
 
-        let hidden = self.encode_tokens(&tokens, n_tokens)?;
+        let hidden = self.encode_tokens_with_backend(&tokens, n_tokens, backend)?;
         Ok((hidden, grid))
     }
 
@@ -651,6 +820,16 @@ impl ViTEncoder {
     /// `tokens.len() != n_tokens · embed_dim`, or when any input value is
     /// non-finite.
     pub fn encode_tokens(&self, tokens: &[f32], n_tokens: usize) -> Result<Vec<f32>> {
+        self.encode_tokens_with_backend(tokens, n_tokens, &ScalarViTBackend)
+    }
+
+    /// Backend-selectable twin of [`Self::encode_tokens`].
+    pub fn encode_tokens_with_backend(
+        &self,
+        tokens: &[f32],
+        n_tokens: usize,
+        backend: &dyn ViTBackendOps,
+    ) -> Result<Vec<f32>> {
         let d = self.attrs.embed_dim;
         if n_tokens == 0 {
             return Err(VokraError::InvalidArgument(
@@ -662,17 +841,19 @@ impl ViTEncoder {
 
         let mut hidden = tokens.to_vec();
         for block in &self.weights.blocks {
-            hidden = self.block_forward(&hidden, n_tokens, block);
+            hidden = self.block_forward(&hidden, n_tokens, block, backend)?;
         }
-        for row in hidden.chunks_mut(d) {
-            layer_norm_row(
-                row,
-                &self.weights.final_ln_gamma,
-                &self.weights.final_ln_beta,
-                self.attrs.layer_norm_eps,
-            );
-        }
-        Ok(hidden)
+        let mut output = vec![0.0f32; hidden.len()];
+        backend.layer_norm_f32(
+            &hidden,
+            &mut output,
+            n_tokens,
+            d,
+            &self.weights.final_ln_gamma,
+            &self.weights.final_ln_beta,
+            self.attrs.layer_norm_eps,
+        )?;
+        Ok(output)
     }
 
     /// Add the positional table to an assembled token sequence in place,
@@ -712,31 +893,49 @@ impl ViTEncoder {
     // -----------------------------------------------------------------------
 
     /// One pre-norm block: `h = x + MHSA(LN1(x))`, `y = h + MLP(LN2(h))`.
-    fn block_forward(&self, x: &[f32], n_tokens: usize, w: &ViTBlockWeights) -> Vec<f32> {
+    fn block_forward(
+        &self,
+        x: &[f32],
+        n_tokens: usize,
+        w: &ViTBlockWeights,
+        backend: &dyn ViTBackendOps,
+    ) -> Result<Vec<f32>> {
         let d = self.attrs.embed_dim;
         let eps = self.attrs.layer_norm_eps;
 
         let mut residual = x.to_vec();
 
-        let mut normed = residual.clone();
-        for row in normed.chunks_mut(d) {
-            layer_norm_row(row, &w.ln1_gamma, &w.ln1_beta, eps);
-        }
-        let attn_out = self.attention(&normed, n_tokens, &w.attn);
+        let mut normed = vec![0.0f32; residual.len()];
+        backend.layer_norm_f32(
+            &residual,
+            &mut normed,
+            n_tokens,
+            d,
+            &w.ln1_gamma,
+            &w.ln1_beta,
+            eps,
+        )?;
+        let attn_out = self.attention(&normed, n_tokens, &w.attn, backend)?;
         for (slot, delta) in residual.iter_mut().zip(attn_out.iter()) {
             *slot += delta;
         }
 
-        let mut normed2 = residual.clone();
-        for row in normed2.chunks_mut(d) {
-            layer_norm_row(row, &w.ln2_gamma, &w.ln2_beta, eps);
-        }
-        let mlp_out = self.mlp_inner(&normed2, n_tokens, &w.mlp);
+        let mut normed2 = vec![0.0f32; residual.len()];
+        backend.layer_norm_f32(
+            &residual,
+            &mut normed2,
+            n_tokens,
+            d,
+            &w.ln2_gamma,
+            &w.ln2_beta,
+            eps,
+        )?;
+        let mlp_out = self.mlp_inner(&normed2, n_tokens, &w.mlp, backend)?;
         for (slot, delta) in residual.iter_mut().zip(mlp_out.iter()) {
             *slot += delta;
         }
 
-        residual
+        Ok(residual)
     }
 
     /// Standard scaled-dot-product multi-head self-attention, no mask.
@@ -744,7 +943,13 @@ impl ViTEncoder {
     /// A ViT encoder over a patch grid is fully bidirectional — there is no
     /// causal structure to mask, unlike the decoder-side attention in
     /// [`crate::conformer`]'s consumers.
-    fn attention(&self, x: &[f32], n_tokens: usize, w: &ViTAttnWeights) -> Vec<f32> {
+    fn attention(
+        &self,
+        x: &[f32],
+        n_tokens: usize,
+        w: &ViTAttnWeights,
+        backend: &dyn ViTBackendOps,
+    ) -> Result<Vec<f32>> {
         let d = self.attrs.embed_dim;
         let n_heads = self.attrs.n_heads;
         let head_dim = self.attrs.head_dim();
@@ -753,103 +958,75 @@ impl ViTEncoder {
         let mut q = vec![0.0f32; n_tokens * d];
         let mut k = vec![0.0f32; n_tokens * d];
         let mut v = vec![0.0f32; n_tokens * d];
-        for t in 0..n_tokens {
-            let src = &x[t * d..(t + 1) * d];
-            linear_row(
-                src,
-                &w.wq,
-                w.bq.as_deref(),
-                d,
-                d,
-                &mut q[t * d..(t + 1) * d],
-            );
-            linear_row(
-                src,
-                &w.wk,
-                w.bk.as_deref(),
-                d,
-                d,
-                &mut k[t * d..(t + 1) * d],
-            );
-            linear_row(
-                src,
-                &w.wv,
-                w.bv.as_deref(),
-                d,
-                d,
-                &mut v[t * d..(t + 1) * d],
-            );
-        }
+        backend.linear_f32(x, &w.wq, w.bq.as_deref(), n_tokens, d, d, &mut q)?;
+        backend.linear_f32(x, &w.wk, w.bk.as_deref(), n_tokens, d, d, &mut k)?;
+        backend.linear_f32(x, &w.wv, w.bv.as_deref(), n_tokens, d, d, &mut v)?;
 
         let mut context = vec![0.0f32; n_tokens * d];
-        let mut scores = vec![0.0f32; n_tokens];
-        let mut probs = vec![0.0f32; n_tokens];
         for h in 0..n_heads {
             let off = h * head_dim;
-            for i in 0..n_tokens {
-                let q_row = &q[i * d + off..i * d + off + head_dim];
-                for (j, slot) in scores.iter_mut().enumerate() {
-                    let k_row = &k[j * d + off..j * d + off + head_dim];
-                    let dot: f32 = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum();
-                    *slot = dot * scale;
+            let mut q_head = vec![0.0f32; n_tokens * head_dim];
+            let mut k_transposed = vec![0.0f32; head_dim * n_tokens];
+            let mut v_head = vec![0.0f32; n_tokens * head_dim];
+            for token in 0..n_tokens {
+                for inner in 0..head_dim {
+                    q_head[token * head_dim + inner] = q[token * d + off + inner];
+                    k_transposed[inner * n_tokens + token] = k[token * d + off + inner];
+                    v_head[token * head_dim + inner] = v[token * d + off + inner];
                 }
-                softmax_row(&scores, &mut probs);
-                let ctx_row = &mut context[i * d + off..i * d + off + head_dim];
-                for (j, &p) in probs.iter().enumerate() {
-                    if p == 0.0 {
-                        continue;
-                    }
-                    let v_row = &v[j * d + off..j * d + off + head_dim];
-                    for (slot, &value) in ctx_row.iter_mut().zip(v_row.iter()) {
-                        *slot += p * value;
-                    }
-                }
+            }
+            let mut scores = vec![0.0f32; n_tokens * n_tokens];
+            backend.matmul_f32(
+                n_tokens,
+                n_tokens,
+                head_dim,
+                &q_head,
+                &k_transposed,
+                &mut scores,
+            )?;
+            for score in &mut scores {
+                *score *= scale;
+            }
+            let mut probs = vec![0.0f32; scores.len()];
+            backend.softmax_f32(&scores, &mut probs, n_tokens, n_tokens)?;
+            let mut head_context = vec![0.0f32; n_tokens * head_dim];
+            backend.matmul_f32(
+                n_tokens,
+                head_dim,
+                n_tokens,
+                &probs,
+                &v_head,
+                &mut head_context,
+            )?;
+            for token in 0..n_tokens {
+                context[token * d + off..token * d + off + head_dim]
+                    .copy_from_slice(&head_context[token * head_dim..(token + 1) * head_dim]);
             }
         }
 
         let mut out = vec![0.0f32; n_tokens * d];
-        for t in 0..n_tokens {
-            linear_row(
-                &context[t * d..(t + 1) * d],
-                &w.wo,
-                w.bo.as_deref(),
-                d,
-                d,
-                &mut out[t * d..(t + 1) * d],
-            );
-        }
-        out
+        backend.linear_f32(&context, &w.wo, w.bo.as_deref(), n_tokens, d, d, &mut out)?;
+        Ok(out)
     }
 
     /// `Linear(D → H) → GELU → Linear(H → D)`, applied per token.
-    fn mlp_inner(&self, x: &[f32], n_tokens: usize, w: &ViTMlpWeights) -> Vec<f32> {
+    fn mlp_inner(
+        &self,
+        x: &[f32],
+        n_tokens: usize,
+        w: &ViTMlpWeights,
+        backend: &dyn ViTBackendOps,
+    ) -> Result<Vec<f32>> {
         let d = self.attrs.embed_dim;
         let h = self.attrs.mlp_dim();
         let kind = self.attrs.gelu;
         let mut out = vec![0.0f32; n_tokens * d];
-        let mut hidden = vec![0.0f32; h];
-        for t in 0..n_tokens {
-            linear_row(
-                &x[t * d..(t + 1) * d],
-                &w.w1,
-                w.b1.as_deref(),
-                h,
-                d,
-                &mut hidden,
-            );
-            for value in hidden.iter_mut() {
-                *value = gelu(*value, kind);
-            }
-            linear_row(
-                &hidden,
-                &w.w2,
-                w.b2.as_deref(),
-                d,
-                h,
-                &mut out[t * d..(t + 1) * d],
-            );
-        }
-        out
+        let mut hidden = vec![0.0f32; n_tokens * h];
+        backend.linear_f32(x, &w.w1, w.b1.as_deref(), n_tokens, d, h, &mut hidden)?;
+        let mut activated = vec![0.0f32; hidden.len()];
+        backend.gelu_f32(kind, &hidden, &mut activated)?;
+        backend.linear_f32(&activated, &w.w2, w.b2.as_deref(), n_tokens, h, d, &mut out)?;
+        Ok(out)
     }
 }
 
@@ -877,6 +1054,17 @@ pub fn vit_patch_embed(
     attrs: &ViTAttrs,
     weights: &PatchEmbedWeights,
 ) -> Result<(Vec<f32>, PatchGrid)> {
+    vit_patch_embed_with_backend(mel, n_mels, n_frames, attrs, weights, &ScalarViTBackend)
+}
+
+fn vit_patch_embed_with_backend(
+    mel: &[f32],
+    n_mels: usize,
+    n_frames: usize,
+    attrs: &ViTAttrs,
+    weights: &PatchEmbedWeights,
+    backend: &dyn ViTBackendOps,
+) -> Result<(Vec<f32>, PatchGrid)> {
     let grid = patch_grid(n_mels, n_frames, attrs)?;
     check_len(mel, n_mels * n_frames, "vit_patch_embed: mel")?;
     require_finite(mel, "vit_patch_embed: mel")?;
@@ -888,27 +1076,29 @@ pub fn vit_patch_embed(
         check_len(bias, d, "vit_patch_embed: proj_b")?;
     }
 
-    let mut tokens = vec![0.0f32; grid.n_patches * d];
-    let mut patch = vec![0.0f32; patch_len];
+    let mut patches = vec![0.0f32; grid.n_patches * patch_len];
     for gy in 0..grid.grid_h {
         let row0 = gy * attrs.stride_h;
         for gx in 0..grid.grid_w {
             let col0 = gx * attrs.stride_w;
+            let token = gy * grid.grid_w + gx;
+            let patch = &mut patches[token * patch_len..(token + 1) * patch_len];
             for (pi, chunk) in patch.chunks_mut(attrs.patch_w).enumerate() {
                 let src = (row0 + pi) * n_frames + col0;
                 chunk.copy_from_slice(&mel[src..src + attrs.patch_w]);
             }
-            let token = gy * grid.grid_w + gx;
-            linear_row(
-                &patch,
-                &weights.proj_w,
-                weights.proj_b.as_deref(),
-                d,
-                patch_len,
-                &mut tokens[token * d..(token + 1) * d],
-            );
         }
     }
+    let mut tokens = vec![0.0f32; grid.n_patches * d];
+    backend.linear_f32(
+        &patches,
+        &weights.proj_w,
+        weights.proj_b.as_deref(),
+        grid.n_patches,
+        patch_len,
+        d,
+        &mut tokens,
+    )?;
     Ok((tokens, grid))
 }
 

@@ -18,14 +18,15 @@
 //! re-breaking the NFR-DS-02 zero-dep posture). Output: a GGUF
 //! carrying every float tensor verbatim under its upstream
 //! safetensors name, plus the `vokra.provenance.*` / `vokra.model.*`
-//! / `vokra.neucodec.variant` metadata chunks the future native
-//! Neucodec loader will read.
+//! / `vokra.neucodec.variant` metadata chunks the native
+//! `vokra_models::neucodec::NeuCodec` loader reads.
 //!
 //! # Variant identity
 //!
 //! Both upstream releases share the [`ARCH`] tag `neucodec` — the
-//! topology is identical byte-for-byte, only the encoder-side
-//! parameter counts differ. The [`NeucodecVariant`] discriminator
+//! decoder topology is identical, while the decoder parameter values and
+//! encoder-side parameter counts may differ. The
+//! [`NeucodecVariant`] discriminator
 //! tags the emitted GGUF under [`KEY_NEUCODEC_VARIANT`]
 //! (`"base"` / `"distill"`) so the runtime + model-card generator can
 //! pick the right upstream-anchored provenance without parsing the
@@ -62,24 +63,24 @@
 //!
 //! GGUF tensor names are the **upstream safetensors names verbatim**
 //! (the CSM / Kokoro / CosyVoice2 / Chatterbox / Qwen3-TTS / VoxCPM /
-//! VibeVoice contract). Real-weight binding is a follow-up wave gated
-//! on the upstream tensor-name manifest fetch; this converter passes
-//! every F32 / F16 / BF16 tensor through unchanged so a future
-//! `NeucodecWeights::from_gguf` can walk the same names.
+//! VibeVoice contract). The native runtime accepts this pass-through layout
+//! for Distill. The first public base GGUF predates it and uses a normalized
+//! decoder namespace; both complete public manifests are pinned separately.
 //!
 //! # Real-weight parity
 //!
-//! Real-weight parity against the upstream Python pipeline is deferred
-//! to owner (`docs/license-audit.md` §3.1 sign-off) — this converter
-//! provides the byte-parallel GGUF surface only.
+//! Real-weight token-to-waveform parity is pinned for both public variants by
+//! `tools/parity/neucodec/dump_reference.py`, which restores the GGUF weights
+//! into the official `CodecDecoderVocos` module. Waveform-to-code encoding is
+//! still explicitly unsupported by the native runtime.
 //!
 //! # No ONNX (permanent)
 //!
 //! Neucodec is distributed as safetensors (base) or torch pickle
 //! (distill) + a Python pipeline; this converter **never** touches
-//! ONNX (FR-LD-05); the pipeline is re-implemented natively in a
-//! future `crates/vokra-models/src/neucodec/` module (whisper.cpp 型
-//! self re-implementation, CLAUDE.md 設計判断 4).
+//! ONNX (FR-LD-05); token-to-waveform decode is re-implemented natively in
+//! `crates/vokra-models/src/neucodec/` (whisper.cpp 型 self
+//! re-implementation, project design decision 4).
 //!
 //! # Wiring status
 //!

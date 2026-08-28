@@ -14,6 +14,89 @@
 use alloc::{vec, vec::Vec};
 
 use crate::scalar;
+use vokra_core::Result;
+
+/// Backend seam for every learned primitive in the Silero VAD subgraph.
+///
+/// The scalar adapter keeps the no_std/Cortex-M forward bit-identical. Host
+/// runtimes can inject device Conv1D and GEMV kernels without exposing the
+/// model's recurrent state or replacing the learned pseudo-STFT with a DSP
+/// FFT. Reflection padding, magnitude, activations and state updates remain
+/// model glue.
+pub trait SileroBackendOps {
+    /// Applies a channel-major Conv1D. `weight` is the checkpoint's standard
+    /// `[c_out, c_in, kernel]` layout; `weight_t` is the scalar hot-path copy.
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d(
+        &mut self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        weight_t: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>>;
+
+    /// Applies `weight @ input + bias` with row-major `[output_dim,input_dim]`
+    /// checkpoint weights.
+    fn gemv(
+        &mut self,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+        input_dim: usize,
+    ) -> Result<Vec<f32>>;
+}
+
+pub(crate) struct ScalarSileroOps;
+
+impl SileroBackendOps for ScalarSileroOps {
+    #[allow(clippy::too_many_arguments)]
+    fn conv1d(
+        &mut self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        _weight: &[f32],
+        weight_t: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+    ) -> Result<Vec<f32>> {
+        Ok(conv1d_wt(
+            input, in_ch, in_len, weight_t, bias, out_ch, kernel, stride, padding,
+        ))
+    }
+
+    fn gemv(
+        &mut self,
+        input: &[f32],
+        weight: &[f32],
+        bias: Option<&[f32]>,
+        output_dim: usize,
+        input_dim: usize,
+    ) -> Result<Vec<f32>> {
+        debug_assert_eq!(weight.len(), output_dim * input_dim);
+        debug_assert_eq!(input.len(), input_dim);
+        debug_assert!(bias.is_none_or(|values| values.len() == output_dim));
+        let mut output = vec![0.0f32; output_dim];
+        for row in 0..output_dim {
+            let mut acc = bias.map_or(0.0, |values| values[row]);
+            for column in 0..input_dim {
+                acc += weight[row * input_dim + column] * input[column];
+            }
+            output[row] = acc;
+        }
+        Ok(output)
+    }
+}
 
 /// Reflection-pads `x` on the **right** by `n` samples (NumPy `mode="reflect"`:
 /// the edge sample is not duplicated).
@@ -155,6 +238,7 @@ pub(crate) fn conv1d_wt(
 }
 
 /// Matrix-vector product `y = w @ x` with `w` stored `[m, n]` row-major.
+#[cfg(test)]
 pub(crate) fn matvec(w: &[f32], m: usize, n: usize, x: &[f32]) -> Vec<f32> {
     debug_assert_eq!(w.len(), m * n);
     debug_assert_eq!(x.len(), n);

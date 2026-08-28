@@ -68,9 +68,12 @@ audit_path, manifest_path = sys.argv[1], sys.argv[2]
 # grep would wrongly pull those 4 rows in (they are duplicates of §3 rows).
 def strip_md_name(cell):
     c = cell.strip()
-    if c.startswith("**") and c.endswith("**") and len(c) >= 4:
-        c = c[2:-2].strip()
-    return c
+    # Audit rows may bold only the human name and leave a repository suffix
+    # outside the closing marker, for example `**AST** (`org/repo`)`. Remove
+    # Markdown emphasis wherever it occurs instead of requiring it to wrap the
+    # entire cell; `audit_name` is the plain-text join key documented by the
+    # manifest schema.
+    return c.replace("**", "").strip()
 
 audit_models = []  # list of (name, marker)
 for raw in open(audit_path, encoding="utf-8"):
@@ -197,6 +200,7 @@ self_test() {
 |---|---|---|---|---|---|
 | **Silero VAD v5** | MIT | MIT | ○ | ★ 公式 zoo | note |
 | **Whisper base/small/medium/large-v3/turbo** | MIT | MIT | ○ | ★ 公式 zoo | note |
+| **Audio Spectrogram Transformer / AudioSet** (`MIT/ast-finetuned-audioset-10-10-0.4593`) | BSD | BSD | ○ | ★ 公式 zoo | bold name plus unbold repository suffix |
 | **X-Codec 2 (Llasa)** | MIT | ⚠ | ⚠ | **⚠ 保留**（bold-wrapped marker） | held |
 | **DAC 24khz (Descript)** | MIT | 2026-07-15 | ___ | ☐ Commercial | mentions ★ 公式 zoo in notes only |
 MD
@@ -205,6 +209,7 @@ MD
     # crates/vokra-eval/src/manifest.rs, splits records on blank lines).
     _silero() { printf 'name = silero-vad-v5\naudit_name = Silero VAD v5\nlicense = %s\n' "${1:-MIT}"; }
     _whisper() { printf 'name = whisper-%s\naudit_name = Whisper base/small/medium/large-v3/turbo\nlicense = MIT\n' "$1"; }
+    _ast() { printf 'name = ast\naudit_name = Audio Spectrogram Transformer / AudioSet (`MIT/ast-finetuned-audioset-10-10-0.4593`)\nlicense = BSD-3-Clause\nexcluded_reason = classification\n'; }
     _xcodec2() { printf 'name = xcodec2\naudit_name = X-Codec 2 (Llasa)\nlicense = pending\nexcluded_reason = held\n'; }
     _phantom() { printf 'name = phantom\naudit_name = Not A Real Audit Row\nlicense = MIT\nexcluded_reason = whatever\n'; }
     # build_manifest <emitter...> — writes records blank-separated to manifest.txt
@@ -219,9 +224,9 @@ MD
     }
     passes() { run_check "$tmp/audit.md" "$tmp/manifest.txt" >/dev/null 2>&1; }
 
-    # Fixture 1: complete manifest (Silero + Whisper x5 + xcodec2 excluded) -> PASS.
+    # Fixture 1: complete manifest (including a bold-name/unbold-suffix join) -> PASS.
     build_manifest '_silero' '_whisper base' '_whisper small' '_whisper medium' \
-        '_whisper large-v3' '_whisper turbo' '_xcodec2'
+        '_whisper large-v3' '_whisper turbo' '_ast' '_xcodec2'
     if passes; then
         echo "self-test PASS: complete manifest passes (bold ⚠ marker recognised)"
     else
@@ -230,7 +235,7 @@ MD
 
     # Fixture 2: drop Silero -> completeness (audit->manifest) FAIL.
     build_manifest '_whisper base' '_whisper small' '_whisper medium' \
-        '_whisper large-v3' '_whisper turbo' '_xcodec2'
+        '_whisper large-v3' '_whisper turbo' '_ast' '_xcodec2'
     if passes; then
         echo "self-test FAIL: dropping Silero should fail completeness" >&2; status=1
     else
@@ -239,7 +244,7 @@ MD
 
     # Fixture 3: Whisper only 4 sizes -> bundle-expansion count FAIL.
     build_manifest '_silero' '_whisper base' '_whisper small' '_whisper medium' \
-        '_whisper large-v3' '_xcodec2'
+        '_whisper large-v3' '_ast' '_xcodec2'
     if passes; then
         echo "self-test FAIL: 4-size Whisper should fail the bundle count" >&2; status=1
     else
@@ -248,7 +253,7 @@ MD
 
     # Fixture 4: a phantom audit_name -> no-orphan (manifest->audit) FAIL.
     build_manifest '_silero' '_whisper base' '_whisper small' '_whisper medium' \
-        '_whisper large-v3' '_whisper turbo' '_xcodec2' '_phantom'
+        '_whisper large-v3' '_whisper turbo' '_ast' '_xcodec2' '_phantom'
     if passes; then
         echo "self-test FAIL: a phantom audit_name should fail no-orphan" >&2; status=1
     else
@@ -257,7 +262,7 @@ MD
 
     # Fixture 5: an NC weight -> no-NC license leg FAIL.
     build_manifest '_silero CC-BY-NC-4.0' '_whisper base' '_whisper small' '_whisper medium' \
-        '_whisper large-v3' '_whisper turbo' '_xcodec2'
+        '_whisper large-v3' '_whisper turbo' '_ast' '_xcodec2'
     if passes; then
         echo "self-test FAIL: a CC-BY-NC weight should fail the license leg" >&2; status=1
     else

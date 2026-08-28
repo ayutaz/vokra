@@ -1,0 +1,14 @@
+[project]
+name = "vokra-mossformer2-ss-16k-parity"
+version = "0.1.0"
+description = "Pinned ClearerVoice-Studio MossFormer2 reference environment; offline only"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "einops>=0.8.0",
+    "huggingface-hub>=1.24.0",
+    "numpy>=1.26",
+    "rotary-embedding-torch==0.8.3",
+    "safetensors>=0.8.0",
+    "torch>=2.0.1",
+    "torchinfo==1.8.0",
+]

@@ -122,12 +122,18 @@ jobs:
       # 2026-08-14 (C ABI backend selector): vokra-capi's GPU arms only compile
       # when vokra-capi itself carries the feature, so without this leg every
       # CI configuration short-circuits on `ensure_backend_available` and the
-      # three `reject_cpu_only_backend` guards in `inject_engine` are dead code
+      # `reject_cpu_only_backend` guards in `inject_engine` are dead code
       # — the review that landed this surface deleted one and no CI job
-      # noticed. The committed Silero fixture makes the refusal path (available
-      # GPU + CPU-only arch => UNSUPPORTED_OP) run here for real; the real-GGUF
-      # legs stay in nightly-full-parity.yml. vokra-capi has no coreml / qnn
-      # feature, so this is restricted to the GPU arms.
+      # noticed. The real-GGUF legs stay in nightly-full-parity.yml. vokra-capi
+      # has no coreml / qnn feature, so this is restricted to the GPU arms.
+      #
+      # 2026-08-27: Silero VAD became backend-honoring, so the committed
+      # fixture now drives the *accept* side here (available GPU + a
+      # backend-parameterised arch => the forward really runs on it) rather
+      # than the refusal side. The arches that are still CPU-only (Mimi,
+      # NanoCodec) have no committed GGUF, so their refusal rests on
+      # `session::tests::reject_cpu_only_backend_passes_cpu_and_refuses_gpus`
+      # alone; a committed CPU-only fixture would restore the end-to-end leg.
       # The backend-reached-the-engine test needs a GPU feature AND a real
       # model at the same time: `.with_backend(backend)` can only be observed
       # on a backend that is not the default, and `build_session` only reaches
