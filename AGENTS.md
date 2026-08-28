@@ -4,6 +4,31 @@ This repository is maintained with Codex. Treat this file as the Codex-facing
 project guide. The older local `CLAUDE.md` is supplementary historical context;
 do not depend on Claude Code settings or hook behavior when working here.
 
+## Agent model and delegation policy
+
+- The primary/root agent is the manager and must use `gpt-5.6-sol`. It owns
+  requirements, investigation, planning, task decomposition, risk decisions,
+  review, verification strategy, and the final user handoff.
+- Any task that creates or changes implementation artifacts must be delegated
+  by the Sol manager to the project `luna_implementer` agent, or to a spawned
+  sub-agent explicitly using `gpt-5.6-luna` when the named agent is not exposed
+  by the current client. Implementation artifacts include Rust and Python
+  source, tests, shell scripts, build files, workflows, and product-behavior
+  configuration. The Sol manager must not directly author those changes.
+- The Luna implementer owns the bounded code edits and focused verification
+  delegated to it. It must follow this file and every applicable project skill,
+  preserve unrelated worktree changes, and report changed files, test evidence,
+  unresolved risks, and any blocked work to the Sol manager.
+- The Sol manager must inspect Luna's diff and verification evidence. Corrections
+  to implementation must be sent back to Luna; Sol accepts and hands off the
+  work only after completing its own review.
+- Sol may directly perform read-only investigation and edit management-only
+  documentation, handoffs, plans, and Codex agent configuration. If Luna is
+  unavailable, Sol must stop and report the blocker instead of silently taking
+  over implementation.
+- Multiple Luna agents may be used only for independent, non-overlapping scopes.
+  Sol remains responsible for coordination and the integrated result.
+
 ## Project invariants
 
 - Vokra is a Rust, audio-focused inference runtime and offline model converter.
