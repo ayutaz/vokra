@@ -7,6 +7,10 @@ dependencies = [
     "numpy==1.26.4",
     "parler-tts @ git+https://github.com/huggingface/parler-tts.git@d108732cd57788ec86bc857d99a6cabd66663d68",
     "torch==2.13.0",
+    # parler-tts pulls torchaudio transitively. Without an explicit pin and
+    # source it resolves from PyPI while torch comes from the pytorch-cpu
+    # index, and the two builds cannot load each other's extension module.
+    "torchaudio==2.11.0",
     "transformers==4.46.1",
 ]
 
@@ -22,6 +26,7 @@ environments = [
 
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
+torchaudio = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

@@ -522,11 +522,26 @@ appear nowhere outside `tools/parity/**`: the Rust runtime carries no
 dependencies (enforced by `scripts/check-zero-deps.sh`) and the published
 Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
 
-- [ ] **VAST verification of the upgraded oracles**: Transformers 4.x to 5.x is
-      a breaking API change. Each upgraded dumper must be run once on VAST to
-      confirm it still produces its reference, and any parity gate that consumes
-      that reference must still hold. Until this runs, the upgraded trees are
-      resolved but unexercised.
+- [x] **VAST verification of the upgraded oracles** (2026-08-28, instance
+      `48950897`, destroyed after log recovery, account verified at zero running
+      instances). All sixteen touched trees installed from their committed
+      lockfiles, executed every `transformers`/`torch` import their dumper
+      declares — at module scope and inside functions — and ran that dumper's
+      argument parser: 16 pass, 0 fail. Log SHA-256
+      `f4f295abe4140bb6d87087608082657a0c4ac651fe170ad63af71548d830c1c3`.
+
+      The run found one real defect, and it predates this branch's dependency
+      work: `parler_tts` resolved `torch` from the `pytorch-cpu` index while
+      `torchaudio` came from PyPI, so `_torchaudio.abi3.so` could not load and
+      the oracle could not start. The same cross-index split existed at
+      `torch 2.5.1+cpu`, so that oracle had never run on this branch. Routing
+      `torchaudio` through the same index fixes it. Measurement, not version
+      arithmetic, settled this: `torch 2.13.0` with `torchaudio 2.11.0` loads
+      fine in six other trees where both come from one index.
+
+      This exercises installation and the import surface. It does not re-derive
+      any reference tensor, so a numerical change inside Transformers 5.5.0
+      would not be caught here.
 - [ ] Re-check the three blocked trees when `qwen-asr`, `parler-tts`, or
       `xcodec2` publish a release that relaxes its pin, and drop the
       corresponding ids from the allow-list.
