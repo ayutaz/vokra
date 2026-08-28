@@ -545,3 +545,28 @@ Python wheel declares `dependencies = []`, so no shipped artefact is exposed.
 - [ ] Re-check the three blocked trees when `qwen-asr`, `parler-tts`, or
       `xcodec2` publish a release that relaxes its pin, and drop the
       corresponding ids from the allow-list.
+
+---
+
+## 9. GGUF producer stamp after the 0.2.0 bump (2026-08-28)
+
+Every GGUF carries `general.schema_producer = "vokra-core <CARGO_PKG_VERSION>"`,
+written by `GgufWriter` so the stamp always describes the build that produced
+the bytes (`vokra-core::gguf::schema::tests::every_builder_written_gguf_is_stamped`
+pins this). Opening the 0.2.0 line therefore changes the bytes of every
+regenerated GGUF, and with them the committed SHA-256 sidecars.
+
+`parity-sbv2-real` passed on `32efad34`, the commit immediately before the
+bump, and the only change from there to `4e59e12b` is Cargo version metadata,
+so the producer string is the whole delta. The three sidecars that job
+regenerates on a pull request were re-pinned to the values that run measured.
+
+- [ ] **Re-pin `tests/fixtures/sbv2/chinese-roberta-wwm-ext-large.gguf.sha256`**.
+      Its artefact is only rebuilt when `parity-sbv2-real` is dispatched with
+      `RUN_ZH=true`, so no run has produced the 0.2.0 value yet and the sidecar
+      still holds the 0.1.0 one. The next ZH dispatch will fail on it, which is
+      the intended fail-closed behaviour; re-pin from that run.
+- [ ] Published GGUFs on `huggingface.co/vokra` carry the 0.1.0 stamp. Nothing
+      republishes them automatically, but any future re-upload will differ in
+      this field from the artefact currently recorded in
+      `docs/license-audit.md`.
