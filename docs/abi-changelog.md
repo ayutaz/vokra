@@ -4138,6 +4138,10 @@ reviewed VAST SHA-256 for the prepared safetensors artifact is recorded.
 This does not claim source-complete behavior or Metal support; Metal remains
 explicitly unsupported until every learned operation is dispatched.
 
+| Surface | Symbol / key | Change | Shape / signature | Ownership / compatibility | Breaking? | Commit |
+|---|---|---|---|---|---:|---|
+| `gguf:vokra.gigaam_multilingual.*` | authenticated Multilingual CTC metadata group | Added | converter-stamped `u32` topology/config keys and string identity keys, including the prepared-artifact SHA-256; consumed by `sber_gigaam_multilingual.rs` and `gigaam::multilingual` | Additive GGUF schema for newly converted artifacts; no existing `vokra.*` key is renamed or reinterpreted, and strict binders continue to reject incomplete or unauthenticated files | no | (this commit) |
+
 ### 2026-08-30 — GigaAM v3 RNNT native token route
 
 The fixed `ai-sage/GigaAM-v3` route now has a strict 561-tensor RNNT binder,
