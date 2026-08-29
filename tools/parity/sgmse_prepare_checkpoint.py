@@ -1,261 +1,422 @@
 #!/usr/bin/env python3
-"""Bridge SpeechBrain SGMSE-VoiceBank ``score_model_ema.ckpt`` → single ``.safetensors``.
+"""Inspect the official SGMSE-VoiceBank checkpoint without creating weights.
 
-Offline side-car (FR-LD-05: no Python / PyTorch ever enters the runtime).
-
-# Why this exists
-
-The upstream ``speechbrain/sgmse-voicebank`` HF repo ships a
-``hyperparams.yaml`` (SpeechBrain SGMSEEnhancement pretrainer config) + a
-single ``score_model_ema.ckpt`` (~250 MiB torch pickle, EMA weights of the
-internal NCSN++ v2 score network). The Rust converter
-(``crates/vokra-convert/src/models/sgmse.rs``) consumes **safetensors only**
-(no pickle in the runtime tree — FR-LD-05). This script bridges the two.
-
-Unlike the SepFormer 3-part bundle (``encoder.ckpt`` / ``decoder.ckpt`` /
-``masknet.ckpt``), SGMSE's checkpoint is a **single flat state_dict**: the
-upstream pretrainer maps ``score_model_ema.ckpt`` → the ``score_model`` module
-at load time, but the ``.ckpt`` file itself carries no ``score_model.``
-prefix on its keys (the state_dict is the internal NCSN++ v2 network
-directly). We preserve that flat layout so a future
-``Sgmse::from_gguf`` walks the same NCSN++ v2 tensor names
-(``input_layer.weight``, ``blocks.0.norm1.weight``, etc.) the upstream
-``sgmse`` code reference uses.
-
-# Layout
-
-=========================   ==========  =========================================
-file                        size        payload
-=========================   ==========  =========================================
-``score_model_ema.ckpt``    ~250 MiB    NCSN++ v2 EMA state_dict (torch pickle)
-``hyperparams.yaml``        ~1 KiB      SpeechBrain pretrainer config (advisory)
-=========================   ==========  =========================================
-
-Only ``score_model_ema.ckpt`` is bridged; ``hyperparams.yaml`` is a
-SpeechBrain-side pretrainer config the runtime binder consumes separately
-(the numerical hparams — theta, sigma_min, sigma_max, N, corrector iterations,
-SNR, STFT n_fft/hop — will land as ``vokra.sgmse.*`` GGUF chunks in the
-follow-up runtime wave, not through this bridge).
-
-Precedent: ``nemo_pt_to_safetensors.py`` (single-file .pt/.nemo → safetensors,
-handles ``.ckpt`` uniformly) + ``sepformer_prepare_checkpoint.py``
-(SpeechBrain-family torch_recovery unwrap). This script is the single-file
-cousin — same INT-dtype filter, same ``.stripped-manifest.json`` sidecar,
-same fail-loud posture.
-
-# Usage
-
-::
-
-    uv run --project tools/parity python tools/parity/sgmse_prepare_checkpoint.py \\
-        --ckpt /path/to/sgmse-voicebank/score_model_ema.ckpt \\
-        --output /tmp/sgmse-voicebank.safetensors \\
-        [--allow-strip-any]
-
-# Determinism
-
-Keys are ordered by ``torch.load`` state_dict iteration order (Python dict
-preserves insertion order since 3.7, and ``torch.load(weights_only=True)``
-is deterministic). Identical ``--ckpt`` input produces byte-identical
-output (safetensors serialization is deterministic for fixed key ordering).
-
-# Redistribution
-
-Upstream weight license is ``apache-2.0`` (SpeechBrain family) — see
-``docs/license-audit.md`` §3.1 row "SGMSE-VoiceBank
-(``speechbrain/sgmse-voicebank``)", ☑ Commercial 2026-08-04 yousan.
+The HF checkpoint is an untrusted pickle container.  Only
+``torch.load(weights_only=True)`` is attempted; SpeechBrain custom classes and
+any unsafe pickle fallback are intentionally forbidden.  This sidecar writes
+an evidence manifest, never a safetensors or GGUF candidate.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-# Mirrors the classification in ``nemo_pt_to_safetensors.py`` +
-# ``sepformer_prepare_checkpoint.py``. INT dtypes come from BatchNorm
-# ``num_batches_tracked`` counters and similar training artefacts — safe to
-# strip. Any dtype outside both sets is refused unless --allow-strip-any is
-# passed (fail-loud posture: the runtime forward path would refuse them
-# anyway).
-INT_DTYPES = {
-    "torch.int8", "torch.int16", "torch.int32", "torch.int64",
-    "torch.uint8", "torch.uint16", "torch.uint32", "torch.uint64",
-    "torch.bool",
+
+MODEL_REPOSITORY = "speechbrain/sgmse-voicebank"
+MODEL_REVISION = "8f4ff7b65284c49492a43349b8106e094ac0d365"
+CHECKPOINT_NAME = "score_model_ema.ckpt"
+CHECKPOINT_SIZE = 262_593_305
+CHECKPOINT_SHA256 = "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3"
+SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
+SOURCE_REVISION = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+SOURCE_LICENSE_SPDX = "mit"
+SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
+SPEECHBRAIN_REVISION = "31c1e329048c0380dc7f2acbe680c44a036b6286"
+SPEECHBRAIN_VERSION = "1.0.3"
+SPEECHBRAIN_SDIST_SHA256 = "fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052"
+SPEECHBRAIN_WHEEL_SHA256 = "9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"
+EXECUTABLE_SPEECHBRAIN_FILES = (
+    "speechbrain/integrations/models/sgmse_plus.py",
+    "speechbrain/inference/enhancement.py",
+)
+EXECUTABLE_SPEECHBRAIN_MARKERS = {
+    "speechbrain/integrations/models/sgmse_plus.py": ("class ScoreModel",),
+    "speechbrain/inference/enhancement.py": ("class SGMSEEnhancement", "enhance_batch"),
 }
-KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
+ALGORITHM_SOURCE_ROLES = {
+    "score_model": ("class ScoreModel", "ScoreModel("),
+    "ncsnpp": ("NCSNpp", "ncsnpp_v2"),
+    "sde": ("OUVESDE", "SDERegistry"),
+    "sampler": ("reverse_diffusion", "annealed_langevin_dynamics"),
+}
+COMPANION_FILES = ("README.md", ".gitattributes", "example.wav")
+
+CONFIG_PATTERNS = {
+    "sample_rate": r"^sample_rate:\s*16000\s*$",
+    "n_fft": r"^n_fft:\s*510\s*$",
+    "hop_length": r"^hop_length:\s*128\s*$",
+    "window_type": r"^window_type:\s*hann\s*$",
+    "sampler_type": r"^\s*sampler_type:\s*pc\s*$",
+    "predictor": r"^\s*predictor:\s*reverse_diffusion\s*$",
+    "corrector": r"^\s*corrector:\s*ald\s*$",
+    "steps": r"^\s*N:\s*30\s*$",
+    "corrector_steps": r"^\s*corrector_steps:\s*1\s*$",
+    "snr": r"^\s*snr:\s*0\.5\s*$",
+    "score_model": r"!new:speechbrain\.integrations\.models\.sgmse_plus\.ScoreModel",
+    "backbone": r"^\s*backbone:\s*ncsnpp_v2\s*$",
+    "sde": r"^\s*sde:\s*ouve\s*$",
+    "theta": r"^\s*theta:\s*1\.5\s*$",
+    "sigma_min": r"^\s*sigma_min:\s*0\.05\s*$",
+    "sigma_max": r"^\s*sigma_max:\s*0\.5\s*$",
+    "ema_decay": r"^\s*ema_decay:\s*0\.999\s*$",
+    "network_scaling": r"^\s*network_scaling:\s*1/t\s*$",
+    "c_in": r"^\s*c_in:\s*['\"]?1['\"]?\s*$",
+    "c_out": r"^\s*c_out:\s*['\"]?1['\"]?\s*$",
+    "c_skip": r"^\s*c_skip:\s*['\"]?0['\"]?\s*$",
+    "sigma_data": r"^\s*sigma_data:\s*0\.1\s*$",
+}
 
 
-def _flatten(prefix: str, obj: Any) -> dict:
-    """Flatten a nested dict into dotted-key ``{name: Tensor}``.
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    SpeechBrain's ``torch_recovery`` normally pickles a flat state_dict, but
-    some Lightning-style forks / EMA wrappers wrap it as
-    ``{"state_dict": {...}}`` or ``{"ema_state_dict": {...}}`` — this walk
-    handles both without special-casing the wrapper name (the unwrap
-    happens in ``_load_ckpt`` before this walk is invoked).
-    """
+
+def config_facts(text: str) -> tuple[dict[str, bool], list[str]]:
+    facts = {name: re.search(pattern, text, re.MULTILINE) is not None for name, pattern in CONFIG_PATTERNS.items()}
+    return facts, [name for name, present in facts.items() if not present]
+
+
+def tensor_manifest(value: Any, path: str = "") -> tuple[dict[str, dict[str, Any]], list[str], bool]:
     import torch
 
-    out: dict = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{prefix}.{k}" if prefix else str(k)
-            out.update(_flatten(key, v))
-    elif isinstance(obj, torch.Tensor):
-        out[prefix] = obj
-    # else: silently drop non-Tensor scalars/arrays — safetensors would
-    # refuse them anyway; the runtime doesn't need them (EMA decay float,
-    # step counter, etc).
-    return out
+    tensors: dict[str, dict[str, Any]] = {}
+    unsupported: list[str] = []
+    finite = True
+    if isinstance(value, torch.Tensor):
+        finite = bool(torch.isfinite(value).all().item()) if value.is_floating_point() else True
+        tensors[path or "<root>"] = {
+            "shape": [int(axis) for axis in value.shape],
+            "dtype": str(value.dtype),
+            "count": int(value.numel()),
+            "finite": finite,
+        }
+    elif isinstance(value, dict):
+        for key in sorted(value, key=str):
+            child, child_unsupported, child_finite = tensor_manifest(
+                value[key], f"{path}.{key}" if path else str(key)
+            )
+            tensors.update(child)
+            unsupported.extend(child_unsupported)
+            finite = finite and child_finite
+    elif isinstance(value, (list, tuple)):
+        for index, child_value in enumerate(value):
+            child, child_unsupported, child_finite = tensor_manifest(child_value, f"{path}[{index}]")
+            tensors.update(child)
+            unsupported.extend(child_unsupported)
+            finite = finite and child_finite
+    elif value is not None and not isinstance(value, (str, int, float, bool)):
+        unsupported.append(f"{path}:{type(value).__name__}")
+    return tensors, unsupported, finite
 
 
-def _load_ckpt(path: Path) -> dict:
-    """Load ``score_model_ema.ckpt`` and return a flat ``{name: Tensor}``.
-
-    Fail-loud on any load failure OR on a payload that yields zero tensors —
-    better a hard exit than a silently-empty GGUF with a valid header but no
-    weights (the classic "silent partial" trap this project bans).
-    """
+def _tensor_map_candidates(value: Any, path: str = "") -> list[tuple[str, dict[str, Any]]]:
     import torch
 
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(value, dict):
+        if value and all(isinstance(item, torch.Tensor) for item in value.values()):
+            candidates.append((path or "<root>", value))
+        for key in sorted(value, key=str):
+            candidates.extend(_tensor_map_candidates(value[key], f"{path}.{key}" if path else str(key)))
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            candidates.extend(_tensor_map_candidates(child, f"{path}[{index}]"))
+    return candidates
+
+
+def safe_load_manifest(path: Path) -> dict[str, Any]:
+    import torch
+
+    result: dict[str, Any] = {
+        "container_path": str(path),
+        "torch_loader": "torch.load(weights_only=True, map_location='cpu')",
+        "unsafe_pickle_fallback": False,
+    }
     try:
         raw = torch.load(str(path), map_location="cpu", weights_only=True)
-    except Exception as exc:  # noqa: BLE001
-        sys.exit(f"torch.load({path!s}, weights_only=True) failed: {exc}")
+    except Exception as error:  # noqa: BLE001 - preserve loud safe-load evidence
+        result["safe_load_status"] = "BLOCKED_WEIGHTS_ONLY"
+        result["safe_load_error"] = f"{type(error).__name__}: {error}"
+        return result
 
-    # Common Lightning-style / EMA-wrapper unwrap. SpeechBrain's default
-    # ``torch_recovery`` writes the flat state_dict; forks that wrap it are
-    # rare but do exist in the wild. We deliberately do NOT prepend a
-    # `score_model.` prefix — the upstream pretrainer adds that at load
-    # time, but the .ckpt file itself carries the internal NCSN++ v2
-    # network's names verbatim, and the Rust converter preserves them.
-    if isinstance(raw, dict):
-        for wrapper in ("state_dict", "model_state_dict", "model", "module", "ema_state_dict"):
-            inner = raw.get(wrapper)
-            if isinstance(inner, dict) and inner:
-                sample = next(iter(inner.values()), None)
-                if hasattr(sample, "dtype") and hasattr(sample, "shape"):
-                    print(f"  unwrapped ['{wrapper}']")
-                    raw = inner
-                    break
-
-    flat = _flatten("", raw)
-    if not flat:
-        sys.exit(
-            f"{path!s} yielded no tensors — expected an NCSN++ v2 state_dict "
-            f"pickled by SpeechBrain's SGMSE pretrainer (see "
-            f"upstream `hyperparams.yaml` `score_model:` block)."
-        )
-    return flat
-
-
-def _partition(sd: dict, allow_strip_any: bool):
-    """Split into ``(kept, dropped_int, unknown_other)`` — same taxonomy the
-    ``nemo_pt_to_safetensors.py`` + ``sepformer_prepare_checkpoint.py``
-    precedents use."""
-    kept: dict = {}
-    dropped: list[tuple[str, str, list[int]]] = []
-    unknown: list[tuple[str, str, list[int]]] = []
-    for name, t in sd.items():
-        if not hasattr(t, "dtype") or not hasattr(t, "shape"):
-            continue
-        dtype_s = str(t.dtype)
-        if dtype_s in KEEP_DTYPES:
-            if hasattr(t, "contiguous"):
-                t = t.contiguous()
-            if hasattr(t, "detach"):
-                t = t.detach()
-            kept[name] = t
-        elif dtype_s in INT_DTYPES:
-            dropped.append((name, dtype_s, list(t.shape)))
-        else:
-            unknown.append((name, dtype_s, list(t.shape)))
-    return kept, dropped, unknown
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(
-        description=(
-            "Bridge SpeechBrain SGMSE-VoiceBank score_model_ema.ckpt → single .safetensors"
-        ),
+    candidates = _tensor_map_candidates(raw)
+    if len(candidates) != 1:
+        result["safe_load_status"] = "BLOCKED_AMBIGUOUS_TENSOR_CONTAINER"
+        result["candidate_paths"] = [candidate[0] for candidate in candidates]
+        return result
+    container_path, state_dict = candidates[0]
+    tensors, unsupported, finite = tensor_manifest(state_dict, "")
+    result["container_path"] = container_path
+    result["ema_extraction"] = (
+        "top_level_state_dict" if container_path == "<root>" else f"safe_tensor_map:{container_path}"
     )
-    ap.add_argument(
-        "--ckpt", required=True, type=Path,
-        help=(
-            "path to score_model_ema.ckpt — typically fetched via "
-            "`huggingface-cli download speechbrain/sgmse-voicebank score_model_ema.ckpt`."
-        ),
-    )
-    ap.add_argument(
-        "--output", required=True, type=Path,
-        help="destination .safetensors path (parent will be mkdir'd).",
-    )
-    ap.add_argument(
-        "--allow-strip-any", action="store_true",
-        help="also strip fp64 / complex tensors (default: refuse them loudly).",
-    )
-    args = ap.parse_args()
+    result["tensor_manifest"] = tensors
+    result["tensor_count"] = len(tensors)
+    result["parameter_count"] = sum(item["count"] for item in tensors.values())
+    result["unsupported_objects"] = unsupported
+    result["all_finite"] = finite
+    if not tensors:
+        result["safe_load_status"] = "BLOCKED_EMPTY_TENSOR_MANIFEST"
+    elif not finite:
+        result["safe_load_status"] = "BLOCKED_NONFINITE_TENSOR"
+    else:
+        result["safe_load_status"] = "SAFE_LOADED"
+    return result
 
+
+def source_identity(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {
+        "repository": SOURCE_REPOSITORY,
+        "expected_revision": SOURCE_REVISION,
+        "license_spdx": SOURCE_LICENSE_SPDX,
+    }
+    blockers: list[str] = []
+    license_path = source_dir / "LICENSE"
+    if not license_path.is_file():
+        blockers.append(f"missing source license: {license_path}")
+    else:
+        result["license_sha256"] = sha256(license_path)
+        result["license_text_is_mit"] = "MIT License" in license_path.read_text(encoding="utf-8", errors="replace")
+        if not result["license_text_is_mit"]:
+            blockers.append("source LICENSE does not contain the MIT notice")
     try:
-        from safetensors.torch import save_file
-        import torch  # noqa: F401
-    except ImportError as exc:
-        print(
-            f"missing dep {exc}. run: uv sync (from tools/parity/)",
-            file=sys.stderr,
-        )
-        return 2
+        commit = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        commit = ""
+        blockers.append(f"source revision unavailable: {error}")
+    result["resolved_revision"] = commit
+    if commit != SOURCE_REVISION:
+        blockers.append(f"source revision {commit!r} != {SOURCE_REVISION!r}")
+    return result, blockers
 
-    ckpt: Path = args.ckpt
-    if not ckpt.is_file():
-        print(f"--ckpt must be an existing file: {ckpt}", file=sys.stderr)
-        return 2
 
-    print(f"  loading {ckpt.name} ({ckpt.stat().st_size:,} bytes)")
-    sd = _load_ckpt(ckpt)
+def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {
+        "repository": SPEECHBRAIN_REPOSITORY,
+        "expected_revision": SPEECHBRAIN_REVISION,
+        "locked_distribution": {
+            "version": SPEECHBRAIN_VERSION,
+            "sdist_sha256": SPEECHBRAIN_SDIST_SHA256,
+            "wheel_sha256": SPEECHBRAIN_WHEEL_SHA256,
+        },
+    }
+    blockers: list[str] = []
+    license_path = source_dir / "LICENSE"
+    if not license_path.is_file():
+        blockers.append(f"missing SpeechBrain license: {license_path}")
+    else:
+        license_text = license_path.read_text(encoding="utf-8", errors="replace")
+        result["license_sha256"] = sha256(license_path)
+        result["license_spdx"] = "apache-2.0"
+        result["license_text_is_apache"] = "Apache License" in license_text
+        if not result["license_text_is_apache"]:
+            blockers.append("SpeechBrain LICENSE does not contain the Apache notice")
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        commit = ""
+        blockers.append(f"SpeechBrain revision unavailable: {error}")
+    result["resolved_revision"] = commit
+    if commit != SPEECHBRAIN_REVISION:
+        blockers.append(f"SpeechBrain revision {commit!r} != {SPEECHBRAIN_REVISION!r}")
 
-    kept, dropped, unknown = _partition(sd, args.allow_strip_any)
+    files: dict[str, Any] = {}
+    for relative in EXECUTABLE_SPEECHBRAIN_FILES:
+        path = source_dir / relative
+        if not path.is_file():
+            blockers.append(f"missing executable SpeechBrain source: {relative}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        markers = EXECUTABLE_SPEECHBRAIN_MARKERS[relative]
+        marker_status = {marker: marker in text for marker in markers}
+        files[relative] = {
+            "sha256": sha256(path),
+            "size": path.stat().st_size,
+            "required_markers": marker_status,
+        }
+        for marker, present in marker_status.items():
+            if not present:
+                blockers.append(
+                    f"SpeechBrain source {relative} is missing executable marker: {marker}"
+                )
+    result["executable_files"] = files
+    return result, blockers
 
-    if unknown and not args.allow_strip_any:
-        first = [(n, d, s) for n, d, s in unknown[:3]]
-        print(
-            f"refusing to drop {len(unknown)} tensors of unknown dtype "
-            f"(first 3: {first}); re-run with --allow-strip-any if verified "
-            f"inference-inert.",
-            file=sys.stderr,
-        )
-        return 3
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    save_file(kept, str(args.output))
+def algorithm_source_inventory(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    result: dict[str, Any] = {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION}
+    blockers: list[str] = []
+    inventory: dict[str, Any] = {}
+    try:
+        candidates = sorted(source_dir.rglob("*.py"))
+    except OSError as error:
+        return result, [f"algorithm source scan failed: {error}"]
+    for role, markers in ALGORITHM_SOURCE_ROLES.items():
+        matches = []
+        for path in candidates:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if all(marker in text for marker in markers):
+                matches.append({"path": str(path.relative_to(source_dir)), "sha256": sha256(path)})
+        inventory[role] = matches
+        if not matches:
+            blockers.append(f"algorithm source role {role!r} has no pinned implementation file")
+    result["files_by_role"] = inventory
+    return result, blockers
+
+
+def companion_identity(companion_dir: Path) -> tuple[dict[str, Any], list[str]]:
+    companions: dict[str, Any] = {}
+    blockers: list[str] = []
+    for filename in COMPANION_FILES:
+        path = companion_dir / filename
+        if not path.is_file():
+            blockers.append(f"missing HF companion file: {path}")
+            continue
+        companions[filename] = {"size": path.stat().st_size, "sha256": sha256(path)}
+    return companions, blockers
+
+
+def inspect(
+    ckpt: Path,
+    hyperparams: Path,
+    companion_dir: Path,
+    algorithm_source_dir: Path,
+    speechbrain_source_dir: Path,
+    manifest_path: Path,
+) -> int:
+    blockers: list[str] = []
+    checkpoint: dict[str, Any] = {"filename": ckpt.name, "expected_filename": CHECKPOINT_NAME}
+    if ckpt.name != CHECKPOINT_NAME:
+        blockers.append(f"checkpoint filename {ckpt.name!r} != {CHECKPOINT_NAME!r}")
+    if ckpt.is_file():
+        checkpoint["size"] = ckpt.stat().st_size
+        checkpoint["sha256"] = sha256(ckpt)
+        checkpoint["expected_size"] = CHECKPOINT_SIZE
+        checkpoint["expected_sha256"] = CHECKPOINT_SHA256
+        if checkpoint["size"] != CHECKPOINT_SIZE or checkpoint["sha256"] != CHECKPOINT_SHA256:
+            blockers.append("checkpoint exact size/SHA256 identity mismatch")
+    else:
+        blockers.append(f"missing checkpoint: {ckpt}")
+
+    config: dict[str, Any] = {"filename": hyperparams.name}
+    if hyperparams.is_file():
+        text = hyperparams.read_text(encoding="utf-8")
+        facts, missing = config_facts(text)
+        config.update({"sha256": sha256(hyperparams), "facts": facts, "raw": text})
+        blockers.extend(f"hyperparams missing or mismatched field: {name}" for name in missing)
+    else:
+        blockers.append(f"missing hyperparams: {hyperparams}")
+
+    algorithm_source, algorithm_blockers = source_identity(algorithm_source_dir)
+    blockers.extend(algorithm_blockers)
+    algorithm_inventory, inventory_blockers = algorithm_source_inventory(algorithm_source_dir)
+    blockers.extend(inventory_blockers)
+    speechbrain_source, speechbrain_blockers = speechbrain_source_identity(speechbrain_source_dir)
+    blockers.extend(speechbrain_blockers)
+    companions, companion_blockers = companion_identity(companion_dir)
+    blockers.extend(companion_blockers)
+    loaded: dict[str, Any] = {}
+    if ckpt.is_file() and checkpoint.get("size") == CHECKPOINT_SIZE and checkpoint.get("sha256") == CHECKPOINT_SHA256:
+        loaded = safe_load_manifest(ckpt)
+        if loaded.get("safe_load_status") != "SAFE_LOADED":
+            blockers.append(f"checkpoint safe-load: {loaded.get('safe_load_status')}")
+    else:
+        loaded = {
+            "safe_load_status": "BLOCKED_CHECKPOINT_IDENTITY",
+            "unsafe_pickle_fallback": False,
+        }
 
     manifest = {
-        "input": str(ckpt),
-        "output": str(args.output),
-        "kept_count": len(kept),
-        "dropped_count": len(dropped),
-        "dropped_tensors": [
-            {"name": n, "dtype": d, "shape": s} for n, d, s in dropped
-        ],
-        "unknown_stripped": (
-            [{"name": n, "dtype": d, "shape": s} for n, d, s in unknown]
-            if args.allow_strip_any else []
-        ),
+        "format": "vokra-sgmse-voicebank-inspection-v1",
+        "model_repository": MODEL_REPOSITORY,
+        "model_revision": MODEL_REVISION,
+        "weight_license_spdx": "apache-2.0",
+        "checkpoint": checkpoint,
+        "hyperparams": config,
+        "companions": companions,
+        "algorithm_source": {**algorithm_source, **algorithm_inventory},
+        "speechbrain_source": speechbrain_source,
+        "safe_load": loaded,
+        "blockers": blockers,
+        "runtime_status": "INSPECTION_ONLY",
+        "parity_status": "INSPECTION_ONLY",
+        "publication": "NO_UPLOAD",
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".stripped-manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-
-    print(
-        f"sgmse_prepare_checkpoint: kept {len(kept)}, "
-        f"dropped {len(dropped)} int, "
-        f"stripped {len(unknown) if args.allow_strip_any else 0} unknown; "
-        f"manifest -> {manifest_path.name}"
-    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if blockers:
+        print(f"SGMSE inspection blocked; evidence preserved at {manifest_path}", file=sys.stderr)
+        return 2
+    print(f"SGMSE inspection complete; evidence written to {manifest_path}")
     return 0
 
 
+def self_test() -> None:
+    assert MODEL_REVISION == "8f4ff7b65284c49492a43349b8106e094ac0d365"
+    assert CHECKPOINT_SIZE == 262_593_305
+    assert len(CHECKPOINT_SHA256) == 64
+    assert SOURCE_REVISION == "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
+    assert SPEECHBRAIN_REVISION == "31c1e329048c0380dc7f2acbe680c44a036b6286"
+    assert SPEECHBRAIN_VERSION == "1.0.3"
+    assert EXECUTABLE_SPEECHBRAIN_FILES[0].endswith("sgmse_plus.py")
+    assert EXECUTABLE_SPEECHBRAIN_FILES[1].endswith("enhancement.py")
+    assert "class SGMSEEnhancement" in EXECUTABLE_SPEECHBRAIN_MARKERS[EXECUTABLE_SPEECHBRAIN_FILES[1]]
+    facts, missing = config_facts("sample_rate: 16000\nn_fft: 510\nhop_length: 128\nwindow_type: hann\n")
+    assert facts["sample_rate"] and facts["n_fft"] and facts["hop_length"] and facts["window_type"]
+    assert "sampler_type" in missing
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--ckpt", type=Path)
+    parser.add_argument("--hyperparams", type=Path)
+    parser.add_argument("--companion-dir", type=Path)
+    parser.add_argument("--algorithm-source-dir", type=Path)
+    parser.add_argument("--speechbrain-source-dir", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    args = parser.parse_args()
+    if args.self_test:
+        if any(value is not None for value in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest)):
+            parser.error("--self-test accepts no other arguments")
+        self_test()
+        print("sgmse_prepare_checkpoint self-test: OK")
+        return 0
+    if None in (args.ckpt, args.hyperparams, args.companion_dir, args.algorithm_source_dir, args.speechbrain_source_dir, args.manifest):
+        parser.error("normal runs require --ckpt, --hyperparams, --companion-dir, --algorithm-source-dir, --speechbrain-source-dir, and --manifest")
+    return inspect(
+        args.ckpt,
+        args.hyperparams,
+        args.companion_dir,
+        args.algorithm_source_dir,
+        args.speechbrain_source_dir,
+        args.manifest,
+    )
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
