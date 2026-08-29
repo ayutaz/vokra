@@ -499,6 +499,65 @@ impl CanaryBoundWeights {
         }
         Ok(output)
     }
+
+    /// Scores the next token after an explicitly supplied decoder prefix.
+    ///
+    /// This is test-only VAST instrumentation. It reuses the production
+    /// encoder/decoder state and does not participate in the normal greedy
+    /// route or alter its logits. The caller must provide the exact prompt
+    /// followed by any forced generated tokens.
+    #[cfg(test)]
+    pub(crate) fn diagnostic_logits_after_prefix(
+        &self,
+        compute: &Compute,
+        encoder: &[f32],
+        encoder_frames: usize,
+        config: &CanaryConfig,
+        prompt: &[u32],
+        forced_prefix: &[u32],
+    ) -> Result<DecoderLogitsDiagnostic> {
+        let capacity = config
+            .decoder
+            .max_sequence_length
+            .checked_sub(prompt.len())
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(format!(
+                    "{} decoder context is shorter than its prompt",
+                    self.release.label()
+                ))
+            })?;
+        if forced_prefix.len() > capacity {
+            return Err(VokraError::InvalidArgument(format!(
+                "{} diagnostic prefix length={} exceeds decoder capacity {capacity}",
+                self.release.label(),
+                forced_prefix.len(),
+            )));
+        }
+        let mut state = DecoderState::new(compute, encoder, encoder_frames, self, config)?;
+        let mut logits = Vec::new();
+        for &token in prompt.iter().chain(forced_prefix) {
+            logits = state.step(compute, token, self, config)?;
+        }
+        if logits.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "Canary diagnostic prefix must include the non-empty prompt".to_owned(),
+            ));
+        }
+        Ok(DecoderLogitsDiagnostic {
+            prompt: prompt.to_vec(),
+            forced_prefix: forced_prefix.to_vec(),
+            decoder_position: prompt.len() + forced_prefix.len(),
+            logits,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct DecoderLogitsDiagnostic {
+    pub(crate) prompt: Vec<u32>,
+    pub(crate) forced_prefix: Vec<u32>,
+    pub(crate) decoder_position: usize,
+    pub(crate) logits: Vec<f32>,
 }
 
 /// NeMo computes an absolute target-sequence limit first, then subtracts the

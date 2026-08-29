@@ -1720,6 +1720,73 @@ fn require_release_u32(file: &GgufFile, key: &str, expected: u32) -> Result<()> 
 mod tests {
     use super::*;
 
+    fn diagnostic_prefix_from_env() -> Option<Vec<u32>> {
+        let value = std::env::var("VOKRA_CANARY_V2_DIAGNOSTIC_PREFIX").ok()?;
+        let prefix = value
+            .split(|character: char| character == ',' || character.is_ascii_whitespace())
+            .filter(|field| !field.is_empty())
+            .map(|field| {
+                field.parse::<u32>().unwrap_or_else(|error| {
+                    panic!(
+                        "VOKRA_CANARY_V2_DIAGNOSTIC_PREFIX contains invalid token {field:?}: {error}"
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !prefix.is_empty(),
+            "VOKRA_CANARY_V2_DIAGNOSTIC_PREFIX must contain at least one token"
+        );
+        Some(prefix)
+    }
+
+    fn diagnostic_top_k(logits: &[f32], requested: usize) -> Vec<(usize, f32)> {
+        assert!(requested > 0, "diagnostic top-k must be positive");
+        assert!(
+            logits.iter().all(|value| value.is_finite()),
+            "diagnostic logits must be finite"
+        );
+        let mut ranked = logits.iter().copied().enumerate().collect::<Vec<_>>();
+        ranked.sort_by(|(left_id, left), (right_id, right)| {
+            right.total_cmp(left).then_with(|| left_id.cmp(right_id))
+        });
+        ranked.truncate(requested.min(ranked.len()));
+        ranked
+    }
+
+    fn diagnostic_json(
+        prompt: &[u32],
+        forced_prefix: &[u32],
+        decoder_position: usize,
+        logits: &[f32],
+        requested_top_k: usize,
+    ) -> String {
+        let top_k = diagnostic_top_k(logits, requested_top_k);
+        let top_two = diagnostic_top_k(logits, 2);
+        let list = |values: &[u32]| {
+            values
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let entries = top_k
+            .iter()
+            .map(|(token_id, logit)| format!("{{\"token_id\":{token_id},\"logit\":{logit:?}}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let margin = top_two
+            .first()
+            .zip(top_two.get(1))
+            .map(|((_, first), (_, second))| first - second)
+            .map_or_else(|| "null".to_owned(), |value| format!("{value:?}"));
+        format!(
+            "{{\"prompt_ids\":[{}],\"forced_prefix\":[{}],\"decoder_position\":{decoder_position},\"top_k\":[{entries}],\"top1_top2_margin\":{margin},\"finite\":true,\"implementation\":\"vokra_canary_aed_decoder_state\"}}",
+            list(prompt),
+            list(forced_prefix),
+        )
+    }
+
     /// Every hparam matches the primary sources (model card + family
     /// reference yaml) verbatim.
     #[test]
@@ -2659,6 +2726,55 @@ mod tests {
             target_language: language("VOKRA_CANARY_V2_TARGET_LANGUAGE", CanaryLanguage::English),
             ..Canary1bV2Options::default()
         };
+
+        // Explicit VAST-only numerical diagnostic. The default parity gate
+        // below remains unchanged; this branch only scores a caller-supplied
+        // forced prefix and emits machine-readable native logits.
+        if let Some(forced_prefix) = diagnostic_prefix_from_env() {
+            let requested_top_k = match std::env::var("VOKRA_CANARY_V2_DIAGNOSTIC_TOP_K") {
+                Ok(value) => value.parse::<usize>().unwrap_or_else(|error| {
+                    panic!(
+                        "VOKRA_CANARY_V2_DIAGNOSTIC_TOP_K contains invalid value {value:?}: {error}"
+                    )
+                }),
+                Err(std::env::VarError::NotPresent) => 8,
+                Err(error) => panic!("failed to read VOKRA_CANARY_V2_DIAGNOSTIC_TOP_K: {error}"),
+            };
+            assert!(
+                requested_top_k > 0,
+                "VOKRA_CANARY_V2_DIAGNOSTIC_TOP_K must be positive"
+            );
+            let bound = model
+                .bound
+                .as_ref()
+                .expect("complete Canary-v2 model must have bound weights");
+            let compute = Compute::for_backend(model.backend, CANARY_HOT_OPS)
+                .expect("CPU diagnostic ops must be available");
+            let (encoder, frames) = bound
+                .encode_pcm(&compute, &pcm)
+                .expect("run Canary-v2 CPU encoder for diagnostic");
+            let prompt = options.prompt_tokens();
+            let diagnostic = bound
+                .diagnostic_logits_after_prefix(
+                    &compute,
+                    &encoder,
+                    frames,
+                    &model.cfg,
+                    &prompt,
+                    &forced_prefix,
+                )
+                .expect("run Canary-v2 CPU decoder for diagnostic");
+            eprintln!(
+                "CANARY_1B_V2_DIAGNOSTIC {}",
+                diagnostic_json(
+                    &diagnostic.prompt,
+                    &diagnostic.forced_prefix,
+                    diagnostic.decoder_position,
+                    &diagnostic.logits,
+                    requested_top_k,
+                )
+            );
+        }
 
         let actual = model
             .transcribe_with_options(&pcm, options)

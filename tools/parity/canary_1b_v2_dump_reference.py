@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import sys
@@ -57,6 +58,7 @@ LANGUAGES = (
 JFK_SHA256 = "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_AUDIO = REPO_ROOT / "tests/fixtures/audio/jfk-30s.wav"
+DIAGNOSTIC_DEFAULT_TOP_K = 8
 
 
 def digest_file(path: Path) -> str:
@@ -118,6 +120,116 @@ def hypothesis_tokens(hypothesis: object) -> list[int]:
     return tokens
 
 
+def parse_diagnostic_prefix(value: str) -> list[int]:
+    """Parse an explicitly requested forced decoder prefix.
+
+    This is deliberately a diagnostic-only input.  The normal reference path
+    continues to obtain its prompt and generated sequence from NeMo.
+    """
+    fields = value.replace(",", " ").split()
+    if not fields:
+        raise ValueError("diagnostic prefix must contain at least one token id")
+    try:
+        tokens = [int(field, 10) for field in fields]
+    except ValueError as error:
+        raise ValueError("diagnostic prefix must contain decimal token ids") from error
+    if any(token < 0 for token in tokens):
+        raise ValueError("diagnostic prefix token ids must be non-negative")
+    return tokens
+
+
+def top_k_logits(values: list[float], k: int) -> list[tuple[int, float]]:
+    """Return finite logits ordered like an argmax with deterministic ties."""
+    if k <= 0:
+        raise ValueError("diagnostic top-k must be positive")
+    if not values or not all(math.isfinite(value) for value in values):
+        raise ValueError("diagnostic logits must be non-empty and finite")
+    ranked = sorted(enumerate(values), key=lambda item: (-item[1], item[0]))
+    return ranked[: min(k, len(ranked))]
+
+
+def official_forced_prefix_diagnostic(
+    model: object,
+    torch: object,
+    np: object,
+    pcm: object,
+    source: str,
+    target: str,
+    forced_prefix: list[int],
+    top_k: int,
+) -> dict[str, object]:
+    """Score a forced prefix with NeMo's real encoder/decoder forward.
+
+    ``model.forward`` is the official ``EncDecMultiTaskModel`` path: it runs
+    the checkpoint's preprocessor, encoder, ``transf_decoder`` and
+    ``log_softmax``.  No decoder or tokenizer mirror is used here.  Disabling
+    the classifier's final log-softmax is only to expose the raw classifier
+    logits for this opt-in diagnostic; the previous setting is restored before
+    returning.
+    """
+    turns = [
+        {
+            "role": "user",
+            "slots": {
+                "decodercontext": "",
+                "emotion": "<|emo:undefined|>",
+                "source_lang": source,
+                "target_lang": target,
+                "pnc": "yes",
+                "itn": "noitn",
+                "timestamp": "notimestamp",
+                "diarize": "nodiarize",
+            },
+        }
+    ]
+    prompt_tensor = model.prompt.encode_dialog(turns=turns)["context_ids"]
+    prompt_ids = [int(token) for token in prompt_tensor.detach().cpu().tolist()]
+    all_ids = prompt_ids + forced_prefix
+    device = torch.device("cpu")
+    audio = torch.from_numpy(np.asarray(pcm[:, 0], dtype=np.float32)).unsqueeze(0).to(device)
+    audio_length = torch.tensor([audio.shape[1]], dtype=torch.long, device=device)
+    transcript = torch.tensor([all_ids], dtype=torch.long, device=device)
+    transcript_length = torch.tensor([len(all_ids)], dtype=torch.long, device=device)
+    classifier = getattr(model, "log_softmax", None)
+    mlp = getattr(classifier, "mlp", None)
+    if mlp is None or not hasattr(mlp, "log_softmax"):
+        raise RuntimeError(
+            "official NeMo model does not expose TokenClassifier.mlp.log_softmax; "
+            "refusing a mirror or text-only diagnostic"
+        )
+    previous_log_softmax = mlp.log_softmax
+    mlp.log_softmax = False
+    try:
+        with torch.inference_mode():
+            outputs = model.forward(
+                input_signal=audio,
+                input_signal_length=audio_length,
+                transcript=transcript,
+                transcript_length=transcript_length,
+            )
+    finally:
+        mlp.log_softmax = previous_log_softmax
+    raw_logits = outputs[0]
+    if raw_logits is None:
+        raise RuntimeError("official NeMo decoder returned no forced-prefix logits")
+    values = [float(value) for value in raw_logits[0, -1].detach().cpu().float().tolist()]
+    ranked = top_k_logits(values, top_k)
+    top_two = top_k_logits(values, 2)
+    return {
+        "prompt_ids": prompt_ids,
+        "forced_prefix": forced_prefix,
+        "decoder_position": len(all_ids),
+        "top_k": [
+            {"token_id": token_id, "logit": logit} for token_id, logit in ranked
+        ],
+        "top1_top2_margin": top_two[0][1] - top_two[1][1]
+        if len(top_two) > 1
+        else None,
+        "finite": all(math.isfinite(value) for value in values),
+        "implementation": "official_nemo_model.forward",
+    }
+
+
 def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     assert 'torch.device("cpu")' in source
@@ -146,6 +258,19 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("unsupported language must fail")
+    assert parse_diagnostic_prefix("3651, 1402 16067") == [3651, 1402, 16067]
+    try:
+        parse_diagnostic_prefix(" ")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("empty diagnostic prefix must fail")
+    assert top_k_logits([1.0, 4.0, 4.0, -1.0], 3) == [
+        (1, 4.0),
+        (2, 4.0),
+        (0, 1.0),
+    ]
+    assert top_k_logits([1.0, 4.0], 8) == [(1, 4.0), (0, 1.0)]
     print("canary_1b_v2_dump_reference: self-test PASS")
 
 
@@ -156,6 +281,16 @@ def main() -> int:
     parser.add_argument("--source-language", default="en")
     parser.add_argument("--target-language")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--diagnostic-prefix",
+        help="opt-in comma/space-separated generated token prefix for official logits",
+    )
+    parser.add_argument(
+        "--diagnostic-top-k",
+        type=int,
+        default=DIAGNOSTIC_DEFAULT_TOP_K,
+        help="top-k logits to emit with --diagnostic-prefix (default: 8)",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -163,6 +298,13 @@ def main() -> int:
         return 0
     if args.nemo is None or args.output is None:
         parser.error("--nemo and --output are required unless --self-test is used")
+    if args.diagnostic_prefix is not None and args.diagnostic_top_k <= 0:
+        parser.error("--diagnostic-top-k must be positive")
+    diagnostic_prefix = (
+        parse_diagnostic_prefix(args.diagnostic_prefix)
+        if args.diagnostic_prefix is not None
+        else None
+    )
 
     require_vast()
     source = validate_language(args.source_language)
@@ -248,6 +390,18 @@ def main() -> int:
         "diarize": "nodiarize",
         "answer": "",
     }
+    if diagnostic_prefix is not None:
+        diagnostic = official_forced_prefix_diagnostic(
+            model,
+            torch,
+            np,
+            pcm,
+            source,
+            target,
+            diagnostic_prefix,
+            args.diagnostic_top_k,
+        )
+        print(json.dumps({"canary_v2_diagnostic": diagnostic}, sort_keys=True), flush=True)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="vokra-canary-v2-reference-") as temp_dir:
         manifest_path = Path(temp_dir) / "manifest.jsonl"
