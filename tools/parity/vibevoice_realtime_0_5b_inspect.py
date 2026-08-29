@@ -12,7 +12,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -101,6 +103,10 @@ def git_blob_sha1_bytes(data: bytes) -> str:
     return digest.hexdigest()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def strict_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -121,6 +127,36 @@ def safe_relative(value: str, label: str) -> None:
     path = Path(value)
     if not value or "\x00" in value or "\\" in value or path.is_absolute() or ".." in path.parts:
         raise RuntimeError(f"unsafe {label} path: {value!r}")
+
+
+def validate_symlink_target(name: str, target: bytes) -> None:
+    """Validate a Git symlink target lexically without resolving it."""
+    if not target or b"\x00" in target or target.startswith(b"/"):
+        raise RuntimeError(f"unsafe tracked symlink target: {name}")
+    stack = list(Path(name).parts[:-1])
+    for component in target.split(b"/"):
+        if component in (b"", b"."):
+            continue
+        if component == b"..":
+            if not stack:
+                raise RuntimeError(f"tracked symlink target escapes checkout: {name}")
+            stack.pop()
+        else:
+            stack.append(component)
+
+
+def filesystem_entry(root: Path, name: str) -> tuple[Path, os.stat_result]:
+    """lstat a tracked path while refusing symlink traversal in its parents."""
+    safe_relative(name, "tracked entry")
+    path = root / name
+    current = root
+    parts = Path(name).parts
+    for index, component in enumerate(parts):
+        current /= component
+        info = os.lstat(current)
+        if index < len(parts) - 1 and stat.S_ISLNK(info.st_mode):
+            raise RuntimeError(f"tracked path traverses symlink parent: {name}")
+    return path, info
 
 
 def git(root: Path, *args: str) -> str:
@@ -429,23 +465,53 @@ def source_inventory(
                 continue
             header, encoded = item.split(b"\t", 1)
             fields = header.split()
-            name = encoded.decode()
+            name = encoded.decode("utf-8")
             if len(fields) != 3 or name in entries:
                 blockers.append(f"tracked index schema/duplicate: {name}")
                 continue
             mode, index_object, stage = fields[0].decode(), fields[1].decode(), fields[2].decode()
-            path = root / name
-            if stage != "0" or mode not in {"100644", "100755"} or path.is_symlink() or not path.is_file():
+            if stage != "0":
                 blockers.append(f"tracked entry is not regular stage-0: {name}")
                 continue
-            expected_mode = 0o755 if mode == "100755" else 0o644
-            if path.stat().st_mode & 0o777 != expected_mode:
-                blockers.append(f"filesystem mode mismatch: {name}")
-            head_object = git(root, "rev-parse", f"HEAD:{name}")
-            working_object = git_blob_sha1(path)
-            entries[name] = {"path": name, "mode": mode, "stage": stage, "index_object_sha1": index_object, "head_object_sha1": head_object, "working_blob_sha1": working_object, "bytes": path.stat().st_size, "sha256": sha256(path)}
-            if not (index_object == head_object == working_object):
-                blockers.append(f"tracked object mismatch: {name}")
+            try:
+                path, filesystem = filesystem_entry(root, name)
+            except (OSError, RuntimeError) as error:
+                blockers.append(str(error))
+                continue
+            if mode in {"100644", "100755"}:
+                if stat.S_ISLNK(filesystem.st_mode) or not stat.S_ISREG(filesystem.st_mode):
+                    blockers.append(f"tracked entry is not regular stage-0: {name}")
+                    continue
+                expected_mode = 0o755 if mode == "100755" else 0o644
+                if filesystem.st_mode & 0o777 != expected_mode:
+                    blockers.append(f"filesystem mode mismatch: {name}")
+                head_object = git(root, "rev-parse", f"HEAD:{name}")
+                working_object = git_blob_sha1(path)
+                entries[name] = {"path": name, "mode": mode, "stage": stage, "index_object_sha1": index_object, "head_object_sha1": head_object, "working_blob_sha1": working_object, "bytes": filesystem.st_size, "sha256": sha256(path)}
+                if not (index_object == head_object == working_object):
+                    blockers.append(f"tracked object mismatch: {name}")
+                continue
+            if mode == "120000":
+                if not stat.S_ISLNK(filesystem.st_mode):
+                    blockers.append(f"tracked entry is not a symlink: {name}")
+                    continue
+                try:
+                    target = os.readlink(os.fsencode(path))
+                    if not isinstance(target, bytes):
+                        target = os.fsencode(target)
+                    validate_symlink_target(name, target)
+                except (OSError, RuntimeError) as error:
+                    blockers.append(str(error))
+                    continue
+                head_object = git(root, "rev-parse", f"HEAD:{name}")
+                working_object = git_blob_sha1_bytes(target)
+                entries[name] = {"path": name, "mode": mode, "stage": stage, "index_object_sha1": index_object, "head_object_sha1": head_object, "working_blob_sha1": working_object, "bytes": len(target), "sha256": sha256_bytes(target), "symlink_target_hex": target.hex()}
+                if not (index_object == head_object == working_object):
+                    blockers.append(f"tracked symlink object mismatch: {name}")
+                continue
+            if mode not in {"100644", "100755"}:
+                blockers.append(f"tracked entry is not regular stage-0: {name}")
+                continue
         role_records: list[dict[str, Any]] = []
         for name, expected in roles.items():
             row = entries.get(name)
@@ -672,7 +738,8 @@ def self_test() -> None:
             for role in role_paths:
                 role_path = path / role; role_path.parent.mkdir(parents=True, exist_ok=True)
                 role_path.write_text(license_text if role == "LICENSE" else f"fixture role {role}\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(path), "add", *role_paths], check=True)
+            (path / "safe-link").symlink_to("LICENSE")
+            subprocess.run(["git", "-C", str(path), "add", *role_paths, "safe-link"], check=True)
             subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "authenticated fixture"], check=True)
             if tag is not None:
                 subprocess.run(["git", "-C", str(path), "tag", tag], check=True)
@@ -686,6 +753,21 @@ def self_test() -> None:
         positive_transformers_revision, positive_transformers_roles = authenticated_fixture(positive_transformers, TRANSFORMERS_REPOSITORY, tuple(TRANSFORMERS_ROLE_BLOBS), apache_text, TRANSFORMERS_TAG)
         positive_inventory = source_inventory(positive_source, positive_transformers, source_revision=positive_source_revision, source_roles=positive_source_roles, transformers_revision=positive_transformers_revision, transformers_roles=positive_transformers_roles)
         assert positive_inventory["source"]["status"] == "AUTHENTICATED" and positive_inventory["transformers"]["status"] == "AUTHENTICATED"
+        safe_links = [row for row in positive_inventory["source"]["tracked_files"] if row["path"] == "safe-link"]
+        assert len(safe_links) == 1 and safe_links[0]["mode"] == "120000" and safe_links[0]["symlink_target_hex"] == b"LICENSE".hex()
+        (positive_source / "escape-link").symlink_to("../outside")
+        subprocess.run(["git", "-C", str(positive_source), "add", "escape-link"], check=True)
+        subprocess.run(["git", "-C", str(positive_source), "commit", "-q", "-m", "unsafe symlink fixture"], check=True)
+        unsafe_revision = git(positive_source, "rev-parse", "HEAD")
+        unsafe_inventory = source_inventory(positive_source, positive_transformers, source_revision=unsafe_revision, source_roles=positive_source_roles, transformers_revision=positive_transformers_revision, transformers_roles=positive_transformers_roles)
+        assert unsafe_inventory["source"]["status"] == "BLOCKED" and any("escapes checkout" in item for item in unsafe_inventory["source"]["blockers"])
+        for target in (b"/etc/passwd", b"../outside", b"nested/../../outside", b"bad\x00target"):
+            try:
+                validate_symlink_target("safe-link", target)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("unsafe tracked symlink target accepted")
         complete_license = manifest_license_evidence({"license": "MIT", "status": "AUTHENTICATED"}, positive_inventory)
         assert complete_license["source"]["status"] == "AUTHENTICATED" and complete_license["transformers"]["status"] == "AUTHENTICATED"
         for files in ([], base["files"] + [{"path": "extra", "type": "file", "size": 0, "git_blob_sha1": "0" * 40, "lfs_pointer_git_blob_sha1": None, "lfs_sha256": None}]):
