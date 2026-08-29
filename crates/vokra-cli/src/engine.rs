@@ -92,6 +92,20 @@ pub(crate) enum ModelTask {
     /// SentencePiece vocabulary sidecar. The concrete engine binds once in
     /// run/bench so the 4.28 GB F32 payload is never duplicated.
     AsrParakeetTdt11b,
+    /// Meta omniASR-CTC-1B waveform-to-token transcription.
+    ///
+    /// The dispatch returns a bare session so `run`/`bench` bind the concrete
+    /// manifest-authenticated engine exactly once and preserve its token-ID
+    /// output. The SentencePiece tokenizer is an external consumer boundary;
+    /// this task never invents decoded text.
+    AsrOmniasrCtcTokens,
+    /// Sber GigaAM Multilingual CTC transcription.
+    ///
+    /// The dispatch returns a bare mmap-backed session so the concrete
+    /// authenticated binder is opened once in the run/bench arm. Its native
+    /// route is greedy CTC text transcription; beam/text-generation flags do
+    /// not apply.
+    AsrGigaamMultilingual,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
     /// VibeVoice-1.5B composite TTS. The strict partial GGUF binder is
@@ -1029,6 +1043,28 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             Ok((session, ModelTask::AsrParakeetTdt11b))
+        }
+        vokra_models::omniasr_ctc::EXPECTED_ARCH => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    vokra_models::omniasr_ctc::EXPECTED_ARCH
+                ));
+            }
+            // Bind in run/bench so there is one concrete load site for the
+            // strict 807-F32 manifest and the selected CPU/Metal backend.
+            Ok((session, ModelTask::AsrOmniasrCtcTokens))
+        }
+        vokra_models::gigaam::multilingual::ARCH => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    vokra_models::gigaam::multilingual::ARCH
+                ));
+            }
+            // Bind in run/bench so there is one concrete load site for the
+            // strict authenticated 552-tensor manifest and CPU-only route.
+            Ok((session, ModelTask::AsrGigaamMultilingual))
         }
         ARCH_QWEN3_ASR => {
             if hint.is_some() {
@@ -2193,14 +2229,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // not re-add them: `bound_arch_registry_is_disjoint_from_the_routed_arches`
     // now fails on a row that shadows either arch.
     BoundArch {
-        arch: "omniasr-ctc",
-        module: "vokra_models::omniasr_ctc",
-        entry: "OmniasrCtcAsr::from_gguf → OmniasrCtcAsr::transcribe",
-        probe: Some(|g: &GgufFile| {
-            vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(g).map(|_| ())
-        }),
-    },
-    BoundArch {
         arch: "sensevoicesmall",
         module: "vokra_models::sensevoicesmall_runtime",
         entry: "SenseVoiceSmall::from_gguf → SenseVoiceSmall::transcribe",
@@ -2218,12 +2246,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
     },
     BoundArch {
         arch: "sber_gigaam_v3",
-        module: "vokra_models::gigaam",
-        entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
-        arch: "gigaam_multilingual",
         module: "vokra_models::gigaam",
         entry: "Gigaam::from_gguf → Gigaam::transcribe",
         probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
@@ -3092,6 +3114,38 @@ mod tests {
     }
 
     #[test]
+    fn load_session_routes_omniasr_ctc_to_the_token_task() {
+        let (_session, task) = with_arch_only_gguf(
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+            "omniasr-routed",
+            |path| load_session(path).expect("omniASR-CTC binds in the concrete run/bench arm"),
+        );
+        assert_eq!(task, ModelTask::AsrOmniasrCtcTokens);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != vokra_models::omniasr_ctc::EXPECTED_ARCH),
+            "a routed omniASR-CTC forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_gigaam_multilingual_to_the_ctc_task() {
+        let (_session, task) = with_arch_only_gguf(
+            vokra_models::gigaam::multilingual::ARCH,
+            "gigaam-multilingual-routed",
+            |path| load_session(path).expect("GigaAM Multilingual session builds bare"),
+        );
+        assert_eq!(task, ModelTask::AsrGigaamMultilingual);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != vokra_models::gigaam::multilingual::ARCH),
+            "a routed GigaAM Multilingual forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
     fn load_session_detects_parakeet_tdt_1_1b_as_native_asr_task() {
         let mut builder = vokra_core::gguf::GgufBuilder::new();
         builder.add_string("vokra.model.arch", ARCH_PARAKEET_TDT_1_1B);
@@ -3932,10 +3986,10 @@ mod tests {
         );
     }
 
-    /// The registry must not carry either arch again. `assert_routed_to_whisper_asr`
-    /// checks the message a user sees; this checks the data behind it, so a
-    /// re-added row fails here with a direct explanation rather than only as a
-    /// downstream symptom.
+    /// The registry must not carry these concrete ASR routes again.
+    /// `assert_routed_to_whisper_asr` checks the message a user sees; this
+    /// checks the data behind it, so a re-added row fails here with a direct
+    /// explanation rather than only as a downstream symptom.
     #[test]
     fn bound_arch_registry_excludes_routed_asr_forwards() {
         for arch in [
@@ -3946,6 +4000,8 @@ mod tests {
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_QWEN3_ASR,
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+            vokra_models::gigaam::multilingual::ARCH,
             ARCH_NEMOTRON_ASR,
             ARCH_CANARY_1B_FLASH,
             ARCH_REAZONSPEECH_NEMO_V2,
@@ -3953,8 +4009,8 @@ mod tests {
         ] {
             assert!(
                 BOUND_ARCHES.iter().all(|b| b.arch != arch),
-                "`{arch}` has a real ASR forward and is \
-                 routed to ModelTask::Asr — a BOUND_ARCHES row for it is both unreachable \
+                "`{arch}` has a real ASR forward and is routed to a concrete ModelTask — a \
+                 BOUND_ARCHES row for it is both unreachable \
                  and untrue"
             );
         }
@@ -4452,6 +4508,8 @@ mod tests {
             ARCH_TITANET,
             ARCH_VOXTRAL,
             ARCH_QWEN3_ASR,
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+            vokra_models::gigaam::multilingual::ARCH,
             ARCH_ULTRAVOX,
             ARCH_MOSS_AUDIO,
             ARCH_KOKORO,

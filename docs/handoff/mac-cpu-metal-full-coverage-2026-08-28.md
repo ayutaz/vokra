@@ -209,15 +209,13 @@ of these bullets closes a model row until the named real run succeeds:
   dedicated `.venv`; all passed. The current Apple contract count is therefore
   37 passing and one intentionally blocked. No Apple real-weight execution
   occurred.
-- OmniASR rejects metadata-only GGUFs, has a safe `weights_only=True` 807-tensor
-  inspection preparer and a no-upload VAST inspection worker. A native
-  waveform frontend, grouped positional convolution, projected 48-layer
-  pre-norm Transformer and CTC-token forward are staged for both the 1B and
-  300M configuration axes. The loader still fail-closes because the pinned
-  fairseq2 checkpoint tensor names, weight-normalized positional-convolution
-  representation and QKV checkpoint layout have not yet been authenticated by
-  a VAST-produced manifest. The worker therefore records `INSPECTION_ONLY`,
-  never parity.
+- OmniASR has an authenticated VAST manifest for the pinned 1B prepared/source
+  identity and exact 807-F32 tensor contract; the native waveform frontend,
+  grouped positional convolution, projected 48-layer pre-norm Transformer,
+  and CTC-token binder are staged. Real VAST numerical parity and the Apple
+  CPU/Metal verdict remain pending, and the external tokenizer is outside the
+  GGUF (the runtime boundary produces token IDs). No public artifact
+  replacement or publish is claimed here.
 - No-upload VAST validation workers are staged for NSNet2, ECAPA-TDNN,
   WeSpeaker and SpeechBrain VoxLingua107 Lang-ID. They pin source revisions,
   authenticate available checkpoint/public-artifact digests, generate an

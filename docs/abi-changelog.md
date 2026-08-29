@@ -4107,6 +4107,58 @@ surface against all of these to build the "0.1 → 1.0" (cumulative) and
       CI required-check wiring is M4-12's call so that PRs are not
       blocked on a still-churning v0.9 header.
 
+### 2026-08-30 — GigaAM Conv1d/RoPE public Rust source change (pre-1.0 advisory)
+
+`vokra-ops::conformer` extends the existing public Rust surface with the
+authenticated GigaAM stem and attention semantics. `ConvSubsampleKind::Conv1d`
+now carries explicit `kernel`, `stride`, and symmetric `padding`, and
+`PositionEncoding::GigaamRope` records the pre-projection rotate-half variant
+(`theta=5000`, `max_len=5000`): rotate-half is applied to the raw hidden input
+for Q/K before their linear projections, while V is projected from the
+original unrotated hidden input. `ConformerSubsampleWeights` carries the four
+explicit stem tensors, and `ConformerEncoder::forward_with_valid_frames`
+exposes the padded-batch tail mask contract. The existing post-projection
+adjacent-pair `PositionEncoding::Rope` is unchanged.
+
+This is a Rust source-level change; the C ABI is unchanged. These public types
+are not marked `#[non_exhaustive]`: adding enum variants can break external
+exhaustive matches, and adding fields to the public subsample struct can break
+external struct literals. That source compatibility impact is accepted under
+the pre-1.0 Rust contract. The execution meaning of all existing variants is
+unchanged; the new Conv1d and GigaAM RoPE variants are explicit additions.
+The generated public API snapshot keeps the type entries; method/field details
+are recorded here until the next snapshot refresh. Source semantics are pinned to
+`salute-developers/GigaAM@7447938d791c4f3e643386ee22c33777004293a5`.
+The fixed multilingual `config.json` is SHA-256
+`c830232c7d51688a630a221517b52585ab5ee57e1d3c21bcbae01759351d2653` and
+explicitly sets `preprocessor.center=false`; this is a checkpoint config
+override, not an assumption about the upstream processor default. The
+multilingual binder/converter remain fail-closed until an independently
+reviewed VAST SHA-256 for the prepared safetensors artifact is recorded.
+This does not claim source-complete behavior or Metal support; Metal remains
+explicitly unsupported until every learned operation is dispatched.
+
+### 2026-08-30 — OmniASR-CTC-1B strict identity and native binder (pre-1.0 advisory)
+
+The OmniASR-CTC-1B conversion/runtime contract is now strict and additive.
+Only `facebook/omniASR-CTC-1B@8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`
+is accepted, with source SHA-256
+`e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c` and
+prepared-artifact SHA-256
+`cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`.
+The converter and native binder require and consume the complete authenticated
+807-tensor F32 manifest, including the source q/k/v ordering and positional
+convolution weight-normalization contract; arbitrary, partial, or alternate
+dtype GGUFs fail closed.
+
+The native waveform frontend, grouped positional convolution, projected
+48-layer encoder, and CTC token-ID path are staged for the CPU and Metal
+Compute routes. This entry records no real VAST numerical-parity result and no
+Apple verdict: both validations remain pending. Tokenization remains an
+external SentencePiece boundary, so the runtime produces token IDs rather than
+claiming an embedded tokenizer. It also makes no claim that a live public
+artifact was replaced or published.
+
 ### Post-1.0 semver contract (rejection of the pre-1.0 free-change rule)
 
 The "Pre-1.0 policy (prerelease semver)" section above **is explicitly

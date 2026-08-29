@@ -7,8 +7,10 @@
 //! ```
 //!
 //! The task is detected from the model architecture (see [`crate::engine`]);
-//! VAD prints per-frame speech-probability summary, ASR prints the transcript,
-//! and TTS writes a WAV (or reports the sample count when `--output` is absent).
+//! VAD prints per-frame speech-probability summary, text-capable ASR prints a
+//! transcript, omniASR-CTC prints native token IDs because its tokenizer is
+//! external, and TTS writes a WAV (or reports the sample count when `--output`
+//! is absent).
 
 use std::process::ExitCode;
 
@@ -32,6 +34,10 @@ USAGE:
                   [--deterministic] [--far-end <reference.wav>]
     vokra-cli run --model <whisper.gguf> --input <in.wav> --word-timestamps
     vokra-cli run --model <parakeet-tdt.gguf> --input <16k-mono.wav>
+    vokra-cli run --model <omniasr-ctc-1b.gguf> --input <16k-mono.wav> \
+                  [--output <token-ids.txt>]
+    vokra-cli run --model <gigaam-multilingual.gguf> --input <16k-mono.wav> \
+                  [--output <transcript.txt>]
     vokra-cli run --model <canary-1b-flash.gguf> --input <16k-mono.wav> \
                   [--language en|de|es|fr] [--target-language en|de|es|fr]
     vokra-cli run --model <nemotron-asr.gguf> --input <16k-mono.wav> \
@@ -1536,6 +1542,8 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AsrCanary1bFlash
         | ModelTask::AsrCanary1bV2
         | ModelTask::AsrParakeetTdt11b
+        | ModelTask::AsrOmniasrCtcTokens
+        | ModelTask::AsrGigaamMultilingual
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
         | ModelTask::VadFirered
@@ -2050,6 +2058,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrParakeetTdt11b => {
             run_parakeet_tdt_1_1b(&session, &a)?;
+        }
+        ModelTask::AsrOmniasrCtcTokens => {
+            run_omniasr_ctc_tokens(&session, &a)?;
+        }
+        ModelTask::AsrGigaamMultilingual => {
+            run_gigaam_multilingual(&session, &a)?;
         }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = a
@@ -6796,6 +6810,116 @@ fn run_qwen3_asr(a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs the manifest-authenticated omniASR-CTC-1B waveform-to-token path.
+///
+/// The released GGUF contains no tokenizer, so this route intentionally emits
+/// the native CTC token IDs. A caller that needs text must apply the separately
+/// versioned SentencePiece tokenizer; the CLI never fabricates a transcript.
+fn run_omniasr_ctc_tokens(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::omniasr_ctc::{OMNIASR_CTC_SAMPLE_RATE, OmniasrCtcAsr};
+
+    if a.text.is_some() {
+        return Err(
+            "run (omniASR-CTC): --text is not accepted; the external SentencePiece tokenizer is not embedded and this route emits token IDs"
+                .to_owned(),
+        );
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (omniASR-CTC): beam-search flags are not supported; the native route exposes deterministic greedy CTC token IDs"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (omniASR-CTC): --input <16k-mono.wav> is required")?;
+    let clip =
+        wav::read_wav(path).map_err(|error| format!("run (omniASR-CTC): {path}: {error}"))?;
+    if clip.sample_rate != OMNIASR_CTC_SAMPLE_RATE {
+        return Err(format!(
+            "run (omniASR-CTC): {path} is {} Hz, expected {OMNIASR_CTC_SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (omniASR-CTC): --input WAV contains no samples".to_owned());
+    }
+
+    let model = OmniasrCtcAsr::from_gguf(session.gguf())
+        .map_err(|error| format!("run (omniASR-CTC) bind: {error}"))?
+        .with_backend(a.backend);
+    let token_ids = model
+        .transcribe_tokens(&clip.samples)
+        .map_err(|error| format!("run (omniASR-CTC) forward: {error}"))?;
+    let rendered = token_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{rendered}\n"))
+            .map_err(|error| format!("run (omniASR-CTC): --output {output}: {error}"))?;
+        eprintln!(
+            "omniASR-CTC: wrote {} token ID(s) -> {output}",
+            token_ids.len()
+        );
+    } else {
+        println!("omniASR-CTC: token_ids={rendered}");
+    }
+    Ok(())
+}
+
+/// Runs the authenticated GigaAM Multilingual greedy CTC transcript route.
+fn run_gigaam_multilingual(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::gigaam::multilingual::{GigaamMultilingual, SAMPLE_RATE};
+
+    if a.text.is_some() {
+        return Err(
+            "run (GigaAM Multilingual): --text is not accepted; this is a waveform-to-transcript ASR route"
+                .to_owned(),
+        );
+    }
+    if a.beam_size != 1 || a.no_repeat_ngram != 0 || a.length_penalty.to_bits() != 0.6f32.to_bits()
+    {
+        return Err(
+            "run (GigaAM Multilingual): beam-search flags are not supported; the native route uses deterministic greedy CTC decoding"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (GigaAM Multilingual): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)
+        .map_err(|error| format!("run (GigaAM Multilingual): {path}: {error}"))?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (GigaAM Multilingual): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first (FR-EX-08: never a silent resample)",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (GigaAM Multilingual): --input WAV contains no samples".to_owned());
+    }
+    let model = GigaamMultilingual::from_gguf(session.gguf())
+        .map_err(|error| format!("run (GigaAM Multilingual) bind: {error}"))?
+        .with_backend(a.backend)
+        .map_err(|error| format!("run (GigaAM Multilingual) backend: {error}"))?;
+    let transcript = model
+        .transcribe(&clip.samples)
+        .map_err(|error| format!("run (GigaAM Multilingual) forward: {error}"))?;
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{transcript}\n"))
+            .map_err(|error| format!("run (GigaAM Multilingual): --output {output}: {error}"))?;
+        eprintln!("GigaAM Multilingual: wrote transcript -> {output}");
+    } else {
+        println!("asr: {transcript}");
+    }
+    Ok(())
+}
+
 fn parse_canary_language(
     code: &str,
 ) -> Result<vokra_models::canary_1b_flash::CanaryLanguage, String> {
@@ -7461,6 +7585,44 @@ mod tests {
             Ok(_) => panic!("bare --mimi must be rejected"),
         };
         assert!(err.contains("--mimi requires a GGUF path"), "got: {err}");
+    }
+
+    #[test]
+    fn gigaam_route_validates_a_16k_mono_wav_before_bind_gate() {
+        let stem = format!("vokra-cli-gigaam-route-{}", std::process::id());
+        let mut model_path = std::env::temp_dir();
+        model_path.push(format!("{stem}.gguf"));
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!("{stem}.wav"));
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::gigaam::multilingual::ARCH,
+        );
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::gigaam::multilingual::NAME,
+        );
+        let bytes = builder.to_bytes().expect("serialize route fixture");
+        std::fs::write(&model_path, bytes).expect("write route fixture");
+        wav::write_wav(&wav_path, &[0.125; 320], 16_000).expect("write valid WAV fixture");
+        let (session, task) = engine::load_session(model_path.to_str().unwrap()).expect("route");
+        assert_eq!(task, ModelTask::AsrGigaamMultilingual);
+        let parsed = parse_args(&args(&[
+            "--model",
+            model_path.to_str().unwrap(),
+            "--input",
+            wav_path.to_str().unwrap(),
+        ]))
+        .expect("valid GigaAM route args");
+        let error = run_gigaam_multilingual(&session, &parsed).unwrap_err();
+        assert!(
+            error.contains("prepared safetensors digest")
+                || error.contains("prepared-artifact digest"),
+            "valid WAV reached the authenticated binder gate: {error}"
+        );
+        let _ = std::fs::remove_file(model_path);
+        let _ = std::fs::remove_file(wav_path);
     }
 
     #[test]
@@ -9580,6 +9742,11 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bFlash), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrCanary1bV2), None);
         assert_eq!(cpu_only_engine_label(ModelTask::AsrParakeetTdt11b), None);
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrOmniasrCtcTokens), None);
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::AsrGigaamMultilingual),
+            None
+        );
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);
@@ -10102,6 +10269,67 @@ mod tests {
             err_unset.contains("--input"),
             "default reaches the VAD task: {err_unset}"
         );
+    }
+
+    #[test]
+    fn omniasr_cli_options_reject_text_and_beam_but_allow_backend_route() {
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::omniasr_ctc::EXPECTED_ARCH,
+        );
+        let bytes = builder.to_bytes().expect("serialize metadata-only GGUF");
+        let model = std::env::temp_dir().join(format!(
+            "vokra-cli-omniasr-options-{}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&model, bytes).expect("write metadata-only GGUF");
+
+        let model_arg = model.to_str().expect("temporary path is UTF-8");
+        let input = std::env::temp_dir().join(format!(
+            "vokra-cli-omniasr-options-{}-input.wav",
+            std::process::id()
+        ));
+        wav::write_wav(&input, &[0.1; 16_000], 16_000).expect("write valid 16k mono WAV");
+        let input_arg = input.to_str().expect("temporary input path is UTF-8");
+        let text_error = main(&args(&[
+            "--model",
+            model_arg,
+            "--text",
+            "must-not-be-decoded",
+        ]))
+        .expect_err("omniASR must not fabricate text without its tokenizer");
+        assert!(
+            text_error.contains("--text is not accepted"),
+            "{text_error}"
+        );
+
+        let beam_error = main(&args(&["--model", model_arg, "--beam-size", "2"]))
+            .expect_err("unsupported OmniASR beam options must fail explicitly");
+        assert!(
+            beam_error.contains("beam-search flags are not supported"),
+            "{beam_error}"
+        );
+
+        let backend_error = main(&args(&[
+            "--model",
+            model_arg,
+            "--input",
+            input_arg,
+            "--backend",
+            "metal",
+        ]))
+        .expect_err("metadata-only fixture must fail at the strict binder");
+        assert!(
+            !backend_error.contains("--backend metal is not supported for this model"),
+            "OmniASR is backend-honoring: {backend_error}"
+        );
+        assert!(
+            backend_error.contains("run (omniASR-CTC) bind"),
+            "Metal route reaches the concrete binder: {backend_error}"
+        );
+        let _ = std::fs::remove_file(model);
+        let _ = std::fs::remove_file(input);
     }
 
     /// (a) `--backend cuda` on the CSM (S2S) arch still reaches the explicit

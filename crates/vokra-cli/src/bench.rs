@@ -691,6 +691,82 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
             })?;
             ("asr-qwen3", audio_seconds, samples)
         }
+        ModelTask::AsrOmniasrCtcTokens => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (omniASR-CTC): --input <16k-mono.wav> is required")?;
+            if args.text.is_some() {
+                return Err(
+                    "bench (omniASR-CTC): --text is not accepted; this route measures external-tokenizer-free token IDs"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE {
+                return Err(format!(
+                    "bench (omniASR-CTC): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE,
+                ));
+            }
+            if clip.samples.is_empty() {
+                return Err("bench (omniASR-CTC): --input WAV contains no samples".to_owned());
+            }
+            let audio_seconds = clip.samples.len() as f64
+                / f64::from(vokra_models::omniasr_ctc::OMNIASR_CTC_SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model = vokra_models::omniasr_ctc::OmniasrCtcAsr::from_gguf(session.gguf())
+                .map_err(|error| format!("bench (omniASR-CTC) bind: {error}"))?
+                .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe_tokens(&pcm)
+                    .map_err(|error| format!("bench (omniASR-CTC) forward: {error}"))?;
+                Ok(())
+            })?;
+            ("asr-omniasr-ctc-tokens", audio_seconds, samples)
+        }
+        ModelTask::AsrGigaamMultilingual => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (GigaAM Multilingual): --input <16k-mono.wav> is required")?;
+            if args.text.is_some() {
+                return Err(
+                    "bench (GigaAM Multilingual): --text is not accepted; this route benchmarks waveform-to-transcript CTC"
+                        .to_owned(),
+                );
+            }
+            let clip = wav::read_wav(path)?;
+            if clip.sample_rate != vokra_models::gigaam::multilingual::SAMPLE_RATE {
+                return Err(format!(
+                    "bench (GigaAM Multilingual): {path} is {} Hz, expected {} Hz — resample offline first",
+                    clip.sample_rate,
+                    vokra_models::gigaam::multilingual::SAMPLE_RATE,
+                ));
+            }
+            if clip.samples.is_empty() {
+                return Err(
+                    "bench (GigaAM Multilingual): --input WAV contains no samples".to_owned(),
+                );
+            }
+            let audio_seconds = clip.samples.len() as f64
+                / f64::from(vokra_models::gigaam::multilingual::SAMPLE_RATE);
+            let pcm = clip.samples;
+            let model =
+                vokra_models::gigaam::multilingual::GigaamMultilingual::from_gguf(session.gguf())
+                    .map_err(|error| format!("bench (GigaAM Multilingual) bind: {error}"))?
+                    .with_backend(args.backend)
+                    .map_err(|error| format!("bench (GigaAM Multilingual) backend: {error}"))?;
+            let samples = time_iters(args.warmup, args.iters, || {
+                model
+                    .transcribe(&pcm)
+                    .map_err(|error| format!("bench (GigaAM Multilingual) forward: {error}"))?;
+                Ok(())
+            })?;
+            ("asr-gigaam-multilingual", audio_seconds, samples)
+        }
         // Same posture for the Moshi duplex (M4-06): per-frame latency
         // reference numbers ride the duplex demo + owner track (T26/T30).
         ModelTask::S2sDuplex => {

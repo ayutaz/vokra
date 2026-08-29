@@ -366,18 +366,26 @@ pub enum ModelKind {
     /// CTC decoding is a host-side runtime function
     /// (`vokra_ops::ctc_decode`). Apache-2.0 weight (`Permissive` —
     /// no runtime-side attribution obligation, unlike NVIDIA's CC-BY 4.0
-    /// Parakeet-CTC / Canary). Every hparam is transcribed verbatim
-    /// from the fairseq2 registry walk
+    /// Parakeet-CTC / Canary). The converter accepts only the pinned
+    /// `facebook/omniASR-CTC-1B` release (upstream revision
+    /// `8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`, source digest
+    /// `e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c`,
+    /// prepared digest
+    /// `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`)
+    /// and its exact 807-entry F32 tensor manifest. The strict runtime
+    /// binder consumes that same name/shape/dtype contract, including the
+    /// source q/k/v ordering and positional-convolution weight norm.
+    /// Every hparam is transcribed verbatim from the fairseq2 registry walk
     /// (`omnilingual_asr/models/wav2vec2_asr/config.py::_1b_asr` →
     /// `wav2vec2_ssl/config.py::_1b_ssl` →
     /// `fairseq2/models/wav2vec2/config.py::large_lv60k`); the HF
     /// release carries no `config.json`, only the `.pt` + a
     /// SentencePiece tokenizer. Reuses `vokra_ops::ctc_decode`
     /// (greedy / beam CTC decoding); the wav2vec 2.0 encoder body is a
-    /// distinct topology from FastConformer — no shared
-    /// `vokra_ops::wav2vec2_encoder` op today (the "may need new op"
-    /// note is deliberately deferred; the scaffold stops at shape /
-    /// weight-store flow).
+    /// distinct topology from FastConformer. The native waveform encoder
+    /// and CTC path are staged for the runtime's CPU and Metal Compute
+    /// backends; this entry does not claim a completed VAST numerical
+    /// parity run or Apple verdict.
     OmniasrCtc,
     /// Resemble AI **Chatterbox-Multilingual** T3 safetensors checkpoint
     /// (SoTA plan Phase 3, 2026-07-24). MIT weight + code. T3 =
@@ -7439,17 +7447,15 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::OmniasrCtc => {
-            // SoTA plan Phase 2: pass every F32/F16 tensor through
-            // verbatim and stamp the `vokra.omniasr_ctc.*` chunk group
-            // (wav2vec 2.0 encoder + CTC head — no decoder or joint
-            // section, since CTC has no RNN-T prediction network) from
-            // the primary-source constants transcribed in
-            // `models::omniasr_ctc`. Provenance = Apache-2.0
-            // (Permissive) — no runtime-side attribution obligation,
-            // unlike NVIDIA's CC-BY 4.0 Parakeet-CTC / Canary.
+            // The strict OmniASR converter accepts only the pinned prepared
+            // bytes and exact 807-entry F32 manifest. It stamps the source
+            // and prepared identities only after the input digest gate;
+            // the native runtime binder consumes the same tensor contract.
+            // CTC has no decoder or joint section, and the external
+            // tokenizer remains outside the GGUF (runtime output is IDs).
             let (builder, report) = models::omniasr_ctc::convert(bytes)?;
             let mut notes = vec![format!(
-                "omniasr-ctc: {} float weights written verbatim, {} non-float skipped",
+                "omniasr-ctc: {} manifest-authenticated F32 weights written, {} non-F32 skipped (always zero on success)",
                 report.written, report.skipped_non_float,
             )];
             notes.extend(
@@ -14530,13 +14536,13 @@ pub fn convert_canary_qwen_file(
 ///
 /// This is the named entry point that mirrors `convert_parakeet_ctc_file` /
 /// `convert_canary_file` / `convert_kyutai_stt_file`. It is functionally
-/// identical to `convert_file(ModelKind::OmniasrCtc, input, output)` —
-/// omniASR-CTC has no side-car config or tokenizer to embed at this
-/// scaffold stage (every hparam is transcribed as constants in
-/// `models::omniasr_ctc`; the fairseq2 registry walk fixes every axis,
-/// and the SentencePiece char tokenizer ships separately on the HF
-/// release) — but the named entry keeps the `convert_*_file` naming
-/// symmetry with the other ASR / TTS models.
+/// identical to `convert_file(ModelKind::OmniasrCtc, input, output)` and
+/// accepts only the pinned prepared artifact and its exact 807-entry F32
+/// manifest. The runtime binder rejects any other provenance, tensor name,
+/// shape, dtype, or QKV/positional-convolution layout. No side-car tokenizer
+/// is embedded: the external SentencePiece tokenizer supplies token IDs.
+/// The prepared/source digests and upstream revision are stamped only after
+/// the input-byte digest gate succeeds.
 ///
 /// # Architecture summary
 ///
@@ -14547,9 +14553,9 @@ pub fn convert_canary_qwen_file(
 ///   Layer Normalization and bias (large_lv60k axes). The positional
 ///   encoder is a single grouped Conv1D (`pos_conv_kernel_size=128`,
 ///   `num_pos_conv_groups=16`). The wav2vec 2.0 encoder is a distinct
-///   topology from the FastConformer used by Parakeet-CTC — no shared
-///   `vokra_ops::wav2vec2_encoder` op today (the task note's "may need
-///   new op" is deliberately deferred).
+///   topology from the FastConformer used by Parakeet-CTC. Native CPU and
+///   Metal Compute execution is staged through the strict runtime binder;
+///   independent VAST numerical parity and Apple validation remain pending.
 /// - CTC head: single Linear from `model_dim=1280` to
 ///   `target_vocab_size=9812`, with bias (fairseq2 default
 ///   `final_proj_bias=True`). **`blank_id = 0`** — the fairseq2 wav2vec
@@ -14576,16 +14582,17 @@ pub fn convert_canary_qwen_file(
 /// - License = **Apache-2.0** (`Permissive`), not CC-BY 4.0
 ///   (`AttributionRequired`) — no runtime-side attribution obligation.
 ///
-/// # BF16 posture
+/// # Tensor and identity contract
 ///
-/// The `facebook/omniASR-CTC-1B.pt` checkpoint is `torch.float32` per
-/// the fairseq2 release; no BF16 pass-through is required to convert
-/// the release build. A downstream that pre-widens to F16 offline
-/// lands on the F16 arm (also pass-through); BF16 tensors reach the
-/// `skipped_non_float` counter — never a silent widen (T29-equivalent
-/// — the Moshi pattern). Provenance is stamped **Apache-2.0**
-/// (`Permissive`) so the M2-13 gate passes commercially without an
-/// attribution obligation on the runtime side.
+/// The accepted prepared bytes have SHA-256
+/// `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`;
+/// the bound manifest contains exactly 807 named `torch.float32` tensors.
+/// There is no F16/BF16 pass-through: non-F32 input is rejected, as are
+/// missing, extra, renamed, reshaped, or otherwise tampered tensors.
+/// The source checkpoint identity is
+/// `facebook/omniASR-CTC-1B@8c22e3ffdaa4aab6431b128b84b991a7d9c2515c`
+/// with source SHA-256
+/// `e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c`.
 ///
 /// # Errors
 ///
