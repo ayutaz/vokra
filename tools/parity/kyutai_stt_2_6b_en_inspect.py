@@ -8,14 +8,16 @@ from typing import Any
 REPO="kyutai/stt-2.6b-en"; REV="a07aec56d22be5589cd0bc8709c75b6cf3e3039d"
 SOURCE_URL="https://github.com/kyutai-labs/delayed-streams-modeling.git"; SOURCE_REV="4c4f65e147df056adf3346290d64c7b9649b18c9"
 MOSHI_URL="https://github.com/kyutai-labs/moshi.git"; MOSHI_REV="e6a55d2722a65870ef52a6c9f6ecfc0e90f38362"
-MODEL_FILES={".gitattributes","README.md","config.json","mimi-pytorch-e351c8d8@125.safetensors","model.safetensors","tokenizer_spm_4k_en.model"}
+TOKENIZER_NAME="tokenizer_en_audio_4000.model"
+LEGACY_TOKENIZER_NAME="tokenizer_spm_4k_en.model"
+MODEL_FILES={".gitattributes","README.md","config.json","mimi-pytorch-e351c8d8@125.safetensors","model.safetensors",TOKENIZER_NAME}
 ARTIFACTS={
 ".gitattributes":(1519,"a6344aac8c09253b3b630fb776ae94478aa0275b",None),
 "README.md":(3782,"e201a9359812bf30ba1279688afc59d39a2f9164",None),
 "config.json":(1257,"cb670551e4f81233fa9f60e025f9101e14b7bc88",None),
 "mimi-pytorch-e351c8d8@125.safetensors":(384644900,"c8d5e4cd18a5c1ce05bb89d81144a46cf1b9076c","09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50"),
 "model.safetensors":(5234275128,"9b68cd59de6c20acf683281b53999639d442beab","2471add7da1fdb2d5dc4561e88a9069376333d992760d55d29d1db46c52849b2"),
-"tokenizer_spm_4k_en.model":(59339,"1820a7cbb15efc6a33dd365113c07e3df9d28d80","d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"),
+TOKENIZER_NAME:(59339,"1820a7cbb15efc6a33dd365113c07e3df9d28d80","d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"),
 }
 FIXED_SHA256={"README.md":"6a93b7d998b32cb65f07e8948508004421042f100130c3572de13af5cab9e4f9","config.json":"b79ea52a30329887a2d0ce2dd5473a63fc5083e441e7986f64f01050c06239c9"}
 HISTORICAL_PUBLIC_ARTIFACT={"repository":"vokra/kyutai-stt-2.6b-en","revision":"c8f5779f1471f34734aafe1999082ca33862bc5e","path":"model.gguf","bytes":5234266976,"git_blob_sha1":"f3735afd029fa1f168af6ba9bed7e8f83045344b","lfs_sha256":"d25302da6650309c094d0cbf10cfecfb507c31408b820304bda0c3195482f990","status":"STALE_PRECONTRACT_BLOCKER"}
@@ -24,6 +26,11 @@ MAX_HEADER=64*1024*1024
 ROLES=("configs/config-stt-en-hf.toml","scripts/stt_evaluate_on_dataset.py","scripts/stt_from_file_mlx.py","scripts/stt_from_file_pytorch.py","scripts/stt_from_file_rust_server.py","scripts/stt_from_file_with_prompt_pytorch.py","scripts/stt_from_mic_mlx.py","scripts/stt_from_mic_rust_server.py","stt-rs/src/main.rs","README.md","LICENSE-APACHE","LICENSE-MIT")
 MOSHI_ROLES=("moshi/moshi/models/lm.py","moshi/moshi/models/lm_utils.py","moshi/moshi/models/loaders.py","moshi/moshi/conditioners/__init__.py","moshi/moshi/conditioners/base.py","moshi/moshi/conditioners/tensors.py","moshi/moshi/conditioners/text.py","rust/moshi-core/src/lm.rs","rust/moshi-core/src/lm_generate.rs","rust/moshi-core/src/lm_generate_multistream.rs","rust/moshi-core/src/mimi.rs","rust/moshi-core/src/conditioner.rs")
 HEX40=re.compile(r"^[0-9a-f]{40}$"); HEX64=re.compile(r"^[0-9a-f]{64}$")
+
+def require_fixed_model_files(names:set[str])->None:
+ if LEGACY_TOKENIZER_NAME in names: raise ValueError("legacy tokenizer filename is not accepted")
+ if TOKENIZER_NAME not in names: raise ValueError("authenticated tokenizer filename is missing")
+ if names!=MODEL_FILES: raise ValueError("fixed six-file tree mismatch")
 
 def sha(path:Path)->str:
  h=hashlib.sha256()
@@ -148,12 +155,13 @@ def source(root:Path,url:str,rev:str,roles:tuple[str,...])->dict[str,Any]:
   license_rows.append({"path":name,"bytes":path.stat().st_size,"sha256":sha(path),"encoding":"utf-8"})
  return {"origin":origin,"revision":head,"roles":role_rows,"license_records":license_rows}
 def base()->dict[str,Any]:
- return {"format":"vokra-kyutai-stt-2.6b-en-inspection-v1","status":"BLOCKED","inspection_status":"PENDING","evidence_stage":"INSPECTION_ONLY","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":REPO,"revision":REV,"license":"CC-BY-4.0","files":ARTIFACTS,"total_bytes":TOTAL},"historical_public_artifact":HISTORICAL_PUBLIC_ARTIFACT,"blockers":["real model/Mimi/tokenizer tensor binder is not implemented","native STT forward and independent CPU parity are not complete","dataset provenance and dependencies require separate review","Metal backend is blocked by CPU completion","config tokenizer_name is tokenizer_en_audio_4000.model but the fixed tree provides tokenizer_spm_4k_en.model"]}
+ return {"format":"vokra-kyutai-stt-2.6b-en-inspection-v1","status":"BLOCKED","inspection_status":"PENDING","evidence_stage":"INSPECTION_ONLY","runtime_status":"NOT_IMPLEMENTED_FAIL_CLOSED","cpu_status":"UNSUPPORTED","metal_status":"BLOCKED_BY_CPU","parity_status":"NOT_RUN","publication":"NO_UPLOAD","model":{"repository":REPO,"revision":REV,"license":"CC-BY-4.0","files":ARTIFACTS,"total_bytes":TOTAL},"historical_public_artifact":HISTORICAL_PUBLIC_ARTIFACT,"blockers":["real model/Mimi/tokenizer tensor binder is not implemented","native STT forward and independent CPU parity are not complete","dataset provenance and dependencies require separate review","Metal backend is blocked by CPU completion"]}
 def inspect(a:argparse.Namespace)->int:
  m=base()
  try:
   snap=Path(a.snapshot); m["server_tree"]=server_tree(json.loads(Path(a.server_tree).read_text(encoding="utf-8"),object_pairs_hook=unique),snap); fs=files(snap)
-  if set(fs)!=MODEL_FILES or sum(p.stat().st_size for p in fs.values())!=TOTAL: raise ValueError("fixed six-file tree/total mismatch")
+  require_fixed_model_files(set(fs))
+  if sum(p.stat().st_size for p in fs.values())!=TOTAL: raise ValueError("fixed six-file tree/total mismatch")
   readme=fs["README.md"].read_text(encoding="utf-8").lower()
   markers=["license: cc-by-4.0","streaming","mimi","12.5","32","english-only","2.5","dataset"]
   if any(x not in readme for x in markers): raise ValueError("README evidence marker missing")
@@ -166,7 +174,7 @@ def inspect(a:argparse.Namespace)->int:
    h=st_header(fs[name]); m["weights"][name]={"header":h,"bytes":fs[name].stat().st_size,"sha256":sha(fs[name]),"tensor_count":len(h["tensors"])}
   try:
    import sentencepiece as spm
-   sp=spm.SentencePieceProcessor(model_file=str(fs["tokenizer_spm_4k_en.model"])); m["tokenizer"]={"piece_count":sp.get_piece_size(),"first": [sp.id_to_piece(i) for i in range(min(20,sp.get_piece_size()))],"last":[sp.id_to_piece(i) for i in range(max(0,sp.get_piece_size()-10),sp.get_piece_size())],"unk_id":sp.unk_id(),"bos_id":sp.bos_id(),"eos_id":sp.eos_id(),"pad_id":sp.pad_id()}
+   sp=spm.SentencePieceProcessor(model_file=str(fs[TOKENIZER_NAME])); m["tokenizer"]={"name":TOKENIZER_NAME,"piece_count":sp.get_piece_size(),"first": [sp.id_to_piece(i) for i in range(min(20,sp.get_piece_size()))],"last":[sp.id_to_piece(i) for i in range(max(0,sp.get_piece_size()-10),sp.get_piece_size())],"unk_id":sp.unk_id(),"bos_id":sp.bos_id(),"eos_id":sp.eos_id(),"pad_id":sp.pad_id()}
    if sp.get_piece_size()!=4000: raise ValueError("tokenizer text_card mismatch")
   except Exception as e: raise ValueError(f"SentencePiece inspection failed: {e}") from e
   m["official_source"]=source(Path(a.source),SOURCE_URL,SOURCE_REV,ROLES) if a.source else (_ for _ in ()).throw(ValueError("source required"))
@@ -177,6 +185,13 @@ def inspect(a:argparse.Namespace)->int:
  Path(a.evidence).mkdir(parents=True,exist_ok=True); (Path(a.evidence)/"manifest.json").write_text(json.dumps(m,indent=2,sort_keys=True)+"\n")
  return 2
 def self_test()->None:
+ assert TOKENIZER_NAME=="tokenizer_en_audio_4000.model" and ARTIFACTS[TOKENIZER_NAME]==(59339,"1820a7cbb15efc6a33dd365113c07e3df9d28d80","d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6")
+ assert LEGACY_TOKENIZER_NAME not in MODEL_FILES and LEGACY_TOKENIZER_NAME not in ARTIFACTS
+ assert sum(v[0] for v in ARTIFACTS.values())==5618985925
+ for bad in (MODEL_FILES-{TOKENIZER_NAME},(MODEL_FILES-{TOKENIZER_NAME})|{LEGACY_TOKENIZER_NAME},MODEL_FILES|{LEGACY_TOKENIZER_NAME}):
+  try:require_fixed_model_files(bad)
+  except ValueError:pass
+  else:raise AssertionError("legacy/missing/duplicate tokenizer tree accepted")
  try:json.loads('{"x":1,"x":2}',object_pairs_hook=unique)
  except ValueError:pass
  else:raise AssertionError("duplicate JSON key accepted")

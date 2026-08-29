@@ -13,6 +13,10 @@ SOURCE_REVISION="4c4f65e147df056adf3346290d64c7b9649b18c9"
 MOSHI_URL="https://github.com/kyutai-labs/moshi.git"
 MOSHI_REVISION="e6a55d2722a65870ef52a6c9f6ecfc0e90f38362"
 TOTAL_BYTES=5618985925
+TOKENIZER_NAME="tokenizer_en_audio_4000.model"
+TOKENIZER_BYTES=59339
+TOKENIZER_GIT_BLOB="1820a7cbb15efc6a33dd365113c07e3df9d28d80"
+TOKENIZER_LFS_SHA256="d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"
 WORK="/dev/shm/vokra-kyutai-stt-2-6b-en-inspection"
 MIN_MEM_KIB=$((128 * 1024 * 1024))
 MIN_TMPFS_KIB=$((32 * 1024 * 1024))
@@ -28,8 +32,9 @@ self_test() {
     'kyutai/stt-2.6b-en' 'a07aec56d22be5589cd0bc8709c75b6cf3e3039d' \
     'delayed-streams-modeling.git' '4c4f65e147df056adf3346290d64c7b9649b18c9' \
     'moshi.git' 'e6a55d2722a65870ef52a6c9f6ecfc0e90f38362' \
-    'mimi-pytorch-e351c8d8@125.safetensors' 'model.safetensors' 'tokenizer_spm_4k_en.model' \
-    'tokenizer_en_audio_4000.model' 'b79ea52a30329887a2d0ce2dd5473a63fc5083e441e7986f64f01050c06239c9' \
+    'mimi-pytorch-e351c8d8@125.safetensors' 'model.safetensors' 'tokenizer_en_audio_4000.model' \
+    '1820a7cbb15efc6a33dd365113c07e3df9d28d80' 'd461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6' \
+    'b79ea52a30329887a2d0ce2dd5473a63fc5083e441e7986f64f01050c06239c9' \
     '6a93b7d998b32cb65f07e8948508004421042f100130c3572de13af5cab9e4f9' \
     'c8f5779f1471f34734aafe1999082ca33862bc5e' 'd25302da6650309c094d0cbf10cfecfb507c31408b820304bda0c3195482f990' \
     '5618985925' 'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' \
@@ -93,6 +98,11 @@ PY
   fi
   if grep -Eq '^(HF_REVISION|SOURCE_REVISION|MOSHI_REVISION)=.*\$\{' "$path"; then
     log 'self-test FAIL: fixed identity is operator-overridable'; fail=1
+  fi
+  if ! sed -n '/^from huggingface_hub import snapshot_download$/,/^PY$/p' "$path" | sed '/^PY$/d' | \
+    UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
+      python -c 'import sys; compile(sys.stdin.read(), "snapshot_download_heredoc.py", "exec")'; then
+    log 'self-test FAIL: snapshot_download heredoc is not valid Python'; fail=1
   fi
   UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
     python "$INSPECTOR" --self-test >/dev/null || fail=1
@@ -219,7 +229,7 @@ from huggingface_hub import snapshot_download
 print(snapshot_download(repo_id=sys.argv[1], revision=sys.argv[2], local_dir=sys.argv[3],
                         allow_patterns=[".gitattributes", "README.md", "config.json",
                                         "mimi-pytorch-e351c8d8@125.safetensors", "model.safetensors",
-                                        "tokenizer_spm_4k_en.model"]))
+                                        "tokenizer_en_audio_4000.model"]))
 PY
 git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$work_dir/source/delayed-streams-modeling" >> "$work_dir/evidence/validation.log" 2>&1
 git -C "$work_dir/source/delayed-streams-modeling" checkout --detach "$SOURCE_REVISION" >> "$work_dir/evidence/validation.log" 2>&1
@@ -235,9 +245,10 @@ inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2, got $inspect_rc"
 [[ -s "$work_dir/evidence/manifest.json" ]] || die 'manifest missing'
-UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" <<'PY'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" "$TOKENIZER_NAME" "$TOKENIZER_BYTES" "$TOKENIZER_GIT_BLOB" "$TOKENIZER_LFS_SHA256" "$TOTAL_BYTES" <<'PY'
 import json, sys
-m = json.load(open(sys.argv[1], encoding="utf-8"))
+manifest_path, tokenizer_name, tokenizer_bytes, tokenizer_blob, tokenizer_lfs, total_bytes = sys.argv[1:]
+m = json.load(open(manifest_path, encoding="utf-8"))
 required = {
     "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY",
     "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED",
@@ -249,5 +260,26 @@ if m.get("inspection_status") != "AUTHENTICATED_EVIDENCE_COMPLETE":
     raise SystemExit("inspection evidence incomplete or errored")
 if m.get("inspection_status") == "INSPECTION_ERROR":
     raise SystemExit("inspection error was incorrectly accepted")
+model = m.get("model")
+if not isinstance(model, dict) or model.get("total_bytes") != int(total_bytes):
+    raise SystemExit("authenticated model total-byte evidence mismatch")
+files = model.get("files")
+if not isinstance(files, dict) or set(files) != {".gitattributes", "README.md", "config.json", "mimi-pytorch-e351c8d8@125.safetensors", "model.safetensors", tokenizer_name}:
+    raise SystemExit("authenticated six-file model evidence mismatch")
+if files.get(tokenizer_name) != [int(tokenizer_bytes), tokenizer_blob, tokenizer_lfs]:
+    raise SystemExit("authenticated tokenizer artifact evidence mismatch")
+tree_files = m.get("server_tree", {}).get("files", [])
+if "tokenizer_spm_4k_en.model" in files or any(isinstance(row, dict) and row.get("path") == "tokenizer_spm_4k_en.model" for row in tree_files):
+    raise SystemExit("legacy tokenizer filename leaked into authenticated evidence")
+config = m.get("config", {}).get("json")
+if not isinstance(config, dict) or config.get("tokenizer_name") != tokenizer_name:
+    raise SystemExit("config tokenizer_name does not match authenticated artifact")
+tree_files = m.get("server_tree", {}).get("files")
+if not isinstance(tree_files, list):
+    raise SystemExit("server-tree evidence is missing")
+tree = {row.get("path"): row for row in tree_files if isinstance(row, dict)}
+row = tree.get(tokenizer_name)
+if not isinstance(row, dict) or row.get("size") != int(tokenizer_bytes) or row.get("git_blob_sha1") != tokenizer_blob or row.get("lfs_sha256") != tokenizer_lfs:
+    raise SystemExit("server-tree tokenizer identity mismatch")
 PY
 die 'Kyutai STT inspection evidence preserved; native runtime/parity remain blocked'
