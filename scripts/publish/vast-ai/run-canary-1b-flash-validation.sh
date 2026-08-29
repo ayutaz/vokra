@@ -59,7 +59,7 @@ require_absent_work_dir() {
 UPSTREAM_REPO="nvidia/canary-1b-flash"
 UPSTREAM_REVISION="2b6e4d2dacb11cc1b1724de31bb48fe68c26c12e"
 MODEL_KIND="canary-1b-flash"
-PARITY_TEST="released_checkpoint_matches_official_nemo_greedy_tokens"
+PARITY_TEST="canary_1b_flash::tests::released_checkpoint_matches_official_nemo_greedy_tokens"
 GGUF_ENV="VOKRA_CANARY_REAL_GGUF"
 REFERENCE_PCM_ENV="VOKRA_CANARY_REFERENCE_PCM"
 REFERENCE_TOKENS_ENV="VOKRA_CANARY_REFERENCE_TOKENS"
@@ -68,6 +68,8 @@ TARGET_LANGUAGE_ENV="VOKRA_CANARY_TARGET_LANGUAGE"
 
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" tmp fail=0 cases=0 required
+  local parity_invocation="\"\$PARITY_TEST\" -- --exact --ignored"
+  local parity_harness_count
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -86,6 +88,18 @@ run_self_test() {
       fail=1
     fi
   done
+
+  cases=$((cases + 1))
+  if grep -En '^[[:space:]]+(released_checkpoint_matches_official_nemo_greedy_tokens|canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens)[[:space:]]+--' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: bare parity test name found" >&2
+    fail=1
+  fi
+  parity_harness_count="$(grep -Fc -- "$parity_invocation" "$script_path" || true)"
+  if [[ "$parity_harness_count" -ne 2 ]]; then
+    echo "run-canary-1b-flash-validation: self-test FAIL: expected two exact singleton parity harnesses, found $parity_harness_count" >&2
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' \
@@ -242,7 +256,7 @@ export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-en.tokens.txt"
 export "$SOURCE_LANGUAGE_ENV=en"
 export "$TARGET_LANGUAGE_ENV=en"
 run_logged cargo test --locked -p vokra-models \
-  "$PARITY_TEST" -- --ignored
+  "$PARITY_TEST" -- --exact --ignored
 
 # A different target language changes the Canary2 prompt and exercises AST,
 # so its exact token sequence is a separate independent-oracle gate rather
@@ -251,7 +265,7 @@ export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-de.pcm.f32"
 export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-de.tokens.txt"
 export "$TARGET_LANGUAGE_ENV=de"
 run_logged cargo test --locked -p vokra-models \
-  released_checkpoint_matches_official_nemo_greedy_tokens -- --ignored
+  "$PARITY_TEST" -- --exact --ignored
 
 run_logged target/release/vokra-cli run \
   --model "$work_dir/canary-1b-flash.gguf" \
