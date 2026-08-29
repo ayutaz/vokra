@@ -9,49 +9,19 @@ use std::path::Path;
 
 use crate::ConvertError;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub const ARCH: &str = "qwen2-omni";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub const NAME: &str = "qwen2-5-omni-7b";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub const CATEGORY: &str = "audio-llm";
 pub const UPSTREAM_HF: &str = "Qwen/Qwen2.5-Omni-7B";
 pub const UPSTREAM_HF_REVISION: &str = "ae9e1690543ffd5c0221dc27f79834d0294cba00";
 pub const OFFICIAL_SOURCE_REPOSITORY: &str = "https://github.com/QwenLM/Qwen2.5-Omni.git";
 pub const OFFICIAL_SOURCE_REVISION: &str = "d8a31ca56c0456b6edfcbcbf4bdbb6ae2200ef42";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only provenance is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only provenance until binding is authenticated.
 pub const TRANSFORMERS_TAG: &str = "v4.52.3";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only provenance is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only provenance until binding is authenticated.
 pub const TRANSFORMERS_REVISION: &str = "f4fc42216cd56ab6b68270bf80d811614d8d59e4";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

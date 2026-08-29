@@ -12,22 +12,10 @@ use vokra_core::gguf::GgufBuilder;
 use crate::ConvertError;
 
 /// Runtime architecture label retained for the existing dispatch contract.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub(crate) const ARCH: &str = "dia";
 /// Product model name retained for the existing dispatch contract.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "dia-1.6b";
 
 /// Compatibility report retained by the shared dispatcher's formatting path.
@@ -38,13 +26,7 @@ pub(crate) struct DiaReport {
     /// Always zero while conversion is inspection-only.
     pub(crate) skipped_non_float: usize,
     /// Always zero while conversion is inspection-only.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "report field is reserved for the future authenticated conversion"
-        )
-    )]
+    #[allow(dead_code)] // Reserved for the future authenticated conversion.
     pub(crate) bf16_passthrough: usize,
     /// Reserved for a future authenticated converter.
     pub(crate) notes: Vec<String>,

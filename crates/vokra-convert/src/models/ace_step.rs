@@ -26,29 +26,11 @@ use std::path::Path;
 
 use crate::ConvertError;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub const ARCH: &str = "ace_step";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub const NAME: &str = "ace-step-1.5";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub const CATEGORY: &str = "music";
 pub const UPSTREAM_HF: &str = "ACE-Step/Ace-Step1.5";
 pub const UPSTREAM_HF_REVISION: &str = "19671f406d603126926c1b7e2adc169acbcade22";

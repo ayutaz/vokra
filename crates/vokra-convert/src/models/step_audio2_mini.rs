@@ -9,41 +9,17 @@ use std::path::Path;
 
 use crate::ConvertError;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub(crate) const ARCH: &str = "step_audio2_mini";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "step-audio-2-mini";
 pub const UPSTREAM_HF: &str = "stepfun-ai/Step-Audio-2-mini";
 pub const UPSTREAM_HF_REVISION: &str = "e36fdd5d71e0ea22f09dd94bbab9bfc544ca1e36";
 pub const OFFICIAL_SOURCE_REPOSITORY: &str = "https://github.com/stepfun-ai/Step-Audio2.git";
 pub const OFFICIAL_SOURCE_REVISION: &str = "76e272b56c3917a8d7188f18bbb5a65dfc8a0845";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only provenance is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only provenance until binding is authenticated.
 pub const TRANSFORMERS_TAG: &str = "v4.49.0";
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only provenance is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only provenance until binding is authenticated.
 pub const TRANSFORMERS_REVISION: &str = "a22a4378d97d06b7a1d9abad6e0086d30fdea199";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

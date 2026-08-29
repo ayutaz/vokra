@@ -13,22 +13,10 @@ use vokra_core::gguf::GgufBuilder;
 use crate::ConvertError;
 
 /// Runtime architecture label retained for shared dispatch.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until binding is authenticated.
 pub(crate) const ARCH: &str = "zonos";
 /// Product model name retained for shared dispatch.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until binding is authenticated.
 pub(crate) const NAME: &str = "zonos-v0.1";
 
 /// Compatibility report retained by the dispatcher's formatting path.

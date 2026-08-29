@@ -23,34 +23,16 @@ use crate::ConvertError;
 
 /// `vokra.model.arch` for Canary-Qwen GGUFs — kept in sync with the
 /// runtime constant `vokra-models::canary_qwen::EXPECTED_ARCH`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only metadata is reserved for the authenticated converter"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only metadata for authenticated conversion.
 pub(crate) const ARCH: &str = "canary-qwen";
 /// `vokra.model.name` for Canary-Qwen GGUFs (canonical model id).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only metadata is reserved for the authenticated converter"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only metadata for authenticated conversion.
 pub(crate) const NAME: &str = "canary-qwen-2.5b";
 
 /// The FR-MD-09 attribution text stamped into
 /// `vokra.provenance.attribution` — wording aligned with `NOTICE` and
 /// the `docs/license-audit.md` NVIDIA Canary-Qwen row.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only attribution is reserved for the authenticated converter"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only attribution for authenticated conversion.
 pub(crate) const CANARY_QWEN_ATTRIBUTION_TEXT: &str = "This application uses NVIDIA Canary-Qwen-2.5B \
      (multimodal ASR + LLM: FastConformer encoder + Qwen LM decoder). \
      Model weights are licensed under CC-BY 4.0 (attribution required; \

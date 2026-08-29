@@ -262,13 +262,7 @@ pub(crate) struct VibeVoiceReport {
     /// Emits GGUF type 30 verbatim; runtime widens BF16 → f32 losslessly
     /// via the single choke point `crates/vokra-core/src/gguf/quant/mod.rs
     /// decode_bf16` (BF16 = top 16 bits of an f32 — `bits << 16` is exact).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "report field is reserved for the future authenticated conversion"
-        )
-    )]
+    #[allow(dead_code)] // Reserved for the future authenticated conversion.
     pub(crate) bf16_passthrough: usize,
     /// Operator-facing diagnostics (never fail the conversion — the
     /// runtime is the authoritative gate, FR-EX-08).

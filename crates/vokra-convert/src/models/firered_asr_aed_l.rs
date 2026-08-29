@@ -22,33 +22,15 @@ pub struct FireredAsrAedLReport {
 }
 
 /// Canonical architecture identifier retained for alias and dispatch tests.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained until native parity is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata until native parity is authenticated.
 pub const ARCH: &str = "firered_asr_aed_l";
 
 /// Canonical model name retained for metadata consumers.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only model metadata is retained until native parity is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only model metadata until native parity is authenticated.
 pub const NAME: &str = "firered-asr-aed-l";
 
 /// Canonical upstream repository.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only provenance is retained until the checkpoint is authenticated"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only provenance until the checkpoint is authenticated.
 pub const UPSTREAM_HF: &str = "FireRedTeam/FireRedASR-AED-L";
 
 /// Conversion is deliberately refused until inspection and native parity are

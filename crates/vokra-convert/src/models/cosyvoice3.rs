@@ -11,22 +11,10 @@ use vokra_core::gguf::GgufBuilder;
 use crate::ConvertError;
 
 /// `vokra.model.arch` retained for dispatch diagnostics.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained for the future authenticated binder"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata for the future binder.
 pub(crate) const ARCH: &str = "cosyvoice3";
 /// Canonical model name retained for dispatch diagnostics.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "inspection-only dispatch metadata is retained for the future authenticated binder"
-    )
-)]
+#[allow(dead_code)] // Retained as inspection-only dispatch metadata for the future binder.
 pub(crate) const NAME: &str = "fun-cosyvoice3-0.5b-2512";
 
 /// Minimal report kept for the generic dispatcher's diagnostic formatter.
