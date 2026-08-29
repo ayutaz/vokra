@@ -44,13 +44,14 @@ self_test() {
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'Linux' 'x86_64' 'MIN_VAST_MEM_KIB' '/proc/meminfo' \
     'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
-    'cargo metadata --no-deps --format-version 1' 'snapshot_download' \
+    'cargo metadata --no-deps --format-version 1' 'hf_hub_download' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CHECKPOINT_FILE" \
     'conv_tasnet_prepare_checkpoint.py' 'weights_only=True' \
     'conv_tasnet_dump_reference.py' 'weights_only=False' \
     'fixture hash' 'CompliancePolicy' 'with_research_license(true)' \
     'MEASURED_NOT_GATED' 'NO_UPLOAD' 'git status --porcelain' \
-    'conv_tasnet_dump_reference.py --self-test' 'license_gate.py' '--approval-evidence' 'UV_NO_CACHE=1'; do
+    'conv_tasnet_dump_reference.py --self-test' 'license_gate.py' '--approval-evidence' 'UV_NO_CACHE=1' \
+    'VOKRA_REMOTE_APPLE_SILICON=1'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
@@ -86,6 +87,10 @@ self_test() {
   ln -s "$temporary/real" "$temporary/link"
   if require_absent_work_dir "$temporary/link/existing/nested/work" "$temporary/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: intermediate symlink ancestor accepted'; fail=1
+  fi
+  printf '%s\n' approval > "$temporary/real/approval.json"
+  if require_absent_work_dir "$temporary/new-work" "$temporary/link/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlinked approval ancestor accepted'; fail=1
   fi
   ln -s "$temporary/missing" "$temporary/dangling"
   if require_absent_work_dir "$temporary/dangling/work" "$temporary/approval.json" >/dev/null 2>&1; then
@@ -123,6 +128,14 @@ self_test() {
   if grep -Eq '/workspace|\$VOKRA_ROOT|\$work_dir' <<< "$command_block"; then log 'self-test FAIL: VAST path leaked into Apple command'; fail=1; fi
   trap - RETURN
   rm -rf "$temporary"
+  local gate_line host_line mkdir_line
+  gate_line="$(grep -n 'PREFLIGHT_GATE' "$path" | tail -n 1 | cut -d: -f1)"
+  host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
+  # shellcheck disable=SC2016 # match the literal source token, not its value
+  mkdir_line="$(grep -n 'mkdir -p "\$work_dir/input"' "$path" | tail -n 1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$mkdir_line" =~ ^[0-9]+$ && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$mkdir_line" ]] || {
+    log 'self-test FAIL: preflight gate is not before host or scratch work'; fail=1;
+  }
   if ! UV_CACHE_DIR="$CONVTASNET_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" --self-test >/dev/null; then
     log 'self-test FAIL: safe Conv-TasNet gate self-test failed'
     fail=1
@@ -142,6 +155,11 @@ require_test_evidence() {
   result_count="$(grep -Ecx '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$log_file" || true)"
   ok_count="$(grep -Ec '^test result:' "$log_file" || true)"
   [[ "$test_count" == 1 && "$named_count" == 1 && "$result_count" == 1 && "$ok_count" == 1 ]] || { die 'Cargo test evidence is not one exact named pass/result'; return 2; }
+}
+
+paths_overlap() {
+  local left="$1" right="$2"
+  [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]
 }
 
 canonical_absent_path() {
@@ -165,15 +183,37 @@ canonical_absent_path() {
   printf '%s%s\n' "$real" "$suffix"
 }
 
+canonical_existing_path() {
+  local target="$1" lexical current="/" component parent base
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || { die 'protected path contains ..'; return 2; }
+    current="${current%/}/$component"
+    [[ ! -L "$current" ]] || { die 'protected path contains a symlinked component'; return 2; }
+  done
+  [[ -e "$target" && ! -L "$target" ]] || { die 'protected path is missing or symlinked'; return 2; }
+  if [[ -d "$target" ]]; then
+    (cd -P "$target" && pwd) || { die 'protected directory is inaccessible'; return 2; }
+  else
+    parent="$(dirname "$target")"; base="$(basename "$target")"
+    parent="$(cd -P "$parent" 2>/dev/null && pwd)" || { die 'protected parent is inaccessible'; return 2; }
+    printf '%s/%s\n' "$parent" "$base"
+  fi
+}
+
 require_absent_work_dir() {
-  local work="$1" approval="$2" candidate root_real approval_parent approval_real
+  local work="$1" approval="$2" candidate root_real approval_real
   [[ ! -e "$work" && ! -L "$work" ]] || { die 'work-dir must be absent before validation'; return 2; }
   candidate="$(canonical_absent_path "$work")" || return 2
-  root_real="$(cd -P "$VOKRA_ROOT" 2>/dev/null && pwd)" || { die 'checkout is inaccessible'; return 2; }
-  approval_parent="$(cd -P "$(dirname "$approval")" 2>/dev/null && pwd)" || { die 'approval parent is inaccessible'; return 2; }
-  approval_real="$approval_parent/$(basename "$approval")"
-  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || { die 'work-dir overlaps checkout'; return 2; }
-  [[ "$candidate" != "$approval_real" && "$candidate/" != "$approval_real/"* && "$approval_real/" != "$candidate/"* ]] || { die 'work-dir overlaps approval'; return 2; }
+  root_real="$(canonical_existing_path "$VOKRA_ROOT")" || return 2
+  approval_real="$(canonical_existing_path "$approval")" || return 2
+  paths_overlap "$candidate" "$root_real" && { die 'work-dir overlaps checkout'; return 2; }
+  paths_overlap "$candidate" "$approval_real" && { die 'work-dir overlaps approval'; return 2; }
+  return 0
 }
 
 work_dir="/workspace/vokra-conv-tasnet-validation"
@@ -286,6 +326,7 @@ gguf_sha256="$(sha256_file "$work_dir/conv-tasnet.gguf")"
 reference_sha256="$(sha256_file "$work_dir/fixtures/manifest.json")"
 cat > "$work_dir/evidence/apple-verifier-command.sh" <<EOF
 #!/usr/bin/env bash
+export VOKRA_REMOTE_APPLE_SILICON=1
 exec scripts/verify/apple-silicon-conv-tasnet.sh \\
   --gguf '<APPLE_CONV_TASNET_GGUF>' \\
   --gguf-sha256 '$gguf_sha256' \\

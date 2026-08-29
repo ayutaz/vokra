@@ -196,6 +196,19 @@ self_test() {
   if require_absent_directory "$temporary/reference" >/dev/null 2>&1; then
     log 'self-test FAIL: existing evidence directory accepted'; fail=1
   fi
+  local old_root="$VOKRA_ROOT"
+  VOKRA_ROOT="$temporary/checkout"
+  mkdir -p "$VOKRA_ROOT/.git"; : > "$VOKRA_ROOT/Cargo.toml"
+  mkdir -p "$temporary/reference-input"; printf '%s\n' fixture > "$temporary/gguf-input"
+  mkdir "$temporary/evidence-parent"; ln -s "$temporary/evidence-parent" "$temporary/evidence-link"
+  if require_disjoint_evidence "$temporary/evidence-link/new" "$temporary/gguf-input" "$temporary/reference-input" "$temporary/approval" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlinked evidence ancestor accepted'; fail=1
+  fi
+  ln -s "$temporary/approval" "$temporary/approval-link"
+  if require_disjoint_evidence "$temporary/new-evidence" "$temporary/gguf-input" "$temporary/reference-input" "$temporary/approval-link" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlinked approval accepted'; fail=1
+  fi
+  VOKRA_ROOT="$old_root"
   log_file="$temporary/parity.log"
   printf '%s\n' \
     'test converted_official_checkpoint_matches_asteroid ... ok' \
@@ -211,6 +224,15 @@ self_test() {
   if require_test_evidence "$temporary/prefix-marker.log" >/dev/null 2>&1; then log 'self-test FAIL: prefixed marker accepted'; fail=1; fi
   trap - RETURN
   rm -rf "$temporary"
+  local gate_line host_line cargo_line mkdir_line
+  gate_line="$(grep -n 'PREFLIGHT_GATE' "$path" | tail -n 1 | cut -d: -f1)"
+  host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
+  cargo_line="$(grep -n '^cargo test --locked' "$path" | tail -n 1 | cut -d: -f1)"
+  # shellcheck disable=SC2016 # match the literal source token, not its value
+  mkdir_line="$(grep -n 'mkdir -p "\$evidence_dir"' "$path" | tail -n 1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$cargo_line" =~ ^[0-9]+$ && "$mkdir_line" =~ ^[0-9]+$ && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$cargo_line" && "$gate_line" -lt "$mkdir_line" ]] || {
+    log 'self-test FAIL: preflight gate is not before host, scratch, or Cargo'; fail=1;
+  }
   (( fail == 0 )) || return 1
   log 'self-test PASS'
 }

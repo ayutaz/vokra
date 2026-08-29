@@ -12,6 +12,12 @@ an external owner approval is added without changing the fixed identities,
 the worker exits 2 before creating work, cache, or evidence. Any conversion
 and parity execution is VAST-only; publication remains `NO_UPLOAD`.
 
+The lock is a Linux x86_64-only frozen closure: its canonical package rows and
+authenticated artifact metadata are bound by the manifest, including the CPU
+PyTorch wheel identity. Every dependency still needs an explicit owner
+license/native/bundled review row and approval evidence; an empty, stale, or
+symlinked approval path cannot unlock the worker.
+
 The reference dumper is an independent Asteroid 0.7.0 oracle and records
 stream-hashed artifacts and runtime versions. The Apple verifier accepts only
 the exact VAST-produced manifest/artifact set and keeps Metal measurements at

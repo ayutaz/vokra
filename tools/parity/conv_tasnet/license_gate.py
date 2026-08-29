@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -19,7 +20,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 GATE_VERSION = 1
-LOCK_SHA256 = "0124b1179f2795d324b94d975bd2dd9c1f7943e2951358c7cc427704935899f8"
+LOCK_SHA256 = "f8a95f3052c472a608a087b2c2470cff193d98276094856e2e6c254678d56afa"
 PROJECT_SHA256 = "0ab5226a359c7d5268761d1f4685a1723d69c2430bba0735ed79be6f943b59f8"
 UPSTREAM_REPO = "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k"
 UPSTREAM_REVISION = "bb8a876bc157b5cf3c405994accb798c49146016"
@@ -35,6 +36,7 @@ PACKAGE_SCHEMAS = {
     frozenset({"name", "source", "version", "sdist", "wheels"}),
     frozenset({"name", "source", "version", "dependencies", "sdist", "wheels"}),
     frozenset({"name", "source", "version", "dependencies", "wheels"}),
+    frozenset({"name", "source", "version", "wheels"}),
     frozenset({"name", "source", "version", "optional-dependencies", "sdist", "wheels"}),
     frozenset({"name", "source", "version", "sdist"}),
     frozenset({"name", "source", "version", "dependencies", "metadata"}),
@@ -54,6 +56,29 @@ def sha(data: bytes) -> str:
 
 def canon(value: Any) -> str:
     return sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def regular_file(path: Path) -> bool:
+    """Accept only a file with symlink-free lexical ancestry.
+
+    Approval evidence is operator-controlled input. Resolving a symlinked
+    parent would let a path which looked harmless in the invocation address a
+    different file after the gate had authenticated it, so reject that
+    ambiguity before parsing JSON.
+    """
+    absolute = Path(os.path.abspath(path))
+    return path.is_file() and not path.is_symlink() and all(
+        not parent.is_symlink() for parent in absolute.parents
+    )
+
+
+def regular_nonempty_file(path: Path) -> bool:
+    if not regular_file(path):
+        return False
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def load_json(path: Path) -> Any:
@@ -187,7 +212,7 @@ def project_schema(project: dict[str, Any]) -> None:
 
 
 def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path: Path | None) -> None:
-    if any(path.is_symlink() or not path.is_file() for path in (lock_path, project_path, manifest_path)):
+    if any(not regular_file(path) for path in (lock_path, project_path, manifest_path)):
         blocked("lock, project, or manifest is not a regular file")
     try:
         lock_bytes = lock_path.read_bytes(); project_bytes = project_path.read_bytes(); manifest = load_json(manifest_path)
@@ -241,7 +266,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path:
     approval = manifest.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"status", "signer", "digest"} or approval.get("status") != "OWNER_SIGNOFF_APPROVED" or not resolved(approval.get("signer")) or approval.get("digest") != canon({"lock_sha256": LOCK_SHA256, "project_sha256": PROJECT_SHA256, "package_rows": rows, "package_review_rows": reviews, "license_rows": license_rows, "identities": identities, "reference_contract": contracts, "publication": "NO_UPLOAD"}):
         blocked("external owner approval is missing or not bound")
-    if evidence_path is None or evidence_path.is_symlink() or not evidence_path.is_file():
+    if evidence_path is None or not regular_nonempty_file(evidence_path):
         blocked("external approval evidence is missing or not regular")
     try: evidence = load_json(evidence_path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error: blocked(f"approval evidence is unreadable: {error}")
@@ -267,6 +292,12 @@ def self_test() -> int:
         try: load_json(duplicate)
         except ValueError: pass
         else: return 1
+        real = root / "real"; real.mkdir()
+        approval = real / "approval.json"; approval.write_text("{}\n", encoding="utf-8")
+        parent_link = root / "parent-link"; parent_link.symlink_to(real, target_is_directory=True)
+        if regular_file(parent_link / approval.name):
+            print("conv-tasnet gate self-test accepted symlinked evidence ancestry", file=sys.stderr)
+            return 1
     valid_artifact = {"url": "https://files.pythonhosted.org/pkg.whl", "hash": "sha256:" + "a" * 64, "size": 1, "upload-time": "2026-01-01T00:00:00Z"}
     for tampered in (
         {key: value for key, value in valid_artifact.items() if key != "size"},
