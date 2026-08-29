@@ -203,6 +203,14 @@ run_self_test() {
   return 1
 }
 
+write_failure_summary_on_exit() {
+  local rc=$?
+  if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then
+    printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"
+  fi
+  exit "$rc"
+}
+
 main() {
   local self_test=0 requested_work_dir="" run_stamp work_dir inputs_dir sources_dir logs_dir
   local public_dir upstream_dir source_dir gguf checkpoint config reference
@@ -247,7 +255,7 @@ main() {
   cpu_log="$logs_dir/cpu.log"
   summary_file="$logs_dir/summary.txt"
   exec > >(tee -a "$run_log") 2>&1
-  trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
+  trap write_failure_summary_on_exit EXIT
 
   step "Sync locked Python 3.12 environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
