@@ -2585,7 +2585,7 @@ mod tests {
         };
         let mut output = vec![0.0; 2 * 4];
         let err = vg
-            .forward_with_resident_ops(&vec![0.0; 4 * 2], 2, &mut fake, &mut output)
+            .forward_with_resident_ops(&[0.0; 4 * 2], 2, &mut fake, &mut output)
             .unwrap_err();
         assert!(matches!(err, VokraError::BackendUnavailable(_)));
         assert_eq!(fake.readbacks, 0);

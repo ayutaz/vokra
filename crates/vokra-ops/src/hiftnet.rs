@@ -4183,8 +4183,8 @@ mod tests {
                 ));
             }
             let mut data = vec![0.0; time];
-            for t in 0..time {
-                data[t] = (bias
+            for (t, value) in data.iter_mut().enumerate() {
+                *value = (bias
                     + (0..in_channels)
                         .map(|c| input.data[c * time + t] * weight[c])
                         .sum::<f32>())
@@ -4210,8 +4210,8 @@ mod tests {
                 ));
             }
             let mut data = vec![0.0; time];
-            for t in 0..time {
-                data[t] = (bias
+            for (t, value) in data.iter_mut().enumerate() {
+                *value = (bias
                     + (0..in_channels)
                         .map(|c| input.data[c * time + t] * weight[c])
                         .sum::<f32>())
@@ -4380,54 +4380,30 @@ mod tests {
     #[test]
     fn hift_resident_graph_exercises_nonzero_full_topology() {
         let (mut cfg, mut weights) = small_hift_generator_bundle();
-        for v in &mut weights.conv_pre_w {
-            *v = 0.002;
-        }
-        for v in &mut weights.conv_pre_b {
-            *v = 0.001;
-        }
+        weights.conv_pre_w.fill(0.002);
+        weights.conv_pre_b.fill(0.001);
         for v in &mut weights.ups_w {
-            for x in v {
-                *x = 0.002;
-            }
+            v.fill(0.002);
         }
         for v in &mut weights.ups_b {
-            for x in v {
-                *x = 0.001;
-            }
+            v.fill(0.001);
         }
         for v in &mut weights.source_downs_w {
-            for x in v {
-                *x = 0.002;
-            }
+            v.fill(0.002);
         }
         for v in &mut weights.source_downs_b {
-            for x in v {
-                *x = 0.001;
-            }
+            v.fill(0.001);
         }
-        for v in &mut weights.conv_post_w {
-            *v = 0.002;
-        }
-        for v in &mut weights.conv_post_b {
-            *v = 0.001;
-        }
-        for v in &mut weights.m_source_linear_w {
-            *v = 0.1;
-        }
+        weights.conv_post_w.fill(0.002);
+        weights.conv_post_b.fill(0.001);
+        weights.m_source_linear_w.fill(0.1);
         for v in &mut weights.f0_predictor_weights.conv_weights {
-            for x in v {
-                *x = 0.001;
-            }
+            v.fill(0.001);
         }
         for v in &mut weights.f0_predictor_weights.conv_biases {
-            for x in v {
-                *x = 0.001;
-            }
+            v.fill(0.001);
         }
-        for x in &mut weights.f0_predictor_weights.linear_w {
-            *x = 0.001;
-        }
+        weights.f0_predictor_weights.linear_w.fill(0.001);
         weights.f0_predictor_weights.linear_b[0] = 0.1;
         for rb in weights
             .source_resblock_weights
@@ -4435,23 +4411,17 @@ mod tests {
             .chain(weights.resblock_weights.iter_mut())
         {
             for v in rb.convs1_w.iter_mut().chain(rb.convs2_w.iter_mut()) {
-                for x in v {
-                    *x = 0.001;
-                }
+                v.fill(0.001);
             }
             for v in rb.convs1_b.iter_mut().chain(rb.convs2_b.iter_mut()) {
-                for x in v {
-                    *x = 0.001;
-                }
+                v.fill(0.001);
             }
             for v in rb
                 .activations1_alpha
                 .iter_mut()
                 .chain(rb.activations2_alpha.iter_mut())
             {
-                for x in v {
-                    *x = 0.2;
-                }
+                v.fill(0.2);
             }
         }
         cfg.audio_limit = 0.99;
@@ -4549,7 +4519,7 @@ mod tests {
         let g = HiFTGenerator::new(cfg, weights).unwrap();
         let mut resident = FakeResident::default();
         let err = g
-            .forward_with_resident_ops(&mut resident, &vec![0.0; 4 * 2], 2)
+            .forward_with_resident_ops(&mut resident, &[0.0; 4 * 2], 2)
             .unwrap_err();
         assert!(err.to_string().contains("must be even"), "{err}");
         assert_eq!(resident.downloads, 0);
