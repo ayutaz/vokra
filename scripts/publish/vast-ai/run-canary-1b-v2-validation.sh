@@ -10,6 +10,7 @@ usage() {
 Usage:
   run-canary-1b-v2-validation.sh --nemo <canary-1b-v2.nemo> \
     [--work-dir /workspace/vokra-canary-v2-validation]
+  run-canary-1b-v2-validation.sh --self-test
 
 Requires Linux and VOKRA_PUBLISH_ON_VAST=1 from provision.sh, plus the
 rustfmt/clippy components and cargo-deny/cargo-audit executables. Produces a
@@ -23,10 +24,127 @@ die() {
   exit 1
 }
 
+canonical_absent_path() {
+  local target="$1" lexical current="/" component suffix="" real
+  [[ "$target" = /* ]] || target="$PWD/$target"
+  lexical="${target#/}"
+  while [[ -n "$lexical" ]]; do
+    component="${lexical%%/*}"
+    if [[ "$lexical" == "$component" ]]; then lexical=""; else lexical="${lexical#*/}"; fi
+    [[ "$component" == "." || -z "$component" ]] && continue
+    [[ "$component" != ".." ]] || die "work path contains .."
+    current="${current%/}/$component"
+    [[ ! -L "$current" ]] || die "work path contains a symlinked ancestor"
+  done
+  current="$target"
+  while [[ ! -e "$current" && ! -L "$current" ]]; do
+    component="$(basename "$current")"; suffix="/$component$suffix"; current="$(dirname "$current")"
+  done
+  [[ -d "$current" && ! -L "$current" ]] || die "work path parent is missing or symlinked"
+  real="$(cd -P "$current" 2>/dev/null && pwd)" || die "work path parent is inaccessible"
+  printf '%s%s\n' "$real" "$suffix"
+}
+
+require_absent_work_dir() {
+  local work="$1" input="$2" candidate root_real input_parent input_real
+  [[ ! -e "$work" && ! -L "$work" ]] || die "work directory must be absent"
+  candidate="$(canonical_absent_path "$work")"
+  root_real="$(cd -P "$PWD" && pwd)"
+  input_parent="$(cd -P "$(dirname "$input")" 2>/dev/null && pwd)" || die "input parent is inaccessible"
+  input_real="$input_parent/$(basename "$input")"
+  [[ "$candidate" != "$root_real" && "$candidate/" != "$root_real/"* && "$root_real/" != "$candidate/"* ]] || die "work directory overlaps checkout"
+  [[ "$candidate" != "$input_real" && "$candidate/" != "$input_real/"* && "$input_real/" != "$candidate/"* ]] || die "work directory overlaps checkpoint"
+}
+
+UPSTREAM_REPO="nvidia/canary-1b-v2"
+UPSTREAM_REVISION="87bc52657add533cd0156b3fc1aef027280754bf"
+MODEL_KIND="canary"
+PARITY_TEST="canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens"
+GGUF_ENV="VOKRA_CANARY_V2_REAL_GGUF"
+REFERENCE_PCM_ENV="VOKRA_CANARY_V2_REFERENCE_PCM"
+REFERENCE_TOKENS_ENV="VOKRA_CANARY_V2_REFERENCE_TOKENS"
+SOURCE_LANGUAGE_ENV="VOKRA_CANARY_V2_SOURCE_LANGUAGE"
+TARGET_LANGUAGE_ENV="VOKRA_CANARY_V2_TARGET_LANGUAGE"
+
+run_self_test() {
+  local script_path="${BASH_SOURCE[0]}" tmp fail=0 cases=0 required
+  tmp="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+
+  cases=$((cases + 1))
+  for required in \
+    "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$MODEL_KIND" "$PARITY_TEST" \
+    "$GGUF_ENV" "$REFERENCE_PCM_ENV" "$REFERENCE_TOKENS_ENV" \
+    "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
+    "tools/parity/canary_1b_v2_prepare_checkpoint.py" \
+    "tools/parity/canary_1b_v2_dump_reference.py" \
+    "--frozen --project tools/parity --python 3.12 python" \
+    "--target-language de"; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      echo "run-canary-1b-v2-validation: self-test FAIL: contract lost token: $required" >&2
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
+  if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: direct Python/pip command found" >&2
+    fail=1
+  fi
+  if grep -En -- '^[[:space:]]*(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh)([[:space:]]|$)' \
+    "$script_path" >/dev/null; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: publication command found" >&2
+    fail=1
+  fi
+
+  cases=$((cases + 1))
+  for required in 'uname -s' 'VOKRA_PUBLISH_ON_VAST' 'git status --porcelain --untracked-files=all' \
+    'cargo fmt --all -- --check' 'cargo test --locked --workspace' \
+    'cargo clippy --locked --workspace --all-targets -- -D warnings'; do
+    if ! grep -Fq -- "$required" "$script_path"; then
+      echo "run-canary-1b-v2-validation: self-test FAIL: fail-closed guard lost token: $required" >&2
+      fail=1
+    fi
+  done
+
+  cases=$((cases + 1))
+  if "$script_path" --self-test --work-dir "$tmp/nonempty" >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: extra self-test argument accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: missing --nemo value accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --unknown-self-test-flag >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: unknown argument accepted" >&2
+    fail=1
+  fi
+  if "$script_path" --nemo "$tmp/a" --nemo "$tmp/b" >/dev/null 2>&1; then
+    echo "run-canary-1b-v2-validation: self-test FAIL: duplicate --nemo accepted" >&2
+    fail=1
+  fi
+
+  rm -rf "$tmp"
+  trap - EXIT
+  if [[ $fail -eq 0 ]]; then
+    echo "run-canary-1b-v2-validation.sh self-test: OK ($cases cases)"
+    return 0
+  fi
+  return 1
+}
+
 nemo_path=""
 work_dir="/workspace/vokra-canary-v2-validation"
+self_test=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --self-test)
+      self_test=1
+      shift
+      ;;
     --nemo)
       [[ $# -ge 2 ]] || die "--nemo requires a path"
       nemo_path="$2"
@@ -47,13 +165,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ $self_test -eq 1 ]]; then
+  [[ -z "$nemo_path" && "$work_dir" == "/workspace/vokra-canary-v2-validation" ]] \
+    || die "--self-test accepts no other arguments"
+  run_self_test
+  exit $?
+fi
+
 [[ "$(uname -s)" == "Linux" ]] || die "actual validation is Linux/VAST-only"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
   || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
 [[ -n "$nemo_path" ]] || die "--nemo is required"
-[[ -f "$nemo_path" ]] || die "checkpoint is not a regular file: $nemo_path"
+[[ -f "$nemo_path" && ! -L "$nemo_path" ]] || die "checkpoint is not a regular non-symlink file: $nemo_path"
 [[ -f Cargo.toml && -d crates/vokra-models ]] \
   || die "run from the Vokra repository root"
+require_absent_work_dir "$work_dir" "$nemo_path"
 
 # Fail before unpacking the multi-gigabyte checkpoint if verification tooling
 # or repository state is incomplete.
@@ -93,7 +219,7 @@ run_logged uv run --frozen --project tools/parity --python 3.12 python \
 
 run_logged cargo build --locked --release -p vokra-cli
 run_logged target/release/vokra-cli convert \
-  --model canary \
+  --model "$MODEL_KIND" \
   --input "$prepared_dir/canary-1b-v2.prepared.safetensors" \
   --tokenizer "$prepared_dir/tokenizer.vocab" \
   --output "$work_dir/canary-1b-v2.gguf"
@@ -109,19 +235,19 @@ run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 
   --source-language en --target-language de \
   --output "$evidence_dir/reference-en-de.json"
 
-export VOKRA_CANARY_V2_REAL_GGUF="$work_dir/canary-1b-v2.gguf"
-export VOKRA_CANARY_V2_REFERENCE_PCM="$evidence_dir/reference-en-en.pcm.f32"
-export VOKRA_CANARY_V2_REFERENCE_TOKENS="$evidence_dir/reference-en-en.tokens.txt"
-export VOKRA_CANARY_V2_SOURCE_LANGUAGE=en
-export VOKRA_CANARY_V2_TARGET_LANGUAGE=en
+export "$GGUF_ENV=$work_dir/canary-1b-v2.gguf"
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-en.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-en.tokens.txt"
+export "$SOURCE_LANGUAGE_ENV=en"
+export "$TARGET_LANGUAGE_ENV=en"
 run_logged cargo test --locked -p vokra-models \
-  canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens -- --ignored
+  "$PARITY_TEST" -- --ignored
 
 # A different target language changes the prompt and independently exercises
 # AST; it is never inferred from the English-ASR pass.
-export VOKRA_CANARY_V2_REFERENCE_PCM="$evidence_dir/reference-en-de.pcm.f32"
-export VOKRA_CANARY_V2_REFERENCE_TOKENS="$evidence_dir/reference-en-de.tokens.txt"
-export VOKRA_CANARY_V2_TARGET_LANGUAGE=de
+export "$REFERENCE_PCM_ENV=$evidence_dir/reference-en-de.pcm.f32"
+export "$REFERENCE_TOKENS_ENV=$evidence_dir/reference-en-de.tokens.txt"
+export "$TARGET_LANGUAGE_ENV=de"
 run_logged cargo test --locked -p vokra-models \
   canary_v2_released_checkpoint_matches_official_nemo_greedy_tokens -- --ignored
 
