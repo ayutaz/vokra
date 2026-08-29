@@ -171,6 +171,9 @@ def license_records(root: Path, files: list[Path]) -> list[dict[str, Any]]:
 
 def regular_files(root: Path) -> list[Path]:
     """Enumerate materialized fixed-snapshot files; symlinks are rejected."""
+    # Validate the one transport subtree before walking so a malformed root
+    # cache can never be silently skipped by the inventory loop below.
+    transport_metadata(root)
     files: list[Path] = []
     for path in sorted(root.rglob("*")):
         relative_parts = path.relative_to(root).parts
@@ -915,6 +918,28 @@ def self_test() -> None:
         (transport / "metadata.json").write_text("{}\n", encoding="utf-8")
         assert ".cache/huggingface/metadata.json" in transport_metadata(root)
         assert all(path.relative_to(root).as_posix() != ".cache/huggingface/metadata.json" for path in regular_files(root))
+        for shape in ("cache-file", "cache-symlink", "transport-file", "transport-symlink"):
+            malformed = root.parent / shape
+            malformed.mkdir()
+            malformed_cache = malformed / ".cache"
+            if shape.startswith("cache-"):
+                if shape.endswith("file"):
+                    malformed_cache.write_bytes(b"not-a-directory")
+                else:
+                    malformed_cache.symlink_to(root.parent / "outside-cache", target_is_directory=True)
+            else:
+                malformed_cache.mkdir()
+                transport_path = malformed_cache / "huggingface"
+                if shape.endswith("file"):
+                    transport_path.write_bytes(b"not-a-directory")
+                else:
+                    transport_path.symlink_to(root.parent / "outside-transport", target_is_directory=True)
+            try:
+                regular_files(malformed)
+            except RuntimeError as error:
+                assert ".cache" in str(error)
+            else:
+                raise AssertionError(f"malformed {shape} transport cache was accepted")
         nested_cache = root / COMPONENTS[0] / ".cache"
         nested_cache.mkdir()
         try:

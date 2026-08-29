@@ -48,7 +48,7 @@ run_self_test() {
     "NOT_IMPLEMENTED_FAIL_CLOSED" "UNSUPPORTED" "BLOCKED_BY_CPU" "NOT_RUN" "NO_UPLOAD" \
     "server-tree" "server/local tree mismatch" "UNAUTHENTICATED_BLOCKER" "UNREVIEWED_BLOCKER" \
     "source-inventory.json" "component-inventory.json" "companion-inventory.json" "tensor-inventory.json" \
-    ".cache/huggingface" "symlink" \
+    ".cache/huggingface" "symlink" "RepoFile" "RepoFolder" "classify_entry" "walk_tree" "path_in_repo" "recursive=False" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-ace-step-v15-inspection: self-test FAIL: missing contract: $required" >&2
@@ -85,6 +85,15 @@ run_self_test() {
     echo "run-ace-step-v15-inspection: self-test FAIL: unsafe loader found" >&2
     fail=1
   fi
+  cases=$((cases + 1))
+  local tree_source
+  tree_source="$(mktemp "${TMPDIR:-/tmp}/ace-step-hf-tree-self-test.XXXXXX.py")"
+  awk '/^import hashlib$/{capture=1} capture && /^PY$/{exit} capture{print}' "$script_path" > "$tree_source"
+  if ! ACE_STEP_HF_TREE_SELF_TEST=1 "${UV_CMD[@]}" "$tree_source" dummy dummy dummy; then
+    echo "run-ace-step-v15-inspection: self-test FAIL: Hub tree class/path contract" >&2
+    fail=1
+  fi
+  rm -f -- "$tree_source"
   cases=$((cases + 1))
   if bash "$script_path" --self-test --work-dir /tmp/ace-step-v15-self-test >/dev/null 2>&1; then
     echo "run-ace-step-v15-inspection: self-test FAIL: extra argument accepted" >&2
@@ -186,28 +195,99 @@ run_logged cargo build --locked --release -p vokra-cli
 run_logged "${UV_CMD[@]}" - "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$server_tree_path" <<'PY'
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, RepoFile, RepoFolder
 
 repo, revision, output = sys.argv[1:]
+def field(item, name, default=None):
+    return item.get(name, default) if isinstance(item, dict) else getattr(item, name, default)
+
+def classify_entry(item):
+    if isinstance(item, RepoFolder):
+        if field(item, "type") not in {None, "directory"}:
+            raise RuntimeError(f"invalid RepoFolder type: {item!r}")
+        return "directory"
+    if isinstance(item, RepoFile):
+        if field(item, "type") not in {None, "file"}:
+            raise RuntimeError(f"invalid RepoFile type: {item!r}")
+        return "file"
+    if isinstance(item, dict):
+        kind = item.get("type")
+        if kind in {"directory", "file"}:
+            return kind
+        if kind is None and any(key in item for key in ("size", "blob_id", "oid")):
+            return "file"
+    raise RuntimeError(f"unknown HF tree entry type: {type(item).__name__}")
+
+def walk_tree(api, repository, revision):
+    pending = [""]
+    seen = set()
+    while pending:
+        path_in_repo = pending.pop()
+        if path_in_repo in seen:
+            continue
+        seen.add(path_in_repo)
+        for item in api.list_repo_tree(repo_id=repository, revision=revision, path_in_repo=path_in_repo, recursive=False):
+            kind = classify_entry(item)
+            path = field(item, "path")
+            if not isinstance(path, str) or not path:
+                raise RuntimeError(f"HF tree entry has no path: {item!r}")
+            if kind == "directory":
+                pending.append(path)
+            else:
+                yield item
+
+if os.environ.get("ACE_STEP_HF_TREE_SELF_TEST") == "1":
+    file_entry = RepoFile(path="model.bin", size=1, oid="a" * 40)
+    file_entry.type = None
+    folder_entry = RepoFolder(path="nested", oid="b" * 40)
+    folder_entry.type = None
+    dict_entry = {"path": "dict.bin", "type": None, "size": 1, "oid": "c" * 40}
+
+    class FakeApi:
+        def __init__(self):
+            self.calls = []
+            self.entries = {"": [folder_entry, file_entry, dict_entry], "nested": [{"path": "nested/file", "type": "file", "size": 1, "oid": "d" * 40}]}
+
+        def list_repo_tree(self, **kwargs):
+            self.calls.append(kwargs)
+            return iter(self.entries[kwargs["path_in_repo"]])
+
+    fake_api = FakeApi()
+    rows = list(walk_tree(fake_api, repo, revision))
+    assert classify_entry(folder_entry) == "directory"
+    assert [classify_entry(item) for item in rows] == ["file", "file", "file"]
+    assert [field(item, "path") for item in rows] == ["model.bin", "dict.bin", "nested/file"]
+    assert fake_api.calls[0]["path_in_repo"] == ""
+    assert fake_api.calls[0]["recursive"] is False
+    assert fake_api.calls[1]["path_in_repo"] == "nested"
+    try:
+        classify_entry(object())
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unknown HF tree entry was accepted")
+    print("ACE-Step Hub tree class/path/pagination self-test: PASS")
+    raise SystemExit(0)
+
 api = HfApi()
 info = api.model_info(repo, revision=revision)
 if info.sha != revision:
     raise SystemExit(f"HF revision drift: {info.sha!r} != {revision!r}")
 rows = []
-for item in api.list_repo_tree(repo, revision=revision, recursive=True):
-    if getattr(item, "type", None) != "file":
-        continue
-    path = getattr(item, "path", None)
-    size = getattr(item, "size", None)
-    blob = getattr(item, "blob_id", None) or getattr(item, "oid", None)
+
+for item in walk_tree(api, repo, revision):
+    path = field(item, "path")
+    size = field(item, "size")
+    blob = field(item, "blob_id") or field(item, "oid")
     if not isinstance(path, str) or not isinstance(size, int) or not isinstance(blob, str):
         raise SystemExit(f"HF file metadata is incomplete: {path!r}")
     row = {"path": path, "type": "file", "size": size, "git_blob_sha1": blob}
-    lfs = getattr(item, "lfs", None)
-    lfs_sha = getattr(lfs, "sha256", None) if lfs is not None else None
-    lfs_size = getattr(lfs, "size", None) if lfs is not None else None
+    lfs = field(item, "lfs")
+    lfs_sha = field(lfs, "sha256") if lfs is not None else None
+    lfs_size = field(lfs, "size") if lfs is not None else None
     if isinstance(lfs, dict):
         lfs_sha = lfs.get("sha256")
         lfs_size = lfs.get("size")
