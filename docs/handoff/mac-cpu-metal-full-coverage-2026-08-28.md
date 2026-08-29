@@ -75,6 +75,45 @@ including both Canary releases, ReazonSpeech, Bark, Parler-TTS and MOSS Audio
 Tokenizer v2. Their offline self-tests pass; none has received a real-hardware
 verdict on this branch yet.
 
+### 2026-08-29 pre-Scaleway execution evidence
+
+The no-upload VAST run on an x86_64 host with 503 GiB RAM completed both
+Canary release workers. Only the small evidence trees and logs were retained;
+the `.nemo`, prepared safetensors and generated GGUF files were not copied to
+the maintainer Mac.
+
+- Canary-1B-Flash passed at commit
+  `9235b960f896799e41e711b4f86a11ba87134bd5`. The authenticated NeMo input
+  SHA-256 is
+  `3887cce1afdd425429cfc5109575a8f2cffeb07c02c503a9faff7612bd74e324`,
+  the generated GGUF SHA-256 is
+  `fbcda72d79ae9889dd42ebfa05c92a20f930b92beaca86e446e12ff000ca80c7`,
+  and both the English ASR and English-to-German AST exact-token gates passed.
+- Canary-1B-v2 passed at commit
+  `e3cd475b37f4eb1a80b1e514bec2b11d99e3163f`. The authenticated NeMo input
+  SHA-256 is
+  `ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094`,
+  the generated GGUF SHA-256 is
+  `3fe5701def703485d4eaf8eae38f81f8d80d6ac47f94d92fd435b6e733bdb2d9`,
+  and both the English ASR and English-to-German AST exact-token gates passed.
+  The latter confirms that the official Canary2 empty-context prompt begins
+  with aggregate-vocabulary token `16053`; the public CLI then emitted the
+  complete expected English and German sentences.
+- The Canary-1B-v2 worker also completed `cargo test --locked --workspace`,
+  strict workspace Clippy, `cargo deny check licenses advisories bans` and
+  `cargo audit` at the same commit.
+- The final VAST worker contract matrix at `e3cd475b...` reports 95 total,
+  94 passing, one expected CosyVoice3 inspection block for the deliberately
+  absent dedicated lock, and zero failures. The portable Apple-worker matrix
+  reports 41 of 41 passing at the same commit. These are contract/self-test
+  results, not Apple-hardware verdicts.
+- A fresh live-artifact audit after those runs remains 194 public repositories,
+  193 GGUF-bearing repositories and 198 GGUF files. CPU remains
+  `full=128`, `partial=45`, `no-runtime-binder=20`, `not-artifact=1`; Metal
+  remains `full=128`, `blocked-by-cpu=65`, `not-artifact=1`. The eight focused
+  audit unit tests pass. No Hugging Face upload was performed, so the live
+  public-artifact counts are expected to remain unchanged.
+
 ### Branch preparation status
 
 The following source work is present and locally reviewed on this branch. None
