@@ -36,6 +36,38 @@ PY
     log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
     fail=1
   fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+def classify_entry(entry):
+    if isinstance(entry, RepoFolder):
+        if getattr(entry, "type", None) not in {None, "directory"}:
+            raise RuntimeError("unknown RepoFolder type")
+        return "directory"
+    if isinstance(entry, RepoFile):
+        if getattr(entry, "type", None) not in {None, "file"}:
+            raise RuntimeError("unknown RepoFile type")
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {entry!r}")
+
+file_entry = RepoFile(path="README.md", size=1, oid="a" * 40)
+file_entry.type = None
+assert classify_entry(file_entry) == "file"
+folder_entry = RepoFolder(path="nested", oid="b" * 40)
+folder_entry.type = None
+assert classify_entry(folder_entry) == "directory"
+try:
+    classify_entry(object())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unknown HF tree entry was accepted")
+print("CosyVoice3 RepoFile/RepoFolder self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
+    fail=1
+  fi
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || { log 'dedicated CosyVoice3 uv.lock absent; self-test deliberately blocked'; return 2; }
   grep -Eq '^[[:space:]]*(git[[:space:]]+push|hf_hub_upload|upload_file|convert)' "$0" && { log 'self-test publication/conversion command'; fail=1; } || true
   UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
@@ -73,19 +105,27 @@ mkdir -p "$work"/{model,evidence,source,matcha}; work="$(cd "$work" && pwd)"; ex
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$PROJECT" --python 3.12 python - "$HF_REPO" "$HF_REV" "$work/server_tree.json" "$work/model" <<'PY' >>"$work/evidence/validation.log" 2>&1
 import json,re,sys
 from pathlib import Path
-from huggingface_hub import HfApi,snapshot_download
+from huggingface_hub import HfApi,RepoFile,RepoFolder,snapshot_download
 repo,rev,packet,dest=sys.argv[1:]; api=HfApi(); info=api.model_info(repo,revision=rev)
 if info.sha != rev: raise RuntimeError('HF resolved revision mismatch')
 def get(x,k,default=None):
     return x.get(k,default) if isinstance(x,dict) else getattr(x,k,default)
+def classify_entry(item):
+    if isinstance(item,RepoFolder):
+        if get(item,'type') not in (None,'directory'): raise RuntimeError('invalid RepoFolder type')
+        return 'directory'
+    if isinstance(item,RepoFile):
+        if get(item,'type') not in (None,'file'): raise RuntimeError('invalid RepoFile type')
+        return 'file'
+    raise RuntimeError(f'unknown HF tree entry type: {type(item).__name__}')
 rows=[]; pending=['']; seen=set()
 while pending:
     p=pending.pop()
     if p in seen: continue
     seen.add(p)
     for item in api.list_repo_tree(repo,revision=rev,path_in_repo=p,recursive=False):
-        path,typ=get(item,'path'),get(item,'type')
-        if not isinstance(path,str) or typ not in ('file','directory'): raise RuntimeError('invalid HF tree entry')
+        typ=classify_entry(item); path=get(item,'path')
+        if not isinstance(path,str): raise RuntimeError('invalid HF tree entry path')
         if typ=='directory': pending.append(path); continue
         lfs=get(item,'lfs')
         lsha=(get(lfs,'sha256') or get(lfs,'oid')) if lfs is not None else None

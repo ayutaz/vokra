@@ -51,6 +51,38 @@ PY
   log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
   fail=1
  fi
+ if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+def classify_entry(entry):
+    if isinstance(entry, RepoFolder):
+        if getattr(entry, "type", None) not in {None, "directory"}:
+            raise RuntimeError("unknown RepoFolder type")
+        return "directory"
+    if isinstance(entry, RepoFile):
+        if getattr(entry, "type", None) not in {None, "file"}:
+            raise RuntimeError("unknown RepoFile type")
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {entry!r}")
+
+file_entry = RepoFile(path="README.md", size=1, oid="a" * 40)
+file_entry.type = None
+assert classify_entry(file_entry) == "file"
+folder_entry = RepoFolder(path="nested", oid="b" * 40)
+folder_entry.type = None
+assert classify_entry(folder_entry) == "directory"
+try:
+    classify_entry(object())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unknown HF tree entry was accepted")
+print("Chatterbox RepoFile/RepoFolder self-test: PASS")
+PY
+ then
+  log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
+  fail=1
+ fi
  grep -Eq '^[[:space:]]*(git[[:space:]]+push|hf_hub_upload|upload_file)' "$0" && { log 'self-test FAIL publication command'; fail=1; } || true
  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
  (( fail == 0 )) || return 1
@@ -90,7 +122,7 @@ for v in base nano turbo; do
  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$REFERENCE_PROJECT" --python 3.12 python - "$repo" "$rev" "$work/$v/server_tree.json" "$patterns" <<'PY' >>"$work/evidence/validation.log" 2>&1
 import json,sys,re
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi,RepoFile,RepoFolder
 repo,rev,out,patterns=sys.argv[1:]; api=HfApi(); info=api.model_info(repo,revision=rev)
 if info.sha!=rev: raise RuntimeError('resolved HF revision mismatch')
 def get(item,name,default=None):
@@ -101,8 +133,15 @@ while pending:
  if p in seen: continue
  seen.add(p)
  for item in api.list_repo_tree(repo,revision=rev,path_in_repo=p,recursive=False):
-  typ=get(item,'type'); path=get(item,'path')
-  if not isinstance(path,str) or typ not in {'file','directory'}: raise RuntimeError('invalid tree item')
+  if isinstance(item,RepoFolder):
+   if get(item,'type') not in {None,'directory'}: raise RuntimeError('invalid RepoFolder type')
+   typ='directory'
+  elif isinstance(item,RepoFile):
+   if get(item,'type') not in {None,'file'}: raise RuntimeError('invalid RepoFile type')
+   typ='file'
+  else: raise RuntimeError(f'unknown HF tree entry type: {type(item).__name__}')
+  path=get(item,'path')
+  if not isinstance(path,str): raise RuntimeError('invalid tree item path')
   if typ=='directory': pending.append(path); continue
   lfs=get(item,'lfs'); lfs_sha=(lfs.get('sha256') or lfs.get('oid')) if isinstance(lfs,dict) else (get(lfs,'sha256') or get(lfs,'oid')) if lfs is not None else None
   git_id=get(item,'blob_id') or get(item,'oid'); size=get(item,'size')

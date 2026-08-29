@@ -56,6 +56,38 @@ PY
     log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
     fail=1
   fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+def classify_entry(entry):
+    if isinstance(entry, RepoFolder):
+        if getattr(entry, "type", None) not in {None, "directory"}:
+            raise RuntimeError("unknown RepoFolder type")
+        return "directory"
+    if isinstance(entry, RepoFile):
+        if getattr(entry, "type", None) not in {None, "file"}:
+            raise RuntimeError("unknown RepoFile type")
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {entry!r}")
+
+file_entry = RepoFile(path="README.md", size=1, oid="a" * 40)
+file_entry.type = None
+assert classify_entry(file_entry) == "file"
+folder_entry = RepoFolder(path="nested", oid="b" * 40)
+folder_entry.type = None
+assert classify_entry(folder_entry) == "directory"
+try:
+    classify_entry(object())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unknown HF tree entry was accepted")
+print("Kyutai STT RepoFile/RepoFolder self-test: PASS")
+PY
+  then
+    log 'self-test FAIL: RepoFile/RepoFolder class-identity regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -126,7 +158,7 @@ emit_tree() {
     python - "$output" "$REPOSITORY" "$HF_REVISION" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
 import json, sys
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, RepoFile, RepoFolder
 
 output, repository, revision = sys.argv[1:]
 api = HfApi()
@@ -141,10 +173,19 @@ while pending:
         continue
     visited.add(path)
     for item in api.list_repo_tree(repository, revision=revision, path_in_repo=path, recursive=False):
+        if isinstance(item, RepoFolder):
+            if getattr(item, "type", None) not in {None, "directory"}:
+                raise RuntimeError(f"invalid RepoFolder type: {item!r}")
+            item_type = "directory"
+        elif isinstance(item, RepoFile):
+            if getattr(item, "type", None) not in {None, "file"}:
+                raise RuntimeError(f"invalid RepoFile type: {item!r}")
+            item_type = "file"
+        else:
+            raise RuntimeError(f"unknown HF tree entry type: {type(item).__name__}")
         item_path = getattr(item, "path", None)
-        item_type = getattr(item, "type", None)
-        if not isinstance(item_path, str) or item_type not in {"file", "directory"}:
-            raise RuntimeError(f"invalid HF tree entry: {item!r}")
+        if not isinstance(item_path, str):
+            raise RuntimeError(f"invalid HF tree entry path: {item!r}")
         if item_type == "directory":
             pending.append(item_path)
             continue
