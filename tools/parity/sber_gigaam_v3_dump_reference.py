@@ -139,6 +139,20 @@ def validate_decision_lengths(logits, frames, symbols, argmax) -> None:
         raise ValueError("RNNT decision trace lengths disagree")
 
 
+def rnnt_encoder_frame(encoded, frame: int):
+    """Select one frame in the official encoder layout ``[B, D, T]``.
+
+    ``RNNTJoint.joint`` (the official decode path) consumes ``[B, T, D]``
+    encoder values directly; its wrapper ``forward`` is the export adapter
+    that transposes ``[B, D, T]`` and must not be used for this loop.
+    """
+    if getattr(encoded, "ndim", None) != 3 or encoded.shape[0] != 1:
+        raise ValueError("official encoder output must have shape [1, D, T]")
+    if frame < 0 or frame >= encoded.shape[2]:
+        raise ValueError("RNNT frame is outside the encoder output")
+    return encoded[0, :, frame].reshape(1, 1, -1)
+
+
 def load_official_model(auto_model, model_dir: Path):
     """Load the pinned remote-code model with CPU-safe Transformers 5 init.
 
@@ -193,6 +207,17 @@ def self_test() -> None:
     assert "decision_argmax.u32le" in source
     assert "contexts.append(torch.device(\"cpu\"))" in source
     assert "low_cpu_mem_usage=False" in source
+    assert "output = joint.joint(enc_frame, prediction)" in source
+    import numpy as np
+
+    shape_probe = np.zeros((1, 768, 3), dtype=np.float32)
+    assert rnnt_encoder_frame(shape_probe, 1).shape == (1, 1, 768)
+    try:
+        rnnt_encoder_frame(np.zeros((3, 768), dtype=np.float32), 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid [B, D, T] encoder shape was accepted")
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40
     assert len(CONFIG_SHA256) == len(MODELING_SHA256) == len(CHECKPOINT_SHA256) == 64
     assert BLANK_ID == NUM_CLASSES - 1 and MAX_SYMBOLS_PER_STEP == 10
@@ -345,9 +370,9 @@ def main() -> int:
         symbols = 0
         while symbols < MAX_SYMBOLS_PER_STEP:
             prediction, next_state = decoder.predict(label, state)
-            enc_frame = encoded[0, :, frame].reshape(1, 1, -1)
+            enc_frame = rnnt_encoder_frame(encoded, frame)
             with torch.inference_mode():
-                output = joint(enc_frame, prediction)
+                output = joint.joint(enc_frame, prediction)
             row = np.asarray(output.reshape(-1).cpu().numpy(), dtype=np.float32)
             if row.shape != (NUM_CLASSES,) or not np.isfinite(row).all():
                 raise SystemExit("official RNNT joint row shape/finite contract mismatch")
