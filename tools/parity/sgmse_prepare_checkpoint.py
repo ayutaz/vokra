@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ SOURCE_REPOSITORY = "https://github.com/sp-uhh/sgmse.git"
 SOURCE_REVISION = "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
 SOURCE_LICENSE_SPDX = "mit"
 SPEECHBRAIN_REPOSITORY = "https://github.com/speechbrain/speechbrain.git"
-SPEECHBRAIN_REVISION = "31c1e329048c0380dc7f2acbe680c44a036b6286"
+SPEECHBRAIN_REVISION = "2b3f4f44351fd08a627c4ab307de5c420351bc19"
 SPEECHBRAIN_VERSION = "1.0.3"
 SPEECHBRAIN_SDIST_SHA256 = "fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052"
 SPEECHBRAIN_WHEEL_SHA256 = "9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"
@@ -44,7 +45,23 @@ ALGORITHM_SOURCE_ROLES = {
     "score_model": ("class ScoreModel", "ScoreModel("),
     "ncsnpp": ("NCSNpp", "ncsnpp_v2"),
     "sde": ("OUVESDE", "SDERegistry"),
-    "sampler": ("reverse_diffusion", "annealed_langevin_dynamics"),
+    "sampler_predictor": ("reverse_diffusion",),
+    "sampler_corrector": ("ald", "CorrectorRegistry"),
+}
+ALGORITHM_SOURCE_FIXED_FILES = {
+    "sampler_predictor": "sgmse/sampling/predictors.py",
+    "sampler_corrector": "sgmse/sampling/correctors.py",
+}
+LOCKED_DISTRIBUTION_BLOCKER = "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION"
+LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS = {
+    "speechbrain/integrations/models/sgmse_plus.py": {
+        "present": False,
+        "required_markers": {},
+    },
+    "speechbrain/inference/enhancement.py": {
+        "present": True,
+        "required_markers": {"class SGMSEEnhancement": False},
+    },
 }
 # The authenticated fixed HF revision contains exactly these two companions;
 # example.wav is not present in that snapshot and must not be downloaded or
@@ -264,7 +281,87 @@ def speechbrain_source_identity(source_dir: Path) -> tuple[dict[str, Any], list[
                     f"SpeechBrain source {relative} is missing executable marker: {marker}"
                 )
     result["executable_files"] = files
+    distribution, distribution_blockers = locked_distribution_source_audit_from_environment()
+    result["locked_distribution_audit"] = distribution
+    blockers.extend(distribution_blockers)
     return result, blockers
+
+
+def locked_distribution_source_audit(
+    version: str,
+    files: set[str],
+    source_texts: dict[str, str],
+) -> tuple[dict[str, Any], list[str]]:
+    """Audit the locked wheel without importing SpeechBrain runtime modules.
+
+    The reviewed 1.0.3 distribution is intentionally a dependency blocker:
+    its source tree lacks the SGMSE integration used by the authenticated
+    checkpoint.  A complete-looking replacement is also blocked until its
+    provenance is reviewed rather than silently treated as runtime-ready.
+    """
+
+    observed: dict[str, Any] = {}
+    for relative, expected in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS.items():
+        present = relative in files
+        markers = {
+            marker: marker in source_texts.get(relative, "")
+            for marker in expected["required_markers"]
+        }
+        observed[relative] = {"present": present, "required_markers": markers}
+    result: dict[str, Any] = {
+        "version": version,
+        "expected_version": SPEECHBRAIN_VERSION,
+        "expected_source_roles": LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS,
+        "observed_source_roles": observed,
+        "status": LOCKED_DISTRIBUTION_BLOCKER,
+    }
+    blockers = [
+        f"{LOCKED_DISTRIBUTION_BLOCKER}: reviewed SpeechBrain {SPEECHBRAIN_VERSION} distribution lacks source-backed SGMSE integration"
+    ]
+    if version != SPEECHBRAIN_VERSION:
+        blockers.append(f"locked SpeechBrain version {version!r} != {SPEECHBRAIN_VERSION!r}")
+    expected_observed = {
+        relative: {
+            "present": expected["present"],
+            "required_markers": {
+                marker: expected_value
+                for marker, expected_value in expected["required_markers"].items()
+            },
+        }
+        for relative, expected in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS.items()
+    }
+    if observed != expected_observed:
+        result["status"] = "BLOCKED_LOCKED_DISTRIBUTION_SOURCE_AUDIT_MISMATCH"
+        blockers.append("locked SpeechBrain source audit differs from the reviewed 1.0.3 evidence")
+    return result, blockers
+
+
+def locked_distribution_source_audit_from_environment() -> tuple[dict[str, Any], list[str]]:
+    """Read package metadata/source markers without importing SpeechBrain."""
+
+    try:
+        from importlib.metadata import distribution
+
+        package = distribution("speechbrain")
+        files = {str(path).replace("\\", "/") for path in (package.files or ())}
+        source_texts: dict[str, str] = {}
+        for relative in LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS:
+            if relative not in files:
+                continue
+            path = Path(package.locate_file(relative))
+            if path.is_file() and not path.is_symlink():
+                source_texts[relative] = path.read_text(encoding="utf-8", errors="replace")
+        return locked_distribution_source_audit(package.version, files, source_texts)
+    except Exception as error:  # noqa: BLE001 - dependency evidence must fail closed
+        return (
+            {
+                "version": None,
+                "expected_version": SPEECHBRAIN_VERSION,
+                "status": "BLOCKED_LOCKED_DISTRIBUTION_UNAVAILABLE",
+                "error": f"{type(error).__name__}: {error}",
+            },
+            [f"BLOCKED_LOCKED_DISTRIBUTION_UNAVAILABLE: {error}"],
+        )
 
 
 def algorithm_source_inventory(source_dir: Path) -> tuple[dict[str, Any], list[str]]:
@@ -277,7 +374,11 @@ def algorithm_source_inventory(source_dir: Path) -> tuple[dict[str, Any], list[s
         return result, [f"algorithm source scan failed: {error}"]
     for role, markers in ALGORITHM_SOURCE_ROLES.items():
         matches = []
-        for path in candidates:
+        role_candidates = candidates
+        fixed_relative = ALGORITHM_SOURCE_FIXED_FILES.get(role)
+        if fixed_relative is not None:
+            role_candidates = [source_dir / fixed_relative]
+        for path in role_candidates:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -385,11 +486,40 @@ def self_test() -> None:
     assert CHECKPOINT_SIZE == 262_593_305
     assert len(CHECKPOINT_SHA256) == 64
     assert SOURCE_REVISION == "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
-    assert SPEECHBRAIN_REVISION == "31c1e329048c0380dc7f2acbe680c44a036b6286"
+    assert SPEECHBRAIN_REVISION == "2b3f4f44351fd08a627c4ab307de5c420351bc19"
     assert SPEECHBRAIN_VERSION == "1.0.3"
     assert EXECUTABLE_SPEECHBRAIN_FILES[0].endswith("sgmse_plus.py")
     assert EXECUTABLE_SPEECHBRAIN_FILES[1].endswith("enhancement.py")
     assert "class SGMSEEnhancement" in EXECUTABLE_SPEECHBRAIN_MARKERS[EXECUTABLE_SPEECHBRAIN_FILES[1]]
+    blocked_audit, blocked = locked_distribution_source_audit(
+        SPEECHBRAIN_VERSION,
+        {"speechbrain/inference/enhancement.py"},
+        {"speechbrain/inference/enhancement.py": "def enhance_batch(self, noisy): pass"},
+    )
+    assert blocked_audit["status"] == LOCKED_DISTRIBUTION_BLOCKER
+    assert any(LOCKED_DISTRIBUTION_BLOCKER in message for message in blocked)
+    complete_audit, complete_blockers = locked_distribution_source_audit(
+        SPEECHBRAIN_VERSION,
+        set(LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS),
+        {
+            "speechbrain/integrations/models/sgmse_plus.py": "class ScoreModel: pass",
+            "speechbrain/inference/enhancement.py": "class SGMSEEnhancement: pass",
+        },
+    )
+    assert complete_audit["status"] == "BLOCKED_LOCKED_DISTRIBUTION_SOURCE_AUDIT_MISMATCH"
+    assert complete_blockers
+    with tempfile.TemporaryDirectory() as temporary:
+        source = Path(temporary)
+        (source / "sgmse" / "sampling").mkdir(parents=True)
+        (source / "score.py").write_text("class ScoreModel: pass\nScoreModel(\n", encoding="utf-8")
+        (source / "ncsnpp.py").write_text("NCSNpp ncsnpp_v2\n", encoding="utf-8")
+        (source / "sde.py").write_text("OUVESDE SDERegistry\n", encoding="utf-8")
+        (source / "sgmse/sampling/predictors.py").write_text("reverse_diffusion\n", encoding="utf-8")
+        (source / "sgmse/sampling/correctors.py").write_text("ald CorrectorRegistry\n", encoding="utf-8")
+        inventory, inventory_blockers = algorithm_source_inventory(source)
+        assert not inventory_blockers
+        assert inventory["files_by_role"]["sampler_predictor"][0]["path"] == "sgmse/sampling/predictors.py"
+        assert inventory["files_by_role"]["sampler_corrector"][0]["path"] == "sgmse/sampling/correctors.py"
     facts, missing = config_facts("sample_rate: 16000\nn_fft: 510\nhop_length: 128\nwindow_type: hann\n")
     assert facts["sample_rate"] and facts["n_fft"] and facts["hop_length"] and facts["window_type"]
     assert "sampler_type" in missing

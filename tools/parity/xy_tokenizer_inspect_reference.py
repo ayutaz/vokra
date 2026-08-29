@@ -50,7 +50,7 @@ SOURCE_ROLE_BLOBS: dict[str, str] = {
     "xy_tokenizer/nn/modules.py": "cc186d9dadd674172837d527fef0f0de183feb4c",
     "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
 }
-SELECTED_MODEL_FILES = {".gitattributes", "README.md", CHECKPOINT_RELATIVE.as_posix(), CONFIG_RELATIVE.as_posix()}
+SELECTED_MODEL_FILES = {".gitattributes", "README.md", CHECKPOINT_RELATIVE.as_posix()}
 SOURCE_LICENSE_ABSENT_BLOCKER = "SOURCE_LICENSE_ABSENT_BLOCKER"
 TOPOLOGY_UNVERIFIED_BLOCKER = "TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER"
 EVIDENCE_FILENAME = "manifest.json"
@@ -140,6 +140,8 @@ def validate_server_packet(snapshot: Path, packet_path: Path) -> dict[str, Any]:
             if not isinstance(row["lfs_pointer_sha1"], str) or len(row["lfs_pointer_sha1"]) != 40:
                 raise RuntimeError("HF server LFS pointer identity is invalid")
         by_path[path] = row
+    if set(by_path) != SELECTED_MODEL_FILES:
+        raise RuntimeError(f"HF server selected-file set mismatch: {sorted(by_path)!r}")
     local = {path.relative_to(snapshot).as_posix(): path for path in regular_files(snapshot)}
     for relative in SELECTED_MODEL_FILES:
         if relative not in by_path or relative not in local:
@@ -348,6 +350,12 @@ def inspect(checkpoint: Path, config: Path, source: Path, prepared: Path, output
         "repository": UPSTREAM_REPOSITORY,
         "revision": UPSTREAM_REVISION,
         "checkpoint_sha256": CHECKPOINT_SHA256,
+        "configuration": {
+            "repository": SOURCE_REPOSITORY,
+            "path": CONFIG_RELATIVE.as_posix(),
+            "sha256": CONFIG_SHA256,
+            "provenance": "AUTHENTICATED_OFFICIAL_SOURCE",
+        },
         "official_source": source_data,
         "server_tree": server,
         "source_revision": SOURCE_REVISION,
@@ -405,6 +413,8 @@ def self_test() -> None:
         "xy_tokenizer/nn/modules.py": "cc186d9dadd674172837d527fef0f0de183feb4c",
         "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
     }
+    assert SELECTED_MODEL_FILES == {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
+    assert CONFIG_RELATIVE.as_posix() not in SELECTED_MODEL_FILES
     config_data = parse_config("audio_tokenizer: {}\n")
     assert config_data["topology_status"] == TOPOLOGY_UNVERIFIED_BLOCKER
     try:
@@ -458,11 +468,19 @@ def self_test() -> None:
         for relative in sorted(SELECTED_MODEL_FILES):
             target = model / relative
             rows.append({"path": relative, "type": "file", "size": target.stat().st_size, "git_blob_sha1": git_blob_sha1(target)})
-        rows.append({"path": "extra/source.py", "type": "file", "size": 1, "git_blob_sha1": "0" * 40})
         rows.sort(key=lambda row: row["path"])
         packet = model / "packet.json"
         packet.write_text(json.dumps({"repository": UPSTREAM_REPOSITORY, "requested_revision": UPSTREAM_REVISION, "resolved_revision": UPSTREAM_REVISION, "files": rows}), encoding="utf-8")
-        assert validate_server_packet(model, packet)["server_file_count"] == 5
+        assert validate_server_packet(model, packet)["server_file_count"] == 3
+        rows.append({"path": "config/xy_tokenizer_config.yaml", "type": "file", "size": 1, "git_blob_sha1": "0" * 40})
+        rows.sort(key=lambda row: row["path"])
+        packet.write_text(json.dumps({"repository": UPSTREAM_REPOSITORY, "requested_revision": UPSTREAM_REVISION, "resolved_revision": UPSTREAM_REVISION, "files": rows}), encoding="utf-8")
+        try:
+            validate_server_packet(model, packet)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("source config was accepted as an HF model file")
     print("xy_tokenizer_inspect_reference.py self-test: OK (safe-load/source/hash contracts)")
 
 

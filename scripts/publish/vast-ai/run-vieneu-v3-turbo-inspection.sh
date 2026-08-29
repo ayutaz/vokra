@@ -10,7 +10,10 @@ INSPECTOR="$PARITY_PROJECT/vieneu_v3_turbo_inspect.py"
 MODEL_REPOSITORY="pnnbao-ump/VieNeu-TTS-v3-Turbo"
 MODEL_REVISION="2da0efab622a1722125991736524f080b751ef5b"
 SOURCE_URL="https://github.com/pnnbao97/VieNeu-TTS.git"
-SOURCE_REVISION="1bc18895b8c6c6f8c927272d36c9b0befc127029"
+SOURCE_TAG_OBJECT="1bc18895b8c6c6f8c927272d36c9b0befc127029"
+SOURCE_TAG_NAME="v3.0.0"
+SOURCE_PEELED_COMMIT="28392eee571db0da31632882ac7226faa2d09d5d"
+SOURCE_REVISION="$SOURCE_TAG_OBJECT"
 MOSS_REPOSITORY="OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 MOSS_REVISION="6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 MIN_VAST_MEM_KIB=$((32 * 1024 * 1024))
@@ -37,7 +40,7 @@ self_test() {
     'Linux' 'x86_64' 'VOKRA_PUBLISH_ON_VAST=1' '/proc/meminfo' 'df -Pk' \
     'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
     'cargo metadata --no-deps --format-version 1' 'pnnbao-ump/VieNeu-TTS-v3-Turbo' \
-    "$MODEL_REVISION" 'pnnbao97/VieNeu-TTS.git' "$SOURCE_REVISION" \
+    "$MODEL_REVISION" 'pnnbao97/VieNeu-TTS.git' "$SOURCE_REVISION" "$SOURCE_TAG_NAME" "$SOURCE_PEELED_COMMIT" \
     'OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano' "$MOSS_REVISION" \
     'vieneu_v3_turbo_inspect.py' 'safetensors' 'onnx' 'load_external_data=False' \
     'RepoFile' 'RepoFolder' 'resolved_revision' 'git_blob_sha1' 'lfs_sha256' \
@@ -45,7 +48,9 @@ self_test() {
     'model_tree.json' 'moss_tree.json' '--model-tree' '--moss-tree' \
     'HF server/local tree mismatch' 'DECLARED_UNVERIFIED' 'UNKNOWN' \
     'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'FAILED' \
-    'collection_status' 'object_pairs_hook' \
+    'collection_status' 'object_pairs_hook' 'git cat-file -t' 'git cat-file -p' \
+    'pinned_tag_object' 'pinned_tag_name' 'pinned_peeled_commit' 'resolved_tag_object' \
+    'resolved_peeled_commit' 'annotated tag identity' \
     'external data path traversal' 'dependency_license_status' \
     'SOURCE_ROLE_BLOBS_UNREVIEWED_BLOCKER' 'TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER' \
     'SOURCE_ROLE_BLOBS' 'AUTHENTICATED_APACHE_2' 'license_status' \
@@ -119,7 +124,9 @@ export UV_CACHE_DIR="$VIENEU_UV_CACHE_DIR"
   echo "model_repository=$MODEL_REPOSITORY"
   echo "model_revision=$MODEL_REVISION"
   echo "source_url=$SOURCE_URL"
-  echo "source_revision=$SOURCE_REVISION"
+  echo "source_tag_object=$SOURCE_TAG_OBJECT"
+  echo "source_tag_name=$SOURCE_TAG_NAME"
+  echo "source_peeled_commit=$SOURCE_PEELED_COMMIT"
   echo "moss_repository=$MOSS_REPOSITORY"
   echo "moss_revision=$MOSS_REVISION"
   echo 'runtime_status=NOT_IMPLEMENTED_FAIL_CLOSED'
@@ -211,9 +218,19 @@ PY
 
 git clone --filter=blob:none --no-checkout "$SOURCE_URL" "$work_dir/source/repo" \
   >> "$work_dir/evidence/validation.log" 2>&1
-git -C "$work_dir/source/repo" checkout --detach "$SOURCE_REVISION" \
+tag_object="$(git -C "$work_dir/source/repo" rev-parse "${SOURCE_TAG_NAME}^{tag}")"
+[[ "$tag_object" == "$SOURCE_TAG_OBJECT" ]] || die 'VieNeu annotated tag object mismatch'
+tag_type="$(git -C "$work_dir/source/repo" cat-file -t "$tag_object")"
+[[ "$tag_type" == tag ]] || die 'VieNeu source object is not an annotated tag'
+tag_content="$(git -C "$work_dir/source/repo" cat-file -p "$tag_object")"
+grep -Fqx "object $SOURCE_PEELED_COMMIT" <<<"$tag_content" || die 'VieNeu annotated tag target mismatch'
+grep -Fqx 'type commit' <<<"$tag_content" || die 'VieNeu annotated tag target type mismatch'
+grep -Fqx "tag $SOURCE_TAG_NAME" <<<"$tag_content" || die 'VieNeu annotated tag name mismatch'
+peeled_commit="$(git -C "$work_dir/source/repo" rev-parse "${SOURCE_TAG_NAME}^{commit}")"
+[[ "$peeled_commit" == "$SOURCE_PEELED_COMMIT" ]] || die 'VieNeu annotated tag peeling mismatch'
+git -C "$work_dir/source/repo" checkout --detach "$SOURCE_PEELED_COMMIT" \
   >> "$work_dir/evidence/validation.log" 2>&1
-[[ "$(git -C "$work_dir/source/repo" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die 'VieNeu source revision mismatch'
+[[ "$(git -C "$work_dir/source/repo" rev-parse HEAD)" == "$SOURCE_PEELED_COMMIT" ]] || die 'VieNeu source HEAD mismatch'
 
 set +e
 UV_CACHE_DIR="$VIENEU_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" --python 3.12 python \

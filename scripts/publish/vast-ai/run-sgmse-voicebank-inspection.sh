@@ -13,7 +13,7 @@ MODEL_REVISION="8f4ff7b65284c49492a43349b8106e094ac0d365"
 SOURCE_URL="https://github.com/sp-uhh/sgmse.git"
 SOURCE_REVISION="1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"
 SPEECHBRAIN_URL="https://github.com/speechbrain/speechbrain.git"
-SPEECHBRAIN_REVISION="31c1e329048c0380dc7f2acbe680c44a036b6286"
+SPEECHBRAIN_REVISION="2b3f4f44351fd08a627c4ab307de5c420351bc19"
 SPEECHBRAIN_VERSION="1.0.3"
 SPEECHBRAIN_SDIST_SHA256="fcab3c6e90012cecb1eed40ea235733b550137e73da6bfa2340ba191ec714052"
 SPEECHBRAIN_WHEEL_SHA256="9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32dd2fba19e9"
@@ -51,6 +51,9 @@ self_test() {
     'NO_UPLOAD' 'sgmse_prepare_checkpoint.py --self-test' '"blockers": []' \
     'README.md' '.gitattributes' 'hyperparams.yaml' \
     'sgmse_plus.py' 'speechbrain/inference/enhancement.py' 'class SGMSEEnhancement' 'files_by_role' \
+    'sgmse/sampling/predictors.py' 'sgmse/sampling/correctors.py' 'reverse_diffusion' 'ald' \
+    'CorrectorRegistry' 'sampler_predictor' 'sampler_corrector' \
+    'BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION' \
     'importlib.metadata' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
     if ! grep -Fq -- "$token" "$path"; then
@@ -68,6 +71,11 @@ self_test() {
   fi
   if ! grep -Fq 'CHECKPOINT_NAME="score_model_ema.ckpt"' "$path"; then
     log 'self-test FAIL: fixed checkpoint filename contract is missing'
+    fail=1
+  fi
+  if [[ "$(grep -Ec '^SPEECHBRAIN_REVISION=' "$path")" != 1 ]] || \
+     ! grep -Fq 'SPEECHBRAIN_REVISION="2b3f4f44351fd08a627c4ab307de5c420351bc19"' "$path"; then
+    log 'self-test FAIL: SpeechBrain feature revision pin is not exact'
     fail=1
   fi
   if ! grep -Fq "\$CHECKPOINT_NAME" "$path"; then
@@ -182,6 +190,8 @@ set -e
 [[ -s "$work_dir/evidence/sgmse_voicebank_manifest.json" ]] || die 'inspection manifest is missing'
 grep -Fq '"runtime_status": "INSPECTION_ONLY"' "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'inspection status missing'
 if ! grep -Fq '"blockers": []' "$work_dir/evidence/sgmse_voicebank_manifest.json"; then
+  grep -Fq 'BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION' \
+    "$work_dir/evidence/sgmse_voicebank_manifest.json" || die 'locked SpeechBrain dependency blocker is missing'
   {
     echo 'runtime_status=INSPECTION_ONLY'
     echo 'parity_status=INSPECTION_ONLY'

@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import stat
 import subprocess
 import sys
@@ -39,7 +40,7 @@ MEMBERS = {
 FT_MODELS = ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"]
 SIX_MODELS = ["5c90dfd2"]
 SOURCE_ROLE_BLOBS = {
-    "LICENSE": "a45a376fb0fcd4a3de06b6c096e620289a2dcb",
+    "LICENSE": "a45a376fb0fcd4a3de06b6c096e62028929a2dcb",
     "demucs/apply.py": "1540f3d44fc8bbca1ce377cc80af3cd9212278be",
     "demucs/hdemucs.py": "711d47157a975e04a0ffb044991d2dc3cfd54b66",
     "demucs/htdemucs.py": "5d2eaaa1eb2620a5d2147eb86361e9964fb94528",
@@ -315,6 +316,7 @@ def inspect_member(path: Path, response: dict[str, Any] | None) -> dict[str, Any
 
 def self_test() -> None:
     global sha256
+    assert all(re.fullmatch(r"[0-9a-f]{40}", blob) for blob in SOURCE_ROLE_BLOBS.values())
     assert parse_config("models: ['f7e0c4bc']\nweights: [[1.]]\n", ["f7e0c4bc"])["weights"] == [[1.0]]
     assert parse_config(
         "models: ['f7e0c4bc', 'd12395a8']\nweights: [[1., 0.], [0., 1.]]\n",

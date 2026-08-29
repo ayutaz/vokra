@@ -26,7 +26,11 @@ MODEL_REPOSITORY = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
 MODEL_REVISION = "2da0efab622a1722125991736524f080b751ef5b"
 SOURCE_REPOSITORY = "pnnbao97/VieNeu-TTS"
 SOURCE_URL = "https://github.com/pnnbao97/VieNeu-TTS.git"
-SOURCE_REVISION = "1bc18895b8c6c6f8c927272d36c9b0befc127029"
+SOURCE_TAG_OBJECT = "1bc18895b8c6c6f8c927272d36c9b0befc127029"
+SOURCE_TAG_NAME = "v3.0.0"
+SOURCE_PEELED_COMMIT = "28392eee571db0da31632882ac7226faa2d09d5d"
+# Retain the established name for the immutable tag-object identity.
+SOURCE_REVISION = SOURCE_TAG_OBJECT
 MOSS_REPOSITORY = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 MOSS_REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
 FORMAT = "vokra-vieneu-v3-turbo-inspection-v2"
@@ -621,6 +625,75 @@ def git_revision(root: Path, expected: str, label: str, blockers: list[str]) -> 
     return actual
 
 
+def validate_source_tag_identity(
+    tag_object: str, object_type: str, tag_content: str, head: str
+) -> list[str]:
+    """Validate both an annotated tag object and its checked-out commit."""
+
+    blockers: list[str] = []
+    if tag_object != SOURCE_TAG_OBJECT:
+        blockers.append(f"VieNeu tag object {tag_object!r} != pinned {SOURCE_TAG_OBJECT!r}")
+    if object_type != "tag":
+        blockers.append(f"VieNeu source object type {object_type!r} != 'tag'")
+    headers: dict[str, str] = {}
+    for line in tag_content.splitlines():
+        if not line:
+            break
+        key, separator, value = line.partition(" ")
+        if separator and key in {"object", "type", "tag"}:
+            if key in headers:
+                blockers.append(f"VieNeu annotated tag has duplicate {key} header")
+            headers[key] = value
+    if headers.get("object") != SOURCE_PEELED_COMMIT:
+        blockers.append(
+            f"VieNeu tag target {headers.get('object')!r} != pinned {SOURCE_PEELED_COMMIT!r}"
+        )
+    if headers.get("type") != "commit":
+        blockers.append(f"VieNeu tag target type {headers.get('type')!r} != 'commit'")
+    if headers.get("tag") != SOURCE_TAG_NAME:
+        blockers.append(f"VieNeu tag name {headers.get('tag')!r} != pinned {SOURCE_TAG_NAME!r}")
+    if head != SOURCE_PEELED_COMMIT:
+        blockers.append(f"VieNeu source HEAD {head!r} != peeled {SOURCE_PEELED_COMMIT!r}")
+    return blockers
+
+
+def git_tag_identity(root: Path, blockers: list[str]) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "pinned_tag_object": SOURCE_TAG_OBJECT,
+        "pinned_tag_name": SOURCE_TAG_NAME,
+        "pinned_peeled_commit": SOURCE_PEELED_COMMIT,
+        "resolved_tag_object": None,
+        "resolved_tag_type": None,
+        "resolved_peeled_commit": None,
+        "resolved_revision": None,
+        "tag_content": None,
+    }
+    try:
+        tag_object = git_output(root, "rev-parse", f"{SOURCE_TAG_NAME}^{{tag}}").strip()
+        tag_type = git_output(root, "cat-file", "-t", tag_object).strip()
+        tag_content = git_output(root, "cat-file", "-p", tag_object)
+        peeled_commit = git_output(root, "rev-parse", f"{SOURCE_TAG_NAME}^{{commit}}").strip()
+        head = git_output(root, "rev-parse", "HEAD").strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        blockers.append(f"VieNeu annotated tag identity unavailable: {error}")
+        return result
+    result.update(
+        {
+            "resolved_tag_object": tag_object,
+            "resolved_tag_type": tag_type,
+            "resolved_peeled_commit": peeled_commit,
+            "resolved_revision": head,
+            "tag_content": tag_content,
+        }
+    )
+    blockers.extend(validate_source_tag_identity(tag_object, tag_type, tag_content, head))
+    if peeled_commit != SOURCE_PEELED_COMMIT:
+        blockers.append(
+            f"VieNeu annotated tag peeling {peeled_commit!r} != pinned {SOURCE_PEELED_COMMIT!r}"
+        )
+    return result
+
+
 def git_output(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(root), *args],
@@ -670,8 +743,10 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "repository": SOURCE_REPOSITORY,
         "url": SOURCE_URL,
-        "pinned_revision": SOURCE_REVISION,
-        "resolved_revision": git_revision(root, SOURCE_REVISION, "VieNeu source", blockers),
+        "pinned_revision": SOURCE_TAG_OBJECT,
+        "pinned_tag_name": SOURCE_TAG_NAME,
+        "pinned_peeled_commit": SOURCE_PEELED_COMMIT,
+        "resolved_revision": None,
         "origin": None,
         "worktree_status": "UNKNOWN",
         "tracked_files": [],
@@ -682,6 +757,7 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
         "role_status": "UNREVIEWED",
         "license_status": "UNVERIFIED",
     }
+    result.update(git_tag_identity(root, blockers))
     if not (root / ".git").exists():
         blockers.append("VieNeu source checkout lacks .git metadata")
     try:
@@ -740,7 +816,9 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
     if len(tracked) != len(files):
         blockers.append("VieNeu source tracked inventory does not match index")
     identity_ok = (
-        result["resolved_revision"] == SOURCE_REVISION
+        result["resolved_tag_object"] == SOURCE_TAG_OBJECT
+        and result["resolved_peeled_commit"] == SOURCE_PEELED_COMMIT
+        and result["resolved_revision"] == SOURCE_PEELED_COMMIT
         and result["origin"] == SOURCE_REPOSITORY
         and result["worktree_status"] == "CLEAN"
         and len(tracked) == len(files)
@@ -1064,6 +1142,25 @@ def self_test() -> None:
     assert not valid_external_range(4, 5, 8)
     assert valid_external_range(8, 0, 8)
     assert len(MODEL_REVISION) == 40 and len(SOURCE_REVISION) == 40 and len(MOSS_REVISION) == 40
+    assert SOURCE_REVISION == SOURCE_TAG_OBJECT
+    assert SOURCE_TAG_NAME == "v3.0.0"
+    assert SOURCE_PEELED_COMMIT == "28392eee571db0da31632882ac7226faa2d09d5d"
+    tag_content = f"object {SOURCE_PEELED_COMMIT}\ntype commit\ntag {SOURCE_TAG_NAME}\n\n"
+    assert not validate_source_tag_identity(
+        SOURCE_TAG_OBJECT, "tag", tag_content, SOURCE_PEELED_COMMIT
+    )
+    for invalid_tag, invalid_type, invalid_content, invalid_head in (
+        ("0" * 40, "tag", tag_content, SOURCE_PEELED_COMMIT),
+        (SOURCE_TAG_OBJECT, "commit", tag_content, SOURCE_PEELED_COMMIT),
+        (
+            SOURCE_TAG_OBJECT,
+            "tag",
+            f"object {'0' * 40}\ntype commit\ntag {SOURCE_TAG_NAME}\n\n",
+            SOURCE_PEELED_COMMIT,
+        ),
+        (SOURCE_TAG_OBJECT, "tag", tag_content, "0" * 40),
+    ):
+        assert validate_source_tag_identity(invalid_tag, invalid_type, invalid_content, invalid_head)
     assert SOURCE_URL.startswith("https://github.com/")
     assert set(SOURCE_ROLE_BLOBS) == {
         "LICENSE",

@@ -53,6 +53,7 @@ run_self_test() {
     "weights_only=True" "save_file" "INSPECTION_ONLY" "torch.load" \
     "HfApi" "RepoFile" "RepoFolder" "server-packet" "collection_status" \
     "AUTHENTICATED_EVIDENCE_COMPLETE" "NO_UPLOAD" "SOURCE_LICENSE_ABSENT_BLOCKER" \
+    "SELECTED_MODEL_FILES" "source_config" "prepared_config" "AUTHENTICATED_OFFICIAL_SOURCE" \
     "all_tracked_regular_files" "inference.py" "xy_tokenizer/model.py" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB" "tmpfs"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
@@ -194,7 +195,7 @@ import tempfile
 from pathlib import Path
 from huggingface_hub import HfApi, RepoFile, RepoFolder, snapshot_download
 
-selected = {".gitattributes", "README.md", "xy_tokenizer.ckpt", "config/xy_tokenizer_config.yaml"}
+selected = {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
 
 
 def validate_materialized_tree(root: Path, expected: set[str]) -> None:
@@ -217,7 +218,7 @@ def validate_materialized_tree(root: Path, expected: set[str]) -> None:
 
 
 if os.environ.get("XY_TOKENIZER_MATERIALIZED_TREE_SELF_TEST") == "1":
-    expected = {"config/xy_tokenizer_config.yaml", "xy_tokenizer.ckpt"}
+    expected = {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
     with tempfile.TemporaryDirectory(prefix="xy-tokenizer-materialized-tree-") as temp_dir:
         root = Path(temp_dir) / "model-materialized"
         (root / "config").mkdir(parents=True)
@@ -279,8 +280,8 @@ for item in api.list_repo_tree(repo_id=repo, revision=revision, recursive=True, 
     if pointer_sha != blob:
         raise SystemExit(f"HF LFS pointer identity mismatch: {item.path}")
     rows[item.path] = {"path": item.path, "type": "file", "size": size, "git_blob_sha1": pointer_sha, "lfs_sha256": oid, "lfs_size": lfs_size, "lfs_pointer_sha1": pointer_sha}
-if not selected.issubset(rows):
-    raise SystemExit(f"selected HF files missing: {sorted(selected - set(rows))}")
+if set(rows) != selected:
+    raise SystemExit(f"selected HF file set mismatch: {sorted(rows)!r}")
 Path(packet_output).write_text(json.dumps({"repository": repo, "requested_revision": revision, "resolved_revision": info.sha, "files": [rows[path] for path in sorted(rows)]}, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 materialized = Path(output).with_name("model-materialized")
 resolved = Path(snapshot_download(
@@ -297,7 +298,7 @@ validate_materialized_tree(resolved, selected)
 Path(output).write_text(str(resolved) + "\n", encoding="utf-8")
 PY
 snapshot_path="$(< "$snapshot_path_file")"
-for relative in .gitattributes README.md "$CHECKPOINT_FILENAME" "$CONFIG_RELATIVE"; do
+for relative in .gitattributes README.md "$CHECKPOINT_FILENAME"; do
   mkdir -p "$assets_dir/$(dirname "$relative")"
   cp -- "$snapshot_path/$relative" "$assets_dir/$relative"
 done
@@ -315,12 +316,16 @@ run_logged git -C "$source_dir" checkout --detach "$SOURCE_REVISION"
 [[ -f "$source_dir/$CONFIG_RELATIVE" ]] || die "official config is missing"
 config_sha="$(sha256sum "$source_dir/$CONFIG_RELATIVE" | awk '{print $1}')"
 [[ "$config_sha" == "$CONFIG_SHA256" ]] || die "official config identity mismatch"
-cp "$source_dir/$CONFIG_RELATIVE" "$prepared_dir/$CONFIG_RELATIVE"
+source_config="$source_dir/$CONFIG_RELATIVE"
+prepared_config="$prepared_dir/$CONFIG_RELATIVE"
+mkdir -p "$(dirname "$assets_dir/$CONFIG_RELATIVE")" "$(dirname "$prepared_config")"
+cp -- "$source_config" "$assets_dir/$CONFIG_RELATIVE"
+cp -- "$source_config" "$prepared_config"
 
 set +e
 run_logged "${UV_CMD[@]}" "$INSPECTOR" \
   --checkpoint "$assets_dir/$CHECKPOINT_FILENAME" \
-  --config "$assets_dir/$CONFIG_RELATIVE" --source "$source_dir" \
+  --config "$prepared_config" --source "$source_dir" \
   --server-packet "$server_packet" --prepared "$prepared_dir/model.safetensors" --output "$evidence_dir"
 inspect_rc=$?
 set -e
