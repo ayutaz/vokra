@@ -22,16 +22,26 @@ pub use gpt::{
     NUM_HEADS, NUM_LAYERS, TEXT_VOCAB_SIZE,
 };
 
+/// GGUF architecture identifier for ChatTTS.
 pub const ARCH: &str = "chattts";
+/// Stable model name used by the inspection boundary.
 pub const NAME: &str = "chattts";
+/// Vokra model category for ChatTTS.
 pub const CATEGORY: &str = "tts";
+/// Upstream Hugging Face repository identifier.
 pub const UPSTREAM_HF: &str = "2Noise/ChatTTS";
+/// Default SPDX license identifier for the upstream weights.
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-4.0";
+/// GGUF metadata key for the Vokra model category.
 pub const GGUF_KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+/// GGUF metadata key for the upstream Hugging Face provenance.
 pub const GGUF_KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
+/// Human-readable upstream weights location.
 pub const PRIMARY_SOURCE_UPSTREAM_HF: &str = "huggingface.co/2Noise/ChatTTS";
+/// Human-readable upstream source-code location.
 pub const PRIMARY_SOURCE_CODE: &str = "github.com/2noise/ChatTTS";
+/// Repository ticket tracking ChatTTS coverage.
 pub const PRIMARY_SOURCE_TICKET: &str = "docs/tickets/coverage-audit-2026-08-03/wave-d/chattts.md";
 
 /// Legacy inspection label retained for callers that display old metadata.
@@ -43,34 +53,50 @@ pub const PREP_SCRIPT_PATH: &str = "tools/parity/chattts_inspect.py";
 #[deprecated(note = "ChatTTS is inspection-only and has no runtime axis contract")]
 pub const AXIS_GROUP_PREFIX: &str = "vokra.chattts.";
 
+/// Tensor-name prefix for the GPT module.
 pub const MODULE_PREFIX_GPT: &str = "gpt.";
+/// Tensor-name prefix for the DVAE module.
 pub const MODULE_PREFIX_DVAE: &str = "dvae.";
+/// Tensor-name prefix for the Vocos module.
 pub const MODULE_PREFIX_VOCOS: &str = "vocos.";
+/// Tensor-name prefix for speaker statistics tensors.
 pub const MODULE_PREFIX_SPEAKER_STATS: &str = "spk_stat";
+/// Display label for the GPT module.
 pub const MODULE_LABEL_GPT: &str = "GPT autoregressive backbone";
+/// Display label for the DVAE module.
 pub const MODULE_LABEL_DVAE: &str = "DVAE speech-token decoder";
+/// Display label for the Vocos module.
 pub const MODULE_LABEL_VOCOS: &str = "Vocos vocoder head";
 
+/// Counts recognized ChatTTS module tensors in an inspected GGUF manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatTtsModuleCensus {
+    /// Number of tensors with the GPT prefix.
     pub gpt: usize,
+    /// Number of tensors with the DVAE prefix.
     pub dvae: usize,
+    /// Number of tensors with the Vocos prefix.
     pub vocos: usize,
+    /// Number of speaker-statistics tensors.
     pub speaker_stats: usize,
+    /// Total number of tensors in the inspected GGUF.
     pub total_tensors: usize,
 }
 
 impl ChatTtsModuleCensus {
+    /// Whether any recognized ChatTTS module tensor was found.
     #[must_use]
     pub const fn matched_any(&self) -> bool {
         self.gpt > 0 || self.dvae > 0 || self.vocos > 0 || self.speaker_stats > 0
     }
 
+    /// Whether GPT, DVAE, and Vocos tensors are all present.
     #[must_use]
     pub const fn synthesis_chain_complete(&self) -> bool {
         self.gpt > 0 && self.dvae > 0 && self.vocos > 0
     }
 
+    /// Return display labels for synthesis modules that are absent.
     #[must_use]
     pub fn missing_synthesis_modules(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
@@ -94,6 +120,7 @@ pub struct ChatTtsWeights {
 }
 
 impl ChatTtsWeights {
+    /// Inspect tensor names and dimensions from a GGUF manifest.
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         let tensors = gguf
             .tensors()
@@ -113,16 +140,19 @@ impl ChatTtsWeights {
         Ok(Self { tensors })
     }
 
+    /// Return the number of tensors in the inspected manifest.
     #[must_use]
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
     }
 
+    /// Return all inspected tensor names.
     #[must_use]
     pub fn tensor_names(&self) -> Vec<&str> {
         self.tensors.iter().map(|(name, _)| name.as_str()).collect()
     }
 
+    /// Return dimensions for a named tensor, if present.
     #[must_use]
     pub fn tensor_dims(&self, name: &str) -> Option<&[usize]> {
         self.tensors
@@ -131,6 +161,7 @@ impl ChatTtsWeights {
             .map(|(_, dims)| dims.as_slice())
     }
 
+    /// Count tensors whose names start with `prefix`.
     #[must_use]
     pub fn count_with_prefix(&self, prefix: &str) -> usize {
         self.tensors
@@ -139,6 +170,7 @@ impl ChatTtsWeights {
             .count()
     }
 
+    /// Summarize recognized module prefixes in the manifest.
     #[must_use]
     pub fn module_census(&self) -> ChatTtsModuleCensus {
         ChatTtsModuleCensus {
@@ -150,6 +182,7 @@ impl ChatTtsWeights {
         }
     }
 
+    /// Require a named tensor to be present in the manifest.
     pub fn require_tensor(&self, name: &str) -> Result<&[usize]> {
         self.tensor_dims(name).ok_or_else(|| {
             VokraError::ModelLoad(format!(
@@ -158,6 +191,7 @@ impl ChatTtsWeights {
         })
     }
 
+    /// Require a named tensor to have exactly `expected` dimensions.
     pub fn require_tensor_dims(&self, name: &str, expected: &[usize]) -> Result<()> {
         let actual = self.require_tensor(name)?;
         if actual != expected {
@@ -202,10 +236,12 @@ impl ChatTts {
         ))
     }
 
+    /// Refuse loading from a path through the strict inspection policy.
     pub fn from_path(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::from_path_with_policy(path, &CompliancePolicy::strict())
     }
 
+    /// Refuse loading from a path with an explicit compliance policy.
     pub fn from_path_with_policy(
         path: impl AsRef<std::path::Path>,
         policy: &CompliancePolicy,
@@ -214,38 +250,47 @@ impl ChatTts {
         Self::from_gguf_with_policy(&bytes, policy)
     }
 
+    /// Return the optional model name metadata.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
+    /// Return the optional model category metadata.
     #[must_use]
     pub fn category(&self) -> Option<&str> {
         self.category.as_deref()
     }
+    /// Return the optional upstream Hugging Face identifier.
     #[must_use]
     pub fn upstream_hf(&self) -> Option<&str> {
         self.upstream_hf.as_deref()
     }
+    /// Return the optional model identifier.
     #[must_use]
     pub fn model_id(&self) -> Option<&str> {
         self.model_id.as_deref()
     }
+    /// Return the optional source metadata.
     #[must_use]
     pub fn source(&self) -> Option<&str> {
         self.source.as_deref()
     }
+    /// Return optional attribution metadata.
     #[must_use]
     pub fn attribution(&self) -> Option<&str> {
         self.attribution.as_deref()
     }
+    /// Return the inspected GGUF manifest.
     #[must_use]
     pub fn weights(&self) -> &ChatTtsWeights {
         &self.weights
     }
+    /// Return the recognized module census.
     #[must_use]
     pub fn module_census(&self) -> ChatTtsModuleCensus {
         self.weights.module_census()
     }
+    /// Return the recorded weight license classification.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license

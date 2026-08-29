@@ -24,25 +24,40 @@ pub const AUDIO_VAE_HOT_OPS: &[HotOp] = &[
 
 /// Exact 0.5B waveform-encoder contract from the pinned `audio_vae.py`.
 pub const AUDIO_VAE_SAMPLE_RATE: u32 = 16_000;
+/// Encoder channel width before the four downsampling stages.
 pub const AUDIO_VAE_ENCODER_DIM: usize = 128;
+/// Encoder stride for each causal downsampling stage.
 pub const AUDIO_VAE_ENCODER_RATES: [usize; 4] = [2, 5, 8, 8];
+/// Number of latent channels emitted by the encoder terminal convolution.
 pub const AUDIO_VAE_LATENT_DIM: usize = 64;
+/// Waveform samples represented by one latent frame.
 pub const AUDIO_VAE_HOP: usize = 640;
+/// Prompt PCM chunk size used before AudioVAE encoding.
 pub const AUDIO_VAE_PROMPT_CHUNK: usize = 1_280;
+/// Decoder stride for each causal upsampling stage.
 pub const AUDIO_VAE_DECODER_RATES: [usize; 4] = [8, 8, 5, 2];
 
 /// Weight-normalised causal Conv1d in grouped `[out, in/groups, kernel]`
 /// layout. The caller supplies the source `groups` axis explicitly.
 #[derive(Debug, Clone)]
 pub struct CausalConv1d {
+    /// Weight-normalisation scale vector.
     pub weight_g: Vec<f32>,
+    /// Weight-normalisation direction tensor in source layout.
     pub weight_v: Vec<f32>,
+    /// Per-output-channel bias.
     pub bias: Vec<f32>,
+    /// Number of input channels.
     pub in_channels: usize,
+    /// Number of output channels.
     pub out_channels: usize,
+    /// Kernel width.
     pub kernel: usize,
+    /// Dilation factor.
     pub dilation: usize,
+    /// Convolution stride.
     pub stride: usize,
+    /// Left causal padding.
     pub padding: usize,
     /// Group count from the upstream convolution (`groups=1` for dense,
     /// `groups=in_channels` for depthwise layers).
@@ -51,6 +66,7 @@ pub struct CausalConv1d {
 
 impl CausalConv1d {
     /// Construct a layer after validating the complete upstream tensor shape.
+    #[allow(clippy::too_many_arguments)] // A convolution's intrinsic parameter set is explicit here.
     pub fn new(
         weight_g: Vec<f32>,
         weight_v: Vec<f32>,
@@ -245,6 +261,7 @@ impl CausalConv1d {
 /// AudioVAE. The source does not impose a positive-alpha restriction.
 #[derive(Debug, Clone)]
 pub struct Snake {
+    /// Per-channel Snake frequency parameter.
     pub alpha: Vec<f32>,
 }
 
@@ -316,9 +333,13 @@ impl Snake {
 /// A residual unit with one source-authenticated dilated convolution.
 #[derive(Debug, Clone)]
 pub struct ResidualUnit {
+    /// Dilated channel-preserving filter convolution.
     pub filter: CausalConv1d,
+    /// First channel-wise Snake activation.
     pub activation: Snake,
+    /// Snake activation after the filter convolution.
     pub pointwise_activation: Snake,
+    /// Pointwise residual projection convolution.
     pub pointwise: CausalConv1d,
 }
 
@@ -391,6 +412,7 @@ pub struct EncoderStage {
 }
 
 impl EncoderStage {
+    #[allow(dead_code)] // Staged topology is dormant until the complete composite is authorized.
     pub(crate) fn from_source(
         residuals: [ResidualUnit; 3],
         activation: Snake,
@@ -403,6 +425,7 @@ impl EncoderStage {
         }
     }
 
+    #[allow(dead_code)] // Staged topology validation is dormant until binding is authorized.
     fn validate(&self, channels: usize, rate: usize) -> Result<usize> {
         if self.downsample.in_channels != channels
             || self.downsample.out_channels != channels * 2
@@ -517,6 +540,7 @@ fn pad_audio_vae_pcm(pcm: &[f32], samples: usize) -> Result<(Vec<f32>, usize)> {
 /// Prepare source prompt audio before the VAE encoder. VoxCPM pads to one
 /// complete two-frame patch (`patch_size * chunk_size = 1280`) before VAE
 /// encoding; the final complete patch is removed by the prompt packer.
+#[allow(dead_code)] // Prompt packing awaits the complete authenticated VoxCPM route.
 pub(crate) fn pad_audio_vae_prompt_pcm(pcm: &[f32]) -> Result<Vec<f32>> {
     if pcm.is_empty() || pcm.iter().any(|value| !value.is_finite()) {
         return Err(VokraError::InvalidArgument(
@@ -558,6 +582,7 @@ impl AudioVaeEncoder {
     /// Attach source-shaped encoder layers after strict tensor binding.  The
     /// dimensions and rates are fixed by the pinned 0.5B config; no
     /// zero/default layer can be used as a production substitute.
+    #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
     pub(crate) fn from_source(
         stem: CausalConv1d,
         stages: Vec<EncoderStage>,
@@ -605,6 +630,7 @@ impl AudioVaeEncoder {
     /// constructor never discovers tensors by prefix or fills missing layers.
     /// It is crate-private until the complete composite manifest records the
     /// release's exact encoder name mapping.
+    #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
     pub(crate) fn from_staged_parts(
         stem: CausalConv1d,
         stages: Vec<EncoderStage>,
@@ -644,6 +670,7 @@ impl AudioVaeEncoder {
         self.terminal.forward_with_compute(&values, time, compute)
     }
 
+    /// Encode through the explicitly selected backend kind.
     pub fn encode_with_backend(
         &self,
         pcm: &[f32],
@@ -658,12 +685,16 @@ impl AudioVaeEncoder {
 /// One decoder stage: Snake, causal upsample, then three residual units.
 #[derive(Debug, Clone)]
 pub struct DecoderStage {
+    /// Channel-wise Snake activation before upsampling.
     pub activation: Snake,
+    /// Causal transposed convolution that upsamples the stage.
     pub upsample: CausalConvTranspose1d,
+    /// Three channel-preserving residual units.
     pub residuals: [ResidualUnit; 3],
 }
 
 impl DecoderStage {
+    #[allow(dead_code)] // Staged topology is dormant until the complete composite is authorized.
     pub(crate) fn from_source(
         activation: Snake,
         upsample: CausalConvTranspose1d,
@@ -676,6 +707,7 @@ impl DecoderStage {
         }
     }
 
+    #[allow(dead_code)] // Staged topology validation is dormant until binding is authorized.
     fn validate(&self, channels: usize, rate: usize) -> Result<usize> {
         let next_channels = channels / 2;
         if channels == 0
@@ -750,18 +782,27 @@ impl DecoderStage {
 /// Causal transposed Conv1d used for decoder upsampling.
 #[derive(Debug, Clone)]
 pub struct CausalConvTranspose1d {
+    /// Weight-normalisation scale vector.
     pub weight_g: Vec<f32>,
+    /// Weight-normalisation direction tensor in source layout.
     pub weight_v: Vec<f32>,
+    /// Per-output-channel bias.
     pub bias: Vec<f32>,
+    /// Number of input channels.
     pub in_channels: usize,
+    /// Number of output channels.
     pub out_channels: usize,
+    /// Kernel width.
     pub kernel: usize,
+    /// Upsampling stride.
     pub stride: usize,
+    /// Number of channel groups.
     pub groups: usize,
 }
 
 impl CausalConvTranspose1d {
     /// Construct a transposed convolution with explicit source tensor shapes.
+    #[allow(clippy::too_many_arguments)] // A transposed convolution's intrinsic parameter set is explicit here.
     pub fn new(
         weight_g: Vec<f32>,
         weight_v: Vec<f32>,
@@ -966,8 +1007,11 @@ impl CausalConvTranspose1d {
 pub struct AudioVaeDecoder {
     /// Initial latent-dimension to decoder-width causal k7 stem.
     pub stem: CausalConv1d,
+    /// Decoder stages that progressively upsample the latent sequence.
     pub stages: Vec<DecoderStage>,
+    /// Terminal waveform projection convolution.
     pub terminal: CausalConv1d,
+    /// Terminal channel-wise Snake activation.
     pub terminal_activation: Snake,
 }
 
@@ -975,6 +1019,7 @@ impl AudioVaeDecoder {
     /// Attach the exact 0.5B decoder topology after every learned tensor has
     /// been resolved by the composite binder. This validates source names'
     /// resulting axes but does not authenticate an arbitrary GGUF by itself.
+    #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
     pub(crate) fn from_source(
         stem: CausalConv1d,
         stages: Vec<DecoderStage>,
@@ -1020,6 +1065,7 @@ impl AudioVaeDecoder {
         })
     }
 
+    #[allow(dead_code)] // Staged topology constructor awaits complete composite authorization.
     pub(crate) fn from_staged_parts(
         stem: CausalConv1d,
         stages: Vec<DecoderStage>,

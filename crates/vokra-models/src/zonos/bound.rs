@@ -21,15 +21,20 @@ const OUTPUT_DIM: usize = 2_048;
 const WEIGHT: &str = "prefix_conditioner.conditioners.1.project.weight";
 const BIAS: &str = "prefix_conditioner.conditioners.1.project.bias";
 /// Fixed Vokra public artifact revision authenticated by the VAST gap run.
+#[allow(dead_code)] // consumed when the authenticated Zonos binder is enabled
 pub const PUBLIC_ARTIFACT_REVISION: &str = "b1bf5c56d470eb9097e9b04f9deca364576574ba";
 /// Fixed upstream HF snapshot used by the parity/config evidence.
+#[allow(dead_code)] // consumed when the authenticated Zonos binder is enabled
 pub const UPSTREAM_HF_REVISION: &str = "9d8331fc49cb5ba8aad2bb56cafd809c66598f4e";
 /// Content digest of the public Zonos GGUF artifact.
+#[allow(dead_code)] // consumed when the authenticated Zonos binder is enabled
 pub const PUBLIC_ARTIFACT_SHA256: &str =
     "12d542bd219f7f31c91b893810d85b0d810285e603029c69fbd19fd3c7da2c5c";
 /// Byte size of the public Zonos GGUF artifact.
+#[allow(dead_code)] // consumed when the authenticated Zonos binder is enabled
 pub const PUBLIC_ARTIFACT_BYTES: u64 = 3_248_843_808;
 /// Sorted `(name, dimensions)` manifest digest for all 246 tensors.
+#[allow(dead_code)] // consumed when the authenticated Zonos binder is enabled
 pub const PUBLIC_MANIFEST_SHA256: &str =
     "6543af3747d3e85bde862c3337744eea31f0105f9df6d8617c1c9afdae805847";
 const SPEC: StrictCheckpointSpec = StrictCheckpointSpec {

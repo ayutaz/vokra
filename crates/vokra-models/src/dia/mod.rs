@@ -61,14 +61,8 @@ use vokra_core::{Result, VokraError};
 
 mod bound;
 mod forward;
-pub use bound::{DiaCheckpoint, DiaTextEmbedding};
-pub(crate) use forward::{
-    DiaBatchOne, DiaCfgBatchOne, SamplingParams, apply_delay_pattern, classifier_free_guidance,
-    constrain_audio_logits, encode_text, prepare_audio_prompt, revert_delay_pattern,
-    revert_generated_audio, sample_tokens,
-};
-
 use crate::codec::DacCodecGguf;
+pub use bound::{DiaCheckpoint, DiaTextEmbedding};
 
 /// `vokra.model.arch` a Dia GGUF must carry. Written by
 /// `vokra-convert::models::dia::ARCH`; the compliance registry

@@ -167,7 +167,9 @@ pub const IRODORI_SAMPLE_RATE: u32 = 48_000;
 /// not promises that a checkpoint can decode without its authenticated codec
 /// hop length.
 pub const IRODORI_DURATION_SCALE: f32 = 1.0;
+/// Minimum manually requested synthesis duration, in seconds.
 pub const IRODORI_DURATION_MIN_SECONDS: f32 = 0.5;
+/// Maximum manually requested synthesis duration, in seconds.
 pub const IRODORI_DURATION_MAX_SECONDS: f32 = 30.0;
 
 /// Text tokenizer repo the released v3 checkpoint pins
@@ -179,6 +181,7 @@ pub const IRODORI_TEXT_TOKENIZER_REPO: &str = "llm-jp/llm-jp-3-150m";
 /// Selected immutable tokenizer evidence revision. The upstream Irodori
 /// config names only the repository; this snapshot is an evidence choice for
 /// official ID parity, not an invented upstream source pin.
+#[allow(dead_code)] // Retained for the staged tokenizer provenance contract.
 pub(crate) const IRODORI_TEXT_TOKENIZER_REVISION: Option<&str> =
     Some("b112feef602fff752e4dac4c30af6a2c2fa41c7a");
 
@@ -186,6 +189,7 @@ pub(crate) const IRODORI_TEXT_TOKENIZER_REVISION: Option<&str> =
 /// (`t=0.999`) toward the data end (`t=0`).  The shared flow sampler uses the
 /// opposite increasing-time convention, so this model-specific helper is the
 /// source-shaped staging boundary until a native full forward is bound.
+#[allow(dead_code)] // Staged schedule helper awaits the authenticated native forward path.
 pub(crate) fn irodori_rf_timesteps(num_steps: usize, sway_coeff: f32) -> Result<Vec<f32>> {
     if num_steps == 0 {
         return Err(VokraError::InvalidArgument(
@@ -220,6 +224,7 @@ pub(crate) fn irodori_rf_timesteps(num_steps: usize, sway_coeff: f32) -> Result<
 /// batch/dual dispatch because Irodori's independent mode can mix text,
 /// speaker, and optional caption branches separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Guidance modes await the authenticated native RF-DiT path.
 pub(crate) enum IrodoriCfgGuidanceMode {
     Independent,
     Joint,
@@ -231,6 +236,7 @@ pub(crate) enum IrodoriCfgGuidanceMode {
 /// boundary: the official Python source seeds and allocates `x_t` internally,
 /// so caller-owned noise here is not a byte-identical source ownership claim.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // Sampling contract is retained for staged validation only.
 pub(crate) struct IrodoriSamplingContract {
     pub num_steps: usize,
     pub cfg_scale_text: f32,
@@ -246,6 +252,7 @@ pub(crate) struct IrodoriSamplingContract {
 }
 
 impl IrodoriSamplingContract {
+    #[allow(dead_code)] // Staged validation awaits the authenticated native RF-DiT path.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.num_steps == 0 {
             return Err(VokraError::InvalidArgument(
@@ -318,6 +325,7 @@ impl IrodoriSamplingContract {
     /// Validates an adapted native caller-owned RF initial-noise buffer. This
     /// is not byte-identical to the official source, which seeds and allocates
     /// `x_t` internally; a future binder must document that boundary explicitly.
+    #[allow(dead_code)] // Staged validation awaits the authenticated native RF-DiT path.
     pub(crate) fn validate_initial_noise(
         &self,
         initial_noise: &[f32],
@@ -351,6 +359,7 @@ impl IrodoriSamplingContract {
 /// rejects out-of-range manual seconds instead of silently reproducing that
 /// user-facing clamp; predicted frames use the source arithmetic below.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(dead_code)] // Duration contract is retained for staged validation only.
 pub(crate) struct IrodoriDurationBounds {
     pub scale: f32,
     pub min_seconds: f32,
@@ -359,6 +368,7 @@ pub(crate) struct IrodoriDurationBounds {
 }
 
 impl IrodoriDurationBounds {
+    #[allow(dead_code)] // Staged validation awaits the authenticated codec binding.
     pub(crate) fn validate(&self) -> Result<()> {
         if !self.scale.is_finite() || self.scale <= 0.0 {
             return Err(VokraError::InvalidArgument(
@@ -380,6 +390,7 @@ impl IrodoriDurationBounds {
 
     /// Convert an explicit manual duration. Out-of-range values are rejected
     /// rather than silently clamped at this fail-closed boundary.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
     pub(crate) fn manual_frames_for_seconds(&self, seconds: f32) -> Result<usize> {
         self.validate()?;
         if !seconds.is_finite() || seconds < self.min_seconds || seconds > self.max_seconds {
@@ -400,6 +411,7 @@ impl IrodoriDurationBounds {
     /// Convert a duration-predictor estimate using the official runtime's
     /// `pred_frames * duration_scale`, `round`, minimum-ceil and maximum-floor
     /// sequence. This is intentionally separate from manual seconds.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
     pub(crate) fn predicted_frames_to_latent_steps(&self, pred_frames: f32) -> Result<usize> {
         self.validate()?;
         if !pred_frames.is_finite() || pred_frames < 0.0 {
@@ -428,6 +440,7 @@ impl IrodoriDurationBounds {
 
     /// Compatibility spelling for callers that only have an explicit seconds
     /// request. It remains the manual, fail-closed path.
+    #[allow(dead_code)] // Staged duration path awaits the authenticated codec binding.
     pub(crate) fn frames_for_seconds(&self, seconds: f32) -> Result<usize> {
         self.manual_frames_for_seconds(seconds)
     }
@@ -542,6 +555,7 @@ impl IrodoriDitConfig {
 
     /// Source `JointAttention._apply_rotary_half` rotates the first half of
     /// attention heads and leaves the second half unrotated.
+    #[allow(dead_code)] // Staged layout helper awaits the authenticated native RF-DiT path.
     pub(crate) fn half_rotary_head_counts(&self) -> Result<(u32, u32)> {
         let heads = self.head_dim().map(|_| self.num_heads).ok_or_else(|| {
             VokraError::InvalidArgument(
@@ -558,6 +572,7 @@ impl IrodoriDitConfig {
 
     /// LowRankAdaLN emits three model-width vectors (shift, scale, gate),
     /// each with a rank bottleneck on its learned residual projection.
+    #[allow(dead_code)] // Staged layout helper awaits the authenticated native RF-DiT path.
     pub(crate) fn adaln_layout(&self) -> Result<(u32, u32, u32)> {
         if self.model_dim == 0 || self.adaln_rank == 0 || self.adaln_rank > self.model_dim {
             return Err(VokraError::InvalidArgument(

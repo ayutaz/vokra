@@ -281,6 +281,7 @@ impl Bottle2neck {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Tensor-prefix binding mirrors the source TDNN block contract.
 fn tdnn_parts(
     file: &GgufFile,
     conv_prefix: &str,
@@ -737,6 +738,7 @@ fn gender_fbank(pcm: &[f32], frontend: &StftAttrs) -> Result<(Vec<f32>, usize)> 
     Ok((features, spectrum.frames))
 }
 
+#[allow(clippy::manual_clamp)] // Preserve source floating-point NaN behavior at the filter boundary.
 fn mel_filters() -> Vec<f32> {
     let bins = N_FFT / 2 + 1;
     let hz_to_mel = |hz: f32| 2_595.0 * (1.0 + hz / 700.0).log10();
@@ -835,7 +837,7 @@ fn verify_metadata(file: &GgufFile) -> Result<()> {
     require_string(file, KEY_UPSTREAM_REVISION, UPSTREAM_REVISION)?;
     require_string(file, KEY_UPSTREAM_HF_REVISION, UPSTREAM_HF_REVISION)?;
     for (key, value) in [
-        (KEY_SAMPLE_RATE, SAMPLE_RATE as u32),
+        (KEY_SAMPLE_RATE, SAMPLE_RATE),
         (KEY_N_MELS, N_MELS as u32),
         (KEY_N_FFT, N_FFT as u32),
         (KEY_WIN_LENGTH, WIN_LENGTH as u32),

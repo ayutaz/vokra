@@ -17,7 +17,9 @@ use crate::hifigan::HifiGanComputeOps;
 use crate::strict_checkpoint::{load_tensor, require_tensor_shape};
 use vokra_ops::hifigan::HifiGanBackendOps;
 
+#[allow(dead_code)] // staged until the authenticated VibeVoice composite is wired
 const BASE: usize = 32;
+#[allow(dead_code)] // staged until the authenticated VibeVoice composite is wired
 const RATIOS: [usize; 6] = [2, 2, 4, 5, 5, 8];
 const DOWN_STRIDES: [usize; 7] = [1, 2, 2, 4, 5, 5, 8];
 const DOWN_KERNELS: [usize; 7] = [7, 4, 4, 8, 10, 10, 16];
@@ -26,6 +28,7 @@ const DEPTHS: [usize; 7] = [3, 3, 3, 3, 3, 3, 8];
 const HOP: usize = 3_200;
 const KERNEL: usize = 7;
 const EPS: f32 = 1.0e-5;
+#[allow(dead_code)] // staged until the authenticated VibeVoice composite is wired
 const GAMMA: f32 = 1.0e-6;
 
 /// Learned operations used by the causal tokenizer encoder.
@@ -284,7 +287,7 @@ impl VibeVoiceTokenizerEncoder {
 
     fn encode_nonstream(&self, compute: &Compute, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
         let mut x = causal_conv(compute, pcm, 1, &self.weights.downsamples[0])?;
-        let mut time = (pcm.len() + DOWN_STRIDES[0] - 1) / DOWN_STRIDES[0];
+        let mut time = pcm.len().div_ceil(DOWN_STRIDES[0]);
         for (stage_index, blocks) in self.weights.stages.iter().enumerate() {
             let channels = CHANNELS[stage_index];
             for block in blocks {
@@ -292,7 +295,7 @@ impl VibeVoiceTokenizerEncoder {
             }
             if let Some(down) = self.weights.downsamples.get(stage_index + 1) {
                 x = causal_conv(compute, &x, channels, down)?;
-                time = (time + down.stride - 1) / down.stride;
+                time = time.div_ceil(down.stride);
             }
         }
         let output = causal_conv(compute, &x, CHANNELS[6], &self.weights.head)?;
@@ -356,7 +359,7 @@ impl VibeVoiceTokenizerStream {
             if let Some(down) = self.encoder.weights.downsamples.get(stage_index + 1) {
                 x = causal_conv_stream(&compute, &x, channels, down, &mut caches[cursor])?;
                 cursor += 1;
-                time = (time + down.stride - 1) / down.stride;
+                time = time.div_ceil(down.stride);
             }
         }
         let output = causal_conv_stream(
@@ -539,7 +542,6 @@ impl VibeVoiceAcousticDecoderStream {
                 "vibevoice acoustic decoder stream output length mismatch".to_owned(),
             ));
         }
-        let output = output;
         finite("vibevoice acoustic decoder stream PCM", &output)?;
         Ok(output)
     }

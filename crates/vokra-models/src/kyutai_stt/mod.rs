@@ -71,9 +71,13 @@
 //! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29
 //! / Moshi T29: this scaffold sets the seam so the follow-up lands drop-in.
 
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, chunks};
+#[cfg(test)]
+use vokra_core::check_weight_license;
+#[cfg(test)]
+use vokra_core::gguf::chunks;
+use vokra_core::gguf::{GgufFile, GgufMetadataValue};
 use vokra_core::rng::SplitMix64;
-use vokra_core::{CompliancePolicy, Result, VokraError, check_weight_license};
+use vokra_core::{CompliancePolicy, Result, VokraError};
 
 /// `vokra.model.arch` a Kyutai STT GGUF must carry. Written by
 /// `vokra-convert::models::kyutai_stt::ARCH`; the compliance registry

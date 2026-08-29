@@ -202,6 +202,7 @@ impl VibeVoiceComposite {
         })
     }
 
+    #[allow(clippy::type_complexity)] // tuple shape mirrors the source prompt contract
     fn prompt_replacements(
         &self,
         packet: &VibeVoiceGenerationPacket,

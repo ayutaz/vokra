@@ -12,10 +12,12 @@ use vokra_core::{Result, VokraError};
 
 use crate::compute::{Compute, HotOp};
 
-use super::{DiaConfig, DiaDecoderBlockWeights, DiaEncoderBlockWeights, DiaWeights};
+use super::{DiaConfig, DiaEncoderBlockWeights, DiaWeights};
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 const HOT_OPS: &[HotOp] = &[HotOp::Gemm, HotOp::RmsNorm, HotOp::Softmax];
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 #[derive(Debug, Clone, Default)]
 struct KvHistory {
     /// Head-major `[heads, time, head_dim]` keys.
@@ -27,6 +29,7 @@ struct KvHistory {
     len: usize,
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 impl KvHistory {
     fn clear(&mut self) {
         self.keys.clear();
@@ -75,6 +78,7 @@ impl KvHistory {
     }
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 #[derive(Debug, Clone, Default)]
 struct CrossHistory {
     keys: Vec<f32>,
@@ -89,6 +93,7 @@ struct CrossHistory {
 /// Strict batch-one source route.  It uses the shared `Compute` seam for all
 /// learned GEMM, RMSNorm, and attention softmax operations; unsupported GPU
 /// coverage is rejected at construction, never replaced by CPU work.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) struct DiaBatchOne<'a> {
     cfg: &'a DiaConfig,
     weights: &'a DiaWeights,
@@ -99,6 +104,7 @@ pub(crate) struct DiaBatchOne<'a> {
     position: usize,
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 impl<'a> DiaBatchOne<'a> {
     /// Construct the route for an authenticated (non-synthesized) weight set.
     pub(crate) fn from_authenticated(
@@ -433,11 +439,13 @@ impl<'a> DiaBatchOne<'a> {
 /// unconditional item at index zero and conditional item at index one. This
 /// crate-private wrapper keeps both encoder/cross and decoder KV histories
 /// persistent; it is not a public production loader.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) struct DiaCfgBatchOne<'a> {
     uncond: DiaBatchOne<'a>,
     cond: DiaBatchOne<'a>,
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 impl<'a> DiaCfgBatchOne<'a> {
     pub(crate) fn from_authenticated(
         cfg: &'a DiaConfig,
@@ -489,10 +497,7 @@ impl<'a> DiaCfgBatchOne<'a> {
         let cond_lengths = self.cond.self_cache_lengths();
         let uncond_position = self.uncond.position;
         let cond_position = self.cond.position;
-        let mut logits = match self.step_raw(channel_tokens, cfg_scale) {
-            Ok(logits) => logits,
-            Err(error) => return Err(error),
-        };
+        let mut logits = self.step_raw(channel_tokens, cfg_scale)?;
         if let Err(error) = constrain_audio_logits(self.cond.cfg, &mut logits) {
             self.uncond
                 .rollback_self_cache(&uncond_lengths, uncond_position);
@@ -538,6 +543,7 @@ impl<'a> DiaCfgBatchOne<'a> {
     /// decoder state.  This mirrors the deliberately crate-private staged
     /// API: callers must discard the route after an error rather than treating
     /// a failed generation as an atomic transaction.
+    #[allow(clippy::too_many_arguments)] // Source-shaped route keeps each parity-controlled input separate.
     pub(crate) fn generate_codes(
         &mut self,
         cfg: &DiaConfig,
@@ -641,6 +647,7 @@ impl<'a> DiaCfgBatchOne<'a> {
     /// Same paired cache operation without audio-token constraints. The
     /// official initial prefill sample applies constraints only on loop
     /// samples, so this is intentionally crate-private and narrowly scoped.
+    #[allow(clippy::question_mark)] // Preserve explicit rollback sequencing between cache branches.
     fn step_raw(&mut self, channel_tokens: &[u32], cfg_scale: f32) -> Result<Vec<Vec<f32>>> {
         let uncond_lengths = self.uncond.self_cache_lengths();
         let cond_lengths = self.cond.self_cache_lengths();
@@ -670,6 +677,7 @@ impl<'a> DiaCfgBatchOne<'a> {
     }
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn take_draws<'a>(draws: &'a [f32], offset: &mut usize, count: usize) -> Result<&'a [f32]> {
     let end = offset
         .checked_add(count)
@@ -684,6 +692,7 @@ fn take_draws<'a>(draws: &'a [f32], offset: &mut usize, count: usize) -> Result<
     Ok(result)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn write_generated_frame(
     delayed: &mut [Vec<i32>],
     index: usize,
@@ -707,6 +716,7 @@ fn write_generated_frame(
     Ok(())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn apply_generation_drain(cfg: &DiaConfig, next: &mut [u32], remaining: usize) -> Result<usize> {
     if remaining == 0 || remaining > cfg.delay_pattern.iter().copied().max().unwrap_or(0) {
         return Err(VokraError::InvalidArgument(
@@ -729,6 +739,7 @@ fn apply_generation_drain(cfg: &DiaConfig, next: &mut [u32], remaining: usize) -
     Ok(remaining - 1)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn materialize_prompt_frame(cfg: &DiaConfig, frame: &[i32]) -> Result<Vec<u32>> {
     if frame.len() != cfg.channels {
         return Err(VokraError::InvalidArgument(
@@ -749,10 +760,12 @@ fn materialize_prompt_frame(cfg: &DiaConfig, frame: &[i32]) -> Result<Vec<u32>> 
         .collect()
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn block_gate_width(cfg: &DiaConfig) -> usize {
     cfg.decoder.n_hidden
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn encoder_block(
     compute: &Compute,
     cfg: &DiaConfig,
@@ -861,6 +874,7 @@ fn encoder_block(
     Ok(x)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn project(
     compute: &Compute,
     input: &[f32],
@@ -892,6 +906,7 @@ fn project(
     Ok(output)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn rope(
     input: &[f32],
     heads: usize,
@@ -927,6 +942,7 @@ fn rope(
     Ok(out)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn to_head_major(input: &[f32], heads: usize, head_dim: usize) -> Result<Vec<f32>> {
     let rows = heads
         .checked_mul(head_dim)
@@ -948,6 +964,8 @@ fn to_head_major(input: &[f32], heads: usize, head_dim: usize) -> Result<Vec<f32
     Ok(output)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
+#[allow(clippy::too_many_arguments)] // Attention arguments mirror the fixed source tensor contract.
 fn attention_full(
     compute: &Compute,
     q: &[f32],
@@ -1004,6 +1022,7 @@ fn attention_full(
     Ok(out)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn attention_cached(
     compute: &Compute,
     q: &[f32],
@@ -1050,6 +1069,7 @@ fn attention_cached(
     Ok(out)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn attention_cross(
     compute: &Compute,
     q: &[f32],
@@ -1074,6 +1094,7 @@ fn attention_cross(
     )
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn transpose(input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Result<()> {
     if input.len() != rows * cols || output.len() != rows * cols {
         return Err(VokraError::InvalidArgument(
@@ -1088,6 +1109,7 @@ fn transpose(input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Res
     Ok(())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn add_in_place(dst: &mut [f32], src: &[f32]) -> Result<()> {
     if dst.len() != src.len() {
         return Err(VokraError::InvalidArgument(
@@ -1100,10 +1122,12 @@ fn add_in_place(dst: &mut [f32], src: &[f32]) -> Result<()> {
     validate_finite(dst.iter().copied())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn validate_finite(mut values: impl Iterator<Item = f32>) -> Result<()> {
     if values.all(f32::is_finite) {
         Ok(())
@@ -1114,6 +1138,7 @@ fn validate_finite(mut values: impl Iterator<Item = f32>) -> Result<()> {
     }
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn validate_len(actual: usize, expected: usize, label: &str) -> Result<()> {
     if actual == expected {
         Ok(())
@@ -1124,6 +1149,7 @@ fn validate_len(actual: usize, expected: usize, label: &str) -> Result<()> {
     }
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn validate_weights(cfg: &DiaConfig, weights: &DiaWeights) -> Result<()> {
     let enc = &cfg.encoder;
     let dec = &cfg.decoder;
@@ -1232,6 +1258,7 @@ fn validate_weights(cfg: &DiaConfig, weights: &DiaWeights) -> Result<()> {
     validate_finite(all_weights(weights))
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn all_weights<'a>(weights: &'a DiaWeights) -> impl Iterator<Item = f32> + 'a {
     weights
         .text_embedding
@@ -1286,6 +1313,7 @@ fn all_weights<'a>(weights: &'a DiaWeights) -> impl Iterator<Item = f32> + 'a {
 
 /// Dia source delay pattern: prepend BOS according to each channel's delay
 /// and preserve trailing PAD slots. Input and output are time-major frames.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn apply_delay_pattern(cfg: &DiaConfig, codes: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
     validate_codes(cfg, codes)?;
     let extra = *cfg.delay_pattern.iter().max().unwrap_or(&0);
@@ -1307,12 +1335,14 @@ pub(crate) fn apply_delay_pattern(cfg: &DiaConfig, codes: &[Vec<u32>]) -> Result
 
 /// Generation-only sentinel used by the upstream `DecoderOutput` for a slot
 /// that has not been sampled yet. It must never reach an embedding lookup.
+#[allow(dead_code)] // Used by the staged generation helpers and their future binder.
 pub(crate) const DIA_UNKNOWN: i32 = -1;
 
 /// Build the official BOS/prompt/delay layout. Unlike the strict public
 /// `apply_delay_pattern`, this representation preserves unknown slots so the
 /// generation writer can perform masked-scatter semantics without replacing
 /// fixed delay padding.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn prepare_audio_prompt(
     cfg: &DiaConfig,
     prompt: Option<&[Vec<u32>]>,
@@ -1338,10 +1368,7 @@ pub(crate) fn prepare_audio_prompt(
     let max_delay = *cfg.delay_pattern.iter().max().unwrap_or(&0);
     // Upstream allocates `max(prompt_len + max_delay, 1)` columns: row zero
     // is BOS and prompt rows occupy 1..=prompt_len.
-    let source_len = prompt_len
-        .checked_add(max_delay)
-        .unwrap_or(usize::MAX)
-        .max(prompt_len + 1);
+    let source_len = prompt_len.saturating_add(max_delay).max(prompt_len + 1);
     let mut source = vec![vec![DIA_UNKNOWN; cfg.channels]; source_len];
     source[0].fill(cfg.audio_bos_value as i32);
     if let Some(frames) = prompt {
@@ -1374,6 +1401,7 @@ pub(crate) fn prepare_audio_prompt(
 /// reverts that slice, and finally truncates to `generated_length`. Keeping the
 /// slice operation here prevents prompt/BOS rows from leaking into returned
 /// codes when an audio prompt is present.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn revert_generated_audio(
     cfg: &DiaConfig,
     delayed: &[Vec<i32>],
@@ -1416,6 +1444,7 @@ pub(crate) fn revert_generated_audio(
 
 /// Official Dia text boundary: UTF-8 bytes, with `[S1]` and `[S2]` replaced
 /// by byte ids 1 and 2, truncated to `data.text_length`.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn encode_text(text: &str, cfg: &DiaConfig) -> Result<Vec<u32>> {
     // The upstream boundary is byte-first: marker replacement is performed
     // on UTF-8 bytes, and an empty string is a valid (empty) token sequence.
@@ -1431,6 +1460,7 @@ pub(crate) fn encode_text(text: &str, cfg: &DiaConfig) -> Result<Vec<u32>> {
         .collect())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn replace_byte_marker(input: &[u8], marker: &[u8], replacement: u8) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len());
     let mut cursor = 0;
@@ -1448,6 +1478,7 @@ fn replace_byte_marker(input: &[u8], marker: &[u8], replacement: u8) -> Vec<u8> 
 
 /// Inverse delay mapping.  The public strict helper remains separate; this
 /// operation is intended for generation state before terminal sanitization.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn revert_delay_pattern(cfg: &DiaConfig, delayed: &[Vec<u32>]) -> Result<Vec<Vec<u32>>> {
     if delayed.iter().any(|frame| frame.len() != cfg.channels) {
         return Err(VokraError::InvalidArgument(
@@ -1468,6 +1499,7 @@ pub(crate) fn revert_delay_pattern(cfg: &DiaConfig, delayed: &[Vec<u32>]) -> Res
     Ok(result)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn validate_codes(cfg: &DiaConfig, codes: &[Vec<u32>]) -> Result<()> {
     if codes.is_empty() || codes.iter().any(|frame| frame.len() != cfg.channels) {
         return Err(VokraError::InvalidArgument(
@@ -1490,12 +1522,14 @@ fn validate_codes(cfg: &DiaConfig, codes: &[Vec<u32>]) -> Result<()> {
 /// exponential/uniform draws consumed by the official multinomial path; no
 /// hidden RNG is permitted here.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) struct SamplingParams {
     pub temperature: f32,
     pub top_p: f32,
     pub top_k: usize,
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn sample_tokens(
     logits: &[Vec<f32>],
     params: SamplingParams,
@@ -1505,6 +1539,7 @@ pub(crate) fn sample_tokens(
     sample_tokens_inner(logits, params, draws, Some(eos))
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn sample_tokens_inner(
     logits: &[Vec<f32>],
     params: SamplingParams,
@@ -1599,7 +1634,7 @@ fn sample_tokens_inner(
                 }
             }
             let total: f32 = probs.iter().sum();
-            if !(total > 0.0) || !total.is_finite() {
+            if total.partial_cmp(&0.0) != Some(Ordering::Greater) || !total.is_finite() {
                 return Err(VokraError::InvalidArgument(
                     "Dia top-p left no probability mass".to_owned(),
                 ));
@@ -1627,6 +1662,7 @@ fn sample_tokens_inner(
 /// `cond + scale * (cond - uncond)`.  The two branches must have identical
 /// channel/vocabulary topology; branch construction and conditioning remain
 /// outside this crate-private staged route.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn classifier_free_guidance(
     conditional: &[Vec<f32>],
     unconditional: &[Vec<f32>],
@@ -1657,6 +1693,7 @@ pub(crate) fn classifier_free_guidance(
 
 /// Apply Dia's post-CFG audio constraints before temperature/top-k/top-p.
 /// Only channel zero may select EOS; every channel rejects ids above EOS.
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 pub(crate) fn constrain_audio_logits(cfg: &DiaConfig, logits: &mut [Vec<f32>]) -> Result<()> {
     if logits.len() != cfg.channels
         || logits.iter().any(|row| row.len() != cfg.tgt_vocab_size)
@@ -1688,6 +1725,7 @@ pub(crate) fn constrain_audio_logits(cfg: &DiaConfig, logits: &mut [Vec<f32>]) -
     Ok(())
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn softmax(values: &[f32]) -> Result<Vec<f32>> {
     let max = values
         .iter()
@@ -1710,7 +1748,7 @@ fn softmax(values: &[f32]) -> Result<Vec<f32>> {
         })
         .collect();
     let total: f32 = output.iter().sum();
-    if !(total > 0.0) || !total.is_finite() {
+    if total.partial_cmp(&0.0) != Some(Ordering::Greater) || !total.is_finite() {
         return Err(VokraError::InvalidArgument(
             "Dia sampling softmax is degenerate".to_owned(),
         ));
@@ -1721,6 +1759,7 @@ fn softmax(values: &[f32]) -> Result<Vec<f32>> {
     Ok(output)
 }
 
+#[allow(dead_code)] // staged until the authenticated Dia/DAC binder is wired
 fn argmax(values: &[f32]) -> Result<usize> {
     let (&first, rest) = values
         .split_first()

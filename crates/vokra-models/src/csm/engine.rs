@@ -397,6 +397,7 @@ impl CsmEngine {
     /// audio segment for every non-final message. A standalone incoming audio
     /// segment cannot be relabeled as such a message, so this route rejects it
     /// explicitly rather than silently accepting a different prompt shape.
+    #[allow(dead_code)] // staged until the authenticated CSM route is wired
     pub(crate) fn build_source_context_frames(
         &self,
         request: &DialogRequest,
@@ -559,6 +560,7 @@ impl CsmFrameSampler {
 /// filtered probability-zero entries. This remains separate from the shared
 /// generic sampler above: that sampler is useful for fixtures but is not an
 /// upstream parity oracle.
+#[allow(dead_code)] // staged until the authenticated CSM route is wired
 pub(crate) fn sample_source_topk_with_draws(
     logits: &[f32],
     temperature: f32,
@@ -590,8 +592,8 @@ pub(crate) fn sample_source_topk_with_draws(
     let threshold = sorted[top_k - 1];
     let candidates: Vec<bool> = scaled
         .iter()
-        .enumerate()
-        .map(|(_, &value)| value >= threshold)
+        .iter()
+        .map(|&value| value >= threshold)
         .collect();
     let max = candidates
         .iter()

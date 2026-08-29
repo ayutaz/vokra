@@ -259,8 +259,7 @@ impl VibeVoiceDpmSolverMultistep {
         let timesteps = (0..num_inference_steps)
             .map(|index| {
                 let numerator = (num_inference_steps - index) * (num_train_steps - 1);
-                let rounded = (numerator + spacing_denominator / 2) / spacing_denominator;
-                rounded
+                (numerator + spacing_denominator / 2) / spacing_denominator
             })
             .collect();
         Ok(Self {

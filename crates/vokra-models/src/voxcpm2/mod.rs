@@ -1175,6 +1175,7 @@ pub(crate) struct VoxCpm2Batch1Route {
     audio_decoder: AudioVaeDecoder,
 }
 
+#[allow(dead_code)] // Prompt packing awaits the authenticated complete composite route.
 fn reshape_prompt_latents(latent: &[f32]) -> Result<Vec<f32>> {
     if latent.len() % 64 != 0 || latent.iter().any(|value| !value.is_finite()) {
         return Err(VokraError::InvalidArgument(
@@ -1204,6 +1205,7 @@ fn reshape_prompt_latents(latent: &[f32]) -> Result<Vec<f32>> {
 
 impl VoxCpm2Batch1Route {
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)] // Staged orchestration awaits complete composite authorization.
     pub(crate) fn from_staged_components(
         generation: StagedGenerationRuntime,
         local_encoder: LocalEncoder,
@@ -1228,6 +1230,7 @@ impl VoxCpm2Batch1Route {
     /// prompt must contain exactly two usable VAE frames for that row. The
     /// source CFG negative half is built internally from the dynamic prefix
     /// and zero mu.
+    #[allow(dead_code)] // Staged orchestration awaits complete composite authorization.
     pub(crate) fn synthesize_batch1(
         &mut self,
         token_ids: &[u32],

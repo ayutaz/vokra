@@ -384,7 +384,7 @@ impl Qwen2Runtime {
         }
         let d = self.config().hidden_size;
         let start = token as usize * d;
-        self.step_embedding(&self.weights.embedding[start..start + d].to_vec())
+        self.step_embedding(&self.weights.embedding[start..start + d])
     }
 
     /// Runs a full causal prompt whose rows are already mixed embeddings.

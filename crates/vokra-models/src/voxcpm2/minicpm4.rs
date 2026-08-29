@@ -40,6 +40,7 @@ pub struct MiniCpm4Config {
 
 impl MiniCpm4Config {
     /// Construct and validate a generic MiniCPM-4 configuration.
+    #[allow(clippy::too_many_arguments)] // Configuration axes are intentionally passed explicitly.
     pub fn new(
         hidden_dim: usize,
         ffn_dim: usize,
@@ -115,6 +116,7 @@ impl MiniCpm4Config {
 
     /// The authenticated 0.5B axes and LongRoPE arrays from the fixed
     /// `config.json` companion.
+    #[allow(clippy::excessive_precision)] // These f32 literals preserve the pinned source values exactly.
     pub fn voxcpm_0_5b() -> Result<Self> {
         const FACTORS: [f32; 32] = [
             1.0004360675811768,
@@ -238,71 +240,85 @@ impl MiniCpm4Config {
         Ok(())
     }
 
+    /// Attention head width derived from hidden width and head count.
     #[must_use]
     pub fn head_dim(&self) -> usize {
         self.hidden_dim / self.n_heads
     }
 
+    /// Key/value projection width derived from KV-head count and head width.
     #[must_use]
     pub fn kv_dim(&self) -> usize {
         self.n_kv_heads * self.head_dim()
     }
 
+    /// Hidden width of each transformer row.
     #[must_use]
     pub fn hidden_dim(&self) -> usize {
         self.hidden_dim
     }
 
+    /// Feed-forward intermediate width.
     #[must_use]
     pub fn ffn_dim(&self) -> usize {
         self.ffn_dim
     }
 
+    /// Number of transformer layers represented by this configuration.
     #[must_use]
     pub fn n_layers(&self) -> usize {
         self.n_layers
     }
 
+    /// Number of query attention heads.
     #[must_use]
     pub fn n_heads(&self) -> usize {
         self.n_heads
     }
 
+    /// Number of key/value attention heads.
     #[must_use]
     pub fn n_kv_heads(&self) -> usize {
         self.n_kv_heads
     }
 
+    /// Maximum supported sequence length.
     #[must_use]
     pub fn max_positions(&self) -> usize {
         self.max_positions
     }
 
+    /// Original pre-extension sequence length used by LongRoPE selection.
     #[must_use]
     pub fn original_max_positions(&self) -> usize {
         self.original_max_positions
     }
 
+    /// Rotary embedding base (`theta`).
     #[must_use]
     pub fn rope_theta(&self) -> f32 {
         self.rope_theta
     }
 
+    /// RMSNorm epsilon.
     #[must_use]
     pub fn rms_norm_eps(&self) -> f32 {
         self.rms_norm_eps
     }
 
+    /// Short-context LongRoPE factors.
     #[must_use]
     pub fn rope_short_factor(&self) -> &[f32] {
         &self.rope_short_factor
     }
 
+    /// Long-context LongRoPE factors.
     #[must_use]
     pub fn rope_long_factor(&self) -> &[f32] {
         &self.rope_long_factor
     }
 
+    /// LongRoPE scale derived from the configured context lengths.
     #[must_use]
     pub fn rope_scale(&self) -> f32 {
         self.rope_scale
@@ -321,6 +337,7 @@ pub struct MiniCpm4Linear {
 }
 
 impl MiniCpm4Linear {
+    /// Bind a source-layout `[out_features, in_features]` matrix and optional bias.
     pub fn from_source(
         weight: Vec<f32>,
         bias: Option<Vec<f32>>,
@@ -399,11 +416,13 @@ impl MiniCpm4Linear {
         )
     }
 
+    /// Input width expected by this linear layer.
     #[must_use]
     pub fn in_features(&self) -> usize {
         self.in_features
     }
 
+    /// Output width produced by this linear layer.
     #[must_use]
     pub fn out_features(&self) -> usize {
         self.out_features
@@ -497,6 +516,7 @@ pub struct MiniCpm4Stack {
 }
 
 impl MiniCpm4Stack {
+    /// Validate and attach a complete transformer stack.
     pub fn new(config: MiniCpm4Config, weights: MiniCpm4StackWeights) -> Result<Self> {
         config.validate()?;
         if weights.blocks.len() != config.n_layers {
@@ -558,11 +578,13 @@ impl MiniCpm4Stack {
         Ok(Self { config, weights })
     }
 
+    /// Validated configuration used by this stack.
     #[must_use]
     pub fn config(&self) -> &MiniCpm4Config {
         &self.config
     }
 
+    /// Number of validated transformer blocks.
     #[must_use]
     pub fn layer_count(&self) -> usize {
         self.weights.blocks.len()
@@ -778,6 +800,7 @@ pub struct MiniCpm4Model {
 }
 
 impl MiniCpm4Model {
+    /// Attach a token embedding matrix to a validated transformer stack.
     pub fn from_source_embedding(stack: MiniCpm4Stack, embedding: Vec<f32>) -> Result<Self> {
         if embedding.is_empty() || embedding.len() % stack.config.hidden_dim != 0 {
             return Err(VokraError::InvalidArgument(
@@ -796,16 +819,19 @@ impl MiniCpm4Model {
         })
     }
 
+    /// Access the validated transformer stack.
     #[must_use]
     pub fn stack(&self) -> &MiniCpm4Stack {
         &self.stack
     }
 
+    /// Number of rows in the token embedding matrix.
     #[must_use]
     pub fn vocab_size(&self) -> usize {
         self.vocab_size
     }
 
+    /// Embed token IDs and run the stack in the requested attention mode.
     pub fn forward_tokens(
         &self,
         tokens: &[u32],
@@ -843,6 +869,7 @@ pub struct MiniCpm4KvCache {
 }
 
 impl MiniCpm4KvCache {
+    /// Create an empty cache using the stack's configured LongRoPE mode.
     #[must_use]
     pub fn new(stack: &MiniCpm4Stack) -> Self {
         Self {
@@ -875,6 +902,7 @@ impl MiniCpm4KvCache {
         Ok(cache)
     }
 
+    /// Number of sequence positions currently cached.
     #[must_use]
     pub fn positions(&self) -> usize {
         self.positions

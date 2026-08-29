@@ -6,6 +6,7 @@
 //! The contracts here make the native boundary explicit without opening the
 //! historical T3-only loaders.
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use vokra_core::{Result, VokraError};
@@ -35,14 +36,23 @@ const AUTHENTICATED_COMPOSITE_MANIFEST_SHA256: &str = "";
 /// authenticated conversion manifest; this contract never invents names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositeBinderEvidence {
+    /// Chatterbox family variant represented by the checkpoint.
     pub variant: ChatterboxVariant,
+    /// Authenticated upstream source revision.
     pub source_revision: String,
+    /// Filename of the authenticated source checkpoint.
     pub checkpoint_filename: String,
+    /// SHA-256 digest of the authenticated tensor manifest.
     pub tensor_manifest_sha256: String,
+    /// Whether the speaker/voice encoder is present.
     pub includes_voice_encoder: bool,
+    /// Whether the S3 tokenizer is present.
     pub includes_s3_tokenizer: bool,
+    /// Whether the S3Gen component is present.
     pub includes_s3gen: bool,
+    /// Whether the HiFT vocoder is present.
     pub includes_hift: bool,
+    /// Whether the watermark component is present.
     pub includes_watermark: bool,
 }
 
@@ -68,7 +78,7 @@ impl CompositeBinderEvidence {
             && self.includes_watermark)
         {
             return Err(VokraError::NotImplemented(
-                "chatterbox composite binder: T3-only checkpoint is incomplete; voice encoder, S3 tokenizer, S3Gen, HiFT and watermark are all required before PCM".into(),
+                "chatterbox composite binder: T3-only checkpoint is incomplete; voice encoder, S3 tokenizer, S3Gen, HiFT and watermark are all required before PCM",
             ));
         }
         Ok(())
@@ -90,15 +100,25 @@ pub enum ChatterboxVariant {
 /// the old shape-only weight structs in the per-variant modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct T3Architecture {
+    /// Variant represented by these axes.
     pub variant: ChatterboxVariant,
+    /// Transformer backbone family.
     pub backbone: Backbone,
+    /// Transformer hidden width.
     pub hidden: usize,
+    /// Number of transformer layers.
     pub layers: usize,
+    /// Number of attention query heads.
     pub heads: usize,
+    /// Number of key/value heads.
     pub kv_heads: usize,
+    /// Feed-forward intermediate width.
     pub ffn: usize,
+    /// Maximum transformer position count.
     pub positions: usize,
+    /// Text-token vocabulary size.
     pub text_vocab: usize,
+    /// Speech-token vocabulary size.
     pub speech_vocab: usize,
 }
 
@@ -107,14 +127,23 @@ pub struct T3Architecture {
 /// authenticated tensor manifest before materializing these names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gpt2T3Contract {
+    /// Authenticated architecture axes.
     pub architecture: T3Architecture,
+    /// Whether GPT-2 learned word-position embeddings are present.
     pub has_learned_wpe: bool,
+    /// Whether custom text position embeddings are present.
     pub has_custom_text_pos_emb: bool,
+    /// Whether custom speech position embeddings are present.
     pub has_custom_speech_pos_emb: bool,
+    /// Whether attention QKV bias is fused.
     pub has_fused_qkv_bias: bool,
+    /// Whether layer-normalization bias tensors are present.
     pub has_layer_norm_bias: bool,
+    /// Whether the feed-forward path uses SwiGLU.
     pub has_swiglu: bool,
+    /// Whether a prompt-speech Perceiver is present.
     pub has_perceiver: bool,
+    /// Whether an emotion projection is present.
     pub has_emotion_projection: bool,
 }
 
@@ -143,8 +172,11 @@ impl Gpt2T3Contract {
 /// T3 transformer family.  Nano/Turbo must never be represented as Llama.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backbone {
+    /// Llama 520M backbone used by multilingual v3.
     Llama520M,
+    /// GPT-2 small backbone used by Nano.
     Gpt2Small,
+    /// GPT-2 medium backbone used by Turbo.
     Gpt2Medium,
 }
 
@@ -206,8 +238,11 @@ impl ChatterboxVariant {
 /// Exact non-text conditioning stages in upstream `T3CondEnc.forward`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditioningStage {
+    /// Projected speaker embedding stage.
     SpeakerProjection,
+    /// Prompt-speech Perceiver stage.
     PromptSpeechPerceiver,
+    /// Projected emotion embedding stage.
     EmotionProjection,
 }
 
@@ -230,7 +265,9 @@ pub const fn conditioning_stages(variant: ChatterboxVariant) -> &'static [Condit
 /// Rows resulting from source-ordered conditioning concatenation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConditioningRows {
+    /// Source-ordered stages represented by `rows`.
     pub stages: Vec<ConditioningStage>,
+    /// Conditioning rows in the corresponding stage order.
     pub rows: Vec<Vec<f32>>,
 }
 
@@ -752,20 +789,30 @@ fn gpt2_pieces(text: &str) -> Result<Vec<String>> {
 /// Exact logits processor order for a generation route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Processor {
+    /// Divide logits by the configured temperature.
     Temperature,
+    /// Keep only the configured top-k logits.
     TopK,
+    /// Filter logits below the configured minimum probability.
     MinP,
+    /// Keep the configured cumulative probability mass.
     TopP,
+    /// Apply the configured repetition penalty.
     RepetitionPenalty,
 }
 
 /// Sampling controls mirrored from the upstream T3 wrappers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingConfig {
+    /// Logit temperature; must be positive and finite.
     pub temperature: f32,
+    /// Number of candidates retained by top-k filtering.
     pub top_k: usize,
+    /// Cumulative probability retained by top-p filtering.
     pub top_p: f32,
+    /// Minimum probability ratio used by min-p filtering.
     pub min_p: f32,
+    /// Penalty applied to tokens present in generation history.
     pub repetition_penalty: f32,
 }
 
@@ -925,6 +972,7 @@ pub fn apply_processors(
     Ok(())
 }
 
+/// Return the exact logits-processor order for a Chatterbox variant.
 #[must_use]
 pub const fn processor_order(variant: ChatterboxVariant) -> &'static [Processor] {
     match variant {
@@ -951,6 +999,7 @@ pub struct RandomDraws {
 }
 
 impl RandomDraws {
+    /// Create a deterministic draw stream whose values are in `[0, 1)`.
     pub fn new(draws: Vec<f32>) -> Result<Self> {
         if draws
             .iter()
@@ -962,6 +1011,8 @@ impl RandomDraws {
         }
         Ok(Self { draws, cursor: 0 })
     }
+    /// Consume and return the next caller-provided draw.
+    #[allow(clippy::should_implement_trait)] // Fallible finite stream, not an Iterator.
     pub fn next(&mut self) -> Result<f32> {
         let value = self.draws.get(self.cursor).copied().ok_or_else(|| {
             VokraError::InvalidArgument(
@@ -997,7 +1048,7 @@ pub fn sample_with_draw(logits: &[f32], draw: f32) -> Result<u32> {
         probs.push(p);
         sum += p;
     }
-    if !(sum > 0.0) {
+    if sum.partial_cmp(&0.0) != Some(Ordering::Greater) {
         return Err(VokraError::InvalidArgument(
             "chatterbox sampling: no finite probability mass".into(),
         ));
@@ -1100,6 +1151,7 @@ pub struct GenerationTopology {
     pub remove_eos: bool,
 }
 
+/// Return the generation topology for a Chatterbox variant.
 #[must_use]
 pub const fn generation_topology(variant: ChatterboxVariant) -> GenerationTopology {
     match variant {
@@ -1119,7 +1171,6 @@ pub const fn generation_topology(variant: ChatterboxVariant) -> GenerationTopolo
 }
 
 /// Remove EOS from the returned Turbo/Nano sequence exactly as upstream does.
-#[must_use]
 pub fn remove_terminal_eos(tokens: &mut Vec<u32>, eos: u32) {
     if tokens.last().copied() == Some(eos) {
         tokens.pop();

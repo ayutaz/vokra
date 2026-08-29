@@ -342,7 +342,7 @@ pub(crate) fn forward_incremental(
     compute: &Compute,
 ) -> Result<Vec<Vec<f32>>> {
     let d = config.backbone.d_model;
-    if frames == 0 || input.len() != frames.checked_mul(d).unwrap_or(usize::MAX) {
+    if frames == 0 || input.len() != frames.saturating_mul(d) {
         return Err(VokraError::InvalidArgument(
             "zonos incremental transformer input shape mismatch".to_owned(),
         ));

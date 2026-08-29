@@ -401,6 +401,7 @@ impl ZonosConfig {
     /// (GQA split, `d_model == num_heads * head_dim`, num_codebooks ==
     /// delay_pattern.len()) mirror the real model.
     #[must_use]
+    #[allow(dead_code)] // staged until the authenticated Zonos runtime binder is wired
     pub(crate) fn tiny_for_tests() -> Self {
         Self {
             backbone: ZonosBackboneConfig {
@@ -730,6 +731,7 @@ impl ZonosWeights {
     ///
     /// [`VokraError::InvalidArgument`] if `config.validate_for_forward`
     /// fails.
+    #[allow(dead_code)] // staged until the authenticated Zonos runtime binder is wired
     pub(crate) fn synthesized(config: &ZonosConfig, seed: u64) -> Result<Self> {
         config.validate_for_forward()?;
         let mut rng = SplitMix64::new(seed);
@@ -1025,6 +1027,7 @@ impl ZonosConditioningPacket {
 
 /// Xavier-uniform draw of `count` `f32`s in `[-a, +a]` where
 /// `a = sqrt(6 / (fan_in + fan_out))`. Deterministic under a fixed `rng`.
+#[allow(dead_code)] // staged until the authenticated Zonos runtime binder is wired
 fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> Vec<f32> {
     let a = (6.0 / (fan_in + fan_out) as f32).sqrt();
     let mut out = Vec::with_capacity(count);
@@ -1441,7 +1444,7 @@ impl ZonosTts {
             }
             self.cfg.apply_delay_pattern(&packet.prompt_codes)?
         };
-        return self.forward_conditioned_delayed(packet, &delayed, &compute, guidance_scale, d);
+        self.forward_conditioned_delayed(packet, &delayed, &compute, guidance_scale, d)
     }
 
     fn forward_conditioned_delayed(
@@ -1454,9 +1457,12 @@ impl ZonosTts {
     ) -> Result<Vec<Vec<f32>>> {
         let (mut conditional_input, mut unconditional_input) = conditioning::build_prefix(
             packet,
-            self.weights.prefix_conditioner.as_ref().ok_or_else(|| {
-                VokraError::NotImplemented("zonos prefix conditioner weights are not bound")
-            })?,
+            self.weights
+                .prefix_conditioner
+                .as_ref()
+                .ok_or(VokraError::NotImplemented(
+                    "zonos prefix conditioner weights are not bound",
+                ))?,
             compute,
             d,
         )?;
@@ -1634,9 +1640,13 @@ impl ZonosTts {
         let compute = crate::compute::Compute::for_backend(self.backend, ZONOS_HOT_OPS)?;
         let d = self.cfg.backbone.d_model;
         let mut offset = prompt_frames + 1;
-        let prefix = self.weights.prefix_conditioner.as_ref().ok_or_else(|| {
-            VokraError::NotImplemented("zonos prefix conditioner weights are not bound")
-        })?;
+        let prefix = self
+            .weights
+            .prefix_conditioner
+            .as_ref()
+            .ok_or(VokraError::NotImplemented(
+                "zonos prefix conditioner weights are not bound",
+            ))?;
         let (conditional_prefix, unconditional_prefix) =
             conditioning::build_prefix(packet, prefix, &compute, d)?;
         let mut conditional_cache = transformer::KvCache::new(&self.cfg)?;
@@ -1659,12 +1669,16 @@ impl ZonosTts {
                 Some(unconditional_cache.step(&self.cfg, &self.weights, &embedding, &compute)?);
         }
         let mut next_logits = guided_logits(
-            conditional_logits.as_ref().ok_or_else(|| {
-                VokraError::InvalidArgument("zonos conditioner produced no logits".to_owned())
-            })?,
-            unconditional_logits.as_ref().ok_or_else(|| {
-                VokraError::InvalidArgument("zonos unconditional produced no logits".to_owned())
-            })?,
+            conditional_logits
+                .as_ref()
+                .ok_or(VokraError::InvalidArgument(
+                    "zonos conditioner produced no logits".to_owned(),
+                ))?,
+            unconditional_logits
+                .as_ref()
+                .ok_or(VokraError::InvalidArgument(
+                    "zonos unconditional produced no logits".to_owned(),
+                ))?,
             self.cfg.num_codebooks,
             self.cfg.head_vocab,
             guidance_scale,
@@ -2113,7 +2127,7 @@ fn sample_tokens(
         if sampling.temperature == 0.0 {
             let mut best = None;
             for (index, &value) in filtered.iter().enumerate() {
-                if value.is_finite() && best.map_or(true, |(_, best_value)| value > best_value) {
+                if value.is_finite() && best.is_none_or(|(_, best_value)| value > best_value) {
                     best = Some((index, value));
                 }
             }
@@ -2271,7 +2285,7 @@ fn sample_tokens(
             }
             *draw_cursor += 1;
             let score = probability / draw;
-            if score.is_finite() && best.map_or(true, |(_, best_score)| score > best_score) {
+            if score.is_finite() && best.is_none_or(|(_, best_score)| score > best_score) {
                 best = Some((index, score));
             }
         }
@@ -2301,7 +2315,7 @@ fn greedy_tokens(logits: &[Vec<f32>], codebooks: usize, head_vocab: usize) -> Re
                     "zonos greedy logits contain non-finite values".to_owned(),
                 ));
             }
-            if best.map_or(true, |(_, best_value)| value > best_value) {
+            if best.is_none_or(|(_, best_value)| value > best_value) {
                 best = Some((index, value));
             }
         }

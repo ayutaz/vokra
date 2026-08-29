@@ -625,7 +625,7 @@ fn post_processor_atom(value: &JsonValue, bos_id: u32, eos_id: u32) -> Option<(&
         let id = id
             .and_then(JsonValue::as_u64)
             .map(|id| id as u32)
-            .or_else(|| match name {
+            .or(match name {
                 "<|begin_of_text|>" => Some(bos_id),
                 "<|end_of_text|>" => Some(eos_id),
                 _ => None,

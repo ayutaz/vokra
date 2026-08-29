@@ -709,9 +709,9 @@ impl AudioLdm2 {
         // caller must not be able to mint a valid-looking SHA/status pair.
         let weights = AudioLdm2Weights::from_gguf(file)?;
         let _ = weights;
-        return Err(VokraError::ModelLoad(
+        Err(VokraError::ModelLoad(
             "audioldm2: BLOCKED — native binding is disabled until an independently verified fixed component tree, projection sidecar, source/model identity, and exact tensor manifest are compiled into the binder; self-declared manifest hashes/status are never accepted".to_owned(),
-        ));
+        ))
     }
 
     /// The bound topology axes (from `vokra.audioldm2.*` chunk group

@@ -10,40 +10,74 @@ use vokra_core::{Result, VokraError};
 
 use crate::strict_checkpoint::sha256_bytes;
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const OFFICIAL_SOURCE_REVISION: &str = "0d990d60740bf174904a5185cce910b847bd3684";
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const OFFICIAL_MODEL_REVISION: &str = "29e01c4e8d000f4bcd70751be16fa94bf3d85a18";
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const OFFICIAL_REFERENCE_FORMAT: &str = "vokra-cosyvoice3-official-reference-v1";
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const SAMPLE_RATE: u32 = 24_000;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const LLM_INPUT_SIZE: usize = 896;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const LLM_OUTPUT_SIZE: usize = 896;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const SPEECH_TOKEN_SIZE: usize = 6_561;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HEAD_SIZE: usize = SPEECH_TOKEN_SIZE + 200;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const SOS_TOKEN: u32 = SPEECH_TOKEN_SIZE as u32;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const EOS_TOKEN: u32 = SOS_TOKEN + 1;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const TASK_TOKEN: u32 = SOS_TOKEN + 2;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FILL_TOKEN: u32 = SOS_TOKEN + 3;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_INPUT_SIZE: usize = 80;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_OUTPUT_SIZE: usize = 80;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_SPEAKER_SIZE: usize = 192;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_PRE_LOOKAHEAD: usize = 3;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const TOKEN_MEL_RATIO: usize = 2;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_NOISE_FRAMES: usize = 15_000;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_STEPS: usize = 10;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_CFG_RATE: f32 = 0.7;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const FLOW_CHUNK_SIZE: usize = 25;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const DIT_DIM: usize = 1_024;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const DIT_DEPTH: usize = 22;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const DIT_HEADS: usize = 16;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const DIT_HEAD_DIM: usize = 64;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const DIT_FF_MULT: usize = 2;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_BASE_CHANNELS: usize = 512;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_HARMONICS: usize = 8;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_UPSAMPLE_RATES: [usize; 3] = [8, 5, 3];
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_UPSAMPLE_KERNELS: [usize; 3] = [16, 11, 7];
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_NFFT: usize = 16;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_HOP: usize = 4;
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub const HIFT_PRE_LOOK_RIGHT: usize = 4;
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct RasConfig {
     pub top_p: f32,
@@ -52,6 +86,7 @@ pub(crate) struct RasConfig {
     pub tau: f32,
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl Default for RasConfig {
     fn default() -> Self {
         Self {
@@ -63,6 +98,7 @@ impl Default for RasConfig {
     }
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl RasConfig {
     fn validate(self) -> Result<Self> {
         if !self.top_p.is_finite()
@@ -82,6 +118,7 @@ impl RasConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) enum InputKind {
     Sos,
     PromptText,
@@ -92,11 +129,13 @@ pub(crate) enum InputKind {
 
 /// Flattened input rows in the order used by `Qwen2LM.inference`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct LlmPrompt {
     rows: Vec<f32>,
     kinds: Vec<InputKind>,
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl LlmPrompt {
     pub(crate) fn build(
         sos: &[f32],
@@ -158,12 +197,14 @@ impl LlmPrompt {
 /// enough: it is checked against the bytes, and the evidence identity must
 /// match the fixed source/model pair.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct FlowNoise {
     values: Vec<f32>,
     sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // evidence is consumed when the authenticated binder is enabled
 pub(crate) struct NoiseEvidence<'a> {
     pub format: &'a str,
     pub source_revision: &'a str,
@@ -181,6 +222,7 @@ struct FixedNoiseCapability(());
 #[allow(dead_code)]
 const FIXED_NOISE_CAPABILITY: FixedNoiseCapability = FixedNoiseCapability(());
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl FlowNoise {
     #[allow(dead_code)]
     fn authenticated(
@@ -251,6 +293,7 @@ impl FlowNoise {
 /// `CausalConditionalCFM.forward`: `torch.linspace(0, 1, n_timesteps + 1)`
 /// followed by `1 - torch.cos(t_span * 0.5 * torch.pi)` when the YAML tag is
 /// `cosine`.  The estimator update is the source's `x = x + dt * dphi_dt`.
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) fn cosine_time_grid(steps: usize) -> Result<Vec<f32>> {
     if steps == 0 {
         return Err(VokraError::InvalidArgument(
@@ -265,6 +308,7 @@ pub(crate) fn cosine_time_grid(steps: usize) -> Result<Vec<f32>> {
 
 /// Source-shaped Euler update.  The estimator is injected by a future native
 /// DiT binder; no fallback estimator or CPU substitution is constructed.
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) fn euler_step(x: &mut [f32], velocity: &[f32], dt: f32) -> Result<()> {
     if x.len() != velocity.len()
         || x.is_empty()
@@ -287,12 +331,14 @@ pub(crate) fn euler_step(x: &mut [f32], velocity: &[f32], dt: f32) -> Result<()>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct SpeechTrace {
     pub yielded_tokens: Vec<u32>,
     pub sampled_tokens: Vec<u32>,
     pub terminated_eos: bool,
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl SpeechTrace {
     pub(crate) fn validate(self) -> Result<Self> {
         if self.yielded_tokens.is_empty()
@@ -335,12 +381,14 @@ impl SpeechTrace {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct GeneratedMel {
     pub data: Vec<f32>,
     pub frames: usize,
     pub channels: usize,
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl GeneratedMel {
     fn validate(self) -> Result<Self> {
         let expected = FLOW_OUTPUT_SIZE.checked_mul(self.frames).ok_or_else(|| {
@@ -362,6 +410,7 @@ impl GeneratedMel {
 /// Components injected by a future authenticated checkpoint binder.  Keeping
 /// this seam internal allows parity workers to exercise source ordering while
 /// preventing an incomplete model from becoming a public loader.
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) trait BatchOneComponents {
     fn generate_speech_tokens(
         &self,
@@ -384,6 +433,7 @@ pub(crate) trait BatchOneComponents {
 
 /// Inputs for one official non-streaming batch-one route.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct BatchOneConditioning {
     pub sos: Vec<f32>,
     pub prompt_text: Vec<f32>,
@@ -401,11 +451,13 @@ pub(crate) struct BatchOneConditioning {
 /// Source-shaped orchestration: Qwen2 AR → CausalMaskedDiffWithDiT →
 /// generated-only mel → causal HiFT.  The flow implementation is supplied by
 /// the caller; no CosyVoice2 flow, zero tensor, or silent CPU fallback exists.
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 pub(crate) struct BatchOneRoute<'a, C: BatchOneComponents> {
     components: &'a C,
     sampling: RasConfig,
 }
 
+#[allow(dead_code)] // staged until the authenticated composite binder is wired
 impl<'a, C: BatchOneComponents> BatchOneRoute<'a, C> {
     pub(crate) fn new(components: &'a C, sampling: RasConfig) -> Result<Self> {
         Ok(Self {

@@ -393,6 +393,7 @@ fn rms_unaffine_dynamic(compute: &Compute, input: &[f32]) -> Result<Vec<f32>> {
     Ok(output)
 }
 
+#[allow(dead_code)] // staged until the authenticated VibeVoice composite is wired
 fn modulate(input: &[f32], shift: &[f32], scale: &[f32]) -> Result<Vec<f32>> {
     modulate_dynamic(input, shift, scale, HIDDEN)
 }
@@ -413,6 +414,7 @@ fn modulate_dynamic(input: &[f32], shift: &[f32], scale: &[f32], width: usize) -
     Ok(output)
 }
 
+#[allow(dead_code)] // staged until the authenticated VibeVoice composite is wired
 fn split_modulation(modulation: Vec<f32>) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
     split_modulation_dynamic(modulation, HIDDEN)
 }

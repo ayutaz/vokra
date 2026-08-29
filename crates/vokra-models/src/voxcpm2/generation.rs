@@ -14,9 +14,13 @@ use vokra_core::gguf::GgufFile;
 pub const FEATURE_PATCHES_PER_STEP: usize = 2;
 const FEATURE_PATCH_WIDTH: usize = FEATURE_PATCHES_PER_STEP * 64;
 
+#[allow(dead_code)] // Used only by the staged GGUF generation path.
 const VOXCPM_HIDDEN: usize = 1_024;
+#[allow(dead_code)] // Used only by the staged GGUF generation path.
 const VOXCPM_FFN: usize = 4_096;
+#[allow(dead_code)] // Used only by the staged GGUF generation path.
 const VOXCPM_KV: usize = 128;
+#[allow(dead_code)] // Used only by the staged GGUF generation path.
 const VOXCPM_VOCAB: usize = 73_448;
 
 /// Source-shaped feature-generation loop. VoxCPM pre-fills the text prompt
@@ -25,7 +29,9 @@ const VOXCPM_VOCAB: usize = 73_448;
 /// source protocol and refuses malformed learned outputs.
 #[derive(Debug, Clone, Copy)]
 pub struct FeatureGenerationLoop {
+    /// Maximum number of feature patches to emit.
     pub max_steps: usize,
+    /// Minimum number of patches before the learned stop decision applies.
     pub min_steps: usize,
     /// Base/residual MiniCPM hidden width (0.5B: 1024).
     pub hidden_dim: usize,
@@ -53,16 +59,19 @@ pub struct PrefillState {
 }
 
 impl PrefillState {
+    /// Number of text/audio rows in the prefill packet.
     #[must_use]
     pub fn rows(&self) -> usize {
         self.rows
     }
 
+    /// Hidden width of each prefill row.
     #[must_use]
     pub fn hidden_dim(&self) -> usize {
         self.hidden_dim
     }
 
+    /// Base-LM input rows in row-major `[rows, hidden_dim]` layout.
     #[must_use]
     pub fn base_rows(&self) -> &[f32] {
         &self.base_rows
@@ -132,11 +141,13 @@ pub struct CausalLanguageState {
 /// `[out,in]` checkpoint matrix once at construction, so the selected Compute
 /// backend is used for every hot projection without per-step transposes.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Bound only when the complete staged composite is authorized.
 pub(crate) struct FeatureProjection {
     linear: crate::voxcpm2::MiniCpm4Linear,
 }
 
 impl FeatureProjection {
+    #[allow(dead_code)] // Staged projection constructor awaits composite authorization.
     pub(crate) fn from_source(
         weight: Vec<f32>,
         bias: Vec<f32>,
@@ -153,6 +164,7 @@ impl FeatureProjection {
         })
     }
 
+    #[allow(dead_code)] // Staged projection is dormant until its composite route is authorized.
     pub(crate) fn apply(&self, input: &[f32], rows: usize, compute: &Compute) -> Result<Vec<f32>> {
         let mut output = vec![0.0; rows * self.linear.out_features()];
         self.linear.apply(compute, input, rows, &mut output)?;
@@ -165,6 +177,7 @@ impl FeatureProjection {
 /// does not assert the missing complete composite manifest, so public
 /// production loaders remain fail-closed.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Staged runtime awaits the authenticated complete composite manifest.
 pub(crate) struct StagedGenerationRuntime {
     language: CausalLanguageState,
     embedding: Vec<f32>,
@@ -184,6 +197,7 @@ pub struct VoxCpm2FlowDraws {
 }
 
 impl VoxCpm2FlowDraws {
+    /// Construct caller-owned finite draws for exactly `required_steps` steps.
     pub fn new(noises: Vec<Vec<f32>>, required_steps: usize) -> Result<Self> {
         if required_steps == 0
             || noises.len() != required_steps
@@ -198,18 +212,27 @@ impl VoxCpm2FlowDraws {
         Ok(Self { noises })
     }
 
+    #[allow(dead_code)] // Consumed only by the dormant staged batch-one route.
     fn get(&self, step: usize) -> Result<&[f32]> {
         self.noises.get(step).map(Vec::as_slice).ok_or_else(|| {
             VokraError::InvalidArgument("voxcpm flow draw packet is exhausted".to_owned())
         })
     }
 
+    /// Number of validated draws available.
     #[must_use]
     pub fn len(&self) -> usize {
         self.noises.len()
     }
+
+    /// Whether no flow draws are available.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.noises.is_empty()
+    }
 }
 
+#[allow(dead_code)] // All methods bind the dormant staged composite route.
 impl StagedGenerationRuntime {
     pub(crate) fn from_staged_gguf(file: &GgufFile) -> Result<Self> {
         let base = load_causal_stack(file, "base_lm", 24)?;
@@ -348,6 +371,7 @@ impl StagedGenerationRuntime {
     /// negative half repeats the current prefix and uses zero mu. This method
     /// never fabricates tokenizer rows or noise. Public production construction remains blocked by the
     /// complete composite manifest gate.
+    #[allow(clippy::too_many_arguments)] // Batch-one wiring has one argument per authenticated component.
     pub(crate) fn generate_batch1(
         &mut self,
         loop_: &FeatureGenerationLoop,
@@ -371,12 +395,11 @@ impl StagedGenerationRuntime {
         }
         let local = local_encoder;
         let dit = local_dit;
-        let flow = flow;
         let quantizer = &self.quantizer;
         let stop = &self.stop;
         let lm_to_dit = &self.lm_to_dit;
         let res_to_dit = &self.res_to_dit;
-        let result = loop_.generate_with_language(
+        loop_.generate_with_language(
             seed_prefix,
             &mut self.language,
             quantizer,
@@ -406,12 +429,12 @@ impl StagedGenerationRuntime {
             },
             |patch| local.forward(patch, 1, 2, compute),
             |hidden| stop.should_stop(hidden, compute),
-        );
-        result
+        )
     }
 }
 
 impl CausalLanguageState {
+    #[allow(dead_code)] // Used for atomic rollback by the dormant staged route.
     fn snapshot(&self) -> LanguageStateSnapshot {
         LanguageStateSnapshot {
             base_cache: self.base_cache.checkpoint(),
@@ -421,6 +444,7 @@ impl CausalLanguageState {
         }
     }
 
+    #[allow(dead_code)] // Used for atomic rollback by the dormant staged route.
     fn restore_snapshot(&mut self, snapshot: &LanguageStateSnapshot) {
         self.base_cache.restore(&snapshot.base_cache);
         self.residual_cache.restore(&snapshot.residual_cache);
@@ -551,27 +575,32 @@ impl CausalLanguageState {
     }
 
     #[must_use]
+    /// Current base-LM hidden row.
     pub fn lm_hidden(&self) -> &[f32] {
         &self.lm_hidden
     }
 
     #[must_use]
+    /// Current residual-LM hidden row.
     pub fn residual_hidden(&self) -> &[f32] {
         &self.residual_hidden
     }
 
     #[must_use]
+    /// Number of cached positions in the base LM.
     pub fn base_cache_positions(&self) -> usize {
         self.base_cache.positions()
     }
 
     #[must_use]
+    /// Number of cached positions in the residual LM.
     pub fn residual_cache_positions(&self) -> usize {
         self.residual_cache.positions()
     }
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Snapshot exists only for dormant staged-route rollback.
 struct LanguageStateSnapshot {
     base_cache: crate::voxcpm2::minicpm4::CacheCheckpoint,
     residual_cache: crate::voxcpm2::minicpm4::CacheCheckpoint,
@@ -580,6 +609,7 @@ struct LanguageStateSnapshot {
 }
 
 impl FeatureGenerationLoop {
+    /// Construct a validated feature-generation loop.
     pub fn new(
         max_steps: usize,
         min_steps: usize,
@@ -678,6 +708,7 @@ impl FeatureGenerationLoop {
     /// advance the base-LM KV state, `quantize` is learned FSQ, `residual`
     /// advances the residual-LM KV state, and `stop` applies
     /// `SiLU(stop_proj(lm_hidden)).argmax` before either state is updated.
+    #[allow(clippy::too_many_arguments)] // The source protocol exposes one callback per graph stage.
     pub fn generate<C, E, B, Q, R, S>(
         &self,
         seed: &[f32],
@@ -776,6 +807,8 @@ impl FeatureGenerationLoop {
     /// encoder; this method supplies the exact ordering and commits each LM
     /// step atomically through [`CausalLanguageState::step`]. On any later
     /// error, cache lengths and both hidden states are restored to entry.
+    #[allow(dead_code)] // Enabled only by the dormant staged batch-one route.
+    #[allow(clippy::too_many_arguments)] // Persistent source state and graph callbacks are distinct inputs.
     pub(crate) fn generate_with_language<C, E, S>(
         &self,
         seed_prefix: &[f32],
@@ -898,9 +931,13 @@ pub struct ScalarQuantizer {
     pub channels: usize,
     /// Symmetric source scale (0.5B: 9).
     pub scale: f32,
+    /// Source-layout input projection weights `[channels, input_dim]`.
     pub in_weight: Vec<f32>,
+    /// Source-layout input projection bias `[channels]`.
     pub in_bias: Vec<f32>,
+    /// Source-layout output projection weights `[input_dim, channels]`.
     pub out_weight: Vec<f32>,
+    /// Source-layout output projection bias `[input_dim]`.
     pub out_bias: Vec<f32>,
     in_weight_t: Vec<f32>,
     out_weight_t: Vec<f32>,
@@ -954,6 +991,7 @@ impl ScalarQuantizer {
     /// Load only the source-shaped FSQ tensors from a VAST-staged GGUF.
     /// This crate-private entry point is not production authentication:
     /// callers must first obtain the complete immutable composite manifest.
+    #[allow(dead_code)] // Staged FSQ loading awaits complete composite authorization.
     pub(crate) fn from_staged_gguf(file: &GgufFile) -> Result<Self> {
         Self::from_weights(
             1_024,
@@ -1062,6 +1100,7 @@ fn transpose_weight(weight: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     transposed
 }
 
+#[allow(dead_code)] // Staged stack loading awaits complete composite authorization.
 fn load_causal_stack(file: &GgufFile, prefix: &str, layers: usize) -> Result<MiniCpm4Stack> {
     let base = MiniCpm4Config::voxcpm_0_5b()?;
     let config = MiniCpm4Config::new_with_original_max_positions(
@@ -1269,15 +1308,14 @@ impl StopController {
 #[derive(Debug, Clone)]
 pub struct LearnedStopController {
     hidden_dim: usize,
-    stop_proj_weight: Vec<f32>,
     stop_proj_bias: Vec<f32>,
-    stop_head_weight: Vec<f32>,
     stop_proj_weight_t: Vec<f32>,
     stop_head_weight_t: Vec<f32>,
     stop_class: usize,
 }
 
 impl LearnedStopController {
+    /// Construct the learned two-class stop predictor from source-layout weights.
     pub fn from_weights(
         hidden_dim: usize,
         stop_proj_weight: Vec<f32>,
@@ -1304,9 +1342,7 @@ impl LearnedStopController {
         let stop_head_weight_t = transpose_weight(&stop_head_weight, 2, hidden_dim);
         Ok(Self {
             hidden_dim,
-            stop_proj_weight,
             stop_proj_bias,
-            stop_head_weight,
             stop_proj_weight_t,
             stop_head_weight_t,
             stop_class,
@@ -1316,6 +1352,7 @@ impl LearnedStopController {
     /// Load the source-shaped stop projection and parameter head from a
     /// VAST-staged GGUF.  The public production composite binder remains
     /// fail-closed until its complete manifest is authenticated.
+    #[allow(dead_code)] // Staged stop weights await complete composite authorization.
     pub(crate) fn from_staged_gguf(file: &GgufFile) -> Result<Self> {
         Self::from_weights(
             1_024,
@@ -1326,6 +1363,7 @@ impl LearnedStopController {
         )
     }
 
+    /// Predict whether the supplied hidden row selects the source stop class.
     pub fn should_stop(&self, hidden: &[f32], compute: &Compute) -> Result<bool> {
         if hidden.len() != self.hidden_dim || hidden.iter().any(|x| !x.is_finite()) {
             return Err(VokraError::InvalidArgument(
@@ -1361,6 +1399,7 @@ impl LearnedStopController {
     }
 }
 
+#[allow(dead_code)] // Used only by the dormant staged CFG path and its layout tests.
 fn row_major_to_channel_major(
     input: &[f32],
     positions: usize,
@@ -1380,14 +1419,17 @@ fn row_major_to_channel_major(
     Ok(output)
 }
 
+#[allow(dead_code)] // Used only by the dormant staged CFG path.
 fn cfg_condition(prefix: &[f32]) -> Result<Vec<f32>> {
     row_major_to_channel_major(prefix, FEATURE_PATCHES_PER_STEP, 64)
 }
 
+#[allow(dead_code)] // Used only by the dormant staged CFG path.
 fn cfg_negative_mu() -> Vec<f32> {
     vec![0.0; VOXCPM_HIDDEN]
 }
 
+#[allow(dead_code)] // Used only by the dormant staged CFG path and its layout tests.
 fn channel_major_to_row_major(
     input: &[f32],
     channels: usize,

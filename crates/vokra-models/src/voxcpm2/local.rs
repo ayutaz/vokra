@@ -20,6 +20,7 @@ const LOCAL_FEATURE: usize = 64;
 const LOCAL_LAYERS: usize = 4;
 const SPECIAL_TOKEN_SHAPE: &[usize] = &[1, 1, 1, LOCAL_HIDDEN];
 const LOCAL_BIAS_SHAPE: &[usize] = &[LOCAL_HIDDEN];
+#[allow(dead_code)] // Used only by the dormant staged tensor-contract tests.
 const LOCAL_TENSOR_RANK_CONTRACT: &[(&str, &[usize])] = &[
     (
         "feat_encoder.in_proj.weight",
@@ -150,6 +151,7 @@ impl LocalEncoder {
     }
 
     #[must_use]
+    /// Access the validated MiniCPM-4 encoder stack.
     pub fn stack(&self) -> &MiniCpm4Stack {
         &self.stack
     }
@@ -353,6 +355,7 @@ impl LocalDit {
     /// Estimate a velocity for channel-major `x` conditioned on channel-major
     /// `cond`. `mu` is the source's 1024-wide conditioning state. The returned
     /// tensor is channel-major `[64, x_positions]`.
+    #[allow(clippy::too_many_arguments)] // The source DiT call has one argument per conditioning axis.
     pub fn forward(
         &self,
         x: &[f32],
@@ -500,6 +503,7 @@ impl UnifiedCfm {
         Self::new(steps, 1.0, cfg_scale)
     }
 
+    /// Construct an explicit UnifiedCFM Euler schedule.
     pub fn new(steps: usize, sway_coefficient: f32, cfg_scale: f32) -> Result<Self> {
         if steps == 0 || !sway_coefficient.is_finite() || !cfg_scale.is_finite() {
             return Err(VokraError::InvalidArgument(
@@ -514,16 +518,19 @@ impl UnifiedCfm {
     }
 
     #[must_use]
+    /// Number of Euler integration steps.
     pub fn steps(&self) -> usize {
         self.steps
     }
 
     #[must_use]
+    /// Timestep sway coefficient.
     pub fn sway_coefficient(&self) -> f32 {
         self.sway_coefficient
     }
 
     #[must_use]
+    /// Classifier-free guidance scale.
     pub fn cfg_scale(&self) -> f32 {
         self.cfg_scale
     }
