@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use vokra_convert::{ModelKind, convert_cosyvoice2_file, convert_file, convert_kokoro_file};
-use vokra_core::gguf::{FrontendSpec, GgufFile, GgufMetadataValue};
+use vokra_core::gguf::{FrontendSpec, GgufFile};
 
 /// A unique temp path for this test process.
 fn tmp_path(tag: &str) -> PathBuf {
@@ -576,29 +576,11 @@ fn synthetic_cosyvoice2_backbone() -> Vec<u8> {
     out
 }
 
-/// Reads a `U8` GGUF metadata array back into bytes.
-fn u8_array(file: &GgufFile, key: &str) -> Vec<u8> {
-    file.get(key)
-        .and_then(|v| match v {
-            GgufMetadataValue::Array(a) => Some(a),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("{key}: expected U8 array"))
-        .values
-        .iter()
-        .map(|v| match v {
-            GgufMetadataValue::U8(x) => *x,
-            other => panic!("{key}: non-U8 element {other:?}"),
-        })
-        .collect()
-}
-
 #[test]
-fn cosyvoice2_tokenizer_side_car_is_discovered_and_embedded() {
-    // M3-09-T06: `convert_cosyvoice2_file` must pick up `vocab.json` +
-    // `merges.txt` from the SAME directory as `--config` and embed them,
-    // with no extra CLI flag. The vocab/merges bytes must survive the
-    // convert → disk → GgufFile::open pipeline verbatim.
+fn cosyvoice2_tokenizer_side_car_does_not_bypass_inspection_only_gate() {
+    // A tokenizer sidecar is one component of the reviewed composite, not a
+    // license or binder substitute. Until the complete composite is
+    // authenticated, conversion must fail closed without writing a GGUF.
     let dir = std::env::temp_dir().join(format!("vokra-cosy-tok-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let input = dir.join("model.safetensors");
@@ -618,28 +600,24 @@ fn cosyvoice2_tokenizer_side_car_is_discovered_and_embedded() {
     std::fs::write(dir.join("vocab.json"), &vocab).expect("write vocab");
     std::fs::write(dir.join("merges.txt"), &merges).expect("write merges");
 
-    let summary = convert_cosyvoice2_file(&input, Some(&config), &output).expect("convert");
+    let error = convert_cosyvoice2_file(&input, Some(&config), &output)
+        .unwrap_err()
+        .to_string();
     assert!(
-        summary
-            .notes
-            .iter()
-            .any(|n| n.contains("text tokenizer embedded: true")),
-        "summary must report the tokenizer was embedded: {:?}",
-        summary.notes
+        error.contains("INSPECTION_ONLY"),
+        "explicit refusal: {error}"
     );
-
-    let file = GgufFile::open(&output).expect("load output gguf");
-    assert_eq!(u8_array(&file, "vokra.cosyvoice2.tokenizer.vocab"), vocab);
-    assert_eq!(u8_array(&file, "vokra.cosyvoice2.tokenizer.merges"), merges);
+    assert!(error.contains("composite"), "composite blocker: {error}");
+    assert!(!output.exists(), "rejected conversion must not create GGUF");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn cosyvoice2_without_side_car_notes_absent_tokenizer() {
-    // No vocab.json/merges.txt next to config → the conversion still succeeds
-    // (the tokenizer is optional at convert time) but the summary reports the
-    // tokenizer was NOT embedded (the runtime text path fails loudly instead).
+fn cosyvoice2_without_side_car_remains_inspection_only() {
+    // Missing optional tokenizer sidecars do not make an otherwise incomplete
+    // CosyVoice2 composite convertible. The same explicit refusal and no
+    // output contract applies with or without those files.
     let dir = std::env::temp_dir().join(format!("vokra-cosy-notok-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let input = dir.join("model.safetensors");
@@ -652,17 +630,15 @@ fn cosyvoice2_without_side_car_notes_absent_tokenizer() {
     )
     .expect("write config");
 
-    let summary = convert_cosyvoice2_file(&input, Some(&config), &output).expect("convert");
+    let error = convert_cosyvoice2_file(&input, Some(&config), &output)
+        .unwrap_err()
+        .to_string();
     assert!(
-        summary
-            .notes
-            .iter()
-            .any(|n| n.contains("text tokenizer embedded: false")),
-        "summary must report no tokenizer embedded: {:?}",
-        summary.notes
+        error.contains("INSPECTION_ONLY"),
+        "explicit refusal: {error}"
     );
-    let file = GgufFile::open(&output).expect("load output gguf");
-    assert!(file.get("vokra.cosyvoice2.tokenizer.vocab").is_none());
+    assert!(error.contains("composite"), "composite blocker: {error}");
+    assert!(!output.exists(), "rejected conversion must not create GGUF");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
