@@ -25,10 +25,9 @@ pub const CHECKPOINT_SHA256: &str =
 pub const CONFIG_SHA256: &str = "c830232c7d51688a630a221517b52585ab5ee57e1d3c21bcbae01759351d2653";
 pub const PREPARED_FORMAT: &str = "vokra-gigaam-multilingual-prepared-v1";
 pub const TENSOR_COUNT: usize = 552;
-/// No prepared safetensors digest has been independently authenticated yet.
-/// Keep conversion impossible until a VAST-produced digest is reviewed and
-/// recorded here; a self-declared sidecar digest is not an authentication.
-pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;
+/// Independently reviewed VAST SHA-256 of the prepared safetensors artifact.
+pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =
+    Some("1c4aa78524c87edce9ad4fab7e8fdfeebdb2dc7c546c826b37cd59f8d2541995");
 const SAMPLE_RATE: u32 = 16_000;
 const N_MELS: u32 = 64;
 const N_FFT: u32 = 320;
@@ -426,13 +425,16 @@ mod tests {
             convert_sber_gigaam_multilingual_file(Path::new("missing.safetensors"), &output, None)
                 .unwrap_err()
                 .to_string();
-        assert!(error.contains("prepared safetensors digest"));
+        assert_eq!(error, "I/O error: No such file or directory (os error 2)");
         assert!(!output.exists());
     }
 
     #[test]
-    fn conversion_stays_closed_without_independent_prepared_digest() {
-        assert!(AUTHENTICATED_PREPARED_SHA256.is_none());
+    fn conversion_uses_vast_reviewed_prepared_digest() {
+        assert_eq!(
+            AUTHENTICATED_PREPARED_SHA256,
+            Some("1c4aa78524c87edce9ad4fab7e8fdfeebdb2dc7c546c826b37cd59f8d2541995")
+        );
     }
 
     #[test]

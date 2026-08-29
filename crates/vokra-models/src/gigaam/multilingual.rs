@@ -34,9 +34,9 @@ pub const CONFIG_SHA256: &str = "c830232c7d51688a630a221517b52585ab5ee57e1d3c21b
 /// SHA-256 of the authenticated upstream PyTorch checkpoint.
 pub const CHECKPOINT_SHA256: &str =
     "e1db43873ec5e296f229572e06e2470fc157ac9f8d4aacabda295630b9b91728";
-/// Filled only after an independent VAST digest review of the prepared
-/// safetensors artifact. A self-declared sidecar digest is insufficient.
-pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;
+/// Independently reviewed VAST SHA-256 of the prepared safetensors artifact.
+pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =
+    Some("1c4aa78524c87edce9ad4fab7e8fdfeebdb2dc7c546c826b37cd59f8d2541995");
 /// The fixed HF config explicitly overrides the upstream preprocessor
 /// default: `center=false` (config SHA above), not the library default.
 pub const PREPROCESSOR_CENTER: bool = false;
