@@ -217,14 +217,20 @@ checkout_exact_source() {
 }
 
 require_vast_host() {
-  local mem_kib free_kib
+  local mem_kib free_kib disk_path parent
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
   [[ "$(uname -s)" == "Linux" ]] || die "model work is Linux/VAST-only; refusing host $(uname -s)"
   mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
   (( mem_kib >= MIN_VAST_MEM_KIB )) || die "MemTotal=$mem_kib KiB is below the VAST 64-GiB guard (67108864 KiB)"
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  disk_path="$VOKRA_SCRATCH"
+  while [[ ! -e "$disk_path" ]]; do
+    parent="$(dirname "$disk_path")"
+    [[ "$parent" != "$disk_path" ]] || die "scratch parent cannot be resolved"
+    disk_path="$parent"
+  done
+  [[ -d "$disk_path" && ! -L "$disk_path" ]] || die "scratch filesystem path is not a real directory"
+  free_kib="$(df -Pk "$disk_path" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || die "could not read free disk"
   (( free_kib >= MIN_FREE_DISK_KIB )) || die "free disk=$free_kib KiB is below the 150-GB guard (150000000 KiB)"
 }
@@ -392,12 +398,12 @@ main() {
   fi
   [[ -n "$approval_evidence" ]] || { die "--approval-evidence is required"; return 2; }
   pre_sync_gate "$approval_evidence"
-  require_vast_host
   require_tooling
   cd "$VOKRA_ROOT"
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/wespeaker-validation/$run_stamp}"
   require_absent_work_dir "$work_dir" "$approval_evidence"
+  require_vast_host
   inputs_dir="$work_dir/inputs"; sources_dir="$work_dir/sources"
   logs_dir="$work_dir/logs"; reference_dir="$work_dir/reference"; public_dir="$inputs_dir/public-pyannote"
   checkpoint="$inputs_dir/upstream/$UPSTREAM_CHECKPOINT"
