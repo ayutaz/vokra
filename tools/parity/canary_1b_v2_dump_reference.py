@@ -119,6 +119,10 @@ def hypothesis_tokens(hypothesis: object) -> list[int]:
 
 
 def self_test() -> None:
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert 'torch.device("cpu")' in source
+    assert "torch." + "cuda" not in source
+    assert '"cuda_device": None' in source
     assert len(LANGUAGES) == 25
     assert len(set(LANGUAGES)) == 25
     for language in LANGUAGES:
@@ -187,7 +191,10 @@ def main() -> int:
             f"reference audio must be 16 kHz mono, got rate={sample_rate}, shape={pcm.shape}"
         )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Numerical-parity policy: the official NeMo run is a CPU oracle. Do not
+    # probe CUDA or fall back to it, since a visible GPU is not part of this
+    # worker's reproducibility contract.
+    device = torch.device("cpu")
     cpu_capability = getattr(torch.backends.cpu, "get_cpu_capability", None)
     environment = {
         "platform": platform.platform(),
@@ -198,9 +205,7 @@ def main() -> int:
             cpu_capability() if callable(cpu_capability) else "unavailable"
         ),
         "device": str(device),
-        "cuda_device": (
-            torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
-        ),
+        "cuda_device": None,
     }
     print(json.dumps({"reference_environment": environment}, sort_keys=True), flush=True)
 
