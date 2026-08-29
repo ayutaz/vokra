@@ -37,6 +37,22 @@ die() {
   exit 2
 }
 
+canonicalize_github_remote() {
+  local remote="$1" expected_path="$2" value path
+  value="$remote"
+  [[ "$value" != */ ]] || value="${value%/}"
+  case "$value" in
+    https://github.com/*) path="${value#https://github.com/}" ;;
+    ssh://git@github.com/*) path="${value#ssh://git@github.com/}" ;;
+    git@github.com:*) path="${value#git@github.com:}" ;;
+    *) return 1 ;;
+  esac
+  [[ "$path" != */ ]] || return 1
+  [[ "$path" == *.git ]] && path="${path%.git}"
+  [[ "$path" == "$expected_path" ]] || return 1
+  printf 'https://github.com/%s\n' "$path"
+}
+
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" repo_root fail=0 cases=0 required status
   repo_root="$(cd "$(dirname "$script_path")/../../.." && pwd)"
@@ -87,6 +103,34 @@ run_self_test() {
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: conversion/local Cargo command found" >&2
     fail=1
   fi
+  cases=$((cases + 1))
+  local remote canonical
+  for remote in \
+    "https://github.com/QwenLM/Qwen2-Audio" \
+    "https://github.com/QwenLM/Qwen2-Audio.git" \
+    "https://github.com/QwenLM/Qwen2-Audio.git/" \
+    "ssh://git@github.com/QwenLM/Qwen2-Audio.git" \
+    "git@github.com:QwenLM/Qwen2-Audio.git"; do
+    canonical="$(canonicalize_github_remote "$remote" "QwenLM/Qwen2-Audio")" || {
+      echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: accepted remote rejected: $remote" >&2
+      fail=1
+      continue
+    }
+    [[ "$canonical" == "https://github.com/QwenLM/Qwen2-Audio" ]] || {
+      echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: remote canonicalization drift: $remote" >&2
+      fail=1
+    }
+  done
+  for remote in \
+    "https://github.com/other/Qwen2-Audio.git" \
+    "https://evil.example/QwenLM/Qwen2-Audio.git" \
+    "https://github.com/QwenLM/Qwen2-Audio/extra.git" \
+    "git://github.com/QwenLM/Qwen2-Audio.git"; do
+    if canonicalize_github_remote "$remote" "QwenLM/Qwen2-Audio" >/dev/null 2>&1; then
+      echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: foreign remote accepted: $remote" >&2
+      fail=1
+    fi
+  done
   cases=$((cases + 1))
   if bash "$script_path" --self-test --work-dir /tmp/qwen2-audio-self-test >/dev/null 2>&1; then
     echo "run-qwen2-audio-7b-instruct-inspection: self-test FAIL: extra argument accepted" >&2
@@ -215,12 +259,12 @@ snapshot_path="$(< "$snapshot_path_file")"
 run_logged git clone --no-tags --filter=blob:none "$SOURCE_REPOSITORY" "$source_dir"
 run_logged git -C "$source_dir" checkout --detach "$SOURCE_REVISION"
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$SOURCE_REVISION" ]] || die "official source revision mismatch"
-[[ "$(git -C "$source_dir" remote get-url origin | sed 's#/$##; s#\.git$##')" == "$SOURCE_REPOSITORY" ]] || die "official source remote mismatch"
+canonicalize_github_remote "$(git -C "$source_dir" remote get-url origin)" "QwenLM/Qwen2-Audio" >/dev/null || die "official source remote mismatch"
 run_logged git clone --filter=blob:none "$TRANSFORMERS_REPOSITORY" "$transformers_dir"
 run_logged git -C "$transformers_dir" checkout --detach "$TRANSFORMERS_REVISION"
 [[ "$(git -C "$transformers_dir" rev-parse HEAD)" == "$TRANSFORMERS_REVISION" ]] || die "Transformers revision mismatch"
 [[ "$(git -C "$transformers_dir" describe --exact-match --tags HEAD)" == "$TRANSFORMERS_TAG" ]] || die "Transformers tag mismatch"
-[[ "$(git -C "$transformers_dir" remote get-url origin | sed 's#/$##; s#\.git$##')" == "$TRANSFORMERS_REPOSITORY" ]] || die "Transformers remote mismatch"
+canonicalize_github_remote "$(git -C "$transformers_dir" remote get-url origin)" "huggingface/transformers" >/dev/null || die "Transformers remote mismatch"
 
 set +e
 "${UV_CMD[@]}" "$INSPECTOR" --snapshot "$snapshot_path" --source "$source_dir" --transformers "$transformers_dir" --server-tree "$server_tree" --output "$evidence_dir" 2>&1 | tee -a "$log_path"

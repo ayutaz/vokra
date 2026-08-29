@@ -23,8 +23,10 @@ from safetensors import safe_open
 UPSTREAM_REPOSITORY = "Qwen/Qwen2-Audio-7B-Instruct"
 UPSTREAM_REVISION = "0a095220c30b7b31434169c3086508ef3ea5bf0a"
 SOURCE_REPOSITORY = "https://github.com/QwenLM/Qwen2-Audio.git"
+SOURCE_REPOSITORY_PATH = "QwenLM/Qwen2-Audio"
 SOURCE_REVISION = "595360e82b5839c1507492ec83cae5bda6d5c7d4"
 TRANSFORMERS_REPOSITORY = "https://github.com/huggingface/transformers"
+TRANSFORMERS_REPOSITORY_PATH = "huggingface/transformers"
 TRANSFORMERS_TAG = "v4.45.0"
 TRANSFORMERS_REVISION = "2ef31dec1676249d26044a8aa8abe33dbecf0d10"
 FORMAT = "vokra-qwen2-audio-7b-instruct-inspection-v2"
@@ -65,6 +67,26 @@ def git_blob_sha1(path: Path) -> str:
 
 def git(source: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(source), *args], text=True, stderr=subprocess.STDOUT).strip()
+
+
+def canonicalize_github_remote(remote: str, expected_path: str) -> str:
+    """Accept only canonical GitHub HTTPS/SSH spellings for one repository."""
+    value = remote[:-1] if remote.endswith("/") else remote
+    if value.startswith("https://github.com/"):
+        path = value.removeprefix("https://github.com/")
+    elif value.startswith("ssh://git@github.com/"):
+        path = value.removeprefix("ssh://git@github.com/")
+    elif value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        raise RuntimeError(f"unsupported GitHub remote form: {remote!r}")
+    if path.endswith("/"):
+        raise RuntimeError(f"unsafe GitHub remote path: {remote!r}")
+    if path.endswith(".git"):
+        path = path[:-4]
+    if path != expected_path:
+        raise RuntimeError(f"GitHub remote repository mismatch: {remote!r}")
+    return f"https://github.com/{path}"
 
 
 def json_files(snapshot: Path) -> list[Path]:
@@ -285,9 +307,7 @@ def inventory_weights(snapshot: Path, index: dict[str, Any] | None = None) -> tu
 def source_inventory(source: Path, transformers: Path) -> dict[str, Any]:
     if git(source, "rev-parse", "HEAD") != SOURCE_REVISION:
         raise RuntimeError("official Qwen2-Audio source is not the fixed detached revision")
-    source_remote = git(source, "remote", "get-url", "origin").removesuffix(".git").removesuffix("/")
-    if source_remote != SOURCE_REPOSITORY.removesuffix(".git"):
-        raise RuntimeError(f"official Qwen2-Audio source origin mismatch: {source_remote!r}")
+    source_remote = canonicalize_github_remote(git(source, "remote", "get-url", "origin"), SOURCE_REPOSITORY_PATH)
     tracked = [path for path in (Path(name) for name in git(source, "ls-files", "-z").split("\0") if name) if (source / path).is_file() and not (source / path).is_symlink()]
     source_roles = {
         "readme": (Path("README.md"), ("Qwen2-Audio",)),
@@ -328,9 +348,7 @@ def source_inventory(source: Path, transformers: Path) -> dict[str, Any]:
         transformer_files.append({"path": relative, "bytes": path.stat().st_size, "sha256": sha256(path)})
     if git(transformers, "rev-parse", "HEAD") != TRANSFORMERS_REVISION or git(transformers, "describe", "--exact-match", "--tags") != TRANSFORMERS_TAG:
         raise RuntimeError("Transformers source is not the fixed v4.45.0 commit/tag")
-    transformers_remote = git(transformers, "remote", "get-url", "origin").removesuffix(".git").removesuffix("/")
-    if transformers_remote != TRANSFORMERS_REPOSITORY:
-        raise RuntimeError(f"Transformers source origin mismatch: {transformers_remote!r}")
+    transformers_remote = canonicalize_github_remote(git(transformers, "remote", "get-url", "origin"), TRANSFORMERS_REPOSITORY_PATH)
     transformers_license = find_license(transformers, require_apache=True)
     def files_payload(root: Path, values: list[Path]) -> list[dict[str, Any]]:
         return [{"path": path.as_posix(), "bytes": (root / path).stat().st_size, "sha256": sha256(root / path)} for path in sorted(values)]
@@ -439,6 +457,26 @@ def self_test() -> None:
     assert TRANSFORMERS_TAG == "v4.45.0" and TRANSFORMERS_REVISION == "2ef31dec1676249d26044a8aa8abe33dbecf0d10"
     assert ("v4." + "44.0") not in source and ("984bc11b0882" + "ff1e5b34ba717ea357e069ceced9") not in source
     assert ("weights_only=" + "False") not in source and "safe_open" in source and "NOT_IMPLEMENTED_FAIL_CLOSED" in source
+    for remote in (
+        "https://github.com/QwenLM/Qwen2-Audio",
+        "https://github.com/QwenLM/Qwen2-Audio.git",
+        "https://github.com/QwenLM/Qwen2-Audio.git/",
+        "ssh://git@github.com/QwenLM/Qwen2-Audio.git",
+        "git@github.com:QwenLM/Qwen2-Audio.git",
+    ):
+        assert canonicalize_github_remote(remote, SOURCE_REPOSITORY_PATH) == "https://github.com/QwenLM/Qwen2-Audio"
+    for remote in (
+        "https://github.com/other/Qwen2-Audio.git",
+        "https://evil.example/QwenLM/Qwen2-Audio.git",
+        "https://github.com/QwenLM/Qwen2-Audio/extra.git",
+        "git://github.com/QwenLM/Qwen2-Audio.git",
+    ):
+        try:
+            canonicalize_github_remote(remote, SOURCE_REPOSITORY_PATH)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("foreign/unsafe GitHub remote was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-qwen2-audio-inspect-") as directory:
         root = Path(directory)
         def write_shard(path: Path, name: str, payload: bytes = b"\0\0\0\0") -> None:
