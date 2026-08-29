@@ -14,6 +14,7 @@ dependencies = [
     "hydra-core==1.3.*",
     "numpy==2.*",
     "omegaconf==2.3.*",
+    "pyannote.audio==4.0.*",
     "safetensors",
     "sentencepiece",
     "soundfile",
