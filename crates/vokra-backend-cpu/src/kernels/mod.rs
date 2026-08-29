@@ -120,10 +120,13 @@ pub(crate) mod neon_i8mm;
 pub(crate) mod kquant;
 
 pub use kquant::{
-    BF16_REL, FP16_REL, KQUANT_GROUP, KQuantDtype, bf16_to_f32, dot_precision_bound,
-    f16_to_f32 as f16_bits_to_f32, f32_to_bf16_rne, f32_to_f16_rne, f64_to_f16_rne, fp16_fma_emu,
-    gemm_bf16_on, gemm_fp16_on, int8_error_bound, kquant_dequant_on, kquant_gemm_i8,
-    kquant_gemm_i8_on, kquant_gemv_i8, kquant_gemv_i8_on, kquant_gemv2_i8_on, kquant_gemvn_i8_on,
+    BF16_REL, FP16_REL, GemmF32Bf16BitsScratch, KQUANT_GROUP, KQuantDtype, bf16_to_f32,
+    dot_precision_bound, f16_to_f32 as f16_bits_to_f32, f32_to_bf16_rne, f32_to_f16_rne,
+    f64_to_f16_rne, fp16_fma_emu, gemm_bf16_bits_on, gemm_bf16_on, gemm_f32_bf16_bits,
+    gemm_f32_bf16_bits_on, gemm_f32_bf16_bits_on_with_scratch,
+    gemm_f32_bf16_bits_on_with_scratch_strided, gemm_f32_bf16_bits_with_scratch, gemm_fp16_on,
+    int8_error_bound, kquant_dequant_on, kquant_gemm_i8, kquant_gemm_i8_on, kquant_gemv_i8,
+    kquant_gemv_i8_on, kquant_gemv2_i8_on, kquant_gemvn_i8_on,
 };
 
 // M3-13-T04..T09: RISC-V RVV 1.0 base kernels + Zvfh feature-gated fp16 path.

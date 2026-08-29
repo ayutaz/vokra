@@ -80,7 +80,7 @@ impl GgmlType {
     /// Converts an on-disk ggml type tag to a [`GgmlType`].
     ///
     /// Returns [`GgufError::UnsupportedDtype`] for any tag other than the dense
-    /// float types (`0`, `1`) and the K-quant types (`12`, `13`, `14`). Other
+    /// float types (`0`, `1`, `30`) and the K-quant types (`12`, `13`, `14`). Other
     /// quantized families (IQ2, Q2_K, Q8_0, …) are intentionally unsupported.
     pub fn from_tag(tag: u32) -> Result<Self, GgufError> {
         match tag {
@@ -272,6 +272,7 @@ mod tests {
         for ty in [
             GgmlType::F32,
             GgmlType::F16,
+            GgmlType::BF16,
             GgmlType::Q4K,
             GgmlType::Q5K,
             GgmlType::Q6K,

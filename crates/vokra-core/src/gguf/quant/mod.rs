@@ -27,7 +27,7 @@ use super::tensor::{GgmlType, QK_K};
 // M5-03-T05: `Vec` and the `format!` macro are `alloc` (core-clean); the no_std
 // subset imports them (inert under std, where they are in the prelude).
 #[cfg(not(feature = "std"))]
-use alloc::{format, vec::Vec};
+use alloc::{borrow::ToOwned, format, vec::Vec};
 
 mod q4_k;
 mod q5_k;
@@ -56,6 +56,41 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
         GgmlType::Q5K => q5_k::dequantize(bytes, n_elements),
         GgmlType::Q6K => q6_k::dequantize(bytes, n_elements),
     })
+}
+
+/// Decodes an on-disk little-endian BF16 payload to raw `u16` bit patterns
+/// without widening through `f32`.
+///
+/// The dtype, element count, and exact byte length are authenticated before
+/// any bytes are read. This deliberately uses `u16::from_le_bytes` per
+/// element instead of casting the byte slice: payload alignment is not a
+/// format guarantee, and the wire format is little-endian regardless of host
+/// endianness.
+pub fn decode_bf16_bits(
+    dtype: GgmlType,
+    bytes: &[u8],
+    n_elements: usize,
+) -> Result<Vec<u16>, GgufError> {
+    if dtype != GgmlType::BF16 {
+        return Err(GgufError::DtypeMismatch {
+            name: "<bf16 accessor>".to_owned(),
+            expected: GgmlType::BF16.tag(),
+            actual: dtype.tag(),
+        });
+    }
+    let element_count = u64::try_from(n_elements).map_err(|_| GgufError::Overflow)?;
+    let expected = dtype.payload_size(element_count)?;
+    if bytes.len() as u64 != expected {
+        return Err(GgufError::TensorSizeMismatch {
+            name: format!("<bf16 {}>", dtype.tag()),
+            expected,
+            actual: bytes.len() as u64,
+        });
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect())
 }
 
 /// Decodes a little-endian `BF16` payload (length already validated):
@@ -181,6 +216,27 @@ mod tests {
             dequantize(GgmlType::F16, &bytes, 3).unwrap(),
             vec![1.0, 2.0, -2.0]
         );
+    }
+
+    #[test]
+    fn bf16_bits_decode_little_endian_without_alignment_assumption() {
+        // The payload starts at an odd address in this subslice. A safe
+        // element-wise decode must still recover the wire-order bit patterns.
+        let storage = [0xA5, 0x80, 0x3F, 0x20, 0xC0, 0x00];
+        let bits = decode_bf16_bits(GgmlType::BF16, &storage[1..5], 2).unwrap();
+        assert_eq!(bits, vec![0x3F80, 0xC020]);
+    }
+
+    #[test]
+    fn bf16_bits_reject_foreign_dtype_and_wrong_length() {
+        assert!(matches!(
+            decode_bf16_bits(GgmlType::F16, &[0; 2], 1),
+            Err(GgufError::DtypeMismatch { .. })
+        ));
+        assert!(matches!(
+            decode_bf16_bits(GgmlType::BF16, &[0; 2], 2),
+            Err(GgufError::TensorSizeMismatch { .. })
+        ));
     }
 
     #[test]

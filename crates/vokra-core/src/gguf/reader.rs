@@ -260,6 +260,37 @@ impl GgufFile {
         let n = info.element_count()? as usize;
         quant::dequantize(info.dtype, self.tensor_bytes(info), n)
     }
+
+    /// Returns a dense BF16 tensor as raw little-endian `u16` bit patterns.
+    ///
+    /// Unlike [`GgufFile::tensor_f32`], this preserves BF16 storage and does
+    /// not materialize an `f32` vector. Each element is decoded with
+    /// `from_le_bytes`, so unaligned payloads and big-endian hosts are safe.
+    /// The dtype and exact shape-implied byte length are authenticated before
+    /// decoding.
+    pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, GgufError> {
+        let info = self
+            .tensor_info(name)
+            .ok_or_else(|| GgufError::MissingTensor(name.to_owned()))?;
+        let n = usize::try_from(info.element_count()?).map_err(|_| GgufError::Overflow)?;
+        quant::decode_bf16_bits(info.dtype, self.tensor_bytes(info), n).map_err(|err| match err {
+            GgufError::DtypeMismatch {
+                expected, actual, ..
+            } => GgufError::DtypeMismatch {
+                name: name.to_owned(),
+                expected,
+                actual,
+            },
+            GgufError::TensorSizeMismatch {
+                expected, actual, ..
+            } => GgufError::TensorSizeMismatch {
+                name: name.to_owned(),
+                expected,
+                actual,
+            },
+            other => other,
+        })
+    }
 }
 
 /// Intermediate parse result (owns everything; borrows nothing).
@@ -675,6 +706,30 @@ mod tests {
         assert!(matches!(
             file.tensor_f32("nope"),
             Err(GgufError::MissingTensor(_))
+        ));
+    }
+
+    #[test]
+    fn tensor_bf16_bits_preserves_wire_patterns_and_authenticates_dtype() {
+        let mut b = GgufBuilder::new();
+        b.add_tensor(
+            "bf",
+            GgmlType::BF16,
+            vec![2],
+            [0x80u8, 0x3F, 0x20, 0xC0].to_vec(),
+        )
+        .unwrap();
+        b.add_tensor("f", GgmlType::F32, vec![1], 1.0f32.to_le_bytes().to_vec())
+            .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_bf16_bits("bf").unwrap(), vec![0x3F80, 0xC020]);
+        assert!(matches!(
+            file.tensor_bf16_bits("f"),
+            Err(GgufError::DtypeMismatch {
+                expected: 30,
+                actual: 0,
+                ..
+            })
         ));
     }
 

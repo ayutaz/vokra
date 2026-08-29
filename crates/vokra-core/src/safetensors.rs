@@ -198,6 +198,29 @@ impl SafetensorsFile {
         quant::dequantize(info.dtype, self.tensor_bytes(info), n)
             .map_err(|e| SafetensorsError::BadEntry(format!("{name}: {e}")))
     }
+
+    /// Returns a dense BF16 tensor as raw little-endian `u16` bit patterns.
+    ///
+    /// This preserves BF16 storage and avoids the `f32` widening performed by
+    /// [`Self::tensor_f32`]. Each element is decoded with `from_le_bytes`,
+    /// rather than reinterpreting the payload, so misaligned data remains safe
+    /// and portable across host endianness.
+    pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, SafetensorsError> {
+        let info = self
+            .tensor_info(name)
+            .ok_or_else(|| SafetensorsError::BadEntry(format!("{name}: not found")))?;
+        if info.dtype != GgmlType::BF16 {
+            return Err(SafetensorsError::BadEntry(format!(
+                "{name}: BF16 accessor requires BF16, got {:?}",
+                info.dtype
+            )));
+        }
+        let count = usize::try_from(info.element_count()).map_err(|_| {
+            SafetensorsError::BadEntry(format!("{name}: element count overflows usize"))
+        })?;
+        quant::decode_bf16_bits(info.dtype, self.tensor_bytes(info), count)
+            .map_err(|e| SafetensorsError::BadEntry(format!("{name}: {e}")))
+    }
 }
 
 /// A safetensors file opened for **windowed** (bounded-memory) tensor
@@ -304,6 +327,48 @@ impl SafetensorsFileReader {
         self.file.read_exact(buf).map_err(SafetensorsError::Io)?;
         Ok(())
     }
+
+    /// Reads a dense BF16 tensor directly into raw `u16` bit patterns.
+    ///
+    /// The bytes are decoded one element at a time after the descriptor's
+    /// dtype/shape validation. This keeps the windowed reader safe without an
+    /// aligned cast or a whole-payload `u8` temporary.
+    pub fn read_tensor_bf16_bits_into(
+        &mut self,
+        name: &str,
+        out: &mut Vec<u16>,
+    ) -> Result<(), SafetensorsError> {
+        use std::io::{Read, Seek, SeekFrom};
+
+        let Some(&i) = self.index.get(name) else {
+            return Err(SafetensorsError::BadEntry(format!("{name}: not found")));
+        };
+        let info = &self.tensors[i];
+        if info.dtype != GgmlType::BF16 {
+            return Err(SafetensorsError::BadEntry(format!(
+                "{name}: BF16 accessor requires BF16, got {:?}",
+                info.dtype
+            )));
+        }
+        let (start, end) = info.range;
+        let count = usize::try_from(info.element_count()).map_err(|_| {
+            SafetensorsError::BadEntry(format!("{name}: element count overflows usize"))
+        })?;
+        debug_assert_eq!(end - start, count * 2);
+        out.clear();
+        out.reserve(count);
+        self.file
+            .seek(SeekFrom::Start(start as u64))
+            .map_err(SafetensorsError::Io)?;
+        for _ in 0..count {
+            let mut bytes = [0u8; 2];
+            self.file
+                .read_exact(&mut bytes)
+                .map_err(SafetensorsError::Io)?;
+            out.push(u16::from_le_bytes(bytes));
+        }
+        Ok(())
+    }
 }
 
 /// Parses the safetensors JSON header into validated descriptors.
@@ -379,8 +444,14 @@ fn parse_header_entries(
 
         // Cross-check the byte span against shape * element size. safetensors
         // is always dense (block_size 1), so `elements * type_size` is exact.
-        let elems: u64 = shape.iter().product();
-        let expected = elems * dtype.type_size() as u64;
+        let elems = shape.iter().try_fold(1u64, |acc, &dim| {
+            acc.checked_mul(dim).ok_or_else(|| {
+                SafetensorsError::BadEntry(format!("{name}: shape element count overflows u64"))
+            })
+        })?;
+        let expected = elems.checked_mul(dtype.type_size() as u64).ok_or_else(|| {
+            SafetensorsError::BadEntry(format!("{name}: byte size overflows u64"))
+        })?;
         if (end - begin) != expected {
             return Err(SafetensorsError::BadEntry(format!(
                 "{name}: byte span {} does not match shape/dtype {expected}",
@@ -517,6 +588,14 @@ mod tests {
         out.extend_from_slice(&bf16);
         let st = SafetensorsFile::parse(out).unwrap();
         assert_eq!(st.tensor_f32("x").unwrap(), values);
+        assert_eq!(
+            st.tensor_bf16_bits("x").unwrap(),
+            vec![0x3F80, 0xC020, 0x3E20]
+        );
+        assert!(matches!(
+            st.tensor_bf16_bits("missing"),
+            Err(SafetensorsError::BadEntry(_))
+        ));
     }
 
     #[test]
@@ -639,5 +718,21 @@ mod tests {
             SafetensorsFileReader::open("/no/such/vokra/checkpoint.safetensors"),
             Err(SafetensorsError::Io(_))
         ));
+    }
+
+    #[test]
+    fn windowed_reader_decodes_bf16_bits_without_reinterpretation() {
+        let header = r#"{"x":{"dtype":"BF16","shape":[2],"data_offsets":[0,4]}}"#;
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        blob.extend_from_slice(header.as_bytes());
+        blob.extend_from_slice(&[0x80, 0x3F, 0x20, 0xC0]);
+        let path = tmp_path("bf16");
+        std::fs::write(&path, blob).unwrap();
+        let mut reader = SafetensorsFileReader::open(&path).unwrap();
+        let mut bits = Vec::new();
+        reader.read_tensor_bf16_bits_into("x", &mut bits).unwrap();
+        assert_eq!(bits, vec![0x3F80, 0xC020]);
+        std::fs::remove_file(&path).ok();
     }
 }
