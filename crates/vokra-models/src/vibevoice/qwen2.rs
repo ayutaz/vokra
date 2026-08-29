@@ -529,7 +529,9 @@ impl Qwen2Runtime {
                 self.config().rope_theta,
                 self.config().head_dim(),
             )?;
-            let attention = self.attend(&compute, layer_index, &q, &k, &v)?;
+            let config = self.config();
+            let attention =
+                Self::attend(&mut self.cache, config, &compute, layer_index, &q, &k, &v)?;
             let projected = layer.o.apply(&compute, &attention, 1)?;
             add_assign(&mut hidden, &projected)?;
             let normed = rms(
@@ -703,20 +705,20 @@ impl Qwen2Runtime {
     }
 
     fn attend(
-        &mut self,
+        cache: &mut [LayerCache],
+        config: Qwen2RuntimeConfig,
         compute: &Compute,
         layer_index: usize,
         q: &[f32],
         k: &[f32],
         v: &[f32],
     ) -> Result<Vec<f32>> {
-        let config = self.config();
         let head_dim = config.head_dim();
         let kv_width = config.kv_width();
-        let cache = &mut self.cache[layer_index];
-        cache.keys.extend_from_slice(k);
-        cache.values.extend_from_slice(v);
-        let context = cache.keys.len() / kv_width;
+        let layer_cache = &mut cache[layer_index];
+        layer_cache.keys.extend_from_slice(k);
+        layer_cache.values.extend_from_slice(v);
+        let context = layer_cache.keys.len() / kv_width;
         let mut output = vec![0.0; config.hidden_size];
         let scale = (head_dim as f32).sqrt().recip();
         for head in 0..config.num_attention_heads {
@@ -726,7 +728,7 @@ impl Qwen2Runtime {
             for position in 0..context {
                 for component in 0..head_dim {
                     key_matrix[component * context + position] =
-                        cache.keys[position * kv_width + kv_head * head_dim + component];
+                        layer_cache.keys[position * kv_width + kv_head * head_dim + component];
                 }
             }
             let mut scores = vec![0.0; context];
@@ -747,7 +749,7 @@ impl Qwen2Runtime {
             let mut value_matrix = vec![0.0; context * head_dim];
             for position in 0..context {
                 value_matrix[position * head_dim..(position + 1) * head_dim].copy_from_slice(
-                    &cache.values[position * kv_width + kv_head * head_dim
+                    &layer_cache.values[position * kv_width + kv_head * head_dim
                         ..position * kv_width + (kv_head + 1) * head_dim],
                 );
             }

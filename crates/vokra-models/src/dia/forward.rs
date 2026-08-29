@@ -1066,7 +1066,6 @@ fn attention_cross(
             heads: cache.heads,
             head_dim: cache.head_dim,
             len: cache.len,
-            valid: cache.valid.clone(),
         },
         q_heads,
         cache.heads,

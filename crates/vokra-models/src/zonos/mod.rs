@@ -2517,11 +2517,11 @@ fn sha256(input: &[u8]) -> [u8; 32] {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
         0xc67178f2,
     ];
-    let mut state = [
+    let mut state: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
     ];
-    let bit_len = (input.len() as u64).wrapping_mul(8);
+    let bit_len: u64 = (input.len() as u64).wrapping_mul(8);
     let padded_len = (input.len() + 9).div_ceil(64) * 64;
     let mut padded = vec![0u8; padded_len];
     padded[..input.len()].copy_from_slice(input);
@@ -2542,7 +2542,7 @@ fn sha256(input: &[u8]) -> [u8; 32] {
                 .wrapping_add(schedule[index - 7])
                 .wrapping_add(small_sigma1);
         }
-        let mut working = state;
+        let mut working: [u32; 8] = state;
         for index in 0..64 {
             let a = working[0];
             let e = working[4];

@@ -421,7 +421,7 @@ fn object_value<'a>(object: &'a [(String, JsonValue)], key: &str) -> Option<&'a 
         .map(|(_, value)| value)
 }
 
-fn string_field(root: &JsonValue, key: &str) -> Result<&str> {
+fn string_field<'a>(root: &'a JsonValue, key: &str) -> Result<&'a str> {
     object_field(root, key)?.as_str().ok_or_else(|| {
         VokraError::ModelLoad(format!("csm tokenizer: field `{key}` must be a string"))
     })

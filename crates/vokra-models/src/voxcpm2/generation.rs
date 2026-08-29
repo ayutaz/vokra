@@ -708,7 +708,7 @@ impl FeatureGenerationLoop {
         let mut prefix = seed[self.hidden_dim * 2..].to_vec();
         let mut patches = Vec::with_capacity(self.max_steps * prefix_len);
         for step in 0..self.max_steps {
-            let patch = cfm(step, &lm_hidden, &residual_hidden, prefix)?;
+            let patch = cfm(step, &lm_hidden, &residual_hidden, &prefix)?;
             if patch.len() != prefix_len || patch.iter().any(|value| !value.is_finite()) {
                 return Err(VokraError::InvalidArgument(
                     "voxcpm feature loop CFM patch must be finite and have shape [2, latent_dim]"

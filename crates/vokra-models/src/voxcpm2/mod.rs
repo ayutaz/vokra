@@ -112,11 +112,12 @@ mod bound;
 mod generation;
 mod local;
 mod minicpm4;
+pub(crate) use audio_vae::pad_audio_vae_prompt_pcm;
 pub use audio_vae::{
     AUDIO_VAE_DECODER_RATES, AUDIO_VAE_ENCODER_DIM, AUDIO_VAE_ENCODER_RATES, AUDIO_VAE_HOP,
     AUDIO_VAE_HOT_OPS, AUDIO_VAE_LATENT_DIM, AUDIO_VAE_PROMPT_CHUNK, AUDIO_VAE_SAMPLE_RATE,
     AudioVaeDecoder, AudioVaeEncoder, CausalConv1d, CausalConvTranspose1d, DecoderStage,
-    EncoderStage, ResidualUnit, Snake, pad_audio_vae_prompt_pcm,
+    EncoderStage, ResidualUnit, Snake,
 };
 pub use bound::{VoxCpm2Checkpoint, VoxCpm2StopProjection};
 pub(crate) use generation::StagedGenerationRuntime;
@@ -1077,12 +1078,12 @@ impl VoxCpm2Tts {
     ) -> Result<Vec<f32>> {
         if self.weights.is_synthesized {
             return Err(VokraError::NotImplemented(
-                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding".to_owned(),
+                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding",
             ));
         }
         if self.vae.out_sample_rate_hz != 16_000 {
             return Err(VokraError::NotImplemented(
-                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract".to_owned(),
+                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract",
             ));
         }
         decoder.decode_with_backend(latents, time, BackendKind::Cpu)
@@ -1099,12 +1100,12 @@ impl VoxCpm2Tts {
     ) -> Result<Vec<f32>> {
         if self.weights.is_synthesized {
             return Err(VokraError::NotImplemented(
-                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding".to_owned(),
+                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding",
             ));
         }
         if self.vae.out_sample_rate_hz != 16_000 {
             return Err(VokraError::NotImplemented(
-                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract".to_owned(),
+                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract",
             ));
         }
         decoder.decode_with_backend(latents, time, backend)

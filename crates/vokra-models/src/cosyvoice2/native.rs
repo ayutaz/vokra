@@ -215,7 +215,7 @@ fn sha256_f32_le(values: &[f32]) -> String {
         bytes.push(0);
     }
     bytes.extend_from_slice(&bit_len.to_be_bytes());
-    let mut h = [
+    let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
     ];
@@ -232,8 +232,16 @@ fn sha256_f32_le(values: &[f32]) -> String {
                 .wrapping_add(w[i - 7])
                 .wrapping_add(s1);
         }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh): (
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+            u32,
+        ) = (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);

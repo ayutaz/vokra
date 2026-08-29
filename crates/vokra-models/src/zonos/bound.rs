@@ -8,8 +8,8 @@ use vokra_core::gguf::GgufFile;
 use vokra_core::{LicenseClass, Result, VokraError};
 
 use super::{
-    ZonosBlockWeights, ZonosConfig, ZonosPrefixConditionerParts, ZonosPrefixConditionerWeights,
-    ZonosWeights,
+    ZonosBlockWeights, ZonosConfig, ZonosPrefixConditionerWeights, ZonosWeights,
+    conditioning::ZonosPrefixConditionerParts,
 };
 use crate::strict_checkpoint::{
     StrictCheckpoint, StrictCheckpointSpec, linear_rows, load_tensor, require_tensor_shape,

@@ -57,7 +57,7 @@ impl LocalEncoder {
     /// complete composite manifest and exact provenance contract.
     pub fn from_gguf(_file: &GgufFile) -> Result<Self> {
         Err(VokraError::NotImplemented(
-            "voxcpm2 local encoder: production GGUF binding is blocked until the exact complete composite name/shape manifest and source/tokenizer provenance are authenticated on VAST".to_owned(),
+            "voxcpm2 local encoder: production GGUF binding is blocked until the exact complete composite name/shape manifest and source/tokenizer provenance are authenticated on VAST",
         ))
     }
 
@@ -234,7 +234,7 @@ impl LocalDit {
     /// complete composite manifest and exact provenance contract.
     pub fn from_gguf(_file: &GgufFile) -> Result<Self> {
         Err(VokraError::NotImplemented(
-            "voxcpm2 local DiT: production GGUF binding is blocked until the exact complete composite name/shape manifest and source/tokenizer provenance are authenticated on VAST".to_owned(),
+            "voxcpm2 local DiT: production GGUF binding is blocked until the exact complete composite name/shape manifest and source/tokenizer provenance are authenticated on VAST",
         ))
     }
 
