@@ -43,12 +43,14 @@ SCHEMA = "omniasr-ctc-reference-v1"
 # fairseq2 implementation boundary.  Their raw content hashes are checked
 # against the reviewed pins below; Git blob SHA-1 is not accepted.
 OMNILINGUAL_SOURCE_PATHS = (
+    "src/omnilingual_asr/__init__.py",
     "src/omnilingual_asr/cards/models/rc_models.yaml",
     "src/omnilingual_asr/datasets/utils/audio.py",
     "src/omnilingual_asr/models/wav2vec2_asr/config.py",
     "src/omnilingual_asr/models/wav2vec2_ssl/config.py",
 )
 FAIRSEQ2_SOURCE_PATHS = (
+    "src/fairseq2/__init__.py",
     "src/fairseq2/models/wav2vec2/config.py",
     "src/fairseq2/models/wav2vec2/factory.py",
     "src/fairseq2/models/wav2vec2/feature_extractor.py",
@@ -77,12 +79,14 @@ FAIRSEQ2_SOURCE_PATHS = (
 # worker used the reviewed source boundary.  Do not replace these with Git
 # blob SHA-1 or guessed digests.
 EXPECTED_OMNILINGUAL_SOURCE_SHA256: dict[str, str] = {
+    "src/omnilingual_asr/__init__.py": "6a2cbaf33ca8d80c6bb357b8743d59309f135db3eb5ed95fca54b7664a2283e8",
     "src/omnilingual_asr/cards/models/rc_models.yaml": "7c9a28b2a111f2e088a5b2be161dd68686a810cd7462241209c2c5e8a81a2913",
     "src/omnilingual_asr/datasets/utils/audio.py": "e4a36129233325f95ab342939ad294fe37ac4eadaff6366524d60dc7ab8ea69e",
     "src/omnilingual_asr/models/wav2vec2_asr/config.py": "94ee297b4ebb122967631d2739b329e3b0d8432e9bf4a63306e085834e382ff1",
     "src/omnilingual_asr/models/wav2vec2_ssl/config.py": "550c6840b9b594226959948b4a48eb0e696171e9c5ac4fc070a9ea2c3d346414",
 }
 EXPECTED_FAIRSEQ2_SOURCE_SHA256: dict[str, str] = {
+    "src/fairseq2/__init__.py": "4cfd6207b154ec67f2e845fb861feede0ec9a6bbb97dbaecf60428867f26abc5",
     "src/fairseq2/models/wav2vec2/config.py": "e75143abfa8e208f2291258949c1af7875087514113c0c370fa915b56905bd22",
     "src/fairseq2/models/wav2vec2/factory.py": "de7bbbd70cf06eb99fb363ecd641b13825c50c66fb1694d1f3a866e722523b5a",
     "src/fairseq2/models/wav2vec2/feature_extractor.py": "37ccd7f2209f0cab58cdd9766f71dc5425a1a42399fc9fa4ebef094694427ec9",
@@ -357,11 +361,14 @@ def validate_manifest(path: Path) -> None:
 
 def run(args: argparse.Namespace) -> None:
     import torch
-    # Importing the official model package is required to install its
-    # fairseq2 asset-family/architecture registration before load_model().
-    # This is intentionally an import-only side effect from the pinned
-    # checkout, never a local replacement registration.
-    import omnilingual_asr.models.wav2vec2_asr  # noqa: F401
+    # The official package exposes its model/card registration through this
+    # fairseq2 entry-point callback.  Initialize the pinned fairseq2 resolver
+    # with that callback before any loader path can lazily create a default
+    # resolver; do not mirror or rename the upstream architecture locally.
+    from fairseq2 import init_fairseq2
+    from omnilingual_asr import setup_fairseq2_extension
+
+    init_fairseq2(extras=setup_fairseq2_extension)
     from fairseq2.assets import AssetCard
     from fairseq2.models.hub import load_model
     from fairseq2.nn import BatchLayout
