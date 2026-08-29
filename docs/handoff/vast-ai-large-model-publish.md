@@ -175,7 +175,7 @@ curl -sI https://huggingface.co/vokra/voxtral-small-24b-2507 | head -1
 
 ### 2.6 instance destroy (billing 抑制)
 
-vast.ai UI から即 destroy、または `vastai destroy <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。
+vast.ai UI から即 destroy、または `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。ローカルから Vast CLI を呼ぶ場合は必ず `vastai-safe.sh` を経由すること。stdout/stderr に誤って出る URL クエリの `api_key` 等を `[REDACTED]` に置換し、CLI の終了コードは保持する。
 
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
@@ -255,6 +255,8 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 | `scripts/publish/publish-one.sh` (**gate 7 追加**) | どこでも | GGUF publish の 5-gate chain。8 GiB 超で fail-closed、`VOKRA_PUBLISH_ON_VAST=1` or `--allow-large` で bypass |
 | `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/hf-transfer/repo/vokra-cli を idempotent に install、shell rc に marker export |
 | `scripts/publish/vast-ai/run-one.sh` | vast.ai | 1 モデル分の DL + convert + publish chain (`--push` で本番) |
+| `scripts/publish/vast-ai/vastai-safe.sh` | local | Vast CLI の stdout/stderr を redaction し、終了コードを保持する wrapper |
+| `scripts/publish/vast-ai/test-vastai-safe.sh` | local | ネットワークなしの wrapper 契約テスト |
 
 各 script は `--self-test` を持つ (pure、network fetch 無し)。CI で回すのは `check-model-size.sh` と `publish-one.sh` の self-test (vast.ai script は vast.ai 前提ゆえ CI 側の自動化対象外)。
 

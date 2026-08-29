@@ -446,7 +446,7 @@ main() {
   log "$code -> $url"
   log ""
   log "next model? re-invoke run-one.sh with a different --hf-repo / --vokra-slug"
-  log "done?       vastai destroy <instance-id>  # or destroy from the vast.ai UI"
+  log "done?       scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>  # or destroy from the vast.ai UI"
 }
 
 main "$@"
