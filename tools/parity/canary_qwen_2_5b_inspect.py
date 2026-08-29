@@ -150,7 +150,12 @@ def require(doc:Any,path:tuple[str,...],want:Any)->None:
     for key in path:
         if not isinstance(cur,dict) or key not in cur: raise RuntimeError(f"missing config path: {'.'.join(path)}")
         cur=cur[key]
-    if cur!=want: raise RuntimeError(f"config mismatch {'.'.join(path)}: {cur!r} != {want!r}")
+    def exact(actual:Any,expected:Any)->bool:
+        if type(actual) is not type(expected): return False
+        if isinstance(expected,list): return len(actual)==len(expected) and all(exact(a,e) for a,e in zip(actual,expected))
+        if isinstance(expected,dict): return set(actual)==set(expected) and all(exact(actual[k],expected[k]) for k in expected)
+        return actual==expected
+    if not exact(cur,want): raise RuntimeError(f"config mismatch {'.'.join(path)}: {cur!r} != {want!r}")
 def inspect_config(c:Any)->dict[str,Any]:
     if not isinstance(c,dict): raise RuntimeError("Canary-Qwen config is not a JSON object")
     # These are the literal paths in the pinned NeMo checkpoint config.  In
@@ -158,6 +163,9 @@ def inspect_config(c:Any)->dict[str,Any]:
     exact={("audio_locator_tag",):"<|audioplaceholder|>",("pretrained_asr",):"nvidia/canary-1b-flash",("pretrained_llm",):"Qwen/Qwen3-1.7B",("pretrained_weights",):False,("freeze_params",):[r"^llm\..+$",r"^embed_tokens\..+$"],("prevent_freeze_params",):[r"^.+\.lora_.+$"],("prompt_format",):"qwen",("torch_dtype",):"bfloat16",("perception","encoder","_target_"):"nemo.collections.asr.modules.ConformerEncoder",("perception","encoder","n_layers"):32,("perception","encoder","d_model"):1024,("perception","encoder","n_heads"):8,("perception","encoder","ff_expansion_factor"):4,("perception","encoder","conv_kernel_size"):9,("perception","encoder","feat_in"):128,("perception","encoder","subsampling"):"dw_striding",("perception","encoder","subsampling_factor"):8,("perception","encoder","subsampling_conv_channels"):256,("perception","encoder","self_attention_model"):"rel_pos",("perception","encoder","pos_emb_max_len"):5000,("perception","output_dim"):2048,("perception","modality_adapter","_target_"):"nemo.collections.speechlm2.modules.perception.IdentityConnector",("perception","modality_adapter","d_model"):1024,("perception","preprocessor","_target_"):"nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor",("perception","preprocessor","sample_rate"):16000,("perception","preprocessor","features"):128,("perception","preprocessor","n_fft"):512,("perception","preprocessor","normalize"):"per_feature",("perception","preprocessor","window"):"hann",("perception","preprocessor","frame_splicing"):1,("perception","preprocessor","pad_to"):0,("perception","preprocessor","dither"):1e-5,("perception","preprocessor","window_size"):0.025,("perception","preprocessor","window_stride"):0.01,("lora","r"):128,("lora","lora_alpha"):256,("lora","lora_dropout"):0.01,("lora","task_type"):"CAUSAL_LM",("lora","target_modules"): ["q_proj","v_proj"]}
     for p,v in exact.items(): require(c,p,v)
     return {"required_paths":[".".join(p) for p in exact],"values":{".".join(p):v for p,v in exact.items()}}
+def validate_generation_config(generation:Any)->None:
+    if not isinstance(generation,dict): raise RuntimeError("Qwen generation config is not a JSON object")
+    require(generation,("eos_token_id",),[151645,151643]); require(generation,("pad_token_id",),151643)
 def inspect_tokenizer(root:Path,rows:list[dict[str,Any]])->dict[str,Any]:
     if {r["path"] for r in rows}!=TOKENIZER_SELECTED_FILES: raise RuntimeError("Qwen tokenizer materialization set mismatch")
     config=load(root/"config.json");
@@ -166,7 +174,7 @@ def inspect_tokenizer(root:Path,rows:list[dict[str,Any]])->dict[str,Any]:
     tokenizer=load(root/"tokenizer_config.json")
     for p,v in {("tokenizer_class",):"Qwen2Tokenizer",("model_max_length",):131072,("eos_token",):"<|im_end|>",("pad_token",):"<|endoftext|>"}.items(): require(tokenizer,p,v)
     generation=load(root/"generation_config.json")
-    for p,v in {("eos_token_id",):151645,("pad_token_id",):151643}.items(): require(generation,p,v)
+    validate_generation_config(generation)
     vocab=load(root/"vocab.json")
     if not isinstance(vocab,dict) or len(vocab)!=151643: raise RuntimeError("Qwen vocab length mismatch")
     merges=(root/"merges.txt").read_text(encoding="utf-8").splitlines()
@@ -299,6 +307,20 @@ def self_test()->None:
     try: inspect_config({"audio_locator_tag":"<|audioplaceholder|>","pretrained_llm":"Qwen/Qwen2-1.5B","torch_dtype":"bfloat16"})
     except RuntimeError: pass
     else: raise AssertionError("old Qwen2 config accepted")
+    valid_generation={"eos_token_id":[151645,151643],"pad_token_id":151643}
+    validate_generation_config(valid_generation)
+    for invalid_generation in (
+        {"eos_token_id":151645,"pad_token_id":151643},
+        {"eos_token_id":[151643,151645],"pad_token_id":151643},
+        {"eos_token_id":[151645],"pad_token_id":151643},
+        {"eos_token_id":[151645,151643,0],"pad_token_id":151643},
+        {"eos_token_id":[True,151643],"pad_token_id":151643},
+        {"eos_token_id":[151645,151643],"pad_token_id":True},
+        {"eos_token_id":[151645,151643]},
+    ):
+        try: validate_generation_config(invalid_generation)
+        except RuntimeError: pass
+        else: raise AssertionError("non-canonical generation EOS/pad contract was accepted")
     try: safe_path("tensor\\name", "tensor")
     except RuntimeError: pass
     else: raise AssertionError("unsafe tensor path accepted")
