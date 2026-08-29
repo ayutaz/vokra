@@ -85,6 +85,18 @@ run_self_test() {
     echo "run-xy-tokenizer-inspection: self-test FAIL: unsafe checkpoint loader found" >&2
     fail=1
   fi
+
+  cases=$((cases + 1))
+  local python_source
+  python_source="$(mktemp "${TMPDIR:-/tmp}/xy-tokenizer-tree-self-test.XXXXXX.py")"
+  awk '/<<'"'"'PY'"'"'/{capture=1; next} capture && /^PY$/{exit} capture' \
+    "$script_path" >"$python_source"
+  if ! XY_TOKENIZER_MATERIALIZED_TREE_SELF_TEST=1 "${UV_CMD[@]}" "$python_source"; then
+    echo "run-xy-tokenizer-inspection: self-test FAIL: materialized tree regression" >&2
+    fail=1
+  fi
+  rm -f -- "$python_source"
+
   cases=$((cases + 1))
   if "$script_path" --self-test --work-dir /tmp/xy-tokenizer-self-test >/dev/null 2>&1; then
     echo "run-xy-tokenizer-inspection: self-test FAIL: extra argument accepted" >&2
@@ -178,11 +190,67 @@ import os
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 from huggingface_hub import HfApi, RepoFile, RepoFolder, snapshot_download
 
-repo, revision, cache_dir, output, packet_output = sys.argv[1:]
 selected = {".gitattributes", "README.md", "xy_tokenizer.ckpt", "config/xy_tokenizer_config.yaml"}
+
+
+def validate_materialized_tree(root: Path, expected: set[str]) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit(f"materialized root is not a regular directory: {root}")
+    actual = set()
+    for candidate in sorted(root.rglob("*")):
+        rel = candidate.relative_to(root).as_posix()
+        if candidate.is_symlink():
+            raise SystemExit(f"materialized payload is symlinked: {rel}")
+        if rel in {".cache", ".cache/huggingface"} or rel.startswith(".cache/huggingface/"):
+            continue
+        if candidate.is_dir():
+            continue
+        if not candidate.is_file():
+            raise SystemExit(f"materialized payload is not a regular file: {rel}")
+        actual.add(rel)
+    if actual != expected:
+        raise SystemExit(f"materialized selected tree drift: {sorted(actual)!r}")
+
+
+if os.environ.get("XY_TOKENIZER_MATERIALIZED_TREE_SELF_TEST") == "1":
+    expected = {"config/xy_tokenizer_config.yaml", "xy_tokenizer.ckpt"}
+    with tempfile.TemporaryDirectory(prefix="xy-tokenizer-materialized-tree-") as temp_dir:
+        root = Path(temp_dir) / "model-materialized"
+        (root / "config").mkdir(parents=True)
+        for relative in expected:
+            (root / relative).write_bytes(b"fixture")
+        validate_materialized_tree(root, expected)
+
+        def rejects(label: str, setup) -> None:
+            setup()
+            try:
+                validate_materialized_tree(root, expected)
+            except SystemExit:
+                return
+            raise AssertionError(f"tree self-test accepted {label}")
+
+        rejects("symlink", lambda: (root / "config/link").symlink_to(root / "config/xy_tokenizer_config.yaml"))
+        (root / "config/link").unlink()
+        rejects("extra file", lambda: (root / "extra").write_bytes(b"extra"))
+        (root / "extra").unlink()
+        try:
+            (root / "fifo").mkfifo()
+        except (AttributeError, NotImplementedError):
+            pass
+        else:
+            rejects("FIFO", lambda: None)
+            (root / "fifo").unlink()
+        outside = Path(temp_dir) / "outside"
+        outside.mkdir()
+        rejects("path escape", lambda: (root / "escape").symlink_to(outside, target_is_directory=True))
+    print("xy-tokenizer materialized tree self-test: PASS")
+    raise SystemExit(0)
+
+repo, revision, cache_dir, output, packet_output = sys.argv[1:]
 api = HfApi()
 info = api.model_info(repo_id=repo, revision=revision)
 if info.sha != revision:
@@ -225,16 +293,7 @@ resolved = Path(snapshot_download(
 ))
 if resolved.resolve() != materialized.resolve():
     raise SystemExit("HF local_dir escaped work directory")
-actual = set()
-for candidate in sorted(resolved.rglob("*")):
-    rel = candidate.relative_to(resolved).as_posix()
-    if rel in {".cache", ".cache/huggingface"} or rel.startswith(".cache/huggingface/"):
-        continue
-    if candidate.is_symlink() or not candidate.is_file():
-        raise SystemExit(f"materialized HF member is not regular: {rel}")
-    actual.add(rel)
-if actual != selected:
-    raise SystemExit(f"materialized selected tree drift: {sorted(actual)}")
+validate_materialized_tree(resolved, selected)
 Path(output).write_text(str(resolved) + "\n", encoding="utf-8")
 PY
 snapshot_path="$(< "$snapshot_path_file")"

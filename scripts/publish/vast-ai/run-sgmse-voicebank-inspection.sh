@@ -20,6 +20,7 @@ SPEECHBRAIN_WHEEL_SHA256="9859d4c1b1fb3af3b85523c0c89f52e45a04f305622ed55f31aa32
 HF_ROOT="https://huggingface.co/$MODEL_REPOSITORY/resolve/$MODEL_REVISION"
 EXPECTED_SIZE=262593305
 EXPECTED_SHA256="7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3"
+CHECKPOINT_NAME="score_model_ema.ckpt"
 COMPANIONS=(README.md .gitattributes example.wav)
 MIN_VAST_MEM_KIB=$((8 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((4 * 1024 * 1024))
@@ -57,6 +58,14 @@ self_test() {
       fail=1
     fi
   done
+  if ! grep -Fq 'CHECKPOINT_NAME="score_model_ema.ckpt"' "$path"; then
+    log 'self-test FAIL: fixed checkpoint filename contract is missing'
+    fail=1
+  fi
+  if ! grep -Fq "\$CHECKPOINT_NAME" "$path"; then
+    log 'self-test FAIL: checkpoint filename is not used through the fixed binding'
+    fail=1
+  fi
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload)([[:space:]]|$)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'
     fail=1

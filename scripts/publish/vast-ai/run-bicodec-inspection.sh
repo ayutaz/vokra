@@ -95,6 +95,17 @@ run_self_test() {
   fi
 
   cases=$((cases + 1))
+  local python_source
+  python_source="$(mktemp "${TMPDIR:-/tmp}/bicodec-tree-self-test.XXXXXX.py")"
+  awk '/<<'"'"'PY'"'"'/{capture=1; next} capture && /^PY$/{exit} capture' \
+    "$script_path" >"$python_source"
+  if ! BICODEC_MATERIALIZED_TREE_SELF_TEST=1 "${UV_CMD[@]}" "$python_source"; then
+    echo "run-bicodec-inspection: self-test FAIL: materialized tree regression" >&2
+    fail=1
+  fi
+  rm -f -- "$python_source"
+
+  cases=$((cases + 1))
   if "$script_path" --self-test --work-dir /tmp/bicodec-self-test >/dev/null 2>&1; then
     echo "run-bicodec-inspection: self-test FAIL: extra argument accepted" >&2
     fail=1
@@ -187,8 +198,65 @@ import os
 import hashlib
 import json
 import sys
+import tempfile
 from pathlib import Path
 from huggingface_hub import HfApi, RepoFile, RepoFolder, snapshot_download
+
+selected = {".gitattributes", "README.md", "BiCodec/config.yaml", "BiCodec/model.safetensors"}
+
+
+def validate_materialized_tree(root: Path, expected: set[str]) -> None:
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit(f"materialized root is not a regular directory: {root}")
+    actual = set()
+    for candidate in sorted(root.rglob("*")):
+        rel = candidate.relative_to(root).as_posix()
+        if candidate.is_symlink():
+            raise SystemExit(f"materialized payload is symlinked: {rel}")
+        if rel in {".cache", ".cache/huggingface"} or rel.startswith(".cache/huggingface/"):
+            continue
+        if candidate.is_dir():
+            continue
+        if not candidate.is_file():
+            raise SystemExit(f"materialized payload is not a regular file: {rel}")
+        actual.add(rel)
+    if actual != expected:
+        raise SystemExit(f"materialized selected tree drift: {sorted(actual)!r}")
+
+
+if os.environ.get("BICODEC_MATERIALIZED_TREE_SELF_TEST") == "1":
+    expected = {"BiCodec/config.yaml", "BiCodec/model.safetensors"}
+    with tempfile.TemporaryDirectory(prefix="bicodec-materialized-tree-") as temp_dir:
+        root = Path(temp_dir) / "model-materialized"
+        (root / "BiCodec").mkdir(parents=True)
+        for relative in expected:
+            (root / relative).write_bytes(b"fixture")
+        validate_materialized_tree(root, expected)
+
+        def rejects(label: str, setup) -> None:
+            setup()
+            try:
+                validate_materialized_tree(root, expected)
+            except SystemExit:
+                return
+            raise AssertionError(f"tree self-test accepted {label}")
+
+        rejects("symlink", lambda: (root / "BiCodec/link").symlink_to(root / "BiCodec/config.yaml"))
+        (root / "BiCodec/link").unlink()
+        rejects("extra file", lambda: (root / "BiCodec/extra").write_bytes(b"extra"))
+        (root / "BiCodec/extra").unlink()
+        try:
+            (root / "BiCodec/fifo").mkfifo()
+        except (AttributeError, NotImplementedError):
+            pass
+        else:
+            rejects("FIFO", lambda: None)
+            (root / "BiCodec/fifo").unlink()
+        outside = Path(temp_dir) / "outside"
+        outside.mkdir()
+        rejects("path escape", lambda: (root / "escape").symlink_to(outside, target_is_directory=True))
+    print("bicodec materialized tree self-test: PASS")
+    raise SystemExit(0)
 
 repo, revision, cache_dir, output, packet_output = sys.argv[1:]
 api = HfApi()
@@ -196,7 +264,6 @@ info = api.model_info(repo_id=repo, revision=revision)
 if info.sha != revision:
     raise SystemExit(f"resolved revision drift: {info.sha!r} != {revision!r}")
 rows = []
-selected = {".gitattributes", "README.md", "BiCodec/config.yaml", "BiCodec/model.safetensors"}
 tree = list(api.list_repo_tree(repo_id=repo, revision=revision, recursive=True, expand=True))
 by_path = {}
 for item in tree:
@@ -246,16 +313,7 @@ resolved = Path(snapshot_download(
 ))
 if resolved.resolve() != materialized.resolve():
     raise SystemExit(f"materialized snapshot escaped work directory: {resolved}")
-actual = set()
-for candidate in sorted(resolved.rglob("*")):
-    rel = candidate.relative_to(resolved).as_posix()
-    if rel in {".cache", ".cache/huggingface"} or rel.startswith(".cache/huggingface/"):
-        continue
-    if candidate.is_symlink() or not candidate.is_file():
-        raise SystemExit(f"materialized payload is not a regular file: {rel}")
-    actual.add(rel)
-if actual != selected:
-    raise SystemExit(f"materialized selected tree drift: {sorted(actual)!r}")
+validate_materialized_tree(resolved, selected)
 Path(output).write_text(str(resolved) + "\n", encoding="utf-8")
 PY
 snapshot_path="$(< "$snapshot_path_file")"
