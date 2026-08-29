@@ -17,7 +17,9 @@ memory [[feedback-large-models-on-vast-ai]] の運用側詳細版。
 # SSH 接続後、まず HF token を export (instance destroy で消える)
 export HF_TOKEN='hf_xxxxxx'
 
-# 1 コマンドで Rust + uv + Python 3.12 + hf-transfer + repo + vokra-cli build まで完了
+# 1 コマンドで Rust + uv + Python 3.12 + repo + vokra-cli build まで完了
+# checkout 内の pyproject.toml / uv.lock は変更しない。run-one.sh が HF 用の
+# pinned dependency をモデル実行ごとの一時的な uv 環境で解決する。
 curl -sSL https://raw.githubusercontent.com/ayutaz/vokra/main/scripts/publish/vast-ai/provision.sh | bash
 source ~/.bashrc  # VOKRA_PUBLISH_ON_VAST=1 marker を pick up
 ```
@@ -253,8 +255,8 @@ owner 判断待ちの vast.ai-scale モデル: なし (§3.1 で fail-closed 済
 |---|---|---|
 | `scripts/publish/check-model-size.sh` | local | HF API で size 判定、`LOCAL_SAFE / LOCAL_OK / LOCAL_BORDERLINE / VAST_AI_REQUIRED` verdict |
 | `scripts/publish/publish-one.sh` (**gate 7 追加**) | どこでも | GGUF publish の 5-gate chain。8 GiB 超で fail-closed、`VOKRA_PUBLISH_ON_VAST=1` or `--allow-large` で bypass |
-| `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/hf-transfer/repo/vokra-cli を idempotent に install、shell rc に marker export |
-| `scripts/publish/vast-ai/run-one.sh` | vast.ai | 1 モデル分の DL + convert + publish chain (`--push` で本番) |
+| `scripts/publish/vast-ai/provision.sh` | vast.ai | Rust/uv/Python 3.12/repo/vokra-cli を idempotent に install。checkout の dependency files は変更せず、shell rc に marker export |
+| `scripts/publish/vast-ai/run-one.sh` | vast.ai | pinned HF dependencies を一時的な uv 環境で解決し、1 モデル分の DL + convert + publish chain (`--push` で本番) |
 | `scripts/publish/vast-ai/vastai-safe.sh` | local | Vast CLI の stdout/stderr を redaction し、終了コードを保持する wrapper |
 | `scripts/publish/vast-ai/test-vastai-safe.sh` | local | ネットワークなしの wrapper 契約テスト |
 

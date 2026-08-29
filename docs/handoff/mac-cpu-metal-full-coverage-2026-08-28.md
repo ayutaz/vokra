@@ -88,9 +88,16 @@ of these bullets closes a model row until the named real run succeeds:
   functions; manager-repeated self-tests, `bash -n` and ShellCheck all pass
   without the former `SC2154` warnings while retaining the original failure
   summary and exit-code contract.
-- `vastai-safe.sh` redacts credential-valued URL query parameters on stdout and
-  stderr while preserving the wrapped CLI exit status. The lifecycle runbook
-  and `run-one.sh` now route local Vast CLI commands through it.
+- `vastai-safe.sh` redacts credential-valued URL query parameters and
+  credential fields in JSON or `key=value` output, including upper- and
+  lower-case instance/Jupyter/container keys, while preserving the wrapped CLI
+  exit status. Its hermetic regression and a live status probe both report the
+  sensitive value as `[REDACTED]`. The lifecycle runbook and `run-one.sh` route
+  local Vast CLI commands through it.
+- `provision.sh` no longer resolves HF dependencies by running `uv add` in the
+  checkout. `run-one.sh` owns its pinned transient HF environment instead. A
+  hermetic regression proves that provision self-test leaves the checkout file
+  set and dependency-file hashes unchanged.
 - The 2026-08-29 manager-wide cheap gates currently report
   `git diff --check` green and the eight focused live-audit unit tests green.
   Luna applied repository rustfmt mechanically across the staged Rust work;
@@ -1638,10 +1645,18 @@ audit and need model-family implementation work.
 
 The first local `vastai` status probe on this branch failed DNS resolution and
 the third-party CLI included its API credential in an exception request URL.
-The value is not recorded here. Treat that credential as compromised and do
-not reuse it before rotation. Repository-owned VAST lifecycle invocations must
-redact credential-bearing query parameters from stdout/stderr while preserving
-the real command exit status.
+The value is not recorded here. The owner confirmed that credential was
+rotated before VAST reuse.
+
+A later instance-list response exposed a `jupyter_token` JSON field because
+the first wrapper version covered URL query values only. The unrelated running
+instance was not touched; the status response exposed only its SSH port mapping
+at that time. Treat the emitted Jupyter credential as compromised even though
+no Jupyter port was advertised. The wrapper now redacts credential-bearing URL
+queries, JSON fields and `key=value` records, including upper- and lower-case
+instance/Jupyter/container variants. Its network-free regression passes, and
+a live status probe showed `[REDACTED]` instead of the credential while
+preserving the real command exit status.
 
 ## Final branch exit gates
 
