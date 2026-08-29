@@ -1794,10 +1794,13 @@ mod tests {
     #[test]
     fn source_delay_and_revert_preserve_channel_offsets() {
         let cfg = DiaConfig::tiny_for_tests();
-        let codes = vec![vec![10, 11], vec![12, 13], vec![14, 15]];
+        let codes = vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 1, 2]];
         let delayed = apply_delay_pattern(&cfg, &codes).expect("delay");
-        assert_eq!(delayed[0], vec![cfg.audio_bos_value; 2]);
-        assert_eq!(delayed[1][0], 12);
+        assert_eq!(
+            delayed[0],
+            vec![1, cfg.audio_bos_value, cfg.audio_bos_value]
+        );
+        assert_eq!(delayed[1][0], 4);
         let restored = revert_delay_pattern(&cfg, &delayed).expect("revert");
         assert_eq!(restored, codes);
     }
@@ -1915,11 +1918,11 @@ mod tests {
         delayed[0] = vec![90; cfg.channels];
         delayed[1] = vec![91; cfg.channels];
         delayed[2] = vec![92; cfg.channels];
-        delayed[3] = vec![10, 11, 12];
-        delayed[4] = vec![13, 14, 15];
-        delayed[5] = vec![16, 17, 18];
+        delayed[3] = vec![1, 2, 3];
+        delayed[4] = vec![4, 5, 6];
+        delayed[5] = vec![7, 1, 2];
         let output = revert_generated_audio(&cfg, &delayed, 3, 1).expect("generated slice");
-        assert_eq!(output, vec![vec![10, 14, 18]]);
+        assert_eq!(output, vec![vec![1, 5, 2]]);
     }
 
     #[test]

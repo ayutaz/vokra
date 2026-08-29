@@ -949,8 +949,9 @@ impl DiaTts {
             return Err(VokraError::NotImplemented(
                 "dia synthesize: no low-level DAC GGUF has been bound — the complete \
                  crate::dac::Dac token-to-PCM decoder must be composed with Dia. Dia's \
-                 decoder emits 9 RVQ codebook channels per step; without a complete \
-                 codec route there is nothing honest to return (FR-EX-08).",
+                 decoder emits 9 RVQ codebook channels per step; call with_dac(...) \
+                 with an authenticated codec before invoking synthesize — without a \
+                 complete codec route there is nothing honest to return (FR-EX-08).",
             ));
         }
         Err(VokraError::NotImplemented(

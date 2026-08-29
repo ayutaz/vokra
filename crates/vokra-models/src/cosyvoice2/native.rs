@@ -1209,7 +1209,10 @@ mod tests {
         };
         let validated = generation.validate().unwrap();
         assert_eq!(validated.yielded_tokens, [7, 8]);
-        assert_eq!(validated.sampling_calls[0].selected_token, 6563);
+        assert_eq!(
+            validated.sampling_calls[0].selected_token,
+            SPEECH_TOKEN_VOCAB_SIZE as u32
+        );
     }
 
     #[test]

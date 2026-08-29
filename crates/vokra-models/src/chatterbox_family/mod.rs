@@ -358,6 +358,10 @@ pub fn punc_norm_gpt2(text: &str) -> String {
     ] {
         normalized = normalized.replace(from, to);
     }
+    // Punctuation replacements may insert a separator next to one that was
+    // already present in the input; retain the wrapper's single-spacing
+    // boundary after those substitutions.
+    normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
     normalized = normalized.replace(" ,", ",").trim_end().to_owned();
     if !ends_with_sentence_punctuation(&normalized) {
         normalized.push('.');
@@ -392,6 +396,10 @@ pub fn punc_norm_multilingual(text: &str) -> String {
     ] {
         text = text.replace(from, to);
     }
+    // Punctuation replacements may insert a separator next to one that was
+    // already present in the input; retain the wrapper's single-spacing
+    // boundary after those substitutions.
+    text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     text = text.trim_end().to_owned();
     if !ends_with_sentence_punctuation(&text) {
         text.push('.');
