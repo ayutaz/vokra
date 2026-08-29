@@ -156,6 +156,8 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
         rows = lock_rows(lock_data)
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, json.JSONDecodeError, ValueError) as error:
         block(f"closure is unreadable: {error}")
+    if not isinstance(manifest, dict):
+        block("manifest JSON top-level value must be an object")
     if manifest.get("gate_version") != GATE_VERSION:
         block("unsupported gate version")
     if set(manifest) != MANIFEST_KEYS:
@@ -218,6 +220,8 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
         evidence = load_json(approval.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError) as error:
         block(f"approval evidence unreadable: {error}")
+    if not isinstance(evidence, dict):
+        block("approval evidence JSON top-level value must be an object")
     if set(evidence) != EVIDENCE_KEYS:
         block("approval evidence schema has missing or extra keys")
     if evidence.get("decision") != "APPROVED" or not resolved(evidence.get("signer")) or evidence.get("signer") != approval_record["signer"]:
@@ -263,11 +267,33 @@ def self_test() -> None:
             if error.code != 2: raise
         else: raise SystemExit("self-test accepted duplicate approval evidence key")
         evidence.write_text(baseline_evidence, encoding="utf-8")
+        evidence.write_text('{"decision":"APPROVED","nested":{"scope":"ok","scope":"tampered"}}', encoding="utf-8")
+        try: run(lock, project, manifest_path, evidence)
+        except SystemExit as error:
+            if error.code != 2: raise
+        else: raise SystemExit("self-test accepted nested duplicate approval evidence key")
+        evidence.write_text(baseline_evidence, encoding="utf-8")
         tampered_manifest = load_json(baseline_manifest); assert isinstance(tampered_manifest, dict); tampered_manifest["extra"] = "reject"; manifest_path.write_text(json.dumps(tampered_manifest), encoding="utf-8")
         try: run(lock, project, manifest_path, evidence)
         except SystemExit as error:
             if error.code != 2: raise
         else: raise SystemExit("self-test accepted extra manifest key")
+        manifest_path.write_text(baseline_manifest, encoding="utf-8")
+        manifest_path.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
+        try: run(lock, project, manifest_path, evidence)
+        except SystemExit as error:
+            if error.code != 2: raise
+        else: raise SystemExit("self-test accepted duplicate manifest key")
+        manifest_path.write_text('{"gate_version":1,"nested":{"scope":"ok","scope":"tampered"}}', encoding="utf-8")
+        try: run(lock, project, manifest_path, evidence)
+        except SystemExit as error:
+            if error.code != 2: raise
+        else: raise SystemExit("self-test accepted nested duplicate manifest key")
+        manifest_path.write_text("[]", encoding="utf-8")
+        try: run(lock, project, manifest_path, evidence)
+        except SystemExit as error:
+            if error.code != 2: raise
+        else: raise SystemExit("self-test leaked a non-object manifest exception")
         manifest_path.write_text(baseline_manifest, encoding="utf-8")
         tampered_evidence = load_json(baseline_evidence); assert isinstance(tampered_evidence, dict); tampered_evidence["signer"] = "OWNER_REVIEW_REQUIRED"; evidence.write_text(json.dumps(tampered_evidence), encoding="utf-8")
         try: run(lock, project, manifest_path, evidence)

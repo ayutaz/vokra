@@ -51,8 +51,11 @@ pre_sync_gate() {
   [[ -f "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" &&
      -f "$PRE_FLIGHT_GATE" && -f "$PRE_FLIGHT_MANIFEST" ]] || die 'YuE gate inputs are missing'
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || die 'approval evidence must be a regular file'
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PRE_FLIGHT_GATE" \
-    --project "$PARITY_PROJECT" --manifest "$PRE_FLIGHT_MANIFEST" --approval-evidence "$approval_evidence"
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PRE_FLIGHT_GATE" \
+    --project "$PARITY_PROJECT" --manifest "$PRE_FLIGHT_MANIFEST" --approval-evidence "$approval_evidence"; then
+    die 'YuE preflight gate rejected the manifest or approval evidence'
+    return 2
+  fi
 }
 
 usage() {
@@ -404,8 +407,11 @@ main() {
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --python 3.12 python \
     "$REFERENCE_DUMPER" --source-root "$source_root" --codec-checkpoint "$codec" \
     --decoder-checkpoint "$decoder" --frames 5 --output-dir "$reference"
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
-    "$REFERENCE_VALIDATOR" --reference "$reference"
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$REFERENCE_VALIDATOR" --reference "$reference"; then
+    die 'YuE reference validator rejected the generated manifest or payloads'
+    return 2
+  fi
   grep -Fq '"format": "vokra-yue-xcodec-mini-reference-v2"' "$reference/manifest.json" \
     || die 'reference format v2 marker is missing'
   grep -Fq '"pickle_load_policy": "weights_only=True_required"' "$reference/manifest.json" \

@@ -63,8 +63,11 @@ pre_sync_gate() {
   command -v uv >/dev/null 2>&1 || die 'uv is required before the YuE Apple gate'
   [[ -f "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && -f "$PRE_FLIGHT_GATE" && -f "$PRE_FLIGHT_MANIFEST" ]] || die 'YuE gate inputs are missing'
   [[ -f "$approval" && ! -L "$approval" ]] || die 'approval evidence must be a regular file'
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PRE_FLIGHT_GATE" \
-    --project "$PARITY_PROJECT" --manifest "$PRE_FLIGHT_MANIFEST" --approval-evidence "$approval"
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PRE_FLIGHT_GATE" \
+    --project "$PARITY_PROJECT" --manifest "$PRE_FLIGHT_MANIFEST" --approval-evidence "$approval"; then
+    die 'YuE preflight gate rejected the manifest or approval evidence'
+    return 2
+  fi
 }
 
 sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
@@ -91,6 +94,30 @@ require_reference() {
   [[ -d "$directory" && ! -L "$directory" ]] \
     || { die 'reference root is missing or symlinked'; return 2; }
   require_file 'VAST YuE xcodec-mini reference manifest' "$manifest"
+  # The shell key-set check below cannot see nested objects; parse the entire
+  # document first so duplicate keys never collapse before validation.
+  command -v uv >/dev/null 2>&1 || die 'uv is required for strict reference JSON validation'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$manifest" <<'PY' || { die 'reference manifest JSON validation failed'; return 2; }
+import json
+import sys
+from pathlib import Path
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+    if not isinstance(value, dict):
+        raise ValueError("reference manifest top-level value must be an object")
+except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    print(f"reference manifest JSON is invalid: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+PY
   local expected_keys actual_keys
   expected_keys="$(printf '%s\n' "${REFERENCE_KEYS[@]}" | sort)"
   actual_keys="$(sed -n 's/^  "\([^"]*\)":.*/\1/p' "$manifest" | sort)"
@@ -246,6 +273,12 @@ run_self_test() (
   printf 'extra\n' > "$reference_root/extra"
   if require_reference "$reference_root"; then die 'extra reference file accepted'; fi
   rm "$reference_root/extra"
+  cp "$reference_root/manifest.json" "$reference_root/manifest.real"
+  sed 's/"source_files_sha256": {}/"source_files_sha256": {"scope": "ok", "scope": "tampered"}/' \
+    "$reference_root/manifest.json" > "$reference_root/manifest.duplicate"
+  mv "$reference_root/manifest.duplicate" "$reference_root/manifest.json"
+  if require_reference "$reference_root"; then die 'nested duplicate manifest key accepted'; fi
+  mv "$reference_root/manifest.real" "$reference_root/manifest.json"
   mv "$reference_root/codes.u32le" "$reference_root/codes.real"
   ln -s codes.real "$reference_root/codes.u32le"
   if require_reference "$reference_root"; then die 'expected-name symlink accepted'; fi
@@ -337,7 +370,10 @@ main() {
   verify_file 'reference manifest' "$reference/manifest.json" "$(wc -c < "$reference/manifest.json" | tr -d '[:space:]')" "$reference_sha"
   require_reference "$reference"
   [[ -f "$REFERENCE_VALIDATOR" ]] || die 'shared YuE reference validator is missing'
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE_VALIDATOR" --reference "$reference"
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$REFERENCE_VALIDATOR" --reference "$reference"; then
+    die 'YuE reference validator rejected the generated manifest or payloads'
+    return 2
+  fi
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {

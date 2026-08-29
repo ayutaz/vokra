@@ -276,6 +276,21 @@ def self_test() -> int:
         if not accepted:
             print(f"approved baseline self-test failed: {actual}", file=sys.stderr)
             return 1
+        approved_manifest_text = altered.read_text(encoding="utf-8")
+        approved_evidence_text = evidence.read_text(encoding="utf-8")
+        duplicate_cases = (
+            ("manifest duplicate", altered, approved_manifest_text.rstrip()[:-1] + ',\n  "gate_version": 1\n}'),
+            ("manifest nested duplicate", altered, approved_manifest_text.replace('"fixed_identities": {', '"fixed_identities": {"source": {},')),
+            ("evidence duplicate", evidence, approved_evidence_text.rstrip()[:-1] + ',\n  "decision": "APPROVED"\n}'),
+            ("evidence nested duplicate", evidence, approved_evidence_text.rstrip()[:-1] + ',\n  "nested": {"scope": "ok", "scope": "tampered"}\n}'),
+        )
+        for label, target, text in duplicate_cases:
+            target.write_text(text, encoding="utf-8")
+            accepted, reason = validate(project, altered, evidence, self_test=True)
+            target.write_text(approved_manifest_text if target is altered else approved_evidence_text, encoding="utf-8")
+            if accepted or "duplicate JSON keys" not in reason:
+                print(f"duplicate JSON self-test failed ({label}): {reason}", file=sys.stderr)
+                return 1
         for label, mutate in (
             ("evidence manifest", lambda e: e.__setitem__("manifest_sha256", "0" * 64)),
             ("evidence scope", lambda e: e.__setitem__("scope_sha256", "0" * 64)),

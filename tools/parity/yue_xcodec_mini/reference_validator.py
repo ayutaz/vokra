@@ -125,6 +125,14 @@ def self_test() -> int:
         try: validate(root); return 1
         except ValueError: pass
         (root / "manifest.json").write_text(manifest_text, encoding="utf-8")
+        nested_duplicate = manifest_text.replace(
+            '"source_files_sha256": {',
+            '"source_files_sha256": {"README.md": "duplicate",',
+        )
+        (root / "manifest.json").write_text(nested_duplicate, encoding="utf-8")
+        try: validate(root); return 1
+        except ValueError: pass
+        (root / "manifest.json").write_text(manifest_text, encoding="utf-8")
         (root / "codes.u32le").write_bytes(b"tampered")
         try: validate(root); return 1
         except ValueError: pass

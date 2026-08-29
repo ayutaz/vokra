@@ -156,7 +156,10 @@ license_preflight() {
   [[ -f "$approval" && ! -L "$approval" ]] \
     || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   gate_args+=(--approval "$approval")
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" "${gate_args[@]}"
+  if ! UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" "${gate_args[@]}"; then
+    die 'SpeechBrain Lang-ID preflight gate rejected the manifest or approval evidence'
+    return 2
+  fi
 }
 
 canonical_candidate() {
