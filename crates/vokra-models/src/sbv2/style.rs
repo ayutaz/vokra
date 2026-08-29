@@ -247,7 +247,7 @@ mod tests {
             .project_with_compute(&Compute::cpu(), &style)
             .expect("valid CPU Compute style projection");
         assert_eq!(computed.len(), scalar.len());
-        for (actual, expected) in computed.iter().zip(scalar) {
+        for (actual, expected) in computed.iter().zip(scalar.iter().copied()) {
             assert!((actual - expected).abs() <= 1e-6, "{actual} != {expected}");
         }
         assert_eq!(scalar, vec![3.625, -3.5625, 3.625]);

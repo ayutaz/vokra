@@ -1869,8 +1869,9 @@ mod tests {
         seed_config(&mut b);
         b.add_u32(KEY_LLM_N_HEAD_KV, 2);
         b.add_u32(KEY_LLM_N_CTX, 8);
-        let (_file, cfg) = parse_config(b.to_bytes().unwrap());
-        let backbone = LlmBackbone::synthesized(cfg, FROM_GGUF_DEFAULT_SEED)
+        let (file, cfg) = parse_config(b.to_bytes().unwrap());
+        let llm_cfg = LlmBackboneConfig::from_gguf(&file, &cfg).expect("read LLM config");
+        let backbone = LlmBackbone::synthesized(llm_cfg, FROM_GGUF_DEFAULT_SEED)
             .expect("explicit synthesized build");
         assert!(backbone.weights().is_synthesized);
         // A trivial forward runs.

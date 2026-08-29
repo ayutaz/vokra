@@ -3299,7 +3299,7 @@ mod tests {
                 .flatten()
                 .take(7 * 4),
         );
-        for value in [24_000.0, 400.0, 1.0] {
+        for value in [24_000.0_f32, 400.0, 1.0] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&(-1i32).to_le_bytes());

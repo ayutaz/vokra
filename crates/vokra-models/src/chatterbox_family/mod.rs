@@ -1251,7 +1251,10 @@ mod tests {
         let cfg = combine_cfg_logits(&[2.0, 4.0], &[1.0, 3.0], 0.5).unwrap();
         assert_eq!(cfg, vec![2.5, 4.5]);
         let mut draws = RandomDraws::new(vec![0.0]).unwrap();
-        assert_eq!(sample_with_draw(&[0.0, 1.0], draws.next().unwrap()), 0);
+        assert_eq!(
+            sample_with_draw(&[0.0, 1.0], draws.next().unwrap()).unwrap(),
+            0
+        );
         assert!(draws.next().is_err());
     }
 

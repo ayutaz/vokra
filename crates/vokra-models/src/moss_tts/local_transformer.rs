@@ -1219,7 +1219,7 @@ mod tests {
         let synthesis = model
             .synthesize_prompt_rows(&codec, prompt, &MossTtsLocalGenerationOptions::greedy(cap))
             .unwrap_or_else(|error| panic!("synthesize Local on {backend:?}: {error}"));
-        let rows = synthesis.generated.rows_from_audio_start;
+        let rows = synthesis.generated.rows_from_audio_start.clone();
         let codes = synthesis
             .generated
             .assistant_audio_codes()
@@ -1247,6 +1247,7 @@ mod tests {
         let audio_channels = synthesis.audio.channels;
         let audio_sample_rate = synthesis.audio.sample_rate;
         let pcm = synthesis.audio.pcm;
+        let pcm_len = pcm.len();
         let sum_sq = pcm
             .iter()
             .map(|sample| f64::from(*sample) * f64::from(*sample))
@@ -1266,7 +1267,7 @@ mod tests {
             audio_samples,
             audio_channels,
             audio_sample_rate,
-            audio_rms: (sum_sq / pcm.len() as f64).sqrt(),
+            audio_rms: (sum_sq / pcm_len as f64).sqrt(),
             audio_peak: peak,
         }
     }

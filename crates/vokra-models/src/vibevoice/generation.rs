@@ -472,53 +472,53 @@ mod tests {
     fn constrained_logits_are_deterministic_and_marker_limited() {
         let mut logits = vec![f32::NEG_INFINITY; 151_936];
         logits[BOS_EOS_TOKEN_ID as usize] = 1.0;
-        logits[super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 2.0;
+        logits[super::super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 2.0;
         logits[42] = 100.0;
         assert_eq!(
             constrained_greedy_token(&logits).unwrap(),
-            super::SPEECH_DIFFUSION_TOKEN_ID
+            super::super::SPEECH_DIFFUSION_TOKEN_ID
         );
         assert_eq!(
             constrained_greedy_token(&logits).unwrap(),
-            super::SPEECH_DIFFUSION_TOKEN_ID
+            super::super::SPEECH_DIFFUSION_TOKEN_ID
         );
     }
 
     #[test]
     fn constrained_sequence_tracks_start_then_diffusion_then_end() {
         let mut logits = vec![f32::NEG_INFINITY; 151_936];
-        logits[super::SPEECH_START_TOKEN_ID as usize] = 3.0;
-        logits[super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 2.0;
+        logits[super::super::SPEECH_START_TOKEN_ID as usize] = 3.0;
+        logits[super::super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 2.0;
         assert_eq!(
             constrained_greedy_token(&logits).unwrap(),
-            super::SPEECH_START_TOKEN_ID
+            super::super::SPEECH_START_TOKEN_ID
         );
-        logits[super::SPEECH_START_TOKEN_ID as usize] = f32::NEG_INFINITY;
-        logits[super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 4.0;
+        logits[super::super::SPEECH_START_TOKEN_ID as usize] = f32::NEG_INFINITY;
+        logits[super::super::SPEECH_DIFFUSION_TOKEN_ID as usize] = 4.0;
         assert_eq!(
             constrained_greedy_token(&logits).unwrap(),
-            super::SPEECH_DIFFUSION_TOKEN_ID
+            super::super::SPEECH_DIFFUSION_TOKEN_ID
         );
-        logits[super::SPEECH_DIFFUSION_TOKEN_ID as usize] = f32::NEG_INFINITY;
-        logits[super::SPEECH_END_TOKEN_ID as usize] = 5.0;
+        logits[super::super::SPEECH_DIFFUSION_TOKEN_ID as usize] = f32::NEG_INFINITY;
+        logits[super::super::SPEECH_END_TOKEN_ID as usize] = 5.0;
         assert_eq!(
             constrained_greedy_token(&logits).unwrap(),
-            super::SPEECH_END_TOKEN_ID
+            super::super::SPEECH_END_TOKEN_ID
         );
     }
 
     #[test]
     fn token_plan_proves_condition_before_one_cache_advance_and_negative_refresh() {
-        let start = token_plan(super::SPEECH_START_TOKEN_ID);
+        let start = token_plan(super::super::SPEECH_START_TOKEN_ID);
         assert!(start.refresh_negative);
         assert_eq!(start.cache_advances, 1);
         assert!(!start.terminal);
 
-        let diffusion = token_plan(super::SPEECH_DIFFUSION_TOKEN_ID);
+        let diffusion = token_plan(super::super::SPEECH_DIFFUSION_TOKEN_ID);
         assert!(diffusion.diffusion);
         assert_eq!(diffusion.cache_advances, 1);
 
-        let end = token_plan(super::SPEECH_END_TOKEN_ID);
+        let end = token_plan(super::super::SPEECH_END_TOKEN_ID);
         assert!(end.clear_codec);
         assert!(!end.terminal);
         assert_eq!(end.cache_advances, 1);

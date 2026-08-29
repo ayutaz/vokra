@@ -1409,6 +1409,8 @@ fn channel_major_to_row_major(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     #[test]
@@ -1483,23 +1485,23 @@ mod tests {
     #[test]
     fn feature_loop_pins_patch_order_and_minimum_stop() {
         let loop_ = FeatureGenerationLoop::new(3, 0, 2, 2).unwrap();
-        let mut calls = 0;
+        let calls = Cell::new(0);
         let result = loop_
             .generate(
                 &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 |_step, _lm, _residual, _prefix| {
-                    calls += 1;
-                    Ok(vec![calls as f32; 4])
+                    calls.set(calls.get() + 1);
+                    Ok(vec![calls.get() as f32; 4])
                 },
                 |_patch| Ok(vec![1.0, 2.0]),
                 |_embed| Ok(vec![1.0, 2.0]),
                 |_hidden| Ok(vec![0.0, 0.0]),
                 |_input| Ok(vec![0.0, 0.0]),
-                |_lm| Ok(calls >= 2),
+                |_lm| Ok(calls.get() >= 2),
             )
             .unwrap();
         assert_eq!(result, vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
-        assert_eq!(calls, 2);
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
