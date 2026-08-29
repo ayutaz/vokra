@@ -7665,6 +7665,67 @@ mod tests {
             vokra_core::gguf::chunks::KEY_MODEL_NAME,
             vokra_models::gigaam::multilingual::NAME,
         );
+        for (key, value) in [
+            ("sample_rate", 16_000),
+            ("n_mels", 64),
+            ("n_fft", 320),
+            ("hop_length", 160),
+            ("win_length", 320),
+            ("n_layers", 16),
+            ("d_model", 768),
+            ("n_heads", 16),
+            ("ffn_dim", 3072),
+            ("conv_kernel_size", 5),
+            ("subsampling_kernel_size", 5),
+            ("subsampling_stride", 2),
+            ("subsampling_padding", 2),
+            (
+                "vocab_size",
+                vokra_models::gigaam::multilingual::VOCAB_SIZE as u32,
+            ),
+            (
+                "blank_id",
+                vokra_models::gigaam::multilingual::BLANK_ID as u32,
+            ),
+        ] {
+            builder.add_u32(&format!("vokra.gigaam_multilingual.{key}"), value);
+        }
+        for (key, value) in [
+            ("model_class", "ctc"),
+            ("model_name", "multilingual_ctc"),
+            ("topology", "CTC"),
+            ("revision", vokra_models::gigaam::multilingual::HF_REVISION),
+            (
+                "source_revision",
+                vokra_models::gigaam::multilingual::SOURCE_REVISION,
+            ),
+            (
+                "config_sha256",
+                vokra_models::gigaam::multilingual::CONFIG_SHA256,
+            ),
+            (
+                "checkpoint_sha256",
+                vokra_models::gigaam::multilingual::CHECKPOINT_SHA256,
+            ),
+            (
+                "prepared_sha256",
+                vokra_models::gigaam::multilingual::AUTHENTICATED_PREPARED_SHA256
+                    .expect("authenticated GigaAM Multilingual SHA"),
+            ),
+        ] {
+            builder.add_string(&format!("vokra.gigaam_multilingual.{key}"), value);
+        }
+        for (key, value) in [
+            ("weight_license", "permissive"),
+            ("license", "MIT"),
+            ("model_id", "ai-sage/GigaAM-Multilingual"),
+            (
+                "source",
+                "https://huggingface.co/ai-sage/GigaAM-Multilingual",
+            ),
+        ] {
+            builder.add_string(&format!("vokra.provenance.{key}"), value);
+        }
         let bytes = builder.to_bytes().expect("serialize route fixture");
         std::fs::write(&model_path, bytes).expect("write route fixture");
         wav::write_wav(&wav_path, &[0.125; 320], 16_000).expect("write valid WAV fixture");
@@ -7679,8 +7740,7 @@ mod tests {
         .expect("valid GigaAM route args");
         let error = run_gigaam_multilingual(&session, &parsed).unwrap_err();
         assert!(
-            error.contains("prepared safetensors digest")
-                || error.contains("prepared-artifact digest"),
+            error.contains("GigaAM tensor manifest mismatch"),
             "valid WAV reached the authenticated binder gate: {error}"
         );
         let _ = std::fs::remove_file(model_path);
