@@ -16,8 +16,12 @@ The exact gated Meta snapshot
 model. The generated reference contains the deterministic PCM input, official
 Whisper features, projected audio embeddings, complete expanded prompt IDs,
 first-position logits, and a short greedy token sequence. The Rust real-GGUF
-test compares every FP32 tensor at `atol=0.01` and greedy IDs exactly. Missing
-inputs skip visibly; a partial configuration fails.
+test compares every FP32 tensor at `atol=0.01` and greedy IDs exactly. Every
+reference artifact and both downloaded source closures are authenticated by
+SHA-256 manifests. The Rust test requires all three paths and the companion
+GGUF hash; it never treats a missing input as a passing skip. The official
+reference environment is pinned to `transformers==5.5.0` (the 4.x-to-5.x
+upgrade requires a fresh VAST rerun before parity can be claimed).
 
 Run only on a provisioned VAST host:
 
@@ -41,6 +45,7 @@ scripts/verify/apple-silicon-ultravox.sh \
   --companion /remote/stage/ultravox-llama-companion.gguf \
   --companion-sha256 <value-from-VAST-input-hashes.txt> \
   --reference /remote/stage/reference \
+  --reference-manifest-sha256 <value-from-VAST-input-hashes.txt> \
   --evidence-dir /remote/evidence/ultravox-metal
 ```
 

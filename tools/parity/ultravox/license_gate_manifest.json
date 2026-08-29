@@ -1,0 +1,171 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "56e14c7e85174b16b22bf33d6cbb4a1c4f21eb3714ebdee854dd3417f4194d45",
+  "project_sha256": "0f9cb64cc8f43a6e1fe8cd793f43909a2f9dbf4957ea963a03d929666c521f78",
+  "package_rows_sha256": "0f9bba61550d1c5325ef154d049f44252b99777dc8c101cb05f673347ea0bfdf",
+  "required_package_rows": [
+    {
+      "name": "accelerate",
+      "version": "1.3.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "resolution-markers": [],
+      "dependencies": [
+        {"name": "huggingface-hub"}, {"name": "numpy"}, {"name": "packaging"},
+        {"name": "psutil"}, {"name": "pyyaml"}, {"name": "safetensors"},
+        {"name": "torch", "version": "2.13.0", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "marker": "sys_platform == 'darwin'"},
+        {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "marker": "sys_platform != 'darwin'"}
+      ]
+    },
+    {
+      "name": "peft",
+      "version": "0.14.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "resolution-markers": [],
+      "dependencies": [
+        {"name": "accelerate"}, {"name": "huggingface-hub"}, {"name": "numpy"},
+        {"name": "packaging"}, {"name": "psutil"}, {"name": "pyyaml"}, {"name": "safetensors"},
+        {"name": "torch", "version": "2.13.0", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "marker": "sys_platform == 'darwin'"},
+        {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "marker": "sys_platform != 'darwin'"},
+        {"name": "tqdm"}, {"name": "transformers"}
+      ]
+    },
+    {
+      "name": "torch",
+      "version": "2.13.0",
+      "source": {"registry": "https://download.pytorch.org/whl/cpu"},
+      "resolution-markers": ["sys_platform == 'darwin'"],
+      "dependencies": [
+        {"name": "filelock", "marker": "sys_platform == 'darwin'"}, {"name": "fsspec", "marker": "sys_platform == 'darwin'"},
+        {"name": "jinja2", "marker": "sys_platform == 'darwin'"}, {"name": "networkx", "marker": "sys_platform == 'darwin'"},
+        {"name": "setuptools", "marker": "sys_platform == 'darwin'"}, {"name": "sympy", "marker": "sys_platform == 'darwin'"},
+        {"name": "typing-extensions", "marker": "sys_platform == 'darwin'"}
+      ]
+    },
+    {
+      "name": "torch",
+      "version": "2.13.0+cpu",
+      "source": {"registry": "https://download.pytorch.org/whl/cpu"},
+      "resolution-markers": [
+        "(platform_machine != 'aarch64' and sys_platform == 'linux') or (platform_python_implementation != 'CPython' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')",
+        "platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'"
+      ],
+      "dependencies": [
+        {"name": "filelock", "marker": "sys_platform != 'darwin'"}, {"name": "fsspec", "marker": "sys_platform != 'darwin'"},
+        {"name": "jinja2", "marker": "sys_platform != 'darwin'"}, {"name": "networkx", "marker": "sys_platform != 'darwin'"},
+        {"name": "setuptools", "marker": "sys_platform != 'darwin'"}, {"name": "sympy", "marker": "sys_platform != 'darwin'"},
+        {"name": "typing-extensions", "marker": "sys_platform != 'darwin'"}
+      ]
+    },
+    {
+      "name": "transformers",
+      "version": "5.5.0",
+      "source": {"registry": "https://pypi.org/simple"},
+      "resolution-markers": [],
+      "dependencies": [
+        {"name": "huggingface-hub"}, {"name": "numpy"}, {"name": "packaging"},
+        {"name": "pyyaml"}, {"name": "regex"}, {"name": "safetensors"},
+        {"name": "tokenizers"}, {"name": "tqdm"}, {"name": "typer"}
+      ]
+    }
+  ],
+  "package_review_rows": [
+    {"name": "accelerate", "version": "1.3.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "annotated-doc", "version": "0.0.5", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "anyio", "version": "4.14.2", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "certifi", "version": "2026.7.22", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "click", "version": "8.5.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "colorama", "version": "0.4.6", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "filelock", "version": "3.32.4", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "fsspec", "version": "2026.7.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "h11", "version": "0.16.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "hf-xet", "version": "1.6.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "httpcore", "version": "1.0.9", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "httpx", "version": "0.28.1", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "huggingface-hub", "version": "1.29.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "idna", "version": "3.19", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "jinja2", "version": "3.1.6", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "markdown-it-py", "version": "4.2.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "markupsafe", "version": "3.0.3", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "mdurl", "version": "0.1.2", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "mpmath", "version": "1.3.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "networkx", "version": "3.6.1", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "numpy", "version": "2.5.2", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "packaging", "version": "26.3", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "peft", "version": "0.14.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "psutil", "version": "7.2.2", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "pygments", "version": "2.21.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "pyyaml", "version": "6.0.3", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "regex", "version": "2026.7.19", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "rich", "version": "15.0.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "safetensors", "version": "0.8.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "setuptools", "version": "84.0.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "shellingham", "version": "1.5.4", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "sympy", "version": "1.14.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "tokenizers", "version": "0.22.2", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "torch", "version": "2.13.0", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "torch", "version": "2.13.0+cpu", "source": {"registry": "https://download.pytorch.org/whl/cpu"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "tqdm", "version": "4.70.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "transformers", "version": "5.5.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "typer", "version": "0.27.1", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "typing-extensions", "version": "4.16.0", "source": {"registry": "https://pypi.org/simple"}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"},
+    {"name": "vokra-ultravox-parity", "version": "0.1.0", "source": {"virtual": "."}, "license": "UNRESOLVED", "status": "UNRESOLVED", "native_bundled_review": "OWNER_REVIEW_REQUIRED"}
+  ],
+  "package_review_rows_sha256": "9f2b262a39e7251e5ab23a27fd9535a83c709f12dc4246f5b4456497d0872a9c",
+  "forbidden_dependencies": ["librosa", "soxr", "soundfile", "triton", "nvidia-cuda"],
+  "identities": {
+    "public_repo": "vokra/ultravox-v0-5-llama-3-2-1b",
+    "public_revision": "ddbbeec5bfcb09c71a1f88971b794e3e5da811f9",
+    "public_file": "ultravox-v0-5-llama-3-2-1b.gguf",
+    "public_sha256": "376c79a7219bb38fc6a857b0bd9ccf57daff878e7bb4723c4801000c0d7b8c9c",
+    "upstream_repo": "fixie-ai/ultravox-v0_5-llama-3_2-1b",
+    "upstream_revision": "b95bec8ab291eeb04b5cd600dd473377f6b79026",
+    "companion_repo": "meta-llama/Llama-3.2-1B-Instruct",
+    "companion_revision": "9213176726f574b556790deb65791e0c5aa438b6",
+    "companion_model_sha256": null,
+    "upstream_model_sha256": "f3a3bf7e9137f3219a0d27ba71668deeee8c60aaf0ea587b48d8f71178763f31",
+    "source_files": {
+      "ultravox_model.py": {"bytes": 41578, "sha256": "df618218561375da01bb53bd2764ea123e0cbf782f3326753f669f63ff6c6d3f"},
+      "ultravox_processing.py": {"bytes": 17087, "sha256": "2ae6682f3deecb22539fae6a6631688fc1675282f1a5b31145d9f95d2347ff7b"},
+      "ultravox_config.py": {"bytes": 7057, "sha256": "99cf5ad911189f2351c2232234025db56b23763283583c0a848ebf2a1ecc40fc"}
+    }
+  },
+  "license_rows": [
+    {
+      "id": "ultravox-audio-weight",
+      "component": "fixie-ai/ultravox-v0_5-llama-3_2-1b official audio weight",
+      "source": "https://huggingface.co/fixie-ai/ultravox-v0_5-llama-3_2-1b",
+      "license": "MIT",
+      "conclusion": "MIT audio-weight boundary; owner redistribution approval pending",
+      "status": "APPROVAL_PENDING",
+      "payload_sha256": "f3a3bf7e9137f3219a0d27ba71668deeee8c60aaf0ea587b48d8f71178763f31",
+      "required_identity": "upstream_repo/upstream_revision/upstream_model_sha256"
+    },
+    {
+      "id": "llama-companion-meta-conditional",
+      "component": "meta-llama/Llama-3.2-1B-Instruct gated companion",
+      "source": "https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct",
+      "license": "Meta-ConditionalCommercial",
+      "conclusion": "Meta conditional license; gated input and owner approval required",
+      "status": "APPROVAL_PENDING",
+      "payload_sha256": null,
+      "required_identity": "companion_repo/companion_revision/companion_model_sha256"
+    },
+    {
+      "id": "python-closure",
+      "component": "locked transformers 5.5.0/torch 2.13.0 Python native and bundled closure",
+      "source": "tools/parity/ultravox/uv.lock",
+      "license": "UNRESOLVED",
+      "conclusion": "Every locked package and native/bundled notice requires owner review",
+      "status": "UNRESOLVED",
+      "native_bundled_review": "OWNER_REVIEW_REQUIRED against every version-keyed package row",
+      "required_identity": "lock_sha256/project_sha256/package_rows_sha256"
+    }
+  ],
+  "license_rows_sha256": "dac079a4ddb7547e2cf0b40e44427f1b4494550df5ad37055ff8788a9bacccd2",
+  "approval": {
+    "status": "OWNER_SIGNOFF_REQUIRED",
+    "signer": null,
+    "digest": null
+  },
+  "publication": "NO_UPLOAD"
+}

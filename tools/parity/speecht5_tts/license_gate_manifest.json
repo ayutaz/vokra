@@ -1,0 +1,531 @@
+{
+  "gate_version": 1,
+  "lock_sha256": "32d372461b63302e58e7ed3f5b7da1495f472a496717e5b85f6767911ad703cb",
+  "pyproject_sha256": "814d6445596fe0f778cc4efd4ce42cf54db0d90d040b1c8661ccec6cbd0ba6a1",
+  "package_rows_sha256": "5a0b8e448b5955506436e425ba3ab87f4b2b79f10dc846719fc04d125b3ea9a7",
+  "dependency_reviews_sha256": "92838f1b0abfe825931796d73bf9db2988ccfe288ad9f8010333b6562ab5d64e",
+  "transformers_route": "transformers==5.5.0 / SpeechT5ForTextToSpeech.generate_speech",
+  "tts_identity": {
+    "repo": "microsoft/speecht5_tts",
+    "revision": "30fcde30f19b87502b8435427b5f5068e401d5f6",
+    "files": {
+      "pytorch_model.bin": [
+        "585476837",
+        "d60d28067349ef66b50d8cd643ae56b6d6b8f27def929bc4ef6fcad907954190"
+      ],
+      "spm_char.model": [
+        "238473",
+        "7fcc48f3e225f627b1641db410ceb0c8649bd2b0c982e150b03f8be3728ab560"
+      ],
+      "config.json": [
+        "2062",
+        "2caf62dde93699a90cfc35ff2a8de27b02b479a0c98881cbc55f9682cc43e258"
+      ],
+      "tokenizer_config.json": [
+        "232",
+        "d589430c619db2d95ff0fa757a187b55ef5ea44eff7fb08a6fbf0e78e32a6247"
+      ],
+      "added_tokens.json": [
+        "40",
+        "74be21ecff0a1fb1f304fe7c72ab21e4f0c046f8359fdf2852eb1b80967069ad"
+      ],
+      "special_tokens_map.json": [
+        "234",
+        "2a098b61fe8ec4cfd7674832ca00b4268c07569743a4ad15c8164e8f60ebf981"
+      ]
+    }
+  },
+  "vocoder_identity": {
+    "repo": "microsoft/speecht5_hifigan",
+    "revision": "bb6f429406e86a9992357a972c0698b22043307d",
+    "pytorch_model_sha256": "b171e9bcd8a2b50dc9780040478dfa26783a9ee4be012cf5776914f091d6887b"
+  },
+  "public_tts_identity": {
+    "repo": "vokra/speecht5-tts",
+    "revision": "43cf6592038616d116a98fde4764d827ece59033",
+    "bytes": 585382432,
+    "sha256": "f26019f5e2f7106d834b0b1fd4f66286839e000350caad169388467452c8dde0"
+  },
+  "operator_approval": {
+    "decision": "PENDING_REVIEW",
+    "signer": null,
+    "digest": null
+  },
+  "dependency_reviews": [
+    {
+      "id": "annotated-doc@0.0.5",
+      "name": "annotated-doc",
+      "version": "0.0.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "anyio@4.14.2",
+      "name": "anyio",
+      "version": "4.14.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "certifi@2026.7.22",
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "click@8.5.0",
+      "name": "click",
+      "version": "8.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "filelock@3.32.4",
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "fsspec@2026.7.0",
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "h11@0.16.0",
+      "name": "h11",
+      "version": "0.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "hf-xet@1.6.0",
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "httpcore@1.0.9",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "httpx@0.28.1",
+      "name": "httpx",
+      "version": "0.28.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "huggingface-hub@1.27.0",
+      "name": "huggingface-hub",
+      "version": "1.27.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "idna@3.19",
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "jinja2@3.1.6",
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "markdown-it-py@4.2.0",
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "markupsafe@3.0.3",
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "mdurl@0.1.2",
+      "name": "mdurl",
+      "version": "0.1.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "mpmath@1.3.0",
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "networkx@3.6.1",
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "numpy@1.26.4",
+      "name": "numpy",
+      "version": "1.26.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "packaging@26.3",
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "pygments@2.21.0",
+      "name": "pygments",
+      "version": "2.21.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "pyyaml@6.0.3",
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "regex@2026.7.19",
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "rich@15.0.0",
+      "name": "rich",
+      "version": "15.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "safetensors@0.8.0",
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "sentencepiece@0.2.2",
+      "name": "sentencepiece",
+      "version": "0.2.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "setuptools@84.0.0",
+      "name": "setuptools",
+      "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "shellingham@1.5.4",
+      "name": "shellingham",
+      "version": "1.5.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "sympy@1.14.0",
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "tokenizers@0.22.2",
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "torch@2.13.0+cpu",
+      "name": "torch",
+      "version": "2.13.0+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "tqdm@4.70.0",
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "transformers@5.5.0",
+      "name": "transformers",
+      "version": "5.5.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "typer@0.27.1",
+      "name": "typer",
+      "version": "0.27.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "typing-extensions@4.16.0",
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "vokra-speecht5-tts-parity@0.1.0",
+      "name": "vokra-speecht5-tts-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    }
+  ],
+  "model_reviews": [
+    {
+      "id": "tts:microsoft/speecht5_tts@30fcde30f19b87502b8435427b5f5068e401d5f6",
+      "kind": "model",
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "tts-public:vokra/speecht5-tts@43cf6592038616d116a98fde4764d827ece59033",
+      "kind": "model",
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "vocoder:microsoft/speecht5_hifigan@bb6f429406e86a9992357a972c0698b22043307d",
+      "kind": "model",
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "source:transformers@5.5.0",
+      "kind": "source",
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    },
+    {
+      "id": "source:bin_to_safetensors",
+      "kind": "source",
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
+    }
+  ],
+  "approval_scope_sha256": "adcce6b31c1c30b5191529e6f404261b5fb64361837b1e1f1eb052578802e5db"
+}

@@ -2,7 +2,7 @@
 """Dump an independent official-Transformers SpeechT5 TTS reference.
 
 The numerical oracle is ``SpeechT5ForTextToSpeech.generate_speech`` from the
-pinned Transformers 4.45.2 package. Vokra code is never imported. The only
+pinned Transformers 5.5.0 package. Vokra code is never imported. The only
 injection is the decoder-prenet dropout mask: SpeechT5 deliberately keeps that
 dropout active during evaluation, so this tool supplies Vokra's documented
 SplitMix64 mask stream to the *official* prenet. All encoder, attention,
@@ -31,7 +31,7 @@ REFERENCE_IMPLEMENTATION = (
     "transformers.models.speecht5.modeling_speecht5."
     "SpeechT5ForTextToSpeech.generate_speech"
 )
-REFERENCE_PACKAGE = "transformers==4.45.2"
+REFERENCE_PACKAGE = "transformers==5.5.0"
 DETERMINISTIC_SEED = 0x5350_4545_4348_5435
 DEFAULT_TEXT = "The quick brown fox jumps over the lazy dog."
 SPEAKER_DIM = 512
@@ -255,7 +255,7 @@ def main() -> int:
 
     if transformers.__version__ != "5.5.0":
         raise RuntimeError(
-            f"transformers {transformers.__version__} != pinned 4.45.2"
+            f"transformers {transformers.__version__} != pinned 5.5.0"
         )
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)

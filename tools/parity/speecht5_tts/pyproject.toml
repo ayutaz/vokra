@@ -1,7 +1,7 @@
 [project]
 name = "vokra-speecht5-tts-parity"
 version = "0.1.0"
-description = "Pinned independent Transformers 4.45.2 SpeechT5 TTS parity oracle"
+description = "Pinned independent Transformers 5.5.0 SpeechT5 TTS parity oracle"
 requires-python = "==3.12.*"
 dependencies = [
     "huggingface-hub==1.27.0",

@@ -19,6 +19,17 @@ artifacts are hashed into the output. Missing imports, revision/shape drift,
 sidecar drift, a non-local snapshot, non-FP32 execution, or a non-CPU official
 reference aborts loudly.
 
+Before synchronization or any snapshot/download/build, the VAST worker runs
+the dependency-free `preflight_gate.py` against the exact `uv.lock` and
+`pyproject.toml` bytes. Its tracked manifest binds canonical version/source/
+marker/dependency rows, both fixed model revisions, the fixed reference-audio
+hash, and every version-keyed license/native/bundled-code review row. The
+production manifest intentionally remains `PENDING_REVIEW` with null signer
+and digest; the worker therefore exits 2 before `uv sync` until an authorized
+human review records an approval digest equal to the complete scope digest.
+The gate also rejects `UNRESOLVED` rows even if an approval-shaped value is
+later supplied.
+
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/qwen3_asr_real.rs` is environment-gated and uses the
 repository FP32 bound `atol=0.01` for projected audio. Greedy token ids,
@@ -46,13 +57,22 @@ all remote-host gates are satisfied:
 VOKRA_REMOTE_APPLE_SILICON=1 \
 scripts/verify/apple-silicon-qwen3-asr.sh \
   --gguf-0.6b /remote/stage/qwen3-asr-0.6b.gguf \
+  --gguf-0.6b-sha256 <sha256-from-vast-evidence> \
   --reference-0.6b /remote/stage/reference-0.6b \
+  --reference-0.6b-sha256 <manifest-sha256-from-vast-evidence> \
   --gguf-1.7b /remote/stage/qwen3-asr-1.7b.gguf \
+  --gguf-1.7b-sha256 <sha256-from-vast-evidence> \
   --reference-1.7b /remote/stage/reference-1.7b \
+  --reference-1.7b-sha256 <manifest-sha256-from-vast-evidence> \
   --evidence-dir /remote/evidence/qwen3-asr-metal
 ```
 
-It requires both per-variant PASS markers, records exact input hashes and the
-Apple hardware/toolchain identity, and performs no network or publication
-action. Pull only the evidence, then remove the staged model data or destroy
-the remote host.
+The VAST worker emits the same complete command in
+`evidence/apple-verifier-command.txt` when run with `--variant all`, including
+both GGUF paths/hashes, both reference paths/manifest hashes, and an evidence
+directory placeholder. Apple requires all four caller-supplied hashes, records
+both expected and actual reference manifest hashes, and verifies each reference
+manifest hash before inner payload hashes or Cargo. It requires both
+per-variant PASS markers and performs no network or publication action. Pull
+only the evidence, then remove the staged model data or destroy the remote
+host.

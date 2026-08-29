@@ -1,0 +1,862 @@
+{
+  "gate_version": 1,
+  "pyproject_sha256": "61260ea1e8ba4b71728bb77f05206b8f46a47548e51f17d8e06562d539b3f91e",
+  "lock_sha256": "0963b74466aeff12229900ee4c11c0a0fdbde2bcc8881e60ad3753641a47abcf",
+  "package_rows_sha256": "b0bb5a4f9f119e42f62d0d3809a0331f210c9159e98cc5c46578fad14f972b22",
+  "review_rows_sha256": "bcb7a13a2a1e3873b6098bae3cca47818ef621125508f1fc5b0d3a465a4e1b0d",
+  "component_rows_sha256": "8700cea9fac4646ae65925adbb0e11b4d41e859db4127c2abdb0ba518fe01019",
+  "approval_scope_sha256": "0dd63de64f49cca4a533315dc6ce9534ddd0ffbb7a1b088b67354ffccbf86eae",
+  "identities": {
+    "official_source_repo": "QwenLM/Qwen3-TTS",
+    "official_source_revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e",
+    "decoder_repo": "Qwen/Qwen3-TTS-Tokenizer-12Hz",
+    "decoder_revision": "a87c50897bb00837eb857d0538b29d117541d7f6",
+    "decoder_checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+    "variants": {
+      "0.6b-base": {
+        "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+        "config_bytes": 4494,
+        "config_sha256": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011"
+      },
+      "0.6b-customvoice": {
+        "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+        "config_bytes": 4908,
+        "config_sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
+      },
+      "1.7b-base": {
+        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+        "config_bytes": 4494,
+        "config_sha256": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9"
+      },
+      "1.7b-customvoice": {
+        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "revision": "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+        "config_bytes": 4908,
+        "config_sha256": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+      }
+    },
+    "common_assets": {
+      "vocab.json": {
+        "bytes": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      },
+      "merges.txt": {
+        "bytes": 1671839,
+        "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3"
+      },
+      "tokenizer_config.json": {
+        "bytes": 7344,
+        "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670"
+      },
+      "generation_config.json": {
+        "bytes": 245,
+        "sha256": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa"
+      }
+    }
+  },
+  "review_rows": [
+    {
+      "name": "accelerate",
+      "version": "1.12.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "certifi",
+      "version": "2026.7.22",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "cffi",
+      "version": "2.1.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "charset-normalizer",
+      "version": "3.5.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "colorama",
+      "version": "0.4.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "decorator",
+      "version": "5.3.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "einops",
+      "version": "0.8.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "filelock",
+      "version": "3.32.4",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "fsspec",
+      "version": "2026.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "hf-xet",
+      "version": "1.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "huggingface-hub",
+      "version": "0.36.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "idna",
+      "version": "3.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "jinja2",
+      "version": "3.1.6",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "joblib",
+      "version": "1.5.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "lazy-loader",
+      "version": "0.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "librosa",
+      "version": "1.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "llvmlite",
+      "version": "0.49.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "mpmath",
+      "version": "1.3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "msgpack",
+      "version": "1.2.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "narwhals",
+      "version": "2.25.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "networkx",
+      "version": "3.6.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "numba",
+      "version": "0.67.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "numpy",
+      "version": "2.5.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "packaging",
+      "version": "26.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "platformdirs",
+      "version": "4.11.5",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "pooch",
+      "version": "1.9.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "psutil",
+      "version": "7.2.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "pycparser",
+      "version": "3.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "pyyaml",
+      "version": "6.0.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "regex",
+      "version": "2026.7.19",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "requests",
+      "version": "2.34.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "safetensors",
+      "version": "0.8.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "scikit-learn",
+      "version": "1.9.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "scipy",
+      "version": "1.18.1",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "setuptools",
+      "version": "84.0.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "soundfile",
+      "version": "0.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "soxr",
+      "version": "1.1.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "sympy",
+      "version": "1.14.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "threadpoolctl",
+      "version": "3.6.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "tokenizers",
+      "version": "0.22.2",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "torch",
+      "version": "2.7.1",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "torch",
+      "version": "2.7.1+cpu",
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "torchaudio",
+      "version": "2.11.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "tqdm",
+      "version": "4.70.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "transformers",
+      "version": "4.57.3",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "urllib3",
+      "version": "2.7.0",
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "name": "vokra-qwen3-tts-parity",
+      "version": "0.1.0",
+      "source": {
+        "virtual": "."
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    }
+  ],
+  "component_rows": [
+    {
+      "component": "official_source",
+      "identity": {
+        "component": "official_source",
+        "kind": "source",
+        "repo": "QwenLM/Qwen3-TTS",
+        "revision": "022e286b98fbec7e1e916cb940cdf532cd9f488e"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "component": "decoder_tokenizer",
+      "identity": {
+        "component": "decoder_tokenizer",
+        "kind": "model",
+        "repo": "Qwen/Qwen3-TTS-Tokenizer-12Hz",
+        "revision": "a87c50897bb00837eb857d0538b29d117541d7f6",
+        "checkpoint_sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "component": "0.6b-base",
+      "identity": {
+        "component": "0.6b-base",
+        "kind": "model",
+        "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+        "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+        "config_bytes": 4494,
+        "config_sha256": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "component": "0.6b-customvoice",
+      "identity": {
+        "component": "0.6b-customvoice",
+        "kind": "model",
+        "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+        "config_bytes": 4908,
+        "config_sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "component": "1.7b-base",
+      "identity": {
+        "component": "1.7b-base",
+        "kind": "model",
+        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        "revision": "fd4b254389122332181a7c3db7f27e918eec64e3",
+        "config_bytes": 4494,
+        "config_sha256": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    },
+    {
+      "component": "1.7b-customvoice",
+      "identity": {
+        "component": "1.7b-customvoice",
+        "kind": "model",
+        "repo": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+        "revision": "0c0e3051f131929182e2c023b9537f8b1c68adfe",
+        "config_bytes": 4908,
+        "config_sha256": "17a07f527a1c25ea30b4e023a184482a23d3e279d697b1dc81b1bde498d29cf9"
+      },
+      "status": "UNRESOLVED",
+      "license": "UNRESOLVED",
+      "native_bundled": "UNRESOLVED",
+      "payload_sha256": null,
+      "approval_schema": "v1",
+      "approval_signer": null,
+      "approval_digest": null
+    }
+  ],
+  "forbidden_packages": [
+    "gradio",
+    "onnxruntime",
+    "protobuf",
+    "sox"
+  ],
+  "publication": "NO_UPLOAD"
+}

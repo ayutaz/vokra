@@ -1297,6 +1297,9 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     "xy_tokenizer": ["xy_tokenizer (`fnlp/XY_Tokenizer_TTSD_V0`)"],
     "bicodec": ["bicodec (`SparkAudio/Spark-TTS-0.5B` — spark-tts-bicodec)"],
+    "voice_gender_classifier": [
+        "voice-gender-classifier (`JaesungHuh/voice-gender-classifier`)"
+    ],
     # Single converter drives both the base and 2026-08-01 distill variant
     # via NeucodecVariant slug dispatch — both §3.1 rows must exist so the
     # check-converter-signoff.sh gate stays green after the distill row lands.

@@ -20,6 +20,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,11 @@ UPSTREAM_REPO = "fixie-ai/ultravox-v0_5-llama-3_2-1b"
 UPSTREAM_REVISION = "b95bec8ab291eeb04b5cd600dd473377f6b79026"
 COMPANION_REPO = "meta-llama/Llama-3.2-1B-Instruct"
 COMPANION_REVISION = "9213176726f574b556790deb65791e0c5aa438b6"
+PUBLIC_REPO = "vokra/ultravox-v0-5-llama-3-2-1b"
+PUBLIC_REVISION = "ddbbeec5bfcb09c71a1f88971b794e3e5da811f9"
+PUBLIC_FILENAME = "ultravox-v0-5-llama-3-2-1b.gguf"
+PUBLIC_FILE_BYTES = 1_366_275_264
+PUBLIC_FILE_SHA256 = "376c79a7219bb38fc6a857b0bd9ccf57daff878e7bb4723c4801000c0d7b8c9c"
 TRANSFORMERS_VERSION = "5.5.0"
 SAMPLE_RATE = 16_000
 SAMPLE_COUNT = 16_000
@@ -87,6 +93,56 @@ def require_revision(directory: Path, expected: str, label: str) -> None:
         die(f"{label} revision={actual!r}, expected {expected}")
 
 
+def require_snapshot_inventory(
+    directory: Path,
+    expected_repo: str,
+    expected_revision: str,
+    expected_files: set[str],
+    label: str,
+) -> dict[str, Any]:
+    """Verify the authenticated downloader's exact input closure before import."""
+    path = directory / ".vokra-source-inventory.json"
+    if not path.is_file():
+        die(f"{label} has no authenticated input inventory: {path}")
+    try:
+        inventory = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        die(f"{label} input inventory is invalid: {error}")
+    if inventory.get("repo") != expected_repo:
+        die(f"{label} inventory repo={inventory.get('repo')!r}, expected {expected_repo!r}")
+    if inventory.get("revision") != expected_revision:
+        die(
+            f"{label} inventory revision={inventory.get('revision')!r}, "
+            f"expected {expected_revision}"
+        )
+    files = inventory.get("files")
+    if not isinstance(files, dict) or set(files) != expected_files:
+        die(f"{label} inventory file closure is not exact: {files!r}")
+    for name, record in files.items():
+        local = record.get("local") if isinstance(record, dict) else None
+        remote = record.get("remote") if isinstance(record, dict) else None
+        if not isinstance(local, dict) or not isinstance(remote, dict):
+            die(f"{label} inventory entry {name!r} is incomplete")
+        verify_file(
+            directory / name,
+            int(local.get("bytes", -1)),
+            str(local.get("sha256", "")),
+        )
+        if not isinstance(remote.get("size"), int) or remote["size"] != local["bytes"]:
+            die(f"{label} remote/local size mismatch for {name}")
+        if name == "model.safetensors":
+            remote_sha = remote.get("lfs_sha256")
+            if not isinstance(remote_sha, str) or len(remote_sha) != 64:
+                die(f"{label} model.safetensors lacks authenticated LFS SHA-256")
+            if remote_sha != local["sha256"]:
+                die(f"{label} model.safetensors differs from authenticated LFS SHA-256")
+        else:
+            blob_id = remote.get("blob_id")
+            if not isinstance(blob_id, str) or len(blob_id) != 40:
+                die(f"{label} {name} lacks authenticated Git blob identity")
+    return inventory
+
+
 def require_public_snapshot(directory: Path) -> dict[str, Any]:
     require_revision(directory, UPSTREAM_REVISION, "Ultravox snapshot")
     for name, (size, digest) in CUSTOM_CODE.items():
@@ -101,6 +157,18 @@ def require_public_snapshot(directory: Path) -> dict[str, Any]:
         "tokenizer.json",
         "tokenizer_config.json",
     ]
+    require_snapshot_inventory(
+        directory,
+        UPSTREAM_REPO,
+        UPSTREAM_REVISION,
+        set(required + list(CUSTOM_CODE)),
+        "Ultravox snapshot",
+    )
+    verify_file(
+        directory / "model.safetensors",
+        PUBLIC_FILE_BYTES,
+        "f3a3bf7e9137f3219a0d27ba71668deeee8c60aaf0ea587b48d8f71178763f31",
+    )
     for name in required:
         path = directory / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -137,6 +205,13 @@ def require_public_snapshot(directory: Path) -> dict[str, Any]:
 
 def require_companion_snapshot(directory: Path) -> dict[str, Any]:
     require_revision(directory, COMPANION_REVISION, "Llama companion snapshot")
+    require_snapshot_inventory(
+        directory,
+        COMPANION_REPO,
+        COMPANION_REVISION,
+        {"config.json", "model.safetensors"},
+        "Llama companion snapshot",
+    )
     for name in ["config.json", "model.safetensors"]:
         path = directory / name
         if not path.is_file() or path.stat().st_size == 0:
@@ -220,15 +295,109 @@ def source_inventory(*directories: Path) -> dict[str, dict[str, object]]:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ultravox-dir", type=Path, required=True)
-    parser.add_argument("--companion-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--ultravox-dir", type=Path)
+    parser.add_argument("--companion-dir", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--max-new-tokens", type=int, default=4)
+    parser.add_argument("--self-test", action="store_true")
     return parser.parse_args(argv)
+
+
+def verify_reference_manifest(directory: Path) -> None:
+    """Recheck every emitted artifact hash, including the source inventory."""
+    manifest_path = directory / "manifest.txt"
+    if not manifest_path.is_file():
+        die(f"reference manifest is missing: {manifest_path}")
+    values: dict[str, str] = {}
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in values:
+            die(f"reference manifest is malformed near {line!r}")
+        values[key] = value
+    artifacts = [
+        "pcm.f32le",
+        "input_features.f32le",
+        "audio_embeddings.f32le",
+        "prompt_ids.u32le",
+        "next_logits.f32le",
+        "generated_ids.u32le",
+        "source_files.json",
+        "environment.json",
+    ]
+    for name in artifacts:
+        expected = values.get(f"sha256_{name.replace('.', '_')}")
+        if not expected:
+            die(f"reference manifest lacks hash for {name}")
+        actual = sha256_file(directory / name)
+        if actual != expected:
+            die(f"reference artifact {name} differs from its manifest hash")
+
+
+def self_test() -> int:
+    """Offline tamper checks for revision, source hash, and reference hashes."""
+    with tempfile.TemporaryDirectory(prefix="vokra-ultravox-reference-") as raw:
+        directory = Path(raw)
+        payload = directory / "payload"
+        payload.write_bytes(b"abc")
+        verify_file(payload, 3, hashlib.sha256(b"abc").hexdigest())
+        try:
+            verify_file(payload, 3, hashlib.sha256(b"tampered").hexdigest())
+        except SystemExit:
+            pass
+        else:
+            die("self-test accepted a tampered source hash")
+        stamp = directory / ".vokra-source-revision"
+        stamp.write_text(UPSTREAM_REVISION + "\n", encoding="utf-8")
+        require_revision(directory, UPSTREAM_REVISION, "self-test snapshot")
+        stamp.write_text("0" * 40 + "\n", encoding="utf-8")
+        try:
+            require_revision(directory, UPSTREAM_REVISION, "self-test snapshot")
+        except SystemExit:
+            pass
+        else:
+            die("self-test accepted a tampered revision")
+        artifacts = [
+            "pcm.f32le",
+            "input_features.f32le",
+            "audio_embeddings.f32le",
+            "prompt_ids.u32le",
+            "next_logits.f32le",
+            "generated_ids.u32le",
+            "source_files.json",
+            "environment.json",
+        ]
+        for name in artifacts:
+            (directory / name).write_bytes(b"\x00\x00\x00\x00")
+        manifest = directory / "manifest.txt"
+        manifest.write_text(
+            "".join(
+                f"sha256_{name.replace('.', '_')}={sha256_file(directory / name)}\n"
+                for name in artifacts
+            ),
+            encoding="utf-8",
+        )
+        verify_reference_manifest(directory)
+        (directory / "pcm.f32le").write_bytes(b"\x01\x00\x00\x00")
+        try:
+            verify_reference_manifest(directory)
+        except SystemExit:
+            pass
+        else:
+            die("self-test accepted a tampered reference hash")
+    print("dump_reference.py self-test: PASS", flush=True)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.self_test:
+        if args.ultravox_dir or args.companion_dir or args.output:
+            die("--self-test accepts no snapshot/output arguments")
+        return self_test()
+    if not args.ultravox_dir or not args.companion_dir or not args.output:
+        die("--ultravox-dir, --companion-dir, and --output are required")
     ultravox_dir = args.ultravox_dir.resolve()
     companion_dir = args.companion_dir.resolve()
     output = args.output.resolve()
@@ -454,6 +623,11 @@ def main(argv: list[str] | None = None) -> int:
         "upstream_revision": UPSTREAM_REVISION,
         "companion_repo": COMPANION_REPO,
         "companion_revision": COMPANION_REVISION,
+        "public_repo": PUBLIC_REPO,
+        "public_revision": PUBLIC_REVISION,
+        "public_filename": PUBLIC_FILENAME,
+        "public_file_bytes": PUBLIC_FILE_BYTES,
+        "public_file_sha256": PUBLIC_FILE_SHA256,
         "transformers_version": transformers.__version__,
         "torch_version": torch.__version__,
         "sample_rate": SAMPLE_RATE,
@@ -474,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
         "public_weights_sha256": sha256_file(ultravox_dir / "model.safetensors"),
         "companion_config_sha256": sha256_file(companion_dir / "config.json"),
         "companion_weights_sha256": sha256_file(companion_dir / "model.safetensors"),
+        "ultravox_inventory_sha256": sha256_file(ultravox_dir / ".vokra-source-inventory.json"),
+        "companion_inventory_sha256": sha256_file(companion_dir / ".vokra-source-inventory.json"),
         "source_ultravox_config_sha256": CUSTOM_CODE["ultravox_config.py"][1],
         "source_ultravox_model_sha256": CUSTOM_CODE["ultravox_model.py"][1],
         "source_ultravox_processing_sha256": CUSTOM_CODE["ultravox_processing.py"][1],
@@ -482,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in artifacts:
         manifest[f"sha256_{name.replace('.', '_')}"] = sha256_file(output / name)
     write_manifest(output / "manifest.txt", manifest)
+    verify_reference_manifest(output)
     print(
         f"ULTRAVOX_OFFICIAL_REFERENCE frames={audio_frames} audio_tokens={audio_token_len} "
         f"prompt_tokens={prompt_ids.numel()} generated_tokens={generated_ids.numel()} "
