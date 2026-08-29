@@ -123,6 +123,19 @@ def self_test() -> None:
     assert 'torch.device("cpu")' in source
     assert "torch." + "cuda" not in source
     assert '"cuda_device": None' in source
+    production = source[source.index("def main") :]
+    lines = production.splitlines()
+    cpu_env_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == 'os.environ["CUDA_VISIBLE_DEVICES"] = ""'
+    )
+    nemo_import_line = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "import " + "nemo"
+    )
+    assert cpu_env_line < nemo_import_line
     assert len(LANGUAGES) == 25
     assert len(set(LANGUAGES)) == 25
     for language in LANGUAGES:
@@ -173,6 +186,10 @@ def main() -> int:
             f"committed JFK fixture SHA-256 {audio_sha256} != pinned {JFK_SHA256}"
         )
 
+    # NeMo's ModelPT constructor probes CUDA during import/restore. This
+    # worker is a CPU oracle, so suppress that internal probe before imports;
+    # do not honor a caller-provided GPU visibility setting.
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     try:
         import nemo
         import numpy as np
@@ -206,6 +223,7 @@ def main() -> int:
         ),
         "device": str(device),
         "cuda_device": None,
+        "cuda_visible_devices": "",
     }
     print(json.dumps({"reference_environment": environment}, sort_keys=True), flush=True)
 
