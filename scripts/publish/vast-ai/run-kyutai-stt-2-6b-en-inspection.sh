@@ -32,13 +32,30 @@ self_test() {
     'tokenizer_en_audio_4000.model' 'b79ea52a30329887a2d0ce2dd5473a63fc5083e441e7986f64f01050c06239c9' \
     '6a93b7d998b32cb65f07e8948508004421042f100130c3572de13af5cab9e4f9' \
     'c8f5779f1471f34734aafe1999082ca33862bc5e' 'd25302da6650309c094d0cbf10cfecfb507c31408b820304bda0c3195482f990' \
-    '5618985925' 'model_info' 'list_repo_tree' 'git_blob_sha1' 'lfs_sha256' \
+    '5618985925' 'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' \
     '128' '32' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' \
     'evidence_stage' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NO_UPLOAD'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"; fail=1
     fi
   done
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"list_repo_tree\([^\n]*\)", source)
+if not calls:
+    raise SystemExit("Kyutai STT tree walk call missing")
+for call in calls:
+    if "path_in_repo=" not in call or re.search(r"(?<![A-Za-z0-9_])path=", call):
+        raise SystemExit(f"Kyutai STT tree walk has incompatible path keyword: {call}")
+PY
+  then
+    log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -123,7 +140,7 @@ while pending:
     if path in visited:
         continue
     visited.add(path)
-    for item in api.list_repo_tree(repository, revision=revision, path=path, recursive=False):
+    for item in api.list_repo_tree(repository, revision=revision, path_in_repo=path, recursive=False):
         item_path = getattr(item, "path", None)
         item_type = getattr(item, "type", None)
         if not isinstance(item_path, str) or item_type not in {"file", "directory"}:

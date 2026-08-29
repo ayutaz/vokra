@@ -16,9 +16,26 @@ die(){ log "ERROR: $*"; exit 2; }
 usage(){ echo 'usage: run-cosyvoice3-inspection.sh [--work-dir DIR] | --self-test'; }
 self_test(){
   local fail=0 token
-  for token in "$HF_REPO" "$HF_REV" "$SOURCE_REV" "$MATCHA_REV" 'git_blob_sha1' 'lfs_sha256' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'weights_only=True' 'CARGO_BUILD_JOBS=1'; do
+  for token in "$HF_REPO" "$HF_REV" "$SOURCE_REV" "$MATCHA_REV" 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'weights_only=True' 'CARGO_BUILD_JOBS=1'; do
     grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test missing $token"; fail=1; }
   done
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$0" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"list_repo_tree\([^\n]*\)", source)
+if not calls:
+    raise SystemExit("CosyVoice3 tree walk call missing")
+for call in calls:
+    if "path_in_repo=" not in call or re.search(r"(?<![A-Za-z0-9_])path=", call):
+        raise SystemExit(f"CosyVoice3 tree walk has incompatible path keyword: {call}")
+PY
+  then
+    log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+    fail=1
+  fi
   [[ -f "$PROJECT/pyproject.toml" && -f "$PROJECT/uv.lock" ]] || { log 'dedicated CosyVoice3 uv.lock absent; self-test deliberately blocked'; return 2; }
   grep -Eq '^[[:space:]]*(git[[:space:]]+push|hf_hub_upload|upload_file|convert)' "$0" && { log 'self-test publication/conversion command'; fail=1; } || true
   UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$PROJECT" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
@@ -66,7 +83,7 @@ while pending:
     p=pending.pop()
     if p in seen: continue
     seen.add(p)
-    for item in api.list_repo_tree(repo,revision=rev,path=p,recursive=False):
+    for item in api.list_repo_tree(repo,revision=rev,path_in_repo=p,recursive=False):
         path,typ=get(item,'path'),get(item,'type')
         if not isinstance(path,str) or typ not in ('file','directory'): raise RuntimeError('invalid HF tree entry')
         if typ=='directory': pending.append(path); continue

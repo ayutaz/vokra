@@ -42,13 +42,30 @@ self_test() {
     '3087131376' 'd677ab655d1916439c5868c819a0e48cdac574defab83c69b0bbc2b7b31a9f06' \
     'model.safetensors.index.json' 'model-36-of-36.safetensors' 'audio_detokenizer/model.pt' \
     'vocoder/model.pt' 'whisper-large-v3/model.safetensors' 'weights_only=True' \
-    'get_unsafe_globals_in_checkpoint' 'server_tree' 'item.lfs' 'lfs_sha256' 'blob_id' 'resolved_origin' 'status": "BLOCKED"' \
+    'get_unsafe_globals_in_checkpoint' 'server_tree' 'item.lfs' 'lfs_sha256' 'blob_id' 'path_in_repo' 'resolved_origin' 'status": "BLOCKED"' \
     'evidence_stage' 'INSPECTION_ONLY' 'NO_UPLOAD' 'cargo fmt --all -- --check'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
     fi
   done
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"list_repo_tree\([^\n]*\)", source)
+if not calls:
+    raise SystemExit("Kimi-Audio tree walk call missing")
+for call in calls:
+    if "path_in_repo=" not in call or re.search(r"(?<![A-Za-z0-9_])path=", call):
+        raise SystemExit(f"Kimi-Audio tree walk has incompatible path keyword: {call}")
+PY
+  then
+    log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'
     fail=1
@@ -133,7 +150,7 @@ if info.sha != revision:
     raise RuntimeError(f"HF revision resolved {info.sha!r}, expected {revision!r}")
 rows = []
 def walk(path=""):
-    for item in api.list_repo_tree(repository, revision=revision, path=path, recursive=False):
+    for item in api.list_repo_tree(repository, revision=revision, path_in_repo=path, recursive=False):
         item_path = getattr(item, "path", None)
         item_type = getattr(item, "type", None)
         if not item_path:

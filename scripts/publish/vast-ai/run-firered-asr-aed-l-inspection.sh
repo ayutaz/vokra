@@ -25,11 +25,28 @@ self_test() {
     'FireRedASR.git' '834635e4cf277ed8ca92049fc375b17c3dc20748' \
     'model.pth.tar' '12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3' \
     'train_bpe1000.model' '473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07' \
-    'model_info' 'list_repo_tree' 'git_blob_sha1' 'lfs_sha256' 'weights_only=True' \
+    'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' 'weights_only=True' \
     '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status'; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
   done
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"list_repo_tree\([^\n]*\)", source)
+if not calls:
+    raise SystemExit("FireRedASR tree walk call missing")
+for call in calls:
+    if "path_in_repo=" not in call or re.search(r"(?<![A-Za-z0-9_])path=", call):
+        raise SystemExit(f"FireRedASR tree walk has incompatible path keyword: {call}")
+PY
+  then
+    log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -96,7 +113,7 @@ while pending:
     path=pending.pop()
     if path in visited: continue
     visited.add(path)
-    for item in api.list_repo_tree(repo, revision=rev, path=path, recursive=False):
+    for item in api.list_repo_tree(repo, revision=rev, path_in_repo=path, recursive=False):
         item_path=getattr(item,"path",None); item_type=getattr(item,"type",None)
         if not isinstance(item_path,str) or item_type not in {"file","directory"}: raise RuntimeError(f"invalid HF entry {item!r}")
         if item_type=="directory": pending.append(item_path); continue

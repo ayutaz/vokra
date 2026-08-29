@@ -31,9 +31,26 @@ license_audit_preflight(){
 }
 self_test(){
  local fail=0 token
- for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.6.0+cpu' '83879e5e0a3d16c550df9a13134c9f3cbe44e5869afe54674c28be72b5cdec37' 'f5cfab32caf3cc2340b434c1e9e0d3f8dbbab73a519925fbb6f08457c03e7e98' 'package_rows' 'license_conclusions'; do
+ for token in 'ResembleAI/chatterbox' '5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18' 'ResembleAI/chatterbox-nano' '71ccd1d0081b430592cea481f4307e764e07bc64' 'ResembleAI/chatterbox-turbo' '749d1c1a46eb10492095d68fbcf55691ccf137cd' '5de7a54aa4e5e2baadb0182dde554908b48b85c2' 'SOURCE_ROLE_BLOBS' 'git_blob_sha1' 'lfs_sha256' 'path_in_repo' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'INSPECTION_ERROR' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'NO_UPLOAD' 'CARGO_BUILD_JOBS=1' 'chatterbox_t3/pyproject.toml' 'uv.lock' '--license-audit' 'BLOCKED_UNRESOLVED' 'https://download.pytorch.org/whl/cpu' '2.6.0+cpu' '83879e5e0a3d16c550df9a13134c9f3cbe44e5869afe54674c28be72b5cdec37' 'f5cfab32caf3cc2340b434c1e9e0d3f8dbbab73a519925fbb6f08457c03e7e98' 'package_rows' 'license_conclusions'; do
   grep -Fq -- "$token" "$INSPECTOR" "$0" || { log "self-test FAIL missing $token"; fail=1; }
  done
+ if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$0" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+calls = re.findall(r"list_repo_tree\([^\n]*\)", source)
+if not calls:
+    raise SystemExit("Chatterbox tree walk call missing")
+for call in calls:
+    if "path_in_repo=" not in call or re.search(r"(?<![A-Za-z0-9_])path=", call):
+        raise SystemExit(f"Chatterbox tree walk has incompatible path keyword: {call}")
+PY
+ then
+  log 'self-test FAIL: frozen HfApi.list_repo_tree path_in_repo contract regression'
+  fail=1
+ fi
  grep -Eq '^[[:space:]]*(git[[:space:]]+push|hf_hub_upload|upload_file)' "$0" && { log 'self-test FAIL publication command'; fail=1; } || true
  UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
  (( fail == 0 )) || return 1
@@ -83,7 +100,7 @@ while pending:
  p=pending.pop()
  if p in seen: continue
  seen.add(p)
- for item in api.list_repo_tree(repo,revision=rev,path=p,recursive=False):
+ for item in api.list_repo_tree(repo,revision=rev,path_in_repo=p,recursive=False):
   typ=get(item,'type'); path=get(item,'path')
   if not isinstance(path,str) or typ not in {'file','directory'}: raise RuntimeError('invalid tree item')
   if typ=='directory': pending.append(path); continue
