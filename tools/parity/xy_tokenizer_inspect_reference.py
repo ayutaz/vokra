@@ -212,8 +212,15 @@ def parse_config(text: str) -> dict[str, Any]:
         value = yaml.load(text, Loader=StrictYamlLoader)
     except yaml.YAMLError as error:
         raise ValueError(f"strict YAML parse failed: {error}") from error
-    if not isinstance(value, dict) or set(value) != {"audio_tokenizer"}:
+    if not isinstance(value, dict) or set(value) != {"sample_rate", "generator_params"}:
         raise ValueError("config schema is not canonical")
+    if (
+        isinstance(value["sample_rate"], bool)
+        or not isinstance(value["sample_rate"], int)
+        or value["sample_rate"] != 16_000
+        or not isinstance(value["generator_params"], dict)
+    ):
+        raise ValueError("config sample_rate/generator_params envelope is not canonical")
     # The fixed config bytes are authenticated, but no independently reviewed
     # topology extraction is present in this checkout. Preserve the parsed
     # bytes for evidence while carrying the blocker; never promote guessed
@@ -442,25 +449,38 @@ def self_test() -> None:
     }
     assert SELECTED_MODEL_FILES == {".gitattributes", "README.md", "xy_tokenizer.ckpt"}
     assert CONFIG_RELATIVE.as_posix() not in SELECTED_MODEL_FILES
-    config_data = parse_config("audio_tokenizer: {}\n")
+    config_data = parse_config("sample_rate: 16000\ngenerator_params: {}\n")
     assert config_data["topology_status"] == TOPOLOGY_UNVERIFIED_BLOCKER
     anchored = parse_config(
-        "audio_tokenizer:\n  sample_rate: &sample_rate 16000\n  hop_length: *sample_rate\n"
+        "sample_rate: &sample_rate 16000\ngenerator_params:\n  sample_rate: *sample_rate\n"
     )
-    assert anchored["raw"]["audio_tokenizer"] == {"sample_rate": 16000, "hop_length": 16000}
+    assert anchored["raw"] == {"sample_rate": 16000, "generator_params": {"sample_rate": 16000}}
     try:
-        parse_config("audio_tokenizer: {}\naudio_tokenizer: {}\n")
+        parse_config("sample_rate: 16000\nsample_rate: 16000\ngenerator_params: {}\n")
     except ValueError:
         pass
     else:
         raise AssertionError("duplicate YAML key was accepted")
+    for invalid_schema in (
+        "audio_tokenizer: {}\n",
+        "sample_rate: 16000\n",
+        "sample_rate: 16000\ngenerator_params: []\n",
+        "sample_rate: 8000\ngenerator_params: {}\n",
+        "sample_rate: 16000\ngenerator_params: {}\nextra: false\n",
+    ):
+        try:
+            parse_config(invalid_schema)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-canonical XY-Tokenizer config schema was accepted")
     for unsafe_yaml in (
-        "audio_tokenizer: &alias {}\n",
+        "sample_rate: &alias {}\ngenerator_params: {}\n",
         "audio_tokenizer: !custom {}\n",
-        "audio_tokenizer:\n  first: &value 1\n  second: &value 2\n",
-        "audio_tokenizer:\n  second: *missing\n",
-        "audio_tokenizer:\n  first: &value {nested: 1}\n  second: *value\n",
-        "audio_tokenizer:\n  first: &value [*value]\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value 1\n  second: &value 2\n",
+        "sample_rate: 16000\ngenerator_params:\n  second: *missing\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value {nested: 1}\n  second: *value\n",
+        "sample_rate: 16000\ngenerator_params:\n  first: &value [*value]\n",
         "<<: {audio_tokenizer: {}}\n",
     ):
         try:
