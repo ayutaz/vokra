@@ -1,0 +1,1171 @@
+{
+  "approval_scope_sha256": "50948bb28d02a01ad2e1f754052a6e1b8ff8b1bf9f90dd9c525a1c464de58001",
+  "component_reviews": [
+    {
+      "approval_digest": null,
+      "id": "source:OpenMOSS/MOSS-Audio@5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
+      "identity": {
+        "files": {
+          "src/configuration_moss_audio.py": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
+          "src/modeling_moss_audio.py": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
+          "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6"
+        },
+        "license": {
+          "blob_sha256": null,
+          "path": "LICENSE",
+          "payload_sha256": null
+        },
+        "license_spdx": null,
+        "repo": "OpenMOSS/MOSS-Audio",
+        "revision": "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
+        "source_file_contract": [
+          {
+            "bytes": null,
+            "git_blob_sha1": null,
+            "path": "src/configuration_moss_audio.py",
+            "role": "configuration",
+            "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "git_blob_sha1": null,
+            "path": "src/modeling_moss_audio.py",
+            "role": "modeling",
+            "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "git_blob_sha1": null,
+            "path": "src/processing_moss_audio.py",
+            "role": "processing",
+            "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "git_blob_sha1": null,
+            "path": "LICENSE",
+            "role": "license",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          }
+        ]
+      },
+      "kind": "source",
+      "license": null,
+      "payload_sha256": null,
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "model:OpenMOSS-Team/MOSS-Audio-4B-Instruct@6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
+      "identity": {
+        "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
+        "license": {
+          "path": "LICENSE",
+          "payload_sha256": null
+        },
+        "license_spdx": null,
+        "model_name": "moss-audio-4b-instruct",
+        "processor_config_sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+        "repo": "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
+        "revision": "6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
+        "snapshot_files": [
+          {
+            "bytes": null,
+            "path": "config.json",
+            "role": "config",
+            "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": 5404,
+            "path": "tokenizer_config.json",
+            "role": "tokenizer",
+            "sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 426,
+            "path": "processor_config.json",
+            "role": "processor",
+            "sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 3383407,
+            "path": "vocab.json",
+            "role": "common_asset",
+            "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 1671853,
+            "path": "merges.txt",
+            "role": "common_asset",
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 4116,
+            "path": "chat_template.jinja",
+            "role": "common_asset",
+            "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 121,
+            "path": "generation_config.json",
+            "role": "common_asset",
+            "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": null,
+            "path": "model.safetensors.index.json",
+            "role": "checkpoint_index",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
+            "role": "checkpoint_shard",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "LICENSE",
+            "role": "license",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          }
+        ],
+        "tokenizer_config_sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0"
+      },
+      "kind": "model",
+      "license": null,
+      "payload_sha256": null,
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "model:OpenMOSS-Team/MOSS-Audio-8B-Instruct@6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
+      "identity": {
+        "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
+        "license": {
+          "path": "LICENSE",
+          "payload_sha256": null
+        },
+        "license_spdx": null,
+        "model_name": "moss-audio-8b-instruct",
+        "processor_config_sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+        "repo": "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
+        "revision": "6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
+        "snapshot_files": [
+          {
+            "bytes": null,
+            "path": "config.json",
+            "role": "config",
+            "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": 6114,
+            "path": "tokenizer_config.json",
+            "role": "tokenizer",
+            "sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 427,
+            "path": "processor_config.json",
+            "role": "processor",
+            "sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 3383407,
+            "path": "vocab.json",
+            "role": "common_asset",
+            "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 1671853,
+            "path": "merges.txt",
+            "role": "common_asset",
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 4116,
+            "path": "chat_template.jinja",
+            "role": "common_asset",
+            "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 121,
+            "path": "generation_config.json",
+            "role": "common_asset",
+            "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": null,
+            "path": "model.safetensors.index.json",
+            "role": "checkpoint_index",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
+            "role": "checkpoint_shard",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "LICENSE",
+            "role": "license",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          }
+        ],
+        "tokenizer_config_sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41"
+      },
+      "kind": "model",
+      "license": null,
+      "payload_sha256": null,
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "public-license:moss-audio-4b-instruct",
+      "identity": {
+        "artifact": "moss-audio-4b-instruct",
+        "license_payload_sha256": null,
+        "license_spdx": null
+      },
+      "kind": "public_artifact",
+      "license": null,
+      "payload_sha256": null,
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    },
+    {
+      "approval_digest": null,
+      "id": "public-license:moss-audio-8b-instruct",
+      "identity": {
+        "artifact": "moss-audio-8b-instruct",
+        "license_payload_sha256": null,
+        "license_spdx": null
+      },
+      "kind": "public_artifact",
+      "license": null,
+      "payload_sha256": null,
+      "signer": null,
+      "status": "PENDING_REVIEW"
+    }
+  ],
+  "dependency_reviews": [
+    {
+      "bundled_review": null,
+      "id": "accelerate@1.12.0",
+      "license": null,
+      "name": "accelerate",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.12.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "annotated-doc@0.0.5",
+      "license": null,
+      "name": "annotated-doc",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.0.5"
+    },
+    {
+      "bundled_review": null,
+      "id": "anyio@4.14.2",
+      "license": null,
+      "name": "anyio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.14.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "certifi@2026.7.22",
+      "license": null,
+      "name": "certifi",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.22"
+    },
+    {
+      "bundled_review": null,
+      "id": "cffi@2.1.1",
+      "license": null,
+      "name": "cffi",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.1.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "charset-normalizer@3.5.1",
+      "license": null,
+      "name": "charset-normalizer",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.5.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "click@8.5.0",
+      "license": null,
+      "name": "click",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "8.5.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "colorama@0.4.6",
+      "license": null,
+      "name": "colorama",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.4.6"
+    },
+    {
+      "bundled_review": null,
+      "id": "einops@0.8.1",
+      "license": null,
+      "name": "einops",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.8.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "filelock@3.32.4",
+      "license": null,
+      "name": "filelock",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.32.4"
+    },
+    {
+      "bundled_review": null,
+      "id": "fsspec@2026.7.0",
+      "license": null,
+      "name": "fsspec",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "h11@0.16.0",
+      "license": null,
+      "name": "h11",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.16.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "hf-xet@1.6.0",
+      "license": null,
+      "name": "hf-xet",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.6.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "httpcore@1.0.9",
+      "license": null,
+      "name": "httpcore",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.0.9"
+    },
+    {
+      "bundled_review": null,
+      "id": "httpx@0.28.1",
+      "license": null,
+      "name": "httpx",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.28.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "huggingface-hub@1.29.0",
+      "license": null,
+      "name": "huggingface-hub",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.29.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "idna@3.19",
+      "license": null,
+      "name": "idna",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.19"
+    },
+    {
+      "bundled_review": null,
+      "id": "jinja2@3.1.6",
+      "license": null,
+      "name": "jinja2",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.1.6"
+    },
+    {
+      "bundled_review": null,
+      "id": "markdown-it-py@4.2.0",
+      "license": null,
+      "name": "markdown-it-py",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.2.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "markupsafe@3.0.3",
+      "license": null,
+      "name": "markupsafe",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.0.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "mdurl@0.1.2",
+      "license": null,
+      "name": "mdurl",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "mpmath@1.3.0",
+      "license": null,
+      "name": "mpmath",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "networkx@3.6.1",
+      "license": null,
+      "name": "networkx",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.6.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "numpy@2.3.5",
+      "license": null,
+      "name": "numpy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.3.5"
+    },
+    {
+      "bundled_review": null,
+      "id": "packaging@26.3",
+      "license": null,
+      "name": "packaging",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "26.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "psutil@7.2.2",
+      "license": null,
+      "name": "psutil",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "7.2.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "pycparser@3.0",
+      "license": null,
+      "name": "pycparser",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "3.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "pygments@2.21.0",
+      "license": null,
+      "name": "pygments",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.21.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "pyyaml@6.0.3",
+      "license": null,
+      "name": "pyyaml",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "6.0.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "regex@2026.7.19",
+      "license": null,
+      "name": "regex",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2026.7.19"
+    },
+    {
+      "bundled_review": null,
+      "id": "requests@2.34.2",
+      "license": null,
+      "name": "requests",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.34.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "rich@15.0.0",
+      "license": null,
+      "name": "rich",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "15.0.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "safetensors@0.7.0",
+      "license": null,
+      "name": "safetensors",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "scipy@1.16.3",
+      "license": null,
+      "name": "scipy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.16.3"
+    },
+    {
+      "bundled_review": null,
+      "id": "setuptools@84.0.0",
+      "license": null,
+      "name": "setuptools",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "84.0.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "shellingham@1.5.4",
+      "license": null,
+      "name": "shellingham",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.5.4"
+    },
+    {
+      "bundled_review": null,
+      "id": "soundfile@0.13.1",
+      "license": null,
+      "name": "soundfile",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.13.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "sympy@1.14.0",
+      "license": null,
+      "name": "sympy",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "1.14.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "tiktoken@0.12.0",
+      "license": null,
+      "name": "tiktoken",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.12.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "tokenizers@0.22.2",
+      "license": null,
+      "name": "tokenizers",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.22.2"
+    },
+    {
+      "bundled_review": null,
+      "id": "torch@2.9.1",
+      "license": null,
+      "name": "torch",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "torch@2.9.1+cpu",
+      "license": null,
+      "name": "torch",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1+cpu"
+    },
+    {
+      "bundled_review": null,
+      "id": "torchaudio@2.9.1",
+      "license": null,
+      "name": "torchaudio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "torchaudio@2.9.1+cpu",
+      "license": null,
+      "name": "torchaudio",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://download.pytorch.org/whl/cpu"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.9.1+cpu"
+    },
+    {
+      "bundled_review": null,
+      "id": "tqdm@4.70.0",
+      "license": null,
+      "name": "tqdm",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.70.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "transformers@5.5.0",
+      "license": null,
+      "name": "transformers",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "5.5.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "typer@0.27.1",
+      "license": null,
+      "name": "typer",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.27.1"
+    },
+    {
+      "bundled_review": null,
+      "id": "typing-extensions@4.16.0",
+      "license": null,
+      "name": "typing-extensions",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "4.16.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "urllib3@2.7.0",
+      "license": null,
+      "name": "urllib3",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "registry": "https://pypi.org/simple"
+      },
+      "status": "PENDING_REVIEW",
+      "version": "2.7.0"
+    },
+    {
+      "bundled_review": null,
+      "id": "vokra-moss-audio-parity@0.1.0",
+      "license": null,
+      "name": "vokra-moss-audio-parity",
+      "native_review": null,
+      "payload_sha256": null,
+      "source": {
+        "virtual": "."
+      },
+      "status": "PENDING_REVIEW",
+      "version": "0.1.0"
+    }
+  ],
+  "dependency_reviews_sha256": "7a5c52c6a9cfb3e8173e1e9a0db7f7c0e3a033e7cf1629cfcfbc13b6cde6f9a5",
+  "fixed_identities": {
+    "common_assets": {
+      "chat_template.jinja": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+      "generation_config.json": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+      "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+      "vocab.json": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d"
+    },
+    "source": {
+      "files": {
+        "src/configuration_moss_audio.py": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
+        "src/modeling_moss_audio.py": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
+        "src/processing_moss_audio.py": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6"
+      },
+      "license": {
+        "blob_sha256": null,
+        "path": "LICENSE",
+        "payload_sha256": null
+      },
+      "license_spdx": null,
+      "repo": "OpenMOSS/MOSS-Audio",
+      "revision": "5cbb1d823937cd5b5de3d8fa4d3a7253ebd3b883",
+      "source_file_contract": [
+        {
+          "bytes": null,
+          "git_blob_sha1": null,
+          "path": "src/configuration_moss_audio.py",
+          "role": "configuration",
+          "sha256": "e597dca441ff7fb58a5ec43186fafdfce19f31dada4955b4910059baa5d52ebd",
+          "status": "UNRESOLVED"
+        },
+        {
+          "bytes": null,
+          "git_blob_sha1": null,
+          "path": "src/modeling_moss_audio.py",
+          "role": "modeling",
+          "sha256": "a52513e518c68a0ba7c636a1ab0e12f7755ceebd0ae033235dc5e2551bfcbf9c",
+          "status": "UNRESOLVED"
+        },
+        {
+          "bytes": null,
+          "git_blob_sha1": null,
+          "path": "src/processing_moss_audio.py",
+          "role": "processing",
+          "sha256": "05fb788cbdc6482eded8d70f7d2f524bc0cdca47d001acab5661c11f02cc6fe6",
+          "status": "UNRESOLVED"
+        },
+        {
+          "bytes": null,
+          "git_blob_sha1": null,
+          "path": "LICENSE",
+          "role": "license",
+          "sha256": null,
+          "status": "UNRESOLVED"
+        }
+      ]
+    },
+    "variants": {
+      "4b": {
+        "config_sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
+        "license": {
+          "path": "LICENSE",
+          "payload_sha256": null
+        },
+        "license_spdx": null,
+        "model_name": "moss-audio-4b-instruct",
+        "processor_config_sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+        "repo": "OpenMOSS-Team/MOSS-Audio-4B-Instruct",
+        "revision": "6907a499dc0e87cc77c8ae0fe23fd0eb5476a02d",
+        "snapshot_files": [
+          {
+            "bytes": null,
+            "path": "config.json",
+            "role": "config",
+            "sha256": "e528a941446f4443f1b9fede12ea484e58a79d494c28d21ef1e73b5148abfbfa",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": 5404,
+            "path": "tokenizer_config.json",
+            "role": "tokenizer",
+            "sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 426,
+            "path": "processor_config.json",
+            "role": "processor",
+            "sha256": "0749d81701d2a2a2e83ca4d549fbebb1a205acac1ac7bdccea7965c1913b2cbf",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 3383407,
+            "path": "vocab.json",
+            "role": "common_asset",
+            "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 1671853,
+            "path": "merges.txt",
+            "role": "common_asset",
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 4116,
+            "path": "chat_template.jinja",
+            "role": "common_asset",
+            "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 121,
+            "path": "generation_config.json",
+            "role": "common_asset",
+            "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": null,
+            "path": "model.safetensors.index.json",
+            "role": "checkpoint_index",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
+            "role": "checkpoint_shard",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "LICENSE",
+            "role": "license",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          }
+        ],
+        "tokenizer_config_sha256": "443bfa629eb16387a12edbf92a76f6a6f10b2af3b53d87ba1550adfcf45f7fa0"
+      },
+      "8b": {
+        "config_sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
+        "license": {
+          "path": "LICENSE",
+          "payload_sha256": null
+        },
+        "license_spdx": null,
+        "model_name": "moss-audio-8b-instruct",
+        "processor_config_sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+        "repo": "OpenMOSS-Team/MOSS-Audio-8B-Instruct",
+        "revision": "6521a39181b47a18f2d9f4b3acfb5bca7b76b57f",
+        "snapshot_files": [
+          {
+            "bytes": null,
+            "path": "config.json",
+            "role": "config",
+            "sha256": "535154c2a5bcbd0e18e2f92bcf370ac74b530eec97ad4fd9317993ba0a316536",
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": 6114,
+            "path": "tokenizer_config.json",
+            "role": "tokenizer",
+            "sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 427,
+            "path": "processor_config.json",
+            "role": "processor",
+            "sha256": "6a5c462858acb299db0d2d967b63d520b72d178f44d1619c33fc860f25fdccbf",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 3383407,
+            "path": "vocab.json",
+            "role": "common_asset",
+            "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 1671853,
+            "path": "merges.txt",
+            "role": "common_asset",
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 4116,
+            "path": "chat_template.jinja",
+            "role": "common_asset",
+            "sha256": "87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": 121,
+            "path": "generation_config.json",
+            "role": "common_asset",
+            "sha256": "bb52bfdd308deaea4ec800bf0165e75770b0a4e5c105963bee1b0398f4043d3e",
+            "status": "REVIEWED"
+          },
+          {
+            "bytes": null,
+            "path": "model.safetensors.index.json",
+            "role": "checkpoint_index",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "__UNRESOLVED_CHECKPOINT_SHARD__",
+            "role": "checkpoint_shard",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          },
+          {
+            "bytes": null,
+            "path": "LICENSE",
+            "role": "license",
+            "sha256": null,
+            "status": "UNRESOLVED"
+          }
+        ],
+        "tokenizer_config_sha256": "0869e41f5d123ff144a811f0d83c5d18871dcd4b4064f46bf9def194bfbc6f41"
+      }
+    }
+  },
+  "gate_version": 1,
+  "lock_sha256": "f26e7504e980c5a62fdcb1bd2ed1d9726da09c839cb9f251412b4d4145fbd59f",
+  "no_upload": "NO_UPLOAD",
+  "operator_approval": {
+    "decision": "PENDING_REVIEW",
+    "digest": null,
+    "signer": null
+  },
+  "package_rows_sha256": "91a9293c167cb9204b81ced5d67d2c221a7b577efbad7404d2171952f90038ea",
+  "pyproject_sha256": "d321bfae5af886eb9ef0fc2fd3696c425c77c5c247353957e05317ab1efb43d0"
+}

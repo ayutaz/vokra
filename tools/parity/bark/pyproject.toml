@@ -1,7 +1,7 @@
 [project]
 name = "vokra-bark-parity"
 version = "0.1.0"
-description = "Pinned independent Transformers 4.31.0 Bark reference; VAST only"
+description = "Pinned independent Transformers 5.5.0 Bark reference; VAST only"
 requires-python = "==3.12.*"
 dependencies = [
     "huggingface-hub==1.27.0",

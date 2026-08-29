@@ -114,6 +114,115 @@ fn error_metrics(actual: &[f32], expected: &[f32], label: &str) -> (f32, f64) {
     (max_abs, (squared_error / actual.len() as f64).sqrt())
 }
 
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn compare_metal_with_cpu(
+    prefix: &str,
+    gguf_path: &Path,
+    expected_variant: ParlerVariant,
+    description: &[u32],
+    prompt: &[u32],
+    expected_hidden: &[f32],
+    expected_codes: &[u32],
+    expected_pcm: &[f32],
+    frames: usize,
+    official_packet: &ParlerGeneratedCodes,
+    metal_hidden: &[f32],
+    metal_generated: &ParlerGeneratedCodes,
+    metal_official_pcm: &[f32],
+    metal_end_to_end_pcm: &[f32],
+) {
+    let cpu_model = ParlerModel::open_mapped_with_backend(gguf_path, BackendKind::Cpu)
+        .expect("strict CPU mapping for direct Parler Metal-vs-CPU comparison");
+    assert_eq!(cpu_model.variant(), expected_variant);
+
+    let cpu_hidden = cpu_model
+        .encode_description(description, None)
+        .expect("native Parler CPU T5 encoding for Metal-vs-CPU comparison");
+    let (cpu_hidden_max_abs, cpu_hidden_rmse) =
+        error_metrics(&cpu_hidden, expected_hidden, "CPU FLAN-T5 hidden state");
+    assert!(
+        cpu_hidden_max_abs <= TEXT_HIDDEN_ATOL,
+        "Parler {prefix} CPU T5 max_abs={cpu_hidden_max_abs}, rmse={cpu_hidden_rmse}, exceeding {TEXT_HIDDEN_ATOL}"
+    );
+    let (hidden_max_abs, hidden_rmse) = error_metrics(
+        &cpu_hidden,
+        metal_hidden,
+        "CPU-vs-Metal FLAN-T5 hidden state",
+    );
+    assert!(
+        hidden_max_abs <= TEXT_HIDDEN_ATOL,
+        "Parler {prefix} CPU-vs-Metal T5 max_abs={hidden_max_abs}, rmse={hidden_rmse}, exceeding {TEXT_HIDDEN_ATOL}"
+    );
+
+    let cpu_generated = cpu_model
+        .generate_codes(
+            description,
+            None,
+            prompt,
+            &ParlerGenerationConfig::greedy(MAX_FRAMES),
+        )
+        .expect("native Parler CPU greedy generation for Metal-vs-CPU comparison");
+    assert_eq!(
+        cpu_generated.as_frame_major(),
+        expected_codes,
+        "Parler {prefix} CPU generated packet differs from the official oracle"
+    );
+    assert_eq!(
+        cpu_generated.as_frame_major(),
+        metal_generated.as_frame_major(),
+        "Parler {prefix} CPU and Metal generated code packets differ"
+    );
+
+    let cpu_official_pcm = cpu_model
+        .decode_codes(official_packet)
+        .expect("native Parler CPU decode of the official packet");
+    let (official_max_abs, official_rmse) = error_metrics(
+        &cpu_official_pcm.samples,
+        metal_official_pcm,
+        "CPU-vs-Metal official PCM",
+    );
+    assert!(
+        official_max_abs <= PCM_ATOL,
+        "Parler {prefix} CPU-vs-Metal official PCM max_abs={official_max_abs}, rmse={official_rmse}, exceeding {PCM_ATOL}"
+    );
+    let (official_cpu_max_abs, official_cpu_rmse) = error_metrics(
+        &cpu_official_pcm.samples,
+        expected_pcm,
+        "CPU official-packet PCM",
+    );
+    assert!(
+        official_cpu_max_abs <= PCM_ATOL,
+        "Parler {prefix} CPU official-packet PCM max_abs={official_cpu_max_abs}, rmse={official_cpu_rmse}, exceeding {PCM_ATOL}"
+    );
+
+    let cpu_end_to_end_pcm = cpu_model
+        .decode_codes(&cpu_generated)
+        .expect("native Parler CPU end-to-end decode");
+    let (end_to_end_max_abs, end_to_end_rmse) = error_metrics(
+        &cpu_end_to_end_pcm.samples,
+        metal_end_to_end_pcm,
+        "CPU-vs-Metal end-to-end PCM",
+    );
+    assert!(
+        end_to_end_max_abs <= PCM_ATOL,
+        "Parler {prefix} CPU-vs-Metal end-to-end PCM max_abs={end_to_end_max_abs}, rmse={end_to_end_rmse}, exceeding {PCM_ATOL}"
+    );
+    let (end_to_end_cpu_max_abs, end_to_end_cpu_rmse) = error_metrics(
+        &cpu_end_to_end_pcm.samples,
+        expected_pcm,
+        "CPU end-to-end PCM",
+    );
+    assert!(
+        end_to_end_cpu_max_abs <= PCM_ATOL,
+        "Parler {prefix} CPU end-to-end PCM max_abs={end_to_end_cpu_max_abs}, rmse={end_to_end_cpu_rmse}, exceeding {PCM_ATOL}"
+    );
+    eprintln!(
+        "PARLER_APPLE_PARITY variant={} metal_vs_cpu=PASS",
+        prefix.to_ascii_lowercase()
+    );
+    assert_eq!(official_packet.frames(), frames);
+}
+
 fn run_variant(prefix: &str, expected_variant: ParlerVariant) {
     let Some((gguf_path, reference_dir)) = parity_paths(prefix) else {
         return;
@@ -158,7 +267,7 @@ fn run_variant(prefix: &str, expected_variant: ParlerVariant) {
         "Parler {prefix} {backend:?} frame-major code packet differs from the official oracle"
     );
 
-    let official_packet = ParlerGeneratedCodes::from_frame_major(expected_codes, frames)
+    let official_packet = ParlerGeneratedCodes::from_frame_major(expected_codes.clone(), frames)
         .expect("official Parler frame-major packet");
     let decoded = model
         .decode_codes(&official_packet)
@@ -185,6 +294,26 @@ fn run_variant(prefix: &str, expected_variant: ParlerVariant) {
         end_to_end_max_abs <= PCM_ATOL,
         "Parler {prefix} {backend:?} end-to-end max_abs {end_to_end_max_abs} exceeds FP32 ceiling {PCM_ATOL}"
     );
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if backend == BackendKind::Metal {
+        compare_metal_with_cpu(
+            prefix,
+            &gguf_path,
+            expected_variant,
+            &description,
+            &prompt,
+            &expected_hidden,
+            &expected_codes,
+            &expected_pcm,
+            frames,
+            &official_packet,
+            &hidden,
+            &generated,
+            &decoded.samples,
+            &end_to_end.samples,
+        );
+    }
 }
 
 #[test]

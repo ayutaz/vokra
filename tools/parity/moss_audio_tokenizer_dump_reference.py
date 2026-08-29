@@ -116,6 +116,35 @@ def source_file(obj: object, label: str) -> Path:
     return path
 
 
+def canonical_source_path(path: Path) -> str:
+    """Return a stable path relative to the HF remote-code cache root."""
+
+    try:
+        start = path.parts.index("transformers_modules")
+    except ValueError as error:
+        raise RuntimeError(
+            f"source path {path} is outside transformers_modules"
+        ) from error
+    relative = Path(*path.parts[start:]).as_posix()
+    if not relative.startswith("transformers_modules/"):
+        raise RuntimeError(f"invalid canonical source path: {relative}")
+    return relative
+
+
+def self_test() -> None:
+    path = Path("/tmp/huggingface/transformers_modules/OpenMOSS-Team/Nano/model.py")
+    assert canonical_source_path(path) == (
+        "transformers_modules/OpenMOSS-Team/Nano/model.py"
+    )
+    try:
+        canonical_source_path(Path("/tmp/local/model.py"))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("local source path was accepted")
+    print("moss reference dumper path self-test: PASS")
+
+
 def flat_values(tensor: object, torch_module: object, label: str) -> tuple[str, str]:
     torch = torch_module
     if not isinstance(tensor, torch.Tensor):
@@ -161,8 +190,14 @@ def main() -> None:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--frames", type=int, default=2)
     parser.add_argument("--num-quantizers", type=int)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return
+    if args.output is None:
+        parser.error("--output is required unless --self-test is used")
     variant = VARIANTS[args.variant]
     model_id = str(variant["model_id"])
     revision = str(variant["revision"])
@@ -204,10 +239,12 @@ def main() -> None:
     )
     model.eval()
 
-    model_source = source_file(type(model), "model class")
-    config_source = source_file(type(model.config), "config class")
-    model_source_sha256 = sha256_file(model_source)
-    config_source_sha256 = sha256_file(config_source)
+    model_source_path = source_file(type(model), "model class")
+    config_source_path = source_file(type(model.config), "config class")
+    model_source = canonical_source_path(model_source_path)
+    config_source = canonical_source_path(config_source_path)
+    model_source_sha256 = sha256_file(model_source_path)
+    config_source_sha256 = sha256_file(config_source_path)
     for label, actual, expected in (
         ("model", model_source_sha256, variant["model_source_sha256"]),
         ("config", config_source_sha256, variant["config_source_sha256"]),

@@ -4,12 +4,13 @@
 //! the folded safetensors through `vokra-cli convert --model
 //! bigvgan-base-24khz-100band`, then set `VOKRA_BIGVGAN_BASE_GGUF`.
 
-use std::env;
+use std::{env, fs};
 
 use vokra_core::gguf::GgufFile;
 use vokra_models::bigvgan::{BigVGan, BigVGanVariant};
 
 const GGUF_ENV: &str = "VOKRA_BIGVGAN_BASE_GGUF";
+const REFERENCE_ENV: &str = "VOKRA_BIGVGAN_REFERENCE";
 
 #[test]
 fn parity_bigvgan_base_real_weight_mel_to_waveform() {
@@ -25,12 +26,19 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
     let model = BigVGan::from_gguf(&file).expect("bind complete BigVGAN tensor manifest");
     assert_eq!(model.variant(), BigVGanVariant::BaseV1_24khz100Band);
 
-    let fixture = include_str!("../../../tools/parity/fixtures/bigvgan_base_reference.csv");
+    let reference_path = env::var(REFERENCE_ENV).unwrap_or_else(|_| {
+        panic!("{REFERENCE_ENV} must point to the VAST-generated official reference when {GGUF_ENV} is set; the committed fixture is never a real-weight fallback")
+    });
+    let fixture = fs::read_to_string(&reference_path).unwrap_or_else(|error| {
+        panic!("read opted-in BigVGAN reference {reference_path}: {error}");
+    });
     let mut rows = fixture.lines();
     let input_row: Vec<&str> = rows.next().expect("input row").split(',').collect();
     let output_row: Vec<&str> = rows.next().expect("output row").split(',').collect();
     assert_eq!(input_row[0], "input");
     assert_eq!(output_row[0], "output");
+    assert_eq!(input_row.len(), 101);
+    assert_eq!(output_row.len(), 257);
     assert!(rows.next().is_none());
     let mel: Vec<f32> = input_row[1..]
         .iter()
@@ -42,9 +50,12 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         .collect();
     assert_eq!(mel.len(), 100);
     assert_eq!(expected.len(), 256);
+    assert!(mel.iter().all(|value| value.is_finite()));
+    assert!(expected.iter().all(|value| value.is_finite()));
 
     let actual = model.decode(&mel, 1).expect("native BigVGAN forward");
     assert_eq!(actual.len(), expected.len());
+    assert!(actual.iter().all(|value| value.is_finite()));
     let max_abs = actual
         .iter()
         .zip(expected.iter())
@@ -55,6 +66,7 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         max_abs <= 2e-5,
         "BigVGAN base max |Δ| {max_abs:e} exceeds the 2e-5 FP32 bound"
     );
+    eprintln!("BIGVGAN_CPU_PARITY_SENTINEL max_abs={max_abs:e}");
 
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     {
@@ -63,6 +75,8 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
             .with_backend(vokra_core::BackendKind::Metal)
             .decode(&mel, 1)
             .expect("real BigVGAN Metal forward");
+        assert_eq!(metal.len(), actual.len());
+        assert!(metal.iter().all(|value| value.is_finite()));
         let gpu_max_abs = actual
             .iter()
             .zip(&metal)
@@ -71,6 +85,9 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         assert!(
             gpu_max_abs <= 0.01,
             "BigVGAN CPU/Metal max |Δ| {gpu_max_abs:e} exceeds the established FP32 GPU gate"
+        );
+        eprintln!(
+            "BIGVGAN_METAL_PARITY_SENTINEL max_abs={gpu_max_abs:e} route=resident_one_final_readback"
         );
     }
 }

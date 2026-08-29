@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.metadata
 import json
 import os
 import platform
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +25,8 @@ from parler_tts import ParlerTTSForConditionalGeneration
 
 
 PARLER_SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
+DAC_REPO = "parler-tts/dac_44khZ_8kbps"
+DAC_REVISION = "5cf6b8ad50fbb17e52c341410a1d00083201b6a9"
 TRANSFORMERS_VERSION = "4.46.1"
 SAMPLE_RATE = 44_100
 FRAME_HOP = 512
@@ -84,12 +86,24 @@ def verify_file(path: Path, expected_bytes: int, expected_sha256: str) -> None:
 
 
 def verify_official_source() -> None:
-    distribution = importlib.metadata.distribution("parler-tts")
-    direct_url_raw = distribution.read_text("direct_url.json")
-    if direct_url_raw is None:
-        raise RuntimeError("parler-tts installation has no PEP 610 direct_url.json")
-    direct_url = json.loads(direct_url_raw)
-    actual_revision = direct_url.get("vcs_info", {}).get("commit_id")
+    source_dir_raw = os.environ.get("PARLER_TTS_SOURCE_DIR")
+    if not source_dir_raw:
+        raise RuntimeError("PARLER_TTS_SOURCE_DIR is required")
+    source_dir = Path(source_dir_raw).resolve()
+    package_dir = Path(parler_tts.__file__).resolve().parent
+    if package_dir.parent != source_dir or package_dir.name != "parler_tts":
+        raise RuntimeError(
+            f"parler_tts imported from {package_dir}, not authenticated source {source_dir}"
+        )
+    try:
+        actual_revision = subprocess.run(
+            ["git", "-C", str(source_dir), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(f"cannot inspect official source checkout {source_dir}: {exc}") from exc
     if actual_revision != PARLER_SOURCE_REVISION:
         raise RuntimeError(
             f"parler-tts source {actual_revision!r} != pinned {PARLER_SOURCE_REVISION}"
@@ -290,6 +304,8 @@ def main() -> int:
         "config_sha256": identity["config_sha256"],
         "generation_config_sha256": identity["generation_sha256"],
         "parler_source_revision": PARLER_SOURCE_REVISION,
+        "dac_repo": DAC_REPO,
+        "dac_revision": DAC_REVISION,
         "transformers_version": TRANSFORMERS_VERSION,
         "description_tokens": len(DESCRIPTION_TOKEN_IDS),
         "prompt_tokens": len(PROMPT_TOKEN_IDS),
