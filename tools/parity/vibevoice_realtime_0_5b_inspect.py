@@ -263,7 +263,8 @@ def validate_config(config: Any) -> dict[str, Any]:
     }
     for path, value in exact.items():
         require(config, path, value)
-    return {"required_paths": [".".join(path) for path in exact], "values": exact}
+    paths = sorted(exact)
+    return {"required_paths": [".".join(path) for path in paths], "values": {".".join(path): exact[path] for path in paths}}
 
 
 def validate_preprocessor(preprocessor: Any) -> dict[str, Any]:
@@ -280,7 +281,8 @@ def validate_preprocessor(preprocessor: Any) -> dict[str, Any]:
     }
     for path, value in exact.items():
         require(preprocessor, path, value)
-    return {"required_paths": [".".join(path) for path in exact], "values": exact}
+    paths = sorted(exact)
+    return {"required_paths": [".".join(path) for path in paths], "values": {".".join(path): exact[path] for path in paths}}
 
 
 def inspect_safetensors(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -597,6 +599,12 @@ def self_test() -> None:
         raise AssertionError("duplicate JSON key accepted")
     assert validate_config(config_fixture())["required_paths"]
     assert validate_preprocessor(config_fixture()["preprocessor_config"])["required_paths"]
+    config_evidence = validate_config(config_fixture())
+    preprocessor_evidence = validate_preprocessor(config_fixture()["preprocessor_config"])
+    json.dumps(config_evidence, sort_keys=True)
+    json.dumps(preprocessor_evidence, sort_keys=True)
+    assert config_evidence["values"]["decoder_config.hidden_size"] == 896
+    assert preprocessor_evidence["values"]["audio_processor.sampling_rate"] == 24000
     assert parse_model_card_frontmatter("---\nlicense: mit\ntags:\n- audio\n---\nprose") == {"license": "mit"}
     for card in ("prose license: mit", "---\nlicense: mit\nlicense: mit\n---", "---\ntags:\n  license: mit\n---", "---\nlicense: apache-2.0\n---"):
         try:
