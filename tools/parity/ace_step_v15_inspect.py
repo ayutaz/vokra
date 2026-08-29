@@ -38,6 +38,60 @@ COMPONENTS = (
     "acestep-5Hz-lm-1.7B",
 )
 CANONICAL_SILENCE_PATH = "acestep-v15-turbo/silence_latent.pt"
+CONFIG_CONTRACTS: dict[str, dict[str, Any]] = {
+    "acestep-v15-turbo": {
+        "architectures": ["AceStepConditionGenerationModel"],
+        "model_type": "acestep",
+        "model_version": "turbo",
+        "dtype": "bfloat16",
+        "hidden_size": 2048,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "in_channels": 192,
+        "patch_size": 2,
+        "is_turbo": True,
+        "audio_acoustic_hidden_dim": 64,
+        "text_hidden_dim": 1024,
+        "vocab_size": 64003,
+    },
+    "vae": {
+        "_class_name": "AutoencoderOobleck",
+        "_diffusers_version": "0.34.0",
+        "audio_channels": 2,
+        "sampling_rate": 48000,
+        "encoder_hidden_size": 128,
+        "decoder_channels": 128,
+        "decoder_input_channels": 64,
+        "channel_multiples": [1, 2, 4, 8, 16],
+        "downsampling_ratios": [2, 4, 4, 6, 10],
+    },
+    "Qwen3-Embedding-0.6B": {
+        "architectures": ["Qwen3Model"],
+        "model_type": "qwen3",
+        "dtype": "bfloat16",
+        "hidden_size": 1024,
+        "intermediate_size": 3072,
+        "num_hidden_layers": 28,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "vocab_size": 151669,
+    },
+    "acestep-5Hz-lm-1.7B": {
+        "architectures": ["Qwen3Model"],
+        "model_type": "qwen3",
+        "dtype": "bfloat16",
+        "hidden_size": 2048,
+        "intermediate_size": 6144,
+        "num_hidden_layers": 28,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "vocab_size": 217204,
+        "eos_token_id": 151645,
+        "pad_token_id": 151643,
+    },
+}
 DEPENDENCIES = ("transformers", "diffusers")
 TEXT_COMPONENTS = {"Qwen3-Embedding-0.6B", "acestep-5Hz-lm-1.7B"}
 
@@ -406,29 +460,41 @@ def json_evidence(path: Path, root: Path) -> dict[str, Any]:
     }
 
 
-def config_semantics(path: Path, root: Path) -> dict[str, Any]:
+def exact_config_value(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(exact_config_value(a, e) for a, e in zip(actual, expected))
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(exact_config_value(actual[key], expected[key]) for key in expected)
+    return actual == expected
+
+
+def config_semantics(path: Path, root: Path, component: str) -> dict[str, Any]:
     try:
         value = json_load_unique(path)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise RuntimeError(f"component config parse failed for {path.relative_to(root)}: {error}") from error
     if not isinstance(value, dict):
         raise RuntimeError(f"component config must be a JSON object: {path.relative_to(root)}")
-    model_type = value.get("model_type")
-    architectures = value.get("architectures")
-    if model_type is not None and not isinstance(model_type, str):
-        raise RuntimeError(f"component config model_type is not a string: {path.relative_to(root)}")
-    if architectures is not None and (
-        not isinstance(architectures, list) or not architectures or not all(isinstance(item, str) for item in architectures)
-    ):
-        raise RuntimeError(f"component config architectures are not a non-empty string list: {path.relative_to(root)}")
-    if model_type is None and architectures is None:
-        raise RuntimeError(f"component config has no model_type or architectures: {path.relative_to(root)}")
-    scalar_evidence = {
-        key: value[key]
-        for key in ("model_type", "architectures", "sample_rate", "sampling_rate", "latent_rate", "latent_sr", "audio_channels")
-        if key in value and isinstance(value[key], (str, int, float, bool, list))
+    expected = CONFIG_CONTRACTS.get(component)
+    if expected is None:
+        raise RuntimeError(f"component has no exact config contract: {component}")
+    selected_axes: dict[str, Any] = {}
+    for key, expected_value in expected.items():
+        if key not in value:
+            raise RuntimeError(f"component config missing canonical axis {key}: {component}")
+        actual_value = value[key]
+        selected_axes[key] = actual_value
+        if not exact_config_value(actual_value, expected_value):
+            raise RuntimeError(f"component config axis mismatch {component}.{key}: expected {expected_value!r}, got {actual_value!r}")
+    return {
+        "path": path.relative_to(root).as_posix(),
+        "component": component,
+        "status": "EXACT_COMPONENT_CONFIG",
+        "selected_axes": selected_axes,
+        "expected_axes": expected,
     }
-    return {"path": path.relative_to(root).as_posix(), "model_type": model_type, "architectures": architectures, "scalar_evidence": scalar_evidence}
 
 
 def strict_component_shard(value: Any) -> str:
@@ -449,7 +515,7 @@ def inventory_component(snapshot: Path, component: str) -> dict[str, Any]:
     config_paths = [path for path in files if path.name == "config.json"]
     if len(config_paths) != 1:
         raise RuntimeError(f"component lacks config.json: {component}")
-    semantics = config_semantics(config_paths[0], snapshot)
+    semantics = config_semantics(config_paths[0], snapshot, component)
     if component in TEXT_COMPONENTS and not any("tokenizer" in path.name.lower() for path in files):
         raise RuntimeError(f"text component lacks tokenizer companion: {component}")
     weights = sorted(path for path in files if path.suffix == ".safetensors")
@@ -877,7 +943,7 @@ def self_test() -> None:
         for number, component in enumerate(COMPONENTS, 1):
             path = root / component
             path.mkdir()
-            (path / "config.json").write_text(json.dumps({"model_type": f"fixture-{number}"}) + "\n", encoding="utf-8")
+            (path / "config.json").write_text(json.dumps(CONFIG_CONTRACTS[component]) + "\n", encoding="utf-8")
             if component in TEXT_COMPONENTS:
                 (path / "tokenizer.json").write_text("{}\n", encoding="utf-8")
             shard = path / "model.safetensors"
@@ -885,6 +951,56 @@ def self_test() -> None:
             result = inventory_component(root, component)
             assert result["tensors"][0]["dtype"] == "bfloat16"
             assert result["tensors"][0]["shape"] == [1]
+            config_path = path / "config.json"
+            contract = CONFIG_CONTRACTS[component]
+            kind_key = "architectures" if "architectures" in contract else "_class_name"
+            model_key = "model_type" if "model_type" in contract else "_diffusers_version"
+            dimension_key = next(key for key, value in contract.items() if type(value) is int)
+            for key, wrong in (
+                (kind_key, ["WrongArchitecture"] if isinstance(contract[kind_key], list) else "WrongClass"),
+                (model_key, "wrong-model"),
+                (dimension_key, contract[dimension_key] + 1),
+                (dimension_key, True),
+            ):
+                wrong_config = dict(contract)
+                wrong_config[key] = wrong
+                config_path.write_text(json.dumps(wrong_config) + "\n", encoding="utf-8")
+                try:
+                    inventory_component(root, component)
+                except RuntimeError as error:
+                    assert "config" in str(error) and key in str(error)
+                else:
+                    raise AssertionError(f"wrong {component} config axis was accepted: {key}")
+            missing_config = dict(contract)
+            missing_config.pop(dimension_key)
+            config_path.write_text(json.dumps(missing_config) + "\n", encoding="utf-8")
+            try:
+                inventory_component(root, component)
+            except RuntimeError as error:
+                assert "missing canonical axis" in str(error)
+            else:
+                raise AssertionError(f"missing {component} config axis was accepted")
+            if "dtype" in contract:
+                legacy_dtype_config = dict(contract)
+                legacy_dtype_config["torch_dtype"] = legacy_dtype_config.pop("dtype")
+                config_path.write_text(json.dumps(legacy_dtype_config) + "\n", encoding="utf-8")
+                try:
+                    inventory_component(root, component)
+                except RuntimeError as error:
+                    assert "missing canonical axis dtype" in str(error)
+                else:
+                    raise AssertionError(f"legacy torch_dtype key was accepted for {component}")
+            if component == "acestep-5Hz-lm-1.7B":
+                wrong_architecture_config = dict(contract)
+                wrong_architecture_config["architectures"] = ["Qwen3ForCausalLM"]
+                config_path.write_text(json.dumps(wrong_architecture_config) + "\n", encoding="utf-8")
+                try:
+                    inventory_component(root, component)
+                except RuntimeError as error:
+                    assert "axis mismatch" in str(error) and "architectures" in str(error)
+                else:
+                    raise AssertionError("legacy Qwen3ForCausalLM architecture was accepted")
+            config_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
         (root / "config.json").write_text("{}\n", encoding="utf-8")
         (root / "README.md").write_text("license: mit\n", encoding="utf-8")
         target = root / "target.bin"
@@ -1043,15 +1159,16 @@ def self_test() -> None:
             assert "duplicate JSON key" in str(error)
         else:
             raise AssertionError("duplicate JSON config key was accepted")
-        duplicate_config.write_text(json.dumps({"model_type": "fixture-1"}) + "\n", encoding="utf-8")
-        duplicate_config.write_text('{"model_type":[]}\n', encoding="utf-8")
+        wrong_type_config = dict(CONFIG_CONTRACTS[COMPONENTS[0]])
+        wrong_type_config["model_type"] = []
+        duplicate_config.write_text(json.dumps(wrong_type_config) + "\n", encoding="utf-8")
         try:
             inventory_component(root, COMPONENTS[0])
         except RuntimeError as error:
-            assert "model_type is not a string" in str(error)
+            assert "axis mismatch" in str(error) and "model_type" in str(error)
         else:
             raise AssertionError("config topology drift was accepted")
-        duplicate_config.write_text(json.dumps({"model_type": "fixture-1"}) + "\n", encoding="utf-8")
+        duplicate_config.write_text(json.dumps(CONFIG_CONTRACTS[COMPONENTS[0]]) + "\n", encoding="utf-8")
         (root / "community-xl").mkdir()
         try:
             validate_snapshot_tree(root)
