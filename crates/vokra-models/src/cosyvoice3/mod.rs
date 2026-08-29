@@ -1,17 +1,25 @@
 //! **Fun-CosyVoice3-0.5B** — Qwen2 LLM backbone + chunk-aware Flow Matching
 //! CFM + **HiFTNet** vocoder (SoTA plan Phase 3, 2026-07-24).
 //!
+//! This module currently exposes a strict, partial LLM checkpoint consumer and
+//! source-shaped native math seams. The complete composite TTS pipeline is not
+//! yet authenticated or numerically compared, so the public route remains
+//! fail-closed.
+//!
 //! # What Fun-CosyVoice3-0.5B is (primary source)
 //!
 //! `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` (HuggingFace / ModelScope) is the
 //! third-generation FunAudio TTS model. The model card describes it as
 //! *"an advanced text-to-speech (TTS) system based on large language models
 //! (LLM), surpassing its predecessor (CosyVoice 2.0) in content consistency,
-//! speaker similarity, and prosody naturalness"* — the topology is the same
-//! CosyVoice2 chain (**FSQ tokens → Qwen2 AR decoder → chunk-aware CFM →
-//! mel → HiFTNet → PCM**, arXiv:2505.17589 + `cosyvoice/hifigan/generator.py`
-//! `HiFTGenerator`), with quality-driving refinements that leave the op
-//! inventory **byte-identical** to CosyVoice2:
+//! speaker similarity, and prosody naturalness"* — the release describes a
+//! composite (**FSQ tokens → Qwen2 AR decoder → chunk-aware CFM → mel →
+//! HiFTNet → PCM**, arXiv:2505.17589 + `cosyvoice/hifigan/generator.py`
+//! `HiFTGenerator`). The runtime does not claim byte-identical topology with
+//! CosyVoice2; quality-driving refinements are described by the
+//! upstream release. This module does not claim operator or tensor
+//! equivalence with CosyVoice2; those relationships require independent
+//! evidence for each component.
 //!
 //! - **Dual-Resolution Speech Representations (DRSR)** — a training-side
 //!   representation scheme that lifts speaker similarity and prosody
@@ -19,11 +27,8 @@
 //! - **Core-Cocktail Training** — a data-mixture strategy, again
 //!   training-side.
 //!
-//! Neither addition requires a new runtime op or backend kernel: DRSR
-//! reshapes what the LLM head + Flow Matching CFM consumes at train time
-//! (the network topology is unchanged); Core-Cocktail is a data recipe
-//! (the runtime never sees it). See the "Very-cheap follow-on" section
-//! below.
+//! These training terms are recorded as upstream claims only. Their runtime
+//! implications remain part of the blocked full-composite inspection.
 //!
 //! # Primary source
 //!
@@ -46,42 +51,28 @@
 //!
 //! # Numeric hparams — deferred to real-checkpoint bind
 //!
-//! The upstream `config.json` (fetched by URL) was not accessible via
-//! anonymous WebFetch in the Phase 3 timebox (empty JSON body returned).
-//! Rather than fabricate `hidden_size` / `num_hidden_layers` /
-//! `num_attention_heads` etc. — which would violate the CLAUDE.md
-//! hallucination ban and silently mis-shape the LLM backbone — the
-//! [`CosyVoice3Config`] surface is:
+//! The fixed inspection contract records the upstream `config.json`, YAML,
+//! tokenizer, and component identities on VAST. Until that evidence is
+//! bound to a complete native pipeline, this module intentionally does not
+//! turn those facts into a public full-TTS loader:
 //!
-//! - **Auto-detected** from the checkpoint tensor shapes at
-//!   convert-time (the CosyVoice2 shape-derivation path applies verbatim:
-//!   `llm.model.model.embed_tokens.weight` → `vocab_size` / `hidden_dim`;
-//!   `llm.model.model.layers.*` contiguous count → `n_layer`;
-//!   layer-0 `mlp.gate_proj.weight` → `ffn_dim`; layer-0
-//!   `self_attn.q_proj.weight` / `k_proj.weight` → GQA algebra
-//!   cross-checks). The GQA head split (`num_attention_heads` /
-//!   `num_key_value_heads`) plus `rope_theta` / `rms_norm_eps` /
-//!   `max_position_embeddings` are **not** shape-derivable — a
-//!   `--config <config.json>` side-car supplies them and is
-//!   cross-checked against the tensor shapes, exactly like CosyVoice2.
-//! - **Loud fail on absence** — a caller who binds an engine before the
-//!   config lands hits [`VokraError::InvalidArgument`] naming the
-//!   missing key, not a silent zero-shape forward (FR-EX-08).
+//! - The strict [`CosyVoice3Checkpoint`] binder validates the existing
+//!   authenticated 293-tensor, LLM-only GGUF and exposes the real layer-0 Q
+//!   projection. It is not a full TTS artifact.
+//! - No public full-composite loader is open. Native LLM → flow → HiFTNet math
+//!   is staged privately, but missing component evidence and comparison remain
+//!   a loud blocker.
 //! - **Sample rate** — `24_000` (the CosyVoice family sample rate; the
 //!   HiFTNet vocoder produces 24 kHz PCM, matching CosyVoice2).
 //!
-//! When the real checkpoint lands (owner T29-equivalent hand-off), the
-//! [`CosyVoice3Config::fun_cosyvoice3_0_5b_placeholder`] constructor can be filled
-//! in with the transcribed values without changing any downstream code
-//! (the [`CosyVoice3Tts`] engine and the converter both read the
-//! shape-derived path today).
+//! The placeholder constructor is test-only scaffolding and is not evidence
+//! that a public loader can consume the composite release.
 //!
-//! # Very-cheap follow-on — reuses CosyVoice2 verbatim
+//! # Partial runtime seam
 //!
-//! Because the topology is a CosyVoice2 chain with training-side
-//! refinements (DRSR + Core-Cocktail), Fun-CosyVoice3-0.5B **does not
-//! add any new op** (`vokra-ops`) or backend kernel. The forward path
-//! is:
+//! The partial consumer shares low-level type seams with CosyVoice2 where
+//! that is already proven, but does not assert that the complete forward
+//! path is equivalent. The missing pieces include:
 //!
 //! - Text tokenizer — Qwen2 byte-level BPE
 //!   ([`crate::cosyvoice2::text_encoder::CosyVoice2Tokenizer`]).
@@ -93,54 +84,44 @@
 //! - Terminal vocoder — HiFTNet
 //!   ([`crate::cosyvoice2::hift_chain::HiFTChain`]).
 //!
-//! This module re-exports the CosyVoice2 [`HiFTChain`] / config / weights
-//! aliases so the runtime seam stays identical: an operator supplying
-//! HiFTNet weights for a CosyVoice3 checkpoint uses the same
-//! `.with_hift_chain(HiFTChain::new(cfg, weights)?)` pattern.
+//! The re-exported HiFT types are a compatibility seam only; they do not
+//! constitute a public CosyVoice3 composite loader.
 //!
 //! # What lands in this Phase 3 slice
 //!
-//! - [`CosyVoice3Config`] — shape-derived hparams surface with a
-//!   `distil-whisper`-style `validate_for_forward` gate on `0`
-//!   placeholders (LLM axes come from the GGUF; a shape-only conversion
-//!   makes the engine's LLM handle honestly `None`, per the CosyVoice2
-//!   contract).
+//! - [`CosyVoice3Config`] — a test/config validation surface; it is not
+//!   populated by arbitrary conversion.
 //! - [`CosyVoice3Weights`] — deterministic
 //!   [`CosyVoice3Weights::synthesized`] fixture (SplitMix64 seed) so
 //!   shape / dtype / size flow can be exercised without the real HF
 //!   checkpoint.
-//! - [`CosyVoice3Tts`] — engine handle carrying config + weights + an
-//!   optional [`HiFTChain`]. [`CosyVoice3Tts::synthesize`] returns
-//!   [`VokraError::NotImplemented`] until real weights are bound and
-//!   the LLM ⇒ CFM ⇒ HiFTNet chain is wired (T29-equivalent follow-up
-//!   wave that delegates to [`crate::cosyvoice2`]).
+//! - [`CosyVoice3Tts`] — test/scaffold engine whose synthesis remains
+//!   explicitly unsupported until every composite component is independently
+//!   bound and parity-tested.
 //!
 //! # No ONNX (permanent)
 //!
 //! Fun-CosyVoice3-0.5B ships `flow.decoder.estimator.fp32.onnx` alongside
 //! PyTorch pickles. The runtime never loads the ONNX graph
 //! (FR-LD-05, permanent constraint) — the pipeline is re-implemented
-//! natively via [`crate::cosyvoice2`] (whisper.cpp 型, CLAUDE.md 設計判断
-//! 4). The Flow Matching estimator is bound off the PyTorch checkpoint
-//! (`flow.pt`) at convert-time, not from the ONNX file.
+//! natively in a future reviewed implementation. The ONNX file is evidence
+//! only and is never executed or treated as a runtime dependency.
 
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+// Source-shaped internal route only.  It stays private until the complete
+// composite checkpoint and independent parity evidence are bound.
+pub(crate) mod native;
 pub use bound::{CosyVoice3Checkpoint, CosyVoice3QProjection};
 
 // ---------------------------------------------------------------------------
 // Public seam re-exports (SoTA plan §1(a) 訂正 shared with CosyVoice2)
 // ---------------------------------------------------------------------------
 //
-// The HiFTNet vocoder chain is architecturally identical between CosyVoice2
-// and CosyVoice3 (same `HiFTGenerator` in `cosyvoice/hifigan/generator.py`,
-// same NSF + ISTFTNet composition). Re-export the CosyVoice2 aliases here
-// so a caller wiring CosyVoice3 sees the seam under its own module path
-// without a shape-drift wrapper (the same pattern
-// `cosyvoice2::hift_chain::HiFTChainConfig` uses over
-// `vokra_ops::hiftnet::HiFTGeneratorConfig`).
+// Re-export the established HiFT types only as a compatibility seam. This
+// does not authenticate or bind the CosyVoice3 composite vocoder.
 
 pub use crate::cosyvoice2::{HiFTChain, HiFTChainConfig, HiFTChainWeights};
 
@@ -154,9 +135,8 @@ pub use crate::cosyvoice2::{HiFTChain, HiFTChainConfig, HiFTChainWeights};
 ///
 /// This arch string is intentionally **distinct** from CosyVoice2's
 /// (`"cosyvoice2"`) so the runtime can label the loaded model correctly
-/// in telemetry / logs / model cards while still delegating the numeric
-/// forward through [`crate::cosyvoice2`] (the "very cheap follow-on"
-/// contract in the task).
+/// in telemetry / logs / model cards. It does not imply a CosyVoice2
+/// implementation or full-composite forward is available.
 pub const EXPECTED_ARCH: &str = "cosyvoice3";
 
 /// PCM sample rate Fun-CosyVoice3 emits (Hz). Same as CosyVoice2 (the
@@ -169,36 +149,27 @@ pub const COSYVOICE3_SAMPLE_RATE: u32 = 24_000;
 
 /// Fun-CosyVoice3-0.5B architectural hyperparameters.
 ///
-/// A deliberate subset of the CosyVoice2 hparam schema — every field maps
-/// 1-to-1 to the corresponding CosyVoice2 axis (see
-/// [`crate::cosyvoice2::CosyVoice2Config`]). Numeric axes stay `0`
-/// placeholders until a real GGUF is converted with a `--config`
-/// side-car; the fixed axes (`sample_rate`, `flow_schedule_tag`,
-/// canonical Mimi shape retained for compliance-gate compatibility with
-/// pre-migration test GGUFs — see CosyVoice2 T13 codec-migration note)
-/// carry their model-card invariants.
+/// A deliberately narrow validation/test surface. Numeric axes remain `0`
+/// placeholders in the scaffold; no arbitrary GGUF conversion populates
+/// them, and the fixed inspection evidence is not a full runtime contract.
 ///
-/// The `0`-placeholder posture is deliberate: without primary-source
-/// hparams (see the module docstring), inventing them would silently
-/// mis-shape the LLM backbone. A shape-only GGUF loads (the container
-/// is inspectable), but the engine's LLM handle is honestly `None` and
-/// [`CosyVoice3Tts::synthesize`] fails loudly naming re-conversion as
-/// the fix (FR-EX-08).
+/// The `0`-placeholder posture is deliberate. The strict 293-tensor partial
+/// binder lives in [`CosyVoice3Checkpoint`]; a full TTS loader is absent and
+/// [`CosyVoice3Tts::synthesize`] remains loud and unsupported.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CosyVoice3Config {
     /// Output PCM sample rate, Hz. Fixed at 24 kHz by the HiFTNet
     /// vocoder (identical to CosyVoice2).
     pub sample_rate: u32,
-    /// Text tokenizer vocabulary size. `0` = shape-only conversion
-    /// (runtime rejects LLM bind).
+    /// Text tokenizer vocabulary size. `0` means scaffold-only.
     pub vocab_size: u32,
-    /// LLM backbone hidden dimension. `0` = shape-only.
+    /// LLM backbone hidden dimension. `0` means scaffold-only.
     pub hidden_dim: u32,
-    /// LLM backbone transformer block count. `0` = shape-only.
+    /// LLM backbone transformer block count. `0` means scaffold-only.
     pub n_layer: u32,
-    /// LLM backbone attention head count. `0` = shape-only.
+    /// LLM backbone attention head count. `0` means scaffold-only.
     pub n_head: u32,
-    /// LLM backbone FFN inner dimension. `0` = shape-only.
+    /// LLM backbone FFN inner dimension. `0` means scaffold-only.
     pub ffn_dim: u32,
     /// Flow Matching sampler default NFE (number of function
     /// evaluations per chunk). `0` = runtime-overridable per invocation
@@ -216,16 +187,11 @@ pub struct CosyVoice3Config {
 }
 
 impl CosyVoice3Config {
-    /// Placeholder-only config for the canonical
-    /// `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` release. Numeric axes are
-    /// `0` sentinels (see the module docstring on why the primary-source
-    /// hparams are deferred — the config.json was not accessible via
-    /// anonymous WebFetch in the Phase 3 timebox). Sample rate and
-    /// schedule tag carry their model-card / op-crate invariants.
+    /// Placeholder-only config for tests. Numeric axes are `0` sentinels;
+    /// this constructor is not an authenticated full-release loader.
     ///
-    /// The T29-equivalent follow-up wave fills in the numeric axes from
-    /// the real config.json + tensor shape verification (the CosyVoice2
-    /// path handles this via `--config` cross-check).
+    /// A future reviewed binder may fill the axes after authenticating the
+    /// fixed composite manifest and source implementation.
     #[must_use]
     pub fn fun_cosyvoice3_0_5b_placeholder() -> Self {
         Self {
@@ -336,23 +302,20 @@ impl CosyVoice3Config {
 }
 
 // ---------------------------------------------------------------------------
-// Weights (scaffold — real binding delegates to CosyVoice2)
+// Weights (test scaffold; no public full-composite binding)
 // ---------------------------------------------------------------------------
 
 /// Fun-CosyVoice3-0.5B weight store scaffold.
 ///
-/// Carries the token embedding + LLM backbone stack (per-layer
-/// projection tensors — the same layout CosyVoice2's
-/// [`crate::cosyvoice2::llm::LlmWeights`] consumes) so shape-driven
-/// tests can exercise the loader boundary without inventing upstream
-/// tensor names.
+/// Carries a deterministic token/LLM scaffold so shape tests can exercise a
+/// boundary without claiming compatibility with the authenticated composite
+/// checkpoint. It is not a native CosyVoice3 checkpoint representation.
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 +
 /// Xavier) against `config` so shape / dtype / size can be exercised
 /// without the real HF checkpoint. Real-checkpoint binding is a
-/// follow-up (T29-equivalent — the CosyVoice2 pattern) that delegates
-/// the loader to
-/// [`crate::cosyvoice2::llm::LlmBackbone::from_gguf`].
+/// follow-up that must independently authenticate and bind the complete
+/// LLM, flow, speech-tokenizer, CampPlus, and HiFT components.
 #[derive(Debug, Clone)]
 pub struct CosyVoice3Weights {
     /// Token embedding: `[vocab_size, hidden_dim]`.
@@ -367,7 +330,8 @@ pub struct CosyVoice3Weights {
 }
 
 /// Per-transformer-block weights (GQA self-attention + SwiGLU FFN, the
-/// Qwen2 block topology). Same convention as CosyVoice2's LLM path.
+/// Qwen2-shaped test scaffold only; it is not proof of the composite
+/// checkpoint topology.
 #[derive(Debug, Clone)]
 pub struct CosyVoice3BlockWeights {
     /// Self-attention pre-norm γ, shape `[hidden_dim]`.
@@ -471,11 +435,9 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 /// Fun-CosyVoice3-0.5B TTS engine handle.
 ///
 /// Carries the resolved config, weight store, and an optional
-/// [`HiFTChain`] terminal vocoder (SoTA plan §1(a) 訂正 seam shared
-/// with CosyVoice2). [`Self::synthesize`] is the primary text → PCM
-/// entry point; until real weights are bound and the LLM ⇒ CFM ⇒
-/// HiFTNet chain is wired end-to-end (T29-equivalent follow-up wave
-/// that delegates to [`crate::cosyvoice2`]), it returns
+/// [`HiFTChain`] terminal-vocoder compatibility seam. [`Self::synthesize`]
+/// is an explicit unsupported boundary; until every composite component is
+/// independently bound and the LLM ⇒ CFM ⇒ HiFTNet chain is proven end-to-end, it returns
 /// [`VokraError::NotImplemented`] with a message naming the blocker
 /// (FR-EX-08 — never a silent zero-fill or empty audio buffer).
 #[derive(Debug, Clone)]
@@ -563,9 +525,8 @@ impl CosyVoice3Tts {
     /// audio, so this returns [`VokraError::NotImplemented`] naming
     /// the blocker. Callers verify the shape flow through
     /// [`CosyVoice3Tts::new`] + [`CosyVoice3Weights::synthesized`]
-    /// today; a follow-up wave binds real Fun-CosyVoice3 weights and
-    /// wires the forward through [`crate::cosyvoice2`] with the
-    /// Fun-CosyVoice3 config surface.
+    /// today; a future reviewed wave must bind every composite component
+    /// and independently prove the complete forward.
     ///
     /// # Errors
     ///
@@ -594,22 +555,15 @@ impl CosyVoice3Tts {
                  synthesized-weight audio would be a hallucinated waveform, not real \
                  speech. Bind real Fun-CosyVoice3 weights (apache-2.0, \
                  huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) before invoking \
-                 synthesize. The shape flow (config validation, weight-store \
-                 construction, text-empty check) is exercised through \
-                 CosyVoice3Tts::new; real-checkpoint binding lands in a follow-up wave \
-                 (T29-equivalent) that delegates the forward to the CosyVoice2 chain \
-                 (Qwen2 LLM → chunk-aware CFM → HiFTNet).",
+                 synthesize. The shape flow is test scaffolding only; the \
+                 complete composite binder and forward remain unsupported.",
             ));
         }
         Err(VokraError::NotImplemented(
-            "cosyvoice3 synthesize: real weights are bound but the Qwen2 LLM backbone → \
-             chunk-aware Flow Matching CFM → HiFTNet vocoder forward path has not \
-             landed yet. Follow-up wave: delegate to crate::cosyvoice2 with the \
-             Fun-CosyVoice3 config surface — the op set (RoPE / RMSNorm / SwiGLU / \
-             GEMM / GEMV / softmax / STFT / iSTFT / snake activation) and every \
-             kernel are already shared with CosyVoice2 (arXiv:2505.17589 confirms the \
-             topology is identical; DRSR + Core-Cocktail are training-side additions \
-             that leave the runtime forward operators byte-identical).",
+            "cosyvoice3 synthesize: the complete Qwen2 LLM → chunk-aware Flow Matching \
+             CFM → HiFTNet composite forward is not implemented. The strict 293-tensor \
+             binder is LLM-only; tokenizer, flow, speech-tokenizer, CampPlus, and HiFT \
+             component binding plus independent parity remain required.",
         ))
     }
 }

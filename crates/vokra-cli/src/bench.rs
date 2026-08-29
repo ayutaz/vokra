@@ -717,6 +717,35 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::VoiceGenderClassification => {
+            let path = args
+                .input
+                .as_deref()
+                .ok_or("bench (voice-gender): --input <16k-mono.wav> is required")?;
+            let clip = wav::read_wav(path)?;
+            let rate = vokra_models::voice_gender_classifier::SAMPLE_RATE;
+            if clip.sample_rate != rate {
+                return Err(format!(
+                    "bench (voice-gender): {path} is {} Hz, expected {rate} Hz — resample offline first",
+                    clip.sample_rate
+                ));
+            }
+            let audio_seconds = clip.samples.len() as f64 / f64::from(rate);
+            let pcm = clip.samples;
+            let model = vokra_models::voice_gender_classifier::VoiceGenderClassifier::from_gguf(
+                session.gguf(),
+            )
+            .map_err(|error| error.to_string())?
+            .with_backend(args.backend);
+            let samples = time_iters(args.warmup, args.iters, || {
+                let prediction = model
+                    .classify_pcm(&pcm, rate)
+                    .map_err(|error| error.to_string())?;
+                std::hint::black_box(prediction);
+                Ok(())
+            })?;
+            ("voice-gender-classifier", audio_seconds, samples)
+        }
         ModelTask::AudioQualityAudiobox => {
             let path = args
                 .input
@@ -1365,6 +1394,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                     .to_owned(),
             );
         }
+        ModelTask::TtsMossLocal => {
+            return Err(
+                "bench: MOSS-TTS Local requires an explicit [rows,13] prompt matrix and MOSS Audio Tokenizer v2 sidecar; use `vokra-cli run --model <moss-tts-local.gguf> --audio-tokenizer <moss-audio-tokenizer-v2.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
+                    .to_owned(),
+            );
+        }
         ModelTask::TtsMossDelay => {
             return Err(
                 "bench: MOSS-TTS Base/v1.5 requires an explicit 33-column prompt matrix and Full Audio Tokenizer sidecar; no raw-text benchmark contract is defined yet — use `vokra-cli run --model <moss-tts-v1.5.gguf> --audio-tokenizer <moss-audio-tokenizer-full.gguf> --max-new-frames <N> --input <prompt.u32le> --output <out.wav>`"
@@ -1527,6 +1562,12 @@ fn execute(args: &BenchArgs) -> Result<BenchOutcome, String> {
                 Ok(())
             })?;
             ("tts", audio_seconds, samples)
+        }
+        ModelTask::TtsVibeVoice => {
+            return Err(
+                "bench: arch `vibevoice` is INSPECTION_ONLY — a strict partial GGUF has no authenticated Qwen tokenizer/prefill, streaming tokenizer, official DPMSolverMultistepScheduler, or composite PCM route; refusing to fabricate an RTF measurement"
+                    .to_owned(),
+            );
         }
         ModelTask::TtsSpeechT5 => {
             return Err(

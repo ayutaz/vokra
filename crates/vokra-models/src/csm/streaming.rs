@@ -134,15 +134,16 @@ impl CsmEngine {
         let frames = self.build_context_frames(request, cleaned.as_deref())?;
         let mut generation = CsmGenerationState::new(self.config())?;
         self.model().prime(&mut generation, &frames)?;
-        let default_cap = self
-            .config()
-            .n_ctx
-            .saturating_sub(generation.context_len())
-            .max(1);
-        let max_frames = config
-            .map(|c| c.max_frames)
-            .unwrap_or(default_cap)
-            .min(default_cap);
+        let default_cap = self.max_frames_for(request, generation.context_len())?;
+        let max_frames = match config {
+            Some(c) => self.validate_max_frames(c.max_frames, generation.context_len())?,
+            None => default_cap,
+        };
+        if max_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "csm stream: max_frames must be greater than zero".into(),
+            ));
+        }
         let audio = self.chain().state(max_frames)?;
         let hop = self.chain().frame_hop()?;
         Ok(CsmStream {
@@ -278,13 +279,14 @@ impl<'e> CsmStream<'e> {
         self.engine.model().prime(&mut self.generation, &frames)?;
         // Fresh audio-chain state sized to the remaining cap (the paged
         // feature arena restarts at t = 0 for the new turn).
-        let default_cap = self
+        self.max_frames = self
             .engine
-            .config()
-            .n_ctx
-            .saturating_sub(self.generation.context_len())
-            .max(1);
-        self.max_frames = default_cap;
+            .max_frames_for(request, self.generation.context_len())?;
+        if self.max_frames == 0 {
+            return Err(VokraError::InvalidArgument(
+                "csm stream: max_frames must be greater than zero".into(),
+            ));
+        }
         self.audio = self.engine.chain().state(self.max_frames)?;
         self.sampler = CsmEngine::sampler_for(request);
         self.frame_index = 0;

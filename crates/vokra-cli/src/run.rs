@@ -40,6 +40,8 @@ USAGE:
     vokra-cli run --model <voxtral.gguf> --input <in.wav> [--language <code>] [--bare-prompt]
     vokra-cli run --model <speaker.gguf> --input <a.wav> [--compare <b.wav>] [--output <embedding.f32>]
     vokra-cli run --model <lang-id.gguf> --input <16k-mono.wav> [--output <scores.f32>]
+    vokra-cli run --model <voice-gender-classifier.gguf> --input <16k-mono.wav> \
+                  [--backend cpu|metal] [--output <probabilities.f32>]
     vokra-cli run --model <audiobox-aesthetics.gguf> --input <16k-mono.wav> \
                   [--output <ce-cu-pc-pq.f32>]
     vokra-cli run --model <audioseal.gguf> --input <16k-mono.wav> \
@@ -138,6 +140,9 @@ USAGE:
     vokra-cli run --model <moss-tts-nano.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-nano.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <stereo.wav>
+    vokra-cli run --model <moss-tts-local-v1.5.gguf> \
+                  --audio-tokenizer <moss-audio-tokenizer-v2.gguf> \
+                  --max-new-frames <N> --input <prompt-rows-13.u32le> --output <stereo.wav>
     vokra-cli run --model <moss-tts-v1.5.gguf> \
                   --audio-tokenizer <moss-audio-tokenizer-full.gguf> \
                   --max-new-frames <N> --input <prompt-rows.u32le> --output <mono.wav>
@@ -167,7 +172,8 @@ OPTIONS:
                                 strict manifest gate.
     --audio-tokenizer <path>    MOSS-TTS only, REQUIRED: exact companion GGUF.
                                 Nano requires Audio Tokenizer Nano; Base/v1.5
-                                require Audio Tokenizer Full. Both stages must
+                                require Audio Tokenizer Full; Local requires v2.
+                                Both stages must
                                 support the same selected backend.
     --vocoder <path>            SpeechT5 only, REQUIRED: strict
                                 microsoft/speecht5_hifigan companion GGUF
@@ -1545,12 +1551,14 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::DiarizationPyannote
         | ModelTask::Separation
         | ModelTask::Tts
+        | ModelTask::TtsVibeVoice
         | ModelTask::TtsSpeechT5
         | ModelTask::TtsQwen3
         | ModelTask::TtsKokoro
         | ModelTask::TtsMelo
         | ModelTask::Speaker
         | ModelTask::LangId
+        | ModelTask::VoiceGenderClassification
         | ModelTask::AudioQualityAudiobox
         | ModelTask::EmotionClassification
         | ModelTask::DeepfakeClassification
@@ -1570,6 +1578,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::Facodec
         | ModelTask::MossAudioTokenizerCodec
         | ModelTask::TtsMossNano
+        | ModelTask::TtsMossLocal
         | ModelTask::TtsMossDelay
         | ModelTask::TtsMossVoiceGenerator
         | ModelTask::S2sDuplex
@@ -1634,7 +1643,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.audio_tokenizer.is_some()
         && !matches!(
             task,
-            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+            ModelTask::TtsMossNano
+                | ModelTask::TtsMossLocal
+                | ModelTask::TtsMossDelay
+                | ModelTask::TtsMossVoiceGenerator
         )
     {
         return Err(
@@ -1664,7 +1676,10 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
     if a.max_new_frames.is_some()
         && !matches!(
             task,
-            ModelTask::TtsMossNano | ModelTask::TtsMossDelay | ModelTask::TtsMossVoiceGenerator
+            ModelTask::TtsMossNano
+                | ModelTask::TtsMossLocal
+                | ModelTask::TtsMossDelay
+                | ModelTask::TtsMossVoiceGenerator
         )
     {
         return Err(
@@ -2095,6 +2110,12 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
                 a.output.as_deref(),
             )?;
         }
+        ModelTask::TtsVibeVoice => {
+            return Err(
+                "run (VibeVoice-1.5B): INSPECTION_ONLY — the strict partial GGUF binder does not imply a runnable composite; authenticated Qwen tokenizer companion, prompt/prefill state, streaming tokenizer, official DPMSolverMultistepScheduler, and 24-kHz decoder are required. No CPU fallback or synthetic waveform is permitted"
+                    .to_owned(),
+            );
+        }
         ModelTask::TtsSpeechT5 => {
             run_speecht5(&session, &a)?;
         }
@@ -2122,6 +2143,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         ModelTask::TtsMossNano => {
             run_moss_tts_nano(&session, &a)?;
         }
+        ModelTask::TtsMossLocal => {
+            run_moss_tts_local(&session, &a)?;
+        }
         ModelTask::TtsMossDelay => {
             run_moss_tts_delay(&session, &a)?;
         }
@@ -2142,6 +2166,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::LangId => {
             run_lang_id(&session, &a)?;
+        }
+        ModelTask::VoiceGenderClassification => {
+            run_voice_gender_classifier(&session, &a)?;
         }
         ModelTask::AudioQualityAudiobox => {
             run_audiobox_aesthetics(&session, &a)?;
@@ -2394,6 +2421,50 @@ fn run_lang_id(session: &Session, args: &RunArgs) -> Result<(), String> {
         println!(
             "lang-id: {} scores in official label order -> {output}",
             scores.len()
+        );
+    }
+    Ok(())
+}
+
+/// Runs the dedicated JaesungHuh male/female classifier. The model owns the
+/// strict 16 kHz input and provenance checks; this CLI layer intentionally
+/// performs one classification and preserves the official `[male, female]`
+/// probability order for both stdout and the optional binary output.
+fn run_voice_gender_classifier(session: &Session, args: &RunArgs) -> Result<(), String> {
+    let path = args
+        .input
+        .as_deref()
+        .ok_or("run (voice-gender): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path)?;
+    let rate = vokra_models::voice_gender_classifier::SAMPLE_RATE;
+    if clip.sample_rate != rate {
+        return Err(format!(
+            "run (voice-gender): {path} is {} Hz, expected {rate} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    let model =
+        vokra_models::voice_gender_classifier::VoiceGenderClassifier::from_gguf(session.gguf())
+            .map_err(|error| format!("run (voice-gender): {error}"))?
+            .with_backend(args.backend);
+    let prediction = model
+        .classify_pcm(&clip.samples, rate)
+        .map_err(|error| format!("run (voice-gender): {error}"))?;
+    println!(
+        "voice-gender: label={} male={:.9} female={:.9}",
+        prediction.label, prediction.probabilities[0], prediction.probabilities[1]
+    );
+    if let Some(output) = args.output.as_deref() {
+        let bytes = prediction
+            .probabilities
+            .iter()
+            .flat_map(|probability| probability.to_le_bytes())
+            .collect::<Vec<_>>();
+        std::fs::write(output, bytes)
+            .map_err(|error| format!("run (voice-gender): --output {output}: {error}"))?;
+        println!(
+            "voice-gender: {} probabilities in official [male,female] order -> {output}",
+            prediction.probabilities.len()
         );
     }
     Ok(())
@@ -5126,6 +5197,85 @@ fn run_moss_tts_nano(session: &Session, a: &RunArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// MOSS-TTS Local Transformer v1.5 explicit `[rows,13]` prompt to the
+/// authenticated v2 48 kHz stereo codec. Raw text is intentionally refused:
+/// the fixed release does not bundle a tokenizer/template contract.
+fn run_moss_tts_local(session: &Session, a: &RunArgs) -> Result<(), String> {
+    const LABEL: &str = "run (moss_tts Local)";
+    if a.text.is_some() {
+        return Err(format!(
+            "{LABEL}: --text is unavailable because the public GGUF does not bundle the pinned tokenizer/template; pass explicit [rows,13] u32le prompt ids with --input"
+        ));
+    }
+    let input_path = a
+        .input
+        .as_deref()
+        .ok_or_else(|| format!("{LABEL}: --input <prompt-rows.u32le> is required"))?;
+    let output_path = a
+        .output
+        .as_deref()
+        .ok_or_else(|| format!("{LABEL}: --output <stereo.wav> is required"))?;
+    let codec_path = a.audio_tokenizer.as_deref().ok_or_else(|| {
+        format!("{LABEL}: --audio-tokenizer <moss-audio-tokenizer-v2.gguf> is required")
+    })?;
+    let max_new_frames = a
+        .max_new_frames
+        .ok_or_else(|| format!("{LABEL}: --max-new-frames <N> is required"))?;
+    let policy = vokra_core::CompliancePolicy::from_env();
+    vokra_core::check_weight_license(session.gguf(), &policy).map_err(|error| error.to_string())?;
+    let codec_file = std::sync::Arc::new(
+        vokra_mmap::open_gguf(codec_path)
+            .map_err(|error| format!("{LABEL}: codec {codec_path}: {error}"))?,
+    );
+    vokra_core::check_weight_license(&codec_file, &policy).map_err(|error| error.to_string())?;
+    let checkpoint =
+        vokra_models::moss_tts::MossTtsLocalCheckpoint::from_gguf_mapped(session.gguf_arc())
+            .map_err(|error| error.to_string())?;
+    let model = vokra_models::moss_tts::MossTtsLocal::from_checkpoint(checkpoint, a.backend)
+        .map_err(|error| error.to_string())?;
+    let codec =
+        vokra_models::moss_audio_tokenizer::MossAudioTokenizer::from_gguf_mapped_with_backend(
+            codec_file, a.backend,
+        )
+        .map_err(|error| error.to_string())?;
+    let bytes =
+        std::fs::read(input_path).map_err(|error| format!("{LABEL}: {input_path}: {error}"))?;
+    const ROW_BYTES: usize = 13 * 4;
+    if bytes.is_empty() || !bytes.len().is_multiple_of(ROW_BYTES) {
+        return Err(format!(
+            "{LABEL}: {input_path} has {} bytes; expected a positive multiple of {ROW_BYTES} for [rows,13] u32le prompt ids",
+            bytes.len()
+        ));
+    }
+    let prompt_rows = bytes
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect::<Vec<_>>();
+    let synthesis = model
+        .synthesize_prompt_rows(
+            &codec,
+            &prompt_rows,
+            &vokra_models::moss_tts::MossTtsLocalGenerationOptions::greedy(max_new_frames),
+        )
+        .map_err(|error| error.to_string())?;
+    wav::write_wav_channels(
+        output_path,
+        &synthesis.audio.pcm,
+        synthesis.audio.sample_rate,
+        synthesis.audio.channels,
+    )
+    .map_err(|error| format!("{LABEL}: --output {output_path}: {error}"))?;
+    println!(
+        "moss_tts Local: {} prompt rows -> {} generated frames x 12 codebooks -> {} samples/channel x {} channels @ {} Hz -> {output_path}",
+        prompt_rows.len() / 13,
+        synthesis.generated.generated_frames,
+        synthesis.audio.samples_per_channel,
+        synthesis.audio.channels,
+        synthesis.audio.sample_rate,
+    );
+    Ok(())
+}
+
 /// MOSS-TTS Base/v1.5 explicit 33-column prompt to Full codec decode.
 ///
 /// The official tokenizer/template remains an explicit caller companion. The
@@ -7664,6 +7814,24 @@ mod tests {
             ]))
             .is_err()
         );
+        let local = parse_args(&args(&[
+            "--model",
+            "moss-tts-local-v1.5.gguf",
+            "--audio-tokenizer",
+            "moss-audio-tokenizer-v2.gguf",
+            "--max-new-frames",
+            "8",
+            "--input",
+            "prompt-rows-13.u32le",
+            "--output",
+            "speech.wav",
+        ]))
+        .expect("MOSS Local explicit v2 companion flags parse");
+        assert_eq!(
+            local.audio_tokenizer.as_deref(),
+            Some("moss-audio-tokenizer-v2.gguf")
+        );
+        assert_eq!(local.max_new_frames, Some(8));
     }
 
     #[test]
@@ -9404,6 +9572,10 @@ mod tests {
         assert_eq!(cpu_only_engine_label(ModelTask::AudioLlmUltravox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Speaker), None);
         assert_eq!(cpu_only_engine_label(ModelTask::LangId), None);
+        assert_eq!(
+            cpu_only_engine_label(ModelTask::VoiceGenderClassification),
+            None
+        );
         assert_eq!(cpu_only_engine_label(ModelTask::AudioQualityAudiobox), None);
         assert_eq!(cpu_only_engine_label(ModelTask::WatermarkAudioseal), None);
         assert_eq!(cpu_only_engine_label(ModelTask::MimiCodec), None);

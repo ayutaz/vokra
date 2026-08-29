@@ -56,7 +56,6 @@ enum LayerTensorLayout {
     /// hook: plural per-stream projections plus `linear{1,2}` FFN names.
     FullLegacy,
     /// v2 release names as stored in the pinned safetensors index/header.
-    #[cfg(test)]
     V2Current,
 }
 
@@ -64,7 +63,6 @@ impl LayerTensorLayout {
     const fn attention_in_suffix(self) -> &'static str {
         match self {
             Self::FullLegacy => "self_attn.in_projs.0.weight",
-            #[cfg(test)]
             Self::V2Current => "self_attn.in_proj.weight",
         }
     }
@@ -72,7 +70,6 @@ impl LayerTensorLayout {
     const fn attention_out_suffix(self) -> &'static str {
         match self {
             Self::FullLegacy => "self_attn.out_projs.0.weight",
-            #[cfg(test)]
             Self::V2Current => "self_attn.out_proj.weight",
         }
     }
@@ -80,7 +77,6 @@ impl LayerTensorLayout {
     const fn ffn_in_suffix(self) -> &'static str {
         match self {
             Self::FullLegacy => "linear1.weight",
-            #[cfg(test)]
             Self::V2Current => "ffn.0.weight",
         }
     }
@@ -88,7 +84,6 @@ impl LayerTensorLayout {
     const fn ffn_out_suffix(self) -> &'static str {
         match self {
             Self::FullLegacy => "linear2.weight",
-            #[cfg(test)]
             Self::V2Current => "ffn.2.weight",
         }
     }
@@ -144,7 +139,6 @@ const FULL_STAGE_SPECS: [StageSpec; 4] = [
 // MOSS-Audio-Tokenizer-v2 starts from a 25 Hz interleaved codec stream.
 // The five x2 patch-up stages followed by x240 reconstruct 7,680 interleaved
 // samples per codec frame, i.e. 3,840 samples for each stereo channel.
-#[cfg(test)]
 const V2_STAGE_SPECS: [StageSpec; 6] = [
     StageSpec {
         module_index: 0,
@@ -234,7 +228,6 @@ impl MappedDecoder {
         Self::bind(file, &FULL_STAGE_SPECS, LayerTensorLayout::FullLegacy)
     }
 
-    #[cfg(test)]
     pub(super) fn bind_v2(file: Arc<GgufFile>) -> Result<Self> {
         Self::bind(file, &V2_STAGE_SPECS, LayerTensorLayout::V2Current)
     }

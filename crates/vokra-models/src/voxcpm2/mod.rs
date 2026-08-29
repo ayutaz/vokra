@@ -12,7 +12,8 @@
 //!   `num_key_value_heads = 2` / SwiGLU `intermediate_size = 4096` /
 //!   RoPE `theta = 10000` with **longrope scaling** / `rms_norm_eps = 1e-5`,
 //!   `vocab_size = 73448`, `max_position_embeddings = 32_768`,
-//!   `scale_emb = 12`, `dim_model_base = 256`, `scale_depth = 1.4`).
+//!   `scale_emb = 12` raw config value (effective `1.0` because
+//!   `use_mup=false`), `dim_model_base = 256`, `scale_depth = 1.4`).
 //! - A **residual acoustic LM** (`residual_lm_num_layers = 6`, same backbone
 //!   family with `vocab_size = 0` and RoPE optionally disabled).
 //! - A **local encoder** (`encoder_config` — 4-layer / 1024d / GQA 16 heads,
@@ -28,16 +29,15 @@
 //!   `scalar_quantization_scale = 9`) — an *inline* FSQ constraint on the
 //!   LM hidden stream (distinct from the FSQ *codec* family that pairs a
 //!   discrete index with a decoder — this projection stays continuous).
-//! - An **AudioVAE V2** (continuous VAE, `patch_size = 2`, `feat_dim = 64`).
-//!   The VAE encoder downsamples 16 kHz PCM by `product(encoder_rates) =
-//!   640` → 25 Hz feature frames; the VAE decoder upsamples continuous
-//!   latents by `product(decoder_rates) = 1920` → 48 kHz PCM (upstream
-//!   `AudioVAEConfig.out_sample_rate = 48_000`). Shared primitive lives
-//!   at [`vokra_ops::vae_continuous`] (SoTA plan Phase 4 new op).
+//! - A **continuous AudioVAE** (`patch_size = 2`, `feat_dim = 64`). For the
+//!   0.5B release, the pinned `audio_vae.py` topology consumes/produces
+//!   16-kHz PCM, with encoder rates `[2,5,8,8]` and decoder rates
+//!   `[8,8,5,2]` (640 samples per latent frame). VoxCPM2-2B is a distinct
+//!   v2 topology and remains on its separately authenticated route.
 //!
 //! Every field above is transcribed **verbatim** from
 //! `huggingface.co/openbmb/VoxCPM-0.5B/raw/main/config.json` and the
-//! upstream `audio_vae_v2.py` `AudioVAEConfig` defaults (fetched 2026-07-24
+//! upstream `audio_vae.py` AudioVAE defaults for 0.5B (fetched 2026-07-24
 //! — CLAUDE.md「ハルシネーション厳禁」).
 //!
 //! # Distinct topology axis: continuous VAE + diffusion decoder
@@ -62,9 +62,10 @@
 //! # Reuses two existing ops — [`vokra_ops::vae_continuous`] and
 //! [`vokra_ops::flow_sampler`]
 //!
-//! - The **AudioVAE V2** encoder / decoder ride the SoTA plan Phase 4
-//!   [`vokra_ops::vae_continuous`] primitive introduced with this model
-//!   (shared with the planned VibeVoice consumer).
+//! - The 0.5B **AudioVAE** encoder / decoder use the source-shaped
+//!   [`AudioVaeDecoder`] kernels below; the shared
+//!   [`vokra_ops::vae_continuous`] config remains the metadata seam for the
+//!   separately authenticated 2B route.
 //! - The **local DiT + UnifiedCFM** flow-matching sampler rides the
 //!   existing [`vokra_ops::flow_sampler`] (Euler solver / linear schedule
 //!   / CFG mode = split-batch or dual-forward — VoxCPM uses the split-
@@ -83,29 +84,65 @@
 //!   every architectural hparam transcribed verbatim from the primary
 //!   source. `validate_for_forward` fails loudly (FR-EX-08) on zeroed
 //!   axes / broken GQA algebra / broken CFG mode.
-//! - [`VoxCpm2Weights`] — deterministic
-//!   [`VoxCpm2Weights::synthesized`] scaffold fixture (zero-initialized;
-//!   only the shape flow is exercised — the SplitMix64 Xavier fixture
-//!   the sibling models use is skipped because the LM backbone weight
-//!   store is a follow-up wave).
-//! - [`VoxCpm2Tts`] — engine handle carrying config + weights. The
-//!   primary [`VoxCpm2Tts::synthesize`] entry point returns
-//!   [`VokraError::NotImplemented`] naming the blocker until real
-//!   weights are bound and the LM → local DiT → CFM sampler →
-//!   AudioVAE-decode → 48 kHz PCM chain is wired end-to-end (T29-
-//!   equivalent follow-up wave — never a silent zero-fill, FR-EX-08).
+//! - [`VoxCpm2Weights`] — deterministic test-only
+//!   [`VoxCpm2Weights::synthesized`] fixture (zero-initialized; it is not a
+//!   production checkpoint and cannot synthesize audio).
+//! - [`VoxCpm2Tts`] — engine handle carrying config + weights. A native,
+//!   source-shaped batch-one LM → local DiT → CFM sampler → AudioVAE decode
+//!   route exists behind the crate-private staged seam. The public loading
+//!   and synthesis entry points remain fail-closed until an immutable,
+//!   complete composite manifest, tokenizer/provenance authentication, and
+//!   independent CPU/Metal parity evidence are accepted (never a silent
+//!   zero-fill, FR-EX-08).
 //!
 //! # No ONNX (permanent)
 //!
 //! VoxCPM-0.5B is distributed as safetensors + a Python pipeline; the
 //! runtime **never** loads an ONNX graph (FR-LD-05, permanent constraint);
-//! the pipeline is re-implemented natively from the safetensors checkpoint
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! a future authenticated-composite wave (the current public route remains
+//! fail-closed; no upstream source implementation is copied into the runtime).
 
+use vokra_core::backend::BackendKind;
 use vokra_core::{Result, VokraError};
 
+use crate::compute::{Compute, HotOp};
+
+mod audio_vae;
 mod bound;
+mod generation;
+mod local;
+mod minicpm4;
+pub use audio_vae::{
+    AUDIO_VAE_DECODER_RATES, AUDIO_VAE_ENCODER_DIM, AUDIO_VAE_ENCODER_RATES, AUDIO_VAE_HOP,
+    AUDIO_VAE_HOT_OPS, AUDIO_VAE_LATENT_DIM, AUDIO_VAE_PROMPT_CHUNK, AUDIO_VAE_SAMPLE_RATE,
+    AudioVaeDecoder, AudioVaeEncoder, CausalConv1d, CausalConvTranspose1d, DecoderStage,
+    EncoderStage, ResidualUnit, Snake, pad_audio_vae_prompt_pcm,
+};
 pub use bound::{VoxCpm2Checkpoint, VoxCpm2StopProjection};
+pub(crate) use generation::StagedGenerationRuntime;
+pub use generation::{
+    CausalLanguageState, EulerFlow, FEATURE_PATCHES_PER_STEP, FeatureGenerationLoop,
+    LearnedStopController, PrefillState, ScalarQuantizer, StopController, VoxCpm2FlowDraws,
+};
+pub use local::{LocalDit, LocalDitWeights, LocalEncoder, UnifiedCfm};
+pub use minicpm4::{
+    MINICPM4_HOT_OPS, MiniCpm4BlockWeights, MiniCpm4Config, MiniCpm4KvCache, MiniCpm4Linear,
+    MiniCpm4Model, MiniCpm4Stack, MiniCpm4StackWeights, minicpm4_compute,
+};
+
+/// Learned operations required by the complete staged 0.5B route. A single
+/// preflight is shared by LM, local DiT, and AudioVAE so a selected Metal
+/// backend cannot silently fall back to scalar host execution.
+pub const VOXCPM2_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::RmsNorm,
+    HotOp::Silu,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+    HotOp::SnakeActivation,
+    HotOp::Tanh,
+];
 
 // Public seam re-export — shared with the VAE primitive
 pub use vokra_ops::vae_continuous::ContinuousVaeConfig;
@@ -121,7 +158,7 @@ pub use vokra_ops::vae_continuous::ContinuousVaeConfig;
 pub const EXPECTED_ARCH: &str = "voxcpm2";
 
 /// Encoder input PCM sample rate (Hz). VoxCPM-0.5B: `16_000`.
-/// Downstream `AudioVAE V2.out_sample_rate = 48_000` for synthesis
+/// Downstream `AudioVAE.out_sample_rate = 16_000` for synthesis
 /// output — see [`ContinuousVaeConfig::out_sample_rate_hz`] on the
 /// shared VAE seam.
 pub const VOXCPM_ENCODER_SAMPLE_RATE: u32 = 16_000;
@@ -138,11 +175,12 @@ pub const VOXCPM_ENCODER_SAMPLE_RATE: u32 = 16_000;
 /// 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The MiniCPM-4 block
 /// is a Llama-family decoder-only transformer with (a) very wide GQA
 /// (16 Q ÷ 2 KV, ratio 8), (b) **longrope scaling** (`rope_scaling.type =
-/// "longrope"`, 32-entry `long_factor` / `short_factor` tables — Note
-/// **these tables live on the safetensors side of the checkpoint at load
-/// time**; the runtime config carries only the axes needed to validate
-/// their presence), (c) MiniCPM-specific **µ-parametrization**-adjacent
-/// scale knobs (`scale_emb = 12`, `dim_model_base = 256`,
+/// "longrope"`, 32-entry `long_factor` / `short_factor` tables). These
+/// tables are authenticated values from the config companion (not learned
+/// safetensors), and the runtime uses them when selecting the source
+/// frequency cache. (c) MiniCPM-specific **µ-parametrization**-adjacent
+/// scale knobs (`scale_emb = 12` raw config value, effective `1.0` for the
+/// fixed non-µP 0.5B path, `dim_model_base = 256`,
 /// `scale_depth = 1.4`), and (d) the token-id anchors
 /// (`bos_token_id = 1`, `eos_token_id = 2`).
 #[derive(Debug, Clone, PartialEq)]
@@ -193,7 +231,9 @@ pub struct VoxCpm2LmConfig {
     /// carried so downstream binding can cross-check the scaling table
     /// lengths. `32_768` for the 0.5B release.
     pub rope_original_max_position_embeddings: u32,
-    /// MiniCPM `scale_emb` scalar (`scale_emb`). `12`.
+    /// Raw MiniCPM `scale_emb` scalar (`scale_emb`). `12`. The official
+    /// 0.5B forward applies it only on the µP path; because `use_mup=false`,
+    /// the effective embedding scale is `1.0`.
     pub scale_emb: u32,
     /// MiniCPM `dim_model_base` scalar (`dim_model_base`). `256`.
     pub dim_model_base: u32,
@@ -205,6 +245,16 @@ pub struct VoxCpm2LmConfig {
 }
 
 impl VoxCpm2LmConfig {
+    /// Return the scale actually applied by the official embedding path.
+    #[must_use]
+    pub fn effective_scale_emb(&self) -> f32 {
+        if self.use_mup {
+            self.scale_emb as f32
+        } else {
+            1.0
+        }
+    }
+
     /// Canonical VoxCPM-0.5B `lm_config` (primary source:
     /// `config.json.lm_config.*`, fetched 2026-07-24).
     #[must_use]
@@ -437,8 +487,9 @@ pub struct VoxCpm2DitConfig {
     /// not silently drift the sampler shape — `validate_for_forward` /
     /// downstream forward path can inspect it explicitly.
     ///
-    /// Runtime consumers of this field land in a follow-up wave
-    /// (T29-equivalent); today the field is scaffold-only.
+    /// The crate-private staged local-DiT route consumes this flag when
+    /// assembling time/delta-time conditioning. It remains explicit in the
+    /// config so alternate variants cannot silently inherit 0.5B semantics.
     pub mean_mode: bool,
     /// CFM sampler sub-config.
     pub cfm: VoxCpm2CfmConfig,
@@ -508,8 +559,8 @@ impl VoxCpm2DitConfig {
 // ---------------------------------------------------------------------------
 
 /// Full VoxCPM-0.5B config: LM backbone + residual acoustic LM depth +
-/// local encoder + local DiT + scalar-quantization bottleneck + AudioVAE V2
-/// (through the shared [`ContinuousVaeConfig`] seam).
+/// local encoder + local DiT + scalar-quantization bottleneck + 0.5B
+/// AudioVAE (through the shared [`ContinuousVaeConfig`] seam).
 ///
 /// The AudioVAE attributes are not carried inline (they live on the shared
 /// [`ContinuousVaeConfig`] seam re-exported from
@@ -533,9 +584,9 @@ pub struct VoxCpm2Config {
     /// — Q/K carry no position embedding, purely content-based
     /// attention). Silently ignoring this flag on 2B would let the
     /// residual LM apply RoPE and drift the attention pattern away from
-    /// upstream (a hazard the parity harness catches). Field is
-    /// scaffold-only today; the runtime forward branch that consumes it
-    /// lands in a follow-up wave (T29-equivalent).
+    /// upstream (a hazard the parity harness catches). The 0.5B staged route
+    /// requires this to remain `false`; an alternate no-RoPE route must
+    /// authenticate and consume the `true` setting before exposure.
     pub residual_lm_no_rope: bool,
     /// Local encoder sub-config.
     pub encoder: VoxCpm2EncoderConfig,
@@ -646,7 +697,7 @@ impl VoxCpm2Config {
         }
     }
 
-    /// Returns the canonical released-variant AudioVAE V2 config
+    /// Returns the canonical released 0.5B AudioVAE config
     /// (`ContinuousVaeConfig::voxcpm_0_5b`).
     ///
     /// This method is 0.5B-anchored for backward-compat. Callers holding
@@ -678,7 +729,7 @@ impl VoxCpm2Config {
         ContinuousVaeConfig::voxcpm2_2b()
     }
 
-    /// Returns the tiny AudioVAE V2 config the tiny top-level fixture is
+    /// Returns the tiny AudioVAE config the tiny top-level fixture is
     /// paired with (`ContinuousVaeConfig::tiny_for_tests` — `latent_dim
     /// = 4` matches [`Self::tiny_for_tests`]'s `feat_dim`).
     #[must_use]
@@ -699,7 +750,7 @@ impl VoxCpm2Config {
     }
 
     /// Rejects `0`-placeholder / ill-formed configs before any forward
-    /// runs, cross-checked against the canonical released AudioVAE V2.
+    /// runs, cross-checked against the canonical released 0.5B AudioVAE.
     ///
     /// # Errors
     ///
@@ -879,15 +930,13 @@ impl VoxCpm2Config {
 
 /// VoxCPM-0.5B weight store scaffold.
 ///
-/// Real binding is a follow-up wave (T29-equivalent — the LM backbone
-/// walk, the residual LM walk, the encoder / DiT walks, and the AudioVAE
-/// V2 walk all defer to the T29 tensor-name manifest fetch). This
-/// scaffold carries only the placeholder VAE decoder-weight bundle so
-/// downstream shape flow / handshake tests are unblocked; the LM /
-/// encoder / DiT slots stay `Vec::new()` and the sole invariant this
-/// slice pins is that `is_synthesized = true` prevents a spurious
-/// synthesize call from returning zero audio (FR-EX-08 — the loud
-/// [`VoxCpm2Tts::synthesize`] guard).
+/// This compatibility weight store is retained for deterministic shape and
+/// handshake fixtures. It is not an authenticated composite loader: public
+/// loading still requires the immutable complete main+AudioVAE+tokenizer
+/// manifest and provenance gate. The native source-shaped batch-one route is
+/// implemented behind crate-private staged constructors, while synthesized
+/// fixtures remain explicitly non-production and cannot produce audio
+/// (FR-EX-08 — the loud [`VoxCpm2Tts::synthesize`] guard).
 #[derive(Debug, Clone)]
 pub struct VoxCpm2Weights {
     /// Placeholder for the LM backbone tensor bytes (aggregate). Real
@@ -939,12 +988,12 @@ impl VoxCpm2Weights {
 /// Carries the resolved config + weight store + an optional
 /// [`ContinuousVaeConfig`] override for the shared
 /// [`vokra_ops::vae_continuous`] seam (default = the canonical released
-/// variant). [`Self::synthesize`] is the primary text → PCM entry point;
-/// until real weights are bound and the LM → residual LM → local
-/// encoder → local DiT → CFM sampler → AudioVAE decode → 48 kHz PCM
-/// chain is wired end-to-end (T29-equivalent follow-up wave), it returns
-/// [`VokraError::NotImplemented`] naming the blocker (FR-EX-08 — never a
-/// silent zero-fill or empty audio buffer).
+/// variant). A source-shaped batch-one route now exists behind the
+/// crate-private staged constructor. Public [`Self::synthesize`] remains
+/// [`VokraError::NotImplemented`] until the immutable complete composite
+/// manifest, tokenizer/provenance gate, and independent real-weight parity
+/// evidence authorize public loading (FR-EX-08 — never a silent zero-fill or
+/// empty audio buffer).
 #[derive(Debug, Clone)]
 pub struct VoxCpm2Tts {
     cfg: VoxCpm2Config,
@@ -1016,6 +1065,51 @@ impl VoxCpm2Tts {
         &self.vae
     }
 
+    /// Decode already-produced 0.5B continuous latents with a fully bound
+    /// source-shaped AudioVAE decoder. This narrow seam does not synthesize
+    /// or fabricate decoder weights; text/LM/CFM generation remains guarded
+    /// by [`Self::synthesize`]. Samples follow the 0.5B 16 kHz contract.
+    pub fn decode_audio_vae(
+        &self,
+        decoder: &AudioVaeDecoder,
+        latents: &[f32],
+        time: usize,
+    ) -> Result<Vec<f32>> {
+        if self.weights.is_synthesized {
+            return Err(VokraError::NotImplemented(
+                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding".to_owned(),
+            ));
+        }
+        if self.vae.out_sample_rate_hz != 16_000 {
+            return Err(VokraError::NotImplemented(
+                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract".to_owned(),
+            ));
+        }
+        decoder.decode_with_backend(latents, time, BackendKind::Cpu)
+    }
+
+    /// Backend-selected AudioVAE decode. The complete hot-op set is
+    /// preflighted before any learned convolution is evaluated.
+    pub fn decode_audio_vae_with_backend(
+        &self,
+        decoder: &AudioVaeDecoder,
+        latents: &[f32],
+        time: usize,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        if self.weights.is_synthesized {
+            return Err(VokraError::NotImplemented(
+                "voxcpm2 AudioVAE decode: synthesized engine weights cannot establish a real decoder binding".to_owned(),
+            ));
+        }
+        if self.vae.out_sample_rate_hz != 16_000 {
+            return Err(VokraError::NotImplemented(
+                "voxcpm2 AudioVAE decode: source-shaped 0.5B decoder requires the authenticated 16 kHz contract".to_owned(),
+            ));
+        }
+        decoder.decode_with_backend(latents, time, backend)
+    }
+
     /// True iff the weight store was built by
     /// [`VoxCpm2Weights::synthesized`] (never a real upstream
     /// checkpoint).
@@ -1025,19 +1119,20 @@ impl VoxCpm2Tts {
     }
 
     /// Synthesizes PCM for `text` at [`Self::vae_config`]'s
-    /// `out_sample_rate_hz` (48 kHz for the canonical release).
+    /// `out_sample_rate_hz` (16 kHz for the canonical 0.5B release).
     ///
-    /// This is the primary text → PCM entry point. **Real weights
-    /// required**: synthesized-weight builds cannot produce meaningful
-    /// audio, so this returns [`VokraError::NotImplemented`] naming the
-    /// blocker (FR-EX-08 — never a silent zero-fill or empty audio
-    /// buffer).
+    /// This public entry point remains fail-closed. The source-shaped
+    /// batch-one route is available only through the crate-private staged
+    /// construction path; public loading still needs an immutable complete
+    /// composite manifest, tokenizer/provenance authentication, and
+    /// independent real-weight parity evidence. Synthesized fixtures never
+    /// produce audio (FR-EX-08 — never a silent zero-fill or empty buffer).
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] if `text` is empty.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] otherwise (public composite gate and
+    ///   parity evidence are not yet authorized — FR-EX-08).
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -1053,25 +1148,181 @@ impl VoxCpm2Tts {
                  huggingface.co/openbmb/VoxCPM-0.5B) before invoking synthesize. \
                  The shape flow (config validation, weight-store construction, \
                  text-empty check, VAE handshake) is exercised through VoxCpm2Tts::new; \
-                 real-checkpoint binding lands in a follow-up wave (T29-equivalent).",
+                 the native source-shaped batch-one route is staged internally, but \
+                 public loading still requires the immutable complete-composite \
+                 manifest, tokenizer/provenance authentication, and real-weight parity.",
             ));
         }
         Err(VokraError::NotImplemented(
-            "voxcpm2 synthesize: real weights are bound but the MiniCPM-4 LM → residual \
-             acoustic LM → local encoder → local DiT → UnifiedCFM sampler → AudioVAE V2 \
-             decode → 48 kHz PCM forward path has not landed yet. Follow-up wave \
-             (T29-equivalent): (1) run the MiniCPM-4 LM (GQA 16 Q ÷ 2 KV / RoPE θ=10000 \
-             with longrope scaling / RMSNorm ε=1e-5 / SwiGLU) with the tokenizer prompt; \
-             (2) run the 6-layer residual acoustic LM; (3) run the 4-layer local encoder \
-             on the audio prompt (16 kHz mono PCM → AudioVAE V2 encode → 25 Hz continuous \
-             latents); (4) drive vokra_ops::flow_sample with the 4-layer local DiT as the \
-             velocity estimator (cfg_mode=SplitBatch, cfg_scale=inference_cfg_rate=2.0, \
-             solver=Euler, schedule=Linear, nfe=inference_timesteps=10); (5) decode the \
-             continuous VAE latents through vokra_ops::continuous_vae_decode → 48 kHz \
-             PCM (the shared Phase 4 primitive). The scalar-quantization bottleneck \
-             (scalar_quantization_latent_dim=256, scalar_quantization_scale=9) applies \
-             inside the LM hidden stream — not the codec.",
+            "voxcpm2 synthesize: public loading remains fail-closed even though the native source-shaped batch-one MiniCPM-4 → residual LM → local encoder/DiT → UnifiedCFM → AudioVAE → 16 kHz PCM route exists internally; immutable complete-composite manifest, tokenizer/provenance authentication, and independent CPU/Metal real-weight parity are required before authorization. The historical main-only checkpoint is diagnostic only, and the scalar-quantization bottleneck remains an LM hidden-stream operation, not a codec.",
         ))
+    }
+}
+
+/// Batch-one composite orchestration over source-shaped staged components.
+/// This crate-private seam requires the caller to supply authenticated
+/// tokenizer IDs, prompt audio, CFM draws, and unconditional CFG inputs; it
+/// never fabricates any of those artifacts. Public GGUF loading remains
+/// fail-closed until the VAST complete-composite manifest is fixed.
+#[allow(dead_code)]
+pub(crate) struct VoxCpm2Batch1Route {
+    generation: StagedGenerationRuntime,
+    local_encoder: LocalEncoder,
+    local_dit: LocalDit,
+    flow: UnifiedCfm,
+    audio_encoder: AudioVaeEncoder,
+    audio_decoder: AudioVaeDecoder,
+}
+
+fn reshape_prompt_latents(latent: &[f32]) -> Result<Vec<f32>> {
+    if latent.len() % 64 != 0 || latent.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(
+            "voxcpm prompt latent must be finite channel-major [64,frames]".to_owned(),
+        ));
+    }
+    let frames = latent.len() / 64;
+    if frames < FEATURE_PATCHES_PER_STEP || frames % FEATURE_PATCHES_PER_STEP != 0 {
+        return Err(VokraError::InvalidArgument(
+            "voxcpm prompt AudioVAE output must contain complete two-frame rows".to_owned(),
+        ));
+    }
+    // Preserve the official boundary rule: reshape to [rows,2,64], then
+    // remove the final complete row before matching audio-mask rows.
+    let rows = frames / FEATURE_PATCHES_PER_STEP - 1;
+    let mut output = vec![0.0; rows * FEATURE_PATCHES_PER_STEP * 64];
+    for row in 0..rows {
+        for patch in 0..FEATURE_PATCHES_PER_STEP {
+            for channel in 0..64 {
+                output[row * FEATURE_PATCHES_PER_STEP * 64 + patch * 64 + channel] =
+                    latent[channel * frames + row * FEATURE_PATCHES_PER_STEP + patch];
+            }
+        }
+    }
+    Ok(output)
+}
+
+impl VoxCpm2Batch1Route {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_staged_components(
+        generation: StagedGenerationRuntime,
+        local_encoder: LocalEncoder,
+        local_dit: LocalDit,
+        flow: UnifiedCfm,
+        audio_encoder: AudioVaeEncoder,
+        audio_decoder: AudioVaeDecoder,
+    ) -> Self {
+        Self {
+            generation,
+            local_encoder,
+            local_dit,
+            flow,
+            audio_encoder,
+            audio_decoder,
+        }
+    }
+
+    /// Run batch-one text/audio prefill, persistent LM feature generation,
+    /// endpoint trimming, and 16-kHz AudioVAE decode on one selected backend.
+    /// `audio_mask` identifies prompt rows; when a row is audio, the encoded
+    /// prompt must contain exactly two usable VAE frames for that row. The
+    /// source CFG negative half is built internally from the dynamic prefix
+    /// and zero mu.
+    pub(crate) fn synthesize_batch1(
+        &mut self,
+        token_ids: &[u32],
+        audio_mask: &[bool],
+        prompt_pcm: Option<&[f32]>,
+        loop_: &FeatureGenerationLoop,
+        draws: &VoxCpm2FlowDraws,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        if token_ids.is_empty() || token_ids.len() != audio_mask.len() {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm batch-1 route requires matching non-empty token/audio rows".to_owned(),
+            ));
+        }
+        let compute = Compute::for_backend(backend, VOXCPM2_HOT_OPS)?;
+        let text_embeddings = self.generation.embed_tokens_raw(token_ids)?;
+        let mut audio_features = vec![0.0; token_ids.len() * FEATURE_PATCHES_PER_STEP * 64];
+        let audio_rows = audio_mask.iter().filter(|value| **value).count();
+        let mut seed_prefix = vec![0.0; FEATURE_PATCHES_PER_STEP * 64];
+        if let Some(pcm) = prompt_pcm {
+            if audio_rows == 0 {
+                return Err(VokraError::InvalidArgument(
+                    "voxcpm prompt PCM requires at least one audio-mask row".to_owned(),
+                ));
+            }
+            let padded_pcm = pad_audio_vae_prompt_pcm(pcm)?;
+            let latent =
+                self.audio_encoder
+                    .encode_with_compute(&padded_pcm, padded_pcm.len(), &compute)?;
+            let prompt_features = reshape_prompt_latents(&latent)?;
+            if prompt_features.len() != audio_rows * FEATURE_PATCHES_PER_STEP * 64 {
+                return Err(VokraError::InvalidArgument(
+                    "voxcpm prompt audio rows do not match post-drop AudioVAE features".to_owned(),
+                ));
+            }
+            let mut audio_row = 0;
+            for (row, is_audio) in audio_mask.iter().copied().enumerate() {
+                if !is_audio {
+                    continue;
+                }
+                audio_features[row * FEATURE_PATCHES_PER_STEP * 64
+                    ..(row + 1) * FEATURE_PATCHES_PER_STEP * 64]
+                    .copy_from_slice(
+                        &prompt_features[audio_row * FEATURE_PATCHES_PER_STEP * 64
+                            ..(audio_row + 1) * FEATURE_PATCHES_PER_STEP * 64],
+                    );
+                audio_row += 1;
+            }
+            if audio_rows != 0 {
+                let last = audio_mask
+                    .iter()
+                    .rposition(|is_audio| *is_audio)
+                    .expect("audio_rows checked nonzero");
+                seed_prefix.copy_from_slice(
+                    &audio_features[last * FEATURE_PATCHES_PER_STEP * 64
+                        ..(last + 1) * FEATURE_PATCHES_PER_STEP * 64],
+                );
+            }
+        } else if audio_rows != 0 {
+            return Err(VokraError::InvalidArgument(
+                "voxcpm audio rows require caller-owned prompt PCM".to_owned(),
+            ));
+        }
+        let local_encoder = &self.local_encoder;
+        let generation = &self.generation;
+        let prefill = loop_.assemble_prefill(
+            &text_embeddings,
+            &audio_features,
+            audio_mask,
+            VoxCpm2LmConfig::voxcpm_0_5b().effective_scale_emb(),
+            |feature| {
+                let encoded = local_encoder.forward(feature, 1, 2, &compute)?;
+                generation.enc_to_lm(&encoded, 1, &compute)
+            },
+        )?;
+        self.generation.prefill(&prefill, &compute)?;
+        let patches = self.generation.generate_batch1(
+            loop_,
+            &seed_prefix,
+            &self.local_encoder,
+            &self.local_dit,
+            &self.flow,
+            draws,
+            &compute,
+        )?;
+        let steps = patches.len() / (FEATURE_PATCHES_PER_STEP * 64);
+        let latents = FeatureGenerationLoop::patches_to_latent(
+            &patches,
+            1,
+            steps,
+            FEATURE_PATCHES_PER_STEP,
+            64,
+        )?;
+        let latent_time = latents.len() / 64;
+        self.audio_decoder
+            .decode_with_compute(&latents, latent_time, &compute)
     }
 }
 
@@ -1082,6 +1333,23 @@ impl VoxCpm2Tts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_latent_reshape_drops_final_complete_patch_row() {
+        let mut latent = vec![0.0f32; 64 * 4];
+        for channel in 0..64 {
+            for frame in 0..4 {
+                latent[channel * 4 + frame] = channel as f32 * 10.0 + frame as f32;
+            }
+        }
+        let features = reshape_prompt_latents(&latent).unwrap();
+        assert_eq!(features.len(), 2 * 64);
+        assert_eq!(features[0], 0.0);
+        assert_eq!(features[1], 10.0);
+        assert_eq!(features[64], 1.0);
+        assert_eq!(features[65], 11.0);
+        assert!(reshape_prompt_latents(&latent[..64 * 3]).is_err());
+    }
 
     #[test]
     fn expected_arch_is_voxcpm2() {
@@ -1110,8 +1378,8 @@ mod tests {
     }
 
     #[test]
-    fn encoder_sample_rate_matches_upstream_audio_vae_v2() {
-        // AudioVAE V2 primary source (audio_vae_v2.py) — the encoder
+    fn encoder_sample_rate_matches_upstream_audio_vae() {
+        // AudioVAE primary source (audio_vae.py) — the encoder
         // consumes 16 kHz PCM.
         assert_eq!(VOXCPM_ENCODER_SAMPLE_RATE, 16_000);
     }
@@ -1137,6 +1405,7 @@ mod tests {
         assert!(lm.rope_scaling_longrope);
         assert_eq!(lm.rope_original_max_position_embeddings, 32_768);
         assert_eq!(lm.scale_emb, 12);
+        assert_eq!(lm.effective_scale_emb(), 1.0);
         assert_eq!(lm.dim_model_base, 256);
         assert!((lm.scale_depth - 1.4).abs() < 1e-5);
         assert!(!lm.use_mup);
@@ -1399,6 +1668,32 @@ mod tests {
             matches!(err, VokraError::NotImplemented(_)),
             "synth synth must be NotImplemented, got {err:?}"
         );
+    }
+
+    #[test]
+    fn tts_synthesize_without_composite_manifest_stays_fail_closed() {
+        let c = VoxCpm2Config::voxcpm_0_5b();
+        let w = VoxCpm2Weights {
+            lm_backbone: Vec::new(),
+            residual_lm: Vec::new(),
+            encoder: Vec::new(),
+            dit: Vec::new(),
+            projections: Vec::new(),
+            is_synthesized: false,
+        };
+        let tts = VoxCpm2Tts::new(c, w).unwrap();
+        let err = tts
+            .synthesize("hello")
+            .expect_err("fragmentary weights must not authorize synthesis");
+        match err {
+            VokraError::NotImplemented(message) => {
+                assert!(message.contains("complete-composite manifest"));
+                assert!(message.contains("tokenizer/provenance"));
+                assert!(message.contains("parity"));
+                assert!(message.contains("batch-one"));
+            }
+            other => panic!("expected fail-closed public synthesis, got {other:?}"),
+        }
     }
 
     #[test]

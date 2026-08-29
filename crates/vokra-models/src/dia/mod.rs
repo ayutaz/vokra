@@ -27,9 +27,10 @@
 //! Dia decodes to PCM via **DAC 44.1 kHz** (`descript-audio-codec` — Descript's
 //! open MIT codec) fetched by upstream `dia/model.py::_load_dac_model` through
 //! `dac.utils.download()`. The `data.channels=9` shape lines up 1:1 with DAC's
-//! 9-codebook RVQ frames at 44.1 kHz. In Vokra, DAC lives in
-//! `vokra-ops::dac_rvq` + `vokra-models::codec::DacCodecGguf` — a caller with a
-//! DAC GGUF injects it via [`DiaTts::with_dac`]. Until then
+//! 9-codebook RVQ frames at 44.1 kHz. In Vokra, the complete token-to-PCM
+//! path is [`crate::dac::Dac`]; the lower-level
+//! [`crate::codec::DacCodecGguf`] is only a GGUF weight container, not itself
+//! a PCM decoder. Until then
 //! [`DiaTts::synthesize`] returns [`VokraError::NotImplemented`] naming the
 //! blocker (FR-EX-08 — never a silent zero-fill).
 //!
@@ -38,25 +39,34 @@
 //! - [`DiaConfig`] — every hparam transcribed from the primary source (no
 //!   hardcoded fabrication; sample-rate is inherited from DAC 44.1 kHz per
 //!   upstream `_load_dac_model`, documented on the field).
-//! - [`DiaWeights`] — a text-encoder + decoder weight store with a
-//!   deterministic [`DiaWeights::synthesized`] fixture (SplitMix64 + Xavier)
-//!   so shape / dtype / size flow can be exercised without the real HF
-//!   checkpoint.
-//! - [`DiaTts`] — engine handle carrying config + weights + optional DAC bind.
+//! - [`DiaWeights`] — a text-encoder + decoder weight store with a strict
+//!   343-tensor GGUF loader and a deterministic
+//!   [`DiaWeights::synthesized`] fixture for shape-only tests.
+//! - [`DiaTts`] — shape-test engine handle carrying config + weights and an
+//!   optional low-level DAC GGUF bind; it is not a complete TTS runtime.
 //!   [`DiaTts::synthesize`] returns [`VokraError::NotImplemented`] until real
 //!   weights are bound (the real forward — encoder embed → per-layer prenorm
 //!   attn/FFN → decoder channel-embed sum → delayed AR sampling per channel →
-//!   DAC decode → PCM — is a follow-up wave gated on the real-checkpoint
-//!   tensor manifest).
+//!   DAC decode → PCM — remains gated on the real-checkpoint tensor manifest
+//!   and separate DAC/tokenizer provenance; the crate-private staged route is
+//!   in `dia::forward`.
 //!
-//! Real-checkpoint parity is deferred exactly like CosyVoice2 T02 / CSM T29:
-//! this scaffold sets the seam so the follow-up lands drop-in.
+//! Real-checkpoint parity and public PCM remain deferred until the VAST and
+//! Apple evidence gates pass. The staged route validates source-shaped math
+//! and cache sequencing but remains crate-private and fail-closed.
 
+use vokra_core::gguf::GgufFile;
 use vokra_core::rng::SplitMix64;
 use vokra_core::{Result, VokraError};
 
 mod bound;
+mod forward;
 pub use bound::{DiaCheckpoint, DiaTextEmbedding};
+pub(crate) use forward::{
+    DiaBatchOne, DiaCfgBatchOne, SamplingParams, apply_delay_pattern, classifier_free_guidance,
+    constrain_audio_logits, encode_text, prepare_audio_prompt, revert_delay_pattern,
+    revert_generated_audio, sample_tokens,
+};
 
 use crate::codec::DacCodecGguf;
 
@@ -451,9 +461,9 @@ pub struct DiaDecoderBlockWeights {
 /// Dia weight store: text encoder + decoder + per-channel logits heads.
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 + Xavier)
-/// against `config` so shape / dtype / size can be exercised without the
-/// real HF checkpoint. Real-checkpoint binding is a follow-up
-/// (T29-equivalent — tensor-name manifest fetch from the upstream release).
+/// against `config` so shape / dtype / size can be exercised without loading
+/// real weights. [`DiaCheckpoint::load_weights`] is the only authenticated
+/// production binding; synthesized values never enter that path.
 #[derive(Debug, Clone)]
 pub struct DiaWeights {
     /// Text-encoder input embedding, shape `[src_vocab_size, enc_n_embd]`.
@@ -659,13 +669,28 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
 pub struct DiaTts {
     cfg: DiaConfig,
     weights: DiaWeights,
-    /// Optional DAC codec bind. Injected via [`Self::with_dac`]; the real
-    /// synth path consumes the RVQ decode + DAC neural chain to produce
-    /// 44.1 kHz PCM.
+    /// Optional low-level DAC GGUF weight container. Injected via
+    /// [`Self::with_dac`]; this field alone is not the complete
+    /// [`crate::dac::Dac`] token-to-PCM decoder.
     dac: Option<DacCodecGguf>,
+    /// Independently authenticated complete DAC route, retained separately
+    /// from the legacy low-level container until parity gates are accepted.
+    production_dac: Option<crate::dac::Dac>,
 }
 
 impl DiaTts {
+    /// Opens an authenticated full Dia-1.6B main-model GGUF.
+    ///
+    /// This binds all 343 tensors through [`DiaCheckpoint`] before constructing
+    /// the engine. It deliberately does not open or infer a DAC: the separate
+    /// 44.1-kHz nine-codebook [`crate::dac::Dac`] artifact and same-execution
+    /// parity evidence are independent gates for PCM production.
+    pub fn from_gguf(file: &GgufFile, cfg: DiaConfig) -> Result<Self> {
+        let checkpoint = DiaCheckpoint::from_gguf(file)?;
+        let weights = checkpoint.load_weights(file, &cfg)?;
+        Self::new(cfg, weights)
+    }
+
     /// Assembles an engine from `cfg` and `weights`. Cross-checks the
     /// weight-store shapes against `cfg` (`n_layer` counts, channel table
     /// counts, per-tensor sizes) so a mismatched pair fails loudly here
@@ -801,13 +826,16 @@ impl DiaTts {
             cfg,
             weights,
             dac: None,
+            production_dac: None,
         })
     }
 
-    /// Injects a [`DacCodecGguf`] — the terminal RVQ codes → PCM decoder.
+    /// Injects the low-level [`DacCodecGguf`] GGUF weight container.
     ///
-    /// Dia's decoder outputs `channels` (9) RVQ codes per step; the DAC codec
-    /// reduces them to a 44.1 kHz PCM waveform. Without a DAC bind
+    /// Dia's decoder outputs `channels` (9) RVQ codes per step. The complete
+    /// [`crate::dac::Dac`] route reduces them to 44.1 kHz PCM; this lower-level
+    /// bind is only a compatibility seam and does not complete that route.
+    /// Without a DAC bind
     /// [`Self::synthesize`] cannot honestly return audio (FR-EX-08).
     ///
     /// Cross-checks that the DAC codec has at least as many codebooks as
@@ -831,6 +859,23 @@ impl DiaTts {
             )));
         }
         self.dac = Some(dac);
+        Ok(self)
+    }
+
+    /// Binds the complete independently authenticated 44.1-kHz nine-codebook
+    /// DAC. This is only composition staging; PCM remains fail-closed until
+    /// official same-execution parity and Apple evidence are accepted.
+    pub fn with_authenticated_dac(mut self, dac: crate::dac::Dac) -> Result<Self> {
+        if dac.sample_rate() != self.cfg.sample_rate || dac.n_codebooks() != self.cfg.channels {
+            return Err(VokraError::InvalidArgument(format!(
+                "dia with_authenticated_dac: expected {} Hz/{} codebooks, got {} Hz/{}",
+                self.cfg.sample_rate,
+                self.cfg.channels,
+                dac.sample_rate(),
+                dac.n_codebooks(),
+            )));
+        }
+        self.production_dac = Some(dac);
         Ok(self)
     }
 
@@ -864,15 +909,16 @@ impl DiaTts {
     /// noise or a hallucinated "silence"), so this returns
     /// [`VokraError::NotImplemented`] naming the blocker. Callers verify the
     /// shape flow through [`DiaTts::new`] + [`DiaWeights::synthesized`]
-    /// today; a follow-up wave binds the real HF checkpoint tensor names and
-    /// wires the forward.
+    /// today; [`DiaCheckpoint::load_weights`] binds the complete main-model
+    /// tensor set, while the separately authenticated [`crate::dac::Dac`]
+    /// and execution evidence remain required for PCM.
     ///
     /// # Errors
     ///
     /// - [`VokraError::InvalidArgument`] on `text_ids` length or an id ≥
     ///   `src_vocab_size`.
-    /// - [`VokraError::NotImplemented`] otherwise (real forward not yet
-    ///   bound — FR-EX-08).
+    /// - [`VokraError::NotImplemented`] otherwise (the public handle still
+    ///   lacks the complete authenticated checkpoint/DAC contract — FR-EX-08).
     pub fn synthesize(&self, text_ids: &[i64]) -> Result<Vec<f32>> {
         if text_ids.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -901,25 +947,22 @@ impl DiaTts {
                  be noise, not speech. Bind real Dia-1.6B weights (Apache 2.0, \
                  nari-labs/Dia-1.6B) before invoking synthesize. The shape flow \
                  (config validation, weight-store construction) is exercised through \
-                 DiaTts::new; the real-checkpoint tensor-name manifest lands in a \
-                 follow-up wave (T29-equivalent).",
+                 DiaTts::new; use DiaCheckpoint::load_weights for the authenticated \
+                 343-tensor main-model payload.",
             ));
         }
-        if self.dac.is_none() {
+        if self.production_dac.is_none() && self.dac.is_none() {
             return Err(VokraError::NotImplemented(
-                "dia synthesize: no DAC codec has been bound — call `.with_dac(\
-                 DacCodecGguf::from_gguf(&dac_gguf)?)?` first. Dia's decoder emits \
-                 9 RVQ codebook channels per step which the DAC 44.1 kHz codec \
-                 reduces to PCM; without it there is nothing honest to return \
-                 (FR-EX-08).",
+                "dia synthesize: no low-level DAC GGUF has been bound — the complete \
+                 crate::dac::Dac token-to-PCM decoder must be composed with Dia. Dia's \
+                 decoder emits 9 RVQ codebook channels per step; without a complete \
+                 codec route there is nothing honest to return (FR-EX-08).",
             ));
         }
         Err(VokraError::NotImplemented(
-            "dia synthesize: real weights are bound and a DAC codec is present, but \
-             the encoder + delayed-AR decoder forward path has not landed yet. \
-             Follow-up wave: transcribe the upstream tensor manifest and wire the \
-             pre-norm MHA + GQA + cross-attn + SwiGLU forward through the \
-             `Compute` seam (CosyVoice2 T07/T08 pattern).",
+            "dia synthesize: main model and DAC composition are staged, but the \
+             official same-execution delayed-AR/sampling parity and Apple evidence \
+             gates remain unaccepted (FR-EX-08).",
         ))
     }
 }

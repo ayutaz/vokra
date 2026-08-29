@@ -1014,6 +1014,146 @@ impl Compute {
         }
     }
 
+    /// Row-major GEMM with f32 activations and raw BF16 weight bits.
+    ///
+    /// `a` is `[m, k]`, `b` is `[k, n]` of numeric BF16 bit patterns, and
+    /// `out` is `[m, n]`. CPU keeps activations in f32 and widens bounded
+    /// weight panels inside the kernel. Metal uploads raw bits to its
+    /// dedicated device primitive and widens in MSL; CUDA/WebGPU retain their
+    /// existing dense-F32 route in model callers because they do not advertise
+    /// this capability. No backend silently falls back to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+    ) -> Result<()> {
+        let mut scratch = kernels::GemmF32Bf16BitsScratch::new();
+        self.gemm_f32_bf16_bits_with_scratch(m, n, k, a, b, out, &mut scratch)
+    }
+
+    /// Mixed-BF16 GEMM using reusable CPU scratch where applicable. The Metal
+    /// arm uses its raw-BF16 host wrapper; the caller-owned CPU scratch remains
+    /// untouched there because the Metal context owns device storage and
+    /// widening.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits_with_scratch(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+        scratch: &mut kernels::GemmF32Bf16BitsScratch,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => {
+                    kernels::gemm_f32_bf16_bits_on_with_scratch(isa, m, n, k, a, b, out, scratch)
+                }
+                None => kernels::gemm_f32_bf16_bits_with_scratch(m, n, k, a, b, out, scratch),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.gemm_f32_bf16_bits(m, n, k, a, b, out),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on CUDA; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on WebGPU; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Mixed-BF16 GEMM into a larger row-major destination.
+    ///
+    /// `out_stride` is the destination row width and must be at least `n`.
+    /// The CPU arm is the bounded-panel seam used by mapped model linears, so
+    /// its reusable `8 × 8` tile is the only output tile allocated. Metal model
+    /// linears use the non-strided method with one complete raw-BF16 logical
+    /// panel per submission; Metal rejects this strided seam explicitly rather
+    /// than hiding a per-row submission loop or allocating a complete F32
+    /// temporary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gemm_f32_bf16_bits_strided_with_scratch(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[u16],
+        out: &mut [f32],
+        out_stride: usize,
+        scratch: &mut kernels::GemmF32Bf16BitsScratch,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) => kernels::gemm_f32_bf16_bits_on_with_scratch_strided(
+                    isa, m, n, k, a, b, out, out_stride, scratch,
+                ),
+                None => kernels::gemm_f32_bf16_bits_on_with_scratch_strided(
+                    vokra_backend_cpu::active_isa(),
+                    m,
+                    n,
+                    k,
+                    a,
+                    b,
+                    out,
+                    out_stride,
+                    scratch,
+                ),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => Err(VokraError::UnsupportedOp(
+                "strided mixed raw-BF16 GEMM is not exposed on Metal; use the contiguous raw-BF16 GEMM route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on CUDA; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "mixed raw-BF16 GEMM is not exposed on WebGPU; use the existing dense-F32 route"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Whether this dispatcher is the explicit CPU backend.
+    #[must_use]
+    pub fn is_cpu(&self) -> bool {
+        matches!(&self.be, Be::Cpu)
+    }
+
+    /// Whether this backend can consume mapped raw-BF16 weight panels while
+    /// retaining FP32 activations. CPU uses the bounded scalar/SIMD panel
+    /// kernels and Metal uses its `ushort` device-storage path. CUDA and
+    /// WebGPU deliberately return `false`; model callers retain their dense
+    /// FP32 route there rather than invoking an unsupported seam or silently
+    /// transferring work to CPU.
+    #[must_use]
+    pub fn supports_mixed_bf16(&self) -> bool {
+        match &self.be {
+            Be::Cpu => true,
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(_) => true,
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => false,
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => false,
+        }
+    }
+
     /// Row-major GEMM against a **K-quantized** weight
     /// (`out[t,j] = bias[j] + Σ_l a[t,l]·dequant(wq[j,l])`), the fused
     /// dequant-dot counterpart of [`Self::gemm_f32`] (M5-15-T27/T33).
@@ -4351,6 +4491,59 @@ mod tests {
         let mut direct = [f32::NAN; 7];
         kernels::elu_f32(&input, &mut direct).expect("direct CPU ELU");
         assert_eq!(via_compute.map(f32::to_bits), direct.map(f32::to_bits));
+    }
+
+    #[test]
+    fn cpu_mixed_bf16_gemm_keeps_f32_activation_and_gpu_seam_explicit() {
+        let a = [1.0039062f32, -2.0078125, 0.5, 3.25];
+        let b = [0x3F80u16, 0x4000, 0x4040, 0x4080];
+        let mut via_compute = [f32::NAN; 4];
+        Compute::cpu()
+            .gemm_f32_bf16_bits(2, 2, 2, &a, &b, &mut via_compute)
+            .expect("CPU mixed BF16 GEMM");
+        let mut expected = [0.0f32; 4];
+        for i in 0..2 {
+            for j in 0..2 {
+                expected[i * 2 + j] = (0..2)
+                    .map(|l| a[i * 2 + l] * kernels::bf16_to_f32(b[l * 2 + j]))
+                    .sum();
+            }
+        }
+        assert_eq!(via_compute, expected);
+        assert!(Compute::cpu().is_cpu());
+        assert!(Compute::cpu().supports_mixed_bf16());
+        assert_eq!(Compute::cpu().backend_name(), "cpu");
+        assert_ne!(a[0], kernels::bf16_to_f32(kernels::f32_to_bf16_rne(a[0])));
+    }
+
+    #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+    #[test]
+    fn metal_strided_mixed_bf16_seam_is_explicitly_unsupported() {
+        let compute = match Compute::for_backend(BackendKind::Metal, &[]) {
+            Ok(compute) => compute,
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; strided mixed-BF16 seam test skipped");
+                return;
+            }
+            Err(error) => panic!("unexpected Metal setup error: {error}"),
+        };
+        let mut output = [f32::NAN; 4];
+        let mut scratch = kernels::GemmF32Bf16BitsScratch::new();
+        let error = compute
+            .gemm_f32_bf16_bits_strided_with_scratch(
+                2,
+                2,
+                2,
+                &[1.0, 2.0, 3.0, 4.0],
+                &[0x3f80, 0x4000, 0x4040, 0x4080],
+                &mut output,
+                2,
+                &mut scratch,
+            )
+            .expect_err("Metal must not hide per-row mixed-BF16 submissions");
+        assert!(
+            matches!(error, VokraError::UnsupportedOp(message) if message.contains("strided") && message.contains("contiguous"))
+        );
     }
 
     #[test]

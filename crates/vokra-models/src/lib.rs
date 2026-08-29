@@ -96,6 +96,10 @@ pub mod canary_qwen;
 // — the Llama primitives and HiFTNet seam are shared with CosyVoice2 /
 // CosyVoice3.
 pub mod chatterbox;
+/// Shared source-native T3/tokenizer/conditioning contracts for the
+/// Chatterbox family.  PCM loaders remain fail-closed until the complete
+/// composite pipeline is authenticated.
+pub mod chatterbox_family;
 // SoTA plan Phase 3 (2026-07-24): Resemble AI Chatterbox-Turbo TTS
 // (MIT). 350M-parameter distilled Turbo variant of Chatterbox — swaps
 // the backbone family from Llama_520M to **gpt2-medium** (30 layers ×
@@ -403,6 +407,10 @@ pub mod speaker;
 // 200-tensor public topology and runs its learned Conv1d/attention path through
 // the explicit CPU/Metal Compute seam.
 pub mod ecapa_tdnn;
+// JaesungHuh MIT voice-gender classifier. This is a distinct 202-tensor
+// classifier architecture and must not route through the 200-tensor
+// SpeechBrain ECAPA speaker binder.
+pub mod voice_gender_classifier;
 // WeSpeaker ResNet34-LM speaker encoder. Strictly accepts the two public
 // manifests and dispatches every learned Conv2D/projection GEMM through the
 // selected CPU or Metal backend.

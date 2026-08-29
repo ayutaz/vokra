@@ -9,27 +9,19 @@
 //! loud [`VokraError::InvalidArgument`] (never a silent empty reply);
 //! [`DialogTurn::text`] echoes the reply text verbatim.
 //!
-//! # Speaker conditioning note (T29-pending)
+//! # Speaker conditioning note
 //!
-//! The upstream tokenizes each segment's text with the speaker id folded
-//! into the text string (generator.py `_tokenize_text_segment(text,
-//! speaker)`). The exact prefix format was **not transcribed** by the T02
-//! fetch; `turn_text` uses `"[{speaker}]{text}"` as the (提案) fixture
-//! format and the T29 tokenizer hand-off pins the real one (the real
-//! tokenizer's `encode` is a `NotImplemented` stub until then anyway, so
-//! no real-checkpoint behaviour depends on this placeholder).
+//! The pinned upstream `generator.py::_tokenize_text_segment` passes the
+//! exact string `format!("[{speaker}]{text}")` to the Llama tokenizer. This
+//! is part of the model input contract, not a fixture convention.
 //!
 //! # Loading (FR-EX-08 posture)
 //!
-//! [`CsmEngine::from_gguf_with_policy`] mirrors the CosyVoice2 pattern:
-//! arch check → M2-13 weight-license gate → config read. Real weight
-//! binding is T29-gated, so the engine binds **synthesized** weights
-//! against the GGUF's shape config (the documented honest bridge —
-//! `LlmBackbone::from_gguf` precedent) and the GGUF tokenizer's `encode`
-//! stays `NotImplemented`; fixture flows inject
-//! [`FixtureByteTokenizer`] by
-//! name. A `0`-placeholder GGUF (scaffold converter) is rejected loudly at
-//! load.
+//! [`CsmEngine::from_gguf_with_policy`] is an explicit inspection/runtime
+//! boundary: it validates the arch, then refuses every production GGUF until
+//! an authenticated CSM + Mimi + tokenizer composite binder and parity result
+//! exist. Deterministic synthesized fixtures remain available only through
+//! [`CsmEngine::synthesized_fixture`] / [`CsmEngine::synthesized_with_config`].
 
 use std::sync::{Arc, Mutex};
 
@@ -47,7 +39,7 @@ use super::audio::{CsmAudioDecodeChain, CsmAudioDecodeState};
 use super::backbone::CsmFrame;
 use super::config::CsmConfig;
 use super::frame::{CsmFrameKind, CsmGenerationState, CsmModel};
-use super::tokenizer::{CsmTextTokenizer, FixtureByteTokenizer, GgufCsmTokenizer};
+use super::tokenizer::{CsmTextTokenizer, FixtureByteTokenizer};
 use crate::mimi::{MimiEncoder, MimiNeuralConfig, MimiNeuralDecoder};
 
 /// Upstream default generation cap: `max_audio_length_ms = 90_000`
@@ -130,9 +122,9 @@ impl CsmEngine {
             )));
         }
         let max_ms = DEFAULT_MAX_AUDIO_MS;
-        // frames = ms * frame_rate / 1000 = ms * frame_rate_mhz / 1e6.
-        let default_max_frames =
-            ((max_ms as u128 * cfg.frame_rate_mhz as u128) / 1_000_000) as usize;
+        // The source generator deliberately uses milliseconds / 80 (the
+        // Mimi 12.5 Hz frame period), rather than a floating-point rate.
+        let default_max_frames = max_audio_frames_from_ms(max_ms);
         Ok(Self {
             model,
             chain,
@@ -190,19 +182,9 @@ impl CsmEngine {
         Self::new(model, chain, encoder, tokenizer)
     }
 
-    /// Loads a CSM GGUF from raw bytes under `policy` (M2-13 gate — a
-    /// CC-BY-NC provenance without a research flag is refused).
-    ///
-    /// Weight posture: **synthesized bridge** until T29 (module docs);
-    /// the GGUF tokenizer's `encode` is `NotImplemented` until T29, so a
-    /// dialog attempt fails loudly unless a fixture tokenizer is injected
-    /// via [`Self::with_tokenizer`].
-    ///
-    /// # Errors
-    ///
-    /// [`VokraError::ModelLoad`] on a wrong arch / missing tokenizer
-    /// blob; compliance-gate refusals verbatim;
-    /// [`VokraError::InvalidArgument`] on a `0`-placeholder shape config.
+    /// Parses the container identity, then refuses every production GGUF until
+    /// the full CSM model, Mimi codec, tokenizer, and parity evidence are
+    /// authenticated. This route never synthesizes weights.
     pub fn from_gguf_with_policy(bytes: &[u8], policy: &CompliancePolicy) -> Result<Self> {
         let file = GgufFile::parse(bytes.to_vec())
             .map_err(|e| VokraError::ModelLoad(format!("csm GGUF: {e}")))?;
@@ -215,30 +197,13 @@ impl CsmEngine {
                 super::EXPECTED_ARCH
             )));
         }
+        // Keep the compliance gate ahead of the intentional runtime refusal:
+        // an unlicensed artifact must still be rejected as such, rather than
+        // being allowed to hide behind the generic inspection blocker.
         check_weight_license(&file, policy)?;
-        let cfg = CsmConfig::from_gguf(&file)?;
-        cfg.validate_for_forward()?;
-        let mimi_cfg = MimiNeuralConfig::from_gguf(&file)?;
-        mimi_cfg.validate()?;
-        // Synthesized bridge (T29 pending — LlmBackbone::from_gguf
-        // precedent, documented in the module docs).
-        let model = CsmModel::synthesized(cfg.clone(), super::CSM_FROM_GGUF_DEFAULT_SEED)?;
-        let encoder =
-            MimiEncoder::synthesized(&mimi_cfg, super::CSM_FROM_GGUF_DEFAULT_SEED ^ 0x5EED)?;
-        let neural = MimiNeuralDecoder::synthesized(
-            &mimi_cfg,
-            super::CSM_FROM_GGUF_DEFAULT_SEED ^ 0xDEC0,
-            true,
-        )?;
-        let attrs = MimiRvqAttrs {
-            n_codebooks: mimi_cfg.quantizer.n_q,
-            codebook_size: mimi_cfg.quantizer.bins,
-            d_model: mimi_cfg.quantizer.dimension,
-        };
-        let chain = CsmAudioDecodeChain::new(encoder.tables().to_vec(), attrs, neural)?;
-        let tokenizer: Arc<dyn CsmTextTokenizer> =
-            Arc::new(GgufCsmTokenizer::from_gguf(&file, cfg.text_vocab_size)?);
-        Self::new(model, chain, encoder, tokenizer)
+        Err(VokraError::NotImplemented(
+            "csm: INSPECTION_ONLY — production loading is blocked until authenticated CSM + Mimi + tokenizer composite binding and parity; no synthesized weights are permitted",
+        ))
     }
 
     /// Loads from a file path with the fail-closed strict policy.
@@ -330,8 +295,10 @@ impl CsmEngine {
 
     /// Sampler for a request: deterministic → greedy (a plain
     /// [`vokra_core::decode::argmax`] — allocation-free, the T18 hot
-    /// path); stochastic → the M1 [`Sampler`] at the upstream defaults
-    /// (temperature 0.9 / top-k 50) with the request seed.
+    /// path); non-deterministic fixture calls use the M1 [`Sampler`] at the
+    /// documented upstream defaults (temperature 0.9 / top-k 50). The
+    /// source-exact exponential-race RNG route remains separate and is not
+    /// exposed by production loading while composite parity is blocked.
     #[must_use]
     pub fn sampler_for(request: &DialogRequest) -> CsmFrameSampler {
         if request.deterministic {
@@ -347,21 +314,49 @@ impl CsmEngine {
         }
     }
 
-    /// Frame cap for a request (`min(request cap, engine default,
-    /// remaining context)` — the backbone rejects `n_ctx` overflow anyway,
-    /// this keeps the loop clean).
-    fn max_frames_for(&self, request: &DialogRequest, context_len: usize) -> usize {
-        let remaining = self.model.config().n_ctx.saturating_sub(context_len);
-        request
-            .max_frames
-            .unwrap_or(self.default_max_frames)
-            .min(self.default_max_frames)
-            .min(remaining)
+    /// Frame cap for a request. Upstream rejects a prompt at or beyond
+    /// `max_seq_len - max_generation_len`; it does not silently truncate the
+    /// requested generation to whatever happens to remain in the KV cache.
+    pub(crate) fn validate_max_frames(
+        &self,
+        requested: usize,
+        context_len: usize,
+    ) -> Result<usize> {
+        let n_ctx = self.model.config().n_ctx;
+        if context_len >= n_ctx || requested >= n_ctx.saturating_sub(context_len) {
+            return Err(VokraError::InvalidArgument(format!(
+                "csm dialog: inputs too long, prompt frames {context_len} must be below \
+                 max_seq_len - max_generation_len ({} - {requested} = {})",
+                n_ctx,
+                n_ctx.saturating_sub(requested)
+            )));
+        }
+        Ok(requested)
     }
 
-    /// Builds the backbone context frames for a request: context turns
-    /// (text → tokenizer, audio → Mimi encode), the cleaned input
-    /// utterance, then the reply text (priming generation).
+    pub(crate) fn max_frames_for(
+        &self,
+        request: &DialogRequest,
+        context_len: usize,
+    ) -> Result<usize> {
+        // An explicit caller cap is part of the upstream request contract;
+        // do not silently lower it to the default before checking context.
+        let requested = request.max_frames.unwrap_or(self.default_max_frames);
+        if requested == 0 {
+            return Err(VokraError::InvalidArgument(
+                "csm dialog: max_frames must be greater than zero".into(),
+            ));
+        }
+        self.validate_max_frames(requested, context_len)
+    }
+
+    /// Builds the legacy fixture context frames for a request.
+    ///
+    /// This helper accepts text-only/audio-only turns and a standalone input
+    /// audio segment for compatibility with the synthesized fixture API. It
+    /// is not the source-exact CSM prompt contract; production loading stays
+    /// closed until the strict composite binder is available. Use
+    /// [`Self::build_source_context_frames`] for the authenticated route.
     pub(crate) fn build_context_frames(
         &self,
         request: &DialogRequest,
@@ -391,6 +386,46 @@ impl CsmEngine {
         }
         if let Some(pcm) = cleaned_input {
             self.push_audio_frames(pcm, &mut frames)?;
+        }
+        self.push_text_frames(request.reply_speaker, &request.reply_text, &mut frames)?;
+        Ok(frames)
+    }
+
+    /// Builds the source-exact CSM context contract.
+    ///
+    /// The pinned upstream chat template supplies exactly one text and one
+    /// audio segment for every non-final message. A standalone incoming audio
+    /// segment cannot be relabeled as such a message, so this route rejects it
+    /// explicitly rather than silently accepting a different prompt shape.
+    pub(crate) fn build_source_context_frames(
+        &self,
+        request: &DialogRequest,
+        cleaned_input: Option<&[f32]>,
+    ) -> Result<Vec<CsmFrame>> {
+        if cleaned_input.is_some() {
+            return Err(VokraError::InvalidArgument(
+                "csm source context: standalone input_audio is not an upstream paired message"
+                    .to_owned(),
+            ));
+        }
+        if request.reply_text.is_empty() {
+            return Err(VokraError::InvalidArgument(
+                "csm source context: reply_text is empty".to_owned(),
+            ));
+        }
+        let mut frames = Vec::new();
+        for (index, turn) in request.context.iter().enumerate() {
+            match (turn.text.as_deref(), turn.audio.as_deref()) {
+                (Some(text), Some(audio)) => {
+                    self.push_text_frames(turn.speaker, text, &mut frames)?;
+                    self.push_audio_frames(audio, &mut frames)?;
+                }
+                _ => {
+                    return Err(VokraError::InvalidArgument(format!(
+                        "csm source context: turn {index} must contain exactly one text and one audio segment"
+                    )));
+                }
+            }
         }
         self.push_text_frames(request.reply_speaker, &request.reply_text, &mut frames)?;
         Ok(frames)
@@ -430,6 +465,10 @@ impl CsmEngine {
         for f in 0..n_frames {
             frames.push(CsmFrame::audio(codes[f * n_q..(f + 1) * n_q].to_vec()));
         }
+        // `generator.py::_tokenize_audio` appends one all-zero EOS frame to
+        // every context audio segment. This is a real conditioning position,
+        // distinct from generated EOS (which is not fed back).
+        frames.push(CsmFrame::audio(vec![0; n_q]));
         Ok(())
     }
 
@@ -494,7 +533,9 @@ impl CsmEngine {
 pub enum CsmFrameSampler {
     /// Temperature-0 argmax (deterministic parity anchor).
     Greedy,
-    /// Seeded M1 sampler (temperature 0.9 / top-k 50 — generator.py).
+    /// Seeded generic sampler for the legacy fixture path only. It is not the
+    /// source stochastic route (which requires caller-owned exponential
+    /// draws and is kept in [`sample_source_topk_with_draws`]).
     Stochastic(Sampler),
 }
 
@@ -508,10 +549,107 @@ impl CsmFrameSampler {
     }
 }
 
-/// The (提案) fixture turn-text format — module docs "Speaker
-/// conditioning note": the real prefix format is pinned at T29.
+/// Source-shaped CSM top-k sampler for independent parity harnesses.
+///
+/// The pinned upstream uses a logit threshold (retaining all ties at the
+/// k-th value), followed by a filtered softmax and an exponential race
+/// `argmax(probability / exponential_draw)`. `torch.empty_like(probs)` is
+/// allocated at full vocabulary width, so the caller-owned draw stream must
+/// consume one positive finite draw for *every* vocabulary index, including
+/// filtered probability-zero entries. This remains separate from the shared
+/// generic sampler above: that sampler is useful for fixtures but is not an
+/// upstream parity oracle.
+pub(crate) fn sample_source_topk_with_draws(
+    logits: &[f32],
+    temperature: f32,
+    top_k: usize,
+    draw_exponential: &mut dyn FnMut() -> f32,
+) -> Result<u32> {
+    if logits.is_empty()
+        || !temperature.is_finite()
+        || temperature <= 0.0
+        || top_k == 0
+        || top_k > logits.len()
+    {
+        return Err(VokraError::InvalidArgument(
+            "csm source sampler: logits, temperature, and top_k must be valid (top_k <= vocab)"
+                .into(),
+        ));
+    }
+    let mut scaled = Vec::with_capacity(logits.len());
+    for &value in logits {
+        if !value.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "csm source sampler: logits contain a non-finite value".into(),
+            ));
+        }
+        scaled.push(value / temperature);
+    }
+    let mut sorted = scaled.clone();
+    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let threshold = sorted[top_k - 1];
+    let candidates: Vec<bool> = scaled
+        .iter()
+        .enumerate()
+        .map(|(_, &value)| value >= threshold)
+        .collect();
+    let max = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &candidate)| candidate.then_some(scaled[index]))
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut probabilities: Vec<f32> = scaled
+        .iter()
+        .enumerate()
+        .map(|(index, &value)| {
+            if candidates[index] {
+                (value - max).exp()
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let total: f32 = probabilities.iter().sum();
+    if !total.is_finite() || total <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "csm source sampler: candidate softmax is not finite".into(),
+        ));
+    }
+    for probability in &mut probabilities {
+        *probability /= total;
+    }
+    let mut best = 0;
+    let mut best_score = f32::NEG_INFINITY;
+    for (index, &probability) in probabilities.iter().enumerate() {
+        // `torch.empty_like(probs).exponential_(1)` draws one exponential
+        // variate for every full-vocabulary element. No hidden RNG is
+        // consumed here; filtered entries retain probability zero.
+        let exponential = draw_exponential();
+        if !exponential.is_finite() || exponential <= 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "csm source sampler: exponential draw must be finite and > 0".into(),
+            ));
+        }
+        let score = probability / exponential;
+        if score > best_score {
+            best_score = score;
+            best = index;
+        }
+    }
+    Ok(best as u32)
+}
+
+/// The exact upstream speaker-conditioning format.
 pub(crate) fn turn_text(speaker: u32, text: &str) -> String {
     format!("[{speaker}]{text}")
+}
+
+/// Converts upstream `max_audio_length_ms` to the frame cap. CSM's source
+/// uses `int(max_audio_length_ms / 80)`; keep the integer operation visible
+/// and independently testable.
+#[must_use]
+pub const fn max_audio_frames_from_ms(max_audio_length_ms: u64) -> usize {
+    (max_audio_length_ms / 80) as usize
 }
 
 /// Explicit zero-pad helper: pads `pcm` up to a whole multiple of
@@ -538,7 +676,7 @@ impl S2sEngine for CsmEngine {
         let frames = self.build_context_frames(request, cleaned.as_deref())?;
         let mut generation = CsmGenerationState::new(self.model.config())?;
         self.model.prime(&mut generation, &frames)?;
-        let max_frames = self.max_frames_for(request, generation.context_len());
+        let max_frames = self.max_frames_for(request, generation.context_len())?;
         let mut audio_state: CsmAudioDecodeState = self.chain.state(max_frames.max(1))?;
         let mut sampler = Self::sampler_for(request);
         let hop = self.chain.frame_hop()?;
@@ -582,6 +720,88 @@ mod tests {
         DialogRequest::new("hello vokra")
             .with_reply_speaker(1)
             .deterministic()
+    }
+
+    #[test]
+    fn source_generation_cap_uses_integer_eighty_ms_frames() {
+        assert_eq!(max_audio_frames_from_ms(90_000), 1_125);
+        assert_eq!(max_audio_frames_from_ms(79), 0);
+        assert_eq!(max_audio_frames_from_ms(80), 1);
+        assert_eq!(turn_text(7, "hello"), "[7]hello");
+    }
+
+    #[test]
+    fn source_sampler_keeps_ties_and_consumes_one_draw_per_vocab_entry() {
+        let mut logits = [4.0, 4.0, 1.0];
+        let draws = [0.5f32, 1.0, 2.0];
+        let mut consumed = 0;
+        let id = sample_source_topk_with_draws(&logits, 1.0, 1, &mut || {
+            let draw = draws[consumed];
+            consumed += 1;
+            draw
+        })
+        .unwrap();
+        assert_eq!(id, 0, "equal probabilities break ties by first candidate");
+        assert_eq!(
+            consumed, 3,
+            "torch exponential_ consumes filtered entries too"
+        );
+    }
+
+    #[test]
+    fn source_sampler_rejects_oversized_top_k() {
+        let mut draws = 0;
+        let error = sample_source_topk_with_draws(&[1.0, 0.0], 1.0, 3, &mut || {
+            draws += 1;
+            1.0
+        })
+        .unwrap_err();
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert_eq!(draws, 0, "invalid top_k must not consume the draw stream");
+    }
+
+    #[test]
+    fn source_sampler_rejects_invalid_full_vocab_draw() {
+        let mut index = 0;
+        let error = sample_source_topk_with_draws(&[3.0, 2.0, 1.0], 1.0, 1, &mut || {
+            index += 1;
+            if index == 2 { f32::NAN } else { 1.0 }
+        })
+        .unwrap_err();
+        assert!(matches!(error, VokraError::InvalidArgument(_)));
+        assert_eq!(index, 2, "draw validation follows full-vocab order");
+    }
+
+    #[test]
+    fn context_audio_segments_end_with_an_all_zero_frame() {
+        let e = engine().with_echo_path(EchoPath::BypassRecordedInput);
+        let hop = e.encoder.frame_hop().unwrap();
+        let request = request().with_input_audio(vec![0.1; hop * 2]);
+        let frames = e.build_context_frames(&request, None).unwrap();
+        // Two encoded audio frames, one source EOS frame, then reply text.
+        assert!(frames.len() >= 4);
+        let audio = frames
+            .iter()
+            .filter_map(|frame| frame.audio.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(audio.len(), 3);
+        assert!(audio[2].iter().all(|&code| code == 0));
+    }
+
+    #[test]
+    fn prompt_plus_requested_generation_is_rejected_not_truncated() {
+        let e = engine().with_echo_path(EchoPath::BypassRecordedInput);
+        let err = e.dialog(&request().with_max_frames(61)).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert!(err.to_string().contains("inputs too long"));
+    }
+
+    #[test]
+    fn zero_generation_cap_is_rejected_like_the_source_contract() {
+        let e = engine().with_echo_path(EchoPath::BypassRecordedInput);
+        let err = e.dialog(&request().with_max_frames(0)).unwrap_err();
+        assert!(matches!(err, VokraError::InvalidArgument(_)));
+        assert!(err.to_string().contains("max_frames"));
     }
 
     #[test]
@@ -685,87 +905,40 @@ mod tests {
     }
 
     #[test]
+    fn source_context_rejects_unpaired_turn_and_standalone_input() {
+        let e = engine().with_echo_path(EchoPath::BypassRecordedInput);
+        let text_only =
+            request().with_context_turn(vokra_core::DialogContextTurn::text(0, "context line"));
+        assert!(e.build_source_context_frames(&text_only, None).is_err());
+        let standalone = request();
+        assert!(
+            e.build_source_context_frames(&standalone, Some(&[0.0; 128]))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn watermark_config_default_is_on_and_backend_deferred() {
         let e = engine();
         assert!(!e.watermark().audioseal_opted_out(), "default ON (T26)");
     }
 
     #[test]
-    fn from_gguf_loads_fixture_metadata_and_rejects_placeholders() {
+    fn from_gguf_is_explicitly_not_implemented_without_full_composite() {
         use vokra_core::gguf::GgufBuilder;
-        // Fixture-shaped GGUF (tiny config + mimi chunk + tokenizer blob).
-        let cfg = CsmConfig::tiny_for_tests();
-        let mut mimi_cfg = MimiNeuralConfig::tiny_for_tests();
-        mimi_cfg.quantizer.n_q = cfg.n_codebooks;
-        mimi_cfg.quantizer.bins = cfg.audio_vocab_size;
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "csm");
-        // The converter always stamps provenance (T04); the gate resolves
-        // the explicit weight-license class from it (T26).
+        let mut builder = GgufBuilder::new();
+        builder.add_string("vokra.model.arch", "csm");
         vokra_core::stamp_provenance(
-            &mut b,
+            &mut builder,
             vokra_core::LicenseClass::Permissive,
             "Apache-2.0",
             Some("sesame/csm-1b"),
-            None,
+            Some("huggingface"),
         );
-        let mut fixed = cfg.clone();
-        fixed.sample_rate = mimi_cfg.sample_rate;
-        fixed.frame_rate_mhz = mimi_cfg.frame_rate_mhz;
-        fixed.write_gguf_metadata(&mut b);
-        mimi_cfg.write_gguf_metadata(&mut b);
-        b.add_metadata(
-            "vokra.tokenizer.model",
-            vokra_core::gguf::GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
-                element_type: vokra_core::gguf::GgufValueType::U8,
-                values: vec![vokra_core::gguf::GgufMetadataValue::U8(1)],
-            }),
-        );
-        let bytes = b.to_bytes().unwrap();
-        let e = CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict())
-            .expect("fixture-shaped GGUF loads (synthesized bridge)");
-        // The GGUF tokenizer is honest: encode = NotImplemented until T29.
-        let err = e
-            .with_echo_path(EchoPath::BypassRecordedInput)
-            .dialog(&request())
-            .unwrap_err();
-        assert!(matches!(err, VokraError::NotImplemented(_)));
-
-        // A provenance-less GGUF is refused by the M2-13 gate first
-        // (fail-closed: unknown weight license needs a research flag).
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "csm");
-        let bytes = b.to_bytes().unwrap();
+        let bytes = builder.to_bytes().expect("fixture GGUF");
         assert!(matches!(
             CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()),
-            Err(VokraError::ResearchLicenseRequired { .. })
-        ));
-
-        // A 0-placeholder GGUF (scaffold converter posture, provenance
-        // stamped) passes the gate and then fails the shape validation
-        // loudly.
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "csm");
-        vokra_core::stamp_provenance(
-            &mut b,
-            vokra_core::LicenseClass::Permissive,
-            "Apache-2.0",
-            Some("sesame/csm-1b"),
-            None,
-        );
-        let bytes = b.to_bytes().unwrap();
-        assert!(matches!(
-            CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()),
-            Err(VokraError::InvalidArgument(_))
-        ));
-
-        // A wrong arch is a ModelLoad error.
-        let mut b = GgufBuilder::new();
-        b.add_string("vokra.model.arch", "whisper");
-        let bytes = b.to_bytes().unwrap();
-        assert!(matches!(
-            CsmEngine::from_gguf_with_policy(&bytes, &CompliancePolicy::strict()),
-            Err(VokraError::ModelLoad(_))
+            Err(VokraError::NotImplemented(message)) if message.contains("INSPECTION_ONLY")
         ));
     }
 

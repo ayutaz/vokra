@@ -69,8 +69,8 @@
 //!
 //! # Loud-partial classification (design § — CLAUDE.md 教訓 (a))
 //!
-//! - **Real (this WP)**:
-//!   - [`Clap::from_gguf`] with strict `vokra.model.arch == "clap"`
+//! - **Envelope (this WP)**:
+//!   - [`Clap::from_gguf`] checks strict `vokra.model.arch == "clap"`
 //!     validation. Sibling audio-embedding / classification arch tags
 //!     (`panns` / `emotion2vec` / `wavlm_sv` / `ecapa_tdnn` /
 //!     `wespeaker` / `campplus` / `audioldm2` / `musicgen`) fail with
@@ -80,24 +80,17 @@
 //!     family with a completely different output surface (fixed 527-way
 //!     head / speaker-embedding / generation / SSL raw representation),
 //!     FR-EX-08.
-//!   - [`ClapWeights::from_gguf`] with a floor of non-empty tensor
-//!     count enforced loud (a GGUF that carries zero tensors is refused
-//!     rather than silently running an all-zero forward — FR-EX-08).
-//!   - Weight-license class surfacing (defaults to
-//!     [`LicenseClass::Unknown`] when the stamp is absent; a
-//!     converter-produced GGUF surfaces [`LicenseClass::Permissive`]
-//!     since CLAP ships Apache-2.0 end-to-end).
+//!   - [`ClapWeights::from_gguf`] diagnoses an empty tensor list, then the
+//!     public loader remains manifest-gated. A metadata-only GGUF is refused
+//!     rather than silently running an all-zero forward (FR-EX-08).
+//!   - License metadata is recorded for the eventual audited bind but is not
+//!     evidence that a CLAP artifact is executable.
 //!
-//! - **Loud-partial (this WP)**: [`Clap::encode_audio`] returns
-//!   [`VokraError::UnsupportedOp`] naming the deferred HTSAT audio
-//!   encoder + RoBERTa text encoder + shared projection head, echoing
-//!   all three primary source URLs (LAION-AI/CLAP GitHub +
-//!   arXiv:2211.06687 + laion/clap-htsat-fused HF release) so a reader
-//!   diagnosing this gap has exactly three places to walk. The
-//!   canonical embedding width ([`CLAP_EMBED_DIM`] = 512) is echoed so
-//!   the reader can cross-check the output shape the follow-up wave
-//!   targets. **No fabricated audio embedding is ever emitted**
-//!   (FR-EX-08 — no silent partial output).
+//! - **Inspection-only (this WP)**: [`Clap::from_gguf`] rejects every
+//!   metadata-only payload with [`VokraError::ModelLoad`] until VAST records
+//!   the exact upstream tensor manifest. [`Clap::encode_audio`] is therefore
+//!   unreachable from an unverified artifact; **no fabricated audio embedding
+//!   is ever emitted** (FR-EX-08 — no silent partial output).
 //!
 //! # Sibling family distinctness (audio-embedding-lineage neighbourhood)
 //!
@@ -195,6 +188,8 @@ pub const CATEGORY: &str = "classification";
 /// constant — recorded here so the runtime binder can echo it in
 /// loud-partial diagnostics without re-fetching a manifest).
 pub const UPSTREAM_HF: &str = "laion/clap-htsat-fused";
+/// Immutable HF revision used for all CLAP source and checkpoint audits.
+pub const UPSTREAM_REVISION: &str = "365dea6ef167def6676140ed93bbc43f84dabb28";
 
 /// Raw PCM sample rate the HTSAT front-end consumes (48 kHz per
 /// upstream CLAP release manifest — distinct from most sibling audio
@@ -224,6 +219,9 @@ pub const PRIMARY_SOURCE_CODE: &str = "github.com/LAION-AI/CLAP";
 pub const PRIMARY_SOURCE_PAPER: &str = "arxiv.org/abs/2211.06687";
 /// Primary-source anchor for the CLAP HF release.
 pub const PRIMARY_SOURCE_HF: &str = "huggingface.co/laion/clap-htsat-fused";
+
+const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
 
 // ---------------------------------------------------------------------------
 // ClapWeights — non-empty tensor gate.
@@ -321,14 +319,15 @@ pub struct Clap {
 }
 
 impl Clap {
-    /// Binds a CLAP GGUF: validates arch, discovers tensors, and
-    /// surfaces the stamped weight-license class for the compliance-gate
-    /// cross-checks.
+    /// Validates the CLAP GGUF envelope, then fails closed until the VAST
+    /// tensor-name/shape manifest has been audited.
     ///
-    /// This binder is a *loud* validation step. Every failure is a
-    /// distinct [`VokraError::ModelLoad`] naming the missing / wrong
-    /// key so a reader diagnosing a mis-produced GGUF has exactly one
-    /// place to walk (FR-EX-08 — never a silent partial bind).
+    /// This is intentionally an inspection-only native-forward scaffold, not
+    /// a live weight binder. The current repository has no audited manifest
+    /// for the public CLAP checkpoint; accepting only metadata or
+    /// tensor names would make a later forward silently bind the wrong
+    /// topology. The only valid success path will be added once VAST records
+    /// the exact names, shapes, layout, and checkpoint digest.
     ///
     /// # Errors
     ///
@@ -338,9 +337,8 @@ impl Clap {
     ///   `emotion2vec` / `wavlm_sv` / `ecapa_tdnn` / `wespeaker` /
     ///   `campplus` / `audioldm2` / `musicgen` — fails with a clear
     ///   message instead of a downstream missing-tensor error).
-    /// - [`VokraError::ModelLoad`] when the GGUF carries zero tensors
-    ///   ([`ClapWeights::from_gguf`] refuses to bind an all-zero
-    ///   forward).
+    /// - [`VokraError::ModelLoad`] for every otherwise well-formed GGUF until
+    ///   the audited tensor manifest is available.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         // 1. Arch check — always first so a mis-typed model handed here
         //    fails with a specific message instead of a downstream
@@ -381,25 +379,30 @@ impl Clap {
             }
         }
 
-        // 2. Load the tensor manifest with the non-emptiness gate.
+        // 2. Load the tensor manifest with the non-emptiness gate. This is
+        // diagnostic only: no tensor is bound to a runtime weight structure.
         let weights = ClapWeights::from_gguf(file)?;
 
-        // 3. Provenance surfacing — read the stamped weight-license
-        //    class for the compliance-gate cross-checks. The CLAP
-        //    converter stamps `Permissive` (Apache-2.0 —
-        //    `DEFAULT_LICENSE_SPDX = "apache-2.0"`); a GGUF missing the
-        //    stamp reads back as `Unknown` (fail-closed default per
-        //    feedback-license-signoff-primary-source memory).
+        // 3. Read the license class only for diagnostics. It is not evidence
+        //    that this metadata-only artifact is executable.
         let weight_license = file
             .get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
             .and_then(|v| v.as_str())
             .and_then(LicenseClass::from_class_str)
             .unwrap_or(LicenseClass::Unknown);
 
-        Ok(Self {
-            weights,
-            weight_license,
-        })
+        let upstream_hf = file
+            .get(KEY_PROVENANCE_UPSTREAM_HF)
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        let upstream_revision = file
+            .get(KEY_PROVENANCE_UPSTREAM_REVISION)
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        Err(VokraError::ModelLoad(format!(
+            "clap: native audio forward is inspection-only; the audited tensor-name/shape manifest is unavailable, so refusing to bind {} tensors (GGUF upstream_hf={upstream_hf}, upstream_revision={upstream_revision}, expected upstream_hf={UPSTREAM_HF}, expected revision={UPSTREAM_REVISION}). VAST evidence must record every audio/projection tensor name, shape, dtype, qkv layout, weight-normalized positional-convolution parameters, checkpoint SHA-256, and official Transformers runtime hash before CPU/Metal execution can be enabled; no fallback or fabricated embedding is permitted (FR-EX-08). License class observed: {weight_license:?}",
+            weights.tensor_count()
+        )))
     }
 
     /// Convenience wrapper for [`Self::from_gguf`] that opens the GGUF
@@ -414,22 +417,18 @@ impl Clap {
         Self::from_gguf(&file)
     }
 
-    /// The stamped weight-license class surfaced from the GGUF's
-    /// `vokra.provenance.weight_license` chunk. The CLAP converter
-    /// stamps `Permissive` (Apache-2.0 — end-to-end per the
-    /// `laion/clap-htsat-fused` model card `license: apache-2.0`
-    /// verified per the converter docstring). A GGUF missing the stamp
-    /// reads back as `Unknown` (fail-closed at the M2-13 compliance
-    /// gate).
+    /// The stamped weight-license class that would be exposed after a real
+    /// manifest bind. `from_gguf` currently rejects before constructing a
+    /// [`Clap`], so this accessor is reserved for that audited path and does
+    /// not imply that metadata-only CLAP artifacts are executable.
     #[inline]
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
-    /// Number of tensors bound from the GGUF. Purely a diagnostic
-    /// accessor — the follow-up HTSAT + RoBERTa + projection head
-    /// forward wave uses it to size its expectations.
+    /// Number of tensors held by an already-constructed runtime handle. The
+    /// current public loader never constructs one from metadata-only input.
     #[inline]
     #[must_use]
     pub fn tensor_count(&self) -> usize {
@@ -449,13 +448,12 @@ impl Clap {
     /// embedding compatible (same shared space) with the paired text
     /// tower's embedding.
     ///
-    /// # Loud-partial (this WP)
+    /// # Manifest gate
     ///
-    /// Returns [`VokraError::UnsupportedOp`] — the full CLAP forward
-    /// requires the deferred HTSAT audio encoder + shared projection
-    /// head walk, which cannot be synthesized from the current binder
-    /// scaffold without a real tensor-name walk against the upstream
-    /// `laion/clap-htsat-fused` safetensors manifest.
+    /// The method is retained as the eventual forward surface. It returns
+    /// [`VokraError::UnsupportedOp`] for any handle constructed internally
+    /// before the audited HTSAT audio encoder + projection walk lands; public
+    /// loading already fails closed at [`Self::from_gguf`].
     ///
     /// The error names all three primary source URLs (LAION-AI/CLAP
     /// GitHub + arXiv:2211.06687 + laion/clap-htsat-fused HF release)
@@ -492,9 +490,9 @@ impl Clap {
     }
 }
 
-/// Construct the loud-partial [`VokraError::UnsupportedOp`] returned by
-/// [`Clap::encode_audio`] until the HTSAT audio encoder + RoBERTa text
-/// encoder + shared projection head composition lands.
+/// Construct the deferred-forward [`VokraError::UnsupportedOp`] returned by
+/// [`Clap::encode_audio`] if an internal handle reaches that surface before
+/// the HTSAT audio encoder + projection composition lands.
 ///
 /// Names **three** primary source URLs (LAION-AI/CLAP GitHub +
 /// arXiv:2211.06687 + laion/clap-htsat-fused HF release) so a reader
@@ -504,6 +502,7 @@ impl Clap {
 /// musicgen / conv_tasnet / redimnet / storm / sortformer / RMVPE /
 /// pyannote / wavlm / emotion2vec loud-partial-message precedent
 /// (CLAUDE.md 教訓 (a)).
+#[allow(dead_code)]
 fn encode_audio_forward_loud_partial() -> VokraError {
     VokraError::UnsupportedOp(format!(
         "clap encode_audio (loud-partial): the full forward is deferred; \
@@ -544,9 +543,8 @@ fn encode_audio_forward_loud_partial() -> VokraError {
 #[cfg(test)]
 mod tests {
     //! Tests for the CLAP runtime binder — contract-constant pins +
-    //! metadata round-trip + negative-space round-trip on the
-    //! loud-partial gates + arch-tag distinctness pin + primary-source
-    //! URL pin.
+    //! manifest-gate negative-space tests, arch-tag distinctness, and source
+    //! URL pins.
     //!
     //! # What "round-trip" means here
     //!
@@ -565,29 +563,23 @@ mod tests {
     //!    match the converter's values exactly (cross-crate consistency
     //!    — a converter drift without a binder-side follow-through
     //!    would land here in the same commit or fail the test).
-    //! 2. **Metadata round-trip**: `from_gguf` reads arch + name +
-    //!    category + license stamp + tensor manifest with the correct
-    //!    surface semantics (Permissive stamp binds, Unknown fallback
-    //!    fires when the stamp is absent).
+    //! 2. **Manifest gate**: metadata and a non-empty tensor list never
+    //!    bypass the unverified checkpoint boundary.
     //! 3. **Loud-error negative-space round-trip**: every stated
     //!    blocker (missing arch / wrong arch / empty tensor list /
     //!    empty PCM / unsupported forward surface) fires at its
     //!    documented surface point, in the documented error variant.
     //! 4. **Arch-tag distinctness pin**: the arch string is stable and
     //!    distinct from every sibling audio-embedding-lineage arch tag.
-    //! 5. **Loud-partial primary-source pin**: the loud-partial message
-    //!    cites all three primary source URLs so a follow-up wave has
-    //!    exactly three anchors to walk.
+    //! 5. **Source pin**: the manifest-gate message cites the immutable
+    //!    revision and required audit evidence.
 
     use super::*;
     use vokra_core::gguf::{GgmlType, GgufBuilder};
 
     /// Helper: builds a legitimate CLAP GGUF (arch + name + category +
-    /// optional weight-license stamp + one representative CLAP-style
-    /// tensor). The tensor uses a placeholder upstream name
-    /// (`audio_branch.htsat.patch_embed.proj.weight`, mirroring a
-    /// plausible HTSAT patch-embed tensor name) so the non-emptiness
-    /// gate is satisfied.
+    /// optional weight-license stamp + one arbitrary non-empty tensor). The
+    /// test tensor is deliberately not presented as an upstream CLAP name.
     fn clap_gguf(weight_license_class: Option<LicenseClass>) -> GgufFile {
         let mut b = GgufBuilder::new();
         b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
@@ -596,11 +588,10 @@ mod tests {
         if let Some(cls) = weight_license_class {
             b.add_string(chunks::KEY_PROVENANCE_WEIGHT_LICENSE, cls.as_str());
         }
-        // One representative CLAP-style tensor so the non-emptiness
-        // gate passes. Uses a placeholder name mirroring a plausible
-        // HTSAT patch-embed tensor path.
+        // An arbitrary tensor is enough to exercise the metadata-only gate;
+        // no unverified upstream tensor name belongs in a contract fixture.
         b.add_tensor(
-            "audio_branch.htsat.patch_embed.proj.weight",
+            "test.tensor",
             GgmlType::F32,
             vec![2, 3],
             vec![0u8; 2 * 3 * 4],
@@ -642,39 +633,22 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 2 — from_gguf metadata round-trip (Permissive stamp bound,
-    //          non-empty tensor gate passed, missing stamp falls back
-    //          to Unknown)
+    // Test 2 — metadata-only payload is rejected by the manifest gate.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn from_gguf_metadata_round_trip() {
-        // Build a legitimate GGUF with arch + name + category +
-        // Permissive license stamp + one tensor. The binder must bind,
-        // surface the Permissive license class (matching what the
-        // converter stamps for CLAP's Apache-2.0 license), and report at
-        // least one tensor bound.
+    fn from_gguf_metadata_only_is_rejected() {
+        // Build a metadata-only GGUF with arch + name + category + a
+        // Permissive license stamp + one tensor. The public loader must
+        // still reject it until the VAST manifest is audited.
         let file = clap_gguf(Some(LicenseClass::Permissive));
-        let c = Clap::from_gguf(&file).expect("valid GGUF must bind");
-        assert_eq!(
-            c.weight_license(),
-            LicenseClass::Permissive,
-            "Permissive stamp must round-trip (mirror of what the CLAP converter emits)"
-        );
-        assert!(
-            c.tensor_count() >= 1,
-            "at least one tensor must be bound from the legitimate GGUF fixture"
-        );
-
-        // A GGUF missing the stamp must fall back to Unknown (fail-closed
-        // default per feedback-license-signoff-primary-source memory).
-        let file_no_stamp = clap_gguf(None);
-        let c2 = Clap::from_gguf(&file_no_stamp).expect("missing stamp still binds");
-        assert_eq!(
-            c2.weight_license(),
-            LicenseClass::Unknown,
-            "missing license stamp must fail-closed to Unknown"
-        );
+        let Err(VokraError::ModelLoad(message)) = Clap::from_gguf(&file) else {
+            panic!("metadata-only GGUF must remain behind the manifest gate")
+        };
+        assert!(message.contains("inspection-only"));
+        assert!(message.contains("tensor-name/shape manifest"));
+        assert!(message.contains(UPSTREAM_REVISION));
+        assert!(message.contains("qkv layout"));
     }
 
     // -----------------------------------------------------------------------
@@ -825,110 +799,117 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 6 — encode_audio loud-partial (returns UnsupportedOp naming
-    //          HTSAT + RoBERTa + shared projection head + all 3 primary
-    //          sources + embedding width + FR-EX-08 rationale)
+    // Test 6 — the unverified metadata payload cannot reach audio execution.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn encode_audio_loud_partial_returns_unsupported_op() {
+    fn encode_audio_requires_audited_manifest() {
         // A GGUF with the license stamp — binds cleanly.
         let file = clap_gguf(Some(LicenseClass::Permissive));
-        let c = Clap::from_gguf(&file).expect("valid arch must bind");
-        assert_eq!(c.weight_license(), LicenseClass::Permissive);
-
-        // Legitimate PCM shape: 1 s of silence at 48 kHz mono (per the
-        // upstream HTSAT front-end convention).
-        let pcm = vec![0.0_f32; 48_000];
-        let Err(err) = c.encode_audio(&pcm) else {
-            panic!("encode_audio must loud-partial");
+        let Err(VokraError::ModelLoad(message)) = Clap::from_gguf(&file) else {
+            panic!("unverified manifest must block audio execution")
         };
-        match err {
-            VokraError::UnsupportedOp(msg) => {
-                // Names the surface + posture.
-                assert!(
-                    msg.contains("clap encode_audio"),
-                    "surface must be called out: {msg}"
-                );
-                assert!(msg.contains("loud-partial"), "posture label: {msg}");
+        assert!(message.contains("inspection-only"));
+        assert!(message.contains("CPU/Metal"));
+        assert!(message.contains("no fallback"));
+        if let Ok(c) = Clap::from_gguf(&file) {
+            assert_eq!(c.weight_license(), LicenseClass::Permissive);
 
-                // Names the three missing pieces by exact identifier.
-                assert!(
-                    msg.contains("HTSAT"),
-                    "message must name the HTSAT audio encoder gap, got `{msg}`"
-                );
-                assert!(
-                    msg.contains("RoBERTa"),
-                    "message must name the RoBERTa text encoder gap, got `{msg}`"
-                );
-                assert!(
-                    msg.contains("shared projection head"),
-                    "message must name the shared projection head gap, got `{msg}`"
-                );
-
-                // The three missing pieces must be enumerated (i, ii, iii).
-                assert!(
-                    msg.contains("(i)") && msg.contains("(ii)") && msg.contains("(iii)"),
-                    "message must enumerate the three missing pieces, got `{msg}`"
-                );
-
-                // Cites all three primary source URLs so a reader
-                // diagnosing the gap has anchors to walk.
-                for url in [PRIMARY_SOURCE_CODE, PRIMARY_SOURCE_PAPER, PRIMARY_SOURCE_HF] {
+            // Legitimate PCM shape: 1 s of silence at 48 kHz mono (per the
+            // upstream HTSAT front-end convention).
+            let pcm = vec![0.0_f32; 48_000];
+            let Err(err) = c.encode_audio(&pcm) else {
+                panic!("encode_audio must loud-partial");
+            };
+            match err {
+                VokraError::UnsupportedOp(msg) => {
+                    // Names the surface + posture.
                     assert!(
-                        msg.contains(url),
-                        "expected primary source URL '{url}' cited: {msg}"
+                        msg.contains("clap encode_audio"),
+                        "surface must be called out: {msg}"
+                    );
+                    assert!(msg.contains("loud-partial"), "posture label: {msg}");
+
+                    // Names the three missing pieces by exact identifier.
+                    assert!(
+                        msg.contains("HTSAT"),
+                        "message must name the HTSAT audio encoder gap, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("RoBERTa"),
+                        "message must name the RoBERTa text encoder gap, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("shared projection head"),
+                        "message must name the shared projection head gap, got `{msg}`"
+                    );
+
+                    // The three missing pieces must be enumerated (i, ii, iii).
+                    assert!(
+                        msg.contains("(i)") && msg.contains("(ii)") && msg.contains("(iii)"),
+                        "message must enumerate the three missing pieces, got `{msg}`"
+                    );
+
+                    // Cites all three primary source URLs so a reader
+                    // diagnosing the gap has anchors to walk.
+                    for url in [PRIMARY_SOURCE_CODE, PRIMARY_SOURCE_PAPER, PRIMARY_SOURCE_HF] {
+                        assert!(
+                            msg.contains(url),
+                            "expected primary source URL '{url}' cited: {msg}"
+                        );
+                    }
+
+                    // Embedding width echoed (load-bearing for consumer
+                    // cosine-similarity computations — silent drift would
+                    // corrupt every downstream comparison).
+                    assert!(
+                        msg.contains("512"),
+                        "message must echo the embedding width (512), got `{msg}`"
+                    );
+
+                    // FR-EX-08 rationale cited.
+                    assert!(
+                        msg.contains("FR-EX-08"),
+                        "expected FR-EX-08 rationale for no fake embedding: {msg}"
                     );
                 }
-
-                // Embedding width echoed (load-bearing for consumer
-                // cosine-similarity computations — silent drift would
-                // corrupt every downstream comparison).
-                assert!(
-                    msg.contains("512"),
-                    "message must echo the embedding width (512), got `{msg}`"
-                );
-
-                // FR-EX-08 rationale cited.
-                assert!(
-                    msg.contains("FR-EX-08"),
-                    "expected FR-EX-08 rationale for no fake embedding: {msg}"
-                );
+                other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
             }
-            other => panic!("expected VokraError::UnsupportedOp, got {other:?}"),
         }
     }
 
     // -----------------------------------------------------------------------
-    // Test 7 — encode_audio rejects empty PCM at the InvalidArgument
-    //          surface BEFORE the loud-partial gate (caller sees the
-    //          actionable error, not the deeper "primitive missing"
-    //          error)
+    // Test 7 — an empty input does not bypass the manifest gate.
     // -----------------------------------------------------------------------
 
     #[test]
-    fn encode_audio_empty_pcm_is_invalid_argument() {
+    fn encode_audio_empty_pcm_does_not_bypass_manifest_gate() {
         let file = clap_gguf(Some(LicenseClass::Permissive));
-        let c = Clap::from_gguf(&file).unwrap();
-        let Err(err) = c.encode_audio(&[]) else {
-            panic!("empty pcm must be rejected");
+        let Err(VokraError::ModelLoad(message)) = Clap::from_gguf(&file) else {
+            panic!("empty input must not make an unverified model executable")
         };
-        match err {
-            VokraError::InvalidArgument(msg) => {
-                assert!(
-                    msg.contains("empty"),
-                    "message must call out the empty PCM, got `{msg}`"
-                );
-                assert!(
-                    msg.contains("48000"),
-                    "message must name the expected sample rate (48 kHz), got `{msg}`"
-                );
-                assert!(
-                    msg.contains("FR-EX-08"),
-                    "message must cite the FR-EX-08 rationale, got `{msg}`"
-                );
+        assert!(message.contains("inspection-only"));
+        if let Ok(c) = Clap::from_gguf(&file) {
+            let Err(err) = c.encode_audio(&[]) else {
+                panic!("empty pcm must be rejected");
+            };
+            match err {
+                VokraError::InvalidArgument(msg) => {
+                    assert!(
+                        msg.contains("empty"),
+                        "message must call out the empty PCM, got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("48000"),
+                        "message must name the expected sample rate (48 kHz), got `{msg}`"
+                    );
+                    assert!(
+                        msg.contains("FR-EX-08"),
+                        "message must cite the FR-EX-08 rationale, got `{msg}`"
+                    );
+                }
+                other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
             }
-            other => panic!("expected VokraError::InvalidArgument, got {other:?}"),
         }
     }
 }

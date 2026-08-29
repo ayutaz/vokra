@@ -66,7 +66,11 @@ impl VoxCpm2Checkpoint {
         self.checkpoint.tensor_count()
     }
 
-    /// End-to-end PCM stays loud until LM/DiT/VAE paths are bound.
+    /// End-to-end PCM stays loud: this is a historical main-checkpoint
+    /// diagnostic only, not a complete AudioVAE/tokenizer runtime. A
+    /// source-shaped batch-one route exists internally, but this old
+    /// main-only artifact cannot authorize it without the immutable complete
+    /// composite manifest and independent parity evidence.
     pub fn synthesize(&self, text: &str) -> Result<Vec<f32>> {
         if text.is_empty() {
             return Err(VokraError::InvalidArgument(
@@ -74,7 +78,7 @@ impl VoxCpm2Checkpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "voxcpm2 synthesize: the complete official 0.5B checkpoint is bound and the real stop projection runs natively, but MiniCPM/residual-LM decode, CFM/DiT sampling and continuous-AudioVAE PCM decode remain pending.",
+            "voxcpm2 synthesize: historical main-checkpoint stop projection is available only as a partial diagnostic; the source-shaped batch-one route exists internally, but immutable complete-composite manifest, AudioVAE/tokenizer/provenance authentication, and independent CPU/Metal parity remain INSPECTION_ONLY blockers.",
         ))
     }
 }

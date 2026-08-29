@@ -1,9 +1,9 @@
 //! Strict real-checkpoint binding and the native Irodori text block.
 //!
-//! The public Vokra artifact is an F32, 637-tensor pass-through of the
-//! official v3 state dict.  This module validates that complete name/shape
-//! tree without eagerly decoding two gigabytes of weights, and decodes one
-//! text-encoder block on demand for native execution.
+//! The historical public Vokra artifact is a partial, 637-tensor diagnostic
+//! checkpoint. This module validates that name/shape tree without eagerly
+//! decoding two gigabytes of weights, and decodes one text-encoder block on
+//! demand for diagnostics; it is not an end-to-end TTS binder.
 
 use std::collections::BTreeMap;
 
@@ -33,7 +33,8 @@ pub struct IrodoriCheckpoint {
 
 impl IrodoriCheckpoint {
     /// Validates the architecture, all 30 topology axes, and the exact
-    /// official 637-tensor name/shape manifest.
+    /// historical 637-tensor diagnostic manifest. This does not authenticate
+    /// the separate tokenizer, reference encoder, or Semantic-DACVAE codec.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let arch = required_string(file, chunks::KEY_MODEL_ARCH)?;
         if arch != EXPECTED_ARCH {
@@ -136,7 +137,7 @@ impl IrodoriCheckpoint {
             ));
         }
         Err(VokraError::NotImplemented(
-            "irodori synthesize: the real official 637-tensor checkpoint is bound and a native text-encoder block is available, but end-to-end PCM still requires the LLM-JP tokenizer sidecars, full text/reference encoders, duration head, RF-DiT joint-attention sampling loop, and the separately distributed Semantic-DACVAE-Japanese-32dim decoder.",
+            "irodori synthesize: PARTIAL_RUNTIME only — a text-encoder diagnostic block is available, but end-to-end PCM still requires authenticated tokenizer/reference components, duration and RF-DiT sampling, and the distinct Semantic-DACVAE-Japanese-32dim decoder.",
         ))
     }
 }

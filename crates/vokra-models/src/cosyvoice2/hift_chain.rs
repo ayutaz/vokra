@@ -41,8 +41,13 @@
 //! propagates those errors verbatim rather than swallowing or re-wrapping
 //! them, so a mis-supplied weight bundle surfaces the exact upstream failure.
 
-use vokra_core::Result;
+use vokra_core::{BackendKind, Result, VokraError};
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+use vokra_ops::hiftnet::HiFTResidentOps;
 use vokra_ops::hiftnet::{HiFTGenerator, HiFTGeneratorConfig, HiFTGeneratorWeights};
+
+#[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+use super::hift_chain_metal::MetalHiFTResidentOps;
 
 /// Configuration for the HiFTNet vocoder chain.
 ///
@@ -146,6 +151,69 @@ impl HiFTChain {
     ///   message.
     pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
         self.generator.forward(mel, t_mel)
+    }
+
+    /// Runs HiFTNet using the selected backend.
+    ///
+    /// CPU retains the established scalar implementation.  Metal uses the
+    /// complete context-owned resident graph on Apple targets when the
+    /// optional `metal` feature is enabled, and performs exactly one final
+    /// device-to-host download.  Other backends are rejected explicitly; no
+    /// backend silently falls back to CPU.
+    pub fn forward_with_backend(
+        &self,
+        mel: &[f32],
+        t_mel: usize,
+        backend: BackendKind,
+    ) -> Result<Vec<f32>> {
+        match backend {
+            BackendKind::Cpu => self.forward(mel, t_mel),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            BackendKind::Metal => {
+                let context = vokra_backend_metal::MetalContext::new()?;
+                let mut ops = MetalHiFTResidentOps::new(&context);
+                let before = context.readback_count();
+                let output_len = t_mel
+                    .checked_mul(self.config().total_upsample_factor() as usize)
+                    .ok_or_else(|| {
+                        VokraError::InvalidArgument(
+                            "CosyVoice2 HiFT output length overflow".to_owned(),
+                        )
+                    })?;
+                let result = self
+                    .generator
+                    .forward_with_resident_ops(&mut ops, mel, t_mel);
+                let tensor = match result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let delta = context.readback_count().saturating_sub(before);
+                        if delta != 0 {
+                            return Err(VokraError::BackendUnavailable(format!(
+                                "CosyVoice2 HiFT Metal resident graph failed after {delta} readbacks; expected zero on failure: {error}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                };
+                let audio = ops.download(&tensor, 1, output_len)?;
+                let delta = context.readback_count().saturating_sub(before);
+                if delta != 1 {
+                    return Err(VokraError::BackendUnavailable(format!(
+                        "CosyVoice2 HiFT Metal resident forward performed {delta} readbacks; expected exactly one final readback"
+                    )));
+                }
+                Ok(audio)
+            }
+            #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+            BackendKind::Metal => Err(VokraError::BackendUnavailable(
+                "CosyVoice2 HiFT Metal execution requires the `metal` feature on Apple targets"
+                    .to_owned(),
+            )),
+            _ => Err(VokraError::UnsupportedOp(
+                "CosyVoice2 HiFT supports only the CPU path and the Apple Metal resident path"
+                    .to_owned(),
+            )),
+        }
     }
 }
 
@@ -322,6 +390,59 @@ mod tests {
         let a = chain.forward(&mel, t_mel).expect("forward 1");
         let b = chain.forward(&mel, t_mel).expect("forward 2");
         assert_eq!(a, b, "wrapper must not introduce hidden state");
+    }
+
+    #[test]
+    fn hift_chain_backend_cpu_preserves_scalar_route() {
+        let (cfg, weights) = small_hift_chain_bundle();
+        let chain = HiFTChain::new(cfg.clone(), weights).expect("build");
+        let mel = vec![0.0; cfg.in_channels as usize * 2];
+        assert_eq!(
+            chain
+                .forward_with_backend(&mel, 2, BackendKind::Cpu)
+                .unwrap(),
+            chain.forward(&mel, 2).unwrap()
+        );
+    }
+
+    #[test]
+    fn hift_chain_backend_cpu_nonzero_fixture_produces_pcm() {
+        let (cfg, mut weights) = small_hift_chain_bundle();
+        // Keep the fixture tiny, but give the terminal logits a finite
+        // non-zero bias so this is a structural synthesis check rather than
+        // another all-zero shape-only assertion.
+        weights.conv_post_b.fill(0.25);
+        let chain = HiFTChain::new(cfg.clone(), weights).expect("build");
+        let mel = vec![0.1; cfg.in_channels as usize * 2];
+        let audio = chain
+            .forward_with_backend(&mel, 2, BackendKind::Cpu)
+            .expect("non-zero fixture must synthesize");
+        assert_eq!(audio.len(), 2 * cfg.total_upsample_factor() as usize);
+        assert!(
+            audio.iter().any(|sample| sample.abs() > 1.0e-7),
+            "non-zero terminal logits must produce non-zero PCM"
+        );
+    }
+
+    #[test]
+    fn hift_chain_non_cpu_non_metal_is_explicitly_unsupported() {
+        let (cfg, weights) = small_hift_chain_bundle();
+        let chain = HiFTChain::new(cfg, weights).expect("build");
+        let err = chain
+            .forward_with_backend(&vec![0.0; 4 * 2], 2, BackendKind::Cuda)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::UnsupportedOp(_)), "{err:?}");
+    }
+
+    #[cfg(not(all(feature = "metal", any(target_os = "macos", target_os = "ios"))))]
+    #[test]
+    fn hift_chain_metal_without_apple_feature_is_backend_unavailable() {
+        let (cfg, weights) = small_hift_chain_bundle();
+        let chain = HiFTChain::new(cfg, weights).expect("build");
+        let err = chain
+            .forward_with_backend(&vec![0.0; 4 * 2], 2, BackendKind::Metal)
+            .unwrap_err();
+        assert!(matches!(err, VokraError::BackendUnavailable(_)), "{err:?}");
     }
 
     /// A weight bundle whose `ups_w` length disagrees with `upsample_rates`

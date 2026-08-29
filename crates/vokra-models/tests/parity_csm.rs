@@ -1,6 +1,5 @@
 //! M4-05 T24 — staged CSM parity (backbone hidden / c0 logits / depth
-//! logits / frame codes / decode PCM) against the `tools/parity/csm_dump.py`
-//! fixtures.
+//! logits / frame codes / decode PCM) against the staged CSM reference.
 //!
 //! # Gating (fabricated pass 禁止)
 //!
@@ -8,14 +7,12 @@
 //!   written by `csm_dump.py self-test`) pins the file/manifest format:
 //!   the reader + sha256 verification run in every CI build. It carries no
 //!   reference semantics.
-//! - The **real reference legs** are env-gated on `VOKRA_CSM_PARITY_DIR`
-//!   (owner sets it after the T29 dump): absent → clean skip with a
-//!   printed reason. Present → the loader now *binds* real weights
-//!   (`CsmBackboneWeights::from_gguf` reads the documented torchtune names),
-//!   but those names are **not header-confirmed** (gated repo), so a real
-//!   comparison must not auto-run: the leg **panics loudly** naming the two
-//!   owner steps (confirm names vs. the real header; wire the staged
-//!   comparison) — never a fabricated pass.
+//! - The **official reference leg** is env-gated on `VOKRA_CSM_PARITY_DIR`
+//!   (owner sets it after the VAST dump): absent → clean skip with a printed
+//!   reason. Present → the JSON packet and artifact identities are required,
+//!   but native binding remains explicitly closed until the complete
+//!   composite binder and accepted CPU parity are reviewed. This test
+//!   therefore panics loudly rather than reporting a fabricated pass.
 //!
 //! # Judgement (ADR M4-05 §D7 / tools/parity/README-csm.md)
 //!
@@ -27,7 +24,8 @@
 use std::path::{Path, PathBuf};
 
 /// FP32 default tolerance (NFR-QL-01). No per-tensor override exists yet —
-/// the first real comparison (post-T29) decides honestly whether one is
+/// the first real comparison (after native composite acceptance) decides
+/// honestly whether one is
 /// architecturally required.
 #[allow(dead_code)] // consumed by the T29 flip-the-switch leg below
 const ATOL: f32 = 0.01;
@@ -77,6 +75,44 @@ fn verify_manifest(dir: &Path) {
         checked += 1;
     }
     assert!(checked >= 5, "manifest lists too few files ({checked})");
+}
+
+fn verify_official_reference_manifest(dir: &Path) {
+    let manifest = std::fs::read_to_string(dir.join("manifest.json"))
+        .unwrap_or_else(|e| panic!("{}: manifest.json: {e}", dir.display()));
+    for marker in [
+        "REFERENCE_EVIDENCE_COMPLETE",
+        "depth_decoder_logits.f32le",
+        "backbone_hidden_last.f32le",
+        "official_pcm_pre_watermark.f32le",
+        "tokenizer_json_git_blob_sha1",
+        "tokenizer_json_sha256",
+        "inspection_identity",
+    ] {
+        assert!(
+            manifest.contains(marker),
+            "official CSM manifest missing {marker}"
+        );
+    }
+    for name in [
+        "processor_input_ids.u32le",
+        "generated_frame_codes.u32le",
+        "backbone_logits.f32le",
+        "backbone_hidden_last.f32le",
+        "depth_decoder_logits.f32le",
+        "official_pcm_pre_watermark.f32le",
+    ] {
+        let path = dir.join(name);
+        assert!(
+            path.is_file(),
+            "official CSM artifact missing: {}",
+            path.display()
+        );
+        assert!(
+            path.metadata().unwrap().len() > 0,
+            "official CSM artifact empty: {name}"
+        );
+    }
 }
 
 /// Minimal SHA-256 (zero-dep — vokra ships no hashing crate; this is the
@@ -164,7 +200,7 @@ fn synthetic_fixture_manifest_roundtrip() {
     assert!(
         dir.join("manifest.txt").exists(),
         "committed self-test fixture missing at {} — regenerate with \
-         `python3 tools/parity/csm_dump.py self-test --out tests/parity/csm/self-test`",
+         `uv run --frozen --project tools/parity --python 3.12 python tools/parity/csm_dump.py self-test --out tests/parity/csm/self-test`",
         dir.display()
     );
     verify_manifest(&dir);
@@ -185,34 +221,29 @@ fn synthetic_fixture_manifest_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Env-gated legs: real reference fixtures (owner, post-T29)
+// Env-gated legs: official reference evidence (owner, VAST)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn staged_reference_parity_is_env_gated() {
     let Some(dir) = std::env::var_os("VOKRA_CSM_PARITY_DIR") else {
         println!(
-            "skip: VOKRA_CSM_PARITY_DIR not set — the real staged reference is the \
-             T29 owner dump (tools/parity/README-csm.md); this is a clean gated \
+            "skip: VOKRA_CSM_PARITY_DIR not set — the official staged reference is the \
+             VAST owner dump (tools/parity/README-csm.md); this is a clean gated \
              skip, not a pass"
         );
         return;
     };
     let dir = PathBuf::from(dir);
-    verify_manifest(&dir);
-    // Fixtures exist and verify. `CsmBackboneWeights::from_gguf` now binds
-    // the documented torchtune names, but they are NOT header-confirmed
-    // (sesame/csm-1b is gated), so auto-running a comparison would risk
-    // reporting a pass off unverified naming. This leg *fails loudly* until
-    // the owner (1) confirms the tensor names against the real checkpoint
-    // header and (2) wires the staged comparison in place of this panic.
+    verify_official_reference_manifest(&dir);
+    // Official evidence exists, but the runtime still refuses production
+    // loading until the CSM+Mimi composite binder and accepted CPU parity are
+    // available. Never turn a packet-presence check into a parity pass.
     panic!(
-        "VOKRA_CSM_PARITY_DIR is set and the fixture manifest verifies. The \
-         runtime now binds real weights (CsmBackboneWeights::from_gguf reads \
-         the documented torchtune names), but those names are not \
-         header-confirmed (gated repo). Owner: confirm the names against the \
-         real checkpoint header, then replace this panic with the staged \
-         comparison (frame codes bit-exact; float stages atol = {ATOL}). \
+        "VOKRA_CSM_PARITY_DIR is present and the official packet verifies, but \
+         native CSM+Mimi binding is INSPECTION_ONLY. Owner: complete the \
+         authenticated composite binder and VAST CPU parity before enabling \
+         this comparison (frame codes bit-exact; float stages atol = {ATOL}). \
          Refusing to report a pass that did not run (fabricated pass 禁止)."
     );
 }

@@ -1,14 +1,14 @@
 //! Strict native binder for OpenMOSS MOSS-Audio-Tokenizer.
 //!
-//! Full and Nano share an upstream Python class but not a tensor topology.
+//! Full, Nano, and v2 share an upstream Python class but not a tensor topology.
 //! This module authenticates the complete public GGUF tensor manifest before
-//! selecting either contract. In particular, the first public Nano GGUF was
+//! selecting the exact contract. In particular, the first public Nano GGUF was
 //! accidentally stamped with Full metadata; it is accepted only behind the
 //! exact 374-tensor Nano manifest and is surfaced through
 //! [`MossAudioTokenizer::requires_metadata_repair`]. A same-metadata artifact
 //! with any other manifest fails closed.
 //!
-//! Nano and Full token-to-PCM are implemented natively with one selected
+//! Nano, Full, and the v2 token-to-PCM paths are implemented natively with one selected
 //! [`Compute`] backend for every learned reduction. Full is mapping-backed and
 //! materialises one Transformer layer at a time; it never creates a second
 //! resident copy of the 7 GB artifact or substitutes Nano/CPU inference.
@@ -38,14 +38,34 @@ pub const CATEGORY: &str = "codec";
 pub const FULL_NAME: &str = "moss-audio-tokenizer";
 /// Canonical Nano model identity.
 pub const NANO_NAME: &str = "moss-audio-tokenizer-nano";
+/// Canonical v2 model identity used by the Local Transformer companion.
+pub const V2_NAME: &str = "moss-audio-tokenizer-v2";
 /// Full upstream repository pinned by the provenance contract.
 pub const FULL_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer";
 /// Nano upstream repository pinned by the provenance contract.
 pub const NANO_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano";
+/// v2 upstream repository pinned by the provenance contract.
+pub const V2_UPSTREAM_HF: &str = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2";
+/// Immutable v2 source revision.
+pub const V2_UPSTREAM_REVISION: &str = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169";
 /// Variant metadata key shared with `vokra-convert`.
 pub const KEY_VARIANT: &str = "vokra.moss_audio_tokenizer.variant";
 /// Upstream repository metadata key shared with `vokra-convert`.
 pub const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+const KEY_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_CONFIG_SHA256: &str = "vokra.moss_audio_tokenizer.config_sha256";
+const KEY_CONFIGURATION_SOURCE_SHA256: &str =
+    "vokra.moss_audio_tokenizer.configuration_source_sha256";
+const KEY_MODELING_SOURCE_SHA256: &str = "vokra.moss_audio_tokenizer.modeling_source_sha256";
+const KEY_INDEX_SHA256: &str = "vokra.moss_audio_tokenizer.index_sha256";
+const KEY_LICENSE_SHA256: &str = "vokra.moss_audio_tokenizer.license_sha256";
+const V2_CONFIG_SHA256: &str = "aeb9a0e9d88c74bf9baa81ee54443d463e09b5f335b3306bb798e282a10e564";
+const V2_CONFIGURATION_SOURCE_SHA256: &str =
+    "f87a7a975868ce3f0077f374f46ebd2aab610fd7a26cd7569d16827a14e29529";
+const V2_MODELING_SOURCE_SHA256: &str =
+    "7f807e6ee77a60d512e5aa4a8f58a1d5af4e3722f4ab350d70dd538429391cb9";
+const V2_INDEX_SHA256: &str = "912f52f053e04ff7e9abc8f05aa75dfbb40b31c86a0f4ad5c5a36e4aa28a624f";
+const V2_LICENSE_SHA256: &str = "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a";
 
 /// Learned reductions required by the native Nano decode graph.
 pub const MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS: &[HotOp] =
@@ -56,6 +76,7 @@ pub const MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS: &[HotOp] =
 
 const FULL_TENSOR_COUNT: usize = 1_600;
 const NANO_TENSOR_COUNT: usize = 374;
+const V2_TENSOR_COUNT: usize = 2_094;
 const FULL_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
     label: "moss_audio_tokenizer/full",
     arch: ARCH,
@@ -82,6 +103,18 @@ const NANO_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
         0x85, 0xd9,
     ],
 };
+const V2_SPEC: StrictCheckpointSpec = StrictCheckpointSpec {
+    label: "moss_audio_tokenizer/v2",
+    arch: ARCH,
+    model_name: V2_NAME,
+    model_name_alias: None,
+    tensor_count: V2_TENSOR_COUNT,
+    manifest_sha256: [
+        0xa8, 0x39, 0x15, 0xcf, 0xfe, 0x78, 0xce, 0xe7, 0xf0, 0x31, 0xe1, 0x8a, 0xc3, 0xde, 0x1b,
+        0xbd, 0x64, 0xe9, 0x3b, 0x3e, 0x4a, 0xf8, 0x43, 0xff, 0x28, 0xd5, 0x31, 0xcc, 0xf8, 0x17,
+        0x48, 0xc6,
+    ],
+};
 
 /// Audited public codec topology.
 #[non_exhaustive]
@@ -91,6 +124,8 @@ pub enum MossAudioTokenizerVariant {
     Full,
     /// 48 kHz stereo, 16 residual LFQ codebooks, 3,840 samples/channel/token.
     Nano,
+    /// 48 kHz stereo, 32-codebook six-stage v2 decoder companion.
+    V2,
 }
 
 impl MossAudioTokenizerVariant {
@@ -99,6 +134,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => 24_000,
             Self::Nano => 48_000,
+            Self::V2 => 48_000,
         }
     }
 
@@ -107,6 +143,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => 1,
             Self::Nano => 2,
+            Self::V2 => 2,
         }
     }
 
@@ -115,6 +152,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => 1_920,
             Self::Nano => 3_840,
+            Self::V2 => 3_840,
         }
     }
 
@@ -123,6 +161,7 @@ impl MossAudioTokenizerVariant {
         match self {
             Self::Full => 32,
             Self::Nano => 16,
+            Self::V2 => 32,
         }
     }
 }
@@ -153,7 +192,7 @@ pub struct MossAudioTokenizer {
 }
 
 impl MossAudioTokenizer {
-    /// Opens and binds a public Full or Nano GGUF through the true mmap path.
+    /// Opens and binds a public Full, Nano, or v2 GGUF through the true mmap path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_mapped_with_backend(path, BackendKind::Cpu)
     }
@@ -207,9 +246,23 @@ impl MossAudioTokenizer {
                 }
                 (checkpoint, MossAudioTokenizerVariant::Nano, legacy)
             }
+            V2_TENSOR_COUNT => {
+                let checkpoint = StrictCheckpoint::bind(file, V2_SPEC)?;
+                validate_common_metadata(file)?;
+                validate_release_metadata(
+                    file,
+                    V2_NAME,
+                    "v2",
+                    V2_UPSTREAM_HF,
+                    v2_source_description(),
+                    "moss_audio_tokenizer/v2",
+                )?;
+                validate_v2_metadata(file)?;
+                (checkpoint, MossAudioTokenizerVariant::V2, false)
+            }
             other => {
                 return Err(VokraError::ModelLoad(format!(
-                    "moss_audio_tokenizer: tensor count {other} matches neither the pinned Full ({FULL_TENSOR_COUNT}) nor Nano ({NANO_TENSOR_COUNT}) release"
+                    "moss_audio_tokenizer: tensor count {other} matches neither the pinned Full ({FULL_TENSOR_COUNT}), Nano ({NANO_TENSOR_COUNT}), nor v2 ({V2_TENSOR_COUNT}) release"
                 )));
             }
         };
@@ -223,6 +276,7 @@ impl MossAudioTokenizer {
         let nano_decoder = match variant {
             MossAudioTokenizerVariant::Full => None,
             MossAudioTokenizerVariant::Nano => Some(NanoDecoder::bind(file)?),
+            MossAudioTokenizerVariant::V2 => None,
         };
         Ok(Self {
             variant,
@@ -241,8 +295,14 @@ impl MossAudioTokenizer {
     /// does not rely on mapping lifetime after construction.
     pub fn from_gguf_mapped(file: Arc<GgufFile>) -> Result<Self> {
         let mut model = Self::from_gguf(&file)?;
-        if model.variant == MossAudioTokenizerVariant::Full {
-            model.full_decoder = Some(MappedDecoder::bind_full(file)?);
+        match model.variant {
+            MossAudioTokenizerVariant::Full => {
+                model.full_decoder = Some(MappedDecoder::bind_full(file)?);
+            }
+            MossAudioTokenizerVariant::V2 => {
+                model.full_decoder = Some(MappedDecoder::bind_v2(file)?);
+            }
+            MossAudioTokenizerVariant::Nano => {}
         }
         Ok(model)
     }
@@ -324,11 +384,12 @@ impl MossAudioTokenizer {
         match self.variant {
             MossAudioTokenizerVariant::Full => MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS,
             MossAudioTokenizerVariant::Nano => MOSS_AUDIO_TOKENIZER_NANO_HOT_OPS,
+            MossAudioTokenizerVariant::V2 => MOSS_AUDIO_TOKENIZER_FULL_HOT_OPS,
         }
     }
 
     /// Decodes frame-major `[frames, num_quantizers]` codes. Full emits 24 kHz
-    /// mono; Nano emits standard stereo-interleaved 48 kHz PCM.
+    /// mono; Nano and v2 emit standard stereo-interleaved 48 kHz PCM.
     pub fn decode_frame_major(
         &self,
         codes: &[u32],
@@ -340,6 +401,15 @@ impl MossAudioTokenizer {
                 let decoder = self.full_decoder.as_ref().ok_or_else(|| {
                     VokraError::UnsupportedOp(
                         "moss_audio_tokenizer/Full: decoding requires the mapping-owning `open_mapped_with_backend` or `from_gguf_mapped_with_backend` constructor; a borrowed bind cannot retain the 7 GB artifact and Vokra will not create a resident copy or fall back to CPU"
+                            .to_owned(),
+                    )
+                })?;
+                decoder.decode_frame_major(self.backend, codes, frames, num_quantizers)?
+            }
+            MossAudioTokenizerVariant::V2 => {
+                let decoder = self.full_decoder.as_ref().ok_or_else(|| {
+                    VokraError::UnsupportedOp(
+                        "moss_audio_tokenizer/v2: decoding requires the mapping-owning constructor; no resident or CPU fallback is permitted"
                             .to_owned(),
                     )
                 })?;
@@ -431,6 +501,23 @@ fn validate_release_metadata(
     require_string(file, chunks::KEY_PROVENANCE_SOURCE, source, label)
 }
 
+fn validate_v2_metadata(file: &GgufFile) -> Result<()> {
+    for (key, expected) in [
+        (KEY_UPSTREAM_REVISION, V2_UPSTREAM_REVISION),
+        (KEY_CONFIG_SHA256, V2_CONFIG_SHA256),
+        (
+            KEY_CONFIGURATION_SOURCE_SHA256,
+            V2_CONFIGURATION_SOURCE_SHA256,
+        ),
+        (KEY_MODELING_SOURCE_SHA256, V2_MODELING_SOURCE_SHA256),
+        (KEY_INDEX_SHA256, V2_INDEX_SHA256),
+        (KEY_LICENSE_SHA256, V2_LICENSE_SHA256),
+    ] {
+        require_string(file, key, expected, "moss_audio_tokenizer/v2")?;
+    }
+    Ok(())
+}
+
 fn require_string(file: &GgufFile, key: &str, expected: &str, label: &str) -> Result<()> {
     let actual = file.get(key).and_then(GgufMetadataValue::as_str);
     if actual != Some(expected) {
@@ -449,6 +536,10 @@ const fn nano_source_description() -> &'static str {
     "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano (MOSS-Audio-Tokenizer codec Nano ~22M params F32 distilled per arXiv:2603.18090, apache-2.0)"
 }
 
+const fn v2_source_description() -> &'static str {
+    "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2 (48 kHz stereo codec, ~2.12B F32 params, 32 residual LFQ codebooks, apache-2.0)"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +552,11 @@ mod tests {
         assert_eq!(MossAudioTokenizerVariant::Nano.sample_rate(), 48_000);
         assert_eq!(MossAudioTokenizerVariant::Nano.channels(), 2);
         assert_eq!(MossAudioTokenizerVariant::Nano.max_quantizers(), 16);
+        assert_eq!(MossAudioTokenizerVariant::V2.sample_rate(), 48_000);
+        assert_eq!(MossAudioTokenizerVariant::V2.channels(), 2);
+        assert_eq!(MossAudioTokenizerVariant::V2.max_quantizers(), 32);
+        assert_eq!(V2_SPEC.tensor_count, 2_094);
+        assert_eq!(V2_SPEC.manifest_sha256[0], 0xa8);
     }
 
     #[test]

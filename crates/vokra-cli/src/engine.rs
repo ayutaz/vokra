@@ -94,6 +94,11 @@ pub(crate) enum ModelTask {
     AsrParakeetTdt11b,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
+    /// VibeVoice-1.5B composite TTS. The strict partial GGUF binder is
+    /// discoverable here, but run remains fail-closed until the authenticated
+    /// Qwen companion, prefill contract, streaming tokenizer, and official
+    /// DPMSolverMultistepScheduler path are available.
+    TtsVibeVoice,
     /// Microsoft SpeechT5 text-to-speech with an explicit 512-value x-vector
     /// and the strict 16 kHz SpeechT5 HiFi-GAN companion.
     ///
@@ -194,6 +199,12 @@ pub(crate) enum ModelTask {
     /// `run` arm so its ordered labels and task-specific result surface stay
     /// available without adding a generic session trait.
     LangId,
+    /// Binary male/female classification through the dedicated
+    /// JaesungHuh/voice-gender-classifier topology. The dispatch returns a
+    /// bare session so the concrete binder can preserve its official label
+    /// order and selected backend without conflating it with ECAPA speaker
+    /// embeddings or language identification.
+    VoiceGenderClassification,
     /// Four-axis CE / CU / PC / PQ audio-quality regression through Meta
     /// Audiobox Aesthetics. The concrete scorer binds in the run/bench arm so
     /// the selected CPU/Metal backend reaches its complete WavLM forward.
@@ -435,6 +446,9 @@ pub(crate) enum ModelTask {
     /// LLM and required MOSS Audio Tokenizer Nano sidecar bind in `run` so
     /// both large weight sets are loaded exactly once and select one backend.
     TtsMossNano,
+    /// OpenMOSS MOSS-TTS Local Transformer v1.5 generation with its exact
+    /// MOSS Audio Tokenizer v2 companion.
+    TtsMossLocal,
     /// OpenMOSS MOSS-TTS Base/v1.5 delayed prompt-token generation. The
     /// mmap-backed Qwen3 model and required Full codec sidecar bind in `run`
     /// and select the same CPU/Metal backend.
@@ -531,12 +545,15 @@ const ARCH_WHISPER: &str = "whisper";
 const ARCH_CRISPER_WHISPER: &str = "crisper-whisper";
 const ARCH_SILERO_VAD: &str = "silero-vad";
 const ARCH_PIPER_PLUS: &str = "piper-plus-mb-istft-vits2";
+/// Microsoft VibeVoice-1.5B composite TTS (strict partial binder).
+const ARCH_VIBEVOICE: &str = "vibevoice";
 const ARCH_CSM: &str = "csm";
 const ARCH_MOSHI: &str = "moshi";
 const ARCH_CAMPPLUS: &str = "campplus";
 const ARCH_XVECTOR: &str = "xvector";
 const ARCH_ECAPA_TDNN: &str = "ecapa_tdnn";
 const ARCH_LANG_ID: &str = "lang_id_ecapa";
+const ARCH_VOICE_GENDER_CLASSIFIER: &str = "voice_gender_classifier";
 const ARCH_AUDIOBOX_AESTHETICS: &str = "audiobox-aesthetics";
 const ARCH_EMOTION2VEC: &str = "emotion2vec";
 const ARCH_DEEPFAKE_DETECTION: &str = "deepfake_detection";
@@ -1171,6 +1188,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // opens both mmap-backed artifacts once on the requested backend.
             Ok((session, ModelTask::TtsQwen3))
         }
+        ARCH_VIBEVOICE => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VIBEVOICE}`"
+                ));
+            }
+            // Bare session: the concrete VibeVoice binder validates the
+            // strict 1,204-tensor partial artifact in the run arm. The full
+            // composite remains explicitly blocked without its authenticated
+            // tokenizer/prefill/scheduler companions.
+            Ok((session, ModelTask::TtsVibeVoice))
+        }
         ARCH_KOKORO => {
             if hint.is_some() {
                 return Err(format!(
@@ -1217,6 +1246,18 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bare session: the run arm binds the task-specific handle once,
             // preserving ordered labels and the selected backend.
             Ok((session, ModelTask::LangId))
+        }
+        ARCH_VOICE_GENDER_CLASSIFIER => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{ARCH_VOICE_GENDER_CLASSIFIER}`"
+                ));
+            }
+            // Bare session: the run/bench arms bind the dedicated classifier
+            // from this already-loaded GGUF exactly once. Keeping this arm
+            // separate from the speaker family prevents an ecapa_tdnn stamp
+            // from silently changing the task semantics.
+            Ok((session, ModelTask::VoiceGenderClassification))
         }
         ARCH_AUDIOBOX_AESTHETICS => {
             if hint.is_some() {
@@ -1816,6 +1857,8 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 Ok((session, ModelTask::TtsMossVoiceGenerator))
             } else if name == vokra_models::moss_tts::NAME {
                 Ok((session, ModelTask::TtsMossNano))
+            } else if name == vokra_models::moss_tts::LOCAL_NAME {
+                Ok((session, ModelTask::TtsMossLocal))
             } else if name == vokra_models::moss_tts::MossTtsDelayRelease::Base.model_name()
                 || name == vokra_models::moss_tts::MossTtsDelayRelease::V1_5.model_name()
             {
@@ -2283,7 +2326,7 @@ const BOUND_ARCHES: &[BoundArch] = &[
     BoundArch {
         arch: "zonos",
         module: "vokra_models::zonos",
-        entry: "ZonosCheckpoint::from_gguf → ZonosCheckpoint::synthesize",
+        entry: "ZonosCheckpoint::from_gguf → INSPECTION_ONLY (no synthesize)",
         probe: Some(|g: &GgufFile| vokra_models::zonos::ZonosCheckpoint::from_gguf(g).map(|_| ())),
     },
     BoundArch {
@@ -3732,6 +3775,17 @@ mod tests {
         assert_eq!(task, ModelTask::LangId);
     }
 
+    #[test]
+    fn load_session_routes_voice_gender_to_dedicated_classification_task() {
+        let result = with_arch_only_gguf(
+            ARCH_VOICE_GENDER_CLASSIFIER,
+            "voice-gender-classifier-arch",
+            load_session,
+        );
+        let (_session, task) = result.expect("voice-gender session builds (bare)");
+        assert_eq!(task, ModelTask::VoiceGenderClassification);
+    }
+
     /// Audiobox has a concrete CPU/Metal run task and binds after WAV rate
     /// validation so malformed input does not decode the 415 MB checkpoint.
     #[test]
@@ -4318,6 +4372,14 @@ mod tests {
             |path| load_session(path).expect("MOSS-TTS Nano session builds (bare)"),
         );
         assert_eq!(task, ModelTask::TtsMossNano);
+        let (_session, task) = with_named_arch_gguf(
+            ARCH_MOSS_TTS,
+            vokra_models::moss_tts::LOCAL_NAME,
+            None,
+            "moss-tts-local",
+            |path| load_session(path).expect("MOSS-TTS Local session builds (bare)"),
+        );
+        assert_eq!(task, ModelTask::TtsMossLocal);
         for release in [
             vokra_models::moss_tts::MossTtsDelayRelease::Base,
             vokra_models::moss_tts::MossTtsDelayRelease::V1_5,
@@ -4384,6 +4446,8 @@ mod tests {
             ARCH_CAMPPLUS,
             ARCH_XVECTOR,
             ARCH_ECAPA_TDNN,
+            ARCH_LANG_ID,
+            ARCH_VOICE_GENDER_CLASSIFIER,
             ARCH_WESPEAKER,
             ARCH_TITANET,
             ARCH_VOXTRAL,

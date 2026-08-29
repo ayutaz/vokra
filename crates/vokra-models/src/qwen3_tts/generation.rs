@@ -103,7 +103,7 @@ impl Qwen3TtsGenerationOptions {
     pub fn greedy(max_new_tokens: usize) -> Self {
         Self {
             max_new_tokens,
-            min_new_tokens: 0,
+            min_new_tokens: OFFICIAL_MIN_NEW_TOKENS,
             temperature: 0.0,
             top_k: None,
             top_p: None,
@@ -1897,6 +1897,15 @@ mod tests {
         assert_eq!(options.predictor_temperature, 0.9);
         assert_eq!(options.predictor_top_k, Some(50));
         assert_eq!(options.predictor_top_p, None);
+    }
+
+    #[test]
+    fn greedy_generation_preserves_official_minimum() {
+        let options = Qwen3TtsGenerationOptions::greedy(8);
+        assert_eq!(options.max_new_tokens, 8);
+        assert_eq!(options.min_new_tokens, OFFICIAL_MIN_NEW_TOKENS);
+        assert_eq!(options.temperature, 0.0);
+        assert_eq!(options.predictor_temperature, 0.0);
     }
 
     #[test]

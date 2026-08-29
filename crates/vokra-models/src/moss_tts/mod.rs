@@ -36,6 +36,7 @@ pub use self::generation::MossTtsGeneratedCodes;
 pub use self::local::MossTtsLocalCheckpoint;
 pub use self::local_transformer::{
     MOSS_TTS_LOCAL_HOT_OPS, MossTtsLocal, MossTtsLocalGeneration, MossTtsLocalGenerationOptions,
+    MossTtsLocalSynthesis, NAME as LOCAL_NAME,
 };
 pub use self::voice_generator::MossVoiceGeneratorCheckpoint;
 use self::weights::NanoWeights;

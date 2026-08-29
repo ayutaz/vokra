@@ -9,9 +9,9 @@
 //! continuous acoustic-VAE latents. Every axis below is transcribed
 //! **verbatim** from
 //! `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json` and
-//! `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
-//! configuration_vibevoice.py` (fetched 2026-07-24 — CLAUDE.md
-//! 「ハルシネーション厳禁」).
+//! `github.com/microsoft/VibeVoice` at the immutable official TTS orphan
+//! `2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c` (the default branch later
+//! removed this path — fetched 2026-07-24; CLAUDE.md 「ハルシネーション厳禁」).
 //!
 //! The stack chains:
 //!
@@ -43,7 +43,11 @@
 //!   modulated MLP with SwiGLU FFN, `hidden_size=1536`,
 //!   `head_layers=4`, `head_ffn_ratio=3.0` → `ffn_dim = int(1536 · 3) = 4608`,
 //!   `rms_norm_eps=1e-5`, `latent_size=64`, `speech_vae_dim=64`,
-//!   `prediction_type="v_prediction"`, `diffusion_type="ddpm"`,
+//!   `prediction_type="v_prediction"`; the effective inference source
+//!   selects `DPMSolverMultistepScheduler` (`dpmsolver++`, solver order 2,
+//!   midpoint, lower-order-final, final sigma zero, with no SDE noise) and
+//!   a squared-cosine schedule, rather than the historical DDPM training
+//!   labels. The remaining config fields are recorded for inspection.
 //!   `ddpm_num_steps=1000`, `ddpm_num_inference_steps=20`,
 //!   `ddpm_beta_schedule="cosine"`, `ddpm_batch_mul=4`). Consumes the
 //!   LM hidden state as AdaLN condition and predicts velocity in the
@@ -51,40 +55,43 @@
 //!
 //! # Distinct topology axis: continuous VAE + **diffusion decoder**
 //!
-//! VibeVoice is the **second** Vokra target (after VoxCPM-0.5B) whose
-//! terminal decoding hop is a continuous-latent feature generator
-//! feeding a continuous VAE decoder — but where VoxCPM uses a
-//! **flow-matching** sampler ([`vokra_ops::flow_sampler`]), VibeVoice
-//! uses a **DDPM** sampler ([`vokra_ops::ddpm_sampler`]) with
-//! `v-prediction` and a cosine β schedule. The two axes are
-//! irreconcilable inside [`vokra_ops::flow_sampler`] (its DDIM /
-//! DPM++ solvers carry `ε`-prediction with a linear α schedule pinned
-//! inside the solver per ADR M3-05 §D4) — see
-//! [`vokra_ops::ddpm_sampler`]'s crate rustdoc for the full "why a
-//! distinct sampler" argument.
+//! The public Vokra slice is intentionally a strict partial consumer. The
+//! historical config labels the diffusion training objective as DDPM, but
+//! the official inference source uses a DPMSolverMultistepScheduler with
+//! `dpmsolver++` (not `sde-dpmsolver++`) and a squared-cosine schedule. Vokra
+//! now has isolated scheduler and acoustic-tokenizer decoder seams, but has
+//! not yet composed the full streaming tokenizer caches, intended Qwen
+//! tokenizer companion, or official mixed prompt/audio prefill contract, so
+//! no production synthesis path is exposed. The standalone Qwen2 decoder and
+//! embedding-input cache path are implemented in [`qwen2`], but are not yet
+//! composed with those stages.
 //!
 //! # Reuses two existing ops + one shared new op
 //!
-//! - **Acoustic VAE encoder/decoder**: shared
-//!   [`vokra_ops::vae_continuous`] primitive (SoTA plan Phase 4 new op
-//!   introduced with VoxCPM-0.5B and shared with this VibeVoice
-//!   consumer as documented in that module's rustdoc).
-//! - **DDPM diffusion sampler**: the SoTA plan Phase 4 new op
-//!   [`vokra_ops::ddpm_sampler`] introduced with this model.
-//! - **Semantic encoder**: a **local** deterministic
-//!   causal-Conv1d chain identical in shape to the acoustic encoder
-//!   half. Structurally consumes the same VAE-primitive kernels as
-//!   the acoustic side; the runtime treats it as a
-//!   [`vokra_ops::vae_continuous::ContinuousVaeEncoder`] with
-//!   `latent_dim=128` — but without a decoder counterpart (VibeVoice
-//!   does not decode the semantic latents back to audio).
+//! - Acoustic and semantic tokenizer topology is bound locally. The
+//!   VibeVoice ConvNeXt-like streaming implementation is distinct from
+//!   VoxCPM's ContinuousVAE and is not interchangeable with
+//!   [`vokra_ops::vae_continuous`]. The acoustic latent decoder is exposed as
+//!   [`VibeVoiceAcousticDecoder`], while full composite generation remains
+//!   pending.
+//! - The old [`vokra_ops::ddpm_sampler`] scaffold is retained only as a
+//!   config/shape fixture. It is not the official VibeVoice inference
+//!   implementation and must not be treated as a completed decoder.
+//! - **Semantic encoder**: the upstream has a deterministic
+//!   causal-Conv1d chain similar in shape to the acoustic encoder half.
+//!   This crate records its axes only; it does not expose the generic
+//!   [`vokra_ops::vae_continuous::ContinuousVaeEncoder`] as a production
+//!   substitute. There is no decoder counterpart (VibeVoice does not decode
+//!   semantic latents back to audio).
 //! - **Qwen2 LM backbone**: reuses the same GQA / RMSNorm / SwiGLU /
 //!   RoPE primitives every earlier Qwen / Mistral / MiniCPM sibling
 //!   uses (the SIMD kernels of `vokra-backend-cpu`).
 //!
 //! No new **backend kernel** is added by this model — the diffusion
 //! head's MLP+AdaLN body is Linear / RMSNorm / SwiGLU, all covered by
-//! the existing kernel inventory.
+//! the existing kernel inventory. The standalone authenticated prediction
+//! head is exposed as [`VibeVoiceDiffusionHead`]; composition with the
+//! scheduler, prompt tokenizer, and PCM generation pipeline remains pending.
 //!
 //! # What lands in this Phase 4 slice
 //!
@@ -97,27 +104,47 @@
 //! - [`VibeVoiceWeights`] — deterministic
 //!   [`VibeVoiceWeights::synthesized`] scaffold fixture (zero-
 //!   initialized; only the shape flow is exercised — the LM backbone
-//!   weight store is a follow-up wave).
+//!   weight store is a follow-up wave; the standalone strict decoder lives in
+//!   [`qwen2`]).
 //! - [`VibeVoiceTts`] — engine handle carrying config + weights. The
 //!   primary [`VibeVoiceTts::synthesize`] entry point returns
 //!   [`VokraError::NotImplemented`] naming the blocker until real
-//!   weights are bound and the LM → diffusion-head → DDPM sampler →
-//!   AudioVAE decode → 24 kHz PCM chain is wired end-to-end
-//!   (T29-equivalent follow-up wave — never a silent zero-fill,
-//!   FR-EX-08).
+//!   weights are bound and the LM → diffusion-head → official
+//!   DPMSolverMultistepScheduler → AudioVAE decode → 24 kHz PCM chain is
+//!   wired end-to-end (T29-equivalent follow-up wave — never a silent
+//!   zero-fill, FR-EX-08). The current crate intentionally stops before
+//!   that production chain.
 //!
 //! # No ONNX (permanent)
 //!
 //! VibeVoice-1.5B is distributed as safetensors + a Python pipeline
 //! (`transformers`); the runtime **never** loads an ONNX graph
-//! (FR-LD-05, permanent constraint); the pipeline is re-implemented
-//! natively from the safetensors checkpoint (whisper.cpp 型 self
-//! re-implementation, CLAUDE.md 設計判断 4).
+//! (FR-LD-05, permanent constraint). The upstream pipeline is not executed
+//! by this crate, and its native tokenizer/scheduler/runtime reimplementation
+//! remains an explicit follow-up boundary.
 
 use vokra_core::{Result, VokraError};
 
 mod bound;
+mod connectors;
+mod diffusion;
+mod generation;
+mod qwen2;
+mod tokenizer;
 pub use bound::{VibeVoiceAcousticProjection, VibeVoiceCheckpoint};
+pub use connectors::{
+    SpeechConnector, VIBEVOICE_CONNECTOR_HOT_OPS, VibeVoiceLatentScale, combine_next_lm_embedding,
+};
+pub use diffusion::{VIBEVOICE_DIFFUSION_HOT_OPS, VibeVoiceDiffusionHead};
+pub use generation::{VibeVoiceComposite, VibeVoiceGenerationPacket, VibeVoiceGenerationResult};
+pub use qwen2::{
+    BOS_EOS_TOKEN_ID, FAST_PADDING_TOKEN_ID, QWEN2_HOT_OPS, Qwen2Runtime, Qwen2RuntimeConfig,
+    SPEECH_DIFFUSION_TOKEN_ID, SPEECH_END_TOKEN_ID, SPEECH_START_TOKEN_ID,
+};
+pub use tokenizer::{
+    VIBEVOICE_TOKENIZER_HOT_OPS, VibeVoiceAcousticDecoder, VibeVoiceAcousticDecoderStream,
+    VibeVoiceTokenizerEncoder, VibeVoiceTokenizerStream,
+};
 
 // Public seam re-exports — shared with the VAE + sampler primitives.
 pub use vokra_ops::ddpm_sampler::{BetaSchedule, DdpmSamplerConfig, PredictionType};
@@ -125,12 +152,11 @@ pub use vokra_ops::vae_continuous::ContinuousVaeConfig;
 
 /// `vokra.model.arch` a VibeVoice-1.5B GGUF must carry. Written by
 /// `vokra-convert::models::vibevoice::ARCH`. Intentionally **distinct**
-/// from every existing arch tag in this crate — VibeVoice pairs a
-/// continuous VAE decoder with a **DDPM** diffusion head, not the
-/// UnifiedCFM flow-matching sampler VoxCPM uses. Silently sharing an
-/// arch tag with VoxCPM would misroute the runtime dispatch: the
-/// sampler for VibeVoice is [`vokra_ops::ddpm_sampler::ddpm_sample`],
-/// **not** [`vokra_ops::flow_sampler::flow_sample`].
+/// from every existing arch tag in this crate. The tag identifies the
+/// strict partial checkpoint consumer; it does not claim that the official
+/// tokenizer or DPMSolverMultistepScheduler route is implemented. Silently
+/// sharing an arch tag with another model would misroute a future runtime
+/// dispatch.
 pub const EXPECTED_ARCH: &str = "vibevoice";
 
 /// Acoustic and semantic tokenizer PCM sample rate (Hz). Both
@@ -144,6 +170,260 @@ pub const VIBEVOICE_ENCODER_SAMPLE_RATE: u32 = 24_000;
 /// Frame rate (Hz) at which the LM steps: `24_000 / product(encoder_ratios) =
 /// 24_000 / 3200 = 7.5`.
 pub const VIBEVOICE_LM_FRAME_RATE_HZ: f32 = 7.5;
+
+/// Effective official scheduler selected by the pinned Python inference
+/// source. [`VibeVoiceDpmSolverMultistep`] implements this numerical seam;
+/// the complete composite TTS route still remains unavailable.
+pub const OFFICIAL_SCHEDULER: &str =
+    "DPMSolverMultistepScheduler:dpmsolver++:squared-cosine:no-sde-noise";
+
+/// A deterministic implementation of the scheduler selected by the pinned
+/// VibeVoice inference source.
+///
+/// This is deliberately a model-local scheduler rather than a reuse of the
+/// historical [`DdpmSamplerConfig`].  The upstream path uses the
+/// diffusers `DPMSolverMultistepScheduler` defaults: DPM-Solver++ (data
+/// prediction), second-order midpoint, cosine alpha-bar, and no stochastic
+/// noise.  It consumes a *v-prediction* output from the diffusion head and
+/// returns the next sample.  It does not own or infer any model weights.
+///
+/// The scheduler is useful independently for parity and for the eventual
+/// native pipeline, but its presence does not make the current partial GGUF a
+/// runnable TTS artifact: the Qwen, diffusion-head, streaming tokenizer, and
+/// codec bindings remain separate required inputs.
+#[derive(Debug, Clone)]
+pub struct VibeVoiceDpmSolverMultistep {
+    alphas_cumprod: Vec<f32>,
+    timesteps: Vec<usize>,
+    step_index: usize,
+    previous_denoised: Option<Vec<f32>>,
+    previous_h: Option<f32>,
+}
+
+/// Result of one deterministic VibeVoice diffusion step.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VibeVoiceDpmStep {
+    /// Sample at the next (lower) noise level.
+    pub sample: Vec<f32>,
+    /// Reconstructed x₀ (`alpha * x - sigma * v`) used for multistep history.
+    pub denoised: Vec<f32>,
+}
+
+impl VibeVoiceDpmSolverMultistep {
+    /// Constructs the official cosine schedule.
+    ///
+    /// `num_train_steps` and `num_inference_steps` are the exact values from
+    /// the authenticated config (`1000` and `20` for VibeVoice-1.5B).
+    pub fn new(num_train_steps: usize, num_inference_steps: usize) -> Result<Self> {
+        if num_train_steps < 2 || num_inference_steps == 0 {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice DPMSolverMultistepScheduler: train steps must be >= 2 and inference steps must be > 0".to_owned(),
+            ));
+        }
+        if num_inference_steps > num_train_steps {
+            return Err(VokraError::InvalidArgument(format!(
+                "vibevoice DPMSolverMultistepScheduler: inference steps {num_inference_steps} exceed train steps {num_train_steps}"
+            )));
+        }
+
+        // diffusers' `betas_for_alpha_bar` cosine schedule.  Keeping the
+        // cumulative product directly avoids accumulating a second rounding
+        // path in the runtime and mirrors the source's alpha_bar ratio.
+        const COSINE_OFFSET: f32 = 0.008;
+        let alpha_bar = |fraction: f32| {
+            let value =
+                ((fraction + COSINE_OFFSET) / (1.0 + COSINE_OFFSET)) * core::f32::consts::FRAC_PI_2;
+            value.cos().powi(2)
+        };
+        let mut alphas_cumprod = Vec::with_capacity(num_train_steps);
+        for index in 0..num_train_steps {
+            // The scheduler stores the product through each training index.
+            // This is the same ratio as `betas_for_alpha_bar` followed by a
+            // cumulative product, with the explicit 0.999 beta cap.
+            let t0 = index as f32 / num_train_steps as f32;
+            let t1 = (index + 1) as f32 / num_train_steps as f32;
+            let beta = (1.0 - alpha_bar(t1) / alpha_bar(t0)).min(0.999);
+            let prior = if index == 0 {
+                1.0
+            } else {
+                alphas_cumprod[index - 1]
+            };
+            alphas_cumprod.push(prior * (1.0 - beta));
+        }
+
+        // `set_timesteps` uses `linspace(0, N - 1, inference + 1).round()`
+        // in ascending order, flips it, and drops the zero endpoint because
+        // the final sigma is appended separately. Use integer round-to-nearest
+        // arithmetic for the same source grid without a float conversion.
+        let spacing_denominator = num_inference_steps;
+        let timesteps = (0..num_inference_steps)
+            .map(|index| {
+                let numerator = (num_inference_steps - index) * (num_train_steps - 1);
+                let rounded = (numerator + spacing_denominator / 2) / spacing_denominator;
+                rounded
+            })
+            .collect();
+        Ok(Self {
+            alphas_cumprod,
+            timesteps,
+            step_index: 0,
+            previous_denoised: None,
+            previous_h: None,
+        })
+    }
+
+    /// Canonical VibeVoice scheduler (`1000` training, `20` inference steps).
+    pub fn vibevoice_1_5b() -> Result<Self> {
+        Self::new(1000, 20)
+    }
+
+    /// Descending training timesteps selected by the scheduler.
+    #[must_use]
+    pub fn timesteps(&self) -> &[usize] {
+        &self.timesteps
+    }
+
+    /// Resets multistep history so a new diffusion sample starts from one
+    /// Gaussian draw and cannot inherit a previous request's state.
+    pub fn reset(&mut self) {
+        self.step_index = 0;
+        self.previous_denoised = None;
+        self.previous_h = None;
+    }
+
+    /// Performs one deterministic DPM-Solver++ step for v-prediction.
+    ///
+    /// `sample` and `model_output` are flat latent buffers of equal shape;
+    /// `timestep` must equal the scheduler's next source timestep.  The first
+    /// step is first-order; subsequent steps use the official second-order
+    /// midpoint correction.  No random draw or SDE noise is performed.
+    pub fn step(
+        &mut self,
+        model_output: &[f32],
+        timestep: usize,
+        sample: &[f32],
+    ) -> Result<VibeVoiceDpmStep> {
+        if model_output.is_empty() || model_output.len() != sample.len() {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice DPMSolverMultistepScheduler: sample/model output shape mismatch"
+                    .to_owned(),
+            ));
+        }
+        let source_index = self.step_index;
+        let source_timestep = *self.timesteps.get(source_index).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "vibevoice DPMSolverMultistepScheduler: no step remains".to_owned(),
+            )
+        })?;
+        if timestep != source_timestep {
+            return Err(VokraError::InvalidArgument(format!(
+                "vibevoice DPMSolverMultistepScheduler: timestep {timestep} does not match expected {source_timestep}"
+            )));
+        }
+        let target_timestep = self.timesteps.get(source_index + 1).copied();
+        let alpha_s = self.alpha(source_timestep);
+        let sigma_s = (1.0 - alpha_s * alpha_s).max(0.0).sqrt();
+        // diffusers' final step uses `alpha_to = 1` / `sigma_to = 0`
+        // (`set_alpha_to_one=True`) after the final nonzero source timestep.
+        // Keeping this explicit avoids a duplicated timestep and makes the
+        // final call return the reconstructed x₀ without adding noise.
+        let (alpha_t, sigma_t) = target_timestep.map_or((1.0, 0.0), |target| {
+            let alpha = self.alpha(target);
+            (alpha, (1.0 - alpha * alpha).max(0.0).sqrt())
+        });
+        let mut denoised = Vec::with_capacity(sample.len());
+        for (&value, &velocity) in sample.iter().zip(model_output) {
+            let x0 = alpha_s * value - sigma_s * velocity;
+            if !x0.is_finite() {
+                return Err(VokraError::InvalidArgument(
+                    "vibevoice DPMSolverMultistepScheduler: non-finite denoised value".to_owned(),
+                ));
+            }
+            denoised.push(x0);
+        }
+
+        let lambda_s = lambda(alpha_s, sigma_s);
+        let lambda_t = lambda(alpha_t, sigma_t);
+        let h = lambda_t - lambda_s;
+        if !(h.is_finite() && h > 0.0) {
+            return Err(VokraError::InvalidArgument(
+                "vibevoice DPMSolverMultistepScheduler: non-positive/non-finite step interval"
+                    .to_owned(),
+            ));
+        }
+        let exp_neg_h_minus_one = (-h).exp() - 1.0;
+        let mut output = Vec::with_capacity(sample.len());
+        // Diffusers enables `lower_order_final` whenever the final sigma is
+        // zero.  The terminal update is therefore explicitly first-order,
+        // even though two previous denoised evaluations are available.
+        let terminal_first_order = target_timestep.is_none();
+        let correction = if !terminal_first_order {
+            if let (Some(previous), Some(previous_h)) = (&self.previous_denoised, self.previous_h) {
+                let ratio = previous_h / h;
+                if ratio.is_finite() && ratio > 0.0 {
+                    Some(
+                        denoised
+                            .iter()
+                            .zip(previous)
+                            .map(|(&current, &old)| (current - old) / ratio)
+                            .collect::<Vec<_>>(),
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        for index in 0..sample.len() {
+            // DPM-Solver++ midpoint, solver order 2.  The correction is
+            // applied only once a previous denoised evaluation exists;
+            // lower-order-final behavior is therefore deterministic.
+            let mut next = (sigma_t / sigma_s) * sample[index]
+                - alpha_t * exp_neg_h_minus_one * denoised[index];
+            if let Some(ref d1) = correction {
+                next -= 0.5 * alpha_t * exp_neg_h_minus_one * d1[index];
+            }
+            if !next.is_finite() {
+                return Err(VokraError::InvalidArgument(
+                    "vibevoice DPMSolverMultistepScheduler: non-finite sample".to_owned(),
+                ));
+            }
+            output.push(next);
+        }
+        self.previous_denoised = Some(denoised.clone());
+        self.previous_h = Some(h);
+        self.step_index += 1;
+        Ok(VibeVoiceDpmStep {
+            sample: output,
+            denoised,
+        })
+    }
+
+    fn alpha(&self, timestep: usize) -> f32 {
+        self.alphas_cumprod[timestep.min(self.alphas_cumprod.len() - 1)].sqrt()
+    }
+}
+
+fn lambda(alpha: f32, sigma: f32) -> f32 {
+    alpha.max(f32::MIN_POSITIVE).ln() - sigma.max(f32::MIN_POSITIVE).ln()
+}
+
+/// Text-tokenizer companion named by the authenticated upstream
+/// `preprocessor_config.json`. It is not present in the VibeVoice HF
+/// snapshot, so a caller must not silently substitute another Qwen release.
+pub const INTENDED_QWEN_TOKENIZER_REPOSITORY: &str = "Qwen/Qwen2.5-1.5B";
+
+/// The complete VibeVoice text/prefill companion contract is not yet
+/// authenticated in this crate. This explicit error seam prevents callers
+/// from mistaking the strict partial checkpoint for a full TTS loader.
+pub fn require_authenticated_companion() -> Result<()> {
+    Err(VokraError::NotImplemented(
+        "vibevoice: the official Qwen2.5-1.5B tokenizer companion and prompt/prefill packet are not bundled or authenticated; no convenient tokenizer substitution is allowed",
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Decoder LM config — Qwen2.5-1.5B flavour
@@ -656,7 +936,7 @@ impl VibeVoiceDiffusionHeadConfig {
 // ---------------------------------------------------------------------------
 
 /// Full VibeVoice-1.5B config: acoustic tokenizer + semantic
-/// tokenizer + Qwen2 decoder LM + DDPM diffusion head + top-level
+/// tokenizer + Qwen2 decoder LM + diffusion head training config + top-level
 /// `{acoustic,semantic}_vae_dim` shortcuts.
 ///
 /// The two tokenizer VAE seams and the diffusion head are
@@ -674,7 +954,8 @@ pub struct VibeVoiceConfig {
     pub semantic: VibeVoiceSemanticTokenizerConfig,
     /// Qwen2 decoder-LM sub-config.
     pub decoder: VibeVoiceDecoderConfig,
-    /// DDPM diffusion-head sub-config.
+    /// Historical DDPM training-side diffusion-head sub-config. This is not
+    /// the effective DPMSolverMultistepScheduler inference route.
     pub diffusion_head: VibeVoiceDiffusionHeadConfig,
     /// Top-level `acoustic_vae_dim`. `64` — MUST equal
     /// `acoustic.vae_dim`.
@@ -754,7 +1035,11 @@ impl VibeVoiceConfig {
         }
     }
 
-    /// Builds the [`DdpmSamplerConfig`] the head samples with.
+    /// Builds the historical [`DdpmSamplerConfig`] shape fixture.
+    ///
+    /// This is not the effective official inference scheduler. The pinned
+    /// Python source selects [`OFFICIAL_SCHEDULER`]; until that scheduler is
+    /// implemented natively this value must not be used for production TTS.
     ///
     /// Every axis is transcribed from `diffusion_head_config.*`; the
     /// CFG axes default to `CfgMode::None` / `CfgScaleProfile::Constant(1.0)`
@@ -1046,7 +1331,7 @@ pub struct VibeVoiceWeights {
     /// Real binding walks the upstream `prediction_head.*` naming
     /// (`noisy_images_proj` / `cond_proj` / `t_embedder.mlp.*` /
     /// `layers.*.{ffn,norm,adaLN_modulation}.*` /
-    /// `final_layer.{norm_final,linear,adaLN_modulation}.*`).
+    /// `final_layer.{linear,adaLN_modulation}.*`).
     pub diffusion_head: Vec<f32>,
     /// `true` when built by [`Self::synthesized`] — never a real
     /// upstream checkpoint.
@@ -1079,12 +1364,13 @@ impl VibeVoiceWeights {
 
 /// VibeVoice-1.5B TTS engine handle.
 ///
-/// Carries the resolved config + weight store + a derived
-/// [`ContinuousVaeConfig`] (acoustic VAE) + a derived
-/// [`DdpmSamplerConfig`]. [`Self::synthesize`] is the primary text →
-/// PCM entry point; until real weights are bound and the LM →
-/// diffusion-head → DDPM sampler → AudioVAE decode → 24 kHz PCM
-/// chain is wired end-to-end (T29-equivalent follow-up wave), it
+/// Carries the resolved config + weight store, the derived
+/// [`ContinuousVaeConfig`] (acoustic VAE), the historical
+/// [`DdpmSamplerConfig`] shape fixture, and an isolated official
+/// [`VibeVoiceDpmSolverMultistep`] scheduler. [`Self::synthesize`] is the primary
+/// text → PCM entry point; until real weights are bound and the LM →
+/// diffusion-head → official DPMSolverMultistepScheduler → AudioVAE decode
+/// → 24 kHz PCM chain is wired end-to-end (T29-equivalent follow-up wave), it
 /// returns [`VokraError::NotImplemented`] naming the blocker
 /// (FR-EX-08 — never a silent zero-fill or empty audio buffer).
 #[derive(Debug, Clone)]
@@ -1093,11 +1379,13 @@ pub struct VibeVoiceTts {
     weights: VibeVoiceWeights,
     acoustic_vae: ContinuousVaeConfig,
     sampler: DdpmSamplerConfig,
+    official_scheduler: VibeVoiceDpmSolverMultistep,
 }
 
 impl VibeVoiceTts {
     /// Assembles an engine from `cfg` and `weights`. Cross-checks the
-    /// config, the acoustic VAE seam, and the DDPM sampler seam at
+    /// config, the acoustic VAE seam, the historical DDPM shape seam, and the
+    /// official DPM-Solver++ schedule at
     /// construction time so a mismatched trio fails loudly here
     /// rather than deep inside a forward.
     ///
@@ -1111,11 +1399,16 @@ impl VibeVoiceTts {
         let acoustic_vae = cfg.acoustic_vae_config();
         acoustic_vae.validate_for_forward()?;
         let sampler = cfg.ddpm_sampler_config()?;
+        let official_scheduler = VibeVoiceDpmSolverMultistep::new(
+            cfg.diffusion_head.ddpm_num_steps as usize,
+            cfg.diffusion_head.ddpm_num_inference_steps as usize,
+        )?;
         Ok(Self {
             cfg,
             weights,
             acoustic_vae,
             sampler,
+            official_scheduler,
         })
     }
 
@@ -1132,11 +1425,22 @@ impl VibeVoiceTts {
         &self.acoustic_vae
     }
 
-    /// The active DDPM sampler config
-    /// (canonical: 20-step DDIM v-prediction, cosine β).
+    /// The historical DDPM sampler shape fixture. It is not the effective
+    /// official inference scheduler and must not be used for production TTS.
     #[must_use]
     pub fn ddpm_sampler_config(&self) -> &DdpmSamplerConfig {
         &self.sampler
+    }
+
+    /// The official deterministic DPM-Solver++ scheduler state template.
+    ///
+    /// Callers that own a diffusion request should clone this value (or call
+    /// [`VibeVoiceDpmSolverMultistep::reset`]) before stepping. The engine
+    /// still refuses synthesis until the authenticated Qwen, head, tokenizer,
+    /// and codec weights are present.
+    #[must_use]
+    pub fn official_scheduler(&self) -> &VibeVoiceDpmSolverMultistep {
+        &self.official_scheduler
     }
 
     /// True iff the weight store was built by
@@ -1180,16 +1484,16 @@ impl VibeVoiceTts {
         }
         Err(VokraError::NotImplemented(
             "vibevoice synthesize: real weights are bound but the Qwen2 decoder LM → diffusion \
-             head → DDPM sampler (vokra_ops::ddpm_sample, v-prediction / cosine β / 20 inference \
-             steps) → acoustic VAE decode (vokra_ops::continuous_vae_decode, 24 kHz PCM out) \
-             forward path has not landed yet. Follow-up wave (T29-equivalent): (1) run the \
+             head → official DPMSolverMultistepScheduler (dpmsolver++ / squared-cosine / no SDE noise) → \
+             distinct streaming VibeVoice acoustic tokenizer (24 kHz PCM out) forward path has \
+             not landed yet. The old DDPM sampler is only a shape fixture and is not substituted. \
+             Follow-up wave (T29-equivalent): (1) run the \
              Qwen2 LM (GQA 12 Q ÷ 2 KV / RoPE θ=1_000_000 / RMSNorm ε=1e-6 / SwiGLU / tied \
              word embeddings / max_position_embeddings=65_536) with the tokenizer prompt; (2) \
-             at each acoustic frame, drive vokra_ops::ddpm_sample with the 4-layer diffusion \
-             head as the v-prediction closure (AdaLN-modulated Linear+SwiGLU MLP receiving the \
-             LM hidden state as `c` and the sinusoidal `timestep_embedding(t)` fused via \
-             `t_embedder.mlp`); (3) decode the recovered continuous acoustic latent through \
-             vokra_ops::continuous_vae_decode → 24 kHz PCM (the shared Phase 4 primitive). \
+             at each acoustic frame, invoke the authenticated official \
+             DPMSolverMultistepScheduler (`dpmsolver++`, squared-cosine, no SDE noise) around the \
+             4-layer diffusion head; (3) decode the recovered continuous acoustic latent \
+             through the authenticated VibeVoice tokenizer → 24 kHz PCM. \
              The semantic tokenizer runs the encoder chain on the audio prompt (24 kHz PCM \
              → 7.5 Hz continuous 128-d latents) as LM conditioning; VibeVoice does NOT decode \
              the semantic latents back to audio.",
@@ -1210,6 +1514,94 @@ mod tests {
     #[test]
     fn expected_arch_is_vibevoice() {
         assert_eq!(EXPECTED_ARCH, "vibevoice");
+    }
+
+    #[test]
+    fn official_composite_requirements_are_not_silently_substituted() {
+        assert_eq!(INTENDED_QWEN_TOKENIZER_REPOSITORY, "Qwen/Qwen2.5-1.5B");
+        assert!(OFFICIAL_SCHEDULER.contains("DPMSolverMultistepScheduler"));
+        assert!(OFFICIAL_SCHEDULER.contains("dpmsolver++"));
+        assert!(OFFICIAL_SCHEDULER.contains("squared-cosine"));
+        let error = require_authenticated_companion().expect_err("companion must remain blocked");
+        assert!(error.to_string().contains("not bundled or authenticated"));
+    }
+
+    #[test]
+    fn official_dpm_scheduler_has_descending_cosine_grid_and_no_random_state() {
+        let scheduler = VibeVoiceDpmSolverMultistep::vibevoice_1_5b().unwrap();
+        assert_eq!(scheduler.timesteps().len(), 20);
+        assert_eq!(scheduler.timesteps().first(), Some(&999));
+        assert_eq!(scheduler.timesteps().last(), Some(&50));
+        assert!(
+            scheduler
+                .timesteps()
+                .windows(2)
+                .all(|pair| pair[0] > pair[1])
+        );
+    }
+
+    #[test]
+    fn official_dpm_scheduler_is_deterministic_and_rejects_wrong_step() {
+        let mut left = VibeVoiceDpmSolverMultistep::new(32, 4).unwrap();
+        let mut right = VibeVoiceDpmSolverMultistep::new(32, 4).unwrap();
+        let sample = [0.25_f32, -0.75];
+        let velocity = [0.1_f32, -0.2];
+        let timestep = left.timesteps()[0];
+        let first = left.step(&velocity, timestep, &sample).unwrap();
+        let same = right.step(&velocity, timestep, &sample).unwrap();
+        assert_eq!(first, same);
+        let wrong = left.step(&velocity, timestep, &first.sample);
+        assert!(matches!(wrong, Err(VokraError::InvalidArgument(_))));
+        let second_timestep = left.timesteps()[1];
+        let second = left
+            .step(&velocity, second_timestep, &first.sample)
+            .unwrap();
+        assert!(second.sample.iter().all(|value| value.is_finite()));
+        assert!(second.denoised.iter().all(|value| value.is_finite()));
+        left.reset();
+        let replay = left.step(&velocity, timestep, &sample).unwrap();
+        assert_eq!(replay, first);
+    }
+
+    #[test]
+    fn official_dpm_scheduler_rejects_shape_and_nonfinite_inputs() {
+        let mut scheduler = VibeVoiceDpmSolverMultistep::new(32, 4).unwrap();
+        let timestep = scheduler.timesteps()[0];
+        assert!(scheduler.step(&[0.0], timestep, &[0.0, 1.0]).is_err());
+        assert!(scheduler.step(&[f32::NAN], timestep, &[0.0]).is_err());
+    }
+
+    #[test]
+    fn official_dpm_scheduler_final_step_has_zero_sigma() {
+        let mut scheduler = VibeVoiceDpmSolverMultistep::new(32, 4).unwrap();
+        let mut sample = vec![0.25_f32, -0.75];
+        for timestep in scheduler.timesteps().to_vec() {
+            sample = scheduler
+                .step(&[0.0, 0.0], timestep, &sample)
+                .unwrap()
+                .sample;
+        }
+        assert!(sample.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn official_dpm_scheduler_terminal_step_is_lower_order_first_order() {
+        let mut scheduler = VibeVoiceDpmSolverMultistep::new(32, 4).unwrap();
+        let mut sample = vec![0.25_f32];
+        for (index, timestep) in scheduler.timesteps().to_vec().into_iter().enumerate() {
+            let velocity = [0.1 + index as f32 * 0.07];
+            if index + 1 == scheduler.timesteps().len() {
+                let alpha_s = scheduler.alpha(timestep);
+                let sigma_s = (1.0 - alpha_s * alpha_s).max(0.0).sqrt();
+                let denoised = alpha_s * sample[0] - sigma_s * velocity[0];
+                let h = lambda(1.0, 0.0) - lambda(alpha_s, sigma_s);
+                let expected = -((-h).exp() - 1.0) * denoised;
+                let actual = scheduler.step(&velocity, timestep, &sample).unwrap().sample[0];
+                assert!((actual - expected).abs() < 1.0e-6);
+            } else {
+                sample = scheduler.step(&velocity, timestep, &sample).unwrap().sample;
+            }
+        }
     }
 
     #[test]
@@ -1548,6 +1940,7 @@ mod tests {
             tts.ddpm_sampler_config().beta_schedule,
             BetaSchedule::Cosine
         );
+        assert_eq!(tts.official_scheduler().timesteps().len(), 20);
     }
 
     #[test]
