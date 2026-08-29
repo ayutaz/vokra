@@ -57,6 +57,9 @@ VARIANTS: dict[str, dict[str, Any]] = {
         ".gitattributes": (1519, "a6344aac8c09253b3b630fb776ae94478aa0275b"), "README.md": (4454, "8b03cc3f9b67ff7ee3ebd5c07e5a0480793590f2"), "config.json": (2623, "056ee1175f04f4a202750b4d7bee431c6401dd4f"), "modeling_gigaam.py": (72778, "c50962bdb5c66d12b780b59719fc3c752a42e74f"), "pytorch_model.bin": (883170115, "2b0f1a4a05b27622fe5eb2732742d4f10bcf068b", "e1db43873ec5e296f229572e06e2470fc157ac9f8d4aacabda295630b9b91728")}},
 }
 FORMAT="vokra-gigaam-inspection-v1"; IGNORE={".cache",".git"}; MAX_ARCHIVE_MEMBERS=100_000; MAX_ARCHIVE_NAME=4096; MAX_ARCHIVE_BYTES=4_000_000_000_000; MAX_ITEMS=300_000; MAX_METADATA=50_000; MAX_DEPTH=64
+V3_TOKENIZER_PIECE_COUNT=1024; V3_RNNT_NUM_CLASSES=1025
+V3_TOKENIZER_FIRST_PIECES=("<unk>", ".", ",", "▁")
+V3_TOKENIZER_LAST_PIECES=((1020, "₽"), (1021, "€"), (1022, "$"), (1023, "«"))
 
 def sha256(path:Path)->str:
  d=hashlib.sha256()
@@ -140,9 +143,9 @@ def config_expectations(variant:dict[str,Any])->dict[str,Any]:
  if variant["model_class"]=="rnnt": expected.update({
   f"{prefix}.preprocessor.mel_scale":"htk",f"{prefix}.preprocessor.mel_norm":None,
   f"{prefix}.head._target_":"modeling_gigaam.RNNTHead",f"{prefix}.head.decoder.pred_hidden":320,
-  f"{prefix}.head.decoder.pred_rnn_layers":1,f"{prefix}.head.decoder.num_classes":1025,
+  f"{prefix}.head.decoder.pred_rnn_layers":1,f"{prefix}.head.decoder.num_classes":V3_RNNT_NUM_CLASSES,
   f"{prefix}.head.joint.enc_hidden":768,f"{prefix}.head.joint.pred_hidden":320,
-  f"{prefix}.head.joint.joint_hidden":320,f"{prefix}.head.joint.num_classes":1025,
+  f"{prefix}.head.joint.joint_hidden":320,f"{prefix}.head.joint.num_classes":V3_RNNT_NUM_CLASSES,
   f"{prefix}.decoding._target_":"modeling_gigaam.RNNTGreedyDecoding",f"{prefix}.decoding.vocabulary":None,
   f"{prefix}.decoding.model_path":"tokenizer.model",
  })
@@ -154,6 +157,14 @@ def config_evidence(path:Path,variant:dict[str,Any],blockers:list[str])->dict[st
  observed={}; expected=config_expectations(variant)
  for key,value in expected.items(): at(raw,key,value,observed,blockers)
  packet.update({"status":"EXACT_CONFIG" if not blockers else "BLOCKED_CONFIG","model_class":variant["model_class"],"model_name":variant["model_name"],"expected":expected,"observed":observed}); return packet
+
+def validate_v3_tokenizer_structure(piece_count:int, first:list[str], last:list[tuple[int,str]], rnnt_num_classes:int)->dict[str,Any]:
+ if type(piece_count) is not int or piece_count!=V3_TOKENIZER_PIECE_COUNT: raise ValueError("v3 tokenizer piece count mismatch")
+ if tuple(first)!=V3_TOKENIZER_FIRST_PIECES: raise ValueError("v3 tokenizer leading pieces mismatch")
+ if tuple(last)!=V3_TOKENIZER_LAST_PIECES: raise ValueError("v3 tokenizer trailing pieces mismatch")
+ if type(rnnt_num_classes) is not int or rnnt_num_classes!=piece_count+1: raise ValueError("RNNT num_classes must equal tokenizer piece count + 1")
+ return {"piece_count":piece_count,"first":list(first),"last":[{"id":index,"piece":piece} for index,piece in last],"rnnt_num_classes":rnnt_num_classes,"class_count_contract":"num_classes == piece_count + 1"}
+
 def card_evidence(path:Path,blockers:list[str])->dict[str,Any]:
  try: text=path.read_text(encoding="utf-8")
  except Exception as e: blockers.append(f"README UTF-8 blocked: {e}"); return {"status":"BLOCKED_CARD"}
@@ -253,8 +264,9 @@ def inspect(snapshot:Path,source:Path,tree:Path,out:Path,variant_name:str)->int:
  if variant_name=="v3" and (snapshot/"tokenizer.model").is_file():
   try:
    import sentencepiece as sp
-   model=sp.SentencePieceProcessor(model_file=str(snapshot/"tokenizer.model")); tokenizer={"status":"STRUCTURE_PARSED","piece_count":model.GetPieceSize()}
-   if model.GetPieceSize()!=1025: blockers.append("v3 tokenizer piece count mismatch")
+   model=sp.SentencePieceProcessor(model_file=str(snapshot/"tokenizer.model"))
+   structure=validate_v3_tokenizer_structure(model.GetPieceSize(),[model.IdToPiece(index) for index in range(4)],[(index,model.IdToPiece(index)) for index,_ in V3_TOKENIZER_LAST_PIECES],V3_RNNT_NUM_CLASSES)
+   tokenizer={"status":"STRUCTURE_PARSED",**structure}
   except Exception as e: blockers.append(f"v3 tokenizer blocked: {e}")
  elif variant_name=="v3": blockers.append("v3 tokenizer missing")
  source_evidence=source_inventory(source,blockers)
@@ -265,6 +277,13 @@ def inspect(snapshot:Path,source:Path,tree:Path,out:Path,variant_name:str)->int:
  out.mkdir(parents=True,exist_ok=True); (out/"manifest.json").write_text(json.dumps(payload,indent=2,sort_keys=True)+"\n"); return 2
 def self_test()->None:
  assert set(VARIANTS)=={"v3","multilingual"} and VARIANTS["v3"]["model_class"]!="ctc" and VARIANTS["multilingual"]["model_class"]!="rnnt"
+ assert V3_TOKENIZER_PIECE_COUNT==1024 and V3_RNNT_NUM_CLASSES==V3_TOKENIZER_PIECE_COUNT+1
+ assert V3_TOKENIZER_FIRST_PIECES==("<unk>", ".", ",", "▁") and V3_TOKENIZER_LAST_PIECES==((1020, "₽"), (1021, "€"), (1022, "$"), (1023, "«"))
+ assert validate_v3_tokenizer_structure(1024,list(V3_TOKENIZER_FIRST_PIECES),list(V3_TOKENIZER_LAST_PIECES),1025)["class_count_contract"]=="num_classes == piece_count + 1"
+ for piece_count,first,last,num_classes in ((1025,list(V3_TOKENIZER_FIRST_PIECES),list(V3_TOKENIZER_LAST_PIECES),1025),(1024,["<unk>", ".", ",", "<space>"],list(V3_TOKENIZER_LAST_PIECES),1025),(1024,list(V3_TOKENIZER_FIRST_PIECES),[(1020, "₽"), (1021, "€"), (1022, "$"), (1023, "!")],1025),(1024,list(V3_TOKENIZER_FIRST_PIECES),list(V3_TOKENIZER_LAST_PIECES),1024)):
+  try:validate_v3_tokenizer_structure(piece_count,first,last,num_classes)
+  except ValueError:pass
+  else:raise AssertionError("invalid v3 tokenizer/RNNT class contract accepted")
  assert all(spec["files"][".gitattributes"][1]=="a6344aac8c09253b3b630fb776ae94478aa0275b" for spec in VARIANTS.values())
  rnnt=config_expectations(VARIANTS["v3"]); ctc=config_expectations(VARIANTS["multilingual"])
  assert rnnt["cfg.model.cfg.head.decoder.pred_hidden"]==320 and "cfg.model.cfg.head.encoder_dim" not in rnnt
