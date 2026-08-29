@@ -43,6 +43,7 @@ EXPECTED_COMPONENTS = {
     "vocoder/config.json": (1_402, None),
     "whisper-large-v3/model.safetensors": (3_087_131_376, "d677ab655d1916439c5868c819a0e48cdac574defab83c69b0bbc2b7b31a9f06"),
 }
+TRANSPORT_CACHE_PATH = PurePosixPath(".cache/huggingface")
 SHARD_RE = re.compile(r"^model-(\d+)-of-(\d+)\.safetensors$")
 HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_SHARDS = {f"model-{index}-of-35.safetensors" for index in range(1, 36)} | {"model-36-of-36.safetensors"}
@@ -324,12 +325,68 @@ def config_axes(config: dict[str, Any]) -> dict[str, Any]:
     return actual
 
 
-def files_under(root: Path) -> tuple[list[Path], list[str]]:
+def transport_cache_scope(root: Path, blockers: list[str]) -> tuple[Path | None, dict[str, Any]]:
+    """Return the exact local_dir transport cache subtree, if valid.
+
+    ``snapshot_download(local_dir=...)`` writes transport metadata below the
+    snapshot root's ``.cache/huggingface`` directory.  Only that exact path is
+    excluded from model identity accounting; any other cache-like path remains
+    a real snapshot member.  The two path components are checked explicitly so
+    a symlink or non-directory cannot smuggle files past the tree contract.
+    """
+    evidence: dict[str, Any] = {
+        "path": TRANSPORT_CACHE_PATH.as_posix(),
+        "scope": "snapshot_root_exact_transport_subtree",
+        "present": False,
+        "identity_role": "NON_IDENTITY_TRANSPORT_METADATA",
+        "status": "ABSENT",
+    }
+    cache = root / ".cache"
+    if cache.is_symlink() or (cache.exists() and not cache.is_dir()):
+        message = f"snapshot root .cache must be a regular directory: {cache}"
+        blockers.append(message)
+        evidence["status"] = "INVALID"
+        evidence["error"] = message
+        return None, evidence
+    if not cache.exists():
+        return None, evidence
+
+    transport = cache / "huggingface"
+    if transport.is_symlink() or (transport.exists() and not transport.is_dir()):
+        message = f"snapshot root .cache/huggingface must be a regular directory: {transport}"
+        blockers.append(message)
+        evidence["status"] = "INVALID"
+        evidence["error"] = message
+        return None, evidence
+    if not transport.exists():
+        return None, evidence
+
+    evidence["present"] = True
+    evidence["status"] = "EXCLUDED"
+    try:
+        evidence["entry_count"] = sum(1 for _ in transport.rglob("*"))
+    except OSError as error:
+        message = f"snapshot transport cache inventory failed: {transport}: {error}"
+        blockers.append(message)
+        evidence["status"] = "INVALID"
+        evidence["error"] = message
+        return None, evidence
+    return transport, evidence
+
+
+def files_under(root: Path, excluded_transport: Path | None = None) -> tuple[list[Path], list[str]]:
     files: list[Path] = []
     blockers: list[str] = []
     if not root.is_dir():
         return [], [f"missing HF snapshot directory: {root}"]
     for path in sorted(root.rglob("*")):
+        if excluded_transport is not None:
+            try:
+                path.relative_to(excluded_transport)
+            except ValueError:
+                pass
+            else:
+                continue
         if path.is_symlink():
             try:
                 resolved = path.resolve(strict=True)
@@ -365,13 +422,26 @@ def files_under(root: Path) -> tuple[list[Path], list[str]]:
     return files, blockers
 
 
-def tree_evidence(root: Path, server_tree: Path | None, blockers: list[str]) -> dict[str, Any]:
-    files, local_blockers = files_under(root)
-    blockers.extend(local_blockers)
+def tree_evidence(
+    root: Path,
+    server_tree: Path | None,
+    blockers: list[str],
+    *,
+    files: list[Path] | None = None,
+    transport_cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if files is None:
+        excluded_transport, discovered_cache = transport_cache_scope(root, blockers)
+        files, local_blockers = files_under(root, excluded_transport)
+        blockers.extend(local_blockers)
+        if transport_cache is None:
+            transport_cache = discovered_cache
+    elif transport_cache is None:
+        _, transport_cache = transport_cache_scope(root, blockers)
     local = sorted((path.relative_to(root).as_posix(), path.stat().st_size) for path in files)
     if server_tree is None:
         blockers.append("missing HF server tree envelope")
-        return {"repository": UPSTREAM_HF, "revision": HF_REVISION, "resolved_revision": None, "files": local, "status": "MISSING"}
+        return {"repository": UPSTREAM_HF, "revision": HF_REVISION, "resolved_revision": None, "files": local, "transport_cache": transport_cache, "status": "MISSING"}
     remote = parse_json(server_tree)
     if not isinstance(remote, dict):
         raise RuntimeError("HF server tree envelope is not an object")
@@ -412,7 +482,7 @@ def tree_evidence(root: Path, server_tree: Path | None, blockers: list[str]) -> 
             if git_blob_sha1(path).lower() != oid.lower():
                 raise RuntimeError(f"HF server/local Git blob SHA-1 mismatch: {item['path']}")
         records.append({"path": item["path"], "size": item["size"], "oid": oid, "lfs_sha256": lfs_sha256, "local_sha256": local_sha256})
-    return {"repository": UPSTREAM_HF, "revision": HF_REVISION, "resolved_revision": remote.get("resolved_revision"), "files": local, "server_files": server, "content_identity": records, "status": "MATCHED"}
+    return {"repository": UPSTREAM_HF, "revision": HF_REVISION, "resolved_revision": remote.get("resolved_revision"), "files": local, "server_files": server, "content_identity": records, "transport_cache": transport_cache, "status": "MATCHED"}
 
 
 def source_evidence(source: Path, blockers: list[str]) -> dict[str, Any]:
@@ -525,9 +595,10 @@ def _inspect(snapshot: Path, source: Path, evidence: Path, server_tree: Path | N
     blockers: list[str] = []
     if revision != HF_REVISION:
         blockers.append(f"operator revision {revision!r} differs from pinned revision")
-    files, file_blockers = files_under(snapshot)
+    excluded_transport, transport_cache = transport_cache_scope(snapshot, blockers)
+    files, file_blockers = files_under(snapshot, excluded_transport)
     blockers.extend(file_blockers)
-    tree = tree_evidence(snapshot, server_tree, blockers)
+    tree = tree_evidence(snapshot, server_tree, blockers, files=files, transport_cache=transport_cache)
     config = parse_json(snapshot / "config.json")
     if not isinstance(config, dict):
         raise RuntimeError("Kimi-Audio config.json root is not an object")
@@ -664,11 +735,31 @@ def self_test() -> None:
         tree_root.mkdir()
         content = tree_root / "config.json"
         content.write_bytes(b"abc")
+        transport = tree_root / ".cache" / "huggingface"
+        transport.mkdir(parents=True)
+        (transport / "download-metadata.json").write_text("transport-only", encoding="utf-8")
         tree_packet = Path(temporary) / "tree.json"
         lfs_digest = sha256(content)
         tree_payload = {"repository": UPSTREAM_HF, "revision": HF_REVISION, "resolved_revision": HF_REVISION, "files": [{"path": "config.json", "type": "file", "size": 3, "oid": lfs_digest, "lfs_sha256": lfs_digest}]}
         tree_packet.write_text(json.dumps(tree_payload), encoding="utf-8")
-        tree_evidence(tree_root, tree_packet, [])
+        matched_tree = tree_evidence(tree_root, tree_packet, [])
+        assert matched_tree["status"] == "MATCHED"
+        assert matched_tree["transport_cache"]["path"] == ".cache/huggingface"
+        assert matched_tree["transport_cache"]["scope"] == "snapshot_root_exact_transport_subtree"
+        assert matched_tree["transport_cache"]["present"] is True
+        assert matched_tree["transport_cache"]["identity_role"] == "NON_IDENTITY_TRANSPORT_METADATA"
+        assert matched_tree["transport_cache"]["status"] == "EXCLUDED"
+        assert matched_tree["transport_cache"]["entry_count"] == 1
+        nested_cache = tree_root / "nested" / ".cache"
+        nested_cache.mkdir(parents=True)
+        (nested_cache / "real-extra").write_bytes(b"extra")
+        try:
+            tree_evidence(tree_root, tree_packet, [])
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("nested .cache extra file was incorrectly excluded")
+        (nested_cache / "real-extra").unlink()
         content.write_bytes(b"abd")
         try:
             tree_evidence(tree_root, tree_packet, [])
@@ -711,6 +802,26 @@ def self_test() -> None:
         blob_packet["files"] = [{"path": "config.json", "type": "file", "size": 3, "oid": git_blob_sha1(content), "lfs_sha256": None}]
         tree_packet.write_text(json.dumps(blob_packet), encoding="utf-8")
         tree_evidence(tree_root, tree_packet, [])
+        for shape in ("cache-file", "transport-file", "cache-symlink", "transport-symlink"):
+            malformed = Path(temporary) / shape
+            malformed.mkdir()
+            malformed_cache = malformed / ".cache"
+            if shape.startswith("cache-"):
+                if shape.endswith("file"):
+                    malformed_cache.write_bytes(b"not-a-directory")
+                else:
+                    malformed_cache.symlink_to(Path(temporary) / "outside-cache", target_is_directory=True)
+            else:
+                malformed_cache.mkdir()
+                transport_path = malformed_cache / "huggingface"
+                if shape.endswith("file"):
+                    transport_path.write_bytes(b"not-a-directory")
+                else:
+                    transport_path.symlink_to(Path(temporary) / "outside-transport", target_is_directory=True)
+            malformed_blockers: list[str] = []
+            _, malformed_evidence = transport_cache_scope(malformed, malformed_blockers)
+            assert malformed_evidence["status"] == "INVALID"
+            assert malformed_blockers
         root = Path(temporary) / "snapshot"
         root.mkdir()
         final_names = ["model.embed_tokens.weight", "model.norm.weight", "lm_head.weight", "mimo_output.weight", "model.mimo_norm.weight"]

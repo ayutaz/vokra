@@ -42,7 +42,7 @@ self_test() {
     '3087131376' 'd677ab655d1916439c5868c819a0e48cdac574defab83c69b0bbc2b7b31a9f06' \
     'model.safetensors.index.json' 'model-36-of-36.safetensors' 'audio_detokenizer/model.pt' \
     'vocoder/model.pt' 'whisper-large-v3/model.safetensors' 'weights_only=True' \
-    'get_unsafe_globals_in_checkpoint' 'server_tree' 'item.lfs' 'lfs_sha256' 'blob_id' 'path_in_repo' 'resolved_origin' 'status": "BLOCKED"' \
+    'get_unsafe_globals_in_checkpoint' 'server_tree' 'item.lfs' 'lfs_sha256' 'blob_id' 'path_in_repo' 'resolved_origin' 'fixed_components' 'MATCHED' 'inspection_error' 'status": "BLOCKED"' \
     'evidence_stage' 'INSPECTION_ONLY' 'NO_UPLOAD' 'cargo fmt --all -- --check'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -248,14 +248,63 @@ inspect_rc=$?
 set -e
 [[ "$inspect_rc" == 2 ]] || die "inspector must exit 2, got $inspect_rc"
 [[ -s "$work_dir/evidence/manifest.json" ]] || die 'manifest missing'
-grep -Fq '"status": "BLOCKED"' "$work_dir/evidence/manifest.json" || die 'blocked status missing'
-grep -Fq '"evidence_stage": "INSPECTION_ONLY"' "$work_dir/evidence/manifest.json" || die 'inspection stage missing'
-grep -Fq '"publication": "NO_UPLOAD"' "$work_dir/evidence/manifest.json" || die 'publication status missing'
-grep -Fq "\"bytes\": $AUDIO_DETOK_BYTES" "$work_dir/evidence/manifest.json" || die 'audio detokenizer size missing'
-grep -Fq "\"sha256\": \"$AUDIO_DETOK_SHA256\"" "$work_dir/evidence/manifest.json" || die 'audio detokenizer hash missing'
-grep -Fq "\"bytes\": $VOCODER_BYTES" "$work_dir/evidence/manifest.json" || die 'vocoder size missing'
-grep -Fq "\"sha256\": \"$VOCODER_SHA256\"" "$work_dir/evidence/manifest.json" || die 'vocoder hash missing'
-grep -Fq "\"bytes\": $WHISPER_BYTES" "$work_dir/evidence/manifest.json" || die 'Whisper size missing'
-grep -Fq "\"sha256\": \"$WHISPER_SHA256\"" "$work_dir/evidence/manifest.json" || die 'Whisper hash missing'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
+  python - "$work_dir/evidence/manifest.json" "$AUDIO_DETOK_BYTES" "$AUDIO_DETOK_SHA256" \
+    "$VOCODER_BYTES" "$VOCODER_SHA256" "$VOCODER_CONFIG_BYTES" "$WHISPER_BYTES" "$WHISPER_SHA256" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
+import json
+import re
+import sys
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate manifest key: {key}")
+        result[key] = value
+    return result
+
+manifest_path, audio_bytes, audio_sha, vocoder_bytes, vocoder_sha, config_bytes, whisper_bytes, whisper_sha = sys.argv[1:]
+manifest = json.loads(open(manifest_path, encoding="utf-8").read(), object_pairs_hook=reject_duplicate_keys)
+if not isinstance(manifest, dict):
+    raise SystemExit("manifest root is not an object")
+for key, expected in (("status", "BLOCKED"), ("evidence_stage", "INSPECTION_ONLY"), ("publication", "NO_UPLOAD")):
+    if manifest.get(key) != expected:
+        raise SystemExit(f"manifest {key} mismatch: {manifest.get(key)!r}")
+if "inspection_error" in json.dumps(manifest, sort_keys=True).lower():
+    raise SystemExit("inspection_error was accepted")
+
+model = manifest.get("model")
+tree = model.get("server_tree") if isinstance(model, dict) else None
+if not isinstance(tree, dict) or tree.get("status") != "MATCHED":
+    raise SystemExit(f"server tree is not MATCHED: {tree!r}")
+transport = tree.get("transport_cache")
+if not isinstance(transport, dict):
+    raise SystemExit("transport cache evidence is missing")
+if transport.get("path") != ".cache/huggingface" or transport.get("scope") != "snapshot_root_exact_transport_subtree":
+    raise SystemExit(f"transport cache scope mismatch: {transport!r}")
+if transport.get("identity_role") != "NON_IDENTITY_TRANSPORT_METADATA":
+    raise SystemExit(f"transport cache identity role mismatch: {transport!r}")
+if transport.get("status") not in {"ABSENT", "EXCLUDED"} or not isinstance(transport.get("present"), bool):
+    raise SystemExit(f"invalid transport cache evidence: {transport!r}")
+
+expected = {
+    "audio_detokenizer/model.pt": (int(audio_bytes), audio_sha),
+    "vocoder/model.pt": (int(vocoder_bytes), vocoder_sha),
+    "vocoder/config.json": (int(config_bytes), None),
+    "whisper-large-v3/model.safetensors": (int(whisper_bytes), whisper_sha),
+}
+fixed = manifest.get("fixed_components")
+if not isinstance(fixed, dict) or set(fixed) != set(expected):
+    raise SystemExit(f"fixed component paths mismatch: {fixed!r}")
+for path, (expected_bytes, expected_sha) in expected.items():
+    identity = fixed.get(path)
+    if not isinstance(identity, dict) or set(identity) != {"bytes", "sha256"}:
+        raise SystemExit(f"fixed component identity schema mismatch: {path}: {identity!r}")
+    if identity["bytes"] != expected_bytes or not isinstance(identity["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", identity["sha256"]):
+        raise SystemExit(f"fixed component identity mismatch: {path}: {identity!r}")
+    if expected_sha is not None and identity["sha256"] != expected_sha:
+        raise SystemExit(f"fixed component SHA-256 mismatch: {path}")
+print("Kimi-Audio manifest structural assertion: PASS")
+PY
 echo 'verdict=BLOCKED; evidence_stage=INSPECTION_ONLY; publication=NO_UPLOAD' | tee -a "$work_dir/evidence/validation.log"
 die 'Kimi-Audio inspection evidence preserved; conversion/runtime/parity remain blocked'
