@@ -133,6 +133,7 @@ pub trait BigVganResidentOps {
     fn upload(&mut self, data: &[f32]) -> Result<Self::Tensor>;
 
     /// Device-resident Conv1d with row-major `[out, in, kernel]` weights.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
     fn conv1d(
         &mut self,
         input: &Self::Tensor,
@@ -147,6 +148,7 @@ pub trait BigVganResidentOps {
     ) -> Result<Self::Tensor>;
 
     /// Device-resident ConvTranspose1d with `[in, out, kernel]` weights.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
     fn conv_transpose1d(
         &mut self,
         input: &Self::Tensor,

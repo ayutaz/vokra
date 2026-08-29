@@ -1549,6 +1549,7 @@ impl GemmF32Bf16BitsScratch {
 }
 
 /// Mixed-BF16 GEMM with caller-owned reusable backend scratch.
+#[allow(clippy::too_many_arguments)] // GEMM operands + forced ISA + caller-owned scratch
 pub fn gemm_f32_bf16_bits_on_with_scratch(
     isa: IsaPath,
     m: usize,
@@ -1567,6 +1568,7 @@ pub fn gemm_f32_bf16_bits_on_with_scratch(
 /// The first `n` values of each row are written; `out` may therefore be a
 /// larger row-major destination, which lets mapped model callers reuse the
 /// backend's single `8 × 8` output tile without allocating a second model tile.
+#[allow(clippy::too_many_arguments)] // GEMM operands + forced ISA + output stride + scratch
 pub fn gemm_f32_bf16_bits_on_with_scratch_strided(
     isa: IsaPath,
     m: usize,

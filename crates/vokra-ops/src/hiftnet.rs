@@ -1010,6 +1010,7 @@ pub trait HiFTResidentOps {
 
     /// Regular Conv1d with explicit stride, dilation, and symmetric zero
     /// padding.  Output length follows PyTorch's Conv1d formula.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
     fn conv1d(
         &mut self,
         input: &Self::Tensor,
@@ -1025,6 +1026,7 @@ pub trait HiFTResidentOps {
     ) -> Result<Self::Tensor>;
 
     /// ConvTranspose1d in PyTorch's `[in, out, kernel]` layout.
+    #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
     fn conv_transpose1d(
         &mut self,
         input: &Self::Tensor,
