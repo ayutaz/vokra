@@ -27,6 +27,17 @@ DEPENDENCY_KEYS = (
     frozenset({"name", "extra"}),
     frozenset({"name", "extra", "marker"}),
 )
+REGISTRY_PACKAGE_KEYS = (
+    frozenset({"name", "version", "source", "sdist", "wheels"}),
+    frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
+    frozenset({"name", "version", "source", "dependencies", "wheels"}),
+)
+VIRTUAL_PACKAGE_KEYS = frozenset({"name", "version", "source", "dependencies", "metadata"})
+ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+REGISTRY_URLS = {
+    "https://pypi.org/simple": "files.pythonhosted.org",
+    "https://download.pytorch.org/whl/cpu": "download-r2.pytorch.org",
+}
 PLACEHOLDERS = {"", "none", "null", "unresolved", "pending", "pending_review", "owner_review_required", "review_required", "todo"}
 MANIFEST_FIELDS = {"approval_scope_sha256", "component_reviews", "dependency_reviews", "dependency_reviews_sha256", "fixed_identities", "gate_version", "lock_sha256", "no_upload", "operator_approval", "package_rows_sha256", "pyproject_sha256"}
 
@@ -84,6 +95,44 @@ def unresolved(value: Any) -> bool:
     return re.sub(r"\s+", "_", value.strip().casefold()) in PLACEHOLDERS
 
 
+def artifact_valid(value: Any, expected_host: str) -> bool:
+    """Validate one locked artifact row and bind its URL to the source host."""
+
+    if (
+        not isinstance(value, dict)
+        or set(value) != ARTIFACT_KEYS
+        or not isinstance(value.get("url"), str)
+        or not isinstance(value.get("hash"), str)
+        or not isinstance(value.get("size"), int)
+        or isinstance(value.get("size"), bool)
+        or value["size"] <= 0
+        or not isinstance(value.get("upload-time"), str)
+        or not value["upload-time"].strip()
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"])
+    ):
+        return False
+    try:
+        parsed = urlparse(value["url"])
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == expected_host
+        and parsed.netloc == expected_host
+        and parsed.path.startswith("/")
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def source_valid(value: Any) -> bool:
+    if not isinstance(value, dict) or len(value) != 1 or set(value) not in ({"registry"}, {"virtual"}):
+        return False
+    if "registry" in value:
+        return isinstance(value["registry"], str) and value["registry"] in REGISTRY_URLS
+    return value["virtual"] == "."
+
+
 def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(lock, dict) or set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}:
         raise ValueError("uv.lock top-level schema drifted")
@@ -98,7 +147,9 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     result = []
     identities: set[tuple[str, str, str]] = set()
     for package in packages:
-        if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not package["name"] or not isinstance(package.get("version"), str) or not package["version"]:
+        if (not isinstance(package, dict) or not isinstance(package.get("name"), str)
+                or not package["name"].strip() or not isinstance(package.get("version"), str)
+                or not package["version"].strip()):
             raise ValueError("uv.lock package row is malformed")
         source = package.get("source")
         if not isinstance(source, dict) or set(source) not in ({"virtual"}, {"registry"}):
@@ -107,37 +158,47 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         dependencies = package.get("dependencies", [])
         sdist = package.get("sdist")
         wheels = package.get("wheels", [])
-        if not isinstance(markers, list) or any(not isinstance(marker, str) for marker in markers) or not isinstance(dependencies, list) or any(not isinstance(dep, dict) or frozenset(dep) not in DEPENDENCY_KEYS or not isinstance(dep.get("name"), str) or not dep["name"].strip() or ("marker" in dep and not isinstance(dep["marker"], str)) or ("extra" in dep and (not isinstance(dep["extra"], str) or not dep["extra"].strip())) for dep in dependencies) or not isinstance(wheels, list) or sdist is not None and not isinstance(sdist, dict):
+        if (not isinstance(markers, list) or any(not isinstance(marker, str) for marker in markers)
+                or not isinstance(dependencies, list)
+                or any(
+                    not isinstance(dep, dict)
+                    or frozenset(dep) not in DEPENDENCY_KEYS
+                    or not isinstance(dep.get("name"), str)
+                    or not dep["name"].strip()
+                    or ("marker" in dep and (not isinstance(dep["marker"], str) or not dep["marker"].strip()))
+                    or ("extra" in dep and (not isinstance(dep["extra"], str) or not dep["extra"].strip()))
+                    for dep in dependencies
+                )
+                or not isinstance(wheels, list)
+                or sdist is not None and not isinstance(sdist, dict)):
             raise ValueError("uv.lock package dependency rows are malformed")
         if source == {"virtual": "."}:
-            if set(package) != {"name", "version", "source", "dependencies", "metadata"}:
+            if frozenset(package) != VIRTUAL_PACKAGE_KEYS:
                 raise ValueError("uv.lock virtual package schema drifted")
             metadata = package.get("metadata")
-            if not isinstance(metadata, dict) or set(metadata) != {"requires-dist"} or not isinstance(metadata["requires-dist"], list):
+            if (not isinstance(metadata, dict) or set(metadata) != {"requires-dist"}
+                    or not isinstance(metadata["requires-dist"], list)
+                    or not metadata["requires-dist"]):
                 raise ValueError("uv.lock virtual metadata drifted")
             for requirement in metadata["requires-dist"]:
-                if (not isinstance(requirement, dict) or set(requirement) - {"name", "specifier", "index"}
-                        or not isinstance(requirement.get("name"), str) or not isinstance(requirement.get("specifier"), str)
+                if (not isinstance(requirement, dict)
+                        or frozenset(requirement) not in (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "index"}))
+                        or not isinstance(requirement.get("name"), str) or not requirement["name"].strip()
+                        or not isinstance(requirement.get("specifier"), str) or not requirement["specifier"].strip()
                         or ("index" in requirement and requirement["index"] != "https://download.pytorch.org/whl/cpu")):
                     raise ValueError("uv.lock requires-dist metadata drifted")
         else:
-            if set(package) not in ({"name", "version", "source", "sdist", "wheels"}, {"name", "version", "source", "dependencies", "sdist", "wheels"}, {"name", "version", "source", "dependencies", "wheels"}):
+            if frozenset(package) not in REGISTRY_PACKAGE_KEYS:
                 raise ValueError("uv.lock registry package schema drifted")
             registry = source.get("registry")
-            if registry not in {"https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"}:
+            if not isinstance(registry, str) or registry not in REGISTRY_URLS:
                 raise ValueError("uv.lock registry is not reviewed")
-            expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
+            expected_host = REGISTRY_URLS[registry]
             artifacts = ([sdist] if sdist is not None else []) + wheels
             if not artifacts:
                 raise ValueError("uv.lock registry package has no artifacts")
-            for artifact in artifacts:
-                if (not isinstance(artifact, dict) or set(artifact) != {"url", "hash", "size", "upload-time"}
-                        or not isinstance(artifact["url"], str) or not artifact["url"].startswith("https://")
-                        or expected_host not in artifact["url"]
-                        or not isinstance(artifact["hash"], str) or not HEX64.fullmatch(artifact["hash"].removeprefix("sha256:"))
-                        or not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0
-                        or not isinstance(artifact["upload-time"], str) or not artifact["upload-time"].strip()):
-                    raise ValueError("uv.lock artifact schema drifted")
+            if any(not artifact_valid(artifact, expected_host) for artifact in artifacts):
+                raise ValueError("uv.lock artifact schema drifted")
         identity = (package["name"], package["version"], json.dumps(source, sort_keys=True))
         if identity in identities:
             raise ValueError("uv.lock package identities are duplicated")
@@ -149,22 +210,28 @@ def package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
 def artifact_blocker(rows: list[dict[str, Any]]) -> str | None:
     virtual = 0
     for row in rows:
-        if row["source"] == {"virtual": "."}:
+        if not isinstance(row, dict):
+            return "malformed normalized package row"
+        source = row.get("source")
+        if source == {"virtual": "."}:
             virtual += 1
             continue
-        if not isinstance(row["source"], dict) or set(row["source"]) != {"registry"} or row["source"].get("registry") not in {"https://pypi.org/simple", "https://download.pytorch.org/whl/cpu"}:
-            return f"malformed package source: {row['name']}"
-        host = "download-r2.pytorch.org" if row["source"]["registry"] == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
-        artifacts = ([row["sdist"]] if row["sdist"] is not None else []) + row["wheels"]
+        if not isinstance(source, dict) or set(source) != {"registry"}:
+            return f"malformed package source: {row.get('name')}"
+        registry = source.get("registry")
+        if not isinstance(registry, str) or registry not in REGISTRY_URLS:
+            return f"malformed package source: {row.get('name')}"
+        host = REGISTRY_URLS[registry]
+        wheels = row.get("wheels")
+        sdist = row.get("sdist")
+        if not isinstance(wheels, list) or (sdist is not None and not isinstance(sdist, dict)):
+            return f"resolver artifact rows are malformed: {row.get('name')}"
+        artifacts = ([sdist] if sdist is not None else []) + wheels
         if not artifacts:
-            return f"resolver artifact URL/hash/size is missing: {row['name']}"
+            return f"resolver artifact URL/hash/size is missing: {row.get('name')}"
         for artifact in artifacts:
-            if (not isinstance(artifact, dict) or set(artifact) != {"url", "hash", "size", "upload-time"}
-                    or not isinstance(artifact.get("url"), str) or not artifact["url"].startswith("https://") or urlparse(artifact["url"]).hostname != host
-                    or not HEX64.fullmatch(str(artifact.get("hash", "")).removeprefix("sha256:"))
-                    or not isinstance(artifact.get("size"), int) or isinstance(artifact.get("size"), bool) or artifact["size"] <= 0
-                    or not isinstance(artifact.get("upload-time"), str) or not artifact["upload-time"].strip()):
-                return f"resolver artifact URL/hash/size is incomplete: {row['name']}"
+            if not artifact_valid(artifact, host):
+                return f"resolver artifact URL/hash/size is incomplete: {row.get('name')}"
     return None if virtual == 1 else "lock must contain exactly one virtual project row"
 
 
@@ -205,8 +272,12 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     try:
         lock_bytes = lock_path.read_bytes(); pyproject_bytes = pyproject_path.read_bytes(); manifest = load_json(manifest_path)
         project_toml = tomllib.loads(pyproject_bytes.decode())
-        project_metadata = project_toml.get("project", {})
-        if set(project_toml) != {"project", "tool"} or set(project_metadata) != {"name", "version", "description", "requires-python", "dependencies"}:
+        project_metadata = project_toml.get("project") if isinstance(project_toml, dict) else None
+        project_tool = project_toml.get("tool") if isinstance(project_toml, dict) else None
+        if (not isinstance(project_toml, dict) or set(project_toml) != {"project", "tool"}
+                or not isinstance(project_metadata, dict)
+                or set(project_metadata) != {"name", "version", "description", "requires-python", "dependencies"}
+                or not isinstance(project_tool, dict)):
             raise ValueError("pyproject root/project schema drifted")
         expected_project = {
             "name": "vokra-wespeaker-parity", "version": "0.1.0",
@@ -216,8 +287,8 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         }
         if project_metadata != expected_project:
             raise ValueError("pyproject project metadata drifted")
-        uv = project_toml["tool"].get("uv")
-        if set(project_toml["tool"]) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "sources", "index"}:
+        uv = project_tool.get("uv")
+        if set(project_tool) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "sources", "index"}:
             raise ValueError("pyproject uv schema drifted")
         if uv != {
             "package": False,
@@ -228,7 +299,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             raise ValueError("pyproject uv index/source configuration drifted")
         lock = tomllib.loads(lock_bytes.decode())
         rows = package_rows(lock)
-    except (OSError, UnicodeError, json.JSONDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, tomllib.TOMLDecodeError, TypeError, ValueError) as exc:
         return False, f"gate input malformed: {exc}"
     if not isinstance(manifest, dict) or set(manifest) != MANIFEST_FIELDS:
         return False, "manifest schema is not exact"
@@ -254,7 +325,16 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
     for row in reviews:
         if not isinstance(row, dict) or set(row) != fields:
             return False, "dependency review schema is not exact"
-        key = (row.get("name"), row.get("version"), json.dumps(row.get("source"), sort_keys=True))
+        if (not isinstance(row.get("id"), str) or not isinstance(row.get("name"), str)
+                or not row["name"].strip() or not isinstance(row.get("version"), str)
+                or not row["version"].strip() or not source_valid(row.get("source"))
+                or not isinstance(row.get("status"), str)
+                or (row.get("license") is not None and not isinstance(row.get("license"), str))
+                or (row.get("native_review") is not None and not isinstance(row.get("native_review"), str))
+                or (row.get("bundled_review") is not None and not isinstance(row.get("bundled_review"), str))
+                or (row.get("payload_sha256") is not None and not isinstance(row.get("payload_sha256"), str))):
+            return False, "dependency review schema is not exact"
+        key = (row["name"], row["version"], json.dumps(row["source"], sort_keys=True))
         if key in seen or key not in expected_keys or row.get("id") != f"{row.get('name')}@{row.get('version')}":
             return False, "dependency review identities are missing, extra, or duplicated"
         seen.add(key)
@@ -320,6 +400,51 @@ def self_test() -> int:
         pass
     else:
         print("wespeaker preflight gate: duplicate package identity accepted", file=sys.stderr); return 1
+    def reject_lock_tamper(label: str, mutate: Any) -> bool:
+        candidate = json.loads(json.dumps(lock))
+        mutate(candidate)
+        try:
+            package_rows(candidate)
+        except (TypeError, ValueError):
+            return True
+        print(f"wespeaker preflight gate: {label} lock tamper accepted", file=sys.stderr)
+        return False
+
+    structural_cases = (
+        ("top-level extra", lambda value: value.update({"unexpected": True})),
+        ("package extra", lambda value: value["package"][0].update({"unexpected": True})),
+        ("source non-dict", lambda value: value["package"][0].update({"source": "not-a-source"})),
+        ("source extra", lambda value: value["package"][0]["source"].update({"unexpected": True})),
+        ("unknown registry", lambda value: value["package"][0]["source"].update({"registry": "https://pypi.example.invalid/simple"})),
+        ("unknown virtual", lambda value: value["package"][-1].update({"source": {"virtual": "other"}})),
+        ("dependency missing", lambda value: next(package for package in value["package"] if package.get("dependencies"))["dependencies"][0].pop("name")),
+        ("dependency extra", lambda value: next(package for package in value["package"] if package.get("dependencies"))["dependencies"][0].update({"unexpected": True})),
+        ("dependency type", lambda value: next(package for package in value["package"] if package.get("dependencies"))["dependencies"].__setitem__(0, "not-a-row")),
+        ("virtual metadata extra", lambda value: next(package for package in value["package"] if package.get("source") == {"virtual": "."})["metadata"].update({"unexpected": True})),
+        ("virtual metadata missing", lambda value: next(package for package in value["package"] if package.get("source") == {"virtual": "."})["metadata"]["requires-dist"][0].pop("name")),
+        ("virtual metadata extra row field", lambda value: next(package for package in value["package"] if package.get("source") == {"virtual": "."})["metadata"]["requires-dist"][0].update({"unexpected": True})),
+        ("virtual metadata row type", lambda value: next(package for package in value["package"] if package.get("source") == {"virtual": "."})["metadata"]["requires-dist"].__setitem__(0, "not-a-row")),
+    )
+    for label, mutate in structural_cases:
+        if not reject_lock_tamper(label, mutate):
+            return 1
+    for artifact_field in ("sdist", "wheels"):
+        source_package = next(package for package in lock["package"] if package.get("source", {}).get("registry") and package.get(artifact_field))
+        source_name, source_version = source_package["name"], source_package["version"]
+        for label, mutate in (
+            ("missing-url", lambda value: value.pop("url")),
+            ("extra-field", lambda value: value.update({"unexpected": True})),
+            ("non-positive-size", lambda value: value.update({"size": 0})),
+            ("boolean-size", lambda value: value.update({"size": True})),
+            ("blank-upload-time", lambda value: value.update({"upload-time": " "})),
+            ("wrong-host", lambda value: value.update({"url": "https://evil.example/artifact.whl"})),
+        ):
+            def mutate_artifact(candidate: dict[str, Any], mutate: Any = mutate, artifact_field: str = artifact_field, source_name: str = source_name, source_version: str = source_version) -> None:
+                package = next(item for item in candidate["package"] if item.get("name") == source_name and item.get("version") == source_version)
+                artifacts = package[artifact_field]
+                mutate(artifacts[0] if isinstance(artifacts, list) else artifacts)
+            if not reject_lock_tamper(f"{artifact_field} {label}", mutate_artifact):
+                return 1
     malformed_artifact = [{"name": "fixture", "version": "1", "source": {"registry": "https://pypi.org/simple"}, "sdist": None, "wheels": [{"url": "https://example.invalid/a.whl", "hash": "sha256:" + "a" * 64, "size": True}]}]
     if artifact_blocker(malformed_artifact) is None:
         print("wespeaker preflight gate: boolean artifact size accepted", file=sys.stderr); return 1
@@ -401,6 +526,25 @@ def self_test() -> int:
         if validate(test_project, duplicate_path, evidence, _self_test=True)[0]:
             print("wespeaker preflight gate: duplicate dependency review accepted", file=sys.stderr)
             return 1
+        for label, mutate in (
+            ("dependency review source non-dict", lambda row: row.update({"source": "not-a-source"})),
+            ("dependency review source extra", lambda row: row.update({"source": {"registry": "https://pypi.org/simple", "unexpected": True}})),
+            ("dependency review source unknown", lambda row: row.update({"source": {"registry": "https://pypi.example.invalid/simple"}})),
+            ("dependency review name type", lambda row: row.update({"name": None})),
+            ("dependency review version type", lambda row: row.update({"version": 7})),
+            ("dependency review status type", lambda row: row.update({"status": False})),
+            ("dependency review license type", lambda row: row.update({"license": False})),
+            ("dependency review bundled type", lambda row: row.update({"bundled_review": 1})),
+            ("dependency review payload type", lambda row: row.update({"payload_sha256": True})),
+        ):
+            candidate = json.loads(approved.read_text(encoding="utf-8"))
+            mutate(candidate["dependency_reviews"][0])
+            candidate["dependency_reviews_sha256"] = canonical(candidate["dependency_reviews"])
+            candidate_path = root / f"{label.replace(' ', '-')}.json"
+            candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
+            if validate(test_project, candidate_path, evidence, _self_test=True)[0]:
+                print(f"wespeaker preflight gate: {label} accepted", file=sys.stderr)
+                return 1
         for field, value in (("scope_sha256", "0" * 64), ("digest", "0" * 64), ("signer", "tampered"), ("decision", "REJECTED"), ("evidence_sha256", "0" * 64), ("manifest_sha256", "0" * 64)):
             tampered_evidence = json.loads(evidence.read_text(encoding="utf-8"))
             tampered_evidence[field] = value

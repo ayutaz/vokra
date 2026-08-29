@@ -219,7 +219,7 @@ checkout_exact_source() {
 require_vast_host() {
   local mem_kib free_kib disk_path parent
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
-  [[ "$(uname -s)" == "Linux" ]] || die "model work is Linux/VAST-only; refusing host $(uname -s)"
+  [[ "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]] || die "model work is Linux x86_64/VAST-only; refusing host $(uname -s) $(uname -m)"
   mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
   (( mem_kib >= MIN_VAST_MEM_KIB )) || die "MemTotal=$mem_kib KiB is below the VAST 64-GiB guard (67108864 KiB)"
@@ -236,15 +236,14 @@ require_vast_host() {
 }
 
 require_tooling() {
-  local tool
+  local tool required_file
   for tool in uv cargo rustc rustup git awk grep find tee wc tr curl; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
-  [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
-  [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "parity uv.lock is missing"
-  [[ -f "$PARITY_DUMPER" ]] || die "official WeSpeaker dumper is missing"
-  [[ -f "$PREPARER" ]] || die "dedicated WeSpeaker preparer is missing"
-  [[ -f "$JFK_WAV" ]] || die "committed JFK fixture is missing"
+  [[ -d "$VOKRA_ROOT/.git" && ! -L "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a real git checkout"
+  for required_file in "$PARITY_PROJECT/uv.lock" "$PARITY_DUMPER" "$PREPARER" "$JFK_WAV"; do
+    [[ -f "$required_file" && ! -L "$required_file" ]] || die "required WeSpeaker input is missing, symlinked, or non-regular: $required_file"
+  done
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die "VAST checkout must be clean"
 }
 
@@ -272,7 +271,7 @@ record_environment() {
 
 # shellcheck disable=SC2016
 run_self_test() {
-  local script_path="${BASH_SOURCE[0]}" tmp payload expected actual fail=0 cases=0 required unsafe_loader_bad legacy_preparer
+  local script_path="${BASH_SOURCE[0]}" tmp payload expected actual fail=0 cases=0 required unsafe_loader_bad legacy_preparer gate_line tooling_line work_line host_line
   tmp="$(mktemp -d)"
   cleanup_self_test() { rm -rf -- "$tmp"; }
   trap cleanup_self_test EXIT
@@ -290,8 +289,8 @@ run_self_test() {
     "tools/parity/wespeaker_prepare_checkpoint.py" "tools/parity/wespeaker_dump_reference.py" \
     "parity_wespeaker_real" "public_pyannote_artifact_matches_upstream_wespeaker" \
     "official_combined_artifact_matches_upstream_wespeaker" \
-    "run::tests::speaker_real_gguf_e2e_identical_inputs_gated" "--frozen --python 3.12" \
-    "VOKRA_PUBLISH_ON_VAST" "uname -s" "MIN_VAST_MEM_KIB=67108864" "MemTotal:" \
+    "run::tests::speaker_real_gguf_e2e_identical_inputs_gated" "require_one_cargo_result" "upload=NOT_RUN" "--frozen --python 3.12" \
+    "VOKRA_PUBLISH_ON_VAST" "uname -s" "uname -m" "x86_64" "MIN_VAST_MEM_KIB=67108864" "MemTotal:" \
     "MIN_FREE_DISK_KIB=150000000" "df -Pk" 'git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all' \
     "cargo test --locked --workspace" "cargo clippy --locked --workspace --all-targets -- -D warnings"; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -300,11 +299,21 @@ run_self_test() {
     fi
   done
 
+  gate_line="$(grep -nF '  pre_sync_gate "$approval_evidence"' "$script_path" | tail -1 | cut -d: -f1)"
+  tooling_line="$(grep -nF '  require_tooling' "$script_path" | tail -1 | cut -d: -f1)"
+  work_line="$(grep -nF '  require_absent_work_dir "$work_dir" "$approval_evidence"' "$script_path" | tail -1 | cut -d: -f1)"
+  host_line="$(grep -nF '  require_vast_host' "$script_path" | tail -1 | cut -d: -f1)"
+  if [[ ! "$gate_line" =~ ^[0-9]+$ || ! "$tooling_line" =~ ^[0-9]+$ || ! "$work_line" =~ ^[0-9]+$ || ! "$host_line" =~ ^[0-9]+$ ]] \
+    || (( gate_line >= tooling_line || gate_line >= work_line || gate_line >= host_line )); then
+    log "self-test FAIL: pre-sync gate is not before tooling/work/host checks"
+    fail=1
+  fi
+
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: direct Python/pip command found"; fail=1
   fi
-  if grep -En '(^|[[:space:]])(git[[:space:]]+push|[^[:space:]]*upload\.sh|[^[:space:]]*publish-one\.sh)([[:space:]]|$)' "$script_path" >/dev/null; then
+  if grep -En '(^|[[:space:]])(git[[:space:]]+push|[^[:space:]]*upload\.sh|[^[:space:]]*publish-one\.sh|huggingface-cli[[:space:]]+upload|hf[[:space:]]+upload|scp|rsync)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: publication command found"; fail=1
   fi
   unsafe_loader_bad="weights_only"
@@ -466,8 +475,7 @@ main() {
   require_official_cpu_sentinel "$parity_log"
   VOKRA_WESPEAKER_GGUF="$corrected_gguf" cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release \
     -p vokra-cli run::tests::speaker_real_gguf_e2e_identical_inputs_gated -- --exact --nocapture 2>&1 | tee -a "$cli_log"
-  grep -F "test run::tests::speaker_real_gguf_e2e_identical_inputs_gated ... ok" "$cli_log" >/dev/null \
-    || die "CLI speaker e2e did not run exactly one passing test"
+  require_one_cargo_result "$cli_log" run::tests::speaker_real_gguf_e2e_identical_inputs_gated
   step "Run workspace verification gates on VAST"
   cargo fmt --all -- --check 2>&1 | tee -a "$workspace_log"
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" 2>&1 | tee -a "$workspace_log"

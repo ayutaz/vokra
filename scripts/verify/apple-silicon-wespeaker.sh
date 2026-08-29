@@ -150,9 +150,20 @@ require_absent_evidence_dir() {
   return 0
 }
 run_self_test() {
-  local tmp="${TMPDIR:-/tmp}/wespeaker-apple-selftest.$$"
+  local tmp="${TMPDIR:-/tmp}/wespeaker-apple-selftest.$$" script_path="${BASH_SOURCE[0]}" gate_line host_line hash_line evidence_line
   SELFTEST_TMP="$tmp"
   mkdir "$tmp"; trap 'rm -rf -- "$SELFTEST_TMP"' EXIT
+  gate_line="$(grep -nF "  license_preflight \"\$approval\"" "$script_path" | tail -1 | cut -d: -f1)"
+  host_line="$(grep -nF '  require_host' "$script_path" | tail -1 | cut -d: -f1)"
+  hash_line="$(grep -nF '  require_hash "WeSpeaker GGUF"' "$script_path" | tail -1 | cut -d: -f1)"
+  evidence_line="$(grep -nF "  require_absent_evidence_dir \"\$evidence\"" "$script_path" | tail -1 | cut -d: -f1)"
+  if [[ ! "$gate_line" =~ ^[0-9]+$ || ! "$host_line" =~ ^[0-9]+$ || ! "$hash_line" =~ ^[0-9]+$ || ! "$evidence_line" =~ ^[0-9]+$ ]] \
+    || (( gate_line >= host_line || gate_line >= hash_line || gate_line >= evidence_line )); then
+    die "preflight gate is not before host/input/evidence checks"
+  fi
+  if grep -En '(^|[[:space:]])(git[[:space:]]+push|huggingface-cli[[:space:]]+upload|hf[[:space:]]+upload|scp|rsync)([[:space:]]|$)' "$script_path" >/dev/null; then
+    die "publication command found in no-upload Apple worker"
+  fi
   mkdir "$tmp/reference"
   for name in "${REFERENCE_FILES[@]}"; do [[ "$name" == manifest.json ]] || printf abc > "$tmp/reference/$name"; done
   cat > "$tmp/reference/manifest.json" <<EOF
