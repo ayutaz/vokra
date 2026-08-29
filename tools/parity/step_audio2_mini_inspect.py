@@ -19,7 +19,7 @@ import sys
 import tempfile
 import warnings
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from safetensors import safe_open
@@ -91,6 +91,13 @@ def blob_sha1(path: Path) -> str:
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1 << 20), b""):
             h.update(block)
+    return h.hexdigest()
+
+
+def blob_sha1_bytes(data: bytes) -> str:
+    h = hashlib.sha1()
+    h.update(f"blob {len(data)}\0".encode())
+    h.update(data)
     return h.hexdigest()
 
 
@@ -175,6 +182,94 @@ def require_path(document: Any, path: tuple[str, ...], expected: Any) -> None:
 
 def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True, stderr=subprocess.STDOUT).strip()
+
+
+def tracked_entry(root: Path, relative: str) -> tuple[Path, os.stat_result]:
+    """Inspect a tracked path without following symlinked parent directories."""
+    safe_relative(relative, "tracked source")
+    posix = PurePosixPath(relative)
+    if posix.is_absolute() or ".." in posix.parts or any(not part for part in posix.parts):
+        raise RuntimeError(f"unsafe tracked source path: {relative!r}")
+    current = root
+    for index, component in enumerate(posix.parts):
+        current /= component
+        info = os.lstat(current)
+        if index < len(posix.parts) - 1 and stat.S_ISLNK(info.st_mode):
+            raise RuntimeError(f"tracked source path traverses symlink parent: {relative}")
+    return current, info
+
+
+def normalize_symlink_target(relative: str, target_bytes: bytes) -> tuple[str, str]:
+    """Validate and lexically normalize a Git symlink target, never resolving it."""
+    if not target_bytes:
+        raise RuntimeError(f"unsafe tracked symlink target: {relative}")
+    if b"\x00" in target_bytes:
+        raise RuntimeError(f"NUL in tracked symlink target: {relative}")
+    if target_bytes.startswith(b"/"):
+        raise RuntimeError(f"absolute tracked symlink target: {relative}")
+    if b"\\" in target_bytes:
+        raise RuntimeError(f"unsafe tracked symlink target path: {relative}")
+    try:
+        target = target_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise RuntimeError(f"unsafe tracked symlink target encoding: {relative}") from error
+    stack = list(PurePosixPath(relative).parent.parts)
+    for component in target.split("/"):
+        if component in ("", "."):
+            continue
+        if component == "..":
+            if not stack:
+                raise RuntimeError(f"tracked symlink target escapes checkout: {relative}")
+            stack.pop()
+        elif "\x00" in component or "\\" in component:
+            raise RuntimeError(f"unsafe tracked symlink target component: {relative}")
+        else:
+            stack.append(component)
+    return target, PurePosixPath(*stack).as_posix() if stack else "."
+
+
+def tracked_symlink_record(root: Path, relative: str, index_object: str) -> dict[str, Any]:
+    """Authenticate a tracked symlink from index/HEAD blob bytes, without dereference."""
+    if not re.fullmatch(r"[0-9a-f]{40}", index_object):
+        raise RuntimeError(f"invalid tracked symlink object ID: {relative}")
+    path, info = tracked_entry(root, relative)
+    if not stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"working-tree tracked symlink is not a symlink: {relative}")
+    index_bytes = subprocess.check_output(["git", "-C", str(root), "cat-file", "blob", index_object])
+    if blob_sha1_bytes(index_bytes) != index_object:
+        raise RuntimeError(f"tracked symlink index object does not match target bytes: {relative}")
+    head_object = git(root, "rev-parse", "--verify", f"HEAD:{relative}")
+    if not re.fullmatch(r"[0-9a-f]{40}", head_object):
+        raise RuntimeError(f"invalid tracked symlink HEAD object ID: {relative}")
+    head_bytes = subprocess.check_output(["git", "-C", str(root), "cat-file", "blob", head_object])
+    if blob_sha1_bytes(head_bytes) != head_object:
+        raise RuntimeError(f"tracked symlink HEAD object does not match target bytes: {relative}")
+    if head_bytes != index_bytes:
+        raise RuntimeError(f"tracked symlink HEAD blob differs from index blob: {relative}")
+    target, normalized = normalize_symlink_target(relative, index_bytes)
+    working_target = os.readlink(path)
+    working_bytes = os.fsencode(working_target)
+    _, working_normalized = normalize_symlink_target(relative, working_bytes)
+    if working_bytes != index_bytes:
+        raise RuntimeError(f"tracked symlink working target differs from Git blobs: {relative}")
+    return {
+        "path": relative,
+        "mode": "120000",
+        "stage": "0",
+        "bytes": len(index_bytes),
+        "sha256": hashlib.sha256(index_bytes).hexdigest(),
+        "index_object_sha1": index_object,
+        "git_blob_sha1": head_object,
+        "working_blob_sha1": blob_sha1_bytes(working_bytes),
+        "symlink": True,
+        "index_target": target,
+        "head_target": target,
+        "working_target": working_target,
+        "normalized_target": normalized,
+        "working_normalized_target": working_normalized,
+        "target_git_blob_sha1": blob_sha1_bytes(index_bytes),
+        "target_scope": "CHECKOUT_RELATIVE_NO_DEREFERENCE",
+    }
 
 
 def lfs_pointer_sha1(payload_sha256: str, payload_size: int) -> str:
@@ -451,29 +546,39 @@ def source_inventory(
             path = root / relative
             if stage != "0":
                 raise RuntimeError(f"tracked source entry is not stage 0: {relative}")
-            if mode == "160000" or mode not in {"100644", "100755"}:
-                raise RuntimeError(f"unsupported tracked mode/gitlink: {relative} ({mode})")
-            if not path.is_file() or path.is_symlink():
+            if mode == "160000":
+                raise RuntimeError(f"tracked gitlink remains a blocker: {relative}")
+            if mode == "120000":
+                result.append(tracked_symlink_record(root, relative, index_object))
+                continue
+            if mode not in {"100644", "100755"}:
+                raise RuntimeError(f"unsupported tracked mode: {relative} ({mode})")
+            path, info = tracked_entry(root, relative)
+            if not stat.S_ISREG(info.st_mode):
                 raise RuntimeError(f"tracked source file is missing/non-regular: {relative}")
             expected_mode = 0o755 if mode == "100755" else 0o644
-            if stat.S_IMODE(path.stat().st_mode) != expected_mode:
+            if stat.S_IMODE(info.st_mode) != expected_mode:
                 raise RuntimeError(f"working-tree mode drift: {relative}")
             head_object = git(root, "rev-parse", f"HEAD:{relative}")
             working_object = blob_sha1(path)
             if index_object != head_object or head_object != working_object:
                 raise RuntimeError(f"tracked source identity drift: {relative}")
-            result.append({"path": relative, "mode": mode, "stage": stage, "bytes": path.stat().st_size, "sha256": digest(path), "index_object_sha1": index_object, "git_blob_sha1": head_object, "working_blob_sha1": working_object})
+            result.append({"path": relative, "mode": mode, "stage": stage, "bytes": info.st_size, "sha256": digest(path), "index_object_sha1": index_object, "git_blob_sha1": head_object, "working_blob_sha1": working_object})
         if git(root, "status", "--porcelain", "--untracked-files=all"):
             raise RuntimeError("official source checkout is dirty")
         return sorted(result, key=lambda row: row["path"])
     source_files = tracked_records(source)
     transformer_files = tracked_records(transformers)
+    source_symlinks = [row for row in source_files if row.get("symlink")]
+    transformer_symlinks = [row for row in transformer_files if row.get("symlink")]
     def fixed_roles(root: Path, tracked: list[dict[str, Any]], expected: dict[str, str]) -> list[dict[str, Any]]:
         by_path = {row["path"]: row for row in tracked}
         rows = []
         for relative, expected_blob in expected.items():
             row = by_path.get(relative)
-            if row is None or row["index_object_sha1"] != expected_blob or row["git_blob_sha1"] != expected_blob or row["working_blob_sha1"] != expected_blob:
+            if row is None or row.get("symlink") or row.get("mode") not in {"100644", "100755"}:
+                raise RuntimeError(f"authenticated source role is not a regular file: {relative}")
+            if row["index_object_sha1"] != expected_blob or row["git_blob_sha1"] != expected_blob or row["working_blob_sha1"] != expected_blob:
                 raise RuntimeError(f"authenticated source role mismatch: {relative}")
             rows.append(row)
         return rows
@@ -483,7 +588,7 @@ def source_inventory(
         raise RuntimeError("source Apache-2.0 license clauses are not authenticated")
     source_role_rows = fixed_roles(source, source_files, source_roles)
     transformer_role_rows = fixed_roles(transformers, transformer_files, transformer_roles)
-    return {"status": "REFERENCE_SOURCE_SELECTED", "repository": SOURCE_REPOSITORY, "revision": source_revision, "origin": source_origin, "clean": True, "license": source_license, "files": source_files, "role_files": source_role_rows, "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": transformers_tag, "revision": transformers_revision, "origin": transformer_origin, "clean": True, "license": transformer_license, "files": transformer_files, "role_files": transformer_role_rows}}
+    return {"status": "REFERENCE_SOURCE_SELECTED", "repository": SOURCE_REPOSITORY, "revision": source_revision, "origin": source_origin, "clean": True, "license": source_license, "files": source_files, "symlinks": source_symlinks, "role_files": source_role_rows, "transformers": {"repository": TRANSFORMERS_REPOSITORY, "tag": transformers_tag, "revision": transformers_revision, "origin": transformer_origin, "clean": True, "license": transformer_license, "files": transformer_files, "symlinks": transformer_symlinks, "role_files": transformer_role_rows}}
 
 
 def write_blocked(output: Path, error: Exception, **extra: Any) -> None:
@@ -642,9 +747,64 @@ def self_test() -> None:
         transformers_fixture = root / "transformers-fixture"
         source_fixture_revision, source_fixture_roles = git_fixture(source_fixture, SOURCE_ROLE_BLOBS, SOURCE_REPOSITORY)
         transformers_fixture_revision, transformers_fixture_roles = git_fixture(transformers_fixture, TRANSFORMERS_ROLE_BLOBS, TRANSFORMERS_REPOSITORY, "fixture-transformers")
+        symlink = source_fixture / "docs" / "source" / "en" / "contributing.md"
+        symlink.parent.mkdir(parents=True, exist_ok=True)
+        symlink.symlink_to("../../../README.md")
+        subprocess.run(["git", "-C", str(source_fixture), "add", "docs/source/en/contributing.md"], check=True)
+        subprocess.run(["git", "-C", str(source_fixture), "commit", "-q", "-m", "tracked symlink fixture"], check=True)
+        source_fixture_revision = git(source_fixture, "rev-parse", "HEAD")
         selected = source_inventory(source_fixture, transformers_fixture, source_revision=source_fixture_revision, transformers_revision=transformers_fixture_revision, transformers_tag="fixture-transformers", source_roles=source_fixture_roles, transformer_roles=transformers_fixture_roles)
         assert selected["status"] == "REFERENCE_SOURCE_SELECTED"
         assert all(row["stage"] == "0" and row["index_object_sha1"] == row["git_blob_sha1"] == row["working_blob_sha1"] for row in selected["files"] + selected["transformers"]["files"])
+        symlink_rows = selected["symlinks"]
+        assert len(symlink_rows) == 1 and symlink_rows[0]["normalized_target"] == "README.md"
+        assert symlink_rows[0]["index_target"] == symlink_rows[0]["head_target"] == symlink_rows[0]["working_target"] == "../../../README.md"
+        assert symlink_rows[0]["target_scope"] == "CHECKOUT_RELATIVE_NO_DEREFERENCE"
+        for target, expected in ((b"../../../../outside", "escapes checkout"), (b"/outside", "absolute"), (b"../README\x00", "NUL"), (b"unsafe\\target", "unsafe")):
+            try:
+                normalize_symlink_target("docs/source/en/contributing.md", target)
+            except RuntimeError as error:
+                assert expected in str(error)
+            else:
+                raise AssertionError("unsafe tracked symlink target accepted")
+        symlink.unlink()
+        symlink.symlink_to("README.md")
+        try:
+            tracked_symlink_record(source_fixture, "docs/source/en/contributing.md", symlink_rows[0]["index_object_sha1"])
+        except RuntimeError as error:
+            assert "differs" in str(error)
+        else:
+            raise AssertionError("working-tree symlink mismatch accepted")
+        symlink.unlink()
+        symlink.symlink_to("../../../README.md")
+        readme = source_fixture / "README.md"
+        readme_bytes = readme.read_bytes()
+        readme.unlink()
+        readme.symlink_to("docs/source/en/contributing.md")
+        subprocess.run(["git", "-C", str(source_fixture), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(source_fixture), "commit", "-q", "-m", "role symlink regression fixture"], check=True)
+        role_symlink_revision = git(source_fixture, "rev-parse", "HEAD")
+        role_symlink_roles = dict(source_fixture_roles)
+        role_symlink_roles["README.md"] = blob_sha1_bytes(os.fsencode(os.readlink(readme)))
+        try:
+            source_inventory(source_fixture, transformers_fixture, source_revision=role_symlink_revision, transformers_revision=transformers_fixture_revision, transformers_tag="fixture-transformers", source_roles=role_symlink_roles, transformer_roles=transformers_fixture_roles)
+        except RuntimeError as error:
+            assert "regular" in str(error)
+        else:
+            raise AssertionError("symlink accepted as fixed source role")
+        readme.unlink()
+        readme.write_bytes(readme_bytes)
+        subprocess.run(["git", "-C", str(source_fixture), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(source_fixture), "commit", "-q", "-m", "restore regular role fixture"], check=True)
+        source_fixture_revision = git(source_fixture, "rev-parse", "HEAD")
+        subprocess.run(["git", "-C", str(source_fixture), "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",submodule"], check=True)
+        try:
+            source_inventory(source_fixture, transformers_fixture, source_revision=source_fixture_revision, transformers_revision=transformers_fixture_revision, transformers_tag="fixture-transformers", source_roles=source_fixture_roles, transformer_roles=transformers_fixture_roles)
+        except RuntimeError as error:
+            assert "gitlink" in str(error)
+        else:
+            raise AssertionError("tracked gitlink accepted")
+        subprocess.run(["git", "-C", str(source_fixture), "update-index", "--force-remove", "submodule"], check=True)
         spoof_roles = dict(source_fixture_roles)
         spoof_roles["LICENSE"] = "0" * 40
         try:
