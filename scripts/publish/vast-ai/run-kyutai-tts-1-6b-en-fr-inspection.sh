@@ -47,7 +47,7 @@ self_test() {
     '09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50' \
     'cd87dd5d17169151782ac700280ec057e5d658a9afbe238a048ea5ff318cce69' \
     'bc79b0162c94862aadd6c5d351b5b4984274af0616e3a56b0df9973ff7c793c7' \
-    'model_info' 'list_repo_tree' 'path_in_repo' 'lfs_sha256' 'git_blob_sha1' 'weights_only=True' \
+    'model_info' 'list_repo_tree' 'path_in_repo' 'RepoFile' 'RepoFolder' 'type=None' 'unknown HF tree entry' 'lfs_sha256' 'git_blob_sha1' 'weights_only=True' \
     '64' '40' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'evidence_stage' 'NO_UPLOAD' 'exit 2'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
@@ -74,6 +74,34 @@ if any(("path=" + "path") in line for line in tree_calls):
 PY
   then
     log 'self-test FAIL: frozen HfApi.list_repo_tree contract regression'
+    fail=1
+  fi
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
+    python <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+
+def classify_item(item):
+    if isinstance(item, RepoFolder):
+        return "directory"
+    if isinstance(item, RepoFile):
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {item!r}")
+
+
+file_entry = RepoFile(path=".gitattributes", size=1, oid="a" * 40)
+assert getattr(file_entry, "type", None) is None, "fixture must model frozen RepoFile(type=None)"
+assert classify_item(file_entry) == "file"
+assert classify_item(RepoFolder(path="nested", oid="b" * 40)) == "directory"
+try:
+    classify_item(object())
+except RuntimeError as exc:
+    assert "unknown HF tree entry" in str(exc)
+else:
+    raise AssertionError("unknown tree entry was accepted")
+PY
+  then
+    log 'self-test FAIL: RepoFile/RepoFolder classification regression'
     fail=1
   fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
@@ -150,7 +178,7 @@ emit_tree() {
     python - "$output" "$repository" "$revision" "$patterns" <<'PY' >> "$work_dir/evidence/validation.log" 2>&1
 import json, sys
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, RepoFile, RepoFolder
 output, repository, revision, pattern_text = sys.argv[1:]
 patterns = set(filter(None, pattern_text.split("\n")))
 api = HfApi()
@@ -159,17 +187,25 @@ if info.sha != revision:
     raise RuntimeError(f"resolved revision {info.sha!r} != {revision!r}")
 rows = []
 pending, visited = [""], set()
+
+def classify_item(item):
+    if isinstance(item, RepoFolder):
+        return "directory"
+    if isinstance(item, RepoFile):
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {item!r}")
+
 while pending:
     path = pending.pop()
     if path in visited:
         continue
     visited.add(path)
     for item in api.list_repo_tree(repository, revision=revision, path_in_repo=path, recursive=False):
+        item_kind = classify_item(item)
         item_path = getattr(item, "path", None)
-        item_type = getattr(item, "type", None)
-        if not isinstance(item_path, str) or item_type not in {"file", "directory"}:
+        if not isinstance(item_path, str):
             raise RuntimeError(f"invalid HF tree entry: {item!r}")
-        if item_type == "directory":
+        if item_kind == "directory":
             pending.append(item_path)
             continue
         if patterns and item_path not in patterns:
