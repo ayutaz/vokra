@@ -42,7 +42,7 @@ if [[ "${1:-}" == --self-test ]]; then
     die "upload command found"
   fi
   rg -n -- "safe_open|read_safetensors_header|actual_names|phase (measure|parity)|snapshot_download|parity_gigaam_multilingual_real" "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "phase/header/parity validation missing"
-  [[ "$(rg -c -- '^  cat > \"\$EVIDENCE_DIR/source\.json\" <<EOF$' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh")" == 1 ]] || die "source evidence heredoc must occur exactly once"
+  [[ "$(rg -Fxc -- '  cat > "$EVIDENCE_DIR/source.json" <<EOF' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh")" == 1 ]] || die "source evidence heredoc must occur exactly once"
   rg -n -- 'real_gigaam_multilingual_cpu_trace_matches_official' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity test filter is missing"
   rg -n -- --exact "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity command must require exact test matching"
   rg -n -- --ignored "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity command must run the ignored real-weight test"
