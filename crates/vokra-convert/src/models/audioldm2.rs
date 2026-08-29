@@ -203,6 +203,13 @@ use crate::safetensors::SafetensorsFile;
 /// is identical, only the model dims + optional variant-specific heads
 /// differ (the same arch-shared / name-distinct posture snac / vocos /
 /// bigvgan / musicgen use).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only dispatch metadata is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const ARCH: &str = "audioldm2";
 
 /// `vokra.model.name` value written for the canonical AudioLDM 2 base
@@ -215,6 +222,13 @@ pub const ARCH: &str = "audioldm2";
 /// as a distinct `NAME` under the shared [`ARCH`] tag — the same
 /// shared-arch / distinct-name split every future family sibling will
 /// use.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const NAME: &str = "audioldm2";
 
 /// `vokra.model.category` value — AudioLDM 2 is a text-to-audio
@@ -223,12 +237,26 @@ pub const NAME: &str = "audioldm2";
 /// (`[[project-scope-expansion-2026-07-30]]`). A separate
 /// `audio-generation` tag would be premature before a second
 /// non-music-tree generator lands.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const CATEGORY: &str = "music";
 
 /// Upstream HF repository slug (`org/name`), recorded under
 /// `vokra.provenance.upstream_hf` so a downstream can trace the artifact
 /// back to its serving location without parsing the free-text
 /// `vokra.provenance.source`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only provenance is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const UPSTREAM_HF: &str = "cvssp/audioldm2";
 
 /// `vokra.model.name` value written for the AudioLDM 2 **Large**
@@ -244,6 +272,13 @@ pub const UPSTREAM_HF: &str = "cvssp/audioldm2";
 /// `source`, `upstream_hf`) flip. Mirror of the
 /// musicgen_medium / musicgen_melody in-place sibling landing pattern
 /// (2026-08-02 precedent).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only variant metadata is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const LARGE_NAME: &str = "audioldm2-large";
 
 /// Upstream HF repository slug for the AudioLDM 2 Large sibling
@@ -251,6 +286,13 @@ pub const LARGE_NAME: &str = "audioldm2-large";
 /// `vokra.provenance.upstream_hf`. See [`LARGE_NAME`] for the base /
 /// large topology relationship (identical multi-encoder bundle,
 /// only dims differ).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only variant provenance is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const LARGE_UPSTREAM_HF: &str = "cvssp/audioldm2-large";
 
 /// The default upstream weight license — `cc-by-nc-sa-4.0` per the
@@ -262,12 +304,26 @@ pub const LARGE_UPSTREAM_HF: &str = "cvssp/audioldm2-large";
 /// `convert_audioldm2_file(_, _, license=Some(_))` boundary when the
 /// source distribution declares a different SPDX id (a permissive
 /// re-training on public-domain audio, for example).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only license metadata is retained until the authenticated bundle is reviewed"
+    )
+)]
 pub const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 
 /// Human-readable upstream source note stored in
 /// `vokra.provenance.source` (`KEY_PROVENANCE_SOURCE`). Kept short —
 /// the license machine class is carried separately in the
 /// `vokra.provenance.weight_license` chunk.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only provenance is retained until the authenticated bundle is reviewed"
+    )
+)]
 const UPSTREAM_SOURCE: &str =
     "cvssp/audioldm2 (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, cc-by-nc-sa-4.0)";
 
@@ -275,12 +331,33 @@ const UPSTREAM_SOURCE: &str =
 /// sibling (`cvssp/audioldm2-large`, Liu et al. 2024 arXiv:2308.05734
 /// text-to-audio LDM, wider/deeper multi-encoder bundle,
 /// cc-by-nc-sa-4.0). Stored in `vokra.provenance.source`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only provenance is retained until the authenticated bundle is reviewed"
+    )
+)]
 const LARGE_UPSTREAM_SOURCE: &str = "cvssp/audioldm2-large (Liu et al. 2024 arXiv:2308.05734 text-to-audio LDM, large variant, cc-by-nc-sa-4.0)";
 
 // Raw string keys not covered by `crate::gguf::chunks` — kept as
 // converter-side constants (the cross-crate constant duplication rule
 // the sibling BF16 pass-through converters use applies).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are retained for the future authenticated converter"
+    )
+)]
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are retained for the future authenticated converter"
+    )
+)]
 const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 
 /// Outcome of an AudioLDM 2 conversion.
@@ -421,6 +498,13 @@ pub fn convert_audioldm2_large_file(
 /// variant-specific wrappers ([`convert_audioldm2_file`] /
 /// [`convert_audioldm2_large_file`]) so the correct built-in defaults
 /// stay in one place.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "shared family helper remains staged behind the inspection-only public gates"
+    )
+)]
 pub(crate) fn convert_audioldm2_family_file(
     input: &Path,
     output: &Path,

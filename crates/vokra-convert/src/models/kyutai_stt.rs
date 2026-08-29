@@ -16,6 +16,13 @@ pub(crate) struct KyutaiSttReport {
     /// Number of non-float tensors skipped by a successful conversion.
     pub(crate) skipped_non_float: usize,
     /// Number of BF16 tensors passed through by a successful conversion.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "report field is reserved for the future authenticated conversion"
+        )
+    )]
     pub(crate) bf16_passthrough: usize,
     /// Conversion diagnostics retained for dispatch compatibility.
     pub(crate) notes: Vec<String>,

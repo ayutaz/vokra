@@ -56,6 +56,13 @@ pub(crate) fn convert(_bytes: Vec<u8>) -> Result<(GgufBuilder, CosyVoice2Report)
 }
 
 /// Refuses conversion while preserving the existing dispatch signature.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "composite conversion entry point remains staged until its binder is authenticated"
+    )
+)]
 pub(crate) fn convert_with_config(
     _bytes: Vec<u8>,
     _config_json: Option<&[u8]>,

@@ -20,13 +20,41 @@ use std::path::Path;
 
 use crate::ConvertError;
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only dispatch metadata is retained until the composite binder is authenticated"
+    )
+)]
 pub const ARCH: &str = "vibevoice_asr";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
+    )
+)]
 pub const NAME: &str = "vibevoice-asr";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the composite binder is authenticated"
+    )
+)]
 pub const CATEGORY: &str = "asr";
 pub const UPSTREAM_HF: &str = "microsoft/VibeVoice-ASR";
 pub const UPSTREAM_HF_REVISION: &str = "d0c9efdb8d614685062c04425d91e01b6f37d944";
 pub const OFFICIAL_SOURCE_REPOSITORY: &str = "https://github.com/microsoft/VibeVoice";
 pub const OFFICIAL_SOURCE_REVISION: &str = "94da20d98b2fa7688e9cbfaf7692ddb4954f7600";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only license metadata is retained until the composite binder is authenticated"
+    )
+)]
 pub const DEFAULT_LICENSE_SPDX: &str = "mit";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

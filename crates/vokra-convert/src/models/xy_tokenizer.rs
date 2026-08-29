@@ -47,29 +47,113 @@ use crate::safetensors::SafetensorsFile;
 /// from every sibling arch tag (`mimi`, `dac`, `wavtokenizer_vq`,
 /// `xcodec2_fsq`, ...) — silently sharing an arch tag would mis-route
 /// the runtime dispatch.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only dispatch metadata is retained until the binder is authenticated"
+    )
+)]
 pub(crate) const ARCH: &str = "xy_tokenizer";
 
 /// `vokra.model.name` value written for the canonical XY_Tokenizer
 /// GGUF.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the binder is authenticated"
+    )
+)]
 pub(crate) const NAME: &str = "xy_tokenizer_ttsd_v0";
 
 /// The upstream HuggingFace repo path — recorded verbatim on the
 /// GGUF at `vokra.provenance.upstream_hf`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only provenance is retained until the prepared artifact is authenticated"
+    )
+)]
 pub(crate) const UPSTREAM_HF: &str = "OpenMOSS-Team/XY_Tokenizer_TTSD_V0";
 
 /// Default SPDX license string (upstream ships apache-2.0 end-to-end).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only license metadata is retained until the artifact is authenticated"
+    )
+)]
 pub(crate) const DEFAULT_LICENSE: &str = "apache-2.0";
 
 /// Model category value written to `vokra.model.category`.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only model metadata is retained until the binder is authenticated"
+    )
+)]
 pub(crate) const CATEGORY: &str = "codec";
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only provenance is retained until the prepared artifact is authenticated"
+    )
+)]
 pub const UPSTREAM_REVISION: &str = "c83433728e698ed0698e88cb5096bc221fb8f8c5";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only checkpoint evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const CHECKPOINT_BYTES: u64 = 2_137_328_977;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only checkpoint evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const CHECKPOINT_SHA256: &str =
     "37c7ac18d0a48f5a1d0687e31af7c0264861232c500206718c98acd8e37d1671";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only sidecar evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const CONFIG_RELATIVE: &str = "config/xy_tokenizer_config.yaml";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only sidecar evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const CONFIG_SHA256: &str = "e7d48677e34f77e5b9fd7dc7a3e0eef7f2d2dd9be9a245d5c1d56489dc748938";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only source evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const SOURCE_REPOSITORY: &str = "https://github.com/gyt1145028706/XY-Tokenizer";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "inspection-only source evidence is retained until the artifact is authenticated"
+    )
+)]
 pub const SOURCE_REVISION: &str = "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e";
 
 // Additional provenance / model keys not in the shared
@@ -78,13 +162,69 @@ pub const SOURCE_REVISION: &str = "5df5609c5883e555bd39a2d0b1005ca8f1a8f12e";
 // project-goal-depth-not-breadth): every codec / TTS record carries its
 // upstream HF path and category verbatim so `check-catalog-reality.sh`
 // and `make_model_card.py` can drive gates without a side registry.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_MODEL_CATEGORY: &str = "vokra.model.category";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_UPSTREAM_REVISION: &str = "vokra.xy_tokenizer.upstream_revision";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_CHECKPOINT_SHA256: &str = "vokra.xy_tokenizer.checkpoint_sha256";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_CONFIG_SHA256: &str = "vokra.xy_tokenizer.config_sha256";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_SOURCE_REPOSITORY: &str = "vokra.xy_tokenizer.source_repository";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_SOURCE_REVISION: &str = "vokra.xy_tokenizer.source_revision";
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "metadata keys are reserved for the future authenticated converter"
+    )
+)]
 const KEY_INSPECTION_STATUS: &str = "vokra.xy_tokenizer.inspection_status";
 
 /// Outcome of an XY_Tokenizer conversion.
