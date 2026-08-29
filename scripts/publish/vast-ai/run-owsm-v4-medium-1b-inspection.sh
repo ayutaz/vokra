@@ -5,25 +5,52 @@ HF_REPOSITORY="espnet/owsm_v4_medium_1B"; HF_REVISION="e10985c8f1d592e905c24d2ac
 SOURCE_URL="https://github.com/espnet/espnet.git"; SOURCE_REVISION="cccc29023d43a3f504e28df7d1324bb4eb6daedd"
 INSPECTOR="$ROOT/tools/parity/owsm_v4_medium_1b_inspect.py"; MIN_MEM_KIB=$((128*1024*1024)); MIN_DISK_KIB=$((32*1024*1024))
 die(){ echo "owsm-v4-vast: ERROR: $*" >&2; exit 2; }
-self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" 'allow_pickle=False' 'weights_only=True' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; ((fail==0)) || return 1; echo 'run-owsm-v4-medium-1b-inspection.sh self-test: OK'; }
+self_test(){ local path="${BASH_SOURCE[0]}" token fail=0; for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" 'allow_pickle=False' 'weights_only=True' 'INSPECTION_ONLY' 'INSPECTION_ERROR' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'NO_UPLOAD' 'exit 2' 'CARGO_BUILD_JOBS=1' 'materialized_files' 'findmnt' 'README.md' 'cc-by-4.0' 'espnet/yodas_owsmv4' 'RepoFile' 'RepoFolder' 'classify_entry' 'OWSM_HF_TREE_SELF_TEST'; do if ! grep -Fq -- "$token" "$path" && ! grep -Fq -- "$token" "$INSPECTOR"; then echo "missing contract $token" >&2; fail=1; fi; done; if grep -En 'git[[:space:]]+push|upload\.sh|publish-one\.sh|--push|--upload' "$path" | grep -v 'grep -En' >/dev/null; then fail=1; fi; UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1; if ! OWSM_HF_TREE_SELF_TEST=1 UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+def classify_entry(entry):
+    if isinstance(entry, RepoFolder):
+        return "directory"
+    if isinstance(entry, RepoFile):
+        return "file"
+    raise RuntimeError(f"unknown HF tree entry: {entry!r}")
+
+file_entry = RepoFile(path="README.md", size=1, oid="a" * 40)
+file_entry.type = None
+assert classify_entry(file_entry) == "file"
+assert classify_entry(RepoFolder(path="nested", oid="b" * 40)) == "directory"
+try:
+    classify_entry(object())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unknown HF tree entry was accepted")
+print("OWSM_HF_TREE_SELF_TEST: PASS")
+PY
+  then echo 'OWSM RepoFile/RepoFolder self-test failed' >&2; fail=1; fi; ((fail==0)) || return 1; echo 'run-owsm-v4-medium-1b-inspection.sh self-test: OK'; }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no other arguments'; self_test; exit $?; fi
 [[ $# == 0 ]] || die 'arguments are not accepted; revisions are fixed'; [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die 'VAST requires Linux x86_64'; [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'; [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die 'checkout must be clean'
 mem_kib="$(awk '$1=="MemTotal:"{print $2;exit}' /proc/meminfo)"; [[ "$mem_kib" =~ ^[0-9]+$ && $mem_kib -ge $MIN_MEM_KIB ]] || die '128 GiB memory guard failed'; [[ "$(findmnt -T /dev/shm -n -o FSTYPE 2>/dev/null)" == tmpfs ]] || die '/dev/shm must be tmpfs'; free_kib="$(df -Pk /dev/shm | awk 'NR==2{print $4}')"; [[ "$free_kib" =~ ^[0-9]+$ && $free_kib -ge $MIN_DISK_KIB ]] || die 'tmpfs disk guard failed'; for command in cargo git uv awk find df findmnt; do command -v "$command" >/dev/null || die "missing tool: $command"; done
  work=/dev/shm/vokra-owsm-v4-medium-1b; if [[ -e "$work" ]]; then [[ -z "$(find "$work" -mindepth 1 -print -quit)" ]] || die 'inspection directory must be empty'; else mkdir -p "$work"; fi; mkdir -p "$work/model" "$work/source" "$work/evidence"; export CARGO_BUILD_JOBS=1; export UV_CACHE_DIR="${OWSM_UV_CACHE_DIR:-/tmp/vokra-owsm-uv-cache}"
 # shellcheck disable=SC2129 # validation output is one stream
- { cargo fmt --all -- --check; cargo metadata --locked --no-deps --format-version 1; } >"$work/evidence/validation.log" 2>&1
+ { cargo fmt --all -- --check; cargo metadata --locked --no-deps --format-version 1 >/dev/null; } >"$work/evidence/validation.log" 2>&1
 # shellcheck disable=SC2129 # heredoc output is one validation stream
  uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$HF_REPOSITORY" "$HF_REVISION" "$work/tree.json" <<'PY' >>"$work/evidence/validation.log" 2>&1
-import json,sys
+import json,re,sys
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi,RepoFile,RepoFolder
 repo,rev,out=sys.argv[1:]; api=HfApi(); info=api.model_info(repo,revision=rev); assert info.sha==rev; rows=[]
 for x in api.list_repo_tree(repo,revision=rev,recursive=True):
- if getattr(x,"type",None)!="file": continue
+ if isinstance(x,RepoFolder): continue
+ if not isinstance(x,RepoFile): raise RuntimeError(f"unknown HF tree entry: {x!r}")
+ path=getattr(x,"path",None); size=getattr(x,"size",None); blob=getattr(x,"blob_id",None) or getattr(x,"oid",None)
+ if not isinstance(path,str) or not path or "\\" in path or "\x00" in path or Path(path).is_absolute() or ".." in Path(path).parts: raise RuntimeError(f"unsafe HF tree path: {path!r}")
+ if not isinstance(size,int) or isinstance(size,bool) or size < 0: raise RuntimeError(f"invalid HF tree size: {path!r}")
+ if not isinstance(blob,str) or not re.fullmatch(r"[0-9a-f]{40}",blob): raise RuntimeError(f"invalid HF tree Git blob: {path!r}")
  lfs=getattr(x,"lfs",None); lfs_sha=getattr(lfs,"sha256",None) if lfs is not None else None
  if isinstance(lfs,dict): lfs_sha=lfs.get("sha256")
- rows.append({"path":getattr(x,"path",None),"type":"file","size":getattr(x,"size",None),"git_blob_sha1":getattr(x,"blob_id",None) or getattr(x,"oid",None),"lfs_sha256":lfs_sha})
-import re
+ if lfs_sha is not None and (not isinstance(lfs_sha,str) or not re.fullmatch(r"[0-9a-f]{64}",lfs_sha)): raise RuntimeError(f"invalid HF tree LFS SHA256: {path!r}")
+ rows.append({"path":path,"type":"file","size":size,"git_blob_sha1":blob,"lfs_sha256":lfs_sha})
 for row in rows:
  assert isinstance(row["path"],str) and row["path"] and "\\" not in row["path"] and ".." not in Path(row["path"]).parts and not row["path"].startswith("/")
  assert isinstance(row["size"],int) and not isinstance(row["size"],bool) and row["size"] >= 0
