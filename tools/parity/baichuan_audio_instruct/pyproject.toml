@@ -1,0 +1,46 @@
+[project]
+name = "vokra-baichuan-audio-instruct-inspection"
+version = "0.1.0"
+description = "VAST-only Baichuan-Audio-Instruct identity inspection"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "huggingface-hub==0.24.7",
+]
+
+[tool.uv]
+package = false
+# uv.lock is generated from index metadata only.  Workers fail before any
+# dedicated sync or HF/source/model acquisition unless the license gate below
+# is explicitly changed to an approved status by the owner.
+
+[tool.vokra.baichuan_audio_instruct_inspection]
+lock_status = "AUTHENTICATED_METADATA_ONLY"
+lock_sha256 = "0e8ca64e2f81060732c317fd6d10e01df7c3a5eb122426ef5d695e9813df7625"
+lock_package_rows_sha256 = "a276c50b73fcbc7f0ac22667d6d56516bf7dea7e9e420456562f128b4fa36b2b"
+lock_resolution_markers_sha256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+lock_package_count = 14
+marker_digest_schema = "package-resolution-and-dependency-markers-v2"
+dependency_license_audit = "BLOCKED_UNREVIEWED_TRANSITIVE"
+license_primary_source = "Version-specific PyPI JSON metadata; upstream license files remain a separate primary-source review for ambiguous/native/MPL/PSF cases"
+license_blockers = [
+    "certifi==2026.7.22 declares MPL-2.0; owner policy clearance is required",
+    "tqdm==4.70.0 declares MPL-2.0 AND MIT; file-level MPL review and owner policy clearance are required",
+    "typing-extensions==4.16.0 is PSF-2.0; owner policy clearance is required",
+    "PyYAML==6.0.3 has a native extension; native distribution notice review is required",
+]
+license_conclusions = [
+    { name = "certifi", version = "2026.7.22", license = "MPL-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json" },
+    { name = "charset-normalizer", version = "3.5.1", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/charset-normalizer/3.5.1/json" },
+    { name = "colorama", version = "0.4.6", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/colorama/0.4.6/json" },
+    { name = "filelock", version = "3.32.4", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/filelock/3.32.4/json" },
+    { name = "fsspec", version = "2026.7.0", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/fsspec/2026.7.0/json" },
+    { name = "huggingface-hub", version = "0.24.7", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/huggingface-hub/0.24.7/json" },
+    { name = "idna", version = "3.19", license = "BSD-3-Clause_REVIEWED", primary_source = "https://pypi.org/pypi/idna/3.19/json" },
+    { name = "packaging", version = "26.3", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/packaging/26.3/json" },
+    { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json" },
+    { name = "requests", version = "2.34.2", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/requests/2.34.2/json" },
+    { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
+    { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
+    { name = "urllib3", version = "2.7.0", license = "MIT_REVIEWED", primary_source = "https://pypi.org/pypi/urllib3/2.7.0/json" },
+    { name = "vokra-baichuan-audio-instruct-inspection", version = "0.1.0", license = "FIRST_PARTY_NOT_INDEPENDENT_DEPENDENCY_SCOPE", primary_source = "repository" },
+]
