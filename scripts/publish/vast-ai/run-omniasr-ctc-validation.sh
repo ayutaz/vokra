@@ -81,6 +81,7 @@ run_self_test() {
     "canonical_absent_path" "canonical_existing_path" "symlink ancestor" \
     "SNAPSHOT_LOCAL_DIR_NAME" "local_dir=destination" "destination.is_symlink()" \
     "materialized snapshot" \
+    'manifest="$prepared.manifest.json"' \
     "git status --porcelain --untracked-files=all" "MemTotal" "df -Pk" \
     "807" "$PARITY_TEST" "OMNIASR_REAL_PARITY_PASS" "parity_status=CPU_PASS" \
     "token_exact=true" "reference_manifest_sha256" "max_abs" \
@@ -89,6 +90,12 @@ run_self_test() {
     "models/transformer/encoder_layer.py" "models/transformer/ffn.py"; do
     grep -Fq -- "$required" "$0" || { echo "self-test missing: $required" >&2; fail=1; }
   done
+  local doubled_manifest='manifest="$prepared.safetensors.'
+  doubled_manifest+='manifest.json"'
+  if grep -Fq -- "$doubled_manifest" "$0"; then
+    echo "self-test found doubled safetensors manifest suffix" >&2
+    fail=1
+  fi
   if grep -En '(^|[;&|][[:space:]]*)(git[[:space:]]+push|.*publish-one\.sh|.*upload\.sh)([[:space:]]|$)' "$0" >/dev/null; then
     echo "self-test found publication command" >&2; fail=1
   fi
@@ -204,7 +211,7 @@ run_logged uv run --frozen --project tools/parity --python 3.12 python "$PREPARE
   --input "$assets/$CHECKPOINT_FILENAME" --output "$prepared"
 prepared_sha="$(sha256sum "$prepared" | awk '{print $1}')"
 [[ "$prepared_sha" == "$PREPARED_SHA256" ]] || die "prepared SHA-256 drift: $prepared_sha"
-manifest="$prepared.safetensors.manifest.json"
+manifest="$prepared.manifest.json"
 [[ -f "$manifest" ]] || die "prepared tensor manifest missing"
 
 run_logged cargo build --locked --release -p vokra-cli
