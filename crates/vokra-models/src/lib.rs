@@ -1656,6 +1656,11 @@ pub mod firered_asr_aed;
 // same leaf set as layer 0), refusing a violation by naming the EXACT absent
 // tensor. Weight-license surfacing fail-closes to `LicenseClass::Unknown`.
 //
+// HISTORICAL AUDIT NOTE (superseded for Multilingual by the strict native
+// binder in `gigaam::multilingual`; v3 remains fail-closed): the following
+// LOUD-PARTIAL text documents the pre-authentication state and is retained as
+// historical rationale only. It must not be read as a current Multilingual
+// runtime status.
 // LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より honest」):
 // `Gigaam::transcribe` returns `VokraError::UnsupportedOp` naming three concrete
 // blockers, all properties of the GGUF CONTRACT rather than of the kernel

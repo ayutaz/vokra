@@ -1,17 +1,25 @@
-//! Inspection-only boundary for Sber GigaAM v3 and Multilingual.
+//! Strict boundary for Sber GigaAM v3 and Multilingual.
 //!
 //! GigaAM v3 is an RNNT release while GigaAM Multilingual is a CTC release.
-//! Their complete tensor/config/vocabulary contracts are not authenticated in
-//! a Vokra GGUF, so this module never binds arbitrary tensors or emits text.
+//! Multilingual binds only the authenticated 552-tensor CTC contract; v3 stays
+//! fail-closed because its RNNT route is not part of this implementation.
 
+/// Authenticated Multilingual CTC binder and native CPU route.
+pub mod multilingual;
+/// Authenticated Multilingual CTC model binding and native CPU route.
+pub use multilingual::GigaamMultilingual;
+
+use vokra_core::backend::BackendKind;
+use vokra_core::engines::AsrEngine;
 use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::tasks::Transcription;
 use vokra_core::{Result, VokraError};
 
 /// v3 arch marker.
 pub const ARCH_V3: &str = "sber_gigaam_v3";
 /// multilingual arch marker.
 pub const ARCH_MULTILINGUAL: &str = "gigaam_multilingual";
-/// Arch markers inspected by this module; not a successful bind list.
+/// Arch markers recognized by this module.
 pub const ACCEPTED_ARCHS: &[&str] = &[ARCH_V3, ARCH_MULTILINGUAL];
 /// v3 model name.
 pub const NAME_V3: &str = "gigaam-v3";
@@ -23,7 +31,7 @@ pub const CATEGORY: &str = "asr";
 pub const UPSTREAM_HF_V3: &str = "ai-sage/GigaAM-v3";
 /// multilingual source identity.
 pub const UPSTREAM_URL_MULTILINGUAL: &str = "github.com/salute-developers/GigaAM";
-/// Historical license declaration, not a runtime authorization.
+/// Fixed weight/source license declaration.
 pub const DEFAULT_LICENSE_SPDX: &str = "mit";
 /// Primary source repository anchor.
 pub const PRIMARY_SOURCE_REPO: &str = "github.com/salute-developers/GigaAM";
@@ -107,7 +115,7 @@ impl GigaamVariant {
     }
 }
 
-/// Inspect an arch marker without authorizing a runtime bind.
+/// Inspect an arch marker before selecting the variant binder.
 pub fn verify_arch(file: &GgufFile) -> Result<GigaamVariant> {
     let arch = file
         .get(chunks::KEY_MODEL_ARCH)
@@ -163,22 +171,26 @@ impl GigaamTopology {
     }
 }
 
-/// Runtime compatibility handle. Construction is fail-closed.
-#[derive(Debug, Clone, Copy)]
-pub struct Gigaam {
-    variant: GigaamVariant,
+/// Runtime handle for the authenticated GigaAM family.
+#[derive(Debug)]
+pub enum Gigaam {
+    /// Native Multilingual CTC route.
+    Multilingual(GigaamMultilingual),
 }
 
 impl Gigaam {
-    /// Always refuse arbitrary or historical GGUFs. The diagnostic preserves
-    /// the RNNT/CTC distinction so the two variants cannot be conflated.
+    /// Bind the authenticated Multilingual CTC route. v3 remains fail-closed
+    /// because its RNNT prediction/joint topology is outside this task.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let variant = verify_arch(file)?;
-        Err(VokraError::UnsupportedOp(format!(
-            "gigaam: INSPECTION_ONLY; refusing runtime bind for `{}` ({}) because v3 is RNNT while multilingual is CTC and the authenticated tensor/config/vocabulary contract is absent",
-            variant.arch(),
-            variant.topology()
-        )))
+        match variant {
+            GigaamVariant::V3 => Err(VokraError::UnsupportedOp(
+                "gigaam: v3 RNNT native route is not implemented; refusing bind".to_owned(),
+            )),
+            GigaamVariant::Multilingual => {
+                Ok(Self::Multilingual(GigaamMultilingual::from_gguf(file)?))
+            }
+        }
     }
 
     /// Filesystem loader using the same fail-closed binder.
@@ -190,17 +202,33 @@ impl Gigaam {
     /// Variant accessor for a constructed compatibility handle.
     #[must_use]
     pub const fn variant(&self) -> GigaamVariant {
-        self.variant
+        match self {
+            Self::Multilingual(_) => GigaamVariant::Multilingual,
+        }
     }
 
-    /// Refuse transcript generation; no fabricated text is returned.
+    /// Run the selected native route.
     pub fn transcribe(&self, pcm: &[f32]) -> Result<String> {
-        if pcm.is_empty() {
-            return Err(VokraError::InvalidArgument(
-                "gigaam: empty PCM is not a transcript".to_owned(),
-            ));
+        match self {
+            Self::Multilingual(model) => model.transcribe(pcm),
         }
-        Err(transcribe_loud_partial(self.variant))
+    }
+
+    /// Backend selected by the bound native route.
+    pub fn backend(&self) -> BackendKind {
+        match self {
+            Self::Multilingual(model) => model.backend(),
+        }
+    }
+}
+
+impl AsrEngine for Gigaam {
+    fn transcribe(&self, pcm: &[f32]) -> Result<Transcription> {
+        Ok(Transcription::new(self.transcribe(pcm)?))
+    }
+
+    fn backend(&self) -> BackendKind {
+        self.backend()
     }
 }
 
@@ -240,10 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn runtime_is_inspection_only() {
-        assert!(matches!(
-            gigaam_inspection_error("tensor binding"),
-            VokraError::UnsupportedOp(_)
-        ));
+    fn v3_runtime_remains_fail_closed() {
+        let error = VokraError::UnsupportedOp(
+            "gigaam: v3 RNNT native route is not implemented; refusing bind".to_owned(),
+        );
+        assert!(matches!(error, VokraError::UnsupportedOp(_)));
     }
 }
