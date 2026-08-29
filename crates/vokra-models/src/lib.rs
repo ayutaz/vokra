@@ -1656,44 +1656,14 @@ pub mod firered_asr_aed;
 // same leaf set as layer 0), refusing a violation by naming the EXACT absent
 // tensor. Weight-license surfacing fail-closes to `LicenseClass::Unknown`.
 //
-// HISTORICAL AUDIT NOTE (superseded for Multilingual by the strict native
-// binder in `gigaam::multilingual`; v3 remains fail-closed): the following
-// LOUD-PARTIAL text documents the pre-authentication state and is retained as
-// historical rationale only. It must not be read as a current Multilingual
-// runtime status.
-// LOUD-PARTIAL (CLAUDE.md 教訓 (a)「loud-partial は fake-complete より honest」):
-// `Gigaam::transcribe` returns `VokraError::UnsupportedOp` naming three concrete
-// blockers, all properties of the GGUF CONTRACT rather than of the kernel
-// library — (i) the MISSING FRONT-END SPEC: neither converter stamps a
-// `vokra.gigaam.*` / `vokra.frontend.*` chunk, so sample rate, mel-bin count,
-// hop, window and normalisation convention are all unknown, and those differ
-// silently between librosa / torchaudio / Kaldi; (ii) the MISSING ENCODER
-// TENSOR-NAME MAPPING: both converters copy every tensor under its verbatim
-// upstream state-dict key and both explicitly record real-weight binding as a
-// follow-up "gated on the upstream tensor-name manifest fetch", so a best-guess
-// mapping would emit a SHAPE-VALID but quietly wrong transcript rather than
-// crash; (iii) the MISSING CTC VOCABULARY: no tokenizer / vocab chunk is
-// embedded (contrast the Whisper converter's `vokra.tokenizer.model` U8 array),
-// and GigaAM is char-wise CTC, so frame-argmax indices cannot be mapped to
-// characters at all. The message states explicitly that the blockers are
-// METADATA, not kernels — `vokra_ops::conformer`, `vokra_ops::ctc_decode_greedy`
-// / `ctc_decode_beam` and `vokra_ops::mel` / `kaldi_fbank` all already exist —
-// and points at the converter + sidecar to extend. No fabricated transcript is
-// ever emitted (FR-EX-08). Deliberately NO `GigaamConfig::upstream_default()`:
-// no in-repo primary source transcribes GigaAM's encoder geometry or front-end
-// axes, so a default would be invented numbers wearing an authoritative face
-// (CLAUDE.md ハルシネーション厳禁) — the same posture `ten_vad` / `firered_vad`
-// take. `GigaamTopology` MEASURES the checkpoint instead of asserting anything.
-//
-// LICENSING: both converters stamp `mit` → `LicenseClass::Permissive` per the
-// upstream `github.com/salute-developers/GigaAM/LICENSE`. This binder only
-// SURFACES whatever class the GGUF carries. `docs/license-audit.md` §3.1
-// sign-off stays BLANK (owner-only per
-// `[[feedback-license-signoff-primary-source]]` — CC does NOT sign, and does not
-// treat a converter default as a sign-off). Both tickets additionally flag open
-// corpus-provenance questions (Sber-internal disclosure for v3; a Common Voice /
-// MLS / VoxPopuli / FLEURS rights chain for the 70+-language variant) that are
-// owner audit items, not runtime concerns.
+// HISTORICAL AUDIT NOTE (superseded for both variants by their strict native
+// binders in `gigaam::multilingual` and `gigaam::v3`): the old LOUD-PARTIAL
+// diagnostic described pre-authentication metadata blockers. It is no longer
+// a current runtime status. The v3 route still fails closed until its
+// independently reviewed prepared SHA is recorded, and its text boundary
+// remains unsupported until the exact SentencePiece runtime is available.
+// Both routes preserve the upstream MIT declaration and the open dataset
+// provenance/publication gate; no fabricated transcript is emitted.
 //
 // Cross-crate string handshake via duplicated `pub const ARCH_V3` /
 // `ARCH_MULTILINGUAL` / `NAME_*` / `CATEGORY` / `UPSTREAM_*` (mirrors of the two

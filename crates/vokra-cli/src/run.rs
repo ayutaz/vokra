@@ -1544,6 +1544,7 @@ fn cpu_only_engine_label(task: ModelTask) -> Option<&'static str> {
         | ModelTask::AsrParakeetTdt11b
         | ModelTask::AsrOmniasrCtcTokens
         | ModelTask::AsrGigaamMultilingual
+        | ModelTask::AsrGigaamV3Tokens
         | ModelTask::SpeechFeaturesWav2Vec2
         | ModelTask::Vad
         | ModelTask::VadFirered
@@ -2064,6 +2065,9 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
         }
         ModelTask::AsrGigaamMultilingual => {
             run_gigaam_multilingual(&session, &a)?;
+        }
+        ModelTask::AsrGigaamV3Tokens => {
+            run_gigaam_v3_tokens(&session, &a)?;
         }
         ModelTask::SpeechFeaturesWav2Vec2 => {
             let path = a
@@ -6920,6 +6924,64 @@ fn run_gigaam_multilingual(session: &Session, a: &RunArgs) -> Result<(), String>
     Ok(())
 }
 
+/// Runs GigaAM v3's greedy RNNT route and emits stable token IDs.
+fn run_gigaam_v3_tokens(session: &Session, a: &RunArgs) -> Result<(), String> {
+    use vokra_models::gigaam::v3::{GigaamV3, SAMPLE_RATE};
+
+    if a.text.is_some() {
+        return Err(
+            "run (GigaAM v3): --text is not accepted; this route emits RNNT token IDs".to_owned(),
+        );
+    }
+    if a.beam_size != 1
+        || a.no_repeat_ngram != 0
+        || a.length_penalty.to_bits() != 0.6f32.to_bits()
+        || a.deterministic
+    {
+        return Err(
+            "run (GigaAM v3): beam/generation options are not supported; use deterministic greedy token IDs"
+                .to_owned(),
+        );
+    }
+    let path = a
+        .input
+        .as_deref()
+        .ok_or("run (GigaAM v3): --input <16k-mono.wav> is required")?;
+    let clip = wav::read_wav(path).map_err(|error| format!("run (GigaAM v3): {path}: {error}"))?;
+    if clip.sample_rate != SAMPLE_RATE {
+        return Err(format!(
+            "run (GigaAM v3): {path} is {} Hz, expected {SAMPLE_RATE} Hz — resample offline first",
+            clip.sample_rate
+        ));
+    }
+    if clip.samples.is_empty() {
+        return Err("run (GigaAM v3): --input WAV contains no samples".to_owned());
+    }
+    let model = GigaamV3::from_gguf(session.gguf())
+        .map_err(|error| format!("run (GigaAM v3) bind: {error}"))?
+        .with_backend(a.backend)
+        .map_err(|error| format!("run (GigaAM v3) backend: {error}"))?;
+    let token_ids = model
+        .transcribe_token_ids(&clip.samples)
+        .map_err(|error| format!("run (GigaAM v3) forward: {error}"))?;
+    let rendered = token_ids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if let Some(output) = a.output.as_deref() {
+        std::fs::write(output, format!("{rendered}\n"))
+            .map_err(|error| format!("run (GigaAM v3): --output {output}: {error}"))?;
+        eprintln!(
+            "GigaAM v3: wrote {} token ID(s) -> {output}",
+            token_ids.len()
+        );
+    } else {
+        println!("gigaam-v3: token_ids={rendered}");
+    }
+    Ok(())
+}
+
 fn parse_canary_language(
     code: &str,
 ) -> Result<vokra_models::canary_1b_flash::CanaryLanguage, String> {
@@ -7620,6 +7682,46 @@ mod tests {
             error.contains("prepared safetensors digest")
                 || error.contains("prepared-artifact digest"),
             "valid WAV reached the authenticated binder gate: {error}"
+        );
+        let _ = std::fs::remove_file(model_path);
+        let _ = std::fs::remove_file(wav_path);
+    }
+
+    #[test]
+    fn gigaam_v3_route_validates_a_16k_mono_wav_before_bind_gate() {
+        let stem = format!("vokra-cli-gigaam-v3-route-{}", std::process::id());
+        let mut model_path = std::env::temp_dir();
+        model_path.push(format!("{stem}.gguf"));
+        let mut wav_path = std::env::temp_dir();
+        wav_path.push(format!("{stem}.wav"));
+        let mut builder = vokra_core::gguf::GgufBuilder::new();
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_ARCH,
+            vokra_models::gigaam::v3::ARCH,
+        );
+        builder.add_string(
+            vokra_core::gguf::chunks::KEY_MODEL_NAME,
+            vokra_models::gigaam::v3::NAME,
+        );
+        std::fs::write(
+            &model_path,
+            builder.to_bytes().expect("serialize route fixture"),
+        )
+        .expect("write route fixture");
+        wav::write_wav(&wav_path, &[0.125; 320], 16_000).expect("write valid WAV fixture");
+        let (session, task) = engine::load_session(model_path.to_str().unwrap()).expect("route");
+        assert_eq!(task, ModelTask::AsrGigaamV3Tokens);
+        let parsed = parse_args(&args(&[
+            "--model",
+            model_path.to_str().unwrap(),
+            "--input",
+            wav_path.to_str().unwrap(),
+        ]))
+        .expect("valid GigaAM v3 route args");
+        let error = run_gigaam_v3_tokens(&session, &parsed).unwrap_err();
+        assert!(
+            !error.contains("expected 16000 Hz"),
+            "valid WAV was rejected before bind: {error}"
         );
         let _ = std::fs::remove_file(model_path);
         let _ = std::fs::remove_file(wav_path);
@@ -9747,6 +9849,7 @@ mod tests {
             cpu_only_engine_label(ModelTask::AsrGigaamMultilingual),
             None
         );
+        assert_eq!(cpu_only_engine_label(ModelTask::AsrGigaamV3Tokens), None);
         assert_eq!(cpu_only_engine_label(ModelTask::Vad), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadFirered), None);
         assert_eq!(cpu_only_engine_label(ModelTask::VadTen), None);

@@ -106,6 +106,11 @@ pub(crate) enum ModelTask {
     /// route is greedy CTC text transcription; beam/text-generation flags do
     /// not apply.
     AsrGigaamMultilingual,
+    /// Sber GigaAM v3 RNNT token-ID transcription.
+    ///
+    /// The route emits the authenticated greedy RNNT token IDs. Text and
+    /// SentencePiece decoding are deliberately outside this task boundary.
+    AsrGigaamV3Tokens,
     /// Text-to-speech (piper-plus native TTS).
     Tts,
     /// VibeVoice-1.5B composite TTS. The strict partial GGUF binder is
@@ -1065,6 +1070,17 @@ pub(crate) fn load_session_with_backend_and_mimi(
             // Bind in run/bench so there is one concrete load site for the
             // strict authenticated 552-tensor manifest and CPU-only route.
             Ok((session, ModelTask::AsrGigaamMultilingual))
+        }
+        vokra_models::gigaam::v3::ARCH => {
+            if hint.is_some() {
+                return Err(format!(
+                    "task hint {hint:?} is not supported on arch `{}`",
+                    vokra_models::gigaam::v3::ARCH
+                ));
+            }
+            // Bind in run/bench so the strict prepared-SHA gate and the
+            // selected CPU-only backend are applied at the concrete callsite.
+            Ok((session, ModelTask::AsrGigaamV3Tokens))
         }
         ARCH_QWEN3_ASR => {
             if hint.is_some() {
@@ -2245,12 +2261,6 @@ const BOUND_ARCHES: &[BoundArch] = &[
         }),
     },
     BoundArch {
-        arch: "sber_gigaam_v3",
-        module: "vokra_models::gigaam",
-        entry: "Gigaam::from_gguf → Gigaam::transcribe",
-        probe: Some(|g: &GgufFile| vokra_models::gigaam::Gigaam::from_gguf(g).map(|_| ())),
-    },
-    BoundArch {
         arch: "kyutai-stt",
         module: "vokra_models::kyutai_stt",
         entry: "KyutaiSttAsr::from_path → KyutaiSttAsr::transcribe",
@@ -3142,6 +3152,21 @@ mod tests {
                 .iter()
                 .all(|row| row.arch != vokra_models::gigaam::multilingual::ARCH),
             "a routed GigaAM Multilingual forward must not retain an unreachable bound-only row"
+        );
+    }
+
+    #[test]
+    fn load_session_routes_gigaam_v3_to_the_token_task() {
+        let (_session, task) =
+            with_arch_only_gguf(vokra_models::gigaam::v3::ARCH, "gigaam-v3-routed", |path| {
+                load_session(path).expect("GigaAM v3 session builds bare")
+            });
+        assert_eq!(task, ModelTask::AsrGigaamV3Tokens);
+        assert!(
+            BOUND_ARCHES
+                .iter()
+                .all(|row| row.arch != vokra_models::gigaam::v3::ARCH),
+            "a routed GigaAM v3 forward must not retain a bound-only row"
         );
     }
 

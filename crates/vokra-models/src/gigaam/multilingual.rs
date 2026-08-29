@@ -584,7 +584,7 @@ impl GigaamMultilingual {
             for class in 0..VOCAB_SIZE {
                 let mut value = self.head_b[class];
                 for d in 0..768 {
-                    value += self.head_w[(class * 768 + d) * 1] * hidden[t * 768 + d];
+                    value += self.head_w[class * 768 + d] * hidden[t * 768 + d];
                 }
                 logits[t * VOCAB_SIZE + class] = value;
             }
@@ -600,10 +600,7 @@ impl GigaamMultilingual {
                     .ok_or_else(|| VokraError::ModelLoad("GigaAM empty CTC row".into()))
             })
             .collect::<Result<Vec<_>>>()?;
-        let token_ids = ctc_decode_greedy(&logits, valid_time, VOCAB_SIZE, BLANK_ID)?
-            .into_iter()
-            .map(|id| id as u32)
-            .collect();
+        let token_ids = ctc_decode_greedy(&logits, valid_time, VOCAB_SIZE, BLANK_ID)?;
         Ok(GigaamMultilingualTrace {
             encoded: hidden,
             encoded_frames: valid_time,
@@ -641,7 +638,7 @@ impl GigaamMultilingual {
         let mut power = vec![0.0f32; 161];
         for frame in 0..frames {
             let start = frame * 160;
-            for freq in 0..=160 {
+            for (freq, power_value) in power.iter_mut().enumerate() {
                 let mut real = 0.0f32;
                 let mut imag = 0.0f32;
                 for sample in 0..320 {
@@ -650,12 +647,12 @@ impl GigaamMultilingual {
                     real += value * angle.cos();
                     imag -= value * angle.sin();
                 }
-                power[freq] = real * real + imag * imag;
+                *power_value = real * real + imag * imag;
             }
             for channel in 0..64 {
                 let mut value = 0.0f32;
-                for freq in 0..161 {
-                    value += power[freq] * self.mel_filter[freq * 64 + channel];
+                for (freq, &power_value) in power.iter().enumerate() {
+                    value += power_value * self.mel_filter[freq * 64 + channel];
                 }
                 mel[frame * 64 + channel] = value.clamp(1e-9, 1e9).ln();
             }

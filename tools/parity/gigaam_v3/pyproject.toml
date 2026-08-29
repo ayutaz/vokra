@@ -1,0 +1,15 @@
+[project]
+name = "vokra-gigaam-v3-parity"
+version = "0.1.0"
+description = "Dedicated VAST-only GigaAM v3 reference/parity environment."
+requires-python = ">=3.12,<3.13"
+
+# Exact package versions are intentionally omitted: no authenticated v3
+# dependency closure is recorded yet. Production workers require the reviewed
+# sibling uv.lock before they can execute this project. The fixed official
+# model/source revisions are checked by the scripts, not supplied as Python
+# dependencies.
+dependencies = []
+
+[tool.uv]
+package = false

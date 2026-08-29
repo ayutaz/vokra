@@ -1,13 +1,19 @@
 //! Strict boundary for Sber GigaAM v3 and Multilingual.
 //!
 //! GigaAM v3 is an RNNT release while GigaAM Multilingual is a CTC release.
-//! Multilingual binds only the authenticated 552-tensor CTC contract; v3 stays
-//! fail-closed because its RNNT route is not part of this implementation.
+//! Both variants expose native CPU graph implementations; binding still
+//! requires each variant's authenticated prepared-artifact identity. The v3
+//! text boundary remains unsupported until its exact SentencePiece runtime is
+//! available, while token-ID RNNT output is available through `v3`.
 
 /// Authenticated Multilingual CTC binder and native CPU route.
 pub mod multilingual;
+/// Authenticated v3 RNNT binder and native CPU route.
+pub mod v3;
 /// Authenticated Multilingual CTC model binding and native CPU route.
 pub use multilingual::GigaamMultilingual;
+/// Authenticated v3 RNNT model binding and native CPU route.
+pub use v3::GigaamV3;
 
 use vokra_core::backend::BackendKind;
 use vokra_core::engines::AsrEngine;
@@ -174,22 +180,21 @@ impl GigaamTopology {
 /// Runtime handle for the authenticated GigaAM family.
 #[derive(Debug)]
 pub enum Gigaam {
+    /// Native v3 RNNT route.
+    V3(Box<GigaamV3>),
     /// Native Multilingual CTC route.
-    Multilingual(GigaamMultilingual),
+    Multilingual(Box<GigaamMultilingual>),
 }
 
 impl Gigaam {
-    /// Bind the authenticated Multilingual CTC route. v3 remains fail-closed
-    /// because its RNNT prediction/joint topology is outside this task.
+    /// Bind the authenticated v3 RNNT or Multilingual CTC route.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         let variant = verify_arch(file)?;
         match variant {
-            GigaamVariant::V3 => Err(VokraError::UnsupportedOp(
-                "gigaam: v3 RNNT native route is not implemented; refusing bind".to_owned(),
-            )),
-            GigaamVariant::Multilingual => {
-                Ok(Self::Multilingual(GigaamMultilingual::from_gguf(file)?))
-            }
+            GigaamVariant::V3 => Ok(Self::V3(Box::new(GigaamV3::from_gguf(file)?))),
+            GigaamVariant::Multilingual => Ok(Self::Multilingual(Box::new(
+                GigaamMultilingual::from_gguf(file)?,
+            ))),
         }
     }
 
@@ -203,6 +208,7 @@ impl Gigaam {
     #[must_use]
     pub const fn variant(&self) -> GigaamVariant {
         match self {
+            Self::V3(_) => GigaamVariant::V3,
             Self::Multilingual(_) => GigaamVariant::Multilingual,
         }
     }
@@ -210,6 +216,7 @@ impl Gigaam {
     /// Run the selected native route.
     pub fn transcribe(&self, pcm: &[f32]) -> Result<String> {
         match self {
+            Self::V3(model) => model.transcribe(pcm),
             Self::Multilingual(model) => model.transcribe(pcm),
         }
     }
@@ -217,6 +224,7 @@ impl Gigaam {
     /// Backend selected by the bound native route.
     pub fn backend(&self) -> BackendKind {
         match self {
+            Self::V3(model) => model.backend(),
             Self::Multilingual(model) => model.backend(),
         }
     }
@@ -230,16 +238,6 @@ impl AsrEngine for Gigaam {
     fn backend(&self) -> BackendKind {
         self.backend()
     }
-}
-
-/// Loud fail-closed diagnostic for the two topology variants.
-#[must_use]
-pub fn transcribe_loud_partial(variant: GigaamVariant) -> VokraError {
-    VokraError::UnsupportedOp(format!(
-        "gigaam: INSPECTION_ONLY; `{}` is {} but native forward, exact tensor manifest, frontend axes, and vocabulary are not authenticated; no transcript is emitted",
-        variant.arch(),
-        variant.topology()
-    ))
 }
 
 fn gigaam_inspection_error(stage: &str) -> VokraError {
@@ -265,13 +263,5 @@ mod tests {
             Some(GigaamVariant::Multilingual)
         );
         assert_eq!(GigaamVariant::from_arch("sber_gigaam_ctc"), None);
-    }
-
-    #[test]
-    fn v3_runtime_remains_fail_closed() {
-        let error = VokraError::UnsupportedOp(
-            "gigaam: v3 RNNT native route is not implemented; refusing bind".to_owned(),
-        );
-        assert!(matches!(error, VokraError::UnsupportedOp(_)));
     }
 }

@@ -4138,6 +4138,18 @@ reviewed VAST SHA-256 for the prepared safetensors artifact is recorded.
 This does not claim source-complete behavior or Metal support; Metal remains
 explicitly unsupported until every learned operation is dispatched.
 
+### 2026-08-30 — GigaAM v3 RNNT native token route
+
+The fixed `ai-sage/GigaAM-v3` route now has a strict 561-tensor RNNT binder,
+native CPU encoder/predictor/joint greedy decoding, and a diagnostic trace for
+frontend, encoded frames, per-decision log-softmax rows, argmax IDs, and token
+IDs. The official decoder is greedy-only with `blank_id=1024` and a maximum of
+10 symbols per frame; no beam or SentencePiece text route is invented. The
+converter and runtime remain fail-closed while the independently reviewed
+prepared safetensors SHA is absent (`AUTHENTICATED_PREPARED_SHA256=None`).
+Metal/CUDA are explicitly unsupported, and dataset provenance keeps
+publication `NO_UPLOAD`.
+
 ### 2026-08-30 — OmniASR-CTC-1B strict identity and native binder (pre-1.0 advisory)
 
 The OmniASR-CTC-1B conversion/runtime contract is now strict and additive.

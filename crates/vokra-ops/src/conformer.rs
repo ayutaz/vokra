@@ -1072,14 +1072,16 @@ impl ConformerEncoder {
                 }
                 conv1_padded_time_major(
                     &masked_mel,
-                    mel_frames,
-                    in_dim,
                     conv1_w,
                     conv1_b,
-                    d_model,
-                    kernel,
-                    stride,
-                    padding,
+                    PaddedConv1dSpec {
+                        input_len: mel_frames,
+                        in_ch: in_dim,
+                        out_ch: d_model,
+                        kernel,
+                        stride,
+                        padding,
+                    },
                     &mut conv1,
                 )?;
                 relu_inplace(&mut conv1);
@@ -1115,7 +1117,17 @@ impl ConformerEncoder {
                 })?;
                 let mut out = vec![0.0f32; out_size];
                 conv1_padded_time_major(
-                    &conv1, out1_len, d_model, conv2_w, conv2_b, d_model, kernel, stride, padding,
+                    &conv1,
+                    conv2_w,
+                    conv2_b,
+                    PaddedConv1dSpec {
+                        input_len: out1_len,
+                        in_ch: d_model,
+                        out_ch: d_model,
+                        kernel,
+                        stride,
+                        padding,
+                    },
                     &mut out,
                 )?;
                 relu_inplace(&mut out);
@@ -1543,18 +1555,30 @@ fn padded_conv_out_len(
 /// primitive. Weight layout is `[out_ch, in_ch, kernel]`; input and output are
 /// `[time, channels]`. Out-of-range input samples are zero, matching
 /// PyTorch's symmetric zero padding used by GigaAM `StridingSubsampling`.
-fn conv1_padded_time_major(
-    input: &[f32],
+struct PaddedConv1dSpec {
     input_len: usize,
     in_ch: usize,
-    weight: &[f32],
-    bias: &[f32],
     out_ch: usize,
     kernel: usize,
     stride: usize,
     padding: usize,
+}
+
+fn conv1_padded_time_major(
+    input: &[f32],
+    weight: &[f32],
+    bias: &[f32],
+    spec: PaddedConv1dSpec,
     output: &mut [f32],
 ) -> Result<()> {
+    let PaddedConv1dSpec {
+        input_len,
+        in_ch,
+        out_ch,
+        kernel,
+        stride,
+        padding,
+    } = spec;
     let input_len_ch = input_len.checked_mul(in_ch).ok_or_else(|| {
         VokraError::InvalidArgument("Conformer Conv1d input shape overflows usize".to_owned())
     })?;
@@ -1593,8 +1617,8 @@ fn conv1_padded_time_major(
         let in_t = out_t.checked_mul(stride).ok_or_else(|| {
             VokraError::InvalidArgument("Conformer Conv1d input offset overflows usize".to_owned())
         })?;
-        for oc in 0..out_ch {
-            let mut acc = bias[oc];
+        for (oc, &channel_bias) in bias.iter().enumerate() {
+            let mut acc = channel_bias;
             for ic in 0..in_ch {
                 let w_base = oc
                     .checked_mul(in_ch)
@@ -2020,14 +2044,16 @@ mod tests {
         let mut first = vec![0.0; 3];
         conv1_padded_time_major(
             &[-2.0, 1.0, -2.0],
-            3,
-            1,
             &[1.0],
             &[0.0],
-            1,
-            1,
-            1,
-            0,
+            PaddedConv1dSpec {
+                input_len: 3,
+                in_ch: 1,
+                out_ch: 1,
+                kernel: 1,
+                stride: 1,
+                padding: 0,
+            },
             &mut first,
         )
         .unwrap();
@@ -2035,7 +2061,21 @@ mod tests {
         assert_eq!(first, [0.0, 1.0, 0.0]);
 
         let mut second = vec![0.0; 3];
-        conv1_padded_time_major(&first, 3, 1, &[-1.0], &[0.0], 1, 1, 1, 0, &mut second).unwrap();
+        conv1_padded_time_major(
+            &first,
+            &[-1.0],
+            &[0.0],
+            PaddedConv1dSpec {
+                input_len: 3,
+                in_ch: 1,
+                out_ch: 1,
+                kernel: 1,
+                stride: 1,
+                padding: 0,
+            },
+            &mut second,
+        )
+        .unwrap();
         relu_inplace(&mut second);
         assert_eq!(second, [0.0, 0.0, 0.0]);
     }
