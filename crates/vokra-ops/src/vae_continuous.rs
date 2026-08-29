@@ -78,7 +78,8 @@
 //! [`ContinuousVaeDecoder::decode`] / [`ContinuousVaeEncoder::encode`]
 //! return [`VokraError::NotImplemented`] naming the blocker (the
 //! neural-chain forward path — Snake + causal Conv1d + weight-norm folded
-//! residual units — is transcribed from upstream `audio_vae_v2.py` and
+//! residual units — is transcribed from the corresponding upstream AudioVAE
+//! source (0.5B `audio_vae.py`, 2B `audio_vae_v2.py`) and
 //! ports in the T29-equivalent follow-up wave).
 //!
 //! # No SIMD / no unsafe
@@ -105,15 +106,15 @@ use vokra_core::{Result, VokraError};
 ///
 /// For VoxCPM-0.5B the canonical fill lives in
 /// [`ContinuousVaeConfig::voxcpm_0_5b`] and is transcribed from the
-/// upstream `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`
+/// upstream `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae.py` for
+/// 0.5B (the separate 2B route uses `audio_vae_v2.py`).
 /// `AudioVAEConfig` defaults (fetched 2026-07-24 — CLAUDE.md
 /// 「ハルシネーション厳禁」).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContinuousVaeConfig {
     /// Encoder input PCM sample rate (Hz). VoxCPM-0.5B: `16_000`.
     pub sample_rate_hz: u32,
-    /// Decoder output PCM sample rate (Hz). VoxCPM-0.5B: `48_000` (the
-    /// upstream AudioVAE decoder upsamples during synthesis).
+    /// Decoder output PCM sample rate (Hz). VoxCPM-0.5B: `16_000`.
     pub out_sample_rate_hz: u32,
     /// Encoder base channel count (upstream `encoder_dim`).
     /// VoxCPM-0.5B: `128`.
@@ -127,11 +128,11 @@ pub struct ContinuousVaeConfig {
     /// downstream flow-matching sampler consume. VoxCPM-0.5B: `64`.
     pub latent_dim: u32,
     /// Decoder base channel count (upstream `decoder_dim`).
-    /// VoxCPM-0.5B: `2048`.
+    /// VoxCPM-0.5B: `1536`.
     pub decoder_dim: u32,
     /// Decoder stride list (upstream `decoder_rates`). Product =
-    /// [`Self::decode_hop_length`]. VoxCPM-0.5B: `[8, 6, 5, 2, 2, 2]`
-    /// (decode hop 1920 = `48_000 / 25 Hz` frames).
+    /// [`Self::decode_hop_length`]. VoxCPM-0.5B: `[8, 8, 5, 2]`
+    /// (decode hop 640 = `16_000 / 25 Hz` frames).
     pub decoder_rates: Vec<u32>,
     /// Whether the causal Conv1d / weight-norm layers use depthwise
     /// separation. VoxCPM-0.5B: `true`.
@@ -166,10 +167,10 @@ pub struct ContinuousVaeConfig {
 }
 
 impl ContinuousVaeConfig {
-    /// Canonical VoxCPM-0.5B `AudioVAE V2` config.
+    /// Canonical VoxCPM-0.5B `AudioVAE` config.
     ///
-    /// Primary source: `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py`
-    /// `class AudioVAEConfig(BaseModel)` block (fetched 2026-07-24) —
+    /// Primary source: `openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae.py`
+    /// `class AudioVAE` defaults (fetched 2026-07-24) —
     /// every field on that Pydantic model is transcribed verbatim.
     ///
     /// Note: upstream carries additional sample-rate-conditioning fields
@@ -181,12 +182,12 @@ impl ContinuousVaeConfig {
     pub fn voxcpm_0_5b() -> Self {
         Self {
             sample_rate_hz: 16_000,
-            out_sample_rate_hz: 48_000,
+            out_sample_rate_hz: 16_000,
             encoder_dim: 128,
             encoder_rates: vec![2, 5, 8, 8],
             latent_dim: 64,
-            decoder_dim: 2048,
-            decoder_rates: vec![8, 6, 5, 2, 2, 2],
+            decoder_dim: 1536,
+            decoder_rates: vec![8, 8, 5, 2],
             depthwise: true,
             use_noise_block: false,
             // 0.5B has no bandwidth-adaptive head — single decoder head,
@@ -281,7 +282,7 @@ impl ContinuousVaeConfig {
     }
 
     /// Encoded frame rate (Hz) — `sample_rate_hz / hop_length`.
-    /// VoxCPM-0.5B: `25 Hz`.
+    /// VoxCPM-0.5B: `25 Hz` (`16_000 / 640`).
     ///
     /// Returns `None` when [`Self::hop_length`] does or when
     /// `hop_length` is zero.
@@ -395,7 +396,7 @@ impl ContinuousVaeConfig {
 /// Continuous VAE encoder weights (scaffold — real binding is a
 /// follow-up wave).
 ///
-/// The upstream `CausalEncoder` (audio_vae_v2.py L125-159) is a chain of
+/// The upstream VoxCPM `CausalEncoder` is a chain of
 /// weight-normalized causal Conv1d layers grouped into `CausalEncoderBlock`
 /// stages (each stage: three dilated residual units + a strided Conv1d
 /// downsample), terminated by two 1x1 `WNConv1d` heads (`fc_mu` and
@@ -450,7 +451,7 @@ impl ContinuousVaeEncoderWeights {
 /// Continuous VAE decoder weights (scaffold — real binding is a
 /// follow-up wave).
 ///
-/// Upstream `CausalDecoder` (audio_vae_v2.py L270-356) is a chain of
+/// Upstream VoxCPM `CausalDecoder` is a chain of
 /// `CausalDecoderBlock`s (each: Snake activation + weight-normalized
 /// `CausalTransposeConv1d` upsample + three dilated residual units),
 /// terminated by a `Snake1d + WNCausalConv1d(d_out=1) + Tanh` head. The
@@ -574,8 +575,8 @@ impl ContinuousVaeEncoder {
     /// Zero-length input is rejected loudly (FR-EX-08). Real
     /// forward-pass binding lives in the T29-equivalent follow-up wave —
     /// the neural-chain forward path (causal Conv1d + Snake + weight-norm
-    /// folded residual units) is transcribed from upstream
-    /// `audio_vae_v2.py` and ports there.
+    /// folded residual units) is transcribed in the model's source-shaped
+    /// AudioVAE module; this shared seam remains a config/legacy adapter.
     ///
     /// # Errors
     ///
@@ -592,14 +593,14 @@ impl ContinuousVaeEncoder {
             return Err(VokraError::NotImplemented(
                 "vae_continuous encode: this encoder holds synthesized weights \
                  (deterministic scaffold fixture). Bind a real continuous-VAE checkpoint \
-                 (e.g. VoxCPM-0.5B AudioVAE V2, apache-2.0) before invoking encode.",
+                 (e.g. VoxCPM-0.5B AudioVAE, apache-2.0) before invoking encode.",
             ));
         }
         Err(VokraError::NotImplemented(
             "vae_continuous encode: real weights are bound but the causal-Conv1d + Snake + \
              weight-norm folded residual encoder forward path has not landed yet. Follow-up \
-             wave (T29-equivalent): port the upstream `CausalEncoder` (audio_vae_v2.py \
-             L125-159) verbatim — Snake activation, WNCausalConv1d stem, three-dilated \
+             wave (T29-equivalent): bind the upstream `AudioVAE` encoder (`audio_vae.py`) \
+             verbatim — Snake activation, WNCausalConv1d stem, three-dilated \
              residual units per stage, per-stage strided downsample, terminal `fc_mu` head.",
         ))
     }
@@ -690,14 +691,14 @@ impl ContinuousVaeDecoder {
             return Err(VokraError::NotImplemented(
                 "vae_continuous decode: this decoder holds synthesized weights \
                  (deterministic scaffold fixture). Bind a real continuous-VAE checkpoint \
-                 (e.g. VoxCPM-0.5B AudioVAE V2, apache-2.0) before invoking decode.",
+                 (e.g. VoxCPM-0.5B AudioVAE, apache-2.0) before invoking decode.",
             ));
         }
         Err(VokraError::NotImplemented(
             "vae_continuous decode: real weights are bound but the causal-Conv1d + Snake + \
              transpose-Conv1d upsample + residual decoder forward path has not landed yet. \
              Follow-up wave (T29-equivalent): port the upstream `CausalDecoder` \
-             (audio_vae_v2.py L270-356) verbatim — WNCausalConv1d stem, per-stage \
+             (the variant's authenticated AudioVAE source) verbatim — WNCausalConv1d stem, per-stage \
              `Snake + WNCausalTransposeConv1d` upsample, three-dilated residual units per \
              stage, terminal `Snake1d + WNCausalConv1d(d_out=1) + Tanh` head, optional \
              `SampleRateConditionLayer` scale/bias.",
@@ -754,16 +755,16 @@ mod tests {
     #[test]
     fn voxcpm_config_matches_primary_source() {
         // Transcribed verbatim from
-        // openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae_v2.py
+        // openbmb/VoxCPM/src/voxcpm/modules/audiovae/audio_vae.py
         // `class AudioVAEConfig(BaseModel)` (fetched 2026-07-24).
         let c = ContinuousVaeConfig::voxcpm_0_5b();
         assert_eq!(c.sample_rate_hz, 16_000);
-        assert_eq!(c.out_sample_rate_hz, 48_000);
+        assert_eq!(c.out_sample_rate_hz, 16_000);
         assert_eq!(c.encoder_dim, 128);
         assert_eq!(c.encoder_rates, vec![2, 5, 8, 8]);
         assert_eq!(c.latent_dim, 64);
-        assert_eq!(c.decoder_dim, 2048);
-        assert_eq!(c.decoder_rates, vec![8, 6, 5, 2, 2, 2]);
+        assert_eq!(c.decoder_dim, 1536);
+        assert_eq!(c.decoder_rates, vec![8, 8, 5, 2]);
         assert!(c.depthwise);
         assert!(!c.use_noise_block);
         assert!(
@@ -814,8 +815,8 @@ mod tests {
         let c = ContinuousVaeConfig::voxcpm_0_5b();
         // encoder_rates product = 2*5*8*8 = 640
         assert_eq!(c.hop_length(), Some(640));
-        // decoder_rates product = 8*6*5*2*2*2 = 1920
-        assert_eq!(c.decode_hop_length(), Some(1920));
+        // decoder_rates product = 8*8*5*2 = 640
+        assert_eq!(c.decode_hop_length(), Some(640));
         // encoder frame rate = 16_000 / 640 = 25.0 Hz
         assert!((c.frame_rate_hz().unwrap() - 25.0).abs() < 1e-4);
     }
