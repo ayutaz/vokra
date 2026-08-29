@@ -12,11 +12,12 @@ with PyTorch's safe unpickler, the command fails and the VAST run must record
 that evidence before any narrowly reviewed loader change.
 
 Unlike the generic ``nemo_pt_to_safetensors.py`` helper, this worker has a
-fail-closed model contract: it accepts exactly the canonical ``model`` wrapper
-seen in the published extraction record, keeps only floating tensors, rejects
-unknown dtypes and integer tensors, and requires the recorded 807-tensor
-payload.  It writes a manifest containing every name and shape; that manifest
-is the input to the later native Rust binder and is not a parity result.
+fail-closed model contract: it accepts exactly the canonical fairseq2 envelope
+(``{model: non-empty dict, fs2: True}``) seen in the published extraction
+record, keeps only floating tensors, rejects unknown dtypes and integer
+tensors, and requires the recorded 807-tensor payload.  It writes a manifest
+containing every name and shape; that manifest is the input to the later
+native Rust binder and is not a parity result.
 
 Usage (on a provisioned VAST instance)::
 
@@ -69,21 +70,33 @@ def sha256_file(path: Path) -> str:
 def unwrap_canonical_model(payload: Any) -> dict[str, Any]:
     """Return the published fairseq2 state dict, refusing loose wrappers.
 
-    The 2026-07-28 VAST extraction recorded a single top-level ``model``
-    mapping.  A permissive recursive walk could accidentally select an
-    optimizer, EMA, or auxiliary model and produce a valid-looking GGUF.
+    The 2026-07-28 VAST extraction recorded the exact top-level envelope
+    ``{model: non-empty dict, fs2: True}``.  A permissive recursive walk could
+    accidentally select an optimizer, EMA, or auxiliary model and produce a
+    valid-looking GGUF.  ``fs2`` is checked as an actual bool so values such
+    as ``1`` cannot masquerade as the fairseq2 marker.
     """
 
     if not isinstance(payload, dict):
         raise ValueError(f"checkpoint top level must be a dict, got {type(payload)!r}")
-    if set(payload) != {"model"} or not isinstance(payload["model"], dict):
+    if set(payload) != {"model", "fs2"}:
         raise ValueError(
-            "omniASR-CTC-1B checkpoint must have exactly one top-level "
-            "`model` state-dict wrapper; refusing ambiguous/auxiliary payload"
+            "omniASR-CTC-1B checkpoint must have exactly the top-level "
+            "`model` and `fs2` keys; refusing ambiguous/auxiliary payload"
+        )
+    if not isinstance(payload["model"], dict):
+        raise ValueError(
+            "omniASR-CTC-1B checkpoint top-level `model` must be a state-dict "
+            f"dict, got {type(payload['model'])!r}"
+        )
+    if not payload["model"]:
+        raise ValueError("checkpoint model state dict is empty")
+    if type(payload["fs2"]) is not bool or payload["fs2"] is not True:
+        raise ValueError(
+            "omniASR-CTC-1B checkpoint top-level `fs2` marker must be the "
+            "boolean True"
         )
     state = payload["model"]
-    if not state:
-        raise ValueError("checkpoint model state dict is empty")
     return state
 
 
@@ -170,12 +183,30 @@ def self_test() -> None:
         def clone(self) -> "SharedFakeTensor":
             return SharedFakeTensor(self.pointer + 1)
 
-    try:
-        unwrap_canonical_model({"state_dict": {}})
-    except ValueError as error:
-        assert "exactly one top-level" in str(error)
-    else:
-        raise AssertionError("non-canonical wrapper must fail")
+    valid_state = {"weight": FakeTensor()}
+    assert unwrap_canonical_model({"model": valid_state, "fs2": True}) is valid_state
+
+    def assert_rejected(payload: Any, expected: str) -> None:
+        try:
+            unwrap_canonical_model(payload)
+        except ValueError as error:
+            assert expected in str(error), (expected, str(error))
+        else:
+            raise AssertionError(f"payload must fail closed: {payload!r}")
+
+    assert_rejected([], "top level must be a dict")
+    assert_rejected({"state_dict": valid_state, "fs2": True}, "exactly the top-level")
+    assert_rejected(
+        {"model": valid_state, "fs2": True, "optimizer": {}},
+        "exactly the top-level",
+    )
+    assert_rejected({"fs2": True}, "exactly the top-level")
+    assert_rejected({"model": valid_state}, "exactly the top-level")
+    assert_rejected({"model": [], "fs2": True}, "must be a state-dict dict")
+    assert_rejected({"model": {}, "fs2": True}, "state dict is empty")
+    assert_rejected({"model": valid_state, "fs2": False}, "boolean True")
+    for invalid_marker in (1, 0, "true", None):
+        assert_rejected({"model": valid_state, "fs2": invalid_marker}, "boolean True")
     try:
         classify_state({"weight": FakeTensor()})
     except ValueError as error:
