@@ -41,7 +41,9 @@ MODEL_FILES = {
     "model.safetensors": (2_035_332_888, "085a1c56d99659990d32b5aa6ad5248530138522", "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514"),
     "preprocessor_config.json": (360, "a9e96de2e59454e3896969a8c6d04a52a63c7e17", None),
 }
-PARAMETERS = 1_017_626_722
+PARAMETERS = 1_017_626_724
+AUTHENTICATED_HEADER_BYTES = 79_432
+AUTHENTICATED_PAYLOAD_BYTES = 2_035_253_448
 QWEN2_ROLE_FILES = (
     "src/transformers/models/qwen2/configuration_qwen2.py",
     "src/transformers/models/qwen2/modeling_qwen2.py",
@@ -517,6 +519,9 @@ def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     assert "safe_open" in source and "BF16" in source
     assert len(HF_REVISION) == len(SOURCE_REVISION) == len(TRANSFORMERS_REVISION) == len(TOKENIZER_REVISION) == 40
+    assert PARAMETERS == 1_017_626_724
+    assert PARAMETERS * 2 == AUTHENTICATED_PAYLOAD_BYTES
+    assert 8 + AUTHENTICATED_HEADER_BYTES + AUTHENTICATED_PAYLOAD_BYTES == MODEL_FILES["model.safetensors"][0]
     assert "VibeVoiceStreamingForConditionalGenerationInference" in source
     try:
         json.loads('{"x":1,"x":2}', object_pairs_hook=strict_pairs)
