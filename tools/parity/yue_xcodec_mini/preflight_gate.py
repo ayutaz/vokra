@@ -278,6 +278,13 @@ def self_test() -> int:
             return 1
         approved_manifest_text = altered.read_text(encoding="utf-8")
         approved_evidence_text = evidence.read_text(encoding="utf-8")
+        for label, target in (("manifest non-object", altered), ("evidence non-object", evidence)):
+            target.write_text("[]\n", encoding="utf-8")
+            accepted, reason = validate(project, altered, evidence, self_test=True)
+            target.write_text(approved_manifest_text if target is altered else approved_evidence_text, encoding="utf-8")
+            if accepted or "schema" not in reason:
+                print(f"non-object JSON self-test failed ({label}): {reason}", file=sys.stderr)
+                return 1
         duplicate_cases = (
             ("manifest duplicate", altered, approved_manifest_text.rstrip()[:-1] + ',\n  "gate_version": 1\n}'),
             ("manifest nested duplicate", altered, approved_manifest_text.replace('"fixed_identities": {', '"fixed_identities": {"source": {},')),

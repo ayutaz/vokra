@@ -198,7 +198,7 @@ validate_work_dir() {
 }
 
 require_vast_host() {
-  local mem_kib free_kib
+  local mem_kib free_kib disk_root
   [[ "$(printenv VOKRA_PUBLISH_ON_VAST 2>/dev/null || true)" == "1" ]] \
     || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
   [[ "$(uname -s)" == "Linux" ]] || die "this worker is VAST/Linux-only"
@@ -207,8 +207,13 @@ require_vast_host() {
   mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
   (( mem_kib >= MIN_VAST_MEM_KIB )) || die "MemTotal=$mem_kib KiB is below the exact 64-GiB guard"
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  disk_root="$VOKRA_SCRATCH"
+  while [[ ! -e "$disk_root" && ! -L "$disk_root" ]]; do
+    [[ "$disk_root" != / ]] || die "scratch path has no existing disk ancestor"
+    disk_root="$(dirname "$disk_root")"
+  done
+  disk_root="$(canonical_candidate "$disk_root")" || return 2
+  free_kib="$(df -Pk "$disk_root" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || die "could not read free disk"
   (( free_kib >= MIN_FREE_DISK_KIB )) || die "free disk=$free_kib KiB is below the exact 150-GB guard"
 }

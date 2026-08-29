@@ -318,7 +318,15 @@ run_self_test() (
 
 canonical_path() {
   local value="$1" parent base
+  [[ "$value" = /* ]] || value="$PWD/$value"
+  value="${value%/}"; [[ -n "$value" ]] || { die 'path is empty'; return 2; }
+  [[ ! -L "$value" ]] || { die "path must not be a symlink: $value"; return 2; }
   parent="$(dirname "$value")"; base="$(basename "$value")"
+  while [[ "$parent" != / ]]; do
+    [[ ! -L "$parent" ]] || { die "path contains a symlink ancestor: $parent"; return 2; }
+    parent="$(dirname "$parent")"
+  done
+  parent="$(dirname "$value")"
   [[ -d "$parent" ]] || { die "path parent is missing: $value"; return 2; }
   (cd -P "$parent" && printf '%s/%s' "$PWD" "$base")
 }
@@ -351,7 +359,7 @@ main() {
   [[ -n "$gguf" && -n "$gguf_sha" && -n "$reference" && -n "$reference_sha" && -n "$approval" && -n "$evidence_dir" ]] || { usage; die 'all explicit GGUF/reference hashes, approval evidence, and --evidence-dir are required'; }
 
   pre_sync_gate "$approval"
-  [[ ! -e "$evidence_dir" ]] || die 'evidence directory must be absent before validation'
+  [[ ! -e "$evidence_dir" && ! -L "$evidence_dir" ]] || die 'evidence directory must be absent and non-symlinked before validation'
   local root_real gguf_real reference_real approval_real evidence_real
   root_real="$(canonical_path "$VOKRA_ROOT")" || return 2
   gguf_real="$(canonical_path "$gguf")" || return 2

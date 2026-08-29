@@ -295,6 +295,12 @@ def self_test() -> None:
             if error.code != 2: raise
         else: raise SystemExit("self-test leaked a non-object manifest exception")
         manifest_path.write_text(baseline_manifest, encoding="utf-8")
+        evidence.write_text("[]", encoding="utf-8")
+        try: run(lock, project, manifest_path, evidence)
+        except SystemExit as error:
+            if error.code != 2: raise
+        else: raise SystemExit("self-test leaked a non-object approval evidence exception")
+        evidence.write_text(baseline_evidence, encoding="utf-8")
         tampered_evidence = load_json(baseline_evidence); assert isinstance(tampered_evidence, dict); tampered_evidence["signer"] = "OWNER_REVIEW_REQUIRED"; evidence.write_text(json.dumps(tampered_evidence), encoding="utf-8")
         try: run(lock, project, manifest_path, evidence)
         except SystemExit as error:

@@ -133,6 +133,12 @@ write_apple_args() {
 canonical_candidate() {
   local value="$1" suffix='' parent
   [[ "$value" = /* ]] || value="$PWD/$value"
+  value="${value%/}"; [[ -n "$value" ]] || { die 'path is empty'; return 2; }
+  parent="$value"
+  while [[ "$parent" != / ]]; do
+    [[ ! -L "$parent" ]] || { die "path contains a symlink ancestor: $parent"; return 2; }
+    parent="$(dirname "$parent")"
+  done
   while [[ ! -e "$value" && ! -L "$value" ]]; do
     parent="$(dirname "$value")"
     suffix="/$(basename "$value")$suffix"
@@ -147,7 +153,8 @@ canonical_file() {
   local value="$1" parent base
   [[ -f "$value" && ! -L "$value" ]] || { die "approval evidence must be a regular file: $value"; return 2; }
   parent="$(dirname "$value")"; base="$(basename "$value")"
-  (cd -P "$parent" && printf '%s/%s\n' "$PWD" "$base")
+  parent="$(canonical_candidate "$parent")" || return 2
+  printf '%s/%s\n' "$parent" "$base"
 }
 
 paths_overlap() {
@@ -179,7 +186,7 @@ validate_work_dir() {
 }
 
 require_vast_host() {
-  local mem_kib free_kib
+  local mem_kib free_kib disk_root
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == '1' ]] \
     || die 'VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first'
   [[ "$(uname -s)" == 'Linux' ]] \
@@ -189,8 +196,13 @@ require_vast_host() {
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'could not read MemTotal'
   (( mem_kib >= MIN_VAST_MEM_KIB )) \
     || die "MemTotal=${mem_kib} KiB is below the 60-GB VAST guard"
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  disk_root="$VOKRA_SCRATCH"
+  while [[ ! -e "$disk_root" && ! -L "$disk_root" ]]; do
+    [[ "$disk_root" != / ]] || die 'scratch path has no existing disk ancestor'
+    disk_root="$(dirname "$disk_root")"
+  done
+  disk_root="$(canonical_candidate "$disk_root")" || return 2
+  free_kib="$(df -Pk "$disk_root" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'could not read free disk'
   (( free_kib >= MIN_FREE_DISK_KIB )) \
     || die "free disk=${free_kib} KiB is below the 120-GB VAST guard"
@@ -297,6 +309,10 @@ run_self_test() {
   if require_one_cargo_result "$temporary/malformed.log" measure_real_cpu_against_official_xcodec_and_vocos; then log 'self-test FAIL: malformed Cargo timing accepted'; fail=1; fi
   rm -rf "$temporary"
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-yue-xcodec-workdir.XXXXXX")"
+  # macOS commonly exposes TMPDIR through /var -> /private/var.  Exercise the
+  # positive path contract with its physical spelling so the symlink-ancestor
+  # rejection remains meaningful rather than rejecting every self-test path.
+  temporary="$(cd -P "$temporary" && pwd)"
   approval="$temporary/approval.json"
   printf '{}\n' > "$approval"
   if validate_work_dir "$temporary/work" "$approval" >/dev/null 2>&1; then :; else
@@ -314,6 +330,7 @@ run_self_test() {
   fi
   rm -rf "$temporary"
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-yue-xcodec-gate-proof.XXXXXX")"
+  temporary="$(cd -P "$temporary" && pwd)"
   set +e
   approval="$temporary/approval.json"
   printf '{}\n' > "$approval"
