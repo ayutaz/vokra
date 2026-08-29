@@ -60,12 +60,15 @@ usage: provision.sh [--repo-url <url>] [--branch <name>] [--skip-build]
 Provisions a fresh vast.ai instance for Vokra HF publish:
   1. Rust toolchain (rustup + stable)
   2. uv + Python 3.12
-  3. hf-transfer for 40x HF upload speedup
-  4. Repo clone at $VOKRA_ROOT
-  5. Cargo release build of vokra-cli
-  6. $VOKRA_SCRATCH scratch dirs (hf-cache, staging)
-  7. Adds `export VOKRA_PUBLISH_ON_VAST=1` to ~/.bashrc so publish-one.sh
+  3. Repo clone at $VOKRA_ROOT
+  4. Cargo release build of vokra-cli
+  5. $VOKRA_SCRATCH scratch dirs (hf-cache, staging)
+  6. Adds `export VOKRA_PUBLISH_ON_VAST=1` to ~/.bashrc so publish-one.sh
      gate 7 auto-bypasses on this instance.
+
+The run-one download path resolves its pinned Hugging Face dependencies in
+its own uv invocation. Provisioning does not edit any repository dependency
+file or create a shared parity environment.
 
 HF_TOKEN must be set in env before publish (not needed for provision itself).
 EOF
@@ -78,9 +81,6 @@ have_hf_shim()     {
     || -e /usr/lib/python3/dist-packages/pip/_vendor/hf_config.pth ]]
 }
 have_uv()          { command -v uv       >/dev/null 2>&1; }
-have_hf_transfer() {
-  uv run --with hf-transfer python -c 'import hf_transfer' 2>/dev/null
-}
 have_repo()        { [[ -d "$VOKRA_ROOT/.git" ]]; }
 have_vokra_cli()   { [[ -x "$VOKRA_ROOT/target/release/vokra-cli" ]]; }
 
@@ -235,23 +235,6 @@ install_uv() {
   uv python install 3.12 || log "uv python install 3.12 exited non-zero (may already be installed)"
 }
 
-install_hf_transfer() {
-  step "hf-transfer (40x HF upload speedup)"
-  if have_hf_transfer; then
-    log "hf-transfer already resolvable via uv — skipping"
-    return 0
-  fi
-  # hf-transfer is a Rust-backed helper huggingface_hub picks up when the
-  # HF_HUB_ENABLE_HF_TRANSFER=1 env var is set. Installing into a uv-managed
-  # venv keeps it isolated from the system Python (feedback-python-uses-uv).
-  # We put the shim in $VOKRA_ROOT/tools/parity where uv sync will resolve it.
-  if [[ -d "$VOKRA_ROOT/tools/parity" && -f "$VOKRA_ROOT/tools/parity/pyproject.toml" ]]; then
-    ( cd "$VOKRA_ROOT/tools/parity" && uv add hf-transfer huggingface_hub )
-  else
-    log "note: $VOKRA_ROOT/tools/parity not present yet — hf-transfer will be resolved on first run-one.sh via --with"
-  fi
-}
-
 clone_repo() {
   step "Repo clone ($VOKRA_REPO_URL @ $VOKRA_BRANCH)"
   if have_repo; then
@@ -324,8 +307,6 @@ run_self_test() {
   cases=$((cases + 1))
   if have_uv;          then echo "  [ok]   uv:           $(uv --version 2>/dev/null || echo 'unknown')"; else echo "  [need] uv:           not installed"; fi
   cases=$((cases + 1))
-  if have_hf_transfer; then echo "  [ok]   hf-transfer:  resolvable"; else echo "  [need] hf-transfer:  not resolvable via uv"; fi
-  cases=$((cases + 1))
   if have_repo;        then echo "  [ok]   repo:         $VOKRA_ROOT is a git checkout"; else echo "  [need] repo:         $VOKRA_ROOT not a git checkout"; fi
   cases=$((cases + 1))
   if have_vokra_cli;   then echo "  [ok]   vokra-cli:    $VOKRA_ROOT/target/release/vokra-cli"; else echo "  [need] vokra-cli:    not built"; fi
@@ -382,7 +363,6 @@ main() {
   install_uv
   harden_vast_docker_image   # Wave 12 pre-handle — before any HF package operation
   clone_repo
-  install_hf_transfer   # after clone: tools/parity is present
   setup_scratch
   if [[ $skip_build -eq 0 ]]; then
     build_vokra_cli
