@@ -82,6 +82,7 @@ run_self_test() {
     "SNAPSHOT_LOCAL_DIR_NAME" "local_dir=destination" "destination.is_symlink()" \
     "materialized snapshot" \
     'manifest="$prepared.manifest.json"' \
+    "dumper owns creation of the reference output directory" \
     "git status --porcelain --untracked-files=all" "MemTotal" "df -Pk" \
     "807" "$PARITY_TEST" "OMNIASR_REAL_PARITY_PASS" "parity_status=CPU_PASS" \
     "token_exact=true" "reference_manifest_sha256" "max_abs" \
@@ -94,6 +95,12 @@ run_self_test() {
   doubled_manifest+='manifest.json"'
   if grep -Fq -- "$doubled_manifest" "$0"; then
     echo "self-test found doubled safetensors manifest suffix" >&2
+    fail=1
+  fi
+  local reference_mkdir='mkdir "$ref_'
+  reference_mkdir+='dir"'
+  if grep -Fq -- "$reference_mkdir" "$0"; then
+    echo "self-test found reference output pre-creation" >&2
     fail=1
   fi
   if grep -En '(^|[;&|][[:space:]]*)(git[[:space:]]+push|.*publish-one\.sh|.*upload\.sh)([[:space:]]|$)' "$0" >/dev/null; then
@@ -219,8 +226,9 @@ gguf="$work_dir/omniasr-ctc-1b.gguf"
 run_logged target/release/vokra-cli convert --model omniasr-ctc --input "$prepared" --output "$gguf"
 grep -Eq '^converted omniasr-ctc: 807 tensors,' "$log" || die "converter did not report exact 807 tensors"
 
+# The dumper owns creation of the reference output directory (exist_ok=False);
+# this path must remain absent until its invocation.
 ref_dir="$evidence/reference"
-mkdir "$ref_dir"
 run_logged env PYTHONPATH="$sources/omnilingual-asr/src:$sources/fairseq2/src${PYTHONPATH:+:$PYTHONPATH}" \
   uv run --frozen --project tools/parity/omniasr_ctc --python 3.12 \
   python "$DUMPER" --checkpoint "$assets/$CHECKPOINT_FILENAME" --tokenizer "$assets/$TOKENIZER_FILENAME" \
