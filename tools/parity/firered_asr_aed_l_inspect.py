@@ -35,6 +35,11 @@ SOURCE_ROLES = (
 )
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+README_MARKERS = (
+    "license: apache-2.0",
+    "it utilizes an attention-based encoder-decoder (aed) architecture.",
+    "beam_size", "nbest", "decode_max_len", "smoothing", "aed_length_penalty", "eos_penalty",
+)
 
 
 def digest(path: Path, algorithm: str = "sha256") -> str:
@@ -286,6 +291,13 @@ def parse_cmvn(raw: str, size: int, sha: str) -> dict[str, Any]:
         raise ValueError("cmvn.txt numeric structure mismatch")
     return {"bytes": size, "sha256": sha, "rows": 2, "columns": 81, "count": rows[0][-1], "terminal_second": rows[1][-1]}
 
+
+def require_readme_markers(card: str) -> tuple[str, ...]:
+    missing = [marker for marker in README_MARKERS if marker not in card.lower()]
+    if missing:
+        raise ValueError(f"model card markers missing: {missing}")
+    return README_MARKERS
+
 def base_manifest() -> dict[str, Any]:
     return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint container/config/tensor manifest requires authenticated review", "frontend/CMVN and Conformer/AED decoder contract requires review", "official beam search/tokenizer rendering requires review", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
 
@@ -300,10 +312,7 @@ def inspect(args: argparse.Namespace) -> int:
             raise ValueError("HF exact file set/total mismatch")
         readme = files["README.md"]
         card = readme.read_text(encoding="utf-8").lower()
-        markers = ["license: apache-2.0", "attention encoder decoder", "beam_size", "nbest", "decode_max_len", "smoothing", "aed_length_penalty", "eos_penalty"]
-        missing = [marker for marker in markers if marker not in card]
-        if missing:
-            raise ValueError(f"model card markers missing: {missing}")
+        markers = require_readme_markers(card)
         manifest["model_card"] = {"path": "README.md", "bytes": readme.stat().st_size, "sha256": digest(readme), "markers": markers}
         manifest["artifacts"] = {}
         for name, (size, blob, lfs) in ARTIFACTS.items():
@@ -332,12 +341,28 @@ def inspect(args: argparse.Namespace) -> int:
     return 2
 
 def self_test() -> None:
+    positive_card = "\n".join(README_MARKERS)
     for bad in ("../x", "/x", "a\\b", "a\x00b", ""):
         try: safe_path(bad)
         except ValueError: pass
         else: raise AssertionError(f"unsafe path accepted: {bad!r}")
     with tempfile.TemporaryDirectory(prefix="firered-inspect-") as directory:
         root = Path(directory) / "snapshot"; root.mkdir()
+        readme_fixture = Path(directory) / "README.md"
+        readme_fixture.write_text(positive_card, encoding="utf-8")
+        assert require_readme_markers(readme_fixture.read_text(encoding="utf-8")) == README_MARKERS
+        for invalid_phrase in (
+            "attention encoder decoder",
+            "it utilizes an attention-based encoder decoder (aed) architecture.",
+            "it utilizes an attention-based encoder-decoder (llm) architecture.",
+        ):
+            readme_fixture.write_text(positive_card.replace(README_MARKERS[1], invalid_phrase), encoding="utf-8")
+            try:
+                require_readme_markers(readme_fixture.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("README fixture accepted an invalid AED marker")
         payload = root / "x"; payload.write_text("x", encoding="utf-8")
         (root / ".cache").mkdir(); (root / ".cache" / "ignored.json").write_text("{}", encoding="utf-8")
         assert set(local_files(root)) == {"x"}
