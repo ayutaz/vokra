@@ -34,6 +34,12 @@ COUNTER_COUNT = 32
 COUNTER = re.compile(
     r"^encoder\.layers\.(\d+)\.conv\.batch_norm\.num_batches_tracked$"
 )
+EXPECTED_SHARED_PAIRS = (
+    (
+        "transf_decoder._embedding.token_embedding.weight",
+        "log_softmax.mlp.layer0.weight",
+    ),
+)
 
 
 def digest_bytes(payload: bytes) -> str:
@@ -72,8 +78,15 @@ def validate_stripped_manifest(manifest: dict[str, object]) -> list[int]:
         )
     if manifest.get("unknown_stripped"):
         raise ValueError("unknown tensor dtypes were stripped")
-    if manifest.get("shared_pairs"):
-        raise ValueError("released Canary checkpoint unexpectedly contains shared storages")
+    expected_shared_pairs = [
+        {"canonical": canonical, "cloned": cloned}
+        for canonical, cloned in EXPECTED_SHARED_PAIRS
+    ]
+    if manifest.get("shared_pairs") != expected_shared_pairs:
+        raise ValueError(
+            "Canary-1B-v2 shared_pairs must contain exactly the pinned pair "
+            f"{expected_shared_pairs}, got {manifest.get('shared_pairs')}"
+        )
     if manifest.get("nemo_checkpoint_member") != MAIN_CHECKPOINT_MEMBER:
         raise ValueError(
             "preparation selected the wrong NeMo checkpoint member: "
@@ -160,7 +173,10 @@ def self_test() -> None:
         "kept_count": FLOAT_TENSOR_COUNT,
         "dropped_count": COUNTER_COUNT,
         "unknown_stripped": [],
-        "shared_pairs": [],
+        "shared_pairs": [
+            {"canonical": canonical, "cloned": cloned}
+            for canonical, cloned in EXPECTED_SHARED_PAIRS
+        ],
         "nemo_checkpoint_member": MAIN_CHECKPOINT_MEMBER,
         "dropped_tensors": [
             {
@@ -172,6 +188,45 @@ def self_test() -> None:
         ],
     }
     assert validate_stripped_manifest(manifest) == list(range(COUNTER_COUNT))
+
+    for invalid_pairs, label in (
+        ([], "missing shared pair"),
+        (
+            [
+                {
+                    "canonical": EXPECTED_SHARED_PAIRS[0][1],
+                    "cloned": EXPECTED_SHARED_PAIRS[0][0],
+                }
+            ],
+            "reversed shared pair",
+        ),
+        (
+            [
+                {
+                    "canonical": "transf_decoder.embedding.token_embedding.weight",
+                    "cloned": EXPECTED_SHARED_PAIRS[0][1],
+                }
+            ],
+            "aliased shared pair",
+        ),
+        (
+            [
+                {"canonical": canonical, "cloned": cloned}
+                for canonical, cloned in EXPECTED_SHARED_PAIRS
+            ]
+            + [{"canonical": "unexpected", "cloned": "unexpected"}],
+            "additional shared pair",
+        ),
+    ):
+        invalid_manifest = dict(manifest)
+        invalid_manifest["shared_pairs"] = invalid_pairs
+        try:
+            validate_stripped_manifest(invalid_manifest)
+        except ValueError as error:
+            assert "shared_pairs" in str(error), label
+        else:
+            raise AssertionError(f"{label} must fail")
+
     wrong = dict(manifest)
     wrong["nemo_checkpoint_member"] = "./timestamps_asr_model_weights.ckpt"
     try:
