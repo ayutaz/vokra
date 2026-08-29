@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import stat
 import tempfile
@@ -56,6 +57,16 @@ TRANSFORMERS_ROLE_BLOBS: dict[str, str | None] = {
     "src/transformers/models/qwen2/configuration_qwen2.py": "2e82f1976f3922f3620415f4eace6c6e046243f8",
     "src/transformers/models/qwen2/modeling_qwen2.py": "16a7316e2d0e56eafe301a7f2d8693d6cc6c73ec",
     "src/transformers/processing_utils.py": "b1c40e7ff2d7c08e8b8e741a59f933f58c13fb30",
+}
+TRANSFORMERS_SYMLINKS: dict[str, dict[str, str]] = {
+    "docs/source/en/contributing.md": {
+        "git_blob_sha1": "c97564d93a7f0a753a23cd97d2467d595bd154ff",
+        "target": "../../../CONTRIBUTING.md",
+    },
+    "docs/source/en/notebooks.md": {
+        "git_blob_sha1": "10fb7a7b979ad8a87ca2401f5b363ab1bdadfdd6",
+        "target": "../../../notebooks/README.md",
+    },
 }
 EXPECTED_INDEX_METADATA = {"total_parameters": 8_674_021_857, "total_size": 17_348_198_410}
 HF_CACHE = Path(".cache/huggingface")
@@ -106,6 +117,62 @@ def git(source: Path, *args: str) -> str:
     ).strip()
 
 
+def inspect_symlink_target(
+    root: Path,
+    relative: str,
+    target_bytes: bytes,
+    index_object: str,
+    head_object: str,
+    expected: dict[str, str] | None,
+) -> dict[str, Any]:
+    """Authenticate a mode-120000 link without dereferencing its target bytes."""
+
+    blockers: list[str] = []
+    record: dict[str, Any] = {
+        "path": relative,
+        "mode": "120000",
+        "target_bytes_hex": target_bytes.hex(),
+        "target": None,
+        "index_object_sha1": index_object,
+        "head_object_sha1": head_object,
+        "git_blob_sha1": git_blob_sha1_bytes(target_bytes),
+        "expected_git_blob_sha1": expected.get("git_blob_sha1") if expected else None,
+        "expected_target": expected.get("target") if expected else None,
+    }
+    if not relative or Path(relative).is_absolute() or ".." in Path(relative).parts:
+        blockers.append("symlink path is absolute or escapes checkout")
+    if not target_bytes or b"\0" in target_bytes or b"\\" in target_bytes:
+        blockers.append("symlink target contains empty, NUL, or backslash bytes")
+    try:
+        target = target_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        target = None
+        blockers.append("symlink target is not UTF-8")
+    record["target"] = target
+    if target is not None and target and b"\0" not in target_bytes and b"\\" not in target_bytes:
+        target_path = Path(target)
+        if target_path.is_absolute():
+            blockers.append("symlink target is absolute or escapes checkout")
+        else:
+            resolved_target = ((root / relative).parent / target).resolve(strict=False)
+            if not resolved_target.is_relative_to(root.resolve()):
+                blockers.append("symlink target escapes checkout")
+            elif not resolved_target.is_file():
+                blockers.append("symlink target file is missing")
+    if expected is None:
+        blockers.append("symlink is not in the authenticated fixed allowlist")
+    else:
+        if record["git_blob_sha1"] != expected["git_blob_sha1"]:
+            blockers.append("symlink Git blob mismatch")
+        if target != expected["target"]:
+            blockers.append("symlink target mismatch")
+    if index_object != head_object or record["git_blob_sha1"] != index_object:
+        blockers.append("symlink index/HEAD/blob mismatch")
+    record["blockers"] = blockers
+    record["status"] = "AUTHENTICATED" if not blockers else "BLOCKED"
+    return record
+
+
 def source_inventory(
     source: Path,
     transformers_source: Path,
@@ -116,7 +183,7 @@ def source_inventory(
     transformers_roles: dict[str, str | None] = TRANSFORMERS_ROLE_BLOBS,
     transformers_tag: str = TRANSFORMERS_TAG,
 ) -> dict[str, Any]:
-    def checkout(root: Path, repository: str, revision: str, roles: dict[str, str | None], tag: str | None, license_name: str, constraint: str | None) -> dict[str, Any]:
+    def checkout(root: Path, repository: str, revision: str, roles: dict[str, str | None], symlinks: dict[str, dict[str, str]], tag: str | None, license_name: str, constraint: str | None) -> dict[str, Any]:
         blockers: list[str] = []
         if git(root, "status", "--porcelain", "--untracked-files=all"):
             blockers.append("checkout is dirty")
@@ -137,6 +204,7 @@ def source_inventory(
             blockers.append("pyproject constraint mismatch")
         raw = subprocess.check_output(["git", "-C", str(root), "ls-files", "-s", "-z"])
         entries: dict[str, dict[str, Any]] = {}
+        symlink_entries: list[dict[str, Any]] = []
         for item in raw.split(b"\0"):
             if not item:
                 continue
@@ -147,7 +215,23 @@ def source_inventory(
                 continue
             mode, index_object, stage = fields[0].decode(), fields[1].decode(), fields[2].decode()
             path = root / name
-            if stage != "0" or mode not in {"100644", "100755"} or path.is_symlink() or not path.is_file():
+            if stage != "0":
+                blockers.append(f"tracked index entry has nonzero stage: {name}")
+                continue
+            if mode == "160000":
+                blockers.append(f"tracked gitlink is not an authenticated regular file: {name}")
+                continue
+            if mode == "120000":
+                if not path.is_symlink():
+                    blockers.append(f"tracked symlink is missing or not a symlink: {name}")
+                    continue
+                target_bytes = os.readlink(os.fsencode(path))
+                head_object = git(root, "rev-parse", f"HEAD:{name}")
+                record = inspect_symlink_target(root, name, target_bytes, index_object=fields[1].decode(), head_object=head_object, expected=symlinks.get(name))
+                symlink_entries.append(record)
+                blockers.extend(f"symlink {name}: {item}" for item in record["blockers"])
+                continue
+            if mode not in {"100644", "100755"} or path.is_symlink() or not path.is_file():
                 blockers.append(f"tracked entry is not regular stage-0: {name}")
                 continue
             expected_mode = 0o755 if mode == "100755" else 0o644
@@ -172,10 +256,20 @@ def source_inventory(
             elif role["mode"] != "100644" or not (role["index_object_sha1"] == role["head_object_sha1"] == role["working_blob_sha1"] == expected):
                 blockers.append(f"fixed role object/mode mismatch: {name}")
         if license_name == "MIT":
-            for demo_name in ("demo/vibevoice_asr_inference_from_file.py", "demo/vibevoice_asr_gradio_demo.py"):
+            demo_markers = {
+                "demo/vibevoice_asr_inference_from_file.py": (
+                    "VibeVoiceASRProcessor",
+                    'language_model_pretrained_name="Qwen/Qwen2.5-7B"',
+                ),
+                "demo/vibevoice_asr_gradio_demo.py": (
+                    "VibeVoiceASRProcessor.from_pretrained(model_path)",
+                    "VibeVoiceASRForConditionalGeneration.from_pretrained(",
+                ),
+            }
+            for demo_name, required_markers in demo_markers.items():
                 demo_path = root / demo_name
                 demo_text = demo_path.read_text(encoding="utf-8", errors="replace") if demo_path.is_file() and not demo_path.is_symlink() else ""
-                if "VibeVoiceASRProcessor" not in demo_text or "Qwen/Qwen2.5-7B" not in demo_text:
+                if any(marker not in demo_text for marker in required_markers):
                     blockers.append(f"official ASR demo boundary marker missing: {demo_name}")
         connector_path = "vibevoice/modular/modeling_vibevoice_asr.py"
         connector_markers = {
@@ -201,8 +295,8 @@ def source_inventory(
         license_ok = all(marker in license_text for marker in markers) and "LICENSE" in entries
         if not license_ok:
             blockers.append(f"{license_name} LICENSE clauses/blob unavailable")
-        return {"repository": repository, "revision": revision, "resolved_revision": actual, "origin": origin, "tag": tag, "clean": not any("dirty" in item for item in blockers), "tracked_files": sorted(entries.values(), key=lambda row: row["path"]), "role_files": sorted(role_files, key=lambda row: row["path"]), "connector_topology": connector_evidence, "license": {"path": "LICENSE", "license": license_name, "authenticated": license_ok, "bytes": license_path.stat().st_size if license_path.is_file() else None, "sha256": sha256(license_path) if license_path.is_file() else None, "markers": {marker: marker in license_text for marker in markers}}, "constraint": constraint, "blockers": blockers, "status": "AUTHENTICATED" if not blockers else "BLOCKED"}
-    return {"source": checkout(source, SOURCE_REPOSITORY, source_revision, source_roles, None, "MIT", "transformers>=4.51.3,<5.0.0"), "transformers": checkout(transformers_source, TRANSFORMERS_REPOSITORY, transformers_revision, transformers_roles, transformers_tag, "Apache-2.0", None)}
+        return {"repository": repository, "revision": revision, "resolved_revision": actual, "origin": origin, "tag": tag, "clean": not any("dirty" in item for item in blockers), "tracked_files": sorted(entries.values(), key=lambda row: row["path"]), "role_files": sorted(role_files, key=lambda row: row["path"]), "symlinks": sorted(symlink_entries, key=lambda row: row["path"]), "connector_topology": connector_evidence, "license": {"path": "LICENSE", "license": license_name, "authenticated": license_ok, "bytes": license_path.stat().st_size if license_path.is_file() else None, "sha256": sha256(license_path) if license_path.is_file() else None, "markers": {marker: marker in license_text for marker in markers}}, "constraint": constraint, "blockers": blockers, "status": "AUTHENTICATED" if not blockers else "BLOCKED"}
+    return {"source": checkout(source, SOURCE_REPOSITORY, source_revision, source_roles, {}, None, "MIT", "transformers>=4.51.3,<5.0.0"), "transformers": checkout(transformers_source, TRANSFORMERS_REPOSITORY, transformers_revision, transformers_roles, TRANSFORMERS_SYMLINKS, transformers_tag, "Apache-2.0", None)}
 
 
 def companion_inventory(snapshot: Path) -> list[dict[str, Any]]:
@@ -738,24 +832,49 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("index fixture with missing tensor coverage was accepted")
-        def auth_repo(path: Path, roles: tuple[str, ...], license_text: str, *, tag: str | None = None, pyproject: bool = False) -> tuple[str, dict[str, str]]:
+        symlink_root = root / "symlink-target-fixture"
+        symlink_root.mkdir()
+        (symlink_root / "CONTRIBUTING.md").write_text("target\n", encoding="utf-8")
+        symlink_target = b"../CONTRIBUTING.md"
+        symlink_blob = git_blob_sha1_bytes(symlink_target)
+        valid_link = inspect_symlink_target(symlink_root, "docs/link.md", symlink_target, symlink_blob, symlink_blob, {"git_blob_sha1": symlink_blob, "target": "../CONTRIBUTING.md"})
+        assert valid_link["status"] == "AUTHENTICATED"
+        for invalid_target in (b"../../outside", b"/absolute", b"bad\0target", b"\xff"):
+            invalid = inspect_symlink_target(symlink_root, "docs/link.md", invalid_target, symlink_blob, symlink_blob, {"git_blob_sha1": git_blob_sha1_bytes(invalid_target), "target": invalid_target.decode("utf-8", errors="replace")})
+            assert invalid["status"] == "BLOCKED"
+        bad_blob = inspect_symlink_target(symlink_root, "docs/link.md", symlink_target, "0" * 40, symlink_blob, {"git_blob_sha1": symlink_blob, "target": "CONTRIBUTING.md"})
+        assert bad_blob["status"] == "BLOCKED"
+        unreviewed = inspect_symlink_target(symlink_root, "docs/link.md", symlink_target, symlink_blob, symlink_blob, None)
+        assert unreviewed["status"] == "BLOCKED"
+        def auth_repo(path: Path, roles: tuple[str, ...], license_text: str, *, tag: str | None = None, pyproject: bool = False, symlinks: dict[str, dict[str, str]] | None = None) -> tuple[str, dict[str, str]]:
             path.mkdir(); subprocess.run(["git", "init", "-q", str(path)], check=True)
             subprocess.run(["git", "-C", str(path), "config", "user.email", "vibevoice-asr-selftest@example.invalid"], check=True)
             subprocess.run(["git", "-C", str(path), "config", "user.name", "VibeVoice ASR self-test"], check=True)
+            members = list(roles)
+            symlinks = symlinks or {}
             for name in roles:
                 target = path / name; target.parent.mkdir(parents=True, exist_ok=True)
                 if name == "LICENSE":
                     content = license_text
                 elif pyproject and name == "pyproject.toml":
                     content = "transformers>=4.51.3,<5.0.0\n"
-                elif name in {"demo/vibevoice_asr_inference_from_file.py", "demo/vibevoice_asr_gradio_demo.py"}:
+                elif name == "demo/vibevoice_asr_inference_from_file.py":
                     content = "VibeVoiceASRProcessor.from_pretrained(model_path, language_model_pretrained_name=\"Qwen/Qwen2.5-7B\")\n"
+                elif name == "demo/vibevoice_asr_gradio_demo.py":
+                    content = "VibeVoiceASRProcessor.from_pretrained(model_path)\nVibeVoiceASRForConditionalGeneration.from_pretrained(\n"
                 elif pyproject and name == "vibevoice/modular/modeling_vibevoice_asr.py":
                     content = "self.acoustic_connector = SpeechConnector(config.acoustic_vae_dim, hidden_size)\nself.semantic_connector = SpeechConnector(config.semantic_vae_dim, hidden_size)\n"
                 else:
                     content = f"role fixture {name}\n"
                 target.write_text(content, encoding="utf-8")
-            subprocess.run(["git", "-C", str(path), "add", *roles], check=True); subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "fixture"], check=True)
+            for name, symlink in symlinks.items():
+                link = path / name; link.parent.mkdir(parents=True, exist_ok=True)
+                target = (link.parent.resolve() / symlink["target"]).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(f"target fixture {name}\n", encoding="utf-8")
+                link.symlink_to(symlink["target"])
+                members.extend((target.relative_to(path.resolve()).as_posix(), name))
+            subprocess.run(["git", "-C", str(path), "add", *members], check=True); subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "fixture"], check=True)
             if tag is not None: subprocess.run(["git", "-C", str(path), "tag", tag], check=True)
             repository = SOURCE_REPOSITORY if pyproject else TRANSFORMERS_REPOSITORY
             subprocess.run(["git", "-C", str(path), "remote", "add", "origin", repository], check=True)
@@ -765,9 +884,13 @@ def self_test() -> None:
         apache_text = 'Apache License, Version 2.0\nYou may obtain a copy of the License.\nDistributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.\n'
         source_fixture = root / "source-auth-fixture"; transformers_fixture = root / "transformers-auth-fixture"
         source_revision, source_roles = auth_repo(source_fixture, tuple(SOURCE_ROLE_BLOBS), mit_text, pyproject=True)
-        transformers_revision, transformers_roles = auth_repo(transformers_fixture, tuple(TRANSFORMERS_ROLE_BLOBS), apache_text, tag=TRANSFORMERS_TAG)
+        transformers_revision, transformers_roles = auth_repo(transformers_fixture, tuple(TRANSFORMERS_ROLE_BLOBS), apache_text, tag=TRANSFORMERS_TAG, symlinks=TRANSFORMERS_SYMLINKS)
         source_evidence = source_inventory(source_fixture, transformers_fixture, source_revision=source_revision, source_roles=source_roles, transformers_revision=transformers_revision, transformers_roles=transformers_roles)
         assert source_evidence["source"]["status"] == "AUTHENTICATED" and source_evidence["transformers"]["status"] == "AUTHENTICATED"
+        assert len(source_evidence["transformers"]["symlinks"]) == len(TRANSFORMERS_SYMLINKS)
+        assert all(item["status"] == "AUTHENTICATED" for item in source_evidence["transformers"]["symlinks"])
+        assert source_evidence["source"]["connector_topology"]["status"] == "AUTHENTICATED"
+        assert source_evidence["source"]["connector_topology"]["markers"] == {"acoustic": True, "semantic": True}
     with tempfile.TemporaryDirectory(prefix="vokra-vibevoice-asr-blocked-") as directory:
         output = Path(directory)
         write_blocked(output, TypeError("fixture type failure"))
