@@ -590,11 +590,7 @@ pub(crate) fn sample_source_topk_with_draws(
     let mut sorted = scaled.clone();
     sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let threshold = sorted[top_k - 1];
-    let candidates: Vec<bool> = scaled
-        .iter()
-        .iter()
-        .map(|&value| value >= threshold)
-        .collect();
+    let candidates: Vec<bool> = scaled.iter().map(|&value| value >= threshold).collect();
     let max = candidates
         .iter()
         .enumerate()
