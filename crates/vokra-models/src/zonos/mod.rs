@@ -1317,12 +1317,24 @@ impl ZonosTts {
             )));
         }
         if dac.sample_rate != self.cfg.sample_rate {
-            return Err(VokraError::InvalidArgument(
-                "zonos with_dac fixture: dac sample rate mismatch".to_owned(),
-            ));
+            return Err(VokraError::InvalidArgument(format!(
+                "zonos with_dac: dac sample_rate {} Hz != Zonos config sample_rate {} Hz \
+                 (Zonos-v0.1 is bound to descript/dac_44khz)",
+                dac.sample_rate, self.cfg.sample_rate,
+            )));
         }
         self.dac_fixture = Some(dac);
         Ok(self)
+    }
+
+    #[cfg(test)]
+    fn dac_is_bound(&self) -> bool {
+        self.dac.is_some() || self.dac_fixture.is_some()
+    }
+
+    #[cfg(not(test))]
+    fn dac_is_bound(&self) -> bool {
+        self.dac.is_some()
     }
 
     /// The resolved configuration.
@@ -1388,7 +1400,7 @@ impl ZonosTts {
                  (Apache 2.0, Zyphra/Zonos-v0.1-transformer) before invoking synthesize.",
             ));
         }
-        if self.dac.is_none() {
+        if !self.dac_is_bound() {
             return Err(VokraError::NotImplemented(
                 "zonos synthesize: no DAC codec has been bound — call \
                  `.with_dac(crate::dac::Dac::from_gguf(&dac_gguf)?)?` first. Zonos's \
@@ -3394,7 +3406,7 @@ mod tests {
                 .flatten()
                 .all(|&token| token < config.eos_token_id)
         );
-        assert_eq!(sanitized, vec![vec![1, 0], vec![3, 0], vec![0, 0]]);
+        assert_eq!(sanitized, vec![vec![1, 0], vec![0, 4], vec![0, 6]]);
         let mut logits = vec![vec![0.0; config.head_vocab]; config.num_codebooks];
         logits[0][config.eos_token_id as usize] = 10.0;
         logits[1][config.eos_token_id as usize] = 10.0;
@@ -3454,13 +3466,46 @@ mod tests {
         );
         let prompt =
             initialize_generation_delay(&config, &[vec![1, 2], vec![3, 4], vec![5, 6]], 2).unwrap();
-        assert_eq!(prompt[0], vec![9, 1, 2, UNKNOWN_GENERATION_TOKEN, 9]);
-        assert_eq!(prompt[1], vec![9, 9, 3, 4, UNKNOWN_GENERATION_TOKEN]);
-        assert_eq!(prompt[2], vec![9, 9, 9, 5, 6]);
+        assert_eq!(
+            prompt[0],
+            vec![
+                9,
+                1,
+                2,
+                UNKNOWN_GENERATION_TOKEN,
+                UNKNOWN_GENERATION_TOKEN,
+                9,
+                9
+            ]
+        );
+        assert_eq!(
+            prompt[1],
+            vec![
+                9,
+                9,
+                3,
+                4,
+                UNKNOWN_GENERATION_TOKEN,
+                UNKNOWN_GENERATION_TOKEN,
+                9
+            ]
+        );
+        assert_eq!(
+            prompt[2],
+            vec![
+                9,
+                9,
+                9,
+                5,
+                6,
+                UNKNOWN_GENERATION_TOKEN,
+                UNKNOWN_GENERATION_TOKEN
+            ]
+        );
         let mut scattered = prompt;
-        scatter_unknown_tokens(&mut scattered, 2, &[7, 8, 6]).unwrap();
-        assert_eq!(scattered[0][2], 2, "prompt value must not be overwritten");
-        assert_eq!(scattered[1][2], 3, "prompt value must not be overwritten");
-        assert_eq!(scattered[2][2], 6, "only unknown slots accept samples");
+        scatter_unknown_tokens(&mut scattered, 4, &[7, 8, 6]).unwrap();
+        assert_eq!(scattered[0][4], 7, "unknown slot must accept a sample");
+        assert_eq!(scattered[1][4], 8, "unknown slot must accept a sample");
+        assert_eq!(scattered[2][4], 6, "prompt value must not be overwritten");
     }
 }

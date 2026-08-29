@@ -1273,7 +1273,9 @@ mod tests {
         .unwrap();
         let (values, time) = transpose.forward(&[1.0, 2.0], 2).unwrap();
         assert_eq!(time, 4);
-        assert_eq!(values, vec![0.5, 0.5, 1.0, 1.0]);
+        // Kernel width four at stride two overlaps the two input frames in
+        // the middle; the normalized contributions therefore sum to 1.5.
+        assert_eq!(values, vec![0.5, 0.5, 1.5, 1.5]);
         assert!((10.0f32).tanh() < 1.0);
     }
 

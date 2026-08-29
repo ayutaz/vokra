@@ -1462,10 +1462,9 @@ mod tests {
         channel_major[1] = 2.0;
         let draws = VoxCpm2FlowDraws::new(vec![channel_major], 1).unwrap();
         assert_eq!(draws.len(), 1);
-        assert_eq!(
-            channel_major_to_row_major(draws.get(0).unwrap(), 64, 2).unwrap()[..4],
-            [1.0, 0.0, 2.0, 0.0]
-        );
+        let row_major = channel_major_to_row_major(draws.get(0).unwrap(), 64, 2).unwrap();
+        assert_eq!(row_major[..4], [1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(row_major[64], 2.0);
         assert!(VoxCpm2FlowDraws::new(vec![vec![0.0; FEATURE_PATCH_WIDTH]], 2).is_err());
     }
 
@@ -1569,7 +1568,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(seen_prefix, vec![0.0, 1.0, 2.0]);
-        assert_eq!(residual_input, vec![11.0, 22.0, 11.0, 22.0]);
+        // The stop callback stays false, so all three generated patches update
+        // the residual input before the next iteration.
+        assert_eq!(residual_input, vec![11.0, 22.0, 11.0, 22.0, 11.0, 22.0]);
         assert_eq!(patches, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
     }
 
