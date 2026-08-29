@@ -777,6 +777,12 @@ const ARCH_PARAKEET_TDT_1_1B: &str = "parakeet-tdt-1_1b";
 const ARCH_PARAKEET_CTC: &str = "parakeet-ctc";
 /// NVIDIA Nemotron-3.5-ASR-Streaming-0.6B causal FastConformer + RNN-T.
 const ARCH_NEMOTRON_ASR: &str = "nemotron_asr_streaming";
+/// StepFun omniASR-CTC-1B waveform-to-token transcription.
+const ARCH_OMNIASR_CTC: &str = "omniasr-ctc";
+/// Sber GigaAM Multilingual CTC transcription.
+const ARCH_GIGAAM_MULTILINGUAL: &str = "gigaam_multilingual";
+/// Sber GigaAM v3 RNNT token-ID transcription.
+const ARCH_GIGAAM_V3: &str = "sber_gigaam_v3";
 /// NVIDIA Canary-1B-Flash multilingual FastConformer + Transformer AED ASR/AST.
 const ARCH_CANARY_1B_FLASH: &str = "canary-1b-flash";
 /// NVIDIA Canary-1B-v2 multilingual FastConformer + Transformer AED ASR/AST.
@@ -1049,33 +1055,33 @@ pub(crate) fn load_session_with_backend_and_mimi(
             }
             Ok((session, ModelTask::AsrParakeetTdt11b))
         }
-        vokra_models::omniasr_ctc::EXPECTED_ARCH => {
+        ARCH_OMNIASR_CTC => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on arch `{}`",
-                    vokra_models::omniasr_ctc::EXPECTED_ARCH
+                    ARCH_OMNIASR_CTC
                 ));
             }
             // Bind in run/bench so there is one concrete load site for the
             // strict 807-F32 manifest and the selected CPU/Metal backend.
             Ok((session, ModelTask::AsrOmniasrCtcTokens))
         }
-        vokra_models::gigaam::multilingual::ARCH => {
+        ARCH_GIGAAM_MULTILINGUAL => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on arch `{}`",
-                    vokra_models::gigaam::multilingual::ARCH
+                    ARCH_GIGAAM_MULTILINGUAL
                 ));
             }
             // Bind in run/bench so there is one concrete load site for the
             // strict authenticated 552-tensor manifest and CPU-only route.
             Ok((session, ModelTask::AsrGigaamMultilingual))
         }
-        vokra_models::gigaam::v3::ARCH => {
+        ARCH_GIGAAM_V3 => {
             if hint.is_some() {
                 return Err(format!(
                     "task hint {hint:?} is not supported on arch `{}`",
-                    vokra_models::gigaam::v3::ARCH
+                    ARCH_GIGAAM_V3
                 ));
             }
             // Bind in run/bench so the strict prepared-SHA gate and the
@@ -3132,9 +3138,7 @@ mod tests {
         );
         assert_eq!(task, ModelTask::AsrOmniasrCtcTokens);
         assert!(
-            BOUND_ARCHES
-                .iter()
-                .all(|row| row.arch != vokra_models::omniasr_ctc::EXPECTED_ARCH),
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_OMNIASR_CTC),
             "a routed omniASR-CTC forward must not retain an unreachable bound-only row"
         );
     }
@@ -3150,7 +3154,7 @@ mod tests {
         assert!(
             BOUND_ARCHES
                 .iter()
-                .all(|row| row.arch != vokra_models::gigaam::multilingual::ARCH),
+                .all(|row| row.arch != ARCH_GIGAAM_MULTILINGUAL),
             "a routed GigaAM Multilingual forward must not retain an unreachable bound-only row"
         );
     }
@@ -3163,9 +3167,7 @@ mod tests {
             });
         assert_eq!(task, ModelTask::AsrGigaamV3Tokens);
         assert!(
-            BOUND_ARCHES
-                .iter()
-                .all(|row| row.arch != vokra_models::gigaam::v3::ARCH),
+            BOUND_ARCHES.iter().all(|row| row.arch != ARCH_GIGAAM_V3),
             "a routed GigaAM v3 forward must not retain a bound-only row"
         );
     }
@@ -4025,8 +4027,8 @@ mod tests {
             ARCH_PARAKEET_TDT_1_1B,
             ARCH_PARAKEET_CTC,
             ARCH_QWEN3_ASR,
-            vokra_models::omniasr_ctc::EXPECTED_ARCH,
-            vokra_models::gigaam::multilingual::ARCH,
+            ARCH_OMNIASR_CTC,
+            ARCH_GIGAAM_MULTILINGUAL,
             ARCH_NEMOTRON_ASR,
             ARCH_CANARY_1B_FLASH,
             ARCH_REAZONSPEECH_NEMO_V2,
@@ -4533,8 +4535,8 @@ mod tests {
             ARCH_TITANET,
             ARCH_VOXTRAL,
             ARCH_QWEN3_ASR,
-            vokra_models::omniasr_ctc::EXPECTED_ARCH,
-            vokra_models::gigaam::multilingual::ARCH,
+            ARCH_OMNIASR_CTC,
+            ARCH_GIGAAM_MULTILINGUAL,
             ARCH_ULTRAVOX,
             ARCH_MOSS_AUDIO,
             ARCH_KOKORO,

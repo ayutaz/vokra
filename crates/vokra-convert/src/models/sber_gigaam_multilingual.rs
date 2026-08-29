@@ -354,7 +354,6 @@ pub fn convert_sber_gigaam_multilingual_file(
         ("model_class", "ctc"),
         ("model_name", "multilingual_ctc"),
         ("topology", "CTC"),
-        ("revision", UPSTREAM_REVISION),
         ("source_revision", UPSTREAM_SOURCE_REVISION),
         ("config_sha256", CONFIG_SHA256),
         ("checkpoint_sha256", CHECKPOINT_SHA256),
@@ -362,6 +361,7 @@ pub fn convert_sber_gigaam_multilingual_file(
     ] {
         builder.add_string(&format!("{KEY_PREFIX}.{key}"), value);
     }
+    builder.add_string("vokra.gigaam_multilingual.revision", UPSTREAM_REVISION);
     vokra_core::stamp_provenance(
         &mut builder,
         LicenseClass::Permissive,
