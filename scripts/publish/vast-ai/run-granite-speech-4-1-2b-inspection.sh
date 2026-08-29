@@ -16,6 +16,7 @@ self_test() {
   for token in "$HF_REPOSITORY" "$HF_REVISION" "$SOURCE_URL" "$SOURCE_REVISION" \
     "$TRANSFORMERS_URL" "$TRANSFORMERS_REVISION" \
     'list_repo_tree' 'model_info' 'get_hf_file_metadata' 'hf_hub_url' 'authenticated HEAD metadata' 'commit_hash' 'etag' 'requested_revision' 'resolved_revision' 'recursive=True' 'expand=True' 'RepoFile' 'RepoFolder' 'isinstance(item, RepoFolder)' 'unknown HF tree entry type' 'recursive_file_only' 'lfs_payload_size' 'git_blob_sha1' 'lfs_pointer_git_blob_sha1' 'lfs_sha256' 'model.sig' 'predicate.resources' 'hash_type' 'allow_symlinks' 'verificationMaterial' 'SIGSTORE_CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED' \
+    'classify_entry' 'GRANITE_HF_TREE_SELF_TEST' 'RepoFile(type=None)' \
     'HEADER_ONLY' '64 * 1024 * 1024' 'AUTHENTICATED_EVIDENCE_COMPLETE' 'AUTHENTICATED' 'INSPECTION_ERROR' 'UNVERIFIED' 'NOT_IMPLEMENTED_FAIL_CLOSED' 'UNSUPPORTED' \
     'BLOCKED_BY_CPU' 'NOT_RUN' 'NO_UPLOAD' 'UNREVIEWED_BLOCKER' 'UNAUTHENTICATED_BLOCKER' \
     'CARGO_BUILD_JOBS=1' 'cargo metadata --locked --no-deps --format-version 1' 'exit 2' \
@@ -26,6 +27,16 @@ self_test() {
   if grep -Eq '^(HF|SOURCE|TRANSFORMERS)_REVISION=.*\$\{' "$path"; then echo 'revision override found' >&2; fail=1; fi
   if grep -En 'weights_only=False|pickle\.load|torch\.load' "$INSPECTOR" >/dev/null; then echo 'unsafe loader found' >&2; fail=1; fi
   UV_CACHE_DIR="${GRANITE_UV_CACHE_DIR:-/tmp/vokra-granite-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test || fail=1
+  local python_source
+  python_source="$(mktemp "${TMPDIR:-/tmp}/granite-hf-tree-self-test.XXXXXX.py")"
+  awk '/<<'"'"'PY'"'"'/{capture=1; next} capture && /^PY$/{exit} capture' \
+    "$path" > "$python_source"
+  if ! GRANITE_HF_TREE_SELF_TEST=1 UV_CACHE_DIR="${GRANITE_UV_CACHE_DIR:-/tmp/vokra-granite-uv-cache}" \
+    uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$python_source"; then
+    echo 'HF tree class-identity self-test failed' >&2
+    fail=1
+  fi
+  rm -f -- "$python_source"
   UV_CACHE_DIR="${GRANITE_UV_CACHE_DIR:-/tmp/vokra-granite-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY' || fail=1
 import json
 def unique(pairs):
@@ -68,15 +79,38 @@ uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$HF_REPOS
 import json,os,re,sys
 from pathlib import Path
 from huggingface_hub import HfApi, RepoFile, RepoFolder, get_hf_file_metadata, hf_hub_url
+
+def classify_entry(entry):
+    if isinstance(entry, RepoFolder):
+        return False
+    if isinstance(entry, RepoFile):
+        return True
+    raise RuntimeError(f"unknown HF tree entry type: {type(entry).__name__}")
+
+
+if os.environ.get("GRANITE_HF_TREE_SELF_TEST") == "1":
+    file_entry = object.__new__(RepoFile)
+    file_entry.type = None
+    folder_entry = object.__new__(RepoFolder)
+    folder_entry.type = None
+    assert classify_entry(file_entry)
+    assert not classify_entry(folder_entry)
+    try:
+        classify_entry(object())
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("unknown HF tree entry was accepted")
+    print("Granite HF tree class-identity self-test: PASS")
+    raise SystemExit(0)
+
 repo,rev,out=sys.argv[1:]
 api=HfApi(); info=api.model_info(repo,revision=rev); assert info.sha==rev and re.fullmatch(r"[0-9a-f]{40}",info.sha or "")
 rows=[]
 for entry in api.list_repo_tree(repo_id=repo,revision=rev,recursive=True,expand=True):
-    if isinstance(entry, RepoFolder):
+    if not classify_entry(entry):
         continue
-    if not isinstance(entry, RepoFile):
-        raise RuntimeError(f"unknown HF tree entry type: {type(entry).__name__}")
-    path=getattr(entry,"path",None); kind=getattr(entry,"type",None); size=getattr(entry,"size",None)
+    path=getattr(entry,"path",None); size=getattr(entry,"size",None)
     lfs=getattr(entry,"lfs",None)
     lfs_sha=getattr(lfs,"sha256",None) if lfs is not None else None
     if isinstance(lfs,dict): lfs_sha=lfs.get("sha256")
@@ -111,7 +145,7 @@ for entry in api.list_repo_tree(repo_id=repo,revision=rev,recursive=True,expand=
     is_lfs = bool(re.fullmatch(r"[0-9a-f]{64}", metadata_etag))
     if lfs_sha is not None and metadata_etag != lfs_sha:
         raise RuntimeError(f"HF LFS payload etag mismatch: {path}")
-    if kind != "file" or not path or "\\" in path or "\x00" in path or path.startswith("/") or ".." in Path(path).parts or not isinstance(size,int) or size < 0 or not isinstance(blob,str) or not re.fullmatch(r"[0-9a-f]{40}",blob) or (is_lfs and not re.fullmatch(r"[0-9a-f]{64}",lfs_sha)) or (not is_lfs and metadata_etag != blob):
+    if not path or "\\" in path or "\x00" in path or path.startswith("/") or ".." in Path(path).parts or not isinstance(size,int) or size < 0 or not isinstance(blob,str) or not re.fullmatch(r"[0-9a-f]{40}",blob) or (is_lfs and not re.fullmatch(r"[0-9a-f]{64}",lfs_sha)) or (not is_lfs and metadata_etag != blob):
         raise RuntimeError(f"incomplete canonical HF identity: {path}")
     rows.append({"path":path,"type":"file","size":size,"lfs_payload_size":size if is_lfs else None,"head_commit":metadata_revision,"head_size":metadata_size,"head_etag":metadata_etag,"git_blob_sha1":blob if not is_lfs else None,"lfs_pointer_git_blob_sha1":blob if is_lfs else None,"lfs_sha256":lfs_sha})
 if len({row["path"] for row in rows}) != len(rows): raise RuntimeError("duplicate canonical HF tree path")
