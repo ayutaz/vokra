@@ -134,10 +134,9 @@ impl CsmEngine {
         let frames = self.build_context_frames(request, cleaned.as_deref())?;
         let mut generation = CsmGenerationState::new(self.config())?;
         self.model().prime(&mut generation, &frames)?;
-        let default_cap = self.max_frames_for(request, generation.context_len())?;
         let max_frames = match config {
             Some(c) => self.validate_max_frames(c.max_frames, generation.context_len())?,
-            None => default_cap,
+            None => self.max_frames_for(request, generation.context_len())?,
         };
         if max_frames == 0 {
             return Err(VokraError::InvalidArgument(
@@ -279,9 +278,17 @@ impl<'e> CsmStream<'e> {
         self.engine.model().prime(&mut self.generation, &frames)?;
         // Fresh audio-chain state sized to the remaining cap (the paged
         // feature arena restarts at t = 0 for the new turn).
-        self.max_frames = self
-            .engine
-            .max_frames_for(request, self.generation.context_len())?;
+        // A re-prime without a new request cap keeps the cap selected when
+        // this stream was opened; an explicit request cap is revalidated
+        // against the new prompt context.
+        self.max_frames = match request.max_frames {
+            Some(requested) => self
+                .engine
+                .validate_max_frames(requested, self.generation.context_len())?,
+            None => self
+                .engine
+                .validate_max_frames(self.max_frames, self.generation.context_len())?,
+        };
         if self.max_frames == 0 {
             return Err(VokraError::InvalidArgument(
                 "csm stream: max_frames must be greater than zero".into(),
@@ -389,7 +396,13 @@ mod tests {
     #[test]
     fn reprime_on_a_live_stream_is_rejected() {
         let e = engine();
-        let mut stream = e.open_stream(&request(), None).unwrap();
+        // The synthesized fixture has a 64-frame context window, so the
+        // production 90-second default (1,125 frames) is intentionally not
+        // representable here. An explicit cap keeps this test focused on
+        // rejecting reprime while live.
+        let mut stream = e
+            .open_stream(&request(), Some(CsmStreamConfig { max_frames: 4 }))
+            .unwrap();
         assert!(stream.reprime_for_next_turn(&request()).is_err());
     }
 

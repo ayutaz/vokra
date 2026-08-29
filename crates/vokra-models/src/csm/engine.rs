@@ -774,8 +774,11 @@ mod tests {
     fn context_audio_segments_end_with_an_all_zero_frame() {
         let e = engine().with_echo_path(EchoPath::BypassRecordedInput);
         let hop = e.encoder.frame_hop().unwrap();
-        let request = request().with_input_audio(vec![0.1; hop * 2]);
-        let frames = e.build_context_frames(&request, None).unwrap();
+        let input_audio = vec![0.1; hop * 2];
+        let request = request().with_input_audio(input_audio.clone());
+        let frames = e
+            .build_context_frames(&request, Some(&input_audio))
+            .unwrap();
         // Two encoded audio frames, one source EOS frame, then reply text.
         assert!(frames.len() >= 4);
         let audio = frames

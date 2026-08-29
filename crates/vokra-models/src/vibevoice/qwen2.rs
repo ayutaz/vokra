@@ -1120,15 +1120,15 @@ mod tests {
             max_position_embeddings: 16,
         };
         let layer = Layer {
-            q: identity_linear(4, 4),
-            k: identity_linear(4, 2),
-            v: identity_linear(4, 2),
-            o: identity_linear(4, 4),
+            q: identity_linear(4, 4, true),
+            k: identity_linear(4, 2, true),
+            v: identity_linear(4, 2, true),
+            o: identity_linear(4, 4, false),
             input_norm: vec![1.0; 4],
             post_norm: vec![1.0; 4],
-            gate: identity_linear(4, 8),
-            up: identity_linear(4, 8),
-            down: identity_linear(8, 4),
+            gate: identity_linear(4, 8, false),
+            up: identity_linear(4, 8, false),
+            down: identity_linear(8, 4, false),
         };
         let embedding = (0..config.vocab_size * config.hidden_size)
             .map(|index| (index % config.hidden_size) as f32 * 0.1 + 0.1)
@@ -1145,14 +1145,14 @@ mod tests {
         .unwrap()
     }
 
-    fn identity_linear(input: usize, output: usize) -> Linear {
+    fn identity_linear(input: usize, output: usize, with_bias: bool) -> Linear {
         let mut weight = vec![0.0; input * output];
         for index in 0..input.min(output) {
             weight[index * output + index] = 1.0;
         }
         Linear {
             weight,
-            bias: Some(vec![0.0; output]),
+            bias: with_bias.then(|| vec![0.0; output]),
             in_features: input,
             out_features: output,
         }

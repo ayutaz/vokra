@@ -1800,9 +1800,9 @@ mod tests {
             2,
         );
         let bert_hidden = vec![0.2, -0.5, 1.3, -0.7, 0.8, 0.4];
-        let expected = bridge.forward(&bert_hidden, 4, 3);
+        let expected = bridge.forward(&bert_hidden, 4, 2);
         let actual = bridge
-            .forward_with_compute(&Compute::cpu(), &bert_hidden, 4, 3)
+            .forward_with_compute(&Compute::cpu(), &bert_hidden, 4, 2)
             .expect("CPU Compute BERT bridge");
         assert_eq!(actual.len(), expected.len());
         for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
