@@ -1,0 +1,63 @@
+[project]
+name = "vokra-cosyvoice2-reference"
+version = "0.1.0"
+description = "Blocked official CosyVoice2 reference inventory; VAST execution only"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "conformer==0.3.2",
+    "diffusers==0.29.0",
+    "einops==0.8.0",
+    "huggingface-hub==0.24.7",
+    "HyperPyYAML==1.2.2",
+    "inflect==7.3.1",
+    "librosa==0.10.2",
+    "modelscope==1.20.0",
+    "numpy==1.26.4",
+    "omegaconf==2.3.0",
+    "onnx==1.16.0",
+    "onnxruntime==1.18.0",
+    "openai-whisper==20231117",
+    "pyworld==0.3.4",
+    "PyYAML==6.0.2",
+    "regex==2024.11.6",
+    "scipy==1.14.1",
+    "soundfile==0.12.1",
+    "torch==2.3.1",
+    "torchaudio==2.3.1",
+    "transformers==4.40.1",
+    "tqdm==4.66.5",
+    "wetext==0.0.4",
+]
+
+[tool.uv]
+# This is an inventory of the fixed upstream requirements, not an executable
+# lock.  The official zero-shot path imports ``cosyvoice.cli.frontend`` and
+# evaluates ``matcha.utils.audio.mel_spectrogram`` from the authenticated YAML.
+# That upstream audio module imports ``librosa``; librosa's Python 3.12
+# closure brings in ``soxr``.  soxr/rubberband are forbidden by the Vokra
+# license policy, so no uv.lock is intentionally checked in until an exact
+# upstream route without that closure is authenticated.  Do not resolve or
+# sync this project as a substitute for the missing gate.
+package = false
+
+[tool.vokra.cosyvoice2_reference]
+source_repository = "https://github.com/FunAudioLLM/CosyVoice"
+source_revision = "8555549e882236e6541748b1042d95693caa82ba"
+matcha_repository = "https://github.com/shivammehta25/Matcha-TTS"
+matcha_revision = "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+route = "official lower-level classes are still blocked: frontend + YAML mel_spectrogram import librosa"
+lock_status = "BLOCKED_FORBIDDEN_SOXR_IN_AUTHENTICATED_OFFICIAL_CLOSURE"
+dedicated_sync = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"
+model_download = "FORBIDDEN_UNTIL_LICENSE_SIGNOFF_AND_LOCK"
+source_license = "Apache-2.0 (authenticated upstream source revision)"
+matcha_license = "MIT (authenticated upstream submodule revision)"
+weight_license = "REVIEWED_SEPARATELY_BY_INSPECTOR"
+dataset_license = "NOT_ACQUIRED; DATASET_PROVENANCE_REVIEW_REQUIRED"
+
+[tool.vokra.cosyvoice2_reference.license_audit]
+status = "BLOCKED_UNRESOLVED"
+blockers = [
+    "Exact official frontend/YAML execution imports librosa, whose resolved closure includes soxr; soxr/rubberband are forbidden.",
+    "No dedicated uv.lock is permitted until the authenticated official route is dependency-clean and every package row has primary-source license evidence.",
+]
+affirmative_gate = "OWNER_SIGNOFF_REQUIRED"
