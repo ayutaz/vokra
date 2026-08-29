@@ -255,7 +255,7 @@ def state_dict_from_checkpoint(value: Any) -> Mapping[str, torch.Tensor]:
     if isinstance(value, Mapping) and all(isinstance(key, str) and isinstance(tensor, torch.Tensor) for key, tensor in value.items()):
         return value
     if isinstance(value, Mapping):
-        for key in ("state_dict", "model", "module"):
+        for key in ("state_dict", "model", "module", "generator"):
             nested = value.get(key)
             if isinstance(nested, Mapping) and all(isinstance(name, str) and isinstance(tensor, torch.Tensor) for name, tensor in nested.items()):
                 if set(value) != {key}:
@@ -502,6 +502,18 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("checkpoint metadata beside state dict was accepted")
+    generator_state = {"layer.weight": torch.ones(1)}
+    assert state_dict_from_checkpoint({"generator": generator_state}) is generator_state
+    for invalid_generator in (
+        {"generator": generator_state, "epoch": 1},
+        {"generator": {"layer.weight": torch.ones(1), "metadata": "unsafe"}},
+    ):
+        try:
+            state_dict_from_checkpoint(invalid_generator)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalid generator checkpoint envelope was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-xy-tokenizer-error-") as directory:
         error_dir = Path(directory)
         write_error_manifest(error_dir, RuntimeError("self-test error"))
