@@ -3,10 +3,9 @@
 Maintainers run every `cargo ... -p vokra-models` command below on VAST. Do
 not compile or test `vokra-models` on the development Mac.
 
-Offline recipe for the Sesame CSM-1B staged reference dump the Rust parity
-test (`crates/vokra-models/tests/parity_csm.rs`) consumes. CI never runs
-Python; the real dump is an **owner step after T29** (both upstream repos
-are gated downloads).
+Offline recipe for the Sesame CSM-1B staged reference evidence. CI never runs
+Python; the real dump is a **VAST owner step** and remains evidence-only until
+the native CSM+Mimi composite binder and CPU parity are accepted.
 
 ## Committed today
 
@@ -15,47 +14,66 @@ are gated downloads).
   carries **no reference semantics**; it pins the file/manifest format and
   the Rust reader (`parity_csm.rs::synthetic_fixture_manifest_roundtrip`).
 
-## Real dump (owner, post-T29)
+## Official reference evidence (owner, VAST)
 
-1. Accept the gated licenses and download:
-   - `sesame/csm-1b` (HF, Apache 2.0 weights — record the revision),
-   - `meta-llama/Llama-3.2-1B` tokenizer file,
-   - Mimi weights `kyutai/moshiko-pytorch-bf16`
-     `tokenizer-e351c8d8-checkpoint125.safetensors` (CC-BY 4.0).
-2. Create a venv and install the upstream stack **pinned** (record every
-   version in the manifest): `torch`, the `SesameAILabs/csm` package at the
-   commit SHA you re-pin in ADR M4-05 §D2, `moshi`, `transformers`.
-   Re-use the version pins from `tools/parity/parity-requirements.txt`
-   where they overlap.
-3. Run:
+1. Run `scripts/publish/vast-ai/run-csm-1b-inspection.sh` on a clean Linux
+   x86-64 VAST checkout. It pins and inspects the fixed `sesame/csm-1b`
+   snapshot, the clean source checkout, and the pinned Transformers CSM
+   implementation. It performs no conversion or upload. The worker requires
+   the dedicated `tools/parity/csm_1b_reference/uv.lock`; it does not use the
+   broad parity lock or `uv run --with`.
+2. Supply the resulting inspection bundle and an authenticated packet to
+   `scripts/publish/vast-ai/run-csm-1b-validation.sh`. The worker invokes
+   `csm_1b_dump_reference.py` through the dedicated Transformers-4.52.1 lock:
+
+   The packet boundary is an exact conversation: `messages` contains the
+   source-shaped role/content entries; each typed `audio` content item embeds
+   a relative path contained by the packet directory. The adapter calls the
+   authenticated processor's `apply_chat_template(tokenize=True,
+   return_dict=True)` before generation, so BOS/EOS handling is owned by the
+   official route. It authenticates each audio input's size/SHA-256.
 
    ```sh
-   uv run --no-project --python 3.12 python tools/parity/csm_dump.py dump \
-       --checkpoint /path/to/csm-1b \
-       --tokenizer /path/to/llama-3.2-tokenizer \
-       --text "Hello from Vokra." --speaker 0 --max-frames 25 \
-       --out tests/parity/csm/reference
+   uv run --frozen --project tools/parity/csm_1b_reference --python 3.12 python \
+       tools/parity/csm_1b_dump_reference.py \
+       --snapshot /path/to/csm-1b \
+       --transformers /path/to/transformers \
+       --inspection-manifest /path/to/inspection/evidence/manifest.json \
+       --packet /path/to/reference-packet.json \
+       --output /dev/shm/csm-reference
    ```
 
-   The dump runs **temperature-0** so the code sequence is exactly
-   reproducible (a stochastic dump must never become a parity reference —
-   fabricated pass 禁止).
+   The official Transformers path runs **greedy** (`do_sample=False` and
+   `depth_decoder_do_sample=False`). The packet includes per-step backbone
+   logits, generation-frame-aligned last hidden states, exact depth-decoder
+   per-codebook logits in call order, generated code IDs, and codec-decoded
+   PCM. The adapter requires generated codes `[B,frames,32]`, one depth call
+   per frame/codebook (`frames * 31`), frame-aligned logits/hidden states, and
+   PCM at exactly `decoded_frames * 1920` samples, where a final all-zero EOS
+   frame is excluded from `decoded_frames`. The PCM is explicitly
+   **pre-watermark**; it is not source final watermarked output.
 
-4. Point the Rust side at it:
+   Reference evidence is independent of the native/composite gate. A complete
+   GGUF and accepted CPU baseline are checked only by the later native stage;
+   they are not prerequisites for collecting official reference evidence.
+
+3. Point the staged Rust leg at the resulting `reference/` directory only to
+   authenticate artifact presence. It deliberately fails closed with
+   `INSPECTION_ONLY`; it does not claim CPU or Metal parity:
 
    ```sh
    VOKRA_CSM_PARITY_DIR=tests/parity/csm/reference \
        cargo test -p vokra-models --test parity_csm -- --nocapture
    ```
 
-   Until the T29 tensor manifest also lands the real-weight `from_gguf`
-   binding, the env-gated legs report a **loud skip naming T29** — never a
-   pass.
+   Until the complete composite binder and accepted VAST CPU baseline land,
+   the env-gated leg reports a loud blocker — never a pass.
 
 ## Judgement (ADR M4-05 §D7)
 
-- `frame_codes.u32` — discrete: **bit-exact** primary judgement.
-- `backbone_hidden` / `c0_logits` / `depth_logits` / `decode_pcm` — FP32
+- `generated_frame_codes.u32le` — discrete: **bit-exact** primary judgement.
+- `backbone_hidden_last` / `backbone_logits` / `depth_decoder_logits` /
+  `official_pcm_pre_watermark` — FP32
   `atol = 0.01` (NFR-QL-01) starting point; any per-tensor relaxation must
   be architectural-bound-derived and recorded in rustdoc + ADR + CI
   (Kokoro `PROSODY_F0_ATOL` precedent).

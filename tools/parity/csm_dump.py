@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
-"""Dump Sesame CSM-1B staged reference fixtures (M4-05 T23).
+#!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
+"""Write the legacy synthetic CSM fixture (M4-05 T23).
 
-This is an **offline** tool (FR-LD-05: no Python / PyTorch ever enters the
-runtime). It drives the pinned upstream implementation and writes the staged
-intermediate tensors that ``crates/vokra-models/tests/parity_csm.rs``
-compares against (env-gated on ``VOKRA_CSM_PARITY_DIR``). CI never runs
-Python — fixtures are file-based (mimi_dump.py / kaldi_fbank precedent).
+This is an **offline** plumbing tool (FR-LD-05: no Python / PyTorch ever
+enters the runtime). Its ``self-test`` subcommand writes only the committed
+synthetic fixture; that fixture carries no reference semantics. The official
+Transformers reference is produced by ``csm_1b_dump_reference.py`` on VAST.
 
 Pins (ADR M4-05 §D2; re-pin the exact commit SHA at T29 checkpoint hand-off)
 ---------------------------------------------------------------------------
@@ -39,18 +38,15 @@ test replays the same context and compares:
 Usage
 -----
 
-Real dump (owner, after T29 — requires the gated checkpoints on disk and a
-venv with the upstream deps; see tools/parity/README-csm.md)::
-
-    python3 tools/parity/csm_dump.py dump \
-        --checkpoint /path/to/csm-1b --tokenizer /path/to/llama-tokenizer \
-        --text "Hello from Vokra." --speaker 0 --max-frames 25 \
-        --out tests/parity/csm/reference
+The old ``dump`` command is retained as an explicit deprecated blocker and
+never writes a reference. Use ``csm_1b_dump_reference.py`` through the VAST
+validation worker for official evidence.
 
 Self-test (no ML deps — validates the writer/manifest/reader plumbing that
 the committed synthetic fixture uses)::
 
-    python3 tools/parity/csm_dump.py self-test --out tests/parity/csm/self-test
+    uv run --frozen --project tools/parity --python 3.12 python \
+        tools/parity/csm_dump.py self-test --out tests/parity/csm/self-test
 """
 
 from __future__ import annotations
@@ -179,26 +175,10 @@ def self_test(out: Path) -> int:
 
 
 def dump(args) -> int:
-    try:
-        import torch  # noqa: F401
-    except ImportError:
-        print(
-            "dump requires the upstream venv (torch + the SesameAILabs/csm package "
-            "+ moshi + transformers pinned per tools/parity/README-csm.md). The "
-            "checkpoint and tokenizer are gated downloads — T29 owner hand-off. "
-            "Nothing was dumped (fabricated fixtures are forbidden).",
-            file=sys.stderr,
-        )
-        return 2
-    # The staged dump drives the pinned upstream Generator with
-    # temperature-0 sampling and forward hooks on the backbone final norm /
-    # codebook0_head / audio_head matmuls. It is deliberately unreachable
-    # until the T29 checkpoints exist on disk; the exact hook wiring is
-    # committed then together with the re-pinned commit SHA (this stub keeps
-    # the honest failure mode: no invented reference).
     print(
-        "dump: the real staged dump lands with the T29 checkpoint hand-off "
-        "(gated repos). See the module docstring for the pinned sources.",
+        "dump: deprecated legacy route; no reference is written. Use "
+        "scripts/publish/vast-ai/run-csm-1b-validation.sh, which invokes the "
+        "official Transformers dumper and requires authenticated evidence.",
         file=sys.stderr,
     )
     return 2
