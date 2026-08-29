@@ -15,7 +15,7 @@ MODEL_FILES={
     ".gitattributes":(1627,"33f879d5e8f1c01e682db7c50613d2aae540b5d8",None,None),
     "LICENSES":(13649,"a171e1b0e4f785a6d206a814d1242464988de517",None,"64036e6306bdad699fda41984bfead9a648b0d2e7c0987cf29f301fb85a97ef4"),
     "README.md":(18967,"79d76b8880fda22f7b93b6432a41ba3c64e546b9",None,"0f5d9e5066ecc9a5a8b110f4c225b835f72d931630f2c38cac06d6837767ba8d"),
-    "config.json":(2382,"af60039c3d20c4314762dc636bc7abfc61372edec",None,"37d15b0445fade873944c9b0cda7221953ec2207169cb6488a3a57d90e629d52"),
+    "config.json":(2382,"af60039c3d20c4314762dc636bc7abfc61372edc",None,"37d15b0445fade873944c9b0cda7221953ec2207169cb6488a3a57d90e629d52"),
     "model.safetensors":(5119120624,"ece9b3ec258fb872cdf3a7e900329899000a02da","800cb0d099cf655a8887d8b741c3a4afa9891e2b2949870251c4d58c72b59175",None),
 }
 MODEL_REQUIRED_FILES=set(MODEL_FILES)
@@ -233,6 +233,11 @@ def inspect(snapshot:Path,tokenizer:Path,source:Path,model_tree:Path,tok_tree:Pa
 def self_test()->None:
     src=Path(__file__).read_text(encoding="utf-8"); assert "inspect_st" in src and "safe_"+"open" not in src and "1_"+"017_626_722" not in src
     assert len(HF_REVISION)==len(SOURCE_REVISION)==len(TOKENIZER_REVISION)==40
+    for name, identity in MODEL_FILES.items():
+        assert len(identity)==4 and type(identity[0]) is int and identity[0]>=0
+        assert isinstance(identity[1], str) and len(identity[1])==40 and all(c in "0123456789abcdef" for c in identity[1])
+        assert identity[2] is None or (isinstance(identity[2], str) and len(identity[2])==64 and all(c in "0123456789abcdef" for c in identity[2]))
+        assert identity[3] is None or (isinstance(identity[3], str) and len(identity[3])==64 and all(c in "0123456789abcdef" for c in identity[3]))
     try: json.loads('{"x":1,"x":2}',object_pairs_hook=pairs)
     except RuntimeError: pass
     else: raise AssertionError("duplicate JSON accepted")
