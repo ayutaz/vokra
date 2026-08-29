@@ -8,11 +8,6 @@ resolution-markers = [
 ]
 
 [manifest]
-members = [
-    "microwakeword-prep",
-    "rmvpe-parity",
-    "vokra-parity-tools",
-]
 overrides = [
     { name = "hydra-core", specifier = ">=1.3.4" },
     { name = "text-unidecode", marker = "python_full_version < '0'" },
@@ -25,26 +20,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d0/4f/d79676ab82f2e42fc3611618139f13a9c4c31d0cff4b486982047679a802/absl_py-2.5.0.tar.gz", hash = "sha256:0c996f25c0490700fadabe6351630f6111534fa0ae252cc6d2014ea3b141135f", size = 118119, upload-time = "2026-07-03T10:57:48.157Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/58/0a/a10b45aab35b175aded078a462dc8d0c698f5b13946e7cb0869097b78bb6/absl_py-2.5.0-py3-none-any.whl", hash = "sha256:0f17b89f2a4eaaedc4f28c622998aa690564b3012a396a4ffad0821007fe03ba", size = 137410, upload-time = "2026-07-03T10:57:46.735Z" },
-]
-
-[[package]]
-name = "ai-edge-litert"
-version = "2.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "backports-strenum" },
-    { name = "flatbuffers" },
-    { name = "ml-dtypes" },
-    { name = "numpy" },
-    { name = "protobuf" },
-    { name = "tqdm" },
-    { name = "typing-extensions" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/09/778399be516866419e3de6257e4f7ab6b8563b2fc204b6353f2361a8b025/ai_edge_litert-2.2.0-cp312-cp312-macosx_12_0_arm64.whl", hash = "sha256:90fe45c8a0557e15b873f685e33ecaa2302782a8cb09a1ca754d536d5fa30945", size = 10835492, upload-time = "2026-08-12T19:03:33.631Z" },
-    { url = "https://files.pythonhosted.org/packages/4f/ef/be6341bb3cc935e47a521ea1a173a022d1680d309545579a12dbc739df40/ai_edge_litert-2.2.0-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:6d3fe2047461fbdd251425960be7a3674dbbf707bd019a01ffe6eb43cc653434", size = 14052423, upload-time = "2026-08-12T18:47:18.261Z" },
-    { url = "https://files.pythonhosted.org/packages/fa/bc/c4788c401cbe1bb082cb09220b1e35ae8a8f89451b494f4e151a8c93bf4f/ai_edge_litert-2.2.0-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:4e151f07229b2f714f9b34ea42a9cacffc98953b1f6e832adee4479f6b81f50a", size = 21258447, upload-time = "2026-08-13T02:13:57.891Z" },
-    { url = "https://files.pythonhosted.org/packages/32/81/818bc82bad14f176c2ac6a42e28750a87aa7b3732ebcc2c94a617de2f26b/ai_edge_litert-2.2.0-cp312-cp312-win_amd64.whl", hash = "sha256:86815ff3378ac9fa4bb5548bcede1be7d050bd59a8ebaf1c056b7aef69fedcee", size = 17914562, upload-time = "2026-08-12T21:19:44.442Z" },
 ]
 
 [[package]]
@@ -223,15 +198,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a1/4a/874ecf9b472f998130c2b5e145dcdb9f6131e84786111489103b66772143/audioread-3.1.0.tar.gz", hash = "sha256:1c4ab2f2972764c896a8ac61ac53e261c8d29f0c6ccd652f84e18f08a4cab190", size = 20082, upload-time = "2025-10-26T19:44:13.484Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7e/16/fbe8e1e185a45042f7cd3a282def5bb8d95bb69ab9e9ef6a5368aa17e426/audioread-3.1.0-py3-none-any.whl", hash = "sha256:b30d1df6c5d3de5dcef0fb0e256f6ea17bdcf5f979408df0297d8a408e2971b4", size = 23143, upload-time = "2025-10-26T19:44:12.016Z" },
-]
-
-[[package]]
-name = "backports-strenum"
-version = "1.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/35/c7/2ed54c32fed313591ffb21edbd48db71e68827d43a61938e5a0bc2b6ec91/backports_strenum-1.3.1.tar.gz", hash = "sha256:77c52407342898497714f0596e86188bb7084f89063226f4ba66863482f42414", size = 7257, upload-time = "2023-12-09T14:36:40.937Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/50/56cf20e2ee5127b603b81d5a69580a1a325083e2b921aa8f067da83927c0/backports_strenum-1.3.1-py3-none-any.whl", hash = "sha256:cdcfe36dc897e2615dc793b7d3097f54d359918fc448754a517e6f23044ccf83", size = 8304, upload-time = "2023-12-09T14:36:39.905Z" },
 ]
 
 [[package]]
@@ -1201,23 +1167,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
-]
-
-[[package]]
-name = "microwakeword-prep"
-version = "0.1.0"
-source = { virtual = "microwakeword" }
-dependencies = [
-    { name = "ai-edge-litert" },
-    { name = "gguf" },
-    { name = "numpy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "ai-edge-litert", specifier = ">=1.0" },
-    { name = "gguf", specifier = ">=0.19.0" },
-    { name = "numpy", specifier = ">=1.26" },
 ]
 
 [[package]]
@@ -2400,27 +2349,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
-]
-
-[[package]]
-name = "rmvpe-parity"
-version = "0.2.0"
-source = { virtual = "rmvpe" }
-dependencies = [
-    { name = "librosa" },
-    { name = "numpy" },
-    { name = "soundfile" },
-    { name = "torch" },
-    { name = "torchaudio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "librosa", specifier = ">=0.10" },
-    { name = "numpy", specifier = ">=1.26" },
-    { name = "soundfile", specifier = ">=0.13" },
-    { name = "torch", specifier = ">=2.0" },
-    { name = "torchaudio", specifier = ">=2.0" },
 ]
 
 [[package]]

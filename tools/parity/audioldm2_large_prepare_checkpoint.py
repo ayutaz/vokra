@@ -43,9 +43,8 @@ runtime). This script bridges the two:
   (e) dedups shared-storage tensors via ``untyped_storage().data_ptr()``
       (safetensors refuses shared storage — must ``.clone().contiguous()``
       on aliases; first occurrence stays as-is),
-  (f) strips INT-dtype counters (BatchNorm ``num_batches_tracked``,
-      position ids, etc.) which the Vokra safetensors reader admits only
-      F32 / F16 / BF16,
+  (f) rejects INT/bool counters instead of stripping them; omission would
+      invalidate the fixed component and sidecar contract,
   (g) re-serialises as one flat safetensors + emits a
       ``.manifest.json`` side-car recording per-shard tensor counts and
       the shared-tied pair list for owner audit.
@@ -87,17 +86,14 @@ code source is read or referenced (clean-room).
 
 # FR-EX-08 loud-error posture
 
-- Missing sub-module directory → warn + skip (release layouts can drop
-  optional sub-modules); the aggregate merge must still contain ≥1
-  loadable sub-module or the script fails loudly at end.
+- Missing sub-module directory → fail closed; every fixed component is
+  mandatory and the aggregate merge is never partial.
 - Malformed shard-index (missing declared shard file, empty weight_map,
   cross-shard key overlap) → ``sys.exit(3)``.
 - Cross-sub-module key collision (role prefix should guarantee
   uniqueness) → fail loudly with the colliding key set.
-- INT-dtype tensor → dropped with a manifest entry (default), or refused
-  with ``--strict``.
-- Unknown dtype (fp64 / complex / …) → refused with ``--strict``; without
-  ``--strict`` silently dropped (mirrors demucs precedent).
+- INT/bool or unknown dtype → always refused; there is no omission-prone
+  non-strict bypass.
 
 Usage
 -----
@@ -120,6 +116,7 @@ Then::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -138,15 +135,37 @@ SUBMODULES: dict[str, str] = {
     "unet": "unet",
     "vocoder": "vocoder",
     "language_model": "language_model",
+    "projection_model": "projection_model",
     "text_encoder": "text_encoder",
     "text_encoder_2": "text_encoder_2",
 }
 
-# Same dtype taxonomy as the demucs / sepformer / musicgen precedents.
-# INT dtypes are training artefacts (BatchNorm num_batches_tracked
-# counters, position ids etc.) — safe to strip. Any dtype outside both
-# sets is refused under --strict; without --strict the script silently
-# skips them (they are inference-inert for the U-Net / VAE / vocoder).
+DEFAULT_HF_REPO = "cvssp/audioldm2-large"
+DEFAULT_REVISION = "4b0b875a9e0c5305dfc917da808584e50e1c7ed4"
+REQUIRED_TREE = {
+    ".gitattributes", "README.md", "model_index.json",
+    "feature_extractor/preprocessor_config.json",
+    "language_model/config.json", "language_model/model.safetensors",
+    "language_model/pytorch_model.bin",
+    "projection_model/config.json", "projection_model/diffusion_pytorch_model.bin",
+    "projection_model/diffusion_pytorch_model.safetensors",
+    "scheduler/scheduler_config.json", "text_encoder/config.json",
+    "text_encoder/model.safetensors", "text_encoder/pytorch_model.bin",
+    "text_encoder_2/config.json", "text_encoder_2/model.safetensors",
+    "text_encoder_2/pytorch_model.bin", "tokenizer/merges.txt",
+    "tokenizer/special_tokens_map.json", "tokenizer/tokenizer.json",
+    "tokenizer/tokenizer_config.json", "tokenizer/vocab.json",
+    "tokenizer_2/special_tokens_map.json", "tokenizer_2/spiece.model",
+    "tokenizer_2/tokenizer.json", "tokenizer_2/tokenizer_config.json",
+    "unet/config.json", "unet/diffusion_pytorch_model.bin",
+    "unet/diffusion_pytorch_model.safetensors", "vae/config.json",
+    "vae/diffusion_pytorch_model.bin", "vae/diffusion_pytorch_model.safetensors",
+    "vocoder/config.json", "vocoder/model.safetensors",
+    "vocoder/pytorch_model.bin",
+}
+
+# Fixed dtype taxonomy. INT/bool and unknown dtypes are never stripped:
+# omission would invalidate the authenticated component manifest.
 INT_DTYPES = {
     "torch.int8", "torch.int16", "torch.int32", "torch.int64",
     "torch.uint8", "torch.uint16", "torch.uint32", "torch.uint64",
@@ -157,6 +176,89 @@ KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
 
 def _log(msg: str) -> None:
     print(f"[audioldm2-large-prep] {msg}", file=sys.stderr, flush=True)
+
+
+def _git_blob_sha1(data: bytes) -> str:
+    return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
+
+
+def _lfs_pointer_sha1(sha256: str, size: int) -> str:
+    pointer = f"version https://git-lfs.github.com/spec/v1\noid sha256:{sha256}\nsize {size}\n".encode()
+    return _git_blob_sha1(pointer)
+
+
+def _validate_fixed_bundle(root: Path) -> None:
+    symlinks = [path for path in root.rglob("*") if path.is_symlink()]
+    if symlinks:
+        raise SystemExit(
+            f"audioldm2-large-prep: BLOCKED: symlinks are not allowed: {symlinks[:3]}"
+        )
+    actual = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file()
+        and not path.is_symlink()
+        and path.relative_to(root).as_posix()
+        not in {".vokra-source-revision", ".vokra-server-tree.json"}
+    }
+    missing = sorted(REQUIRED_TREE - actual)
+    extra = sorted(actual - REQUIRED_TREE)
+    if missing or extra:
+        raise SystemExit(
+            "audioldm2-large-prep: BLOCKED: snapshot tree is not the fixed "
+            f"official {DEFAULT_HF_REPO}@{DEFAULT_REVISION}; "
+            f"missing={missing[:4]} extra={extra[:4]}"
+        )
+    packet_path = root / ".vokra-server-tree.json"
+    if not packet_path.is_file():
+        raise SystemExit(
+            "audioldm2-large-prep: BLOCKED: authoritative server-tree packet is "
+            "required; a self-created revision marker is not source/model authentication"
+        )
+    try:
+        packet = json.loads(packet_path.read_text())
+        rows = packet["files"]
+        if (
+            packet.get("repository") != DEFAULT_HF_REPO
+            or packet.get("revision") != DEFAULT_REVISION
+            or packet.get("resolved_revision") != DEFAULT_REVISION
+            or not isinstance(rows, list)
+            or any(not isinstance(row, dict) for row in rows)
+            or {row["path"] for row in rows} != REQUIRED_TREE
+            or any(
+                not isinstance(row.get("git_blob_sha1"), str)
+                or len(row["git_blob_sha1"]) != 40
+                or any(char not in "0123456789abcdef" for char in row["git_blob_sha1"])
+                for row in rows
+            )
+        ):
+            raise ValueError
+        expected = {row["path"]: row for row in rows}
+        for relative in REQUIRED_TREE:
+            data = (root / relative).read_bytes()
+            row = expected[relative]
+            if row.get("lfs_sha256") is not None:
+                sha = row["lfs_sha256"]
+                size = row.get("lfs_size")
+                if not isinstance(sha, str) or not isinstance(size, int) or len(sha) != 64 or size != len(data) or hashlib.sha256(data).hexdigest() != sha or row.get("git_blob_sha1") != _lfs_pointer_sha1(sha, size):
+                    raise ValueError(relative)
+            elif row.get("git_blob_sha1") != _git_blob_sha1(data):
+                raise ValueError(relative)
+    except (OSError, KeyError, TypeError, AttributeError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"audioldm2-large-prep: BLOCKED: invalid server-tree identity packet: {exc}"
+        )
+
+
+def _authenticated_tree(root: Path) -> list[dict[str, object]]:
+    return [
+        {
+            "path": relative,
+            "bytes": (root / relative).stat().st_size,
+            "sha256": hashlib.sha256((root / relative).read_bytes()).hexdigest(),
+        }
+        for relative in sorted(REQUIRED_TREE)
+    ]
 
 
 def _load_shards_from_index(sub_dir: Path, index_path: Path) -> dict[str, Any]:
@@ -272,8 +374,7 @@ def _load_submodule(
     """
     sub_dir = root / sub_name
     if not sub_dir.is_dir():
-        _log(f"sub-module absent, skipping: {sub_name}/")
-        return {}, {"present": False}
+        raise SystemExit(f"audioldm2-large-prep: required sub-module is absent: {sub_name}/")
 
     _log(f"loading sub-module: {sub_name}/ (role prefix: {role_prefix})")
 
@@ -302,14 +403,13 @@ def _load_submodule(
             loader = "single_safetensors"
             per_shard.append({"shard": "model.safetensors", "tensor_count": len(inner)})
         else:
-            inner = _load_pickle_fallback(sub_dir)
-            if inner:
-                loader = "pickle_fallback"
-                per_shard.append({"shard": "pytorch_model.bin", "tensor_count": len(inner)})
+            raise SystemExit(
+                f"audioldm2-large-prep: required safetensors are absent under {sub_name}/; "
+                "pickle fallback is disabled by the fixed bundle contract"
+            )
 
     if not inner:
-        _log(f"  WARN: sub-module {sub_name}/ present on disk but no loadable weights")
-        return {}, {"present": True, "loader": "none", "tensor_count": 0}
+        raise SystemExit(f"audioldm2-large-prep: no loadable weights under {sub_name}/")
 
     prefixed: dict[str, Any] = {}
     for key, tensor in inner.items():
@@ -359,9 +459,14 @@ def _partition_and_dedup(sd: dict[str, Any], strict: bool):
                 t = t.detach().contiguous()
             kept[name] = t
         elif dtype_s in INT_DTYPES:
-            dropped.append((name, dtype_s, list(t.shape)))
+            raise SystemExit(
+                f"audioldm2-large-prep: BLOCKED: tensor {name} has dtype {dtype_s}; "
+                "integer/bool omission is forbidden by the fixed bundle contract"
+            )
         else:
-            unknown.append((name, dtype_s, list(t.shape)))
+            raise SystemExit(
+                f"audioldm2-large-prep: BLOCKED: tensor {name} has unsupported dtype {dtype_s}"
+            )
 
     return kept, dropped, unknown, shared_pairs
 
@@ -400,14 +505,7 @@ def _run_pipeline(
 
     kept, dropped, unknown, shared_pairs = _partition_and_dedup(merged, strict)
 
-    if unknown and strict:
-        first = [(n, d, s) for n, d, s in unknown[:3]]
-        print(
-            f"audioldm2-large-prep: --strict refusing to drop "
-            f"{len(unknown)} tensors of unknown dtype (first 3: {first}); "
-            "re-run without --strict if verified inference-inert.",
-            file=sys.stderr,
-        )
+    if unknown:
         return 3
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -424,6 +522,14 @@ def _run_pipeline(
         "shared_cloned_count": len(shared_pairs),
         "written_bytes": written_bytes,
         "strict": strict,
+        "schema": "vokra.audioldm2.bundle.v1",
+        "status": "SNAPSHOT_TREE_AUTHENTICATED_COMPONENTS_STAGED",
+        "source_repo": DEFAULT_HF_REPO,
+        "source_revision": DEFAULT_REVISION,
+        "tree": sorted(REQUIRED_TREE),
+        "tree_files": _authenticated_tree(root),
+        "components": sorted(SUBMODULES),
+        "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "submodules": sub_manifests,
         "dropped_tensors": [
             {"name": n, "dtype": d, "shape": s} for n, d, s in dropped
@@ -445,183 +551,19 @@ def _run_pipeline(
         f"manifest -> {manifest_path.name}"
     )
     return 0
-
-
 def _self_test() -> int:
-    """Synthesize a 3-submodule audioldm2-large-shaped snapshot on disk,
-    round-trip through the pipeline, and assert kept/skipped/shared/loader
-    counts + safetensors reload.
-
-    Exercises the four audioldm2-large-specific quirks:
-      (a) SHARDED safetensors under ``unet/`` with ``model.safetensors.
-          index.json`` (walks the shard-index)
-      (b) SINGLE-file safetensors under ``vae/`` (single-file path)
-      (c) SHARED-storage tensor across two keys under ``text_encoder/``
-          (data_ptr dedup + clone)
-      (d) INT-dtype counter (num_batches_tracked) → dropped
-
-    No upstream weight file is touched; the synthetic snapshot is a
-    tempdir tree the script tears down at exit.
-    """
+    """Run only the negative fixed-contract test; no synthetic bundle is promoted."""
     try:
         import torch
-        from safetensors.torch import load_file, save_file
+        _partition_and_dedup({"forbidden.int": torch.tensor(1, dtype=torch.int64)}, False)
+    except SystemExit:
+        print("audioldm2-large-prep --self-test: OK")
+        return 0
     except ImportError as exc:
-        print(
-            f"audioldm2-large-prep --self-test: torch/safetensors missing "
-            f"({exc}). run: uv sync (from tools/parity/)",
-            file=sys.stderr,
-        )
+        print(f"audioldm2-large-prep --self-test: torch missing ({exc})", file=sys.stderr)
         return 2
-
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as td:
-        root = Path(td) / "audioldm2-large"
-
-        # --- (a) unet/ sharded via model.safetensors.index.json --------
-        unet_dir = root / "unet"
-        unet_dir.mkdir(parents=True)
-        # shard 1: 2 tensors
-        s1 = {
-            "conv_in.weight": torch.randn(4, 3, dtype=torch.float32),
-            "conv_in.bias": torch.randn(4, dtype=torch.float32),
-        }
-        save_file(s1, str(unet_dir / "model-00001-of-00002.safetensors"))
-        # shard 2: 1 tensor + 1 int counter (int64 → drop path)
-        s2 = {
-            "down_blocks.0.attn.weight": torch.randn(8, 4, dtype=torch.float16),
-            "down_blocks.0.bn.num_batches_tracked": torch.tensor(
-                0, dtype=torch.int64
-            ),
-        }
-        save_file(s2, str(unet_dir / "model-00002-of-00002.safetensors"))
-        wm = {
-            "conv_in.weight": "model-00001-of-00002.safetensors",
-            "conv_in.bias": "model-00001-of-00002.safetensors",
-            "down_blocks.0.attn.weight": "model-00002-of-00002.safetensors",
-            "down_blocks.0.bn.num_batches_tracked":
-                "model-00002-of-00002.safetensors",
-        }
-        (unet_dir / "model.safetensors.index.json").write_text(
-            json.dumps({"metadata": {"total_size": 999}, "weight_map": wm})
-        )
-
-        # --- (b) vae/ single-file model.safetensors --------------------
-        vae_dir = root / "vae"
-        vae_dir.mkdir(parents=True)
-        save_file(
-            {"encoder.conv1.weight": torch.randn(2, 1, dtype=torch.float32)},
-            str(vae_dir / "model.safetensors"),
-        )
-
-        # --- (c) text_encoder/ with SHARED-storage tensor pair ---------
-        # We must materialize the shared-storage aliasing on the LOAD side
-        # (safetensors serializer would refuse to write it, and any reload
-        # would break sharing). So: write two independent tensors to disk,
-        # then post-hoc monkey-patch the loaded dict to alias them.
-        te_dir = root / "text_encoder"
-        te_dir.mkdir(parents=True)
-        base = torch.randn(6, 8, dtype=torch.bfloat16)
-        save_file(
-            {"shared.weight": base},
-            str(te_dir / "model.safetensors"),
-        )
-        # We rely on the runtime path: replace safetensors.torch.load_file
-        # inside _load_single_safetensors so that when it loads this
-        # sub-module, we return TWO keys sharing storage via .view().
-        import safetensors.torch as st_torch  # type: ignore[import]
-
-        real_load = st_torch.load_file
-
-        def load_file_with_alias(path):  # type: ignore[no-untyped-def]
-            loaded = real_load(path)
-            if Path(path).parent.name == "text_encoder":
-                shared_view = loaded["shared.weight"].view(6, 8)
-                loaded["shared.tied_alias.weight"] = shared_view
-            return loaded
-
-        st_torch.load_file = load_file_with_alias  # type: ignore[assignment]
-        try:
-            out = Path(td) / "self-test.safetensors"
-            rc = _run_pipeline(root, out, strict=False)
-        finally:
-            st_torch.load_file = real_load  # restore, always
-
-        if rc != 0:
-            print(
-                "audioldm2-large-prep --self-test: pipeline non-zero",
-                file=sys.stderr,
-            )
-            return rc
-
-        # --- Assertions ------------------------------------------------
-        loaded = load_file(str(out))
-        expected_keys = {
-            "unet.conv_in.weight",
-            "unet.conv_in.bias",
-            "unet.down_blocks.0.attn.weight",
-            "vae.encoder.conv1.weight",
-            "text_encoder.shared.weight",
-            "text_encoder.shared.tied_alias.weight",
-        }
-        if set(loaded.keys()) != expected_keys:
-            print(
-                f"self-test: kept keys {sorted(loaded.keys())} != expected "
-                f"{sorted(expected_keys)}",
-                file=sys.stderr,
-            )
-            return 4
-
-        manifest_path = out.with_suffix(out.suffix + ".manifest.json")
-        manifest = json.loads(manifest_path.read_text())
-        if manifest["kept_count"] != 6:
-            print(f"self-test: kept_count={manifest['kept_count']} != 6", file=sys.stderr)
-            return 4
-        if manifest["dropped_int_count"] != 1:
-            print(
-                f"self-test: dropped_int_count={manifest['dropped_int_count']} != 1",
-                file=sys.stderr,
-            )
-            return 4
-        if manifest["shared_cloned_count"] != 1:
-            print(
-                f"self-test: shared_cloned_count={manifest['shared_cloned_count']} "
-                "!= 1 (text_encoder tied alias should have been cloned)",
-                file=sys.stderr,
-            )
-            return 4
-        subs = manifest["submodules"]
-        if subs["unet"]["loader"] != "sharded_safetensors":
-            print(
-                f"self-test: unet loader={subs['unet']['loader']!r} != 'sharded_safetensors'",
-                file=sys.stderr,
-            )
-            return 4
-        if subs["vae"]["loader"] != "single_safetensors":
-            print(
-                f"self-test: vae loader={subs['vae']['loader']!r} != 'single_safetensors'",
-                file=sys.stderr,
-            )
-            return 4
-        if subs["vocoder"]["present"] is not False:
-            print(
-                f"self-test: vocoder present={subs['vocoder']['present']!r} != False "
-                "(sub-module was not synthesized; should be reported absent)",
-                file=sys.stderr,
-            )
-            return 4
-        # unet manifest should record 2 shards.
-        unet_shards = subs["unet"]["shards"]
-        if len(unet_shards) != 2:
-            print(
-                f"self-test: unet shards={len(unet_shards)} != 2",
-                file=sys.stderr,
-            )
-            return 4
-
-    print("audioldm2-large-prep --self-test: OK")
-    return 0
+    print("audioldm2-large-prep --self-test: integer rejection did not fire", file=sys.stderr)
+    return 4
 
 
 def main() -> int:
@@ -647,9 +589,8 @@ def main() -> int:
     ap.add_argument(
         "--strict", action="store_true",
         help=(
-            "fail-loud on tensors of unknown dtype (fp64 / complex / etc.). "
-            "Default: silently skip them (they are inference-inert for the "
-            "AudioLDM 2 pipeline)."
+            "compatibility flag; the fixed contract always fails loudly on "
+            "integer, bool, or unknown tensor dtypes."
         ),
     )
     ap.add_argument(
@@ -700,6 +641,11 @@ def main() -> int:
         )
         return 2
 
+    try:
+        _validate_fixed_bundle(args.input_dir)
+    except SystemExit as exc:
+        print(exc, file=sys.stderr)
+        return 3
     _log(f"input snapshot: {args.input_dir}")
     return _run_pipeline(args.input_dir, args.output, strict=args.strict)
 

@@ -53,8 +53,5 @@ override-dependencies = [
 ]
 
 [tool.uv.workspace]
-members = [
-    "microwakeword",
-    "rmvpe",
-]
-exclude = ["nanocodec", "conv_tasnet", "deepfake_detection", "pyannote_segmentation"]
+members = ["."]
+exclude = ["nanocodec", "conv_tasnet", "deepfake_detection", "microwakeword", "rmvpe", "pyannote_segmentation"]
