@@ -57,9 +57,9 @@ SOURCE_ROLE_BLOBS = {
     "README.md": "3ec3ddabbdac14f65776a6553b2cbeb1aff69fcc",
     "stepaudio2.py": "1598da2a37e177aa4de093943969460f46359bb7",
     "token2wav.py": "ad4163edc2318778a4ad604d5a30009c5d959e99",
-    "cosyvoice2/flow.py": "f252d9b8c90668e92db30d63a404ab7cb3ba905f",
-    "cosyvoice2/flow_matching.py": "900c71e265d6c6de7fce84a8c7e3ec4e40162619",
-    "cosyvoice2/decoder_dit.py": "cb80edc768fbb42b62824321286bcc21c86bfa3d",
+    "cosyvoice2/flow/flow.py": "f252d9b8c90668e92db30d63a404ab7cb3ba905f",
+    "cosyvoice2/flow/flow_matching.py": "900c71e265d6c6de7fce84a8c7e3ec4e40162619",
+    "cosyvoice2/flow/decoder_dit.py": "cb80edc768fbb42b62824321286bcc21c86bfa3d",
     "flashcosyvoice/cosyvoice2.py": "9a1ede5efd965a12614f15212a01136060763d88",
     "flashcosyvoice/modules/flow.py": "b6ae2816ad5e28e362db6e6c9510bdb8e592cc6d",
     "flashcosyvoice/modules/hifigan.py": "72e49728f0fcd319f1c0a02520954c25d34d2631",
@@ -681,6 +681,12 @@ def self_test() -> None:
     assert FORBIDDEN_MODEL_FILES == {"preprocessor_config.json", "generation_config.json"}
     assert "audio_encoder_config" in source and "configuration_step_audio_2.py" in source and "modeling_step_audio_2.py" in source
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40 and len(TRANSFORMERS_REVISION) == 40
+    assert SOURCE_ROLE_BLOBS["cosyvoice2/flow/flow.py"] == "f252d9b8c90668e92db30d63a404ab7cb3ba905f"
+    assert SOURCE_ROLE_BLOBS["cosyvoice2/flow/flow_matching.py"] == "900c71e265d6c6de7fce84a8c7e3ec4e40162619"
+    assert SOURCE_ROLE_BLOBS["cosyvoice2/flow/decoder_dit.py"] == "cb80edc768fbb42b62824321286bcc21c86bfa3d"
+    assert "cosyvoice2/flow.py" not in SOURCE_ROLE_BLOBS
+    assert "cosyvoice2/flow_matching.py" not in SOURCE_ROLE_BLOBS
+    assert "cosyvoice2/decoder_dit.py" not in SOURCE_ROLE_BLOBS
     assert SHARD_BYTES["model-00001-of-00004.safetensors"][0] == 4_925_370_984
     assert MAX_HEADER_BYTES == 64 * 1024 * 1024
     try:
