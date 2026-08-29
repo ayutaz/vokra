@@ -28,18 +28,28 @@ reject_path_overlap() {
 }
 validate_parity_log() {
   local log_file="$1"
-  local named_count summary_count target_count test_line_count
-  local target='^test real_gigaam_multilingual_cpu_trace_matches_official \.\.\. ok$'
+  local named_count summary_count exact_summary_count target_count test_line_count
+  local logits_count token_pass_count isolated_ok_count
+  local metric='[+-]?[0-9]+(\.[0-9]+)?e[+-][0-9]+'
+  local target="^test real_gigaam_multilingual_cpu_trace_matches_official \.\.\. GIGAAM_MULTILINGUAL_PARITY encoded max_abs=${metric} index=[0-9]+ mean_abs=${metric}$"
+  local summary='^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$'
   [[ -f "$log_file" ]] || return 1
   named_count="$(grep -Ec '^test [^ ]+ \.\.\. ' "$log_file" || true)"
   summary_count="$(grep -Ec '^test result: ' "$log_file" || true)"
   target_count="$(grep -Ec "$target" "$log_file" || true)"
   test_line_count="$(grep -Ec '^test ' "$log_file" || true)"
+  exact_summary_count="$(grep -Ec "$summary" "$log_file" || true)"
+  logits_count="$(grep -Ec "^GIGAAM_MULTILINGUAL_PARITY logits max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$log_file" || true)"
+  token_pass_count="$(grep -Ec '^GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS$' "$log_file" || true)"
+  isolated_ok_count="$(grep -Ec '^ok$' "$log_file" || true)"
   [[ "$named_count" == 1 ]] || return 1
   [[ "$summary_count" == 1 ]] || return 1
+  [[ "$exact_summary_count" == 1 ]] || return 1
   [[ "$target_count" == 1 ]] || return 1
   [[ "$test_line_count" == $((named_count + summary_count)) ]] || return 1
-  grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file"
+  [[ "$logits_count" == 1 ]] || return 1
+  [[ "$token_pass_count" == 1 ]] || return 1
+  [[ "$isolated_ok_count" == 1 ]] || return 1
 }
 
 if [[ "${1:-}" == --self-test ]]; then
@@ -78,20 +88,29 @@ if [[ "${1:-}" == --self-test ]]; then
   parity_log_test_dir="$(mktemp -d)"
   trap 'rm -rf "$parity_log_test_dir"' EXIT
   cat > "$parity_log_test_dir/good.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... ok
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
+GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   validate_parity_log "$parity_log_test_dir/good.log" || die "valid cargo parity log was rejected"
   cat > "$parity_log_test_dir/duplicate.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... ok
-test real_gigaam_multilingual_cpu_trace_matches_official ... ok
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
+GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/duplicate.log"; then die "duplicate named parity test was accepted"; fi
   cat > "$parity_log_test_dir/extra.log" <<'EOF'
 test another_test ... ok
-test real_gigaam_multilingual_cpu_trace_matches_official ... ok
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
+GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/extra.log"; then die "extra named parity test was accepted"; fi
   cat > "$parity_log_test_dir/failed.log" <<'EOF'
@@ -99,6 +118,20 @@ test real_gigaam_multilingual_cpu_trace_matches_official ... FAILED
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/failed.log"; then die "failed parity test was accepted"; fi
+  cat > "$parity_log_test_dir/missing-ok.log" <<'EOF'
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
+GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/missing-ok.log"; then die "missing isolated parity ok was accepted"; fi
+  cat > "$parity_log_test_dir/spoof.log" <<'EOF'
+test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=0e0 index=0 mean_abs=0e0
+GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/spoof.log"; then die "spoofed parity metric output was accepted"; fi
   rm -rf "$parity_log_test_dir"
   trap - EXIT
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/gigaam_multilingual_validation.py" --self-test 2>/dev/null || die "reference validator self-test failed"
