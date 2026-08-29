@@ -23,6 +23,7 @@ import argparse
 import io
 import json
 import posixpath
+import stat
 import sys
 import tarfile
 import zipfile
@@ -52,14 +53,34 @@ PREFERRED_NEMO_CHECKPOINTS = (
 def normalize_archive_member(name: str) -> str:
     """Normalize a tar/zip member name without resolving it on the host."""
     normalized = posixpath.normpath(name)
+    if normalized == "." and name not in (".", "./"):
+        raise ValueError(f"unsafe archive member name: {name!r}")
     if (
-        normalized == "."
-        or normalized.startswith("../")
+        normalized.startswith("../")
         or normalized == ".."
         or normalized.startswith("/")
     ):
         raise ValueError(f"unsafe archive member name: {name!r}")
     return normalized.removeprefix("./")
+
+
+def validate_tar_checkpoint_member(member: tarfile.TarInfo) -> None:
+    """Require a selected NeMo checkpoint to be a safe regular tar member."""
+    normalize_archive_member(member.name)
+    if member.issym() or member.islnk():
+        raise ValueError(f"unsafe archive link member: {member.name!r}")
+    if not member.isfile():
+        raise ValueError(f"checkpoint member is not a regular file: {member.name!r}")
+
+
+def validate_zip_checkpoint_member(member: zipfile.ZipInfo) -> None:
+    """Require a selected NeMo checkpoint to be a safe regular zip member."""
+    normalize_archive_member(member.filename)
+    file_type = stat.S_IFMT(member.external_attr >> 16)
+    if file_type == stat.S_IFLNK:
+        raise ValueError(f"unsafe archive link member: {member.filename!r}")
+    if file_type not in (0, stat.S_IFREG) or member.is_dir():
+        raise ValueError(f"checkpoint member is not a regular file: {member.filename!r}")
 
 
 def choose_nemo_checkpoint_member(
@@ -143,9 +164,15 @@ def extract_state_dict_from_nemo(
         # Try zip
         if zipfile.is_zipfile(path):
             with zipfile.ZipFile(path, "r") as zf:
-                names = zf.namelist()
+                members = zf.infolist()
+                names = [member.filename for member in members]
                 try:
                     ckpt_name = choose_nemo_checkpoint_member(names, checkpoint_member)
+                except ValueError as error:
+                    raise SystemExit(f"{path}: {error}") from error
+                selected = next(member for member in members if member.filename == ckpt_name)
+                try:
+                    validate_zip_checkpoint_member(selected)
                 except ValueError as error:
                     raise SystemExit(f"{path}: {error}") from error
                 print(f"  extracting {ckpt_name} from {path.name} zip")
@@ -160,13 +187,19 @@ def extract_state_dict_from_nemo(
         raise SystemExit(f"{path} is neither tar/tar.gz nor zip")
 
     with tar:
-        members = tar.getnames()
+        members = tar.getmembers()
+        names = [member.name for member in members]
         try:
-            ckpt_name = choose_nemo_checkpoint_member(members, checkpoint_member)
+            ckpt_name = choose_nemo_checkpoint_member(names, checkpoint_member)
+        except ValueError as error:
+            raise SystemExit(f"{path}: {error}") from error
+        selected = next(member for member in members if member.name == ckpt_name)
+        try:
+            validate_tar_checkpoint_member(selected)
         except ValueError as error:
             raise SystemExit(f"{path}: {error}") from error
         print(f"  extracting {ckpt_name} from {path.name} tar")
-        f = tar.extractfile(ckpt_name)
+        f = tar.extractfile(selected)
         if f is None:
             raise SystemExit(f"could not open {ckpt_name} inside tar")
         data = f.read()
@@ -184,7 +217,10 @@ def extract_state_dict_from_pt(path: Path):
 
 
 def self_test_checkpoint_selection() -> None:
+    assert normalize_archive_member(".") == "."
+    assert normalize_archive_member("./") == "."
     canary_members = [
+        ".",
         "./timestamps_asr_model_weights.ckpt",
         "./model_config.yaml",
         "./model_weights.ckpt",
@@ -215,6 +251,37 @@ def self_test_checkpoint_selection() -> None:
         assert "unsafe" in str(error)
     else:
         raise AssertionError("absolute archive path must fail")
+
+    for member_type, label in (
+        (tarfile.SYMTYPE, "symlink"),
+        (tarfile.LNKTYPE, "hardlink"),
+    ):
+        member = tarfile.TarInfo("model_weights.ckpt")
+        member.type = member_type
+        try:
+            validate_tar_checkpoint_member(member)
+        except ValueError as error:
+            assert "unsafe archive link" in str(error)
+        else:
+            raise AssertionError(f"{label} checkpoint member must fail")
+
+    for file_type, name in (
+        (stat.S_IFLNK, "symlink.ckpt"),
+        (stat.S_IFDIR, "directory/"),
+        (stat.S_IFIFO, "fifo.ckpt"),
+    ):
+        member = zipfile.ZipInfo(name)
+        member.external_attr = file_type << 16
+        try:
+            validate_zip_checkpoint_member(member)
+        except ValueError as error:
+            assert "unsafe archive" in str(error) or "not a regular" in str(error)
+        else:
+            raise AssertionError(f"ZIP {name} must fail")
+    for file_type in (0, stat.S_IFREG):
+        member = zipfile.ZipInfo("regular.ckpt")
+        member.external_attr = file_type << 16
+        validate_zip_checkpoint_member(member)
     print("nemo_pt_to_safetensors: checkpoint-selection self-test PASS")
 
 
