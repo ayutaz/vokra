@@ -25,6 +25,10 @@ const FAIRSEQ2_REPOSITORY: &str = "https://github.com/facebookresearch/fairseq2"
 const FAIRSEQ2_REVISION: &str = "8ae890e1b4d3e36307d0ba5fb695f0fc4815ecca";
 const OMNI_SOURCE_FILES: &[(&str, &str)] = &[
     (
+        "src/omnilingual_asr/__init__.py",
+        "6a2cbaf33ca8d80c6bb357b8743d59309f135db3eb5ed95fca54b7664a2283e8",
+    ),
+    (
         "src/omnilingual_asr/cards/models/rc_models.yaml",
         "7c9a28b2a111f2e088a5b2be161dd68686a810cd7462241209c2c5e8a81a2913",
     ),
@@ -42,6 +46,10 @@ const OMNI_SOURCE_FILES: &[(&str, &str)] = &[
     ),
 ];
 const FAIRSEQ2_SOURCE_FILES: &[(&str, &str)] = &[
+    (
+        "src/fairseq2/__init__.py",
+        "4cfd6207b154ec67f2e845fb861feede0ec9a6bbb97dbaecf60428867f26abc5",
+    ),
     (
         "src/fairseq2/models/wav2vec2/config.py",
         "e75143abfa8e208f2291258949c1af7875087514113c0c370fa915b56905bd22",
@@ -428,6 +436,7 @@ fn verify_packet(reference: &Path) -> JsonValue {
     exact_object_keys(
         input,
         &[
+            "audio",
             "sample_rate",
             "channels",
             "samples",
@@ -437,6 +446,38 @@ fn verify_packet(reference: &Path) -> JsonValue {
         ],
         "input",
     );
+    let audio = field(input, "audio");
+    exact_object_keys(
+        audio,
+        &[
+            "path",
+            "sha256",
+            "bytes",
+            "format",
+            "sample_rate",
+            "channels",
+            "samples",
+            "prefix_samples",
+        ],
+        "input.audio",
+    );
+    assert_eq!(
+        string_field(audio, "path"),
+        "tests/fixtures/audio/jfk-30s.wav"
+    );
+    assert_eq!(
+        string_field(audio, "sha256"),
+        "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+    );
+    assert_eq!(usize_field(audio, "bytes"), 352_078);
+    assert_eq!(
+        string_field(audio, "format"),
+        "RIFF/WAVE PCM signed 16-bit little-endian mono"
+    );
+    assert_eq!(usize_field(audio, "sample_rate"), 16_000);
+    assert_eq!(usize_field(audio, "channels"), 1);
+    assert_eq!(usize_field(audio, "samples"), 176_000);
+    assert_eq!(usize_field(audio, "prefix_samples"), 16_000);
     assert_eq!(
         usize_field(input, "sample_rate"),
         OMNIASR_CTC_SAMPLE_RATE as usize
@@ -447,6 +488,10 @@ fn verify_packet(reference: &Path) -> JsonValue {
     let pcm_digest = string_field(input, "pcm_sha256");
     assert_eq!(pcm_digest.len(), 64);
     assert!(pcm_digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(
+        pcm_digest,
+        "53ae25874366c72403af2b01485def4d2215a4f630a94f81553e4d91898befc0"
+    );
     assert_eq!(
         string_field(input, "normalization"),
         "torch_layer_norm_waveform_eps_1e-5"
@@ -497,13 +542,15 @@ fn verify_packet(reference: &Path) -> JsonValue {
             "pcm.f32le" => assert_eq!(shape.as_slice(), &[16_000]),
             "frontend.f32le" | "encoder.f32le" => {
                 assert_eq!(shape[0], 1, "batch dimension: {name}");
+                assert_eq!(shape[1], 49, "frame dimension: {name}");
                 assert_eq!(shape[2], 1280, "model dimension: {name}");
             }
             "ctc_logits.f32le" => {
                 assert_eq!(shape[0], 1, "logit batch dimension");
+                assert_eq!(shape[1], 49, "logit frame dimension");
                 assert_eq!(shape[2], 9812, "logit vocabulary dimension");
             }
-            "tokens.u32le" => {}
+            "tokens.u32le" => assert_eq!(shape.as_slice(), &[5], "token count"),
             _ => unreachable!(),
         }
         let digest = string_field(row, "sha256");

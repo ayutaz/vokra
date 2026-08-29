@@ -23,6 +23,7 @@ import math
 import re
 import struct
 import sys
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,14 @@ SAMPLE_RATE = 16_000
 PCM_SAMPLES = 16_000
 PCM_EPS = 1e-5
 SCHEMA = "omniasr-ctc-reference-v1"
+AUDIO_FIXTURE_PATH = "tests/fixtures/audio/jfk-30s.wav"
+AUDIO_SHA256 = "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+AUDIO_BYTES = 352_078
+AUDIO_FORMAT = "RIFF/WAVE PCM signed 16-bit little-endian mono"
+AUDIO_TOTAL_SAMPLES = 176_000
+PCM_SHA256 = "53ae25874366c72403af2b01485def4d2215a4f630a94f81553e4d91898befc0"
+EXPECTED_FRAMES = 49
+EXPECTED_TOKENS = 5
 
 # These are the source files that establish the model card and the actual
 # fairseq2 implementation boundary.  Their raw content hashes are checked
@@ -140,25 +149,50 @@ def source_records(
     return records
 
 
-def fixed_pcm() -> list[float]:
-    # A deterministic finite signal with non-zero DC-free content.  This is
-    # the sole input for both sides of parity and is deliberately generated,
-    # not downloaded or replaced with a fixture.
-    values = [
-        0.35 * math.sin(2.0 * math.pi * 440.0 * i / SAMPLE_RATE)
-        + 0.11 * math.sin(2.0 * math.pi * 997.0 * i / SAMPLE_RATE)
-        for i in range(PCM_SAMPLES)
-    ]
+def load_fixture_pcm(path: Path) -> tuple[list[float], str, int, int]:
+    """Load the authenticated 1-second prefix of the committed WAV fixture."""
+    if not path.is_file() or path.is_symlink():
+        die(f"audio fixture must be a regular non-symlink file: {path}")
+    try:
+        canonical = path.resolve(strict=True)
+    except OSError as exc:
+        die(f"audio fixture cannot be resolved: {path}: {exc}")
+    if canonical != path:
+        die(f"audio fixture path must be canonical: {path} -> {canonical}")
+    audio_digest, audio_bytes = sha256_file(path)
+    if audio_digest != AUDIO_SHA256:
+        die(f"audio fixture SHA-256 mismatch: {audio_digest}")
+    if audio_bytes != AUDIO_BYTES:
+        die(f"audio fixture byte count differs: {audio_bytes}")
+    try:
+        with wave.open(str(path), "rb") as stream:
+            params = stream.getparams()
+            if (
+                params.nchannels,
+                params.sampwidth,
+                params.framerate,
+                params.comptype,
+            ) != (1, 2, SAMPLE_RATE, "NONE"):
+                die(f"audio fixture format is not strict PCM16 mono 16kHz: {params}")
+            if params.nframes != AUDIO_TOTAL_SAMPLES:
+                die(f"audio fixture frame count differs: {params.nframes}")
+            raw = stream.readframes(PCM_SAMPLES)
+    except (EOFError, OSError, wave.Error) as exc:
+        die(f"audio fixture is not a readable RIFF/WAVE file: {path}: {exc}")
+    if len(raw) != PCM_SAMPLES * 2:
+        die(f"audio fixture has fewer than {PCM_SAMPLES} frames")
+    values = [sample / 32768.0 for sample in struct.unpack("<" + "h" * PCM_SAMPLES, raw)]
     # Establish the input as float32 before either serialization or the
-    # official normalizer sees it.  This round-trip is equivalent to creating
-    # a torch.float32 tensor and makes the bytes consumed by Rust identical to
-    # the values passed to apply_audio_normalization below.
-    values = list(struct.unpack("<" + "f" * len(values), struct.pack("<" + "f" * len(values), *values)))
+    # official normalizer sees it. This round-trip makes the bytes consumed by
+    # Rust identical to the values passed to apply_audio_normalization.
+    values = list(
+        struct.unpack("<" + "f" * len(values), struct.pack("<" + "f" * len(values), *values))
+    )
     if not any(value != 0.0 for value in values) or not all(
         math.isfinite(value) for value in values
     ):
-        die("fixed PCM is zero or non-finite")
-    return values
+        die("audio fixture prefix is zero or non-finite")
+    return values, audio_digest, audio_bytes, params.nframes
 
 
 def write_f32(path: Path, values: Any) -> tuple[str, int, list[int]]:
@@ -295,9 +329,38 @@ def validate_manifest(path: Path) -> None:
     inp = manifest["input"]
     if not isinstance(inp, dict):
         die("input contract must be an object")
-    if set(inp) != {"sample_rate", "channels", "samples", "pcm_sha256", "dtype", "normalization"}:
+    if set(inp) != {
+        "audio",
+        "sample_rate",
+        "channels",
+        "samples",
+        "pcm_sha256",
+        "dtype",
+        "normalization",
+    }:
         die("input schema is not exact")
-    if inp != dict(inp, sample_rate=SAMPLE_RATE, channels=1, samples=PCM_SAMPLES, dtype="float32-le", normalization="torch_layer_norm_waveform_eps_1e-5"):
+    audio = inp["audio"]
+    if not isinstance(audio, dict) or audio != {
+        "path": AUDIO_FIXTURE_PATH,
+        "sha256": AUDIO_SHA256,
+        "bytes": audio.get("bytes") if isinstance(audio, dict) else None,
+        "format": AUDIO_FORMAT,
+        "sample_rate": SAMPLE_RATE,
+        "channels": 1,
+        "samples": AUDIO_TOTAL_SAMPLES,
+        "prefix_samples": PCM_SAMPLES,
+    }:
+        die("audio fixture contract is not exact")
+    if not isinstance(audio["bytes"], int) or isinstance(audio["bytes"], bool) or audio["bytes"] != AUDIO_BYTES:
+        die("audio fixture byte count is invalid")
+    if inp != dict(
+        inp,
+        sample_rate=SAMPLE_RATE,
+        channels=1,
+        samples=PCM_SAMPLES,
+        dtype="float32-le",
+        normalization="torch_layer_norm_waveform_eps_1e-5",
+    ):
         die("input contract is not exact")
     if not isinstance(inp["pcm_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", inp["pcm_sha256"]):
         die("input PCM digest is invalid")
@@ -330,12 +393,14 @@ def validate_manifest(path: Path) -> None:
             die(f"artifact rank is invalid: {row.get('path')}")
         if row["path"] == "pcm.f32le" and row["shape"] != [PCM_SAMPLES]:
             die("PCM shape is not exact")
-        if row["path"] in {"frontend.f32le", "encoder.f32le"} and row["shape"][0] != 1:
-            die(f"batch shape is not exact: {row['path']}")
-        if row["path"] in {"frontend.f32le", "encoder.f32le"} and row["shape"][2] != 1280:
-            die(f"model dimension is not exact: {row['path']}")
-        if row["path"] == "ctc_logits.f32le" and row["shape"][-1] != 9812:
-            die("CTC vocabulary shape is not exact")
+        expected_shape = {
+            "frontend.f32le": [1, EXPECTED_FRAMES, 1280],
+            "encoder.f32le": [1, EXPECTED_FRAMES, 1280],
+            "ctc_logits.f32le": [1, EXPECTED_FRAMES, 9812],
+            "tokens.u32le": [EXPECTED_TOKENS],
+        }.get(row["path"])
+        if expected_shape is not None and row["shape"] != expected_shape:
+            die(f"artifact shape is not exact: {row['path']}")
         artifact_path = path.parent / row["path"]
         digest, size = sha256_file(artifact_path)
         if digest != row["sha256"] or size != row["bytes"]:
@@ -346,7 +411,9 @@ def validate_manifest(path: Path) -> None:
         if elements * 4 != row["bytes"]:
             die(f"artifact shape does not account for byte length: {row['path']}")
     pcm_row = next(row for row in artifacts if row["path"] == "pcm.f32le")
-    if pcm_row["sha256"] != inp["pcm_sha256"] or pcm_row["shape"] != [PCM_SAMPLES]:
+    if inp["pcm_sha256"] != PCM_SHA256:
+        die("PCM digest is not the authenticated fixture prefix")
+    if pcm_row["sha256"] != PCM_SHA256 or pcm_row["sha256"] != inp["pcm_sha256"] or pcm_row["shape"] != [PCM_SAMPLES]:
         die("PCM artifact is not bound to the input contract")
     comparison = manifest["comparison"]
     if comparison != {
@@ -393,10 +460,12 @@ def run(args: argparse.Namespace) -> None:
         FAIRSEQ2_SOURCE_PATHS,
         EXPECTED_FAIRSEQ2_SOURCE_SHA256,
     )
-    pcm = fixed_pcm()
+    pcm, audio_digest, audio_bytes, audio_samples = load_fixture_pcm(args.audio)
     pcm_path = args.output_dir / "pcm.f32le"
     pcm_path.write_bytes(struct.pack("<" + "f" * len(pcm), *pcm))
     pcm_digest, pcm_bytes = sha256_file(pcm_path)
+    if pcm_digest != PCM_SHA256:
+        die(f"derived PCM SHA-256 mismatch: {pcm_digest}")
     # This must remain the upstream preprocessing boundary.  The pinned source
     # file and its recorded hash authenticate the exact `eps=1e-5`
     # implementation; this worker does not mirror it locally.
@@ -423,10 +492,24 @@ def run(args: argparse.Namespace) -> None:
         die(f"official card resolved to unexpected model type: {type(model)!r}")
     model.eval()
     with torch.inference_mode():
-        extracted, extracted_layout = model.encoder_frontend.extract_features(source, seqs_layout)
-        frontend, frontend_layout = model.encoder_frontend.process_features(extracted, extracted_layout)
-        encoded, encoded_layout = model.encoder(frontend, frontend_layout)
-        logits = model.final_proj(encoded)
+        # Follow Wav2Vec2AsrModel.forward() from pinned fairseq2 exactly:
+        # extract_features returns (features, layout, raw_features), while
+        # process_features returns (features, temporal_mask).  The encoder
+        # itself returns only the encoded tensor; the layout remains the one
+        # produced by feature extraction.
+        extracted, extracted_layout, _ = model.encoder_frontend.extract_features(
+            source, seqs_layout
+        )
+        frontend, _ = model.encoder_frontend.process_features(
+            extracted, extracted_layout, model.masker if model.training else None
+        )
+        frontend_layout = extracted_layout
+        encoded = model.encoder(frontend, frontend_layout)
+        encoded_layout = frontend_layout
+        encoded_for_logits = encoded
+        if model.final_dropout is not None:
+            encoded_for_logits = model.final_dropout(encoded_for_logits)
+        logits = model.final_proj(encoded_for_logits)
     if not isinstance(logits, torch.Tensor) or not isinstance(encoded, torch.Tensor) or not isinstance(frontend, torch.Tensor):
         die("official frontend/encoder/final projection did not return tensors")
     predicted = torch.argmax(logits, dim=-1)
@@ -452,7 +535,24 @@ def run(args: argparse.Namespace) -> None:
             "omnilingual_asr": {"repository": OMNILINGUAL_REPOSITORY, "revision": OMNILINGUAL_REVISION, "files": omni_files},
             "fairseq2": {"repository": FAIRSEQ2_REPOSITORY, "revision": FAIRSEQ2_REVISION, "files": fairseq_files},
         },
-        "input": {"sample_rate": SAMPLE_RATE, "channels": 1, "samples": PCM_SAMPLES, "pcm_sha256": pcm_digest, "dtype": "float32-le", "normalization": "torch_layer_norm_waveform_eps_1e-5"},
+        "input": {
+            "audio": {
+                "path": AUDIO_FIXTURE_PATH,
+                "sha256": audio_digest,
+                "bytes": audio_bytes,
+                "format": AUDIO_FORMAT,
+                "sample_rate": SAMPLE_RATE,
+                "channels": 1,
+                "samples": audio_samples,
+                "prefix_samples": PCM_SAMPLES,
+            },
+            "sample_rate": SAMPLE_RATE,
+            "channels": 1,
+            "samples": PCM_SAMPLES,
+            "pcm_sha256": pcm_digest,
+            "dtype": "float32-le",
+            "normalization": "torch_layer_norm_waveform_eps_1e-5",
+        },
         "artifacts": [{"path": "pcm.f32le", "sha256": pcm_digest, "bytes": pcm_bytes, "dtype": "float32-le", "shape": [PCM_SAMPLES]}] + artifacts,
         "comparison": {
             "frontend_atol": 0.01,
@@ -472,7 +572,9 @@ def run(args: argparse.Namespace) -> None:
 def self_test() -> None:
     assert OMNILINGUAL_REVISION == "a7fb36017a46eee8953f76bd628c174d51aefeef"
     assert FAIRSEQ2_REVISION == "8ae890e1b4d3e36307d0ba5fb695f0fc4815ecca"
-    pcm = fixed_pcm()
+    fixture = Path(__file__).resolve().parents[2] / AUDIO_FIXTURE_PATH
+    pcm, audio_digest, audio_bytes, audio_samples = load_fixture_pcm(fixture)
+    assert audio_digest == AUDIO_SHA256 and audio_bytes == AUDIO_BYTES and audio_samples == AUDIO_TOTAL_SAMPLES
     assert len(pcm) == PCM_SAMPLES and any(value != 0.0 for value in pcm)
     assert all(math.isfinite(value) for value in pcm)
     assert no_duplicate_pairs([("a", 1)]) == {"a": 1}
@@ -492,24 +594,25 @@ def main() -> None:
     parser.add_argument("--validate-manifest", type=Path)
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--tokenizer", type=Path)
+    parser.add_argument("--audio", type=Path)
     parser.add_argument("--omnilingual-src", type=Path)
     parser.add_argument("--fairseq2-src", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--model-card", default="omniASR_CTC_1B")
     args = parser.parse_args()
     if args.self_test:
-        if args.validate_manifest is not None or any(value is not None for value in (args.checkpoint, args.tokenizer, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
+        if args.validate_manifest is not None or any(value is not None for value in (args.checkpoint, args.tokenizer, args.audio, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
             die("--self-test accepts no work arguments")
         self_test()
         return
     if args.validate_manifest is not None:
-        if any(value is not None for value in (args.checkpoint, args.tokenizer, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
+        if any(value is not None for value in (args.checkpoint, args.tokenizer, args.audio, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
             die("--validate-manifest accepts no work arguments")
         validate_manifest(args.validate_manifest)
         print(f"validated {args.validate_manifest}")
         return
-    if any(value is None for value in (args.checkpoint, args.tokenizer, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
-        parser.error("work mode requires checkpoint, tokenizer, both source checkouts, and output-dir")
+    if any(value is None for value in (args.checkpoint, args.tokenizer, args.audio, args.omnilingual_src, args.fairseq2_src, args.output_dir)):
+        parser.error("work mode requires checkpoint, tokenizer, audio, both source checkouts, and output-dir")
     assert args.output_dir is not None
     args.output_dir.mkdir(parents=True, exist_ok=False)
     run(args)

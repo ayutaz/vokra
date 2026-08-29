@@ -20,6 +20,9 @@ FAIRSEQ2_REVISION="8ae890e1b4d3e36307d0ba5fb695f0fc4815ecca"
 PREPARER="tools/parity/omniasr_ctc_prepare_checkpoint.py"
 DUMPER="tools/parity/omniasr_ctc_dump_reference.py"
 PARITY_TEST="real_omniasr_ctc_encoder_logits_and_tokens_match_official"
+AUDIO_FIXTURE_PATH="tests/fixtures/audio/jfk-30s.wav"
+AUDIO_FIXTURE_SHA256="58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+AUDIO_FIXTURE_BYTES=352078
 MIN_MEM_KIB=$((64 * 1024 * 1024))
 MIN_DISK_KIB=$((150 * 1024 * 1024))
 DEFAULT_WORK_DIR="/workspace/vokra-omniasr-ctc-validation"
@@ -72,13 +75,28 @@ canonical_existing_path() {
   printf '%s\n' "$canonical"
 }
 
+canonical_existing_file() {
+  local path="$1" label="$2" cursor canonical
+  [[ "$path" = /* ]] || die "$label must be absolute: $path"
+  [[ -f "$path" && ! -L "$path" ]] || die "$label must be a regular non-symlink file: $path"
+  cursor="$path"
+  while [[ "$cursor" != "/" ]]; do
+    [[ ! -L "$cursor" ]] || die "$label has a symlink ancestor: $cursor"
+    cursor="$(dirname "$cursor")"
+  done
+  canonical="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+  [[ "$canonical" == "$path" ]] || die "$label is not canonical: $path -> $canonical"
+  printf '%s\n' "$canonical"
+}
+
 run_self_test() {
   local fail=0 required
   for required in \
     "$MODEL_ID" "$HF_REVISION" "$CHECKPOINT_SHA256" "$PREPARED_SHA256" \
     "$OMNI_REPOSITORY" "$OMNI_REVISION" "$FAIRSEQ2_REPOSITORY" \
-    "$FAIRSEQ2_REVISION" "$PREPARER" "$DUMPER" "NO_UPLOAD" \
-    "canonical_absent_path" "canonical_existing_path" "symlink ancestor" \
+    "$FAIRSEQ2_REVISION" "$PREPARER" "$DUMPER" "$AUDIO_FIXTURE_PATH" \
+    "--audio" "$AUDIO_FIXTURE_SHA256" "$AUDIO_FIXTURE_BYTES" "NO_UPLOAD" \
+    "canonical_absent_path" "canonical_existing_path" "canonical_existing_file" "symlink ancestor" \
     "SNAPSHOT_LOCAL_DIR_NAME" "local_dir=destination" "destination.is_symlink()" \
     "materialized snapshot" \
     'manifest="$prepared.manifest.json"' \
@@ -149,6 +167,14 @@ free_kib="$(df -Pk "$work_parent" | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ && "$free_kib" -ge "$MIN_DISK_KIB" ]] || die "at least 150 GiB free disk required"
 for command in git cargo uv sha256sum; do command -v "$command" >/dev/null 2>&1 || die "missing tool: $command"; done
 [[ -f tools/parity/omniasr_ctc/uv.lock ]] || die "dedicated OmniASR uv.lock is required; generate/review it on VAST"
+
+# Authenticate the committed fixture before any source clone, model download,
+# conversion, or reference execution begins.
+audio_fixture="$(canonical_existing_file "$repo_root/$AUDIO_FIXTURE_PATH" audio-fixture)"
+audio_bytes="$(stat -c '%s' "$audio_fixture")"
+[[ "$audio_bytes" == "$AUDIO_FIXTURE_BYTES" ]] || die "audio fixture byte count drift: $audio_bytes"
+audio_sha256="$(sha256sum "$audio_fixture" | awk '{print $1}')"
+[[ "$audio_sha256" == "$AUDIO_FIXTURE_SHA256" ]] || die "audio fixture SHA-256 drift: $audio_sha256"
 
 # No scratch/cache is created before all host/path gates above pass.
 mkdir "$work_dir"
@@ -232,6 +258,7 @@ ref_dir="$evidence/reference"
 run_logged env PYTHONPATH="$sources/omnilingual-asr/src:$sources/fairseq2/src${PYTHONPATH:+:$PYTHONPATH}" \
   uv run --frozen --project tools/parity/omniasr_ctc --python 3.12 \
   python "$DUMPER" --checkpoint "$assets/$CHECKPOINT_FILENAME" --tokenizer "$assets/$TOKENIZER_FILENAME" \
+  --audio "$repo_root/$AUDIO_FIXTURE_PATH" \
   --omnilingual-src "$sources/omnilingual-asr" --fairseq2-src "$sources/fairseq2" --output-dir "$ref_dir"
 run_logged env PYTHONPATH="$sources/omnilingual-asr/src:$sources/fairseq2/src${PYTHONPATH:+:$PYTHONPATH}" \
   uv run --frozen --project tools/parity/omniasr_ctc --python 3.12 \
