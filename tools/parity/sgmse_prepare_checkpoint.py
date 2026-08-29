@@ -46,7 +46,10 @@ ALGORITHM_SOURCE_ROLES = {
     "sde": ("OUVESDE", "SDERegistry"),
     "sampler": ("reverse_diffusion", "annealed_langevin_dynamics"),
 }
-COMPANION_FILES = ("README.md", ".gitattributes", "example.wav")
+# The authenticated fixed HF revision contains exactly these two companions;
+# example.wav is not present in that snapshot and must not be downloaded or
+# treated as evidence.
+COMPANION_FILES = ("README.md", ".gitattributes")
 
 CONFIG_PATTERNS = {
     "sample_rate": r"^sample_rate:\s*16000\s*$",
@@ -377,6 +380,8 @@ def inspect(
 
 def self_test() -> None:
     assert MODEL_REVISION == "8f4ff7b65284c49492a43349b8106e094ac0d365"
+    assert COMPANION_FILES == ("README.md", ".gitattributes")
+    assert "example.wav" not in COMPANION_FILES
     assert CHECKPOINT_SIZE == 262_593_305
     assert len(CHECKPOINT_SHA256) == 64
     assert SOURCE_REVISION == "1961cf4483e37df1bb92ccf0eb8b28bf6f44cb0e"

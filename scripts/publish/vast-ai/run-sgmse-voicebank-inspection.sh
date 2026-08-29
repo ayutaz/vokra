@@ -21,7 +21,7 @@ HF_ROOT="https://huggingface.co/$MODEL_REPOSITORY/resolve/$MODEL_REVISION"
 EXPECTED_SIZE=262593305
 EXPECTED_SHA256="7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3"
 CHECKPOINT_NAME="score_model_ema.ckpt"
-COMPANIONS=(README.md .gitattributes example.wav)
+COMPANIONS=(README.md .gitattributes)
 MIN_VAST_MEM_KIB=$((8 * 1024 * 1024))
 MIN_FREE_DISK_KIB=$((4 * 1024 * 1024))
 SGMSE_UV_CACHE_DIR="${SGMSE_UV_CACHE_DIR:-/tmp/vokra-sgmse-uv-cache}"
@@ -49,7 +49,7 @@ self_test() {
     "$SPEECHBRAIN_WHEEL_SHA256" "$EXPECTED_SHA256" \
     '262593305' 'weights_only=True' 'unsafe pickle fallback' 'INSPECTION_ONLY' \
     'NO_UPLOAD' 'sgmse_prepare_checkpoint.py --self-test' '"blockers": []' \
-    'README.md' '.gitattributes' 'example.wav' \
+    'README.md' '.gitattributes' 'hyperparams.yaml' \
     'sgmse_plus.py' 'speechbrain/inference/enhancement.py' 'class SGMSEEnhancement' 'files_by_role' \
     'importlib.metadata' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
@@ -58,6 +58,14 @@ self_test() {
       fail=1
     fi
   done
+  if ! grep -Fq 'COMPANIONS=(README.md .gitattributes)' "$path"; then
+    log 'self-test FAIL: companion declaration is not the fixed two-file contract'
+    fail=1
+  fi
+  if grep -Eq 'COMPANIONS=\([^)]*example\.wav' "$path"; then
+    log 'self-test FAIL: nonexistent example.wav was restored as a production companion'
+    fail=1
+  fi
   if ! grep -Fq 'CHECKPOINT_NAME="score_model_ema.ckpt"' "$path"; then
     log 'self-test FAIL: fixed checkpoint filename contract is missing'
     fail=1

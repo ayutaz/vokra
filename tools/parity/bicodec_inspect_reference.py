@@ -419,7 +419,9 @@ def inspect(model_dir: Path, source_dir: Path, server_packet: Path, output_dir: 
         "server_tree": server,
         "tensor_count": len(tensors),
         "dtype_counts": dtype_counts,
-        "config_topology": sorted(config["audio_tokenizer"].keys()),
+        # parse_config returns a wrapper so the raw authenticated YAML and
+        # derived observations cannot be confused with one another.
+        "config_topology": sorted(config["raw"]["audio_tokenizer"].keys()),
         "packets": packets,
         "weight_license": {**weight_license, "policy": "RESEARCH_ONLY_SHARE_ALIKE_NO_UPLOAD"},
         "blockers": ["native/runtime implementation is not available", "numerical parity is NOT_RUN", "publication is NO_UPLOAD"],
@@ -496,7 +498,9 @@ def self_test() -> None:
         "postnet": {"input_channels": 1024, "vocos_dim": 384, "vocos_intermediate_dim": 2048, "vocos_num_layers": 6, "out_channels": 1024, "use_tanh_at_final": False},
     }}
     canonical_yaml = yaml.safe_dump(valid_config, sort_keys=False)
-    parse_config(canonical_yaml)
+    parsed_config = parse_config(canonical_yaml)
+    assert set(parsed_config) == {"raw", "observed_fixed_values"}
+    assert parsed_config["raw"]["audio_tokenizer"] == parsed_config["observed_fixed_values"]
     missing = json.loads(json.dumps(valid_config))
     del missing["audio_tokenizer"]["decoder"]
     try:
