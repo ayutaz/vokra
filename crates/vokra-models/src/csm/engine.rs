@@ -730,7 +730,7 @@ mod tests {
 
     #[test]
     fn source_sampler_keeps_ties_and_consumes_one_draw_per_vocab_entry() {
-        let mut logits = [4.0, 4.0, 1.0];
+        let logits = [4.0, 4.0, 1.0];
         let draws = [0.5f32, 1.0, 2.0];
         let mut consumed = 0;
         let id = sample_source_topk_with_draws(&logits, 1.0, 1, &mut || {

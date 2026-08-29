@@ -407,6 +407,7 @@ impl ResidualUnit {
 #[derive(Debug, Clone)]
 pub struct EncoderStage {
     residuals: [ResidualUnit; 3],
+    /// Channel-width Snake activation before the strided convolution.
     pub activation: Snake,
     downsample: CausalConv1d,
 }

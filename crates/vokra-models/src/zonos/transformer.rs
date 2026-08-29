@@ -502,11 +502,11 @@ mod tests {
                 for head in 0..bb.num_heads {
                     let kv_head = head / groups;
                     let mut scores = Vec::with_capacity(position + 1);
-                    for prior in 0..=position {
+                    for key_row in keys.iter().take(position + 1) {
                         let mut score = 0.0;
                         for lane in 0..hd {
-                            score += queries[position][head * hd + lane]
-                                * keys[prior][kv_head * hd + lane];
+                            score +=
+                                queries[position][head * hd + lane] * key_row[kv_head * hd + lane];
                         }
                         scores.push(score * scale);
                     }

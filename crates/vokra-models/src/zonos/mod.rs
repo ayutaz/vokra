@@ -2830,10 +2830,12 @@ mod tests {
 
     #[test]
     fn sampling_filters_and_explicit_draws_are_deterministic() {
-        let mut sampling = ZonosSamplingParams::default();
-        sampling.temperature = 1.0;
-        sampling.top_k = Some(2);
-        sampling.min_p = None;
+        let sampling = ZonosSamplingParams {
+            temperature: 1.0,
+            top_k: Some(2),
+            min_p: None,
+            ..ZonosSamplingParams::default()
+        };
         let logits = vec![vec![4.0, 3.0, 1.0]];
         let mut history = vec![vec![0]];
         let mut cursor = 0;
@@ -2865,12 +2867,14 @@ mod tests {
 
     #[test]
     fn unified_sampling_runs_before_probability_filters_and_requires_draws() {
-        let mut sampling = ZonosSamplingParams::default();
-        sampling.temperature = 1.0;
-        sampling.min_p = None;
-        sampling.unified_linear = 1.0;
-        sampling.unified_confidence = 0.5;
-        sampling.unified_quadratic = 0.1;
+        let sampling = ZonosSamplingParams {
+            temperature: 1.0,
+            min_p: None,
+            unified_linear: 1.0,
+            unified_confidence: 0.5,
+            unified_quadratic: 0.1,
+            ..ZonosSamplingParams::default()
+        };
         let logits = vec![vec![2.0, 1.0, 0.0]];
         let mut cursor = 0;
         let token = sample_tokens(

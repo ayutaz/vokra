@@ -584,10 +584,15 @@ mod tests {
 
     #[test]
     fn ras_rejects_empty_top_p_domain() {
-        let mut config = RasConfig::default();
-        config.top_p = 0.0;
+        let config = RasConfig {
+            top_p: 0.0,
+            ..RasConfig::default()
+        };
         assert!(config.validate().is_err());
-        config.top_p = f32::NAN;
+        let config = RasConfig {
+            top_p: f32::NAN,
+            ..RasConfig::default()
+        };
         assert!(config.validate().is_err());
     }
 

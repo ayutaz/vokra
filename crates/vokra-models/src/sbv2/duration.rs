@@ -1687,7 +1687,7 @@ mod tests {
             .map(|i| (i as f32 * 0.31) - 0.9)
             .collect();
         let conditioning: Vec<f32> = (0..channels * time)
-            .map(|i| (0.4 - i as f32 * 0.13))
+            .map(|i| 0.4 - i as f32 * 0.13)
             .collect();
         let expected = dds.forward(&input, time, Some(&conditioning));
         let actual = dds

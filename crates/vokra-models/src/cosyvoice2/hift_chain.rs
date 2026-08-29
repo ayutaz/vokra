@@ -429,7 +429,7 @@ mod tests {
         let (cfg, weights) = small_hift_chain_bundle();
         let chain = HiFTChain::new(cfg, weights).expect("build");
         let err = chain
-            .forward_with_backend(&vec![0.0; 4 * 2], 2, BackendKind::Cuda)
+            .forward_with_backend(&[0.0; 4 * 2], 2, BackendKind::Cuda)
             .unwrap_err();
         assert!(matches!(err, VokraError::UnsupportedOp(_)), "{err:?}");
     }
@@ -440,7 +440,7 @@ mod tests {
         let (cfg, weights) = small_hift_chain_bundle();
         let chain = HiFTChain::new(cfg, weights).expect("build");
         let err = chain
-            .forward_with_backend(&vec![0.0; 4 * 2], 2, BackendKind::Metal)
+            .forward_with_backend(&[0.0; 4 * 2], 2, BackendKind::Metal)
             .unwrap_err();
         assert!(matches!(err, VokraError::BackendUnavailable(_)), "{err:?}");
     }
