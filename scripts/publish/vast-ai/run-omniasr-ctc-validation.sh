@@ -23,6 +23,7 @@ PARITY_TEST="real_omniasr_ctc_encoder_logits_and_tokens_match_official"
 MIN_MEM_KIB=$((64 * 1024 * 1024))
 MIN_DISK_KIB=$((150 * 1024 * 1024))
 DEFAULT_WORK_DIR="/workspace/vokra-omniasr-ctc-validation"
+SNAPSHOT_LOCAL_DIR_NAME="hf-materialized"
 
 die() { echo "run-omniasr-ctc-validation: $*" >&2; exit 2; }
 
@@ -78,6 +79,8 @@ run_self_test() {
     "$OMNI_REPOSITORY" "$OMNI_REVISION" "$FAIRSEQ2_REPOSITORY" \
     "$FAIRSEQ2_REVISION" "$PREPARER" "$DUMPER" "NO_UPLOAD" \
     "canonical_absent_path" "canonical_existing_path" "symlink ancestor" \
+    "SNAPSHOT_LOCAL_DIR_NAME" "local_dir=destination" "destination.is_symlink()" \
+    "materialized snapshot" \
     "git status --porcelain --untracked-files=all" "MemTotal" "df -Pk" \
     "807" "$PARITY_TEST" "OMNIASR_REAL_PARITY_PASS" "parity_status=CPU_PASS" \
     "token_exact=true" "reference_manifest_sha256" "max_abs" \
@@ -136,6 +139,8 @@ for command in git cargo uv sha256sum; do command -v "$command" >/dev/null 2>&1 
 # No scratch/cache is created before all host/path gates above pass.
 mkdir "$work_dir"
 work_dir="$(cd "$work_dir" && pwd -P)"
+snapshot_local_dir="$work_dir/$SNAPSHOT_LOCAL_DIR_NAME"
+canonical_absent_path "$snapshot_local_dir" snapshot-local-dir
 assets="$work_dir/assets"
 prepared="$work_dir/prepared/$CHECKPOINT_FILENAME.safetensors"
 prepared_dir="$(dirname "$prepared")"
@@ -157,21 +162,36 @@ run_logged git -C "$sources/fairseq2" checkout --detach "$FAIRSEQ2_REVISION"
 [[ -z "$(git -C "$sources/fairseq2" status --porcelain)" ]] || die "fairseq2 checkout is dirty"
 
 run_logged uv run --frozen --project tools/parity --python 3.12 python - \
-  "$MODEL_ID" "$HF_REVISION" "$work_dir/hf-cache" "$evidence/hf-snapshot-path.txt" <<'PY'
+  "$MODEL_ID" "$HF_REVISION" "$work_dir/hf-cache" "$snapshot_local_dir" \
+  "$evidence/hf-snapshot-path.txt" <<'PY'
 import os
 import sys
 from pathlib import Path
 from huggingface_hub import snapshot_download
-repo, revision, cache_dir, output = sys.argv[1:]
-path = Path(snapshot_download(repo_id=repo, revision=revision, cache_dir=cache_dir,
-                              allow_patterns=["omniASR-CTC-1B.pt", "omniASR_tokenizer.model"],
-                              token=os.environ.get("HF_TOKEN") or os.environ.get("HF")))
-if path.name != revision:
-    raise SystemExit(f"snapshot revision drift: {path.name} != {revision}")
+repo, revision, cache_dir, local_dir, output = sys.argv[1:]
+destination = Path(local_dir)
+if not destination.is_absolute():
+    raise SystemExit(f"materialized snapshot destination must be absolute: {destination}")
+if destination.exists() or destination.is_symlink():
+    raise SystemExit(f"materialized snapshot destination must be absent and non-symlink: {destination}")
+if not destination.parent.is_dir() or destination.parent.is_symlink():
+    raise SystemExit(f"materialized snapshot parent must be a regular directory: {destination.parent}")
+if destination.parent.resolve(strict=True) != destination.parent:
+    raise SystemExit(f"materialized snapshot parent has a symlink ancestor: {destination.parent}")
+downloaded = Path(snapshot_download(repo_id=repo, revision=revision, cache_dir=cache_dir,
+                                    local_dir=destination,
+                                    allow_patterns=["omniASR-CTC-1B.pt", "omniASR_tokenizer.model"],
+                                    token=os.environ.get("HF_TOKEN") or os.environ.get("HF")))
+canonical_destination = destination.resolve(strict=True)
+if canonical_destination != destination:
+    raise SystemExit(f"materialized snapshot destination is not canonical: {destination} -> {canonical_destination}")
+if downloaded.resolve(strict=True) != canonical_destination:
+    raise SystemExit(f"snapshot_download returned an unexpected materialized path: {downloaded}")
 for name in ("omniASR-CTC-1B.pt", "omniASR_tokenizer.model"):
-    if not (path / name).is_file() or (path / name).is_symlink():
-        raise SystemExit(f"missing canonical snapshot asset: {name}")
-Path(output).write_text(str(path), encoding="utf-8")
+    asset = canonical_destination / name
+    if not asset.is_file() or asset.is_symlink():
+        raise SystemExit(f"missing canonical materialized snapshot asset: {name}")
+Path(output).write_text(str(canonical_destination), encoding="utf-8")
 PY
 snapshot="$(< "$evidence/hf-snapshot-path.txt")"
 cp "$snapshot/$CHECKPOINT_FILENAME" "$assets/$CHECKPOINT_FILENAME"
