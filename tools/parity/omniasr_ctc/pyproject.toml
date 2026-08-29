@@ -1,0 +1,14 @@
+[project]
+name = "vokra-omniasr-ctc-reference"
+version = "0.1.0"
+description = "Pinned official fairseq2/Omnilingual ASR reference environment"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "fairseq2==0.5.2",
+  "numpy>=1.26,<3",
+  "soundfile>=0.13,<1",
+  "torch>=2.2,<3",
+]
+
+[tool.uv]
+package = false

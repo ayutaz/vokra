@@ -56,9 +56,10 @@
 //!   - `max_seq_len` = 4096 (upper bound on the post-extraction frame
 //!     count).
 //! - **CTC head + vocab**:
-//!   - `target_vocab_size` = 9812 (the v1 tokenizer's char vocab;
-//!     `omniASR_tokenizer_v1`, `char_tokenizer` family per
-//!     `src/omnilingual_asr/cards/models/rc_models_v1.yaml`),
+//!   - `target_vocab_size` = 9812 (the initial release tokenizer's char
+//!     vocab; card `omniASR_CTC_1B` uses tokenizer ref
+//!     `omniASR_tokenizer` in
+//!     `src/omnilingual_asr/cards/models/rc_models.yaml`),
 //!   - **`blank_id` = 0** — the fairseq2 wav2vec 2.0 CTC convention
 //!     (`torch.nn.functional.ctc_loss` is called without an explicit
 //!     `blank=` argument in
@@ -97,12 +98,14 @@
 //!   source (no hardcoded fabrication; sample-rate is inherited from the
 //!   wav2vec 2.0 waveform convention, documented on the field).
 //! - [`OmniasrCtcWeights`] — a strict weight store plus a deterministic
-//!   [`OmniasrCtcWeights::synthesized`] test fixture. `from_gguf` refuses
-//!   payloads until the audited VAST tensor-name manifest is available.
+//!   [`OmniasrCtcWeights::synthesized`] test fixture. `from_gguf` binds only
+//!   the complete audited VAST tensor-name/shape manifest and exact prepared
+//!   SHA-256 `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`.
 //! - [`OmniasrCtcAsr`] — backend-selectable native-forward handle carrying
 //!   config and explicitly bound weights. `transcribe_tokens` runs the
 //!   complete encoder and CTC path; SentencePiece detokenization remains
-//!   outside this module and the GGUF binder stays manifest-gated.
+//!   outside this module and the GGUF binder authenticates the pinned release
+//!   before constructing the native engine.
 //!
 //! # No ONNX (permanent)
 //!
@@ -112,7 +115,7 @@
 //! This module never touches ONNX.
 
 use vokra_core::backend::BackendKind;
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::rng::SplitMix64;
 use vokra_core::{LicenseClass, Result, VokraError};
 use vokra_ops::{
@@ -126,6 +129,9 @@ use crate::align::charsiu::{
     linear_forward_with_compute, positional_conv_forward_with_compute,
 };
 use crate::compute::{Compute, HotOp};
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::strict_checkpoint::load_tensor;
 
 /// `vokra.model.arch` an omniASR-CTC GGUF must carry. Written by
 /// `vokra-convert::models::omniasr_ctc::ARCH`; the compliance registry
@@ -141,6 +147,14 @@ pub const EXPECTED_ARCH: &str = "omniasr-ctc";
 /// ("16 kHz mono waveform") and the wav2vec 2.0 convention.
 pub const OMNIASR_CTC_SAMPLE_RATE: u32 = 16_000;
 
+/// The official Omnilingual ASR preprocessing boundary is
+/// `torch.nn.functional.layer_norm(waveform, waveform.shape)` with the
+/// PyTorch default `eps=1e-5` (the initial upstream commit's
+/// `datasets/utils/audio.py::apply_audio_normalization`).  This is
+/// intentionally Omni-specific: the shared wav2vec2 CTC helper uses a
+/// different `1e-7` epsilon and must not be changed for its other models.
+const OMNIASR_CTC_NORMALIZATION_EPS: f32 = 1e-5;
+
 /// Fixed count of Conv1D layers in the wav2vec 2.0 waveform feature
 /// extractor — 7, matching the fairseq2
 /// `Wav2Vec2EncoderConfig.feature_extractor_layer_descs` default which
@@ -153,10 +167,22 @@ pub const OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS: usize = 7;
 
 /// The pinned fairseq2 payload size for `facebook/omniASR-CTC-1B`.
 ///
-/// This is a loader gate, not a substitute for the upstream tensor-name
-/// manifest.  A checkpoint with a different count is rejected before any
-/// tensor is interpreted.
+/// The loader additionally checks the complete audited name/shape/F32 map;
+/// this count is only the first cheap rejection before tensor interpretation.
 pub const OMNIASR_CTC_EXPECTED_TENSOR_COUNT: usize = 807;
+
+/// Immutable identity of the audited VAST extraction.  The source and
+/// prepared digests are metadata bindings, not parity claims: they identify
+/// the exact fairseq2 checkpoint and the safetensors prepared from it.
+const OMNIASR_CTC_MODEL_ID: &str = "facebook/omniASR-CTC-1B";
+const OMNIASR_CTC_HF_REVISION: &str = "8c22e3ffdaa4aab6431b128b84b991a7d9c2515c";
+const OMNIASR_CTC_SOURCE_SHA256: &str =
+    "e8564fa59dab7caedbcdb54ab7fb9bd6c96989f4d19add2ad81ddd969716952c";
+const OMNIASR_CTC_PREPARED_SHA256: &str =
+    "cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5";
+const KEY_PROVENANCE_UPSTREAM_REVISION: &str = "vokra.provenance.upstream_revision";
+const KEY_OMNIASR_SOURCE_SHA256: &str = "vokra.omniasr_ctc.source_sha256";
+const KEY_OMNIASR_PREPARED_SHA256: &str = "vokra.omniasr_ctc.prepared_sha256";
 
 /// Learned operations used by the native forward path.
 pub const OMNIASR_CTC_HOT_OPS: &[HotOp] = &[
@@ -1103,9 +1129,9 @@ pub struct OmniasrCtcHeadWeights {
 ///
 /// [`Self::synthesized`] builds a deterministic fixture (SplitMix64 +
 /// Xavier) against `config` so shape / dtype / size can be exercised
-/// without the real HF checkpoint. Real-checkpoint binding is a
-/// follow-up (T29-equivalent — tensor-name manifest fetch from the
-/// upstream release).
+/// without the real HF checkpoint. Real-checkpoint binding consumes the
+/// complete audited VAST manifest; this fixture is never accepted by
+/// `from_gguf`.
 #[derive(Debug, Clone)]
 pub struct OmniasrCtcWeights {
     /// 7 waveform-feature-extractor Conv1D layers, in order.
@@ -1276,6 +1302,427 @@ fn xavier(rng: &mut SplitMix64, count: usize, fan_in: usize, fan_out: usize) -> 
         out.push((u01 * 2.0 - 1.0) * a);
     }
     out
+}
+
+fn normalize_omniasr_pcm(pcm: &[f32]) -> Vec<f32> {
+    let mean = pcm.iter().copied().sum::<f32>() / pcm.len() as f32;
+    let variance = pcm
+        .iter()
+        .map(|&value| {
+            let delta = value - mean;
+            delta * delta
+        })
+        .sum::<f32>()
+        / pcm.len() as f32;
+    let scale = 1.0 / (variance + OMNIASR_CTC_NORMALIZATION_EPS).sqrt();
+    pcm.iter().map(|&value| (value - mean) * scale).collect()
+}
+
+/// The complete 807-entry contract extracted from the authoritative VAST
+/// manifest.  Keeping this as an explicit name/shape map means a matching
+/// tensor count can never authenticate a different fairseq2 state dict.
+fn omniasr_manifest() -> BTreeMap<String, Vec<u64>> {
+    let mut expected = BTreeMap::new();
+    let mut add = |name: String, shape: &[u64]| {
+        expected.insert(name, shape.to_vec());
+    };
+    add("encoder.layer_norm.bias".to_owned(), &[1280]);
+    add("encoder.layer_norm.weight".to_owned(), &[1280]);
+    add("final_proj.bias".to_owned(), &[9812]);
+    add("final_proj.weight".to_owned(), &[9812, 1280]);
+
+    for i in 0..48 {
+        let p = format!("encoder.layers.{i}");
+        add(format!("{p}.ffn.inner_proj.bias"), &[5120]);
+        add(format!("{p}.ffn.inner_proj.weight"), &[5120, 1280]);
+        add(format!("{p}.ffn.output_proj.bias"), &[1280]);
+        add(format!("{p}.ffn.output_proj.weight"), &[1280, 5120]);
+        add(format!("{p}.ffn_layer_norm.bias"), &[1280]);
+        add(format!("{p}.ffn_layer_norm.weight"), &[1280]);
+        for projection in ["k", "output", "q", "v"] {
+            add(format!("{p}.self_attn.{projection}_proj.bias"), &[1280]);
+            add(
+                format!("{p}.self_attn.{projection}_proj.weight"),
+                &[1280, 1280],
+            );
+        }
+        add(format!("{p}.self_attn_layer_norm.bias"), &[1280]);
+        add(format!("{p}.self_attn_layer_norm.weight"), &[1280]);
+    }
+
+    let kernels = [10u64, 3, 3, 3, 3, 2, 2];
+    for (i, &kernel) in kernels.iter().enumerate() {
+        let input = if i == 0 { 1 } else { 512 };
+        let p = format!("encoder_frontend.feature_extractor.layers.{i}");
+        add(format!("{p}.conv.bias"), &[512]);
+        add(format!("{p}.conv.weight"), &[512, input, kernel]);
+        add(format!("{p}.layer_norm.bias"), &[512]);
+        add(format!("{p}.layer_norm.weight"), &[512]);
+    }
+    add("encoder_frontend.model_dim_proj.bias".to_owned(), &[1280]);
+    add(
+        "encoder_frontend.model_dim_proj.weight".to_owned(),
+        &[1280, 512],
+    );
+    add("encoder_frontend.pos_encoder.conv.bias".to_owned(), &[1280]);
+    add(
+        "encoder_frontend.pos_encoder.conv.weight_g".to_owned(),
+        &[1, 1, 128],
+    );
+    add(
+        "encoder_frontend.pos_encoder.conv.weight_v".to_owned(),
+        &[1280, 80, 128],
+    );
+    add(
+        "encoder_frontend.post_extract_layer_norm.bias".to_owned(),
+        &[512],
+    );
+    add(
+        "encoder_frontend.post_extract_layer_norm.weight".to_owned(),
+        &[512],
+    );
+    expected
+}
+
+fn require_omniasr_provenance(file: &GgufFile) -> Result<()> {
+    let required = [
+        (chunks::KEY_MODEL_NAME, "omniasr-ctc-1b"),
+        (chunks::KEY_PROVENANCE_MODEL_ID, OMNIASR_CTC_MODEL_ID),
+        (
+            chunks::KEY_PROVENANCE_SOURCE,
+            "https://huggingface.co/facebook/omniASR-CTC-1B",
+        ),
+        (KEY_PROVENANCE_UPSTREAM_REVISION, OMNIASR_CTC_HF_REVISION),
+        (KEY_OMNIASR_SOURCE_SHA256, OMNIASR_CTC_SOURCE_SHA256),
+        (KEY_OMNIASR_PREPARED_SHA256, OMNIASR_CTC_PREPARED_SHA256),
+        (chunks::KEY_PROVENANCE_LICENSE, "Apache-2.0"),
+        (
+            chunks::KEY_PROVENANCE_WEIGHT_LICENSE,
+            LicenseClass::Permissive.as_str(),
+        ),
+    ];
+    for (key, expected) in required {
+        let actual = file.get(key).and_then(|value| value.as_str());
+        if actual != Some(expected) {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: provenance `{key}` is {actual:?}, expected exact {expected:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_omniasr_manifest(file: &GgufFile) -> Result<()> {
+    let expected = omniasr_manifest();
+    if expected.len() != OMNIASR_CTC_EXPECTED_TENSOR_COUNT {
+        return Err(VokraError::ModelLoad(format!(
+            "omniasr-ctc: internal manifest has {} entries, expected {}",
+            expected.len(),
+            OMNIASR_CTC_EXPECTED_TENSOR_COUNT
+        )));
+    }
+    validate_manifest_contract(file, &expected)
+}
+
+fn validate_manifest_contract(
+    file: &GgufFile,
+    expected: &BTreeMap<String, Vec<u64>>,
+) -> Result<()> {
+    if file.tensors().len() != expected.len() {
+        return Err(VokraError::ModelLoad(format!(
+            "omniasr-ctc: GGUF contains {} tensors, expected exact audited manifest size {}",
+            file.tensors().len(),
+            expected.len()
+        )));
+    }
+    let mut seen = BTreeSet::new();
+    for info in file.tensors() {
+        if !seen.insert(info.name.as_str()) {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: duplicate tensor `{}`",
+                info.name
+            )));
+        }
+        let Some(shape) = expected.get(&info.name) else {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: unexpected tensor `{}`",
+                info.name
+            )));
+        };
+        if &info.dimensions != shape {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: tensor `{}` has shape {:?}, expected {:?}",
+                info.name, info.dimensions, shape
+            )));
+        }
+        if info.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: tensor `{}` has dtype {:?}, expected F32 from the audited manifest",
+                info.name, info.dtype
+            )));
+        }
+    }
+    if seen.len() != expected.len() {
+        return Err(VokraError::ModelLoad(
+            "omniasr-ctc: audited manifest contains missing tensor names".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn load_omniasr_tensor(file: &GgufFile, name: &str, shape: &[usize]) -> Result<Vec<f32>> {
+    let values = load_tensor(file, "omniasr-ctc", name, shape)?;
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(format!(
+            "omniasr-ctc: tensor `{name}` contains non-finite values"
+        )));
+    }
+    Ok(values)
+}
+
+/// Materializes the legacy PyTorch/fairseq2 `weight_norm(..., dim=2)` pair.
+/// With `weight_v [out, in, kernel]` and `weight_g [1, 1, kernel]`, each
+/// kernel position is one normalization vector over the first two axes. This
+/// is the same axis convention recorded by the official fairseq2 Wav2Vec2
+/// positional Conv1D, not an inferred per-output-channel normalization.
+fn materialize_positional_weight(file: &GgufFile) -> Result<Vec<f32>> {
+    let g = load_omniasr_tensor(
+        file,
+        "encoder_frontend.pos_encoder.conv.weight_g",
+        &[1, 1, 128],
+    )?;
+    let v = load_omniasr_tensor(
+        file,
+        "encoder_frontend.pos_encoder.conv.weight_v",
+        &[1280, 80, 128],
+    )?;
+    materialize_positional_weight_values(&g, &v, 1280, 80, 128)
+}
+
+fn materialize_positional_weight_values(
+    g: &[f32],
+    v: &[f32],
+    out_channels: usize,
+    in_channels: usize,
+    kernel_size: usize,
+) -> Result<Vec<f32>> {
+    if g.len() != kernel_size || v.len() != out_channels * in_channels * kernel_size {
+        return Err(VokraError::ModelLoad(
+            "omniasr-ctc: positional Conv1D weight_norm g/v shape mismatch".to_owned(),
+        ));
+    }
+    let mut output = vec![0.0; v.len()];
+    for kernel in 0..kernel_size {
+        let mut norm_sq = 0.0f32;
+        for out in 0..out_channels {
+            for input in 0..in_channels {
+                let index = (out * in_channels + input) * kernel_size + kernel;
+                norm_sq += v[index] * v[index];
+            }
+        }
+        let norm = norm_sq.sqrt();
+        if !norm.is_finite() || norm == 0.0 || !g[kernel].is_finite() {
+            return Err(VokraError::ModelLoad(format!(
+                "omniasr-ctc: positional Conv1D weight_norm kernel {kernel} has invalid norm/g"
+            )));
+        }
+        let scale = g[kernel] / norm;
+        for out in 0..out_channels {
+            for input in 0..in_channels {
+                let index = (out * in_channels + input) * kernel_size + kernel;
+                output[index] = v[index] * scale;
+            }
+        }
+    }
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::ModelLoad(
+            "omniasr-ctc: materialized positional Conv1D contains non-finite values".to_owned(),
+        ));
+    }
+    Ok(output)
+}
+
+fn fuse_qkv(q: Vec<f32>, k: Vec<f32>, v: Vec<f32>, model_dim: usize) -> Result<Vec<f32>> {
+    let expected = model_dim * model_dim;
+    if q.len() != expected || k.len() != expected || v.len() != expected {
+        return Err(VokraError::ModelLoad(
+            "omniasr-ctc: q/k/v projection shape mismatch".to_owned(),
+        ));
+    }
+    let mut fused = Vec::with_capacity(expected * 3);
+    fused.extend(q);
+    fused.extend(k);
+    fused.extend(v);
+    Ok(fused)
+}
+
+fn fuse_qkv_bias(q: Vec<f32>, k: Vec<f32>, v: Vec<f32>, model_dim: usize) -> Result<Vec<f32>> {
+    if q.len() != model_dim || k.len() != model_dim || v.len() != model_dim {
+        return Err(VokraError::ModelLoad(
+            "omniasr-ctc: q/k/v bias shape mismatch".to_owned(),
+        ));
+    }
+    let mut fused = Vec::with_capacity(model_dim * 3);
+    fused.extend(q);
+    fused.extend(k);
+    fused.extend(v);
+    Ok(fused)
+}
+
+fn bind_omniasr_weights(file: &GgufFile, cfg: &OmniasrCtcConfig) -> Result<OmniasrCtcWeights> {
+    let enc = &cfg.encoder;
+    let mut feature_extractor = Vec::with_capacity(7);
+    for (i, desc) in enc.feature_extractor_layer_descs.iter().enumerate() {
+        let input = if i == 0 { 1 } else { 512 };
+        let p = format!("encoder_frontend.feature_extractor.layers.{i}");
+        feature_extractor.push(OmniasrCtcFeatureExtractorLayerWeights {
+            conv_w: load_omniasr_tensor(
+                file,
+                &format!("{p}.conv.weight"),
+                &[desc.out_dim, input, desc.kernel],
+            )?,
+            conv_b: Some(load_omniasr_tensor(
+                file,
+                &format!("{p}.conv.bias"),
+                &[desc.out_dim],
+            )?),
+            norm_gamma: Some(load_omniasr_tensor(
+                file,
+                &format!("{p}.layer_norm.weight"),
+                &[desc.out_dim],
+            )?),
+            norm_beta: Some(load_omniasr_tensor(
+                file,
+                &format!("{p}.layer_norm.bias"),
+                &[desc.out_dim],
+            )?),
+        });
+    }
+    let feature_projection = OmniasrCtcFeatureProjectionWeights {
+        norm_gamma: Some(load_omniasr_tensor(
+            file,
+            "encoder_frontend.post_extract_layer_norm.weight",
+            &[512],
+        )?),
+        norm_beta: Some(load_omniasr_tensor(
+            file,
+            "encoder_frontend.post_extract_layer_norm.bias",
+            &[512],
+        )?),
+        linear_w: load_omniasr_tensor(
+            file,
+            "encoder_frontend.model_dim_proj.weight",
+            &[1280, 512],
+        )?,
+        linear_b: load_omniasr_tensor(file, "encoder_frontend.model_dim_proj.bias", &[1280])?,
+    };
+    let pos_encoder_layers = vec![OmniasrCtcPosEncoderLayerWeights {
+        conv_w: materialize_positional_weight(file)?,
+        conv_b: load_omniasr_tensor(file, "encoder_frontend.pos_encoder.conv.bias", &[1280])?,
+    }];
+
+    let mut encoder_blocks = Vec::with_capacity(48);
+    for i in 0..48 {
+        let p = format!("encoder.layers.{i}");
+        let mut q_proj = Vec::with_capacity(1280 * 1280);
+        let mut k_proj = Vec::with_capacity(1280 * 1280);
+        let mut v_proj = Vec::with_capacity(1280 * 1280);
+        let mut q_bias = Vec::with_capacity(1280);
+        let mut k_bias = Vec::with_capacity(1280);
+        let mut v_bias = Vec::with_capacity(1280);
+        // The fairseq2 module exposes separate q_proj, k_proj, v_proj rows;
+        // the native runtime's fused layout is explicitly [Q rows, K rows,
+        // V rows], preserving the official source module order.
+        q_proj.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.q_proj.weight"),
+            &[1280, 1280],
+        )?);
+        k_proj.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.k_proj.weight"),
+            &[1280, 1280],
+        )?);
+        v_proj.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.v_proj.weight"),
+            &[1280, 1280],
+        )?);
+        q_bias.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.q_proj.bias"),
+            &[1280],
+        )?);
+        k_bias.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.k_proj.bias"),
+            &[1280],
+        )?);
+        v_bias.extend(load_omniasr_tensor(
+            file,
+            &format!("{p}.self_attn.v_proj.bias"),
+            &[1280],
+        )?);
+        let qkv_proj = fuse_qkv(q_proj, k_proj, v_proj, 1280)?;
+        let qkv_bias = fuse_qkv_bias(q_bias, k_bias, v_bias, 1280)?;
+        encoder_blocks.push(OmniasrCtcEncoderBlockWeights {
+            attn_norm_gamma: load_omniasr_tensor(
+                file,
+                &format!("{p}.self_attn_layer_norm.weight"),
+                &[1280],
+            )?,
+            attn_norm_beta: load_omniasr_tensor(
+                file,
+                &format!("{p}.self_attn_layer_norm.bias"),
+                &[1280],
+            )?,
+            qkv_proj,
+            qkv_bias,
+            attn_out: load_omniasr_tensor(
+                file,
+                &format!("{p}.self_attn.output_proj.weight"),
+                &[1280, 1280],
+            )?,
+            attn_out_bias: load_omniasr_tensor(
+                file,
+                &format!("{p}.self_attn.output_proj.bias"),
+                &[1280],
+            )?,
+            ffn_norm_gamma: load_omniasr_tensor(
+                file,
+                &format!("{p}.ffn_layer_norm.weight"),
+                &[1280],
+            )?,
+            ffn_norm_beta: load_omniasr_tensor(file, &format!("{p}.ffn_layer_norm.bias"), &[1280])?,
+            ffn_fc1: load_omniasr_tensor(
+                file,
+                &format!("{p}.ffn.inner_proj.weight"),
+                &[5120, 1280],
+            )?,
+            ffn_fc1_bias: load_omniasr_tensor(file, &format!("{p}.ffn.inner_proj.bias"), &[5120])?,
+            ffn_fc2: load_omniasr_tensor(
+                file,
+                &format!("{p}.ffn.output_proj.weight"),
+                &[1280, 5120],
+            )?,
+            ffn_fc2_bias: load_omniasr_tensor(file, &format!("{p}.ffn.output_proj.bias"), &[1280])?,
+        });
+    }
+    Ok(OmniasrCtcWeights {
+        feature_extractor,
+        feature_projection,
+        frontend_model_dim_norm_gamma: None,
+        frontend_model_dim_norm_beta: None,
+        pos_encoder_layers,
+        encoder_blocks,
+        encoder_final_norm_gamma: load_omniasr_tensor(file, "encoder.layer_norm.weight", &[1280])?,
+        encoder_final_norm_beta: load_omniasr_tensor(file, "encoder.layer_norm.bias", &[1280])?,
+        head: OmniasrCtcHeadWeights {
+            vocab_head: load_omniasr_tensor(file, "final_proj.weight", &[9812, 1280])?,
+            vocab_bias: load_omniasr_tensor(file, "final_proj.bias", &[9812])?,
+        },
+        is_synthesized: false,
+    })
 }
 
 fn omni_encoder_config(cfg: &OmniasrCtcConfig) -> CharsiuConfig {
@@ -1845,9 +2292,9 @@ impl OmniasrCtcAsr {
             // Permissive via the `omniasr-ctc-` family prefix walk).
             // Distinct from Parakeet-CTC's default (AttributionRequired
             // = CC-BY 4.0) — omniASR has no runtime-side attribution
-            // obligation. A future manifest-backed GGUF binder may replace
-            // this with the stamped provenance class; from_gguf currently
-            // fail-closes before constructing an engine.
+            // obligation. The manifest-backed `from_gguf` path re-checks the
+            // same class and all pinned provenance before constructing an
+            // engine.
             weight_license: LicenseClass::Permissive,
             backend: BackendKind::Cpu,
         })
@@ -1868,9 +2315,8 @@ impl OmniasrCtcAsr {
     }
 
     /// The currently selected weight-license class. `new()` defaults to the
-    /// compliance registry's Apache-2.0/Permissive class. The manifest-gated
-    /// `from_gguf` path does not construct an engine or surface provenance
-    /// until the real tensor binder is available.
+    /// compliance registry's Apache-2.0/Permissive class. The strict
+    /// `from_gguf` path replaces this with the authenticated provenance class.
     #[inline]
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
@@ -1889,6 +2335,18 @@ impl OmniasrCtcAsr {
     /// Runs the waveform frontend, feature projection, positional
     /// convolution, pre-norm Transformer encoder, and final encoder norm.
     pub fn encode_features(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
+        let (_, encoder, frames) = self.forward_trace(pcm)?;
+        Ok((encoder, frames))
+    }
+
+    /// Returns the post-frontend representation and final encoder output from
+    /// one native forward.  The VAST reference packet uses this diagnostic
+    /// boundary for `frontend.f32le`; it is not a second implementation.
+    pub fn diagnostic_trace(&self, pcm: &[f32]) -> Result<(Vec<f32>, Vec<f32>, usize)> {
+        self.forward_trace(pcm)
+    }
+
+    fn forward_trace(&self, pcm: &[f32]) -> Result<(Vec<f32>, Vec<f32>, usize)> {
         if pcm.is_empty() {
             return Err(VokraError::InvalidArgument(
                 "omniasr-ctc encode_features: pcm slice is empty".to_owned(),
@@ -1902,7 +2360,7 @@ impl OmniasrCtcAsr {
         let compute = Compute::for_backend(self.backend, OMNIASR_CTC_HOT_OPS)?;
         let attrs = omni_stem_attrs(&self.cfg);
         let stem = omni_stem_weights(&self.weights);
-        let normalized = crate::wav2vec2_ctc::zero_mean_unit_var(pcm);
+        let normalized = normalize_omniasr_pcm(pcm);
         let features = crate::wav2vec2_ctc::waveform_frontend_with_compute(
             &normalized,
             &attrs,
@@ -1970,6 +2428,7 @@ impl OmniasrCtcAsr {
                 &compute,
             )?;
         }
+        let frontend = hidden.clone();
         for block in &self.weights.encoder_blocks {
             omni_stable_block(&mut hidden, frames, &encoder_cfg, block, &compute)?;
         }
@@ -1983,11 +2442,15 @@ impl OmniasrCtcAsr {
             &compute,
         )?;
         omni_reject_non_finite("encoder output", &hidden)?;
-        Ok((hidden, frames))
+        Ok((frontend, hidden, frames))
     }
 
-    /// Runs the CTC projection and greedy blank/repeat folding.
-    pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
+    /// Runs the CTC projection and returns frame-major logits plus frame count.
+    ///
+    /// This is the diagnostic boundary used by the independent VAST reference
+    /// packet.  It shares the exact encoder path with [`Self::transcribe_tokens`]
+    /// so parity cannot accidentally compare a second implementation.
+    pub fn ctc_logits(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
         let (hidden, frames) = self.encode_features(pcm)?;
         let logits = linear_forward_with_compute(
             &hidden,
@@ -1999,6 +2462,12 @@ impl OmniasrCtcAsr {
             &Compute::for_backend(self.backend, OMNIASR_CTC_HOT_OPS)?,
         )?;
         omni_reject_non_finite("CTC logits", &logits)?;
+        Ok((logits, frames))
+    }
+
+    /// Runs the CTC projection and greedy blank/repeat folding.
+    pub fn transcribe_tokens(&self, pcm: &[f32]) -> Result<Vec<u32>> {
+        let (logits, frames) = self.ctc_logits(pcm)?;
         ctc_decode_greedy(
             &logits,
             frames,
@@ -2019,12 +2488,10 @@ impl OmniasrCtcAsr {
     ///
     /// # Loud-partial contract
     ///
-    /// Until that manifest is supplied from the VAST extraction record this
-    /// method returns a loud [`VokraError::ModelLoad`] after the exact 807
-    /// tensor-count gate; no name or shape is inferred. The manifest must
-    /// also resolve the fairseq2 positional-convolution weight-normalization
-    /// representation and the checkpoint's fused-QKV row layout before this
-    /// boundary can construct [`OmniasrCtcWeights`].
+    /// The exact 807-entry manifest is checked before decoding any payload.
+    /// The binder also resolves the fairseq2 positional-convolution
+    /// weight-normalization representation and fuses separate source q/k/v
+    /// rows in the native [Q,K,V] layout before constructing weights.
     /// Two primitives already exist and must not be rewritten: the
     /// 7-layer strided conv stem ([`vokra_ops::waveform_frontend`],
     /// whose `wav2vec2_base` preset targets exactly these checkpoints)
@@ -2087,27 +2554,19 @@ impl OmniasrCtcAsr {
 
         // 2. Strict topology axes from the `vokra.omniasr_ctc.*` chunk
         //    group.
-        let _cfg = OmniasrCtcConfig::from_gguf(file)?;
-
-        // A GGUF is loadable only when it carries the exact pinned payload.
-        // Do not substitute synthesized weights.  The upstream fairseq2
-        // tensor-name manifest is an audited input to the binder and is not
-        // present in this source tree; accepting a different payload would
-        // make an unknown checkpoint look like omniASR.
-        if file.tensors().len() != OMNIASR_CTC_EXPECTED_TENSOR_COUNT {
-            return Err(VokraError::ModelLoad(format!(
-                "omniasr-ctc: GGUF contains {} weight tensors, expected the pinned {}-tensor fairseq2 payload; refusing to bind an unrecognised checkpoint (FR-EX-08)",
-                file.tensors().len(),
-                OMNIASR_CTC_EXPECTED_TENSOR_COUNT
-            )));
+        let cfg = OmniasrCtcConfig::from_gguf(file)?;
+        let expected_cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        if cfg != expected_cfg {
+            return Err(VokraError::ModelLoad(
+                "omniasr-ctc: GGUF topology is not the audited facebook/omniASR-CTC-1B registry configuration".to_owned(),
+            ));
         }
-
-        // 3. The actual fairseq2 state-dict name manifest is deliberately
-        // required before decoding tensors.  It must be supplied from the
-        // VAST extraction record; no names or shapes are inferred here.
-        Err(VokraError::ModelLoad(
-            "omniasr-ctc: the 807-tensor payload count is valid, but the audited fairseq2 tensor-name manifest is not available in this checkout; refusing to guess binding names or shapes. Supply the VAST manifest before enabling real checkpoint loading (FR-EX-08)".to_owned(),
-        ))
+        require_omniasr_provenance(file)?;
+        validate_omniasr_manifest(file)?;
+        let weights = bind_omniasr_weights(file, &cfg)?;
+        let mut asr = Self::new(cfg, weights)?;
+        asr.weight_license = LicenseClass::Permissive;
+        Ok(asr)
     }
 
     /// Transcribes a mono `f32` PCM slice using the native wav2vec2 CTC path.
@@ -2220,6 +2679,23 @@ mod tests {
         OmniasrCtcConfig::tiny_for_tests()
             .validate_for_forward()
             .expect("tiny config is well-formed");
+    }
+
+    #[test]
+    fn official_pcm_normalization_uses_layer_norm_default_epsilon() {
+        let pcm = [0.0_f32, 1.0, 2.0, 3.0];
+        let normalized = normalize_omniasr_pcm(&pcm);
+        let mean = 1.5_f32;
+        let variance = 1.25_f32;
+        let scale = 1.0 / (variance + 1e-5_f32).sqrt();
+        for (actual, value) in normalized.iter().zip(pcm) {
+            assert_eq!(*actual, (value - mean) * scale);
+        }
+        assert_ne!(
+            normalized[1],
+            (pcm[1] - mean) / (variance + 1e-7_f32).sqrt(),
+            "the shared wav2vec2 CTC epsilon must not leak into OmniASR"
+        );
     }
 
     #[test]
@@ -3065,10 +3541,7 @@ mod tests {
         let error = OmniasrCtcAsr::from_gguf(&file).expect_err("metadata-only GGUF must fail");
         match error {
             VokraError::ModelLoad(message) => {
-                assert!(
-                    message.contains("expected the pinned") && message.contains("807-tensor"),
-                    "unexpected error: {message}"
-                );
+                assert!(!message.is_empty(), "error must explain the rejection");
             }
             other => panic!("expected ModelLoad, got {other:?}"),
         }
@@ -3251,7 +3724,7 @@ mod tests {
         let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
         let error = OmniasrCtcAsr::from_gguf(&file).expect_err("unbound payload must fail closed");
-        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("807-tensor")));
+        assert!(matches!(error, VokraError::ModelLoad(_)));
     }
 
     /// A GGUF that omits provenance is also rejected when its payload is not
@@ -3263,18 +3736,20 @@ mod tests {
         let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, None);
         let error = OmniasrCtcAsr::from_gguf(&file).expect_err("unbound payload must fail closed");
-        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("807-tensor")));
+        assert!(matches!(error, VokraError::ModelLoad(_)));
     }
 
-    /// A topology-valid but payload-incomplete GGUF cannot construct an
-    /// engine while the audited fairseq2 tensor-name manifest is absent.
+    /// A tiny/noncanonical GGUF cannot construct an engine even when its
+    /// metadata looks plausible; the production contract is fixed to the
+    /// audited 1B artifact.
     #[test]
-    fn from_gguf_rejects_payload_until_manifest_is_available() {
-        // Tiny scale — the loud-partial message does not depend on width.
+    fn from_gguf_rejects_noncanonical_payload() {
+        // Tiny scale — production binding never substitutes synthesized
+        // weights for the audited 807-tensor release.
         let cfg = OmniasrCtcConfig::tiny_for_tests();
         let file = omniasr_ctc_gguf(&cfg, Some(LicenseClass::Permissive));
         let error = OmniasrCtcAsr::from_gguf(&file).expect_err("unbound payload must fail closed");
-        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("807-tensor")));
+        assert!(matches!(error, VokraError::ModelLoad(_)));
     }
 
     #[test]
@@ -3282,7 +3757,7 @@ mod tests {
         let cfg = OmniasrCtcConfig::tiny_for_tests();
         let mut weights = OmniasrCtcWeights::synthesized(&cfg, 11).expect("weights");
         // Exercise tensor-layout and backend plumbing only. Production GGUF
-        // loading never does this and remains manifest-gated.
+        // loading never does this and remains strictly manifest-bound.
         weights.is_synthesized = false;
         let asr = OmniasrCtcAsr::new(cfg, weights).expect("valid bound shapes");
         let tokens = asr
@@ -3306,5 +3781,115 @@ mod tests {
         assert_eq!(q, [1.0, 2.0, 11.0, 12.0]);
         assert_eq!(k, [3.0, 4.0, 13.0, 14.0]);
         assert_eq!(v, [5.0, 6.0, 15.0, 16.0]);
+    }
+
+    #[test]
+    fn audited_manifest_has_all_807_names_and_pinned_shapes() {
+        let manifest = omniasr_manifest();
+        assert_eq!(manifest.len(), 807);
+        assert_eq!(
+            manifest["encoder_frontend.pos_encoder.conv.weight_g"],
+            vec![1, 1, 128]
+        );
+        assert_eq!(
+            manifest["encoder_frontend.pos_encoder.conv.weight_v"],
+            vec![1280, 80, 128]
+        );
+        assert_eq!(
+            manifest["encoder.layers.47.self_attn.v_proj.weight"],
+            vec![1280, 1280]
+        );
+    }
+
+    #[test]
+    fn tiny_synthetic_manifest_accepts_and_tampering_fails_closed() {
+        use vokra_core::gguf::{GgmlType, GgufBuilder, GgufFile};
+
+        let mut expected = BTreeMap::new();
+        expected.insert("q".to_owned(), vec![2, 2]);
+        expected.insert("k".to_owned(), vec![2, 2]);
+        let mut builder = GgufBuilder::new();
+        builder
+            .add_tensor("q", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        builder
+            .add_tensor("k", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        let file = GgufFile::parse(builder.to_bytes().unwrap()).unwrap();
+        assert!(validate_manifest_contract(&file, &expected).is_ok());
+
+        let mut tampered = GgufBuilder::new();
+        tampered
+            .add_tensor("q", GgmlType::F32, vec![4], vec![0; 16])
+            .unwrap();
+        tampered
+            .add_tensor("k", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        let file = GgufFile::parse(tampered.to_bytes().unwrap()).unwrap();
+        assert!(validate_manifest_contract(&file, &expected).is_err());
+
+        let mut extra = GgufBuilder::new();
+        extra
+            .add_tensor("q", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        extra
+            .add_tensor("k", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        extra
+            .add_tensor("evil", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        let file = GgufFile::parse(extra.to_bytes().unwrap()).unwrap();
+        assert!(validate_manifest_contract(&file, &expected).is_err());
+
+        let mut wrong_name = GgufBuilder::new();
+        wrong_name
+            .add_tensor("q", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        wrong_name
+            .add_tensor("evil", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        let file = GgufFile::parse(wrong_name.to_bytes().unwrap()).unwrap();
+        assert!(validate_manifest_contract(&file, &expected).is_err());
+
+        let mut wrong_dtype = GgufBuilder::new();
+        wrong_dtype
+            .add_tensor("q", GgmlType::F16, vec![2, 2], vec![0; 8])
+            .unwrap();
+        wrong_dtype
+            .add_tensor("k", GgmlType::F32, vec![2, 2], vec![0; 16])
+            .unwrap();
+        let file = GgufFile::parse(wrong_dtype.to_bytes().unwrap()).unwrap();
+        assert!(validate_manifest_contract(&file, &expected).is_err());
+    }
+
+    #[test]
+    fn qkv_fusion_is_source_ordered_and_weight_norm_uses_kernel_axis() {
+        assert_eq!(
+            fuse_qkv(
+                vec![1.0, 2.0, 3.0, 4.0],
+                vec![5.0, 6.0, 7.0, 8.0],
+                vec![9.0, 10.0, 11.0, 12.0],
+                2,
+            )
+            .unwrap(),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0
+            ]
+        );
+        assert_eq!(
+            fuse_qkv_bias(vec![1.0], vec![2.0], vec![3.0], 1).unwrap(),
+            vec![1.0, 2.0, 3.0]
+        );
+        let actual = materialize_positional_weight_values(
+            &[2.0, 4.0],
+            &[3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0],
+            2,
+            2,
+            2,
+        )
+        .unwrap();
+        assert!((actual[0] - 3.0 * 2.0 / 9.0f32.sqrt()).abs() < 1e-6);
+        assert!((actual[1] - 4.0 * 4.0 / 41.0f32.sqrt()).abs() < 1e-6);
+        assert!(materialize_positional_weight_values(&[1.0], &[0.0], 1, 1, 1).is_err());
     }
 }

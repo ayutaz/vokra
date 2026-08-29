@@ -512,6 +512,11 @@ impl ZipformerEncoder {
                 ));
             }
         }
+        if matches!(cfg.stem, ConvSubsampleKind::Conv1d { .. }) {
+            return Err(VokraError::InvalidArgument(
+                "ZipformerConfig: Conv1d stem is only supported by ConformerEncoder".to_owned(),
+            ));
+        }
         weights.validate(&cfg)?;
         Ok(Self { cfg, weights })
     }
@@ -616,6 +621,9 @@ impl ZipformerEncoder {
                 }
                 Ok((out, t_out))
             }
+            ConvSubsampleKind::Conv1d { .. } => Err(VokraError::InvalidArgument(
+                "ZipformerEncoder: Conv1d stem is only supported by ConformerEncoder".to_owned(),
+            )),
         }
     }
 
