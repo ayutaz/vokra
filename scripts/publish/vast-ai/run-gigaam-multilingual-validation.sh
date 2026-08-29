@@ -26,6 +26,21 @@ reject_path_overlap() {
     "$left"|"$left"/*) die "path overlap: $left and $right";;
   esac
 }
+validate_parity_log() {
+  local log_file="$1"
+  local named_count summary_count target_count test_line_count
+  local target='^test real_gigaam_multilingual_cpu_trace_matches_official \.\.\. ok$'
+  [[ -f "$log_file" ]] || return 1
+  named_count="$(grep -Ec '^test [^ ]+ \.\.\. ' "$log_file" || true)"
+  summary_count="$(grep -Ec '^test result: ' "$log_file" || true)"
+  target_count="$(grep -Ec "$target" "$log_file" || true)"
+  test_line_count="$(grep -Ec '^test ' "$log_file" || true)"
+  [[ "$named_count" == 1 ]] || return 1
+  [[ "$summary_count" == 1 ]] || return 1
+  [[ "$target_count" == 1 ]] || return 1
+  [[ "$test_line_count" == $((named_count + summary_count)) ]] || return 1
+  grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log_file"
+}
 
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die "--self-test accepts no other arguments"
@@ -60,6 +75,32 @@ if [[ "${1:-}" == --self-test ]]; then
   rg -n -- "encoded\.f32le|logits\.f32le|raw_argmax\.u32le|token_ids\.u32le" "$ROOT/tools/parity/sber_gigaam_multilingual_dump_reference.py" >/dev/null || die "raw reference artifacts missing"
   rg -n -- 'transpose\(0, 1\)|logaddexp\.reduce' "$ROOT/tools/parity/sber_gigaam_multilingual_dump_reference.py" >/dev/null || die "official encoder/head axis contract missing"
   if rg -n -- '\.npz|np\.savez' "$ROOT/tools/parity/sber_gigaam_multilingual_dump_reference.py" >/dev/null; then die "reference must not be npz-only"; fi
+  parity_log_test_dir="$(mktemp -d)"
+  trap 'rm -rf "$parity_log_test_dir"' EXIT
+  cat > "$parity_log_test_dir/good.log" <<'EOF'
+test real_gigaam_multilingual_cpu_trace_matches_official ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  validate_parity_log "$parity_log_test_dir/good.log" || die "valid cargo parity log was rejected"
+  cat > "$parity_log_test_dir/duplicate.log" <<'EOF'
+test real_gigaam_multilingual_cpu_trace_matches_official ... ok
+test real_gigaam_multilingual_cpu_trace_matches_official ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/duplicate.log"; then die "duplicate named parity test was accepted"; fi
+  cat > "$parity_log_test_dir/extra.log" <<'EOF'
+test another_test ... ok
+test real_gigaam_multilingual_cpu_trace_matches_official ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/extra.log"; then die "extra named parity test was accepted"; fi
+  cat > "$parity_log_test_dir/failed.log" <<'EOF'
+test real_gigaam_multilingual_cpu_trace_matches_official ... FAILED
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/failed.log"; then die "failed parity test was accepted"; fi
+  rm -rf "$parity_log_test_dir"
+  trap - EXIT
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/gigaam_multilingual_validation.py" --self-test 2>/dev/null || die "reference validator self-test failed"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/sber_gigaam_multilingual_dump_reference.py" --self-test 2>/dev/null || die "reference dumper self-test failed"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" <<'PY'
@@ -600,9 +641,7 @@ for key in ("encoded_max_abs", "encoded_mean_abs", "logits_max_abs", "logits_mea
     if data[key] > bound:
         raise SystemExit(f"parity metric exceeds registered bound: {key}")
 PY
-[[ "$(grep -Ec '^test ' "$EVIDENCE_DIR/parity.log")" == 1 ]] || die "parity.log must contain exactly one test line"
-[[ "$(grep -Ec '^test [^ ]*real_gigaam_multilingual_cpu_trace_matches_official \.\.\. ok$' "$EVIDENCE_DIR/parity.log")" == 1 ]] || die "parity.log must record exactly one named GigaAM test pass"
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$EVIDENCE_DIR/parity.log")" == 1 ]] || die "parity.log must report the exact one-test result"
+validate_parity_log "$EVIDENCE_DIR/parity.log" || die "parity.log must contain exactly one passing named GigaAM test and one exact one-test result"
 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$EVIDENCE_DIR/digest.json" <<'PY'
 import json
 import sys
