@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Fail-closed VAST evidence inspector for NVIDIA Canary-Qwen-2.5B."""
 from __future__ import annotations
-import argparse, datetime, hashlib, json, math, subprocess, sys, tempfile
+import argparse, copy, datetime, hashlib, json, math, subprocess, sys, tempfile
 from pathlib import Path
 from typing import Any
 import yaml
@@ -12,6 +12,7 @@ TOKENIZER_REPOSITORY="Qwen/Qwen3-1.7B"; TOKENIZER_REVISION="70d244cc86ccca08cf5a
 FORMAT="vokra-canary-qwen-2.5b-inspection-v1"; MAX_HEADER_BYTES=64*1024*1024
 CANONICAL_INPUT_LENGTH_MARKER="**Input length.** The maximum audio duration in training was 40s, and the maximum token sequence length was 1024 tokens (including prompt, audio, and response)."
 OPEN_ASR_LEADERBOARD_VALUES={"mean_wer":5.63,"rtfx":418.28,"ami_wer":10.19,"earnings22_wer":10.45,"gigaspeech_wer":9.43,"librispeech_clean_wer":1.61,"librispeech_other_wer":3.1,"spgispeech_wer":1.9,"tedlium_wer":2.71,"voxpopuli_wer":5.66}
+CANARY_I64_TENSOR_NAMES=frozenset(f"perception.encoder.layers.{index}.conv.batch_norm.num_batches_tracked" for index in range(32))
 MODEL_FILES={
     ".eval_results/open_asr_leaderboard.yaml":(2128,"9dc5e54acc69f650c5b9cb40492baadf6bb05430",None,"1b0dbb55d8d897f107baed2a8a57fa9b81e259141e45fd1d45ca8533079527bd"),
     ".gitattributes":(1627,"33f879d5e8f1c01e682db7c50613d2aae540b5d8",None,None),
@@ -189,22 +190,26 @@ def inspect_st(path:Path)->dict[str,Any]:
         raw=f.read(n)
     h=json.loads(raw.decode(),object_pairs_hook=pairs); meta=h.get("__metadata__")
     if meta is not None and (not isinstance(meta,dict) or not all(isinstance(k,str) and isinstance(v,str) for k,v in meta.items())): raise RuntimeError("invalid metadata")
-    payload=size-8-n; intervals=[]; rows=[]
+    payload=size-8-n; intervals=[]; rows=[]; dtype_counts={"BF16":0,"I64":0}
     for name,r in h.items():
         if name=="__metadata__": continue
         safe_path(name,"tensor name")
-        if not isinstance(r,dict) or set(r)!={"dtype","shape","data_offsets"} or r["dtype"]!="BF16": raise RuntimeError(f"invalid non-BF16 tensor: {name}")
+        if not isinstance(r,dict) or set(r)!={"dtype","shape","data_offsets"} or r["dtype"] not in {"BF16","I64"}: raise RuntimeError(f"invalid tensor dtype: {name}")
         shape,off=r["shape"],r["data_offsets"]
         if not isinstance(shape,list) or not isinstance(off,list) or len(off)!=2 or any(not isinstance(x,int) or isinstance(x,bool) or x<0 for x in shape+off): raise RuntimeError(f"invalid tensor descriptor: {name}")
-        elems=math.prod(shape); start,end=off
-        if end<start or end>payload or end-start!=2*elems: raise RuntimeError(f"invalid tensor range: {name}")
-        intervals.append((start,end,name)); rows.append({"name":name,"dtype":"BF16","shape":shape,"elements":elems,"data_offsets":off})
+        dtype=r["dtype"]
+        if dtype=="I64" and (name not in CANARY_I64_TENSOR_NAMES or shape!=[]): raise RuntimeError(f"invalid I64 tensor contract: {name}")
+        if dtype=="BF16" and name in CANARY_I64_TENSOR_NAMES: raise RuntimeError(f"I64 allowlist tensor has wrong dtype: {name}")
+        elems=math.prod(shape); start,end=off; width=8 if dtype=="I64" else 2
+        if end<start or end>payload or end-start!=width*elems: raise RuntimeError(f"invalid tensor range: {name}")
+        dtype_counts[dtype]+=1; intervals.append((start,end,name)); rows.append({"name":name,"dtype":dtype,"shape":shape,"elements":elems,"data_offsets":off})
+    if set(row["name"] for row in rows if row["dtype"]=="I64")!=CANARY_I64_TENSOR_NAMES: raise RuntimeError("I64 tensor allowlist is incomplete or has extras")
     cur=0
     for start,end,name in sorted(intervals):
         if start!=cur: raise RuntimeError(f"range gap/overlap: {name}")
         cur=end
     if cur!=payload or not rows: raise RuntimeError("tensor body coverage/nonzero tensor contract failed")
-    return {"path":path.name,"bytes":size,"sha256":sha256(path),"header_bytes":n,"tensor_count":len(rows),"parameter_count":sum(r["elements"] for r in rows),"all_dtype":"BF16","resident_scope":"header-only; tensor body never read","tensors":rows}
+    return {"path":path.name,"bytes":size,"sha256":sha256(path),"header_bytes":n,"tensor_count":len(rows),"parameter_count":sum(r["elements"] for r in rows),"dtype_counts":dtype_counts,"dtype_contract":{"BF16":{"byte_width":2,"scope":"all non-allowlisted tensors"},"I64":{"byte_width":8,"shape":[],"exact_names":sorted(CANARY_I64_TENSOR_NAMES)}},"resident_scope":"header-only; tensor body never read","tensors":rows}
 
 def source_inventory(source:Path)->dict[str,Any]:
     if git(source,"status","--porcelain","--untracked-files=all") or git(source,"rev-parse","HEAD")!=SOURCE_REVISION or git(source,"describe","--exact-match","--tags","HEAD")!=SOURCE_TAG: raise RuntimeError("NeMo source identity/clean check failed")
@@ -308,6 +313,29 @@ def self_test()->None:
         else: raise AssertionError("unsafe tensor name accepted")
         def st_fixture(header:dict[str,Any],body:int)->None:
             raw=json.dumps(header,separators=(",",":")).encode(); path.write_bytes(len(raw).to_bytes(8,"little")+raw+bytes(body))
+        valid_header={}; offset=0
+        for index in range(32):
+            name=f"perception.encoder.layers.{index}.conv.batch_norm.num_batches_tracked"
+            valid_header[name]={"dtype":"I64","shape":[],"data_offsets":[offset,offset+8]}; offset+=8
+        valid_header["perception.encoder.weight"]={"dtype":"BF16","shape":[2],"data_offsets":[offset,offset+4]}; offset+=4
+        st_fixture(valid_header,offset)
+        valid_st=inspect_st(path)
+        assert valid_st["dtype_counts"]=={"BF16":1,"I64":32} and valid_st["dtype_contract"]["I64"]["byte_width"]==8
+        unknown_i64=copy.deepcopy(valid_header); unknown_i64["perception.encoder.layers.0.conv.batch_norm.unknown"] = unknown_i64.pop("perception.encoder.layers.0.conv.batch_norm.num_batches_tracked")
+        missing_i64=copy.deepcopy(valid_header); missing_i64.pop("perception.encoder.layers.31.conv.batch_norm.num_batches_tracked"); missing_i64["perception.encoder.weight"]["data_offsets"]=[offset-12,offset-8]
+        extra_i64=copy.deepcopy(valid_header); extra_i64["perception.encoder.layers.32.conv.batch_norm.num_batches_tracked"]={"dtype":"I64","shape":[],"data_offsets":[offset,offset+8]}
+        nonscalar_i64=copy.deepcopy(valid_header); nonscalar_i64["perception.encoder.layers.0.conv.batch_norm.num_batches_tracked"]={"dtype":"I64","shape":[1],"data_offsets":[0,8]}
+        wrong_other_dtype=copy.deepcopy(valid_header); wrong_other_dtype["perception.encoder.weight"]["dtype"]="F32"
+        assert set(unknown_i64)-set(valid_header)=={"perception.encoder.layers.0.conv.batch_norm.unknown"}
+        assert set(valid_header)-set(missing_i64)=={"perception.encoder.layers.31.conv.batch_norm.num_batches_tracked"}
+        assert set(extra_i64)-set(valid_header)=={"perception.encoder.layers.32.conv.batch_norm.num_batches_tracked"}
+        assert set(nonscalar_i64)==set(wrong_other_dtype)==set(valid_header)
+        assert wrong_other_dtype["perception.encoder.weight"]["dtype"]=="F32" and valid_header["perception.encoder.weight"]["dtype"]=="BF16"
+        for malformed,body in ((unknown_i64,offset),(missing_i64,offset-8),(extra_i64,offset+8),(nonscalar_i64,offset),(wrong_other_dtype,offset)):
+            st_fixture(malformed,body)
+            try: inspect_st(path)
+            except RuntimeError: pass
+            else: raise AssertionError("invalid mixed-dtype safetensors accepted")
         for header,body in (
             ({"a":{"dtype":"BF16","shape":[1],"data_offsets":[0,2]},"b":{"dtype":"BF16","shape":[1],"data_offsets":[1,3]}},3),
             ({"a":{"dtype":"BF16","shape":[1],"data_offsets":[0,2]},"b":{"dtype":"BF16","shape":[1],"data_offsets":[3,5]}},5),
