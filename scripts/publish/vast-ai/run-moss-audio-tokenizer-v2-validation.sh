@@ -210,6 +210,7 @@ paths_overlap() { local left="${1%/}" right="${2%/}"; [[ "$left" == "$right" || 
 
 validate_work_dir() {
   local work="$1" approval="$2" canonical_work canonical_root canonical_project approval_real
+  [[ "$work" = /* ]] || { die "--work-dir must be an absolute path"; return 2; }
   [[ ! -e "$work" && ! -L "$work" ]] || { die "--work-dir must be absent/nonexistent"; return 2; }
   canonical_work="$(canonical_candidate "$work")" || return 2
   canonical_root="$(canonical_candidate "$VOKRA_ROOT")" || return 2
@@ -401,6 +402,10 @@ run_self_test() {
     log 'self-test FAIL: approval under symlink ancestor accepted'; fail=1
   fi
   printf '{}\n' > "$tmp/approval.json"
+  cases=$((cases + 1))
+  if validate_work_dir 'relative-v2-work' "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: relative work directory accepted'; fail=1
+  fi
   cases=$((cases + 1))
   if validate_work_dir "$V2_PROJECT/../v2-lexical-work" "$tmp/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: lexical checkout overlap accepted'; fail=1

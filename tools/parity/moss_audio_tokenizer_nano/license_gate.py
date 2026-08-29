@@ -245,7 +245,7 @@ def blocked(message: str) -> None:
 
 
 def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
-    if not snapshot.is_dir():
+    if snapshot.is_symlink() or not snapshot.is_dir():
         blocked(f"snapshot directory is missing: {snapshot}")
     if manifest_path.is_symlink() or not manifest_path.is_file():
         blocked("snapshot manifest is missing or not a regular file")
@@ -253,6 +253,8 @@ def verify_snapshot(snapshot: Path, manifest_path: Path) -> None:
         manifest = load_json(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError) as error:
         blocked(f"invalid snapshot manifest: {error}")
+    if not isinstance(manifest, dict):
+        blocked("snapshot manifest top-level value must be an object")
     rows = manifest.get("model_rows")
     if not isinstance(rows, list) or [row.get("path") for row in rows if isinstance(row, dict)] != list(PAYLOAD_FILES):
         blocked("snapshot identity table is not the exact seven-file contract")
@@ -437,6 +439,17 @@ def self_test() -> None:
         snapshot = root / "snapshot"; snapshot.mkdir(); (snapshot / "demo").write_bytes(b"abc")
         (snapshot / ".cache" / "huggingface").mkdir(parents=True)
         verify_snapshot(snapshot, manifest_path)
+        snapshot_manifest = manifest_path.read_text(encoding="utf-8")
+        for label, payload in (("snapshot-manifest-duplicate", '{"model_rows":[],"model_rows":[]}'), ("snapshot-manifest-non-object", "[]")):
+            manifest_path.write_text(payload, encoding="utf-8")
+            try:
+                verify_snapshot(snapshot, manifest_path)
+            except SystemExit as error:
+                if error.code != 2:
+                    raise
+            else:
+                raise SystemExit(f"self-test accepted {label}")
+            manifest_path.write_text(snapshot_manifest, encoding="utf-8")
         for label, mutate in (
             ("snapshot-missing", lambda: (snapshot / "demo").unlink()),
             ("snapshot-extra", lambda: (snapshot / "extra").write_bytes(b"x")),
@@ -457,6 +470,33 @@ def self_test() -> None:
                     path.unlink()
             (snapshot / "demo").write_bytes(b"abc")
         run(lock_path, project_path, manifest_path, evidence_path)
+        baseline_manifest = manifest_path.read_text(encoding="utf-8")
+        baseline_evidence = evidence_path.read_text(encoding="utf-8")
+        for label, target, payload in (
+            ("manifest-duplicate", manifest_path, '{"gate_version":1,"gate_version":1}'),
+            ("manifest-nested-duplicate", manifest_path, '{"model_rows":{"path":"a","path":"b"}}'),
+            ("evidence-duplicate", evidence_path, '{"decision":"APPROVED","decision":"PENDING"}'),
+            ("evidence-nested-duplicate", evidence_path, '{"scope":{"a":1,"a":2}}'),
+        ):
+            target.write_text(payload, encoding="utf-8")
+            try:
+                run(lock_path, project_path, manifest_path, evidence_path)
+            except SystemExit as error:
+                if error.code != 2:
+                    raise
+            else:
+                raise SystemExit(f"self-test accepted {label}")
+            target.write_text(baseline_manifest if target is manifest_path else baseline_evidence, encoding="utf-8")
+        for label, target in (("manifest-non-object", manifest_path), ("evidence-non-object", evidence_path)):
+            target.write_text("[]", encoding="utf-8")
+            try:
+                run(lock_path, project_path, manifest_path, evidence_path)
+            except SystemExit as error:
+                if error.code != 2:
+                    raise
+            else:
+                raise SystemExit(f"self-test accepted {label}")
+            target.write_text(baseline_manifest if target is manifest_path else baseline_evidence, encoding="utf-8")
         for input_path, label in ((lock_path, "lock-input"), (project_path, "project-input"), (manifest_path, "manifest-input")):
             target = root / (label + "-target"); target.write_bytes(b"input-target")
             original = input_path.read_bytes(); input_path.unlink(); input_path.symlink_to(target)

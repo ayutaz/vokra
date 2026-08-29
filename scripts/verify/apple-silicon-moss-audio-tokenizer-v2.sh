@@ -56,6 +56,7 @@ require_file() {
 
 require_absent_evidence_directory() {
   local directory="$1"
+  [[ "$directory" = /* ]] || { die 'evidence directory must be an absolute path'; return 2; }
   [[ ! -e "$directory" && ! -L "$directory" ]] || { die "evidence directory must be absent: $directory"; return 2; }
   mkdir -p "$directory"
 }
@@ -106,6 +107,7 @@ canonical_absent_path() {
 
 require_disjoint_evidence() {
   local evidence="$1" gguf="$2" reference="$3" root="$4" approval="$5" evidence_real gguf_real reference_real root_real approval_real
+  [[ "$evidence" = /* ]] || { die 'evidence directory must be an absolute path'; return 2; }
   [[ ! -e "$evidence" && ! -L "$evidence" ]] || { die 'evidence directory must be absent and non-symlink'; return 2; }
   [[ -f "$reference" && ! -L "$reference" && -f "$gguf" && ! -L "$gguf" && -f "$approval" && ! -L "$approval" && -d "$root" && ! -L "$root" ]] || { die 'existing inputs and checkout must have exact non-symlink types'; return 2; }
   [[ -d "$(dirname "$evidence")" ]] || { die 'evidence parent is unavailable'; return 2; }
@@ -261,6 +263,7 @@ run_self_test() (
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
     || die "SHA-256 helper self-test failed"
+  if require_absent_evidence_directory 'relative-evidence'; then die 'relative evidence path was accepted'; fi
   require_absent_evidence_directory "$temporary/evidence"
   mkdir -p "$temporary/root/nested"
   cp "$temporary/value" "$temporary/root/gguf"

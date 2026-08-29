@@ -156,7 +156,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
     for path, label in ((lock_path, "lock"), (project_path, "project"), (manifest_path, "manifest")):
         if path.is_symlink() or not path.is_file(): blocked(f"{label} input is missing or not a regular file")
     try:
-        lock_bytes=lock_path.read_bytes(); project_bytes=project_path.read_bytes(); m=load_json(manifest_path.read_text()); lock=tomllib.loads(lock_bytes.decode()); project_name, project_version = project_identity(project_bytes)
+        lock_bytes=lock_path.read_bytes(); project_bytes=project_path.read_bytes(); m=load_json(manifest_path.read_text(encoding="utf-8")); lock=tomllib.loads(lock_bytes.decode()); project_name, project_version = project_identity(project_bytes)
         rows=lock_rows(lock)
     except (OSError,UnicodeDecodeError,tomllib.TOMLDecodeError,json.JSONDecodeError,ValueError) as e: blocked(f"invalid closure: {e}")
     if (error := artifact_error(lock)) is not None: blocked(f"resolver artifact metadata: {error}")
@@ -197,7 +197,7 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, approval: Path
     expected_scope=scope(m)
     if a.get("digest") != expected_scope or not isinstance(a.get("signer"),str) or not a["signer"] or not HEX64.fullmatch(str(a.get("digest"))): blocked("approval digest is not canonical")
     if approval is None or approval.is_symlink() or not approval.is_file(): blocked("approval evidence missing or is not a regular file")
-    try: e=load_json(approval.read_text())
+    try: e=load_json(approval.read_text(encoding="utf-8"))
     except (OSError,json.JSONDecodeError,ValueError) as x: blocked(f"approval evidence unreadable: {x}")
     if not isinstance(e, dict) or set(e) != {"scope_schema", "scope_sha256", "approval_digest", "decision", "signer", "manifest_sha256"} or e.get("scope_schema") != "moss-audio-tokenizer-v2-approval-v1" or e.get("scope_sha256") != expected_scope or e.get("approval_digest") != expected_scope or e.get("decision") != "APPROVED" or e.get("signer") != a["signer"] or e.get("manifest_sha256") != sha(manifest_path.read_bytes()): blocked("approval evidence does not bind canonical scope")
     print("moss v2 license gate: PASS")
@@ -238,6 +238,26 @@ def self_test() -> None:
         LOCK_SHA256, PROJECT_SHA256 = sha(lock.read_bytes()), sha(project.read_bytes())
         m={"gate_version":1,"lock_sha256":LOCK_SHA256,"project_sha256":PROJECT_SHA256,"package_rows":rows,"package_rows_sha256":canon(rows),"package_review_rows":reviews,"package_review_rows_sha256":canon(reviews),"license_rows":licenses,"license_rows_sha256":canon(licenses),"identities":identities,"tensor_manifest":TENSOR,"publication_decision":"NO_UPLOAD","approval":{"status":"OWNER_SIGNOFF_APPROVED","signer":"test","digest":None}}
         m["approval"]["digest"]=scope(m); manifest.write_text(json.dumps(m,sort_keys=True)); e={"scope_schema":"moss-audio-tokenizer-v2-approval-v1","scope_sha256":m["approval"]["digest"],"approval_digest":m["approval"]["digest"],"decision":"APPROVED","signer":"test","manifest_sha256":sha(manifest.read_bytes())}; approval.write_text(json.dumps(e)); run(lock,project,manifest,approval)
+        baseline_manifest = manifest.read_text(); baseline_approval = approval.read_text()
+        for label, target, payload in (
+            ("manifest-duplicate", manifest, '{"gate_version":1,"gate_version":1}'),
+            ("manifest-nested-duplicate", manifest, '{"identities":{"repo":"a","repo":"b"}}'),
+            ("approval-duplicate", approval, '{"decision":"APPROVED","decision":"PENDING"}'),
+            ("approval-nested-duplicate", approval, '{"scope":{"a":1,"a":2}}'),
+        ):
+            target.write_text(payload)
+            try: run(lock, project, manifest, approval)
+            except SystemExit as error:
+                if error.code != 2: raise
+            else: raise SystemExit(f"self-test accepted {label}")
+            target.write_text(baseline_manifest if target is manifest else baseline_approval)
+        for label, target in (("manifest-non-object", manifest), ("approval-non-object", approval)):
+            target.write_text("[]")
+            try: run(lock, project, manifest, approval)
+            except SystemExit as error:
+                if error.code != 2: raise
+            else: raise SystemExit(f"self-test accepted {label}")
+            target.write_text(baseline_manifest if target is manifest else baseline_approval)
         for input_path, label in ((lock, "lock-input"), (project, "project-input"), (manifest, "manifest-input")):
             target = p / (label + "-target"); target.write_bytes(b"input-target")
             original = input_path.read_bytes(); input_path.unlink(); input_path.symlink_to(target)
