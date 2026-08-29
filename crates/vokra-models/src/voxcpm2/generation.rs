@@ -1552,7 +1552,8 @@ mod tests {
         let mut residual_input = Vec::new();
         let patches = loop_
             .generate(
-                &[0.0, 0.0, 0.0, 0.0],
+                // [lm_hidden(2), residual_hidden(2), prefix(2*feature_dim)].
+                &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 |step, _lm, _residual, prefix| {
                     seen_prefix.push(prefix[0]);
                     Ok(vec![step as f32 + 1.0, step as f32 + 1.0])

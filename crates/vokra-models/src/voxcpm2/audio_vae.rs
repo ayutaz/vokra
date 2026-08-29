@@ -1276,7 +1276,9 @@ mod tests {
         // Kernel width four at stride two overlaps the two input frames in
         // the middle; the normalized contributions therefore sum to 1.5.
         assert_eq!(values, vec![0.5, 0.5, 1.5, 1.5]);
-        assert!((10.0f32).tanh() < 1.0);
+        let terminal = (10.0f32).tanh();
+        assert!(terminal.is_finite());
+        assert!((-1.0..=1.0).contains(&terminal));
     }
 
     #[test]
