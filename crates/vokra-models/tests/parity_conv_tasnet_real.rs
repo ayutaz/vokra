@@ -80,6 +80,9 @@ fn compare(
     );
 }
 
+// Metal-vs-CPU measurement is compiled only for the Apple Silicon parity leg;
+// Linux builds do not contain the corresponding call site.
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn measure_metal_vs_cpu(label: &str, actual: &[f32], expected: &[f32]) {
     assert_eq!(actual.len(), expected.len(), "{label} shape");
     assert!(!actual.is_empty(), "{label} is empty");

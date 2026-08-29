@@ -379,6 +379,9 @@ fn run_case(case: Case, backend: BackendKind, backend_name: &str) -> Qwen3TtsSyn
     synthesis
 }
 
+// CPU/Metal comparison is compiled only for the Apple Silicon parity leg;
+// Linux builds do not contain the corresponding call site.
+#[cfg(all(feature = "metal", target_os = "macos"))]
 fn compare_cpu_metal(case: Case, cpu: &Qwen3TtsSynthesis, metal: &Qwen3TtsSynthesis) {
     assert_eq!(
         cpu.generation.as_frame_major(),
