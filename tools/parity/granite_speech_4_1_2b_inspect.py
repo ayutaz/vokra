@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse, base64, hashlib, json, os, re, struct, subprocess, sys, tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 HF_REPOSITORY = "ibm-granite/granite-speech-4.1-2b"
@@ -83,7 +83,11 @@ CONFIG_FACTS = {
     ("text_config", "logits_scaling"): 8.0, ("text_config", "residual_multiplier"): 0.22,
     ("transformers_version",): "4.57.6",
 }
-PREPROCESSOR_FACTS = {"sampling_rate": 16000, "n_fft": 512, "win_length": 400, "hop_length": 160, "feature_size": 80}
+# The official snapshot only binds sampling_rate at the top level.  The
+# feature extractor's window/feature defaults live in the pinned Transformers
+# implementation, not in this JSON, so treating their absence as a mismatch
+# would invent a model-file contract.
+PREPROCESSOR_FACTS = {"sampling_rate": 16000}
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -100,6 +104,54 @@ def git_blob_sha1(path: Path) -> str:
 
 def git_blob_sha1_bytes(data: bytes) -> str:
     digest=hashlib.sha1(); digest.update(f"blob {len(data)}\0".encode()); digest.update(data); return digest.hexdigest()
+
+def tracked_symlink(root: Path, relative: str, object_id: str, blockers: list[str]) -> dict[str, Any] | None:
+    """Authenticate a Git symlink without dereferencing an untrusted target."""
+    try:
+        if not relative or "\x00" in relative or "\\" in relative or PurePosixPath(relative).is_absolute() or ".." in PurePosixPath(relative).parts:
+            raise ValueError("unsafe tracked symlink path")
+        path = root / relative
+        target_bytes = subprocess.run(
+            ["git", "-C", str(root), "cat-file", "blob", object_id],
+            check=True, capture_output=True,
+        ).stdout
+        target = target_bytes.decode("utf-8", errors="strict")
+        if not target or "\x00" in target or "\\" in target or target.endswith("\n"):
+            raise ValueError("unsafe Git symlink target encoding")
+        if git_blob_sha1_bytes(target_bytes) != object_id:
+            raise ValueError("Git symlink object does not match target bytes")
+        if target.startswith("/"):
+            raise ValueError("absolute symlink target")
+        # Normalize only the link text. Do not call Path.resolve(): that would
+        # follow a target supplied by the checkout and could escape the tree.
+        parts: list[str] = []
+        for component in (*PurePosixPath(relative).parent.parts, *target.split("/")):
+            if component in ("", "."):
+                continue
+            if component == "..":
+                if not parts:
+                    raise ValueError("symlink target escapes checkout")
+                parts.pop()
+            elif "\x00" in component:
+                raise ValueError("unsafe symlink target component")
+            else:
+                parts.append(component)
+        normalized = PurePosixPath(*parts).as_posix()
+        working_target = os.readlink(path)
+        if working_target != target:
+            raise ValueError("working-tree symlink target differs from Git index")
+        return {
+            "path": relative,
+            "index_object_id": object_id,
+            "index_target": target,
+            "working_target": working_target,
+            "normalized_target": normalized,
+            "target_scope": "CHECKOUT_RELATIVE_NO_DEREFERENCE",
+            "target_git_blob_sha1": git_blob_sha1_bytes(target_bytes),
+        }
+    except (OSError, UnicodeError, ValueError, subprocess.CalledProcessError) as error:
+        blockers.append(f"unsafe tracked symlink {relative}: {error}")
+        return None
 
 def lfs_pointer_bytes(payload_sha256: str, payload_bytes: int) -> bytes:
     return f"version https://git-lfs.github.com/spec/v1\noid sha256:{payload_sha256}\nsize {payload_bytes}\n".encode()
@@ -258,6 +310,99 @@ def safe_header(path: Path, root: Path, blockers: list[str]) -> dict[str, Any]:
     if cursor != size-data_start: blockers.append(f"tensor data does not end at file boundary: {path}"); header_blocked=True
     item.update({"status":"BLOCKED_HEADER" if header_blocked else "HEADER_ONLY","header_bytes":header_len,"metadata":metadata,"tensor_count":len(tensors),"tensors":tensors,"resident_scope":"header-only; body never read"}); return item
 
+def parse_sigstore_verification_material(value: Any, blockers: list[str]) -> dict[str, Any]:
+    """Parse the v0.3 verification-material oneof without doing crypto.
+
+    Sigstore's protobuf JSON represents the certificate/public-key oneof as
+    either ``certificate`` or ``publicKey``.  The old collector required the
+    certificate arm unconditionally, which rejected valid public-key bundles.
+    Unknown top-level or nested fields remain a hard structural blocker.
+    """
+    if not isinstance(value, dict):
+        blockers.append("model.sig verificationMaterial is not an object")
+        return {"status": "BLOCKED_UNKNOWN_SCHEMA"}
+    keys = set(value)
+    arms = [key for key in ("certificate", "publicKey") if key in value]
+    allowed_keys = {arms[0], "tlogEntries", "timestampVerificationData"} if len(arms) == 1 else set()
+    if len(arms) != 1 or not keys <= allowed_keys or "tlogEntries" not in keys:
+        blockers.append("model.sig verificationMaterial unknown schema")
+        return {"status": "BLOCKED_UNKNOWN_SCHEMA", "keys": sorted(keys)}
+    arm = arms[0]
+    material = value[arm]
+    if not isinstance(material, dict) or set(material) != {"rawBytes"}:
+        blockers.append(f"model.sig verificationMaterial.{arm} unknown schema")
+        return {"status": "BLOCKED_UNKNOWN_SCHEMA", "keys": sorted(keys), "arm": arm}
+    raw_bytes = material["rawBytes"]
+    try:
+        decoded = base64.b64decode(raw_bytes, validate=True)
+    except Exception:
+        decoded = b""
+    if not isinstance(raw_bytes, str) or not decoded:
+        blockers.append(f"model.sig verificationMaterial.{arm}.rawBytes is not nonempty base64")
+    entries = value["tlogEntries"]
+    if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+        blockers.append("model.sig verificationMaterial.tlogEntries is not an object array")
+        entries = []
+    entry_inventory = []
+    allowed_entry_keys = {
+        "logIndex", "logId", "kindVersion", "integratedTime",
+        "inclusionPromise", "inclusionProof", "canonicalizedBody",
+    }
+    for entry in entries:
+        unknown = set(entry) - allowed_entry_keys
+        if unknown:
+            blockers.append(f"model.sig tlog entry unknown schema keys: {sorted(unknown)!r}")
+        if not isinstance(entry.get("logId"), dict) or set(entry["logId"]) != {"keyId"} or not isinstance(entry["logId"].get("keyId"), str):
+            blockers.append("model.sig tlog entry logId schema mismatch")
+        if not isinstance(entry.get("kindVersion"), dict) or set(entry["kindVersion"]) != {"kind", "version"} or any(not isinstance(entry["kindVersion"].get(field), str) for field in ("kind", "version")):
+            blockers.append("model.sig tlog entry kindVersion schema mismatch")
+        for field in ("logIndex", "integratedTime", "canonicalizedBody"):
+            if not isinstance(entry.get(field), str):
+                blockers.append(f"model.sig tlog entry {field} schema mismatch")
+        for field in ("inclusionPromise", "inclusionProof"):
+            nested = entry.get(field)
+            if nested is not None and not isinstance(nested, dict):
+                blockers.append(f"model.sig tlog entry {field} schema mismatch")
+        promise = entry.get("inclusionPromise")
+        if promise is not None and (set(promise) != {"signedEntryTimestamp"} or not isinstance(promise.get("signedEntryTimestamp"), str)):
+            blockers.append("model.sig tlog entry inclusionPromise schema mismatch")
+        proof = entry.get("inclusionProof")
+        if proof is not None:
+            proof_keys = {"checkpoint", "logIndex", "rootHash", "treeSize", "hashes"}
+            checkpoint = proof.get("checkpoint")
+            if (set(proof) != proof_keys
+                    or not isinstance(checkpoint, dict)
+                    or set(checkpoint) != {"envelope"}
+                    or not isinstance(checkpoint.get("envelope"), str)
+                    or not checkpoint["envelope"]
+                    or any(not isinstance(proof.get(field), str) for field in ("logIndex", "rootHash", "treeSize"))
+                    or not isinstance(proof.get("hashes"), list)
+                    or any(not isinstance(item, str) for item in proof["hashes"])
+                ):
+                blockers.append("model.sig tlog entry inclusionProof schema mismatch")
+        entry_inventory.append({"keys": sorted(entry), "status": "STRUCTURE_PARSED"})
+    timestamp_data = value.get("timestampVerificationData")
+    timestamp_inventory = None
+    if timestamp_data is not None:
+        if not isinstance(timestamp_data, dict) or set(timestamp_data) != {"rfc3161Timestamps"} or not isinstance(timestamp_data["rfc3161Timestamps"], list):
+            blockers.append("model.sig timestampVerificationData unknown schema")
+        else:
+            timestamp_inventory = []
+            for timestamp in timestamp_data["rfc3161Timestamps"]:
+                if not isinstance(timestamp, dict) or set(timestamp) != {"signedTimestamp"} or not isinstance(timestamp["signedTimestamp"], str):
+                    blockers.append("model.sig RFC3161 timestamp schema mismatch")
+                else:
+                    timestamp_inventory.append({"keys": sorted(timestamp), "status": "STRUCTURE_PARSED"})
+    return {
+        "status": "STRUCTURE_PARSED",
+        "arm": arm,
+        "keys": sorted(keys),
+        "raw_bytes": "PRESENT_BASE64",
+        "tlog_entry_count": len(entries),
+        "tlog_entries": entry_inventory,
+        "rfc3161_timestamps": timestamp_inventory,
+    }
+
 def sigstore_evidence(path: Path, snapshot: Path, files: list[Path], blockers: list[str]) -> dict[str, Any]:
     item=identity(path,snapshot)
     try:
@@ -305,9 +450,8 @@ def sigstore_evidence(path: Path, snapshot: Path, files: list[Path], blockers: l
             try: base64.b64decode(encoded,validate=True)
             except Exception: blockers.append("model.sig signature is not valid base64"); continue
             signature_shapes.append({"keys":sorted(signature),"base64":"STRUCTURALLY_VALID"})
-        verification=value.get("verificationMaterial")
-        if not isinstance(verification,dict) or set(verification) != {"certificate","tlogEntries"} or not isinstance(verification.get("certificate"),dict) or not isinstance(verification.get("tlogEntries"),list) or any(not isinstance(entry,dict) for entry in verification["tlogEntries"]): blockers.append("model.sig verificationMaterial structure mismatch")
-        item.update({"status":"STRUCTURE_PARSED_CRYPTO_NOT_VERIFIED","payload_type":payload_type,"predicate_type":decoded.get("predicateType"),"serialization_keys":sorted(serialization) if isinstance(serialization,dict) else [],"resource_paths":sorted(paths),"resource_sha256":resource_hashes,"signature_inventory":signature_shapes,"verification_material_keys":sorted(verification) if isinstance(verification,dict) else []})
+        verification=parse_sigstore_verification_material(value.get("verificationMaterial"), blockers)
+        item.update({"status":"STRUCTURE_PARSED_CRYPTO_NOT_VERIFIED","payload_type":payload_type,"predicate_type":decoded.get("predicateType"),"serialization_keys":sorted(serialization) if isinstance(serialization,dict) else [],"resource_paths":sorted(paths),"resource_sha256":resource_hashes,"signature_inventory":signature_shapes,"verification_material":verification})
     except Exception as error: blockers.append(f"model.sig parse failed: {error}"); item.update({"status":"BLOCKED_SIGSTORE_PARSE","error":str(error)})
     blockers.append("SIGSTORE_CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED")
     return item
@@ -366,12 +510,16 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, output: Pat
         dirty=subprocess.run(["git","-C",str(source),"status","--porcelain","--untracked-files=all"],check=True,capture_output=True,text=True).stdout.strip()
         if actual!=SOURCE_REVISION or origin!=SOURCE_REPOSITORY: blockers.append("source identity/origin mismatch")
         if dirty: blockers.append(f"source checkout is dirty: {dirty}")
-        paths=[]; gitlinks=[]
+        paths=[]; gitlinks=[]; symlinks=[]
         for record in names:
             if not record: continue
             header, rel = record.split(b"\t",1); fields=header.split(); mode=fields[0].decode(); object_id=fields[1].decode() if len(fields)>1 else ""
             path=source/os.fsdecode(rel)
             if mode == "160000": gitlinks.append({"path":path.relative_to(source).as_posix(),"object_id":object_id,"status":"GITLINK_NOT_CHECKED_OUT"}); blockers.append(f"source gitlink not checked out: {path}")
+            elif mode == "120000":
+                relative_path = path.relative_to(source).as_posix()
+                record = tracked_symlink(source, relative_path, object_id, blockers)
+                if record is not None: symlinks.append(record)
             elif mode not in ("100644","100755"): blockers.append(f"source tracked non-regular member: {path}")
             elif path.is_file(): paths.append(path)
             else: blockers.append(f"source tracked file missing: {path}")
@@ -393,32 +541,38 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, output: Pat
             license_blob=subprocess.run(["git","-C",str(source),"rev-parse",f"HEAD:{license_path.relative_to(source).as_posix()}"],check=True,capture_output=True,text=True).stdout.strip()
             license_records.append({**identity(license_path,source),"git_blob_sha1":git_blob_sha1(license_path),"indexed_git_blob_sha1":license_blob,"expected_git_blob_sha1":SOURCE_LICENSE_BLOB})
             if license_blob!=SOURCE_LICENSE_BLOB or git_blob_sha1(license_path)!=SOURCE_LICENSE_BLOB: blockers.append("IBM source LICENSE Git blob mismatch")
-        source_inventory.update({"resolved_revision":actual,"origin":origin,"clean":not bool(dirty),"tags_at_revision":tags,"tracked_files":[identity(p,source,True) for p in sorted(paths)],"required_role_files":role_records,"gitlinks":gitlinks,"license_files":license_records,"license_status":"DECLARATION_REQUIRES_PRIMARY_REVIEW"})
+        source_inventory.update({"resolved_revision":actual,"origin":origin,"clean":not bool(dirty),"tags_at_revision":tags,"tracked_files":[identity(p,source,True) for p in sorted(paths)],"symlinks":symlinks,"required_role_files":role_records,"gitlinks":gitlinks,"license_files":license_records,"license_status":"DECLARATION_REQUIRES_PRIMARY_REVIEW"})
     except Exception as error: blockers.append(f"source inventory failed: {error}")
     try:
         actual=subprocess.run(["git","-C",str(transformers_source),"rev-parse","HEAD"],check=True,capture_output=True,text=True).stdout.strip()
         origin=subprocess.run(["git","-C",str(transformers_source),"remote","get-url","origin"],check=True,capture_output=True,text=True).stdout.strip()
         tags=subprocess.run(["git","-C",str(transformers_source),"tag","--points-at",actual],check=True,capture_output=True,text=True).stdout.splitlines()
         transformer_modes=subprocess.run(["git","-C",str(transformers_source),"ls-files","-s","-z"],check=True,capture_output=True).stdout.split(b"\0")
-        transformer_gitlinks=[]
+        transformer_gitlinks=[]; transformer_symlinks=[]
         for record in transformer_modes:
             if not record: continue
-            mode=record.split(b"\t",1)[0].split()[0].decode()
-            if mode not in ("100644","100755"): transformer_gitlinks.append(record.split(b"\t",1)[1].decode(errors="replace")); blockers.append(f"Transformers tracked non-regular member: {transformer_gitlinks[-1]}")
+            header, raw_path = record.split(b"\t",1)
+            fields = header.split(); mode=fields[0].decode(); object_id=fields[1].decode() if len(fields) > 1 else ""
+            relative_path = raw_path.decode(errors="strict")
+            if mode == "120000":
+                record = tracked_symlink(transformers_source, relative_path, object_id, blockers)
+                if record is not None: transformer_symlinks.append(record)
+            elif mode not in ("100644","100755"):
+                transformer_gitlinks.append(relative_path); blockers.append(f"Transformers tracked non-regular member: {transformer_gitlinks[-1]}")
         dirty=subprocess.run(["git","-C",str(transformers_source),"status","--porcelain","--untracked-files=all"],check=True,capture_output=True,text=True).stdout.strip()
         if actual!=TRANSFORMERS_REVISION or origin!=TRANSFORMERS_REPOSITORY: blockers.append("Transformers source identity/origin mismatch")
         if dirty: blockers.append(f"Transformers checkout is dirty: {dirty}")
         role_records=[]
         for role in TRANSFORMERS_ROLE_FILES:
             path=transformers_source/role
-            if not path.is_file(): blockers.append(f"Transformers role file missing: {role}"); continue
+            if not path.is_file() or path.is_symlink(): blockers.append(f"Transformers role file missing/nonregular: {role}"); continue
             expected=TRANSFORMERS_ROLE_BLOBS.get(role)
             actual_blob=git_blob_sha1(path)
             indexed_blob=subprocess.run(["git","-C",str(transformers_source),"rev-parse",f"HEAD:{role}"],check=True,capture_output=True,text=True).stdout.strip()
             if expected is None: blockers.append(f"Transformers role Git blob is unavailable: {role}")
             elif actual_blob != expected or indexed_blob != expected: blockers.append(f"Transformers role Git blob mismatch: {role}")
             role_records.append({**identity(path,transformers_source),"git_blob_sha1":actual_blob,"indexed_git_blob_sha1":indexed_blob,"expected_git_blob_sha1":expected})
-        licenses=[p for p in sorted(transformers_source.glob("LICENSE*")) if p.is_file()]
+        licenses=[p for p in sorted(transformers_source.glob("LICENSE*")) if p.is_file() and not p.is_symlink()]
         if not licenses: blockers.append("Transformers source license file missing")
         if [p.relative_to(transformers_source).as_posix() for p in licenses] != ["LICENSE"]: blockers.append("Transformers LICENSE role set is not exactly LICENSE")
         license_records=[]
@@ -426,7 +580,7 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, output: Pat
             license_blob=subprocess.run(["git","-C",str(transformers_source),"rev-parse",f"HEAD:{license_path.relative_to(transformers_source).as_posix()}"],check=True,capture_output=True,text=True).stdout.strip()
             license_records.append({**identity(license_path,transformers_source),"git_blob_sha1":git_blob_sha1(license_path),"indexed_git_blob_sha1":license_blob,"expected_git_blob_sha1":TRANSFORMERS_LICENSE_BLOB})
             if license_blob!=TRANSFORMERS_LICENSE_BLOB or git_blob_sha1(license_path)!=TRANSFORMERS_LICENSE_BLOB: blockers.append("Transformers LICENSE Git blob mismatch")
-        source_inventory["transformers_source_inventory"]={"repository":TRANSFORMERS_REPOSITORY,"pinned_revision":TRANSFORMERS_REVISION,"resolved_revision":actual,"origin":origin,"clean":not bool(dirty),"tags_at_revision":tags,"gitlinks":transformer_gitlinks,"role_files":role_records,"license_files":license_records,"status":"ROLE_HASHES_AUTHENTICATED" if len(role_records)==len(TRANSFORMERS_ROLE_FILES) and set(TRANSFORMERS_ROLE_BLOBS)==set(TRANSFORMERS_ROLE_FILES) and not dirty and not transformer_gitlinks else "BLOCKED"}
+        source_inventory["transformers_source_inventory"]={"repository":TRANSFORMERS_REPOSITORY,"pinned_revision":TRANSFORMERS_REVISION,"resolved_revision":actual,"origin":origin,"clean":not bool(dirty),"tags_at_revision":tags,"gitlinks":transformer_gitlinks,"symlinks":transformer_symlinks,"role_files":role_records,"license_files":license_records,"status":"ROLE_HASHES_AUTHENTICATED" if len(role_records)==len(TRANSFORMERS_ROLE_FILES) and set(TRANSFORMERS_ROLE_BLOBS)==set(TRANSFORMERS_ROLE_FILES) and not dirty and not transformer_gitlinks else "BLOCKED"}
     except Exception as error:
         blockers.append(f"Transformers source inventory failed: {error}")
     config_packets=[]
@@ -474,6 +628,26 @@ def self_test() -> None:
         except RuntimeError as error: assert "symlink" in str(error)
         else: raise AssertionError("payload symlink accepted")
         symlink.unlink()
+        symlink_tmp = tempfile.TemporaryDirectory(prefix="granite-symlink-")
+        symlink_repo = Path(symlink_tmp.name)
+        subprocess.run(["git", "init", "-q", str(symlink_repo)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(symlink_repo), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(symlink_repo), "config", "user.name", "Granite self-test"], check=True)
+        (symlink_repo / "README.md").write_text("ok\n", encoding="utf-8")
+        (symlink_repo / "docs").mkdir()
+        (symlink_repo / "docs" / "README.md").symlink_to("../README.md")
+        subprocess.run(["git", "-C", str(symlink_repo), "add", "README.md", "docs/README.md"], check=True, capture_output=True)
+        index_record = subprocess.run(["git", "-C", str(symlink_repo), "ls-files", "-s", "--", "docs/README.md"], check=True, capture_output=True, text=True).stdout.strip()
+        index_fields, index_path = index_record.split("\t", 1)
+        symlink_object = index_fields.split()[1]
+        symlink_blockers: list[str] = []
+        symlink_record = tracked_symlink(symlink_repo, index_path, symlink_object, symlink_blockers)
+        assert symlink_record is not None and symlink_record["index_target"] == "../README.md" and not symlink_blockers
+        (symlink_repo / "docs" / "README.md").unlink()
+        (symlink_repo / "docs" / "README.md").symlink_to("../../outside")
+        escaped_blockers: list[str] = []
+        assert tracked_symlink(symlink_repo, index_path, symlink_object, escaped_blockers) is None and escaped_blockers
+        symlink_tmp.cleanup()
         bool_header=json.dumps({"x":{"dtype":"F32","shape":[True],"data_offsets":[0,4]}}).encode(); (root/"bool.safetensors").write_bytes(struct.pack("<Q",len(bool_header))+bool_header+b"\0"*4); bad=[]; safe_header(root/"bool.safetensors",root,bad); assert bad
         unsafe_name=json.dumps({"../x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}).encode(); (root/"unsafe.safetensors").write_bytes(struct.pack("<Q",len(unsafe_name))+unsafe_name+b"\0"*4); bad=[]; safe_header(root/"unsafe.safetensors",root,bad); assert any("unsafe tensor name" in item for item in bad)
         duplicate_header=b'{"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"x":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}'; (root/"duplicate.safetensors").write_bytes(struct.pack("<Q",len(duplicate_header))+duplicate_header+b"\0"*4); bad=[]; safe_header(root/"duplicate.safetensors",root,bad); assert bad
@@ -498,7 +672,10 @@ def self_test() -> None:
         identity_packet=root/"identity-tree.json"; identity_packet.write_text(json.dumps({"repository":HF_REPOSITORY,"requested_revision":"0"*40,"resolved_revision":"0"*40,"head_commit":"0"*40,"walk":"recursive_file_only","files":[regular_row,lfs_row]}),encoding="utf-8"); identity_blockers=[]; assert server_tree(snapshot,identity_packet,identity_blockers)["status"] == "MISMATCH" and any("identity/walk" in item for item in identity_blockers)
         top_level_spoof=root/"top-level-spoof.json"; top_level_spoof.write_text(json.dumps({"repository":HF_REPOSITORY,"requested_revision":HF_REVISION,"revision":HF_REVISION,"resolved_revision":HF_REVISION,"head_commit":HF_REVISION,"walk":"recursive_file_only","files":[regular_row,lfs_row]}),encoding="utf-8"); top_level_blockers=[]; assert server_tree(snapshot,top_level_spoof,top_level_blockers)["status"] == "MISMATCH" and any("top-level schema" in item for item in top_level_blockers)
         sig_snapshot=root/"sig-snapshot"; sig_snapshot.mkdir(); signed_file=sig_snapshot/"x.safetensors"; signed_file.write_bytes(path.read_bytes()); signed={"_type":"https://in-toto.io/Statement/v1","predicateType":"https://model_signing/signature/v1.0","predicate":{"serialization":{"hash_type":"sha256","method":"files","allow_symlinks":False,"ignore_paths":list(SIGSTORE_IGNORE_PATHS)},"resources":[{"name":"x.safetensors","algorithm":"sha256","digest":sha256(signed_file)}]}}
-        payload=base64.b64encode(json.dumps(signed).encode()).decode(); sig=sig_snapshot/"model.sig"; sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{"certificate":{},"tlogEntries":[]}}),encoding="utf-8"); sig_blockers=[]; evidence=sigstore_evidence(sig,sig_snapshot,[signed_file,sig],sig_blockers); assert evidence["payload_type"] == "https://in-toto.io/Statement/v1" and any("CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED" in item for item in sig_blockers) and not any("resource set mismatch" in item for item in sig_blockers)
+        payload=base64.b64encode(json.dumps(signed).encode()).decode(); sig=sig_snapshot/"model.sig"; sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{"certificate":{"rawBytes":base64.b64encode(b"cert").decode()},"tlogEntries":[],"timestampVerificationData":{"rfc3161Timestamps":[]}}}),encoding="utf-8"); sig_blockers=[]; evidence=sigstore_evidence(sig,sig_snapshot,[signed_file,sig],sig_blockers); assert evidence["payload_type"] == "https://in-toto.io/Statement/v1" and evidence["verification_material"]["status"] == "STRUCTURE_PARSED" and any("CRYPTOGRAPHIC_VERIFICATION_NOT_PERFORMED" in item for item in sig_blockers) and not any("resource set mismatch" in item for item in sig_blockers)
+        sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{"publicKey":{"rawBytes":base64.b64encode(b"key").decode()},"tlogEntries":[]}}),encoding="utf-8"); public_key_blockers=[]; public_key_evidence=sigstore_evidence(sig,sig_snapshot,[signed_file,sig],public_key_blockers); assert public_key_evidence["verification_material"]["arm"] == "publicKey" and not any("unknown schema" in item for item in public_key_blockers)
+        tlog_blockers=[]; tlog_evidence=parse_sigstore_verification_material({"certificate":{"rawBytes":base64.b64encode(b"cert").decode()},"tlogEntries":[{"logIndex":"1","logId":{"keyId":base64.b64encode(b"id").decode()},"kindVersion":{"kind":"hashedrekord","version":"0.0.1"},"integratedTime":"2","canonicalizedBody":base64.b64encode(b"body").decode(),"inclusionPromise":{"signedEntryTimestamp":base64.b64encode(b"set").decode()},"inclusionProof":{"checkpoint":{"envelope":"checkpoint"},"logIndex":"1","rootHash":base64.b64encode(b"root").decode(),"treeSize":"1","hashes":[]}}]},tlog_blockers); assert tlog_evidence["status"] == "STRUCTURE_PARSED" and not tlog_blockers
+        sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{"certificate":{"rawBytes":base64.b64encode(b"cert").decode()},"tlogEntries":[],"unexpected":True}}),encoding="utf-8"); unknown_material_blockers=[]; sigstore_evidence(sig,sig_snapshot,[signed_file,sig],unknown_material_blockers); assert any("unknown schema" in item for item in unknown_material_blockers)
         signed["predicate"]["resources"][0]["name"]="../unsafe"; payload=base64.b64encode(json.dumps(signed).encode()).decode(); sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[]},"verificationMaterial":{}}),encoding="utf-8"); sig_blockers=[]; sigstore_evidence(sig,sig_snapshot,[signed_file,sig],sig_blockers); assert any("unsafe resource path" in item for item in sig_blockers)
         signed["predicate"]["resources"][0]["name"]="x.safetensors"; signed["predicate"]["serialization"]["hash_type"]="sha512"; payload=base64.b64encode(json.dumps(signed).encode()).decode(); sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{"certificate":{},"tlogEntries":[]}}),encoding="utf-8"); sig_blockers=[]; sigstore_evidence(sig,sig_snapshot,[signed_file,sig],sig_blockers); assert any("serialization values mismatch" in item for item in sig_blockers)
         signed["predicate"]["serialization"]["hash_type"]="sha256"; signed["predicate"]["serialization"]["ignore_paths"]=["model.sig"]; payload=base64.b64encode(json.dumps(signed).encode()).decode(); sig.write_text(json.dumps({"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json","dsseEnvelope":{"payloadType":"application/vnd.in-toto+json","payload":payload,"signatures":[{"sig":base64.b64encode(b"sig").decode()}]},"verificationMaterial":{}}),encoding="utf-8"); sig_blockers=[]; sigstore_evidence(sig,sig_snapshot,[signed_file,sig],sig_blockers); assert any("serialization values mismatch" in item for item in sig_blockers)
