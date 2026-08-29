@@ -47,7 +47,6 @@ ROUTED_PARTIAL_ARCHES = {
     "magnet_small_10secs",
     "magnet_medium_30secs",
     "melodyflow_t24_30secs",
-    "sbv2",
     # The public GGUF contains only the MIT Whisper tower + projector.  Those
     # learned stages are native CPU/Metal, but the separately licensed Llama
     # companion/tokenizer/chat route is not yet a complete CLI engine.
@@ -319,6 +318,7 @@ METAL_CODE_ARCHES = {
     "reazonspeech_nemo_v2",
     "rnnoise",
     "rmvpe",
+    "sbv2",
     "silero-vad",
     "snac",
     "sepformer",
@@ -330,6 +330,7 @@ METAL_CODE_ARCHES = {
     "utmos",
     "vocos",
     "voxtral",
+    "voice_gender_classifier",
     "wav2vec2_ctc",
     "wavtokenizer",
     "whisper",

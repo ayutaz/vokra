@@ -511,7 +511,8 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertEqual(audit.classify(snac, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(routed_partial, routed, bound).cpu_code, "partial")
         self.assertEqual(audit.classify(csm, routed, bound).cpu_code, "partial")
-        self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "partial")
+        self.assertEqual(audit.classify(sbv2, routed, bound).cpu_code, "full")
+        self.assertEqual(audit.classify(sbv2, routed, bound).metal_code, "full")
         self.assertEqual(audit.classify(nsnet2, routed, bound).cpu_code, "partial")
         self.assertEqual(
             audit.classify(nsnet2, routed, bound).metal_code, "blocked-by-cpu"
@@ -594,6 +595,20 @@ const BOUND_ARCHES: &[BoundArch] = &[
             audit.cpu_only_repositories([qwen, missing_metal], routed, set()),
             ["vokra/new-cpu-model"],
         )
+
+    def test_new_native_arches_are_explicitly_registered_for_metal_audit(self):
+        self.assertIn("sbv2", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("sbv2", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertIn("voice_gender_classifier", audit.METAL_CODE_ARCHES)
+
+    def test_parsed_metal_registry_has_no_invalid_arches(self):
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "crates/vokra-cli/src/engine.rs").read_text(encoding="utf-8")
+        routed, bound = audit.parse_engine_arches(source)
+        invalid_metal = audit.METAL_CODE_ARCHES - (
+            routed - audit.ROUTED_PARTIAL_ARCHES
+        )
+        self.assertEqual(invalid_metal, set())
 
 
 if __name__ == "__main__":
