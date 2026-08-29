@@ -23,7 +23,6 @@ import argparse
 import gc
 import hashlib
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -58,6 +57,7 @@ N_FFT = 3528
 HOP_LENGTH = 882
 OUTPUT_SAMPLE_RATE = 44_100
 PADDING = "same"
+REFERENCE_FORMAT = "vokra-yue-xcodec-mini-reference-v2"
 
 
 def sha256_file(path: Path) -> str:
@@ -80,31 +80,23 @@ def verify_file(path: Path, filename: str, size: int, sha256: str) -> None:
 
 
 def verify_source_root(path: Path) -> dict[str, str]:
-    if not path.is_dir():
+    if path.is_symlink() or not path.is_dir():
         raise ValueError(f"source root is not a directory: {path}")
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    revision = result.stdout.strip()
-    if revision != UPSTREAM_REVISION:
-        raise ValueError(
-            f"source root revision {revision}, expected {UPSTREAM_REVISION}"
-        )
-    required = [
-        Path("quantization/__init__.py"),
-        Path("quantization/vq.py"),
-        Path("quantization/core_vq_lsx_version.py"),
-        Path("quantization/distrib.py"),
-    ]
+    required = [Path("README.md"), Path("quantization/__init__.py"), Path("quantization/vq.py"), Path("quantization/core_vq_lsx_version.py"), Path("quantization/distrib.py"), Path("utils/utils.py"), Path("utils/ddp_utils.py")]
+    expected = {"README.md": (31, "4bcf87ecfbbb8e07a01b21415a970c8b53a5283bf6872b657040d3f45c9241f7"), "quantization/__init__.py": (271, "34c806bc1cafc8b835926b6f6450bee769f95eb467cf1c19b4427e9dd7e55bbc"), "quantization/vq.py": (4598, "8f24a4a389bad6dec6d77a35526264a1acd07c29a69854274bc73ebda4c622f9"), "quantization/core_vq_lsx_version.py": (16050, "154e2c5ddbacd3b82c74bf18d7177ea4b011cbd71e6e5575c7265b70e58c2af0"), "quantization/distrib.py": (4109, "79b8dbfe3dda4da10ea0d3e143b373d90dd920f40d4a7f6f7446412b3584f655"), "utils/utils.py": (8484, "8521062c4b1afae1366a100244449a7dcdcc79883bf1874e50f9954c66c2ccd2"), "utils/ddp_utils.py": (9108, "a53a4efc83ab34c8655d61bbcae7e0965a573ecce3321f8c1cffc2ec6889644f")}
+    actual_entries = {item.relative_to(path).as_posix() for item in path.rglob("*") if item.is_file() or item.is_symlink()}
+    if actual_entries != {item.as_posix() for item in required}:
+        raise ValueError("source snapshot file set is not exact")
     hashes: dict[str, str] = {}
     for relative in required:
         source = path / relative
-        if not source.is_file():
+        if source.is_symlink() or not source.is_file() or not source.resolve().is_relative_to(path.resolve()):
             raise ValueError(f"fixed upstream source is missing {relative}")
-        hashes[relative.as_posix()] = sha256_file(source)
+        size, expected_hash = expected[relative.as_posix()]
+        if source.stat().st_size != size or sha256_file(source) != expected_hash:
+            raise ValueError(f"fixed upstream source identity mismatch: {relative}")
+        hashes[relative.as_posix()] = expected_hash
+    hashes["README.md"] = expected["README.md"][1]
     return hashes
 
 
@@ -113,9 +105,11 @@ def load_pickle(path: Path):
 
     try:
         return torch.load(path, map_location="cpu", weights_only=True)
-    except Exception:
-        # This fallback is permitted only after exact size/SHA authentication.
-        return torch.load(path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        raise RuntimeError(
+            f"torch.load({path}) with weights_only=True failed; "
+            "refusing unrestricted pickle deserialization"
+        ) from exc
 
 
 def unwrap_decoder_state(raw: object) -> dict:
@@ -140,6 +134,16 @@ def self_test() -> int:
     assert TOKEN_SAMPLE_RATE // TOKEN_HOP_LENGTH == TOKEN_FRAME_RATE
     assert CODEBOOKS == 12
     assert OUTPUT_SAMPLE_RATE // HOP_LENGTH == TOKEN_FRAME_RATE
+    assert REFERENCE_FORMAT == "vokra-yue-xcodec-mini-reference-v2"
+    source = Path(__file__).read_text(encoding="utf-8")
+    assert "weights_only=True" in source
+    assert ("weights_only=" + "False") not in source
+    assert "unrestricted pickle deserialization" in source
+    validator_root = Path(__file__).resolve().parent / "yue_xcodec_mini"
+    sys.path.insert(0, str(validator_root))
+    from reference_validator import self_test as validator_self_test  # type: ignore[import-not-found]
+    if validator_self_test() != 0:
+        return 1
     print("yue_xcodec_mini_dump_reference self-test: ok")
     return 0
 
@@ -167,6 +171,10 @@ def main() -> int:
         )
     if args.frames <= 0:
         parser.error("--frames must be positive")
+    if args.output_dir.is_symlink() or args.output_dir.exists() and (
+        not args.output_dir.is_dir() or any(args.output_dir.iterdir())
+    ):
+        parser.error("--output-dir must be absent or an empty directory")
 
     source_hashes = verify_source_root(args.source_root)
     verify_file(
@@ -287,6 +295,8 @@ def main() -> int:
         args.output_dir / "waveform.f32le"
     )
     metadata = {
+        "format": REFERENCE_FORMAT,
+        "pickle_load_policy": "weights_only=True_required",
         "upstream_hf": UPSTREAM_HF,
         "upstream_revision": UPSTREAM_REVISION,
         "source_files_sha256": source_hashes,
@@ -310,10 +320,28 @@ def main() -> int:
         "samples": waveform.numel(),
         "torch": torch.__version__,
         "vocos_decoder_tensor_count": len(expected_decoder),
+        "runtime": "torch-cpu",
+        "device": "cpu",
+        "codes_dtype": "uint32-le",
+        "features_dtype": "float32-le",
+        "backbone_dtype": "float32-le",
+        "waveform_dtype": "float32-le",
+        "contiguous": True,
     }
-    (args.output_dir / "manifest.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n"
-    )
+    for name in ("codes.u32le", "features.f32le", "backbone.f32le", "waveform.f32le"):
+        metadata[f"sha256_{name.replace('.', '_')}"] = sha256_file(args.output_dir / name)
+        metadata[f"bytes_{name.replace('.', '_')}"] = (args.output_dir / name).stat().st_size
+    manifest_tmp = args.output_dir / ".manifest.json.tmp"
+    manifest_tmp.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    manifest_tmp.replace(args.output_dir / "manifest.json")
+    if {path.name for path in args.output_dir.iterdir()} != {
+        "manifest.json", "codes.u32le", "features.f32le", "backbone.f32le", "waveform.f32le"
+    }:
+        raise ValueError("reference output file set is not exact")
+    validator_root = Path(__file__).resolve().parent / "yue_xcodec_mini"
+    sys.path.insert(0, str(validator_root))
+    from reference_validator import validate as validate_reference  # type: ignore[import-not-found]
+    validate_reference(args.output_dir)
     print(json.dumps(metadata, sort_keys=True))
     return 0
 
