@@ -21,6 +21,70 @@ disjoint() {
   case "$right" in "$left"|"$left"/*) die "path overlap: $left / $right";; esac
 }
 
+validate_parity_log() {
+  local log_file="$1"
+  [[ -f "$log_file" ]] || return 1
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --no-project \
+    --python 3.12 python - "$log_file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+target_prefix = "test real_gigaam_v3_cpu_trace_matches_official ... "
+target_lines = [line for line in lines if line.startswith(target_prefix)]
+if len(target_lines) != 1:
+    raise SystemExit("parity log must contain exactly one target test start")
+target_line = target_lines[0]
+
+test_lines = [line for line in lines if line.startswith("test ")]
+if len(test_lines) != 2 or sum(line.startswith("test result: ") for line in test_lines) != 1:
+    raise SystemExit("parity log contains an unexpected named test line")
+
+if lines.count("ok") != 1:
+    raise SystemExit("parity log must contain one isolated test completion")
+
+summary_re = re.compile(
+    r"^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; "
+    r"([0-9]+) filtered out; finished in [0-9]+(?:\.[0-9]+)?s$"
+)
+summaries = [summary_re.fullmatch(line) for line in lines if line.startswith("test result: ")]
+if len(summaries) != 1 or summaries[0] is None:
+    raise SystemExit("parity log result is not an exact one-pass summary")
+running_re = re.compile(r"^running 1 test$")
+running = [running_re.fullmatch(line) for line in lines if line.startswith("running ")]
+if len(running) != 1:
+    raise SystemExit("parity log must contain exactly one running 1 test line")
+
+markers = []
+for line in lines:
+    marker = "GIGAAM_V3_PARITY"
+    if marker in line:
+        markers.append(line[line.index(marker):])
+
+metric_re = re.compile(
+    r"GIGAAM_V3_PARITY (log_mel|encoded|rnnt_logits) "
+    r"max_abs=[0-9]+(?:\.[0-9]+)?e[+-][0-9]+ "
+    r"mean_abs=[0-9]+(?:\.[0-9]+)?e[+-][0-9]+"
+)
+if len(markers) != 4:
+    raise SystemExit("parity log must contain exactly four GigaAM markers")
+metrics = []
+for marker in markers:
+    if marker == "GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD":
+        continue
+    match = metric_re.fullmatch(marker)
+    if match is None:
+        raise SystemExit("parity log contains a malformed or spoofed GigaAM marker")
+    metrics.append(match.group(1))
+if sorted(metrics) != ["encoded", "log_mel", "rnnt_logits"]:
+    raise SystemExit("parity log metric markers are missing or duplicated")
+
+if not target_line.startswith(target_prefix + "GIGAAM_V3_PARITY log_mel "):
+    raise SystemExit("target test start is not interleaved with its first metric")
+PY
+}
+
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die "--self-test accepts no arguments"
   for path in \
@@ -73,6 +137,69 @@ for invalid in (
     else:
         raise SystemExit("invalid AUTHENTICATED_PREPARED_SHA256 layout was accepted")
 PY
+  parity_log_test_dir="$(mktemp -d)"
+  trap 'rm -rf "$parity_log_test_dir"' EXIT
+  cat > "$parity_log_test_dir/good.log" <<'EOF'
+running 1 test
+
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+EOF
+  validate_parity_log "$parity_log_test_dir/good.log" || die "valid interleaved parity log was rejected"
+  cat > "$parity_log_test_dir/duplicate-test.log" <<'EOF'
+running 1 test
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/duplicate-test.log"; then die "duplicate target test was accepted"; fi
+  cat > "$parity_log_test_dir/extra-test.log" <<'EOF'
+running 1 test
+test another_test ... ok
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/extra-test.log"; then die "extra named test was accepted"; fi
+  cat > "$parity_log_test_dir/duplicate-marker.log" <<'EOF'
+running 1 test
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/duplicate-marker.log"; then die "duplicate CPU marker was accepted"; fi
+  cat > "$parity_log_test_dir/malformed-marker.log" <<'EOF'
+running 1 test
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=nan mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/malformed-marker.log"; then die "malformed metric marker was accepted"; fi
+  cat > "$parity_log_test_dir/malformed-summary.log" <<'EOF'
+running 1 test
+test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; -1 filtered out; finished in 0.01s
+EOF
+  if validate_parity_log "$parity_log_test_dir/malformed-summary.log"; then die "malformed summary was accepted"; fi
+  rm -rf "$parity_log_test_dir"
+  trap - EXIT
   echo "run-gigaam-v3-validation.sh self-test: OK (NO_UPLOAD; parity OPEN)"
   exit 0
 fi
@@ -219,8 +346,7 @@ cargo run --locked -p vokra-cli -- convert --model sber-gigaam-v3 --input "$GIGA
 [[ -f "$GIGAAM_GGUF" && ! -L "$GIGAAM_GGUF" ]] || die "converter did not create GGUF"
 mkdir "$GIGAAM_EVIDENCE_DIR"
 cargo test --locked -p vokra-models --test parity_gigaam_v3_real real_gigaam_v3_cpu_trace_matches_official -- --exact --ignored --nocapture --test-threads=1 > "$GIGAAM_EVIDENCE_DIR/parity.log" 2>&1
-[[ "$(grep -Ec '^test [^ ]*real_gigaam_v3_cpu_trace_matches_official \.\.\. ok$' "$GIGAAM_EVIDENCE_DIR/parity.log")" == 1 ]] || die "parity log must contain one named test pass"
-[[ "$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$GIGAAM_EVIDENCE_DIR/parity.log")" == 1 ]] || die "parity log result is not exact"
+validate_parity_log "$GIGAAM_EVIDENCE_DIR/parity.log" || die "parity log shape or PASS markers are invalid"
 GGUF_SHA256="$(sha256sum "$GIGAAM_GGUF" | awk '{print $1}')"
 [[ "$GGUF_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "GGUF digest is invalid"
 cat > "$GIGAAM_EVIDENCE_DIR/validation-summary.json" <<EOF
