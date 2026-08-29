@@ -231,10 +231,7 @@ fn real_gigaam_v3_cpu_trace_matches_official() {
             .collect::<Vec<_>>(),
         expected_symbols
     );
-    assert_eq!(
-        trace.decision_argmax.iter().copied().collect::<Vec<_>>(),
-        expected_argmax
-    );
+    assert_eq!(trace.decision_argmax.to_vec(), expected_argmax);
     assert_eq!(trace.token_ids, expected_tokens);
     eprintln!("GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD");
 }
