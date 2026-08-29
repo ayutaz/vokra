@@ -50,7 +50,7 @@ run_self_test() {
     "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "safe_open" "SHARD_COUNT" \
     "model.safetensors.index.json" "INSPECTION_ONLY" \
     "BLOCKED" "Exception" "--transformers-source" "resident_scope" "allow_patterns=[\"*\"]" "companion-inventory" "source-inventory" "transformers-inventory" "MIN_VAST_MEM_KIB" \
-    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA"; do
+    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA" "connector_topology" "acoustic_connector" "semantic_connector"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing contract: $required" >&2
       fail=1
@@ -292,6 +292,8 @@ if transport.get("status") not in {"ABSENT", "EXCLUDED"} or not isinstance(trans
 if transport["status"] == "ABSENT" and transport["present"] is not False: raise SystemExit("absent transport cache was marked present")
 if transport["status"] == "EXCLUDED" and transport["present"] is not True: raise SystemExit("excluded transport cache was not marked present")
 if transport["status"] == "EXCLUDED" and (not isinstance(transport.get("entry_count"), int) or isinstance(transport.get("entry_count"), bool) or transport["entry_count"] < 0): raise SystemExit("transport cache entry count is invalid")
+connector = manifest.get("official_source", {}).get("connector_topology")
+if not isinstance(connector, dict) or connector.get("path") != "vibevoice/modular/modeling_vibevoice_asr.py" or connector.get("status") != "AUTHENTICATED" or connector.get("role_blob_authenticated") is not True or connector.get("markers") != {"acoustic": True, "semantic": True}: raise SystemExit("ASR connector topology evidence is incomplete")
 PY
 
 {

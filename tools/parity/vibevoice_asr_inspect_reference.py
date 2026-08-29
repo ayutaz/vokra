@@ -177,13 +177,31 @@ def source_inventory(
                 demo_text = demo_path.read_text(encoding="utf-8", errors="replace") if demo_path.is_file() and not demo_path.is_symlink() else ""
                 if "VibeVoiceASRProcessor" not in demo_text or "Qwen/Qwen2.5-7B" not in demo_text:
                     blockers.append(f"official ASR demo boundary marker missing: {demo_name}")
+        connector_path = "vibevoice/modular/modeling_vibevoice_asr.py"
+        connector_markers = {
+            "acoustic": r"self\.acoustic_connector\s*=\s*SpeechConnector\s*\(\s*config\.acoustic_vae_dim\b",
+            "semantic": r"self\.semantic_connector\s*=\s*SpeechConnector\s*\(\s*config\.semantic_vae_dim\b",
+        }
+        connector_file = root / connector_path
+        connector_role = entries.get(connector_path)
+        expected_connector = roles.get(connector_path)
+        connector_role_authenticated = connector_role is not None and connector_role["mode"] == "100644" and expected_connector is not None and connector_role["index_object_sha1"] == connector_role["head_object_sha1"] == connector_role["working_blob_sha1"] == expected_connector
+        connector_text = connector_file.read_text(encoding="utf-8", errors="replace") if connector_file.is_file() and not connector_file.is_symlink() else ""
+        connector_evidence = {
+            "path": connector_path,
+            "role_blob_authenticated": connector_role_authenticated,
+            "markers": {name: re.search(pattern, connector_text) is not None for name, pattern in connector_markers.items()},
+            "status": "AUTHENTICATED" if connector_role_authenticated and all(re.search(pattern, connector_text) for pattern in connector_markers.values()) else "BLOCKED",
+        }
+        if license_name == "MIT" and connector_evidence["status"] != "AUTHENTICATED":
+            blockers.append("official ASR connector topology marker/blob is not authenticated")
         license_path = root / "LICENSE"
         license_text = license_path.read_text(encoding="utf-8", errors="replace").lower() if license_path.is_file() and not license_path.is_symlink() else ""
         markers = (("permission is hereby granted, free of charge", "the software is provided \"as is\"", "without warranty") if license_name == "MIT" else ("apache license, version 2.0", "you may obtain a copy of the license", "distributed under the license", "without warranties or conditions"))
         license_ok = all(marker in license_text for marker in markers) and "LICENSE" in entries
         if not license_ok:
             blockers.append(f"{license_name} LICENSE clauses/blob unavailable")
-        return {"repository": repository, "revision": revision, "resolved_revision": actual, "origin": origin, "tag": tag, "clean": not any("dirty" in item for item in blockers), "tracked_files": sorted(entries.values(), key=lambda row: row["path"]), "role_files": sorted(role_files, key=lambda row: row["path"]), "license": {"path": "LICENSE", "license": license_name, "authenticated": license_ok, "bytes": license_path.stat().st_size if license_path.is_file() else None, "sha256": sha256(license_path) if license_path.is_file() else None, "markers": {marker: marker in license_text for marker in markers}}, "constraint": constraint, "blockers": blockers, "status": "AUTHENTICATED" if not blockers else "BLOCKED"}
+        return {"repository": repository, "revision": revision, "resolved_revision": actual, "origin": origin, "tag": tag, "clean": not any("dirty" in item for item in blockers), "tracked_files": sorted(entries.values(), key=lambda row: row["path"]), "role_files": sorted(role_files, key=lambda row: row["path"]), "connector_topology": connector_evidence, "license": {"path": "LICENSE", "license": license_name, "authenticated": license_ok, "bytes": license_path.stat().st_size if license_path.is_file() else None, "sha256": sha256(license_path) if license_path.is_file() else None, "markers": {marker: marker in license_text for marker in markers}}, "constraint": constraint, "blockers": blockers, "status": "AUTHENTICATED" if not blockers else "BLOCKED"}
     return {"source": checkout(source, SOURCE_REPOSITORY, source_revision, source_roles, None, "MIT", "transformers>=4.51.3,<5.0.0"), "transformers": checkout(transformers_source, TRANSFORMERS_REPOSITORY, transformers_revision, transformers_roles, transformers_tag, "Apache-2.0", None)}
 
 
@@ -198,23 +216,53 @@ def companion_inventory(snapshot: Path) -> list[dict[str, Any]]:
 
 
 def parsed_json_companions(snapshot: Path, companions: list[dict[str, Any]]) -> dict[str, Any]:
-    selected = {"config.json": json.loads((snapshot / "config.json").read_text(encoding="utf-8"), object_pairs_hook=strict_pairs)}
-    flat = set()
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                flat.add(str(key).lower())
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-        elif isinstance(value, str):
-            flat.add(value.lower())
-    walk(selected["config.json"])
-    for group in (("acoustic",), ("semantic",), ("connector", "speech_connector"), ("qwen", "decoder"), ("model_type",), ("architectures",), ("torch_dtype", "dtype")):
-        if not any(token in item for item in flat for token in group):
-            raise RuntimeError(f"official config lacks required ASR structure marker: {group}")
-    return selected
+    del companions
+    config = json.loads((snapshot / "config.json").read_text(encoding="utf-8"), object_pairs_hook=strict_pairs)
+    if not isinstance(config, dict):
+        raise RuntimeError("official config root must be an object")
+    sections = {
+        "acoustic_tokenizer_config": {
+            "model_type": "vibevoice_acoustic_tokenizer",
+            "vae_dim": 64,
+            "dtype": "bfloat16",
+        },
+        "semantic_tokenizer_config": {
+            "model_type": "vibevoice_semantic_tokenizer",
+            "vae_dim": 128,
+            "dtype": "bfloat16",
+        },
+        "decoder_config": {
+            "model_type": "qwen2",
+            "hidden_size": 3584,
+            "num_hidden_layers": 28,
+            "dtype": "bfloat16",
+        },
+        "diffusion_head_config": {
+            "model_type": "vibepod_diffusion_head",
+            "hidden_size": 3584,
+            "latent_size": 64,
+            "speech_vae_dim": 64,
+        },
+    }
+    expected = {
+        "model_type": "vibevoice",
+        "architectures": ["VibeVoiceForASRTraining"],
+        "dtype": "float32",
+        "acoustic_vae_dim": 64,
+        "semantic_vae_dim": 128,
+    }
+    for key, expected_value in expected.items():
+        actual = config.get(key)
+        if type(actual) is not type(expected_value) or actual != expected_value:
+            raise RuntimeError(f"official config exact contract mismatch: {key}")
+    for section, required in sections.items():
+        if not isinstance(config.get(section), dict):
+            raise RuntimeError(f"official config lacks structural section: {section}")
+        for key, expected_value in required.items():
+            actual = config[section].get(key)
+            if type(actual) is not type(expected_value) or actual != expected_value:
+                raise RuntimeError(f"official config exact contract mismatch: {section}.{key}")
+    return {"config.json": config}
 
 
 def transport_cache_scope(snapshot: Path) -> tuple[Path | None, dict[str, Any]]:
@@ -486,7 +534,7 @@ def inspect(snapshot: Path, source: Path, transformers_source: Path, server_tree
         "numerical_parity": "NOT_RUN",
         "upstream": {"repository": UPSTREAM_REPOSITORY, "revision": UPSTREAM_REVISION, "license": upstream_license, "shard_count": SHARD_COUNT, "index": "model.safetensors.index.json"},
         "hf_server_tree": hf_identity,
-        "official_source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "license": sources["source"]["license"], "transformers": sources["transformers"]},
+        "official_source": {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "license": sources["source"]["license"], "connector_topology": sources["source"]["connector_topology"], "transformers": sources["transformers"]},
         "tensor_count": len(tensors),
         "shards": shard_records,
         "companions": companions,
@@ -536,7 +584,18 @@ def self_test() -> None:
         records, tensors = inventory_shards(snapshot, json.loads(index_path.read_text(encoding="utf-8")))
         assert len(records) == SHARD_COUNT and len(tensors) == SHARD_COUNT
         assert all(record["dtype"] == "bfloat16" and record["shape"] == [1] for record in tensors)
-        (snapshot / "config.json").write_text("{}", encoding="utf-8")
+        config_fixture = {
+            "model_type": "vibevoice",
+            "architectures": ["VibeVoiceForASRTraining"],
+            "dtype": "float32",
+            "acoustic_vae_dim": 64,
+            "semantic_vae_dim": 128,
+            "acoustic_tokenizer_config": {"model_type": "vibevoice_acoustic_tokenizer", "vae_dim": 64, "dtype": "bfloat16"},
+            "semantic_tokenizer_config": {"model_type": "vibevoice_semantic_tokenizer", "vae_dim": 128, "dtype": "bfloat16"},
+            "decoder_config": {"model_type": "qwen2", "hidden_size": 3584, "num_hidden_layers": 28, "dtype": "bfloat16"},
+            "diffusion_head_config": {"model_type": "vibepod_diffusion_head", "hidden_size": 3584, "latent_size": 64, "speech_vae_dim": 64},
+        }
+        (snapshot / "config.json").write_text(json.dumps(config_fixture), encoding="utf-8")
         (snapshot / "README.md").write_text("---\nlicense: mit\n---\n", encoding="utf-8")
         lfs_path = snapshot / "external.bin"; lfs_path.write_bytes(b"payload")
         tree_rows = []
@@ -610,6 +669,52 @@ def self_test() -> None:
         else:
             raise AssertionError("non-directory root cache was accepted")
         (snapshot / ".cache").unlink()
+        assert parsed_json_companions(snapshot, [])["config.json"] == config_fixture
+        def assert_config_rejected(path: tuple[str, ...], value: Any) -> None:
+            candidate = json.loads(json.dumps(config_fixture))
+            target = candidate
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            (snapshot / "config.json").write_text(json.dumps(candidate), encoding="utf-8")
+            try:
+                parsed_json_companions(snapshot, [])
+            except RuntimeError:
+                return
+            raise AssertionError(f"config mismatch was accepted: {'.'.join(path)}")
+
+        for path, value in (
+            (("model_type",), "vibevoice_wrong"),
+            (("architectures",), ["VibeVoiceWrong"]),
+            (("dtype",), "bfloat16"),
+            (("acoustic_vae_dim",), 65),
+            (("semantic_vae_dim",), 129),
+            (("acoustic_tokenizer_config", "model_type"), "wrong_acoustic"),
+            (("semantic_tokenizer_config", "model_type"), "wrong_semantic"),
+            (("decoder_config", "model_type"), "wrong_decoder"),
+            (("diffusion_head_config", "model_type"), "wrong_diffusion"),
+            (("acoustic_tokenizer_config", "vae_dim"), 65),
+            (("semantic_tokenizer_config", "vae_dim"), 129),
+            (("decoder_config", "hidden_size"), 3585),
+            (("decoder_config", "num_hidden_layers"), 29),
+            (("decoder_config", "dtype"), "float32"),
+            (("diffusion_head_config", "hidden_size"), 3585),
+            (("diffusion_head_config", "latent_size"), 65),
+            (("diffusion_head_config", "speech_vae_dim"), 65),
+            (("acoustic_vae_dim",), True),
+            (("decoder_config", "num_hidden_layers"), True),
+        ):
+            assert_config_rejected(path, value)
+        missing_section = json.loads(json.dumps(config_fixture))
+        missing_section.pop("semantic_tokenizer_config")
+        (snapshot / "config.json").write_text(json.dumps(missing_section), encoding="utf-8")
+        try:
+            parsed_json_companions(snapshot, [])
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("missing tokenizer structure was accepted")
+        (snapshot / "config.json").write_text(json.dumps(config_fixture), encoding="utf-8")
         assert weight_license(snapshot, companion_inventory(snapshot))["license"] == "MIT"
         bad_card = snapshot / "README.md"; bad_card.write_text("prose license: mit\n", encoding="utf-8")
         try:
@@ -645,6 +750,8 @@ def self_test() -> None:
                     content = "transformers>=4.51.3,<5.0.0\n"
                 elif name in {"demo/vibevoice_asr_inference_from_file.py", "demo/vibevoice_asr_gradio_demo.py"}:
                     content = "VibeVoiceASRProcessor.from_pretrained(model_path, language_model_pretrained_name=\"Qwen/Qwen2.5-7B\")\n"
+                elif pyproject and name == "vibevoice/modular/modeling_vibevoice_asr.py":
+                    content = "self.acoustic_connector = SpeechConnector(config.acoustic_vae_dim, hidden_size)\nself.semantic_connector = SpeechConnector(config.semantic_vae_dim, hidden_size)\n"
                 else:
                     content = f"role fixture {name}\n"
                 target.write_text(content, encoding="utf-8")
