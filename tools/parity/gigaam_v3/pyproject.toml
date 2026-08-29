@@ -4,12 +4,24 @@ version = "0.1.0"
 description = "Dedicated VAST-only GigaAM v3 reference/parity environment."
 requires-python = ">=3.12,<3.13"
 
-# Exact package versions are intentionally omitted: no authenticated v3
-# dependency closure is recorded yet. Production workers require the reviewed
-# sibling uv.lock before they can execute this project. The fixed official
-# model/source revisions are checked by the scripts, not supplied as Python
-# dependencies.
-dependencies = []
+# This is the narrow closure for the fixed official GigaAM v3 remote-code
+# reference and the safetensors preparer.  ONNX/onnxruntime are deliberately
+# excluded: neither the reference dumper nor the preparer imports them.
+# The exact resolved versions are recorded in the sibling uv.lock generated on
+# the approved VAST host; this project must remain fail-closed until that lock
+# is reviewed.
+dependencies = [
+    "hydra-core==1.3.*",
+    "numpy==2.*",
+    "omegaconf==2.3.*",
+    "safetensors",
+    "sentencepiece",
+    "soundfile",
+    "torch==2.8.0",
+    "torchaudio==2.8.0",
+    "tqdm",
+    "transformers==5.*",
+]
 
 [tool.uv]
 package = false
