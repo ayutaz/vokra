@@ -81,7 +81,7 @@ license_preflight() {
   [[ -f "$approval" && ! -L "$approval" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" \
     --lock "$NANO_PROJECT/uv.lock" --project "$NANO_PROJECT/pyproject.toml" \
-    --manifest "$LICENSE_MANIFEST" --approval "$approval"
+    --manifest "$LICENSE_MANIFEST" --approval-evidence "$approval"
 }
 
 canonical_candidate() {
@@ -104,6 +104,24 @@ canonical_candidate() {
   (cd -P "$value" && printf '%s%s\n' "$PWD" "$suffix")
 }
 
+canonical_existing_path() {
+  local value="$1" parent
+  [[ "$value" = /* ]] || value="$PWD/$value"
+  value="${value%/}"
+  [[ -e "$value" && ! -L "$value" ]] || return 1
+  parent="$value"
+  while [[ "$parent" != / ]]; do
+    [[ ! -L "$parent" ]] || return 1
+    parent="$(dirname "$parent")"
+  done
+  if [[ -d "$value" ]]; then
+    (cd -P "$value" && printf '%s\n' "$PWD")
+  else
+    parent="$(dirname "$value")"
+    (cd -P "$parent" && printf '%s/%s\n' "$PWD" "$(basename "$value")")
+  fi
+}
+
 paths_overlap() { local left="${1%/}" right="${2%/}"; [[ "$left" == "$right" || "$left" == "$right"/* || "$right" == "$left"/* ]]; }
 
 validate_work_dir() {
@@ -112,14 +130,15 @@ validate_work_dir() {
   canonical_work="$(canonical_candidate "$work")" || return 2
   canonical_root="$(canonical_candidate "$VOKRA_ROOT")" || return 2
   canonical_project="$(canonical_candidate "$NANO_PROJECT")" || return 2
-  approval_real="$(cd -P "$(dirname "$approval")" && pwd -P)/$(basename "$approval")" || return 2
+  [[ -f "$approval" && ! -L "$approval" ]] || { die "approval evidence must be a regular non-symlink file"; return 2; }
+  approval_real="$(canonical_existing_path "$approval")" || { die "approval evidence path contains a symlink ancestor"; return 2; }
   paths_overlap "$canonical_work" "$canonical_root" && { die "--work-dir overlaps checkout"; return 2; }
   paths_overlap "$canonical_work" "$canonical_project" && { die "--work-dir overlaps project"; return 2; }
   paths_overlap "$canonical_work" "$approval_real" && { die "--work-dir overlaps approval"; return 2; }
 }
 
 require_vast_host() {
-  local mem_kib free_kib
+  local mem_kib free_kib disk_path parent
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == "1" ]] \
     || die "VOKRA_PUBLISH_ON_VAST=1 is absent; run provision.sh first"
   [[ "$(uname -s)" == "Linux" ]] \
@@ -129,8 +148,14 @@ require_vast_host() {
   [[ "$mem_kib" =~ ^[0-9]+$ ]] || die "could not read MemTotal"
   (( mem_kib >= MIN_VAST_MEM_KIB )) \
     || die "MemTotal=${mem_kib} KiB is below the Nano VAST guard"
-  mkdir -p "$VOKRA_SCRATCH"
-  free_kib="$(df -Pk "$VOKRA_SCRATCH" | awk 'NR == 2 {print $4}')"
+  disk_path="$VOKRA_SCRATCH"
+  while [[ ! -e "$disk_path" ]]; do
+    parent="$(dirname "$disk_path")"
+    [[ "$parent" != "$disk_path" ]] || die "scratch parent cannot be resolved"
+    disk_path="$parent"
+  done
+  [[ -d "$disk_path" && ! -L "$disk_path" ]] || die "scratch filesystem path is not a real directory"
+  free_kib="$(df -Pk "$disk_path" | awk 'NR == 2 {print $4}')"
   [[ "$free_kib" =~ ^[0-9]+$ ]] || die "could not read free disk"
   (( free_kib >= MIN_FREE_DISK_KIB )) \
     || die "free disk=${free_kib} KiB is below the Nano VAST guard"
@@ -423,6 +448,37 @@ run_self_test() {
   if "$script_path" --self-test trailing >/dev/null 2>&1; then
     log 'self-test FAIL: trailing argument accepted'; fail=1
   fi
+  mkdir -p "$tmp/real/existing"
+  ln -s "$tmp/real" "$tmp/link"
+  printf '{}\n' > "$tmp/approval.json"
+  cases=$((cases + 1))
+  if validate_work_dir "$tmp/link/existing/nested/new" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: descendant under symlink ancestor accepted'; fail=1
+  fi
+  mkdir -p "$tmp/approval-real"
+  printf '{}\n' > "$tmp/approval-real/evidence.json"
+  ln -s "$tmp/approval-real" "$tmp/approval-parent-link"
+  cases=$((cases + 1))
+  if validate_work_dir "$tmp/approval-work" "$tmp/approval-parent-link/evidence.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: approval under symlink ancestor accepted'; fail=1
+  fi
+  cases=$((cases + 1))
+  if validate_work_dir "$NANO_PROJECT/../nano-lexical-work" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: lexical checkout overlap accepted'; fail=1
+  fi
+  mkdir "$tmp/empty-work"
+  cases=$((cases + 1))
+  if validate_work_dir "$tmp/empty-work" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: pre-existing empty Nano work directory accepted'; fail=1
+  fi
+  cases=$((cases + 1))
+  if validate_work_dir "$VOKRA_ROOT/nano-self-test-work" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: checkout-overlapping Nano work directory accepted'; fail=1
+  fi
+  cases=$((cases + 1))
+  if validate_work_dir "$tmp/approval.json/child" "$tmp/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: approval-overlapping Nano work directory accepted'; fail=1
+  fi
   cases=$((cases + 1))
   printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
   require_cpu_test_evidence "$tmp/cpu.log" || { log 'self-test FAIL: valid CPU evidence rejected'; fail=1; }
@@ -525,11 +581,11 @@ main() {
   [[ -n "$approval_evidence" ]] || { die "--approval-evidence is required"; usage; return 2; }
   [[ -f "$approval_evidence" && ! -L "$approval_evidence" ]] || { die "--approval-evidence must be a regular non-symlink file"; return 2; }
   license_preflight "$approval_evidence"
-  require_vast_host
   require_tooling
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${requested_work_dir:-$VOKRA_SCRATCH/moss-tokenizer-nano-validation/$run_stamp}"
   validate_work_dir "$work_dir" "$approval_evidence"
+  require_vast_host
   snapshot="$work_dir/upstream"
   stage="$work_dir/stage"
   logs="$work_dir/logs"

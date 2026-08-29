@@ -81,7 +81,7 @@ pre_sync_gates() {
     --project "$LOCAL_PROJECT" --manifest "$LOCAL_MANIFEST" --approval-evidence "$local_approval" || rc=$?
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE" \
     --lock "$V2_PROJECT/uv.lock" --project "$V2_PROJECT/pyproject.toml" \
-    --manifest "$V2_MANIFEST" --approval "$v2_approval" || rc=$?
+    --manifest "$V2_MANIFEST" --approval-evidence "$v2_approval" || rc=$?
   return "$rc"
 }
 require_prompt_shape() {

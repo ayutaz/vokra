@@ -60,15 +60,60 @@ require_absent_evidence_directory() {
   mkdir -p "$directory"
 }
 
+canonical_existing_path() {
+  local path="$1" parent
+  [[ "$path" == /* ]] || path="$PWD/$path"
+  [[ -e "$path" && ! -L "$path" ]] || return 1
+  local scan rest component
+  rest="${path#/}"; scan=''
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; rest="${rest#*/}"
+    [[ "$component" == "$rest" ]] && rest=''
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
+    scan="$scan/$component"
+    [[ ! -L "$scan" ]] || return 1
+  done
+  if [[ -d "$path" ]]; then
+    (cd -P "$path" && printf '%s\n' "$PWD")
+  else
+    parent="$(dirname "$path")"
+    (cd -P "$parent" && printf '%s/%s\n' "$PWD" "$(basename "$path")")
+  fi
+}
+
+canonical_absent_path() {
+  local path="$1" suffix='' name parent
+  [[ "$path" == /* ]] || path="$PWD/$path"
+  [[ ! -e "$path" && ! -L "$path" ]] || return 1
+  local scan rest component
+  rest="${path#/}"; scan=''
+  while [[ -n "$rest" ]]; do
+    component="${rest%%/*}"; rest="${rest#*/}"
+    [[ "$component" == "$rest" ]] && rest=''
+    [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
+    scan="$scan/$component"
+    [[ ! -L "$scan" ]] || return 1
+  done
+  while [[ ! -e "$path" && ! -L "$path" ]]; do
+    name="${path##*/}"; [[ -n "$name" ]] && suffix="/$name$suffix"
+    parent="$(dirname "$path")"
+    [[ "$parent" != "$path" ]] || return 1
+    path="$parent"
+  done
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  (cd -P "$path" && printf '%s%s\n' "$PWD" "$suffix")
+}
+
 require_disjoint_evidence() {
-  local evidence="$1" gguf="$2" reference="$3" root="$4" approval="$5" evidence_parent evidence_real gguf_real reference_real root_real approval_real
-  [[ ! -L "$evidence" && ! -L "$reference" && ! -L "$gguf" && ! -L "$root" && ! -L "$approval" ]] || { die 'evidence/reference/GGUF/checkout/approval paths must not be symlinks'; return 2; }
-  evidence_parent="$(cd "$(dirname "$evidence")" 2>/dev/null && pwd -P)" || { die 'evidence parent is unavailable'; return 2; }
-  gguf_real="$(cd "$(dirname "$gguf")" 2>/dev/null && pwd -P)/$(basename "$gguf")" || { die 'GGUF parent is unavailable'; return 2; }
-  reference_real="$(cd "$(dirname "$reference")" 2>/dev/null && pwd -P)/$(basename "$reference")" || { die 'reference parent is unavailable'; return 2; }
-  approval_real="$(cd "$(dirname "$approval")" 2>/dev/null && pwd -P)/$(basename "$approval")" || { die 'approval parent is unavailable'; return 2; }
-  root_real="$(cd "$root" 2>/dev/null && pwd -P)" || { die 'checkout path is unavailable'; return 2; }
-  evidence_real="$evidence_parent/$(basename "$evidence")"
+  local evidence="$1" gguf="$2" reference="$3" root="$4" approval="$5" evidence_real gguf_real reference_real root_real approval_real
+  [[ ! -e "$evidence" && ! -L "$evidence" ]] || { die 'evidence directory must be absent and non-symlink'; return 2; }
+  [[ -f "$reference" && ! -L "$reference" && -f "$gguf" && ! -L "$gguf" && -f "$approval" && ! -L "$approval" && -d "$root" && ! -L "$root" ]] || { die 'existing inputs and checkout must have exact non-symlink types'; return 2; }
+  [[ -d "$(dirname "$evidence")" ]] || { die 'evidence parent is unavailable'; return 2; }
+  evidence_real="$(canonical_absent_path "$evidence")" || { die 'evidence path cannot be canonicalized'; return 2; }
+  gguf_real="$(canonical_existing_path "$gguf")" || { die 'GGUF path cannot be canonicalized'; return 2; }
+  reference_real="$(canonical_existing_path "$reference")" || { die 'reference path cannot be canonicalized'; return 2; }
+  approval_real="$(canonical_existing_path "$approval")" || { die 'approval path cannot be canonicalized'; return 2; }
+  root_real="$(canonical_existing_path "$root")" || { die 'checkout path cannot be canonicalized'; return 2; }
   [[ "$evidence_real" != "$root_real" && "$evidence_real" != "$gguf_real" && "$evidence_real" != "$reference_real" && "$evidence_real" != "$approval_real" ]] || { die 'evidence path aliases checkout or input'; return 2; }
   case "$evidence_real/" in "$root_real/"*|"$gguf_real/"*|"$reference_real/"*|"$approval_real/"*) die 'evidence path overlaps checkout or input'; return 2 ;; esac
   case "$root_real/" in "$evidence_real/"*) die 'checkout overlaps evidence'; return 2 ;; esac
@@ -81,7 +126,7 @@ license_preflight() {
   local approval="$1" gate_args=(--lock "$V2_PROJECT/uv.lock" --project "$V2_PROJECT/pyproject.toml" --manifest "$LICENSE_MANIFEST")
   [[ -f "$LICENSE_GATE" && ! -L "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && ! -L "$LICENSE_MANIFEST" ]] || { die 'v2 approval gate/manifest is missing or symlinked'; return 2; }
   [[ -n "$approval" && -f "$approval" && ! -L "$approval" ]] || { die 'approval evidence must be a required regular non-symlink file'; return 2; }
-  gate_args+=(--approval "$approval")
+  gate_args+=(--approval-evidence "$approval")
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$LICENSE_GATE" "${gate_args[@]}"
 }
 
@@ -208,8 +253,9 @@ record_environment() {
 }
 
 run_self_test() (
-  local temporary script_path required reference index
-  temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-moss-tokenizer-v2-apple.XXXXXX")"
+  local temporary temporary_parent script_path required reference index
+  temporary_parent="$(cd -P "${TMPDIR:-/tmp}" && pwd -P)" || die 'temporary test parent is unavailable'
+  temporary="$(mktemp -d "$temporary_parent/vokra-moss-tokenizer-v2-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
   printf 'abc' > "$temporary/value"
   [[ "$(sha256_file "$temporary/value")" == \
@@ -220,11 +266,15 @@ run_self_test() (
   cp "$temporary/value" "$temporary/root/gguf"
   cp "$temporary/value" "$temporary/root/reference.csv"
   if require_disjoint_evidence "$temporary/root/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'checkout-contained evidence was accepted'; fi
+  if require_disjoint_evidence "$temporary/root/nested/../lexical-alias-evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'lexical checkout overlap was accepted'; fi
   if require_disjoint_evidence "$temporary/root/gguf" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'evidence/input equality was accepted'; fi
   ln -s "$temporary/value" "$temporary/input-link"
   if require_file input "$temporary/input-link"; then die 'symlink input was accepted'; fi
   ln -s "$temporary/value" "$temporary/approval-link"
   if require_disjoint_evidence "$temporary/disjoint-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/approval-link"; then die 'symlink approval was accepted'; fi
+  mkdir -p "$temporary/real-parent/child"
+  ln -s "$temporary/real-parent" "$temporary/link-parent"
+  if require_disjoint_evidence "$temporary/link-parent/child/new-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/value"; then die 'symlink evidence ancestor was accepted'; fi
   mkdir -p "$temporary/existing"
   if require_absent_evidence_directory "$temporary/existing"; then die 'pre-existing evidence directory was accepted'; fi
   ln -s "$temporary/value" "$temporary/evidence-link"

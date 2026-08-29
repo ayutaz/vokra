@@ -10,6 +10,7 @@ import sys
 import tempfile
 from pathlib import Path
 import tomllib
+from urllib.parse import urlparse
 
 REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 REVISION = "6aa02b01e445cc585582cf0ba480bc3ea6c8dd68"
@@ -49,6 +50,19 @@ PACKAGE_REVIEW_SCHEMA = {
 }
 MANIFEST_SCHEMA = {"gate_version", "lock_sha256", "project_sha256", "package_rows", "package_rows_sha256", "package_review_rows", "package_review_rows_sha256", "license_rows", "license_rows_sha256", "model_rows", "model_rows_sha256", "upstream_repo", "upstream_revision", "reference_route", "reference_contract", "publication_decision", "approval"}
 APPROVAL_SCHEMA = {"status", "signer", "digest"}
+LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
+PACKAGE_KEYS = {
+    frozenset({"name", "version", "source", "sdist", "wheels"}),
+    frozenset({"dependencies", "name", "sdist", "source", "version", "wheels"}),
+    frozenset({"name", "source", "version", "wheels"}),
+    frozenset({"dependencies", "name", "source", "version", "wheels"}),
+    frozenset({"dependencies", "metadata", "name", "source", "version"}),
+}
+ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+REGISTRY_HOSTS = {
+    "https://pypi.org/simple": "files.pythonhosted.org",
+    "https://download.pytorch.org/whl/cu126": "download-r2.pytorch.org",
+}
 
 
 def sha(data: bytes) -> str:
@@ -91,13 +105,17 @@ def resolved(value: object) -> bool:
 
 
 def lock_rows(lock: dict) -> list[dict]:
+    if set(lock) != LOCK_KEYS or lock.get("version") != 1 or type(lock.get("version")) is not int or lock.get("revision") != 3 or type(lock.get("revision")) is not int:
+        raise ValueError("lock top-level schema drifted")
+    if not isinstance(lock.get("requires-python"), str) or not isinstance(lock.get("resolution-markers"), list) or any(not isinstance(item, str) for item in lock["resolution-markers"]) or not isinstance(lock.get("supported-markers"), list) or any(not isinstance(item, str) for item in lock["supported-markers"]):
+        raise ValueError("lock marker schema malformed")
     packages = lock.get("package")
     if not isinstance(packages, list) or not packages:
         raise ValueError("lock package table missing/empty")
     rows = []
     seen = set()
     for package in packages:
-        if not isinstance(package, dict):
+        if not isinstance(package, dict) or frozenset(package) not in PACKAGE_KEYS:
             raise ValueError("malformed lock package row")
         name, version = package.get("name"), package.get("version")
         if not isinstance(name, str) or not name.strip() or not isinstance(version, str) or not version.strip():
@@ -110,8 +128,19 @@ def lock_rows(lock: dict) -> list[dict]:
         dependencies = package.get("dependencies", [])
         if not isinstance(markers, list) or any(not isinstance(marker, str) for marker in markers):
             raise ValueError("malformed lock resolution markers")
-        if not isinstance(dependencies, list) or any(not isinstance(dep, dict) or not set(dep) <= {"name", "marker"} or not isinstance(dep.get("name"), str) or not dep["name"] or ("marker" in dep and not isinstance(dep["marker"], str)) for dep in dependencies):
+        if not isinstance(dependencies, list) or any(not isinstance(dep, dict) or set(dep) != {"name", "marker"} or not isinstance(dep.get("name"), str) or not dep["name"] or not isinstance(dep["marker"], str) for dep in dependencies):
             raise ValueError("malformed lock dependency row")
+        source = package.get("source")
+        if not isinstance(source, dict) or len(source) != 1 or set(source) not in ({"registry"}, {"virtual"}):
+            raise ValueError("malformed lock source")
+        if "registry" in source and source["registry"] not in REGISTRY_HOSTS:
+            raise ValueError("unsupported lock registry")
+        if "virtual" in source and source["virtual"] != ".":
+            raise ValueError("malformed virtual source")
+        if "virtual" in source:
+            metadata = package.get("metadata")
+            if not isinstance(metadata, dict) or set(metadata) != {"requires-dist"} or not isinstance(metadata["requires-dist"], list) or any(not isinstance(req, dict) or set(req) not in ({"name", "specifier"}, {"index", "name", "specifier"}) or not isinstance(req.get("name"), str) or not req["name"] or not isinstance(req.get("specifier"), str) or ("index" in req and req["index"] != "https://download.pytorch.org/whl/cu126") for req in metadata["requires-dist"]):
+                raise ValueError("malformed virtual metadata")
         rows.append({
             "name": name, "version": version, "source": package.get("source"),
             "resolution-markers": package.get("resolution-markers", []),
@@ -132,6 +161,8 @@ def artifact_error(lock: dict) -> str | None:
         source = package.get("source")
         if not isinstance(source, dict):
             return f"package {package.get('name')!r} has malformed source"
+        if frozenset(package) not in PACKAGE_KEYS:
+            return f"package {package.get('name')!r} has an inexact row schema"
         if "sdist" in package and not isinstance(package["sdist"], dict):
             return f"package {package.get('name')!r} has malformed sdist"
         if "wheels" in package and not isinstance(package["wheels"], list):
@@ -139,9 +170,11 @@ def artifact_error(lock: dict) -> str | None:
         if source == {"virtual": "."}:
             if "sdist" in package or "wheels" in package:
                 return "virtual project source cannot carry resolver artifacts"
+            if set(package) != frozenset({"dependencies", "metadata", "name", "source", "version"}) or not isinstance(package.get("metadata"), dict) or set(package["metadata"]) != {"requires-dist"} or not isinstance(package["metadata"]["requires-dist"], list):
+                return "virtual project metadata schema is not exact"
             virtual_count += 1
             continue
-        if set(source) != {"registry"} or not isinstance(source.get("registry"), str) or not source["registry"].startswith("https://"):
+        if set(source) != {"registry"} or source.get("registry") not in REGISTRY_HOSTS:
             return f"package {package.get('name')!r} has malformed registry source"
         artifacts = []
         sdist = package.get("sdist")
@@ -153,15 +186,23 @@ def artifact_error(lock: dict) -> str | None:
         if not artifacts:
             return f"package {package.get('name')!r} has no resolver artifacts"
         for artifact in artifacts:
-            if not isinstance(artifact, dict):
+            if not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS:
                 return f"package {package.get('name')!r} has malformed artifact"
-            url, digest, size = artifact.get("url"), artifact.get("hash"), artifact.get("size")
-            if not isinstance(url, str) or not url.startswith("https://"):
+            parsed = None
+            try:
+                parsed = urlparse(artifact["url"])
+                hostname = parsed.hostname
+            except (TypeError, ValueError):
+                hostname = None
+            expected_host = REGISTRY_HOSTS[source["registry"]]
+            if (parsed is None or not isinstance(artifact["url"], str) or parsed.scheme != "https" or hostname != expected_host or parsed.netloc != hostname or not parsed.path.startswith("/") or parsed.query or parsed.fragment):
                 return f"package {package.get('name')!r} has invalid artifact URL"
-            if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            if not isinstance(artifact["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"]):
                 return f"package {package.get('name')!r} has invalid artifact hash"
-            if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            if not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0:
                 return f"package {package.get('name')!r} has invalid artifact size"
+            if not isinstance(artifact["upload-time"], str) or not artifact["upload-time"].strip():
+                return f"package {package.get('name')!r} has invalid artifact upload-time"
     if virtual_count != 1:
         return "lock must contain exactly one virtual project source"
     return None
@@ -353,10 +394,17 @@ def self_test() -> None:
         vector_path.write_bytes(b"abc")
         if sha_file(vector_path) != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad":
             raise SystemExit("self-test streaming SHA-256 known vector failed")
-        virtual = '\n[[package]]\nname="demo"\nversion="0.1.0"\nsource={virtual="."}\n'
-        lock_path.write_text('version=1\n[[package]]\nname="demo"\nversion="1"\nsource={registry="https://pypi.org/simple"}\nsdist={url="https://files.pythonhosted.org/demo.tar.gz",hash="sha256:' + "a" * 64 + '",size=1}\n' + virtual, encoding="utf-8")
+        virtual = '\n[[package]]\nname="demo"\nversion="0.1.0"\nsource={virtual="."}\ndependencies=[]\n[package.metadata]\nrequires-dist=[]\n'
+        lock_path.write_text('version=1\nrevision=3\nrequires-python="==3.12.*"\nresolution-markers=[]\nsupported-markers=[]\n[[package]]\nname="demo"\nversion="1"\nsource={registry="https://pypi.org/simple"}\nsdist={url="https://files.pythonhosted.org/packages/demo.tar.gz",hash="sha256:' + "a" * 64 + '",size=1,upload-time="2026-01-01T00:00:00Z"}\nwheels=[{url="https://files.pythonhosted.org/packages/demo.whl",hash="sha256:' + "b" * 64 + '",size=2,upload-time="2026-01-01T00:00:00Z"}]\n' + virtual, encoding="utf-8")
         project_path.write_text('[project]\nname="demo"\nversion="0.1.0"\n', encoding="utf-8")
         valid_lock = tomllib.loads(lock_path.read_text())
+        for label, mutate in (("top-extra", lambda value: value.update(unexpected=True)), ("top-missing", lambda value: value.pop("revision")), ("package-extra", lambda value: value["package"][0].update(unexpected=True))):
+            candidate = load_json(json.dumps(valid_lock)); mutate(candidate)
+            try:
+                lock_rows(candidate)
+            except ValueError:
+                continue
+            raise SystemExit(f"self-test accepted malformed lock schema: {label}")
         for label, mutate in (("sdist", lambda value: value["package"][0].update(sdist="bad")), ("wheels", lambda value: value["package"][0].update(wheels={})), ("source", lambda value: value["package"][0].update(source="bad")), ("virtual-source", lambda value: value["package"][0].update(source={"virtual":"other"})), ("missing-virtual", lambda value: value["package"].pop()), ("duplicate-virtual", lambda value: value["package"].append(dict(value["package"][-1]))), ("duplicate-package", lambda value: value["package"].append(dict(value["package"][0]))), ("bool-size", lambda value: value["package"][0]["sdist"].update(size=True))):
             candidate = load_json(json.dumps(valid_lock)); mutate(candidate)
             rejected = artifact_error(candidate) is not None
@@ -367,6 +415,14 @@ def self_test() -> None:
                     rejected = True
             if not rejected:
                 raise SystemExit(f"self-test accepted malformed lock: {label}")
+        for field in ("url", "hash", "size", "upload-time"):
+            candidate = load_json(json.dumps(valid_lock)); candidate["package"][0]["sdist"].pop(field)
+            if artifact_error(candidate) is None:
+                raise SystemExit(f"self-test accepted missing artifact field: {field}")
+        for label, mutate in (("extra-artifact-field", lambda value: value["package"][0]["sdist"].update(extra=True)), ("empty-upload-time", lambda value: value["package"][0]["sdist"].update(**{"upload-time": " "})), ("evil-host", lambda value: value["package"][0]["sdist"].update(url="https://evil.example/packages/demo.tar.gz"))):
+            candidate = load_json(json.dumps(valid_lock)); mutate(candidate)
+            if artifact_error(candidate) is None:
+                raise SystemExit(f"self-test accepted malformed artifact: {label}")
         PAYLOAD_FILES = ("demo",)
         FILE_IDENTITIES = {"demo": {"path": "demo", "role": "upstream", "bytes": 3, "sha256": sha(b"abc"), "status": "REVIEWED"}}
         ROUTE = {"status": "REVIEWED", "transformers_version": "5.5.0", "reason": "owner evidence"}
@@ -457,7 +513,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--verify-snapshot", action="store_true"); parser.add_argument("--snapshot", type=Path)
-    parser.add_argument("--lock", type=Path); parser.add_argument("--project", type=Path); parser.add_argument("--manifest", type=Path); parser.add_argument("--approval", type=Path)
+    parser.add_argument("--lock", type=Path); parser.add_argument("--project", type=Path); parser.add_argument("--manifest", type=Path); parser.add_argument("--approval-evidence", dest="approval", type=Path)
     args = parser.parse_args()
     if args.self_test:
         self_test()

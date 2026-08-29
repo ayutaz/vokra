@@ -273,7 +273,7 @@ pre_sync_gates() {
   require_resolver_artifacts "$V2_PROJECT/uv.lock" || rc=$?
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE" \
     --lock "$V2_PROJECT/uv.lock" --project "$V2_PROJECT/pyproject.toml" \
-    --manifest "$V2_MANIFEST" --approval "$v2_approval_path" || rc=$?
+    --manifest "$V2_MANIFEST" --approval-evidence "$v2_approval_path" || rc=$?
   return "$rc"
 }
 
@@ -367,7 +367,7 @@ self_test() {
   grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12' "$0" >/dev/null || die 'gates must disable UV cache'
   grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE"' "$0" >/dev/null || die 'v2 gate must disable UV cache'
   grep -F -- '--approval-evidence "$local_approval_path"' "$0" >/dev/null || die 'Local external approval evidence option is missing'
-  grep -F -- '--approval "$v2_approval_path"' "$0" >/dev/null || die 'v2 external approval evidence option is missing'
+  grep -F -- '--approval-evidence "$v2_approval_path"' "$0" >/dev/null || die 'v2 external approval evidence option is missing'
   grep -F 'uv sync --project "$LOCAL_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'Local closure sync is missing'
   grep -F 'uv sync --project "$V2_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'v2 closure sync is missing'
   grep -F '"$CODEC_REFERENCE_DUMPER" --variant v2 --frames 1 --num-quantizers 12 --device cuda' "$0" >/dev/null || die 'v2 reference must run on CUDA'

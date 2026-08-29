@@ -120,6 +120,23 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous JSON instead of silently applying last-key-wins."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def load_json(text: str) -> object:
+    """Parse a JSON document with duplicate-key rejection at every depth."""
+
+    return json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
+
+
 def safetensors_header(path: Path) -> dict[str, dict[str, object]]:
     """Read and validate one safetensors header without loading tensor data."""
 
@@ -135,8 +152,8 @@ def safetensors_header(path: Path) -> dict[str, dict[str, object]]:
                 f"for {file_size}-byte file"
             )
         try:
-            raw_header = json.loads(handle.read(header_size).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raw_header = load_json(handle.read(header_size).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise ValueError(f"{path}: invalid safetensors header JSON: {exc}") from exc
     if not isinstance(raw_header, dict):
         raise ValueError(f"{path}: safetensors header is not an object")
@@ -526,8 +543,8 @@ def main() -> int:
             raise ValueError(
                 f"{label} SHA-256 {actual} != {expected} at revision {REVISION}"
             )
-    config = json.loads(args.config.read_text(encoding="utf-8"))
-    index = json.loads(args.index.read_text(encoding="utf-8"))
+    config = load_json(args.config.read_text(encoding="utf-8"))
+    index = load_json(args.index.read_text(encoding="utf-8"))
     validate_config(config)
 
     manifest = expected_manifest()

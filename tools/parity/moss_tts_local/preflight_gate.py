@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 import tomllib
+from urllib.parse import urlparse
 
 LOCK_SHA256 = "f4d225fad7bb7fbc5fa2342855a91aa74b929612d87c36f2c97294e4df49cc29"
 PROJECT_SHA256 = "18cc19e890ca0b762985af3bd48216177a6a487133da97b2b172ab28087ee0b3"
@@ -99,15 +100,39 @@ PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "dependencies", "metadata"}),
 )
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+REGISTRY_URLS = {
+    "https://pypi.org/simple": "files.pythonhosted.org",
+    "https://download.pytorch.org/whl/cu126": "download-r2.pytorch.org",
+}
+
+
+def _artifact_host(value: Any) -> str | None:
+    """Return a bare approved artifact host, rejecting malformed HTTPS URLs."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlparse(value)
+        hostname = parsed.hostname
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or hostname not in set(REGISTRY_URLS.values())
+        or parsed.netloc != hostname
+        or not parsed.path.startswith("/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return hostname
 
 
 def _artifact_valid(value: Any) -> bool:
     return (
         isinstance(value, dict)
         and set(value) == ARTIFACT_KEYS
-        and isinstance(value["url"], str)
-        and value["url"].startswith("https://")
-        and value["url"].split("/", 3)[2] in {"files.pythonhosted.org", "download-r2.pytorch.org"}
+        and _artifact_host(value["url"]) is not None
         and isinstance(value["hash"], str)
         and bool(re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]))
         and isinstance(value["size"], int)
@@ -141,7 +166,7 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         source = package.get("source")
         if not isinstance(source, dict) or len(source) != 1 or set(source) not in ({"registry"}, {"virtual"}):
             raise ValueError("malformed lock package source")
-        if "registry" in source and (not isinstance(source["registry"], str) or source["registry"] not in {"https://pypi.org/simple", "https://download.pytorch.org/whl/cu126"}):
+        if "registry" in source and (not isinstance(source["registry"], str) or source["registry"] not in REGISTRY_URLS):
             raise ValueError("lock registry source must be HTTPS")
         if "virtual" in source:
             virtual_count += 1
@@ -158,13 +183,13 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("malformed lock dependency row")
         if "sdist" in package and not _artifact_valid(package["sdist"]):
             raise ValueError("malformed lock sdist artifact")
-        if "registry" in source:
-            expected_host = "download-r2.pytorch.org" if source["registry"] == "https://download.pytorch.org/whl/cu126" else "files.pythonhosted.org"
-            artifacts = ([package["sdist"]] if "sdist" in package else []) + package.get("wheels", [])
-            if any(not isinstance(item, dict) or item["url"].split("/", 3)[2] != expected_host for item in artifacts):
-                raise ValueError("lock artifact host is not bound to its registry")
         if "wheels" in package and (not isinstance(package["wheels"], list) or not package["wheels"] or any(not _artifact_valid(item) for item in package["wheels"])):
             raise ValueError("malformed lock wheel artifacts")
+        if "registry" in source:
+            expected_host = REGISTRY_URLS[source["registry"]]
+            artifacts = ([package["sdist"]] if "sdist" in package else []) + package.get("wheels", [])
+            if any(not isinstance(item, dict) or _artifact_host(item.get("url")) != expected_host for item in artifacts):
+                raise ValueError("lock artifact host is not bound to its registry")
         if "virtual" in source:
             metadata = package.get("metadata")
             if "sdist" in package or "wheels" in package or not isinstance(metadata, dict) or set(metadata) != {"requires-dist"} or not isinstance(metadata["requires-dist"], list):
@@ -197,8 +222,8 @@ def artifact_error(lock: dict[str, Any]) -> str | None:
         if not artifacts:
             return f"{package.get('name')}: no resolver artifacts"
         for artifact in artifacts:
-            if (not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS or not isinstance(artifact.get("url"), str)
-                    or not artifact["url"].startswith("https://") or not isinstance(artifact.get("hash"), str)
+            if (not isinstance(artifact, dict) or set(artifact) != ARTIFACT_KEYS or _artifact_host(artifact.get("url")) is None
+                    or not isinstance(artifact.get("hash"), str)
                     or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"]) or not isinstance(artifact.get("size"), int)
                     or isinstance(artifact["size"], bool) or artifact["size"] <= 0 or not isinstance(artifact.get("upload-time"), str)
                     or not artifact["upload-time"].strip()):
@@ -307,16 +332,61 @@ def self_test() -> int:
     if artifact_error(lock_data) is not None:
         print(f"genuine resolver artifact metadata rejected: {artifact_error(lock_data)}", file=sys.stderr)
         return 1
-    broken_lock = json.loads(json.dumps(lock_data))
-    for package in broken_lock["package"]:
-        if package.get("source", {}).get("virtual") is None:
-            if "wheels" in package:
-                package["wheels"][0].pop("size", None)
-            else:
-                package["sdist"].pop("size", None)
-            break
-    if artifact_error(broken_lock) is None:
-        print("missing resolver artifact metadata was accepted", file=sys.stderr)
+    registry_package = next(
+        package for package in lock_data["package"]
+        if package.get("source", {}).get("registry") and package.get("wheels")
+    )
+    artifact = registry_package["wheels"][0]
+
+    def reject_artifact_tamper(label: str, mutate: Any) -> bool:
+        altered = json.loads(json.dumps(lock_data))
+        altered_package = next(
+            package for package in altered["package"]
+            if package.get("name") == registry_package["name"]
+            and package.get("version") == registry_package["version"]
+        )
+        mutate(altered_package["wheels"][0])
+        try:
+            lock_rows(altered)
+        except ValueError:
+            return True
+        print(f"artifact tamper accepted: {label}", file=sys.stderr)
+        return False
+
+    for field in sorted(ARTIFACT_KEYS):
+        if not reject_artifact_tamper(f"missing-{field}", lambda value, field=field: value.pop(field)):
+            return 1
+    if not reject_artifact_tamper("extra-field", lambda value: value.update({"unexpected": True})):
+        return 1
+    for label, value in (
+        ("bad-url", "https://files.pythonhosted.org"),
+        ("malformed-url", "https://["),
+        ("wrong-host", "https://download-r2.pytorch.org/packages/invalid.whl"),
+        ("url-port", "https://files.pythonhosted.org:443/packages/invalid.whl"),
+        ("url-query", artifact["url"] + "?tampered=1"),
+        ("empty-upload-time", "   "),
+    ):
+        if label == "empty-upload-time":
+            mutate = lambda item, value=value: item.update({"upload-time": value})
+        else:
+            mutate = lambda item, value=value: item.update({"url": value})
+        if not reject_artifact_tamper(label, mutate):
+            return 1
+    for label, value in (("bool-size", True), ("zero-size", 0), ("negative-size", -1), ("float-size", 1.5), ("string-size", "1")):
+        if not reject_artifact_tamper(label, lambda item, value=value: item.update({"size": value})):
+            return 1
+    if not reject_artifact_tamper("bad-hash", lambda item: item.update({"hash": "sha256:tampered"})):
+        return 1
+
+    for field in ("name", "version", "source", "wheels"):
+        altered = json.loads(json.dumps(lock_data))
+        package = next(item for item in altered["package"] if item.get("name") == registry_package["name"] and item.get("version") == registry_package["version"])
+        package.pop(field)
+        try:
+            lock_rows(altered)
+        except ValueError:
+            continue
+        print(f"missing package field accepted: {field}", file=sys.stderr)
         return 1
     strict_cases: list[tuple[str, Any]] = []
     strict_cases.append(("top-level", {**json.loads(json.dumps(lock_data)), "unexpected": True}))
