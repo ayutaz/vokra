@@ -354,7 +354,7 @@ def source_inventory(source: Path, transformers: Path) -> dict[str, Any]:
         "decoder_modeling": "Qwen2Model",
     }
     transformer_files = []
-    for role, relative in transformer_roles.items():
+    for role, relative in transformers_roles.items():
         path = transformers / relative
         if not path.is_file() or transformer_markers[role].lower() not in path.read_text(encoding="utf-8", errors="replace").lower():
             raise RuntimeError(f"required Transformers Qwen2-Audio role missing or unrecognized: {relative}")
@@ -658,6 +658,30 @@ def self_test() -> None:
         fake_transformers = root / "transformers"
         fake_source.mkdir()
         fake_transformers.mkdir()
+        apache = "Apache License, Version 2.0\n"
+        for relative, marker in (
+            ("README.md", "Qwen2-Audio"),
+            ("demo/web_demo_audio.py", "Qwen2Audio"),
+            ("eval_audio/eval.py", "evaluation"),
+            ("LICENSE", apache),
+        ):
+            path = fake_source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(marker, encoding="utf-8")
+        transformer_files = {
+            "src/transformers/models/qwen2_audio/configuration_qwen2_audio.py": "Qwen2AudioConfig",
+            "src/transformers/models/qwen2_audio/modeling_qwen2_audio.py": "Qwen2AudioForConditionalGeneration",
+            "src/transformers/models/qwen2_audio/processing_qwen2_audio.py": "Qwen2AudioProcessor",
+            "src/transformers/models/whisper/feature_extraction_whisper.py": "WhisperFeatureExtractor",
+            "src/transformers/models/qwen2/configuration_qwen2.py": "Qwen2Config",
+            "src/transformers/models/qwen2/modeling_qwen2.py": "Qwen2Model",
+        }
+        for relative, marker in transformer_files.items():
+            path = fake_transformers / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(marker, encoding="utf-8")
+        (fake_transformers / "LICENSE").write_text(apache, encoding="utf-8")
+        source_tracked = "README.md\0demo/web_demo_audio.py\0eval_audio/eval.py\0LICENSE\0"
         original_git = globals()["git"]
         def fake_git(path: Path, *args: str) -> str:
             if path == fake_source and args == ("rev-parse", "HEAD"):
@@ -665,15 +689,18 @@ def self_test() -> None:
             if path == fake_source and args == ("remote", "get-url", "origin"):
                 return SOURCE_REPOSITORY
             if path == fake_source and args == ("ls-files", "-z"):
-                return "README.md\0"
+                return source_tracked
+            if path == fake_transformers and args == ("rev-parse", "HEAD"):
+                return TRANSFORMERS_REVISION
+            if path == fake_transformers and args == ("describe", "--exact-match", "--tags"):
+                return TRANSFORMERS_TAG
+            if path == fake_transformers and args == ("remote", "get-url", "origin"):
+                return TRANSFORMERS_REPOSITORY
             raise AssertionError(f"unexpected fixture git call: {path} {args}")
         globals()["git"] = fake_git
         try:
-            source_inventory(fake_source, fake_transformers)
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("weak official source role evidence was accepted")
+            selected_sources = source_inventory(fake_source, fake_transformers)
+            assert len(selected_sources["transformers"]["role_files"]) == len(transformer_files)
         finally:
             globals()["git"] = original_git
         blocked = root / "blocked"
