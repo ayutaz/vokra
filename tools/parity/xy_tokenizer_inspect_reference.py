@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import stat
 import tempfile
@@ -178,9 +179,35 @@ def _mapping(loader: StrictYamlLoader, node: yaml.MappingNode, deep: bool = Fals
 StrictYamlLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
 
 
+def _validate_scalar_aliases(text: str) -> None:
+    """Allow only non-tagged scalar anchors and aliases in the fixed config."""
+    anchors: set[str] = set()
+    try:
+        events = list(yaml.parse(text))
+    except yaml.YAMLError as error:
+        raise ValueError(f"strict YAML parse failed: {error}") from error
+    for event in events:
+        tag = getattr(event, "tag", None)
+        if tag is not None:
+            raise ValueError("YAML tags are not accepted")
+        if isinstance(event, yaml.events.ScalarEvent):
+            if event.value == "<<":
+                raise ValueError("YAML merge keys are not accepted")
+            if event.anchor is not None:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", event.anchor):
+                    raise ValueError("YAML anchor name is invalid")
+                if event.anchor in anchors:
+                    raise ValueError("duplicate YAML anchor")
+                anchors.add(event.anchor)
+        elif isinstance(event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent)):
+            if event.anchor is not None:
+                raise ValueError("only scalar YAML anchors are accepted")
+        elif isinstance(event, yaml.events.AliasEvent) and event.anchor not in anchors:
+            raise ValueError("undefined YAML alias")
+
+
 def parse_config(text: str) -> dict[str, Any]:
-    if any(marker in text for marker in ("!", "&", "*")):
-        raise ValueError("YAML aliases/tags are not accepted")
+    _validate_scalar_aliases(text)
     try:
         value = yaml.load(text, Loader=StrictYamlLoader)
     except yaml.YAMLError as error:
@@ -417,18 +444,31 @@ def self_test() -> None:
     assert CONFIG_RELATIVE.as_posix() not in SELECTED_MODEL_FILES
     config_data = parse_config("audio_tokenizer: {}\n")
     assert config_data["topology_status"] == TOPOLOGY_UNVERIFIED_BLOCKER
+    anchored = parse_config(
+        "audio_tokenizer:\n  sample_rate: &sample_rate 16000\n  hop_length: *sample_rate\n"
+    )
+    assert anchored["raw"]["audio_tokenizer"] == {"sample_rate": 16000, "hop_length": 16000}
     try:
         parse_config("audio_tokenizer: {}\naudio_tokenizer: {}\n")
     except ValueError:
         pass
     else:
         raise AssertionError("duplicate YAML key was accepted")
-    try:
-        parse_config("audio_tokenizer: &alias {}\n")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("YAML alias was accepted")
+    for unsafe_yaml in (
+        "audio_tokenizer: &alias {}\n",
+        "audio_tokenizer: !custom {}\n",
+        "audio_tokenizer:\n  first: &value 1\n  second: &value 2\n",
+        "audio_tokenizer:\n  second: *missing\n",
+        "audio_tokenizer:\n  first: &value {nested: 1}\n  second: *value\n",
+        "audio_tokenizer:\n  first: &value [*value]\n",
+        "<<: {audio_tokenizer: {}}\n",
+    ):
+        try:
+            parse_config(unsafe_yaml)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe YAML anchor/alias construct was accepted")
     bad_state = {"layer..weight": torch.ones(1)}
     try:
         validate_state_dict(bad_state)
