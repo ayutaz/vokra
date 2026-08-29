@@ -196,10 +196,12 @@ pub enum Variant {
     /// backbone (`Wav2Vec2ForCTC` head family) bundled with 1000+
     /// per-language CTC adapters (~2000 sibling files in the repo).
     ///
-    /// The backbone axes are pinned from upstream revision
-    /// `3d33597edbdaaba14a8e858e2c8caa76e3cec0cd`: 48 × d=1280 × 16h ×
+    /// The candidate backbone axes recorded from upstream revision
+    /// `3d33597edbdaaba14a8e858e2c8caa76e3cec0cd` are 48 × d=1280 × 16h ×
     /// ffn=5120, stable pre-LayerNorm, and base `vocab_size=154`.
-    /// Per-language adapters remain separate artifacts. The currently
+    /// They remain unauthenticated until VAST records the exact checkpoint
+    /// manifest; this pass-through converter does not make them a binding
+    /// contract. Per-language adapters remain separate artifacts. The currently
     /// public Vokra GGUF contains only an 8.9 MB adapter and carries
     /// incompatible metadata/license stamps, so the runtime refuses it
     /// until a full backbone+adapter artifact passes the publication
@@ -388,8 +390,8 @@ impl Variant {
                 num_conv_pos_embedding_groups: 16,
                 has_ctc_head: true,
             },
-            // Primary source: facebook/mms-1b-all config.json at
-            // revision 3d33597edbdaaba14a8e858e2c8caa76e3cec0cd.
+            // Candidate axes from the pinned primary-source revision. The
+            // strict runtime still requires a VAST file/name/shape manifest.
             Self::Mms1bAll => VariantAxes {
                 name: "mms-1b-all",
                 upstream_hf: "facebook/mms-1b-all",
@@ -434,9 +436,10 @@ pub struct Wav2Vec2CtcReport {
 /// `wav2vec2-xlsr-53-espeak-cv-ft`).
 ///
 /// Reads `input` (an upstream `wav2vec2-*` `model.safetensors`),
-/// writes a Vokra GGUF to `output`. `license` overrides the default
-/// `apache-2.0` provenance stamp; pass `None` to keep the built-in
-/// stamp.
+/// writes a Vokra GGUF to `output`. `license` overrides the built-in
+/// provenance stamp; pass `None` to use the variant default. MMS uses the
+/// audited `cc-by-nc-4.0`/NonCommercial default, while the other variants
+/// retain their permissive default.
 ///
 /// # Errors
 ///
@@ -449,6 +452,16 @@ pub fn convert_wav2vec2_ctc_file_with_variant(
     variant: Variant,
     license: Option<&str>,
 ) -> Result<Wav2Vec2CtcReport, ConvertError> {
+    if variant == Variant::Mms1bAll {
+        let _ = mms_license(license)?;
+        // No complete backbone+adapter manifest or authenticated adapter
+        // composition exists yet. Never stamp arbitrary/adapter-only input
+        // as a product-facing MMS GGUF.
+        return Err(ConvertError::Usage(
+            "MMS-1B-All conversion is INSPECTION_ONLY until VAST authenticates the full backbone+language-adapter manifest"
+                .to_owned(),
+        ));
+    }
     let bytes = std::fs::read(input)?;
     let st = SafetensorsFile::parse(bytes)?;
     let axes = variant.axes();
@@ -469,8 +482,8 @@ pub fn convert_wav2vec2_ctc_file_with_variant(
         &spdx,
         Some(axes.name),
         Some(&format!(
-            "{} (wav2vec 2.0 waveform-in encoder + optional CTC head, apache-2.0)",
-            axes.upstream_hf
+            "{} (wav2vec 2.0 waveform-in encoder + optional CTC head, weight license {spdx})",
+            axes.upstream_hf,
         )),
     );
 
@@ -504,6 +517,22 @@ pub fn convert_wav2vec2_ctc_file_with_variant(
         .map_err(|e| ConvertError::Gguf(e.to_string()))?;
     std::fs::write(output, out_bytes)?;
     Ok(report)
+}
+
+/// Resolves the canonical MMS weight license without permitting a caller to
+/// relabel the non-commercial checkpoint as permissive. Product conversion is
+/// separately blocked above until the complete checkpoint contract is
+/// authenticated; this helper keeps the eventual provenance rule explicit.
+fn mms_license(license: Option<&str>) -> Result<(&'static str, LicenseClass), ConvertError> {
+    match license.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(("cc-by-nc-4.0", LicenseClass::NonCommercial)),
+        Some(value) if value.eq_ignore_ascii_case("cc-by-nc-4.0") => {
+            Ok(("cc-by-nc-4.0", LicenseClass::NonCommercial))
+        }
+        Some(value) => Err(ConvertError::Usage(format!(
+            "MMS-1B-All accepts only canonical cc-by-nc-4.0 provenance, got {value:?}"
+        ))),
+    }
 }
 
 /// Default file-based converter — base-960h (the smallest / most
@@ -1065,91 +1094,39 @@ mod tests {
     }
 
     #[test]
-    fn hparam_chunk_pins_mms_1b_all_variant() {
-        // Regression fence: the pass-through converter stamps the
-        // official MMS-1B backbone axes and NonCommercial provenance.
-        // This does not make an adapter-only artifact runnable: the
-        // strict runtime separately requires the complete tensor set.
-        let bytes = safetensors_one_bf16("dummy.weight", &[1, 2], &[0u8; 4]);
-        let input_path = write_temp("mms-in", &bytes);
-        let output_path = write_temp("mms-out", &[]);
+    fn mms_conversion_is_inspection_only_and_license_is_fail_closed() {
+        assert_eq!(
+            mms_license(None).unwrap(),
+            ("cc-by-nc-4.0", LicenseClass::NonCommercial)
+        );
+        assert_eq!(
+            mms_license(Some("CC-BY-NC-4.0")).unwrap(),
+            ("cc-by-nc-4.0", LicenseClass::NonCommercial)
+        );
+        let error = mms_license(Some("apache-2.0")).unwrap_err().to_string();
+        assert!(error.contains("only canonical cc-by-nc-4.0"), "{error}");
 
-        let report = convert_wav2vec2_ctc_file_with_variant(
+        let input_path = write_temp("mms-inspection-only-in", &[]);
+        let output_path = write_temp("mms-inspection-only-out", &[]);
+        let error = convert_wav2vec2_ctc_file_with_variant(
             &input_path,
             &output_path,
             Variant::Mms1bAll,
             Some("cc-by-nc-4.0"),
         )
-        .expect("mms-1b-all conversion must succeed");
-        assert_eq!(report.read, 1);
-        assert_eq!(report.written, 1);
-        assert_eq!(report.bf16_passthrough, 1);
-        assert_eq!(report.skipped_non_float, 0);
-
-        let file = GgufFile::parse(std::fs::read(&output_path).unwrap()).unwrap();
-
-        // Discriminating name + upstream_hf must faithfully report MMS.
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("mms-1b-all"),
-            "GGUF must report `mms-1b-all`"
-        );
-        assert_eq!(
-            file.get(KEY_PROVENANCE_UPSTREAM_HF)
-                .and_then(|v| v.as_str()),
-            Some("facebook/mms-1b-all"),
-            "upstream_hf must point at the MMS release, not a sibling wav2vec2 arm"
-        );
-        // Shared wav2vec2 arch + category (tensor names remain the
-        // wav2vec2 family verbatim; MMS is a fine-tune, not a distinct
-        // downstream inference arch).
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some(ARCH)
-        );
-        assert_eq!(
-            file.get(KEY_MODEL_CATEGORY).and_then(|v| v.as_str()),
-            Some(MODEL_CATEGORY)
-        );
-        // NonCommercial gate: MMS-1B-All ships cc-by-nc-4.0 (T4 tier
-        // per the X-Codec-2 (2026-07-28) precedent). The license
-        // override arrives as `cc-by-nc-4.0` — the stamp must survive
-        // and the weight_license class must resolve to `NonCommercial`
-        // (fail-closed for the M2-13 runtime gate).
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("cc-by-nc-4.0")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::NonCommercial.as_str()),
-            "weight_license class must be NonCommercial (T4 tier gate)"
-        );
-        assert_eq!(
-            file.get(KEY_HIDDEN_SIZE).and_then(|v| v.as_u64()),
-            Some(1280),
-            "official MMS-1B hidden size"
-        );
-        assert_eq!(file.get(KEY_N_LAYER).and_then(|v| v.as_u64()), Some(48));
-        assert_eq!(
-            file.get(KEY_INTERMEDIATE_SIZE).and_then(|v| v.as_u64()),
-            Some(5120)
-        );
-        assert_eq!(file.get(KEY_VOCAB_SIZE).and_then(|v| v.as_u64()), Some(154));
-        assert_eq!(
-            file.get(KEY_HAS_CTC_HEAD).and_then(|v| v.as_bool()),
-            Some(true),
-            "MMS-1B-All ships per-lang CTC adapters + English default head"
-        );
-        assert_eq!(
-            file.get(KEY_FEAT_EXTRACT_NORM).and_then(|v| v.as_str()),
-            Some("layer"),
-            "official MMS-1B feature-extractor norm"
-        );
-
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("INSPECTION_ONLY"), "{error}");
+        assert_eq!(output_path.metadata().unwrap().len(), 0);
         std::fs::remove_file(&input_path).ok();
         std::fs::remove_file(&output_path).ok();
+    }
+
+    #[test]
+    fn mms_default_license_is_noncommercial() {
+        assert_eq!(
+            mms_license(None).unwrap(),
+            ("cc-by-nc-4.0", LicenseClass::NonCommercial)
+        );
     }
 }

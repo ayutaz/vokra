@@ -351,7 +351,10 @@ pub fn convert_audioldm2_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioLdm2Report, ConvertError> {
-    convert_audioldm2_family_file(input, output, license, NAME, UPSTREAM_HF, UPSTREAM_SOURCE)
+    let _ = (input, output, license);
+    Err(ConvertError::Usage(
+        "audioldm2 conversion is BLOCKED: a complete authenticated cvssp/audioldm2 bundle manifest (all fixed components, projection_model, sidecars, and source/model revisions) is required before binding; the legacy single-file pass-through is disabled".into(),
+    ))
 }
 
 /// Converts a `cvssp/audioldm2-large` safetensors checkpoint at
@@ -401,14 +404,10 @@ pub fn convert_audioldm2_large_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<AudioLdm2Report, ConvertError> {
-    convert_audioldm2_family_file(
-        input,
-        output,
-        license,
-        LARGE_NAME,
-        LARGE_UPSTREAM_HF,
-        LARGE_UPSTREAM_SOURCE,
-    )
+    let _ = (input, output, license);
+    Err(ConvertError::Usage(
+        "audioldm2-large conversion is BLOCKED: a complete authenticated cvssp/audioldm2-large bundle manifest (all fixed components, projection_model, sidecars, and source/model revisions) is required before binding; the legacy single-file pass-through is disabled".into(),
+    ))
 }
 
 /// Shared implementation for the AudioLDM 2 family (base + large,
@@ -511,6 +510,19 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use vokra_core::gguf::{GgmlType, GgufFile};
 
+    #[test]
+    fn conversion_refuses_legacy_single_file_without_authenticated_bundle() {
+        let input = tmp_path("blocked-in");
+        let output = tmp_path("blocked-out");
+        std::fs::write(&input, b"not a complete AudioLDM2 bundle").expect("write input");
+        let error = convert_audioldm2_file(&input, &output, None).unwrap_err();
+        assert!(
+            matches!(error, ConvertError::Usage(message) if message.contains("BLOCKED") && message.contains("projection_model"))
+        );
+        assert!(!output.exists());
+        let _ = std::fs::remove_file(input);
+    }
+
     /// A unique temp path — per-process id **plus** a monotonic counter
     /// so two tests in the same process never race on the same file.
     fn tmp_path(tag: &str) -> PathBuf {
@@ -590,6 +602,7 @@ mod tests {
     /// (`GgmlType::BF16`) with byte-identical payload — mirror of the
     /// musicgen / xcodec2 / wavtokenizer / neucodec pin.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn bf16_tensor_passes_through_verbatim() {
         // Non-zero BF16 bit patterns so a subsequent byte-identity
         // assert catches any silent widen / downcast (zeroed payloads
@@ -645,6 +658,7 @@ mod tests {
     /// cc-by-nc-sa-4.0 flip vs. sibling MusicGen NonCommercial
     /// converters).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn f32_and_f16_tensors_pass_through_and_default_license_is_noncommercial_sharealike() {
         let f32_vals: [f32; 2] = [7.0, -8.25];
         let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -746,6 +760,7 @@ mod tests {
     /// pattern as `convert_file_licensed` — the model_id / arch /
     /// category / upstream stamps survive but the license triple flips.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn caller_license_override_swaps_the_stamp() {
         // Non-zero payloads that are NOT approximations of π/e —
         // clippy::approx_constant would flag 3.14/2.71 as a naked
@@ -814,6 +829,7 @@ mod tests {
     /// (mirror of xcodec2 / wavtokenizer / musicgen empty-string guard
     /// test).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn empty_string_license_override_keeps_the_default_stamp() {
         let f32_vals: [f32; 2] = [0.5, -0.5];
         let f32_bytes: Vec<u8> = f32_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -854,6 +870,7 @@ mod tests {
     /// provenance stamp (fail-closed license posture applies
     /// unconditionally, mirror of musicgen precedent).
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn empty_safetensors_still_stamps_provenance() {
         // An empty safetensors requires the header `{}` (2 bytes)
         // prefixed by its little-endian u64 length (8 bytes) = 10
@@ -935,6 +952,7 @@ mod tests {
     /// four-chunk delta so a silent regression on the shared helper
     /// fires here first.
     #[test]
+    #[ignore = "AudioLDM2 conversion is fail-closed pending authenticated bundle binder"]
     fn large_sibling_flips_name_and_upstream_but_keeps_arch_category_and_license() {
         // Non-zero BF16 bit patterns so the byte-identity assert also
         // catches any silent widen / downcast on the sibling path.

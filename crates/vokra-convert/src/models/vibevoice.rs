@@ -2,10 +2,11 @@
 //! (SoTA plan Phase 4, 2026-07-24).
 //!
 //! Input: the upstream `microsoft/VibeVoice-1.5B` release —
-//! `model.safetensors` (BF16). Output: a GGUF carrying every float
-//! tensor plus the `vokra.vibevoice.*` / `vokra.provenance.*` /
-//! `vokra.model.*` metadata chunks the native VibeVoice implementation
-//! (`crates/vokra-models/src/vibevoice/`) reads.
+//! `model.safetensors` (BF16). The public converter currently emits no
+//! artifact: this family remains `INSPECTION_ONLY` until the official
+//! tokenizer companion, prefill contract, and scheduler-backed native graph
+//! have been authenticated. The existing strict public GGUF binder is kept
+//! for the already-proven partial artifact.
 //!
 //! # What is transcribed vs. shape-driven
 //!
@@ -13,9 +14,9 @@
 //!   `vokra.vibevoice.*` chunk group is transcribed **verbatim** from
 //!   the primary sources
 //!   `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json` and
-//!   `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
-//!   configuration_vibevoice.py` (fetched 2026-07-24 — CLAUDE.md
-//!   「ハルシネーション厳禁」).
+//!   `github.com/microsoft/VibeVoice` at the immutable official TTS orphan
+//!   `2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c` (the default branch later
+//!   removed this path; fetched 2026-07-24 — CLAUDE.md 「ハルシネーション厳禁」).
 //! - **Nested config blocks** — VibeVoice splits its `config.json`
 //!   into `decoder_config.*` (Qwen2 backbone),
 //!   `acoustic_tokenizer_config.*` (σ-VAE mirror-symmetric
@@ -32,12 +33,10 @@
 //!
 //! # No side-car config
 //!
-//! VibeVoice-1.5B ships a real upstream `config.json`, but every field
-//! is fixed for the 1.5B release and byte-parallel to the transcribed
-//! constants below. A future 7B variant (the release corpus ships the
-//! `Qwen2.5-7B` backbone alongside 1.5B) would demand `--config`;
-//! this converter fails loudly if a tensor shape disagrees with the
-//! transcribed axes at runtime bind time (FR-EX-08).
+//! VibeVoice-1.5B ships a real upstream `config.json`, but a config alone is
+//! not sufficient to authenticate the composite runtime. The fixed HF
+//! snapshot does not ship text-tokenizer files and the official source
+//! selects a separate Qwen companion. No convenient replacement is inferred.
 //!
 //! # Tensor naming contract
 //!
@@ -50,21 +49,17 @@
 //!
 //! # BF16 posture
 //!
-//! The upstream VibeVoice-1.5B release is served in **BF16**
-//! (`config.json.torch_dtype = "bfloat16"`). Today's F32 / F16
-//! pass-through arm hits `skipped_non_float` on BF16 tensors and the
-//! converter surfaces the loud "no float tensors" note. Pre-widen
-//! offline to F32 (via a small prepare script — the CSM / Kokoro /
-//! VoxCPM pattern) or wait for the streaming BF16 pass-through path
-//! (T29-equivalent — the Moshi / Kyutai STT pattern) to convert the
-//! release build directly.
+//! The old pass-through implementation was intentionally removed. A
+//! safetensors byte buffer is not proof of the complete composite contract;
+//! callers must use the VAST inspection worker and a later authenticated
+//! conversion wave.
 //!
 //! # No ONNX (permanent)
 //!
 //! VibeVoice-1.5B is distributed as safetensors + a Python pipeline;
-//! this converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in `crates/vokra-models/src/vibevoice/`
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4).
+//! this converter **never** touches ONNX (FR-LD-05). The upstream pipeline
+//! is not executed by conversion, and native tokenizer/scheduler/runtime
+//! implementation remains a separately gated follow-up.
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{
@@ -72,15 +67,13 @@ use vokra_core::gguf::{
 };
 
 use crate::ConvertError;
-use crate::safetensors::SafetensorsFile;
 
 /// `vokra.model.arch` for VibeVoice-1.5B GGUFs — kept in sync with the
 /// runtime constant `vokra-models::vibevoice::EXPECTED_ARCH`.
-/// Intentionally **distinct** from every sibling arch tag because
-/// VibeVoice pairs a continuous VAE decoder with a **DDPM** diffusion
-/// head, not the UnifiedCFM flow-matching sampler VoxCPM uses.
-/// Silently sharing an arch tag would misroute the runtime dispatch
-/// (VoxCPM → flow_sample, VibeVoice → ddpm_sample).
+/// Intentionally **distinct** from every sibling arch tag because it
+/// identifies the strict partial VibeVoice checkpoint consumer. It is not a
+/// claim that the official tokenizer, prefill state, or scheduler-backed
+/// composite route is runnable.
 pub(crate) const ARCH: &str = "vibevoice";
 
 /// `vokra.model.name` value written for the canonical VibeVoice-1.5B
@@ -171,8 +164,8 @@ const KEY_DIFFUSION_HEAD_DDPM_BATCH_MUL: &str = "vokra.vibevoice.diffusion_head.
 
 // --- Transcribed constants ------------------------------------------------
 // Primary sources: `huggingface.co/microsoft/VibeVoice-1.5B/raw/main/config.json`
-// + `github.com/microsoft/VibeVoice/blob/main/vibevoice/modular/
-// configuration_vibevoice.py` (fetched 2026-07-24 — CLAUDE.md
+// + `github.com/microsoft/VibeVoice` at the immutable official TTS orphan
+// `2f9a3d79a0e51bd1cf2ab40d36884c8948e6bb9c` (fetched 2026-07-24 — CLAUDE.md
 // 「ハルシネーション厳禁」).
 
 /// Model family marker (`architecture = "VibeVoiceForConditionalGeneration"`).
@@ -282,69 +275,16 @@ pub(crate) struct VibeVoiceReport {
 /// constants above; provenance stamps mark the weight as `Permissive`
 /// (MIT — end-to-end).
 pub(crate) fn convert(bytes: Vec<u8>) -> Result<(GgufBuilder, VibeVoiceReport), ConvertError> {
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
-    b.add_string(chunks::KEY_MODEL_NAME, NAME);
-    write_hparams(&mut b);
-    // Self-describing redistribution: the artifact carries its own licence.
-    // VibeVoice-1.5B ships MIT end-to-end (LICENSE +
-    // huggingface.co/microsoft/VibeVoice-1.5B model card `license: MIT`,
-    // fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
-    // MIT is a `Permissive` license class — same commercial verdict as
-    // apache-2.0 (no runtime-side attribution obligation), just a
-    // different SPDX string.
-    vokra_core::stamp_provenance(
-        &mut b,
-        LicenseClass::Permissive,
-        "mit",
-        Some(NAME),
-        Some("microsoft/VibeVoice-1.5B (MIT end-to-end)"),
-    );
-
-    let mut report = VibeVoiceReport::default();
-    for t in st.tensors() {
-        match t.dtype {
-            // BF16 pass-through added 2026-07-25 (mirror of qwen3-tts +
-            // moshi + voxtral): upstream VibeVoice-1.5B ships
-            // `torch_dtype: bfloat16` so the release checkpoint hits this
-            // arm. Emit as GGUF type 30 verbatim; runtime widens on load
-            // via `decode_bf16` (exact, `bits << 16`).
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
-    }
-    if report.written == 0 {
-        report.notes.push(
-            "no float tensors passed through — this GGUF is metadata-only and \
-             the runtime will refuse to bind any weights (FR-EX-08). The \
-             upstream VibeVoice-1.5B release ships `model.safetensors` in BF16 \
-             (config.json `torch_dtype: bfloat16`); the BF16 pass-through path \
-             is now wired (2026-07-25), so this state is only reachable when \
-             the release contains no F32 / F16 / BF16 float tensors at all."
-                .into(),
-        );
-    }
-    Ok((b, report))
+    let _ = bytes;
+    Err(ConvertError::Usage(
+        "VibeVoice-1.5B conversion is INSPECTION_ONLY: arbitrary safetensors cannot authenticate the fixed composite, official Qwen tokenizer companion, prefill contract, or DPMSolverMultistepScheduler path; no GGUF may be emitted (HF microsoft/VibeVoice-1.5B@142f4a5dda029212cda8b118e9d99c3da27018d8)".into(),
+    ))
 }
 
 /// Writes the `vokra.vibevoice.*` chunk group from the transcribed
 /// constants above (primary sources: `config.json` and
 /// `configuration_vibevoice.py`).
+#[allow(dead_code)]
 fn write_hparams(b: &mut GgufBuilder) {
     // Top-level.
     b.add_string(KEY_MODEL_FAMILY, MODEL_FAMILY);
@@ -628,79 +568,19 @@ const _: () = {
     assert!(RT_DECODER_N_LAYER != DECODER_N_LAYER);
 };
 
-/// Convert a `microsoft/VibeVoice-Realtime-0.5B` safetensors buffer
-/// into a populated GGUF builder.
+/// Refuse conversion of the unauthenticated Realtime-0.5B composite.
 ///
-/// Sibling of [`convert`] -- the two paths differ only in the arch
-/// tag, name, and the `write_hparams_realtime_05b` chunk-group writer.
-/// The tensor pass-through loop (F32/F16/BF16 verbatim) and the
-/// provenance stamp (MIT permissive, end-to-end) are otherwise
-/// byte-parallel.
+/// The old pass-through path emitted a runtime-looking GGUF from arbitrary
+/// safetensors and accepted caller-supplied license labels.  The VAST
+/// inspection wave must authenticate the complete snapshot, source, and
+/// companion tokenizer before a converter can emit any artifact.
 pub(crate) fn convert_realtime_05b(
     bytes: Vec<u8>,
 ) -> Result<(GgufBuilder, VibeVoiceReport), ConvertError> {
-    let variant = VibeVoiceVariant::Realtime05B;
-    let st = SafetensorsFile::parse(bytes)?;
-
-    let mut b = GgufBuilder::new();
-    b.add_string(chunks::KEY_MODEL_ARCH, variant.arch());
-    b.add_string(chunks::KEY_MODEL_NAME, variant.name());
-    write_hparams_realtime_05b(&mut b);
-    // Self-describing redistribution: MIT end-to-end
-    // (`huggingface.co/microsoft/VibeVoice-Realtime-0.5B` cardData
-    // `license: mit`, fetched 2026-08-01 -- CLAUDE.md 「ハルシネー
-    // ション厳禁」). MIT is a `Permissive` license class (same
-    // commercial verdict as apache-2.0, no runtime attribution
-    // obligation), just a different SPDX string. The
-    // `LicenseClass::from_id` prefix walk (`id.starts_with
-    // ("vibevoice-")`) also resolves this variant to `Permissive`.
-    vokra_core::stamp_provenance(
-        &mut b,
-        LicenseClass::Permissive,
-        "mit",
-        Some(variant.name()),
-        Some(variant.source_description()),
-    );
-
-    let mut report = VibeVoiceReport::default();
-    for t in st.tensors() {
-        match t.dtype {
-            // Same BF16 pass-through rule as the 1.5B path (mirror
-            // of qwen3-tts + moshi + voxtral + voxcpm2 + bigvgan):
-            // emit BF16 as GGUF type 30 verbatim; runtime widens on
-            // load via `decode_bf16` (exact, `bits << 16`).
-            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-                b.add_tensor(
-                    &t.name,
-                    t.dtype,
-                    t.shape.clone(),
-                    st.tensor_bytes(t).to_vec(),
-                )?;
-                report.written += 1;
-                if t.dtype == GgmlType::BF16 {
-                    report.bf16_passthrough += 1;
-                }
-            }
-            _ => {
-                report.skipped_non_float += 1;
-            }
-        }
-    }
-    if report.written == 0 {
-        report.notes.push(
-            "no float tensors passed through -- this GGUF is \
-             metadata-only and the runtime will refuse to bind any \
-             weights (FR-EX-08). The upstream \
-             VibeVoice-Realtime-0.5B release ships \
-             `model.safetensors` in BF16 (config.json \
-             `torch_dtype: bfloat16`); the BF16 pass-through path \
-             is wired (2026-07-25), so this state is only reachable \
-             when the release contains no F32 / F16 / BF16 float \
-             tensors at all."
-                .into(),
-        );
-    }
-    Ok((b, report))
+    let _ = bytes;
+    Err(ConvertError::Usage(
+        "VibeVoice-Realtime-0.5B conversion is INSPECTION_ONLY: complete authenticated HF snapshot, official source, companion tokenizer, and runtime binding are not approved; no GGUF may be emitted (HF microsoft/VibeVoice-Realtime-0.5B@6bce5f06044837fe6d2c5d7a71a84f0416bd57e4)".into(),
+    ))
 }
 
 /// Writes the `vokra.vibevoice.*` chunk group for the Realtime-0.5B
@@ -711,6 +591,7 @@ pub(crate) fn convert_realtime_05b(
 /// `tts_backbone_num_hidden_layers` axis. Skips every
 /// `vokra.vibevoice.semantic.*` key -- the streaming variant is
 /// acoustic-tokenizer-only.
+#[allow(dead_code)]
 fn write_hparams_realtime_05b(b: &mut GgufBuilder) {
     // Top-level.
     b.add_string(KEY_MODEL_FAMILY, RT_MODEL_FAMILY);
@@ -941,6 +822,20 @@ mod tests {
         assert_eq!(NAME, "vibevoice-1.5b");
     }
 
+    #[test]
+    fn base_conversion_is_fail_closed_without_authenticated_composite() {
+        let mut input = minimal_safetensors_one_f32();
+        let error = convert(std::mem::take(&mut input))
+            .expect_err("arbitrary VibeVoice bytes must not produce a GGUF");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
+        assert!(
+            error
+                .to_string()
+                .contains("142f4a5dda029212cda8b118e9d99c3da27018d8")
+        );
+        assert!(error.to_string().contains("DPMSolverMultistepScheduler"));
+    }
+
     /// The transcribed constants must equal the primary-source values.
     /// Changing any of these silently mis-shapes the Qwen2 backbone /
     /// VAE handshake / diffusion-head sampler.
@@ -1108,6 +1003,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "public VibeVoice conversion is intentionally INSPECTION_ONLY"]
     fn round_trip_carries_arch_chunks_and_provenance() {
         let (builder, report) = convert(minimal_safetensors_one_f32()).expect("convert");
         assert_eq!(report.written, 1);
@@ -1254,6 +1150,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "public VibeVoice conversion is intentionally INSPECTION_ONLY"]
     fn zero_tensor_conversion_surfaces_a_loud_note() {
         let (_, report) = convert(minimal_safetensors_no_tensors()).expect("convert");
         assert_eq!(report.written, 0);
@@ -1267,6 +1164,7 @@ mod tests {
     /// Pins the F16 leg of the `GgmlType::F32 | GgmlType::F16` union
     /// match arm.
     #[test]
+    #[ignore = "public VibeVoice conversion is intentionally INSPECTION_ONLY"]
     fn f16_tensor_passes_through_verbatim() {
         let (builder, report) = convert(minimal_safetensors_one_f16()).expect("convert");
         assert_eq!(report.written, 1, "F16 must reach the pass-through arm");
@@ -1301,6 +1199,7 @@ mod tests {
     /// undetected; rewriting to the passes-through invariant keeps the
     /// regression guard.
     #[test]
+    #[ignore = "public VibeVoice conversion is intentionally INSPECTION_ONLY"]
     fn bf16_tensor_passes_through_verbatim() {
         let (builder, report) = convert(minimal_safetensors_one_bf16()).expect("convert");
         assert_eq!(
@@ -1342,6 +1241,7 @@ mod tests {
 
     /// Pins `SafetensorsFile::parse(bytes)?` error propagation.
     #[test]
+    #[ignore = "public VibeVoice conversion is intentionally INSPECTION_ONLY"]
     fn malformed_input_returns_parse_error() {
         // Case 1: empty buffer.
         let err = convert(Vec::new()).expect_err("empty buffer must be rejected");
@@ -1512,161 +1412,36 @@ mod tests {
         assert_eq!(ACOUSTIC_VAE_DIM, 64);
     }
 
-    #[test]
-    fn realtime_round_trip_carries_arch_chunks_and_provenance() {
-        let (builder, report) =
-            convert_realtime_05b(minimal_safetensors_one_f32()).expect("convert");
-        assert_eq!(report.written, 1);
-        assert_eq!(report.skipped_non_float, 0);
-
-        let out = builder.to_bytes().expect("serialize");
-        let file = GgufFile::parse(out).expect("parse");
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_ARCH).and_then(|v| v.as_str()),
-            Some("vibevoice_streaming")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_MODEL_NAME).and_then(|v| v.as_str()),
-            Some("vibevoice-realtime-0.5b")
-        );
-        assert_eq!(get_string(&file, KEY_MODEL_FAMILY), "vibevoice_streaming");
-
-        // Overriding U32 axes round-trip verbatim.
-        for (key, want) in [
-            (KEY_DECODER_HIDDEN_DIM, RT_DECODER_HIDDEN_DIM),
-            (KEY_DECODER_N_LAYER, RT_DECODER_N_LAYER),
-            (KEY_DECODER_N_HEAD, RT_DECODER_N_HEAD),
-            (KEY_DECODER_N_HEAD_KV, DECODER_N_HEAD_KV),
-            (KEY_DECODER_FFN_DIM, RT_DECODER_FFN_DIM),
-            (KEY_DECODER_VOCAB_SIZE, DECODER_VOCAB_SIZE),
-            (KEY_DECODER_MAX_POSITIONS, RT_DECODER_MAX_POSITIONS),
-            (KEY_DECODER_MAX_WINDOW_LAYERS, RT_DECODER_MAX_WINDOW_LAYERS),
-            (KEY_ACOUSTIC_VAE_DIM, ACOUSTIC_VAE_DIM),
-            (KEY_ACOUSTIC_VAE_DIM_INNER, ACOUSTIC_VAE_DIM),
-            (KEY_ACOUSTIC_SAMPLE_RATE_HZ, ACOUSTIC_SAMPLE_RATE_HZ),
-            (
-                KEY_DIFFUSION_HEAD_HIDDEN_SIZE,
-                RT_DIFFUSION_HEAD_HIDDEN_SIZE,
-            ),
-            (KEY_DIFFUSION_HEAD_LAYERS, DIFFUSION_HEAD_LAYERS),
-            (KEY_DIFFUSION_HEAD_LATENT_SIZE, DIFFUSION_HEAD_LATENT_SIZE),
-            (
-                KEY_DIFFUSION_HEAD_SPEECH_VAE_DIM,
-                DIFFUSION_HEAD_SPEECH_VAE_DIM,
-            ),
-            (
-                KEY_DIFFUSION_HEAD_DDPM_NUM_STEPS,
-                DIFFUSION_HEAD_DDPM_NUM_STEPS,
-            ),
-            (
-                KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
-                RT_TTS_BACKBONE_NUM_HIDDEN_LAYERS,
-            ),
-        ] {
-            assert_eq!(get_u32(&file, key), want, "{key}");
-        }
-
-        // tie_word_embeddings flip must survive.
-        assert_eq!(
-            get_bool(&file, KEY_DECODER_TIE_WORD_EMBEDDINGS),
-            RT_DECODER_TIE_WORD_EMBEDDINGS
-        );
-
-        // Provenance: MIT permissive (end-to-end).
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_MODEL_ID)
-                .and_then(|v| v.as_str()),
-            Some("vibevoice-realtime-0.5b")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some("mit")
-        );
-        assert_eq!(
-            file.get(chunks::KEY_PROVENANCE_WEIGHT_LICENSE)
-                .and_then(|v| v.as_str()),
-            Some(LicenseClass::Permissive.as_str())
-        );
-    }
-
-    /// The streaming variant is acoustic-tokenizer-only -- no
-    /// `vokra.vibevoice.semantic.*` key may be emitted on a Realtime
-    /// GGUF, or the runtime will read the wrong-shape config.
-    #[test]
-    fn realtime_gguf_carries_no_semantic_tokenizer_keys() {
-        let (builder, _) = convert_realtime_05b(minimal_safetensors_one_f32()).expect("convert");
-        let out = builder.to_bytes().expect("serialize");
-        let file = GgufFile::parse(out).expect("parse");
-        for key in [
-            KEY_SEMANTIC_CHANNELS,
-            KEY_SEMANTIC_CAUSAL,
-            KEY_SEMANTIC_VAE_DIM,
-            KEY_SEMANTIC_VAE_DIM_INNER,
-            KEY_SEMANTIC_FIX_STD,
-            KEY_SEMANTIC_STD_DIST_TYPE,
-            KEY_SEMANTIC_ENCODER_N_FILTERS,
-            KEY_SEMANTIC_ENCODER_RATIOS,
-            KEY_SEMANTIC_ENCODER_DEPTHS,
-            KEY_SEMANTIC_LAYERNORM,
-            KEY_SEMANTIC_LAYERNORM_EPS,
-            KEY_SEMANTIC_MIXER_LAYER,
-            KEY_SEMANTIC_CONV_BIAS,
-        ] {
-            assert!(
-                file.get(key).is_none(),
-                "{key}: streaming variant must NOT emit any semantic \
-                 tokenizer key"
-            );
-        }
-    }
-
-    /// BF16 (the upstream serving format) rides the pass-through arm
-    /// on the Realtime path too -- mirror of
-    /// `bf16_tensor_passes_through_verbatim` for the 1.5B path.
-    #[test]
-    fn realtime_bf16_tensor_passes_through_verbatim() {
-        let (builder, report) =
-            convert_realtime_05b(minimal_safetensors_one_bf16()).expect("convert");
-        assert_eq!(report.written, 1);
-        assert_eq!(report.bf16_passthrough, 1);
-        assert_eq!(report.skipped_non_float, 0);
-        let out = builder.to_bytes().expect("serialize");
-        let file = GgufFile::parse(out).expect("parse");
-        let info = file
-            .tensor_info("model.embed_tokens.weight")
-            .expect("BF16 tensor must be present after pass-through");
-        assert_eq!(
-            info.dtype,
-            GgmlType::BF16,
-            "no convert-time widening -- GGUF dtype must remain BF16"
-        );
-    }
-
-    /// Every Realtime-added `vokra.vibevoice.*` key must carry the
-    /// documented prefix (matches the sibling
-    /// `every_metadata_key_carries_a_documented_prefix` guard for
-    /// 1.5B). Only KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS is new; the rest
-    /// are shared with the 1.5B path which already pins them.
+    /// The streaming-specific key remains namespaced even though its writer
+    /// is unreachable until the inspection gate is promoted.
     #[test]
     fn realtime_added_key_carries_a_documented_prefix() {
-        assert!(
-            KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS.starts_with("vokra.vibevoice."),
-            "streaming-specific key must live under vokra.vibevoice.* prefix"
-        );
+        assert!(KEY_TTS_BACKBONE_NUM_HIDDEN_LAYERS.starts_with("vokra.vibevoice."));
     }
 
-    /// Zero-tensor Realtime input must surface the same loud note as
-    /// the 1.5B path (metadata-only GGUF; runtime refuses to bind
-    /// weights per FR-EX-08).
     #[test]
-    fn realtime_zero_tensor_conversion_surfaces_a_loud_note() {
-        let (_, report) = convert_realtime_05b(minimal_safetensors_no_tensors()).expect("convert");
-        assert_eq!(report.written, 0);
+    fn realtime_bf16_input_refuses_without_artifact() {
+        let error = convert_realtime_05b(minimal_safetensors_one_bf16())
+            .expect_err("Realtime BF16 input must remain inspection-only");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
+    }
+
+    #[test]
+    fn realtime_zero_tensor_input_refuses_without_artifact() {
+        let error = convert_realtime_05b(minimal_safetensors_no_tensors())
+            .expect_err("Realtime zero-tensor input must remain inspection-only");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
+    }
+
+    #[test]
+    fn realtime_public_conversion_is_fail_closed() {
+        let error = convert_realtime_05b(minimal_safetensors_one_f32())
+            .expect_err("Realtime conversion must remain inspection-only");
+        assert!(error.to_string().contains("INSPECTION_ONLY"));
         assert!(
-            report.notes.iter().any(|n| n.contains("no float tensors")),
-            "zero-tensor Realtime conversion must emit a loud note: {:?}",
-            report.notes
+            error
+                .to_string()
+                .contains("6bce5f06044837fe6d2c5d7a71a84f0416bd57e4")
         );
     }
 }

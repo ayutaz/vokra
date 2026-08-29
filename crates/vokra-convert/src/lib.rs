@@ -148,15 +148,11 @@ pub enum ModelKind {
     /// Convert with [`convert_dac_file`] — the config is required, so this is
     /// not a plain single-input [`convert_file`] model. MIT weights.
     Dac,
-    /// `sesame/csm-1b` safetensors checkpoint (M4-05): Sesame CSM-1B, the
-    /// S2S speech-generation model (Llama-3.2-1B-flavor backbone +
-    /// llama-100M-flavor depth transformer over Mimi RVQ frames; Apache 2.0
-    /// code + weight, docs/license-audit.md — the HF repo is gated, T29
-    /// owner hand-off). Weights are bound verbatim; flavor dims / RoPE
-    /// scaling / rates are transcribed primary-source constants and the two
-    /// vocab axes are `0`-placeholders the runtime rejects at load
-    /// (FR-EX-08). The Llama-3.2 tokenizer blob is embedded through
-    /// [`convert_csm_file`].
+    /// `sesame/csm-1b` composite inspection target (M4-05): the CSM S2S
+    /// model requires its Mimi codec, tokenizer, configuration, and
+    /// provenance alongside the checkpoint. The public converter currently
+    /// refuses the legacy single-file path with `INSPECTION_ONLY`; no
+    /// incomplete GGUF is emitted.
     Csm,
     /// `kyutai/moshiko-pytorch-bf16` safetensors checkpoint (M4-06):
     /// Moshi (Helium temporal transformer + depformer), full-duplex S2S
@@ -1440,6 +1436,10 @@ pub enum ModelKind {
     /// F16 / BF16 tensor passes through verbatim under its upstream
     /// safetensors name. Provenance = **apache-2.0** (Permissive).
     EcapaTdnn,
+    /// JaesungHuh MIT 202-tensor binary voice-gender classifier. Distinct
+    /// from [`ModelKind::EcapaTdnn`]: the official model uses a 512-point
+    /// torchaudio frontend and a dedicated 2-class head.
+    VoiceGenderClassifier,
     /// Wespeaker **wespeaker-voxceleb-resnet34-LM** speaker
     /// verification checkpoint (SoTA plan Phase 5 speaker fleet,
     /// 2026-07-28). Category = `speaker`. ResNet-34 speaker embedding
@@ -4624,6 +4624,9 @@ impl ModelKind {
             | "ecapa_tdnn"
             | "spkrec-ecapa-voxceleb"
             | "speechbrain/spkrec-ecapa-voxceleb" => Some(Self::EcapaTdnn),
+            "voice-gender-classifier"
+            | "voice_gender_classifier"
+            | "jaesunghuh/voice-gender-classifier" => Some(Self::VoiceGenderClassifier),
             "wespeaker"
             | "we-speaker"
             | "we_speaker"
@@ -5954,6 +5957,7 @@ impl ModelKind {
             Self::NeuTtsAir => "neutts-air",
             Self::NemotronSpeechStreamingV2603 => "nemotron-speech-streaming-v2603",
             Self::EcapaTdnn => "ecapa-tdnn",
+            Self::VoiceGenderClassifier => "voice-gender-classifier",
             Self::Wespeaker => "wespeaker",
             Self::Speaker3d => "speaker-3d",
             Self::TitaNet => "titanet-large",
@@ -7295,10 +7299,9 @@ pub fn convert_file_licensed(
             ));
         }
         ModelKind::Csm => {
-            // Tokenizer-less path (M4-05-T03/T04): every float tensor
-            // verbatim + the vokra.csm.* / vokra.mimi.* chunk groups. The
-            // Llama-3.2 tokenizer blob (gated repo — T29) travels through
-            // `convert_csm_file`.
+            // The legacy single-checkpoint route is intentionally refused by
+            // the model-specific boundary. Keep this dispatch arm so callers
+            // receive the same explicit inspection-only error.
             let (builder, report) = models::csm::convert(bytes, None)?;
             let mut notes = vec![format!(
                 "csm: {} float weights written, {} non-float skipped, tokenizer \
@@ -7751,21 +7754,10 @@ pub fn convert_file_licensed(
             (builder, notes)
         }
         ModelKind::Irodori => {
-            // SoTA plan Phase 5 JA-TTS-1 (2026-07-24): pass every F32/F16
-            // tensor through verbatim and stamp the `vokra.irodori.*`
-            // chunk group (RF-DiT body + LLM-JP-3 prompt-text encoder +
-            // reference-latent speaker encoder + v3 phase-2 duration
-            // predictor) from the transcribed constants in
-            // `models::irodori`. THIRD consumer of the continuous-latent
-            // + DiT class (after VoxCPM + VibeVoice); the sampler is
-            // Rectified-Flow Euler with a Linear or Sway schedule (F5-TTS
-            // toggle), NOT VibeVoice's DDPM and NOT VoxCPM's EpsS-
-            // schedule flow-matching — silently sharing an arch tag
-            // would misroute the runtime dispatch. Provenance = **MIT**
-            // end-to-end (Permissive — no runtime-side attribution
-            // obligation; code + weight all under a single MIT LICENSE
-            // at `github.com/Aratako/Irodori-TTS`, verified via
-            // `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`).
+            // The unauthenticated single-file route is intentionally refused
+            // by the model-specific boundary. In particular, a generic DAC
+            // GGUF is not the distinct Semantic-DACVAE decoder required by
+            // Irodori, so no metadata-only/pass-through artifact is emitted.
             let (builder, report) = models::irodori::convert(bytes)?;
             let mut notes = vec![format!(
                 "irodori: {} float weights written verbatim, {} non-float skipped",
@@ -9029,6 +9021,24 @@ pub fn convert_file_licensed(
                 // 3 model keys + 4 provenance keys + upstream HF/revision +
                 // 15 exact frontend/topology/layout keys.
                 metadata_count: 24,
+                output_bytes: std::fs::metadata(output)?.len(),
+                notes,
+            });
+        }
+        ModelKind::VoiceGenderClassifier => {
+            let report = models::voice_gender_classifier::convert_voice_gender_classifier_file(
+                input, output, license,
+            )?;
+            let notes = vec![format!(
+                "voice-gender-classifier: {} float weights written verbatim ({} BF16 passthrough), {} non-float skipped",
+                report.written, report.bf16_passthrough, report.skipped_non_float,
+            )];
+            return Ok(ConvertSummary {
+                model: ModelKind::VoiceGenderClassifier,
+                tensor_count: report.written,
+                // 3 model keys + 4 provenance keys + upstream HF/source/HF
+                // checkpoint revisions + 15 exact frontend/topology/layout keys.
+                metadata_count: 25,
                 output_bytes: std::fs::metadata(output)?.len(),
                 notes,
             });
@@ -12603,14 +12613,12 @@ pub fn convert_llama_omni2_file_with_config(
     })
 }
 
-/// Convert a Sesame CSM-1B safetensors checkpoint into a Vokra GGUF,
-/// optionally embedding the raw `meta-llama/Llama-3.2-1B` tokenizer file
-/// as `vokra.tokenizer.model` (M4-05-T03/T04/T05).
+/// Refuse the legacy single-checkpoint CSM conversion path.
 ///
-/// The tokenizer repo is gated (T29 owner hand-off); passing
-/// `tokenizer = None` converts without the blob and the runtime text path
-/// fails loudly until a tokenizer-carrying GGUF exists (FR-EX-08 — never a
-/// silent byte-level fallback).
+/// CSM is a composite of the model checkpoint, Mimi codec, tokenizer,
+/// configuration, and provenance. Until that exact composite is authenticated
+/// and parity-reviewed, this API returns `INSPECTION_ONLY` and writes no GGUF;
+/// `tokenizer` is retained only for the stable call signature.
 pub fn convert_csm_file(
     input: &Path,
     tokenizer: Option<&Path>,
@@ -13197,6 +13205,9 @@ pub use models::panns::{PannsReport, convert_panns_file};
 // file-based entry point mirrors the panns / dasheng / muq / mert /
 // yamnet re-export pattern.
 pub use models::basic_pitch::{BasicPitchReport, convert_basic_pitch_file};
+pub use models::voice_gender_classifier::{
+    VoiceGenderClassifierReport, convert_voice_gender_classifier_file,
+};
 // SSL audio-encoder wave (2026-08-13): BEATs — foundational
 // self-supervised audio encoder with iterative acoustic tokenizer +
 // mask acoustic modeling (~90M params iter3_plus_AS2M, mit default).
@@ -13891,8 +13902,13 @@ pub fn convert_qwen3_tts_file(input: &Path, output: &Path) -> Result<ConvertSumm
     convert_file(ModelKind::Qwen3Tts, input, output)
 }
 
-/// Convert an OpenBMB **VoxCPM-0.5B** safetensors checkpoint into a Vokra
-/// GGUF (SoTA plan Phase 4, 2026-07-24).
+/// Reject production conversion of an OpenBMB **VoxCPM-0.5B** checkpoint.
+///
+/// The historical public GGUF contains only the main checkpoint. The
+/// authenticated replacement must bind the exact AudioVAE, tokenizer,
+/// config, and provenance as one composite; until that VAST/native-parity
+/// work is complete this API is deliberately `INSPECTION_ONLY` and writes no
+/// GGUF.
 ///
 /// This is the named entry point that mirrors `convert_qwen3_tts_file`
 /// / `convert_chatterbox_nano_file` / `convert_dia_file` /
@@ -14104,23 +14120,13 @@ pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSumm
     convert_file(ModelKind::VibeVoice, input, output)
 }
 
-/// Convert an Aratako **Irodori-TTS-500M-v3** safetensors checkpoint into
-/// a Vokra GGUF (SoTA plan Phase 5 JA-TTS-1, 2026-07-24).
+/// Refuse the unauthenticated Irodori-TTS-500M-v3 single-file conversion path.
 ///
-/// This is the named entry point that mirrors `convert_vibevoice_file` /
-/// `convert_voxcpm2_file` / `convert_qwen3_tts_file` /
-/// `convert_chatterbox_nano_file` / `convert_dia_file` /
-/// `convert_zonos_file` / `convert_csm_file` / `convert_kokoro_file`. It
-/// is functionally identical to
-/// `convert_file(ModelKind::Irodori, input, output)` — Irodori-TTS-500M-v3
-/// takes no side-car config on this conversion path (every hparam of
-/// the `vokra.irodori.*` chunk group is transcribed as compile-time
-/// constants in `models::irodori` from the primary sources
-/// `github.com/Aratako/Irodori-TTS/blob/main/configs/train_500m_v3_phase1_body.yaml`
-/// plus `..._phase2_duration.yaml` plus
-/// `github.com/Aratako/Irodori-TTS/blob/main/irodori_tts/config.py::ModelConfig`)
-/// — but the named entry keeps the `convert_*_file` naming symmetry with
-/// the other TTS models.
+/// The public entry point is retained for API symmetry, but it does not
+/// construct a metadata-only or BF16 pass-through artifact. A valid future
+/// conversion must authenticate the RF-DiT checkpoint, tokenizer/reference
+/// inputs, duration path, and the distinct Semantic-DACVAE-Japanese-32dim
+/// decoder as one composite.
 ///
 /// Irodori-TTS-500M-v3 is the **third** consumer of the continuous-latent
 /// plus DiT class (after VoxCPM-0.5B and VibeVoice-1.5B) — but this time
@@ -14160,30 +14166,14 @@ pub fn convert_vibevoice_file(input: &Path, output: &Path) -> Result<ConvertSumm
 ///   `duration_token_init_frames=9.0`,
 ///   `duration_speaker_fusion="adarn_zero"`.
 ///
-/// Terminal decode: the paired `Aratako/Semantic-DACVAE-Japanese-32dim`
-/// codec (a `dacvae.DACVAE` variant of the Meta open-source
-/// `facebookresearch/dacvae` codec, Apache 2.0) — 32-d continuous latent
-/// → 48 kHz mono PCM. Callers inject the codec through
-/// `IrodoriTts::with_codec` once the paired GGUF is prepared (the same
-/// `DacCodecGguf`-shaped seam Dia + Zonos use with vanilla DAC).
+/// Terminal decode is the paired `Aratako/Semantic-DACVAE-Japanese-32dim`
+/// continuous-latent decoder (32-d latent → 48 kHz PCM). The ordinary
+/// `DacCodecGguf` seam is not an interoperable proof of this codec and cannot
+/// unlock synthesis.
 ///
-/// # BF16 posture
-///
-/// The upstream Irodori-TTS release trains in bf16
-/// (`TrainConfig.precision = "bf16"`) but the released
-/// `model.safetensors` blob is typically served in F32 / F16 (the
-/// `save_pretrained` default). If a downstream ships BF16, today's
-/// F32/F16 pass-through arm hits the `skipped_non_float` counter and
-/// the "no float tensors" loud note fires. Pre-widen offline to F32
-/// (the CSM / Kokoro / VoxCPM pattern) to convert a BF16 checkpoint
-/// directly.
-///
-/// Weight license = **MIT** end-to-end (`github.com/Aratako/Irodori-TTS/blob/main/LICENSE`
-/// verified via `gh api /repos/Aratako/Irodori-TTS/license` → `MIT`,
-/// fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」). The M2-13
-/// gate passes commercially without any attribution obligation on the
-/// runtime side (MIT is a `Permissive` license class, same commercial
-/// verdict as apache-2.0).
+/// The conversion remains `INSPECTION_ONLY` regardless of dtype or license
+/// override. Model, codec, source, and publication licenses are separate
+/// review inputs; no end-to-end license claim is made here.
 pub fn convert_irodori_file(input: &Path, output: &Path) -> Result<ConvertSummary, ConvertError> {
     convert_file(ModelKind::Irodori, input, output)
 }

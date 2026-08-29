@@ -41,10 +41,11 @@
 //!
 //! Spark-TTS is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! re-implemented natively in `crates/vokra-models/` (whisper.cpp 型
-//! self re-implementation, CLAUDE.md 設計判断 4).
+//! planned for a future native implementation in `crates/vokra-models/`
+//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4); the
+//! current converter intentionally stops at inspection-only GGUF output.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
 use vokra_core::gguf::{GgmlType, GgufBuilder, chunks};
@@ -59,6 +60,16 @@ pub(crate) const ARCH: &str = "bicodec";
 
 /// `vokra.model.name` value for the canonical Spark-TTS bicodec release.
 pub(crate) const NAME: &str = "spark-tts-bicodec";
+
+/// Immutable upstream identities used by the inspection-only conversion.
+pub const UPSTREAM_HF_REVISION: &str = "642071559bfc6346c2359d19dcb6be3f9dd8a05d";
+pub const CHECKPOINT_BYTES: u64 = 625_518_756;
+pub const CHECKPOINT_SHA256: &str =
+    "e9940cd48d4446e4340ced82d234bf5618350dd9f5db900ebe47a4fdb03867ec";
+pub const CONFIG_BYTES: u64 = 1_164;
+pub const CONFIG_SHA256: &str = "744f4093ae2381a2eb44ea8c4a5268a8d1e581498e9bf0808c034d1b076429be";
+pub const OFFICIAL_SOURCE_REPOSITORY: &str = "https://github.com/SparkAudio/Spark-TTS";
+pub const OFFICIAL_SOURCE_REVISION: &str = "2f1ea9082400547242641f5271b6f941c9f439d1";
 
 /// `vokra.model.category` key — codec bucket for the artifact.
 ///
@@ -82,14 +93,22 @@ const KEY_PROVENANCE_UPSTREAM_HF: &str = "vokra.provenance.upstream_hf";
 /// Value written under [`KEY_PROVENANCE_UPSTREAM_HF`].
 const PROVENANCE_UPSTREAM_HF: &str = "SparkAudio/Spark-TTS-0.5B";
 
-/// Default weight-license SPDX (may be overridden via the `license`
-/// argument to [`convert_bicodec_file`]).
+/// Default weight-license SPDX. Only this exact CC-BY-NC-SA value is accepted
+/// by [`convert_bicodec_file`]; permissive relabels are rejected.
 const DEFAULT_LICENSE_SPDX: &str = "cc-by-nc-sa-4.0";
 
 /// Advisory source note stamped alongside the license into the
 /// `vokra.provenance.source` chunk.
 const PROVENANCE_SOURCE_NOTE: &str =
     "SparkAudio/Spark-TTS-0.5B (cc-by-nc-sa-4.0; research-only, share-alike)";
+
+const KEY_UPSTREAM_REVISION: &str = "vokra.bicodec.upstream_revision";
+const KEY_CHECKPOINT_SHA256: &str = "vokra.bicodec.checkpoint_sha256";
+const KEY_CONFIG_SHA256: &str = "vokra.bicodec.config_sha256";
+const KEY_SOURCE_REPOSITORY: &str = "vokra.bicodec.source_repository";
+const KEY_SOURCE_REVISION: &str = "vokra.bicodec.source_revision";
+const KEY_INSPECTION_STATUS: &str = "vokra.bicodec.inspection_status";
+const KEY_INPUT_AUTHENTICATED: &str = "vokra.bicodec.input_authenticated";
 
 /// Outcome of a bicodec conversion.
 ///
@@ -123,12 +142,10 @@ pub struct BicodecReport {
 /// Convert a Spark-TTS bicodec safetensors checkpoint into a Vokra GGUF.
 ///
 /// `input` is the upstream safetensors path; the emitted GGUF is written
-/// to `output`. `license` overrides the raw SPDX string stamped into
-/// `vokra.provenance.license` — the default is
+/// to `output`. `license` may repeat the raw SPDX string stamped into
+/// `vokra.provenance.license`; the only accepted value is
 /// `DEFAULT_LICENSE_SPDX` (`"cc-by-nc-sa-4.0"`), matching the SparkAudio
-/// weight card at `huggingface.co/SparkAudio/Spark-TTS-0.5B`. Pass
-/// `Some(other_spdx)` when the immediate redistribution source has
-/// re-tagged the artifact.
+/// weight card at `huggingface.co/SparkAudio/Spark-TTS-0.5B`.
 ///
 /// # Errors
 ///
@@ -142,24 +159,45 @@ pub fn convert_bicodec_file(
     output: &Path,
     license: Option<&str>,
 ) -> Result<BicodecReport, ConvertError> {
+    let license_spdx = require_license(license)?;
     let bytes = std::fs::read(input)?;
-    let st = SafetensorsFile::parse(bytes)?;
+    validate_staged_identity(input, &bytes)?;
+    convert_bicodec_bytes(&bytes, output, license_spdx)
+}
+
+/// Convert a byte buffer after the public entry point has authenticated it.
+/// This private helper keeps format-loop tests small; production callers must use
+/// [`convert_bicodec_file`], which authenticates both the checkpoint and its
+/// required sibling `config.yaml` first.
+fn convert_bicodec_bytes(
+    bytes: &[u8],
+    output: &Path,
+    license_spdx: &str,
+) -> Result<BicodecReport, ConvertError> {
+    let st = SafetensorsFile::parse(bytes.to_vec())?;
+    if st.tensors().is_empty() {
+        return Err(ConvertError::Parse(
+            "BiCodec checkpoint has no tensors; refusing to claim a complete conversion".to_owned(),
+        ));
+    }
 
     let mut b = GgufBuilder::new();
     b.add_string(chunks::KEY_MODEL_ARCH, ARCH);
     b.add_string(chunks::KEY_MODEL_NAME, NAME);
     b.add_string(KEY_MODEL_CATEGORY, MODEL_CATEGORY);
     b.add_string(KEY_PROVENANCE_UPSTREAM_HF, PROVENANCE_UPSTREAM_HF);
+    b.add_string(KEY_UPSTREAM_REVISION, UPSTREAM_HF_REVISION);
+    b.add_string(KEY_CHECKPOINT_SHA256, CHECKPOINT_SHA256);
+    b.add_string(KEY_CONFIG_SHA256, CONFIG_SHA256);
+    b.add_string(KEY_SOURCE_REPOSITORY, OFFICIAL_SOURCE_REPOSITORY);
+    b.add_string(KEY_SOURCE_REVISION, OFFICIAL_SOURCE_REVISION);
+    b.add_string(KEY_INSPECTION_STATUS, "INSPECTION_ONLY");
+    b.add_bool(KEY_INPUT_AUTHENTICATED, true);
 
     // Self-describing redistribution: the artifact carries its own licence.
-    // The `license` param overrides the raw SPDX string (`vokra.provenance.
-    // license`) and — when overridden — re-derives the class through
-    // `LicenseClass::from_license_str` so the compliance gate stays honest
-    // (a caller who overrides to a non-permissive SPDX would otherwise get a
-    // silent permissive verdict). `None` keeps the SparkAudio default
-    // (cc-by-nc-sa-4.0 → NonCommercialShareAlike) that matches the
-    // upstream weight card.
-    let license_spdx = license.unwrap_or(DEFAULT_LICENSE_SPDX);
+    // `require_license` has already restricted this value to the upstream
+    // CC-BY-NC-SA-4.0 identity, so the compliance class cannot be relabelled
+    // as permissive. `None` selects the same upstream default.
     let class = LicenseClass::from_license_str(license_spdx);
     vokra_core::stamp_provenance(
         &mut b,
@@ -197,10 +235,64 @@ pub fn convert_bicodec_file(
         }
     }
 
+    if report.written == 0 {
+        return Err(ConvertError::Parse(
+            "BiCodec checkpoint contains no supported float tensors; refusing to claim a complete conversion"
+                .to_owned(),
+        ));
+    }
+
     let out_bytes = b.to_bytes()?;
     std::fs::write(output, &out_bytes)?;
 
     Ok(report)
+}
+
+fn require_license(license: Option<&str>) -> Result<&'static str, ConvertError> {
+    let value = license
+        .unwrap_or(DEFAULT_LICENSE_SPDX)
+        .trim()
+        .to_ascii_lowercase();
+    if value != DEFAULT_LICENSE_SPDX {
+        return Err(ConvertError::Usage(format!(
+            "BiCodec weights are cc-by-nc-sa-4.0; refusing license override `{value}`"
+        )));
+    }
+    Ok(DEFAULT_LICENSE_SPDX)
+}
+
+/// Validate the fixed HF artifact when the input is staged beside its official
+/// `config.yaml`. Synthetic unit fixtures intentionally omit that sidecar and
+/// therefore exercise only the format loop; the VAST worker always supplies
+/// the sidecar and cannot bypass this identity check.
+fn validate_staged_identity(input: &Path, checkpoint: &[u8]) -> Result<(), ConvertError> {
+    let config = input
+        .parent()
+        .map(|parent| parent.join("config.yaml"))
+        .unwrap_or_else(|| PathBuf::from("config.yaml"));
+    if !config.exists() {
+        return Err(ConvertError::Parse(
+            "BiCodec input must be accompanied by the authenticated config.yaml sidecar".to_owned(),
+        ));
+    }
+    let checkpoint_sha =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(checkpoint));
+    if checkpoint.len() as u64 != CHECKPOINT_BYTES || checkpoint_sha != CHECKPOINT_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "BiCodec checkpoint identity mismatch: bytes={} sha256={checkpoint_sha}",
+            checkpoint.len()
+        )));
+    }
+    let config_bytes = std::fs::read(&config)?;
+    let config_sha =
+        crate::models::canary_1b_flash::hex(&crate::models::canary_1b_flash::sha256(&config_bytes));
+    if config_bytes.len() as u64 != CONFIG_BYTES || config_sha != CONFIG_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "BiCodec config identity mismatch: bytes={} sha256={config_sha}",
+            config_bytes.len()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -295,7 +387,8 @@ mod tests {
         let output = temp_path("bf16-out", "gguf");
         std::fs::write(&input, &input_bytes).expect("write input");
 
-        let report = convert_bicodec_file(&input, &output, None).expect("convert");
+        let report = convert_bicodec_bytes(&input_bytes, &output, DEFAULT_LICENSE_SPDX)
+            .expect("convert synthetic fixture");
         assert_eq!(report.read, 1, "one tensor observed");
         assert_eq!(
             report.written, 1,
@@ -411,7 +504,8 @@ mod tests {
         let output = temp_path("f32f16-out", "gguf");
         std::fs::write(&input, &input_bytes).expect("write input");
 
-        let report = convert_bicodec_file(&input, &output, None).expect("convert");
+        let report = convert_bicodec_bytes(&input_bytes, &output, DEFAULT_LICENSE_SPDX)
+            .expect("convert synthetic fixture");
         assert_eq!(report.read, 2, "two tensors observed");
         assert_eq!(report.written, 2, "both F32 and F16 must pass through");
         assert_eq!(
@@ -441,6 +535,46 @@ mod tests {
         assert_eq!(f16_info.dimensions, vec![2, 2]);
         assert_eq!(file.tensor_bytes(f16_info), f16_bytes.as_slice());
 
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn permissive_license_override_is_rejected() {
+        let input = temp_path("license-in", "safetensors");
+        let output = temp_path("license-out", "gguf");
+        std::fs::write(&input, safetensors_one_bf16(&[1], &[0, 0])).expect("write input");
+        let error = require_license(Some("apache-2.0"))
+            .expect_err("BiCodec must reject a permissive relabel");
+        assert!(error.to_string().contains("cc-by-nc-sa-4.0"));
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn empty_checkpoint_is_not_a_complete_conversion() {
+        let input = temp_path("empty-in", "safetensors");
+        let output = temp_path("empty-out", "gguf");
+        let header = b"{}";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        std::fs::write(&input, &bytes).expect("write input");
+        let error = convert_bicodec_bytes(&bytes, &output, DEFAULT_LICENSE_SPDX)
+            .expect_err("empty BiCodec input must fail closed");
+        assert!(error.to_string().contains("no tensors"));
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn public_conversion_requires_config_sidecar() {
+        let input = temp_path("missing-config-in", "safetensors");
+        let output = temp_path("missing-config-out", "gguf");
+        std::fs::write(&input, safetensors_one_bf16(&[1], &[0, 0])).expect("write input");
+        let error = convert_bicodec_file(&input, &output, None)
+            .expect_err("public conversion must require authenticated config");
+        assert!(error.to_string().contains("config.yaml sidecar"));
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
     }

@@ -1299,7 +1299,8 @@ pub(crate) fn main(args: &[String]) -> Result<ExitCode, String> {
             // both on VAST and this strict entry point refuses the raw,
             // main-only checkpoint.  The MiniCPM text tokenizer is also a
             // required side-car for the 2B release and is embedded verbatim.
-            // VoxCPM-0.5B remains compatible with the no-tokenizer path.
+            // VoxCPM-0.5B is inspection-only until its AudioVAE + tokenizer
+            // composite is authenticated; the converter emits no GGUF.
             // Quantization surface is whisper-only (same posture as
             // Qwen3-TTS / Chatterbox family / CosyVoice3 / dia / zonos).
             if p.quant.is_some() {
