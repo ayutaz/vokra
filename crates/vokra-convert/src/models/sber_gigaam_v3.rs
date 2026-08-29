@@ -314,19 +314,54 @@ fn validate_checkpoint(
     file: &SafetensorsFile,
     manifest: &[(String, Vec<u64>, GgmlType)],
 ) -> Result<(), ConvertError> {
-    if file.tensors().len() != manifest.len()
-        || file
-            .tensors()
-            .iter()
-            .zip(manifest)
-            .any(|(actual, (expected, _, _))| actual.name != *expected)
-    {
+    // A safetensors header has no semantic ordering guarantee: for example,
+    // `safetensors.torch.save_file` may serialize a manifest-ordered mapping
+    // in a different order. Copy only the small descriptors so validation can
+    // compare names independently of that serialization detail.
+    let actual = file
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), tensor.shape.clone(), tensor.dtype))
+        .collect::<Vec<_>>();
+    validate_manifest_metadata(&actual, manifest)
+}
+
+fn validate_manifest_metadata(
+    actual: &[(String, Vec<u64>, GgmlType)],
+    manifest: &[(String, Vec<u64>, GgmlType)],
+) -> Result<(), ConvertError> {
+    if actual.len() != manifest.len() {
         return Err(ConvertError::Parse(
-            "GigaAM v3 tensor names/order mismatch".into(),
+            "GigaAM v3 tensor count mismatch".into(),
         ));
     }
-    for (actual, (name, shape, dtype)) in file.tensors().iter().zip(manifest) {
-        if actual.shape != *shape || actual.dtype != *dtype {
+
+    let expected_names: BTreeSet<&str> =
+        manifest.iter().map(|(name, _, _)| name.as_str()).collect();
+    if expected_names.len() != manifest.len() {
+        return Err(ConvertError::Parse(
+            "GigaAM v3 manifest tensor names are not unique".into(),
+        ));
+    }
+    let actual_names: BTreeSet<&str> = actual.iter().map(|(name, _, _)| name.as_str()).collect();
+    if actual_names.len() != actual.len() {
+        return Err(ConvertError::Parse(
+            "GigaAM v3 tensor names are not unique".into(),
+        ));
+    }
+    if actual_names != expected_names {
+        return Err(ConvertError::Parse(
+            "GigaAM v3 tensor names mismatch".into(),
+        ));
+    }
+
+    // Dtype and shape are bound to each name, never to the serialized order.
+    for (name, expected_shape, expected_dtype) in manifest {
+        let (_, actual_shape, actual_dtype) = actual
+            .iter()
+            .find(|(actual_name, _, _)| actual_name == name)
+            .expect("validated GigaAM v3 tensor name set");
+        if actual_shape != expected_shape || actual_dtype != expected_dtype {
             return Err(ConvertError::Parse(format!(
                 "GigaAM v3 tensor `{name}` dtype/shape mismatch"
             )));
@@ -414,9 +449,14 @@ pub fn convert_sber_gigaam_v3_file(
         Some(UPSTREAM_HF),
         Some("https://huggingface.co/ai-sage/GigaAM-v3"),
     );
-    for tensor in checkpoint.tensors() {
+    // Emit in authenticated manifest order for deterministic GGUF bytes;
+    // safetensors header order is an implementation detail, not model order.
+    for (name, _, _) in &manifest {
+        let tensor = checkpoint
+            .tensor_info(name)
+            .expect("validated GigaAM v3 tensor name set");
         builder.add_tensor(
-            &tensor.name,
+            name,
             tensor.dtype,
             tensor.shape.clone(),
             checkpoint.tensor_bytes(tensor).to_vec(),
@@ -440,6 +480,11 @@ fn sidecar_path(input: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata(name: &str, shape: &[u64], dtype: GgmlType) -> (String, Vec<u64>, GgmlType) {
+        (name.to_owned(), shape.to_vec(), dtype)
+    }
+
     #[test]
     fn manifest_count_and_gate() {
         assert_eq!(expected_manifest().len(), TENSOR_COUNT);
@@ -490,5 +535,49 @@ mod tests {
             manifest.last().map(|row| row.0.as_str()),
             Some("model.head.joint.joint_net.1.bias")
         );
+    }
+
+    #[test]
+    fn checkpoint_validation_ignores_header_order_but_rejects_metadata_drift() {
+        let manifest = vec![
+            metadata("first", &[2], GgmlType::F32),
+            metadata("second", &[3], GgmlType::F16),
+        ];
+        let reordered = vec![manifest[1].clone(), manifest[0].clone()];
+        assert!(validate_manifest_metadata(&reordered, &manifest).is_ok());
+
+        let missing = vec![manifest[0].clone()];
+        assert!(validate_manifest_metadata(&missing, &manifest).is_err());
+
+        let extra = vec![
+            manifest[0].clone(),
+            metadata("unexpected", &[3], GgmlType::F16),
+        ];
+        assert!(validate_manifest_metadata(&extra, &manifest).is_err());
+
+        let duplicate = vec![manifest[0].clone(), manifest[0].clone()];
+        assert!(validate_manifest_metadata(&duplicate, &manifest).is_err());
+
+        let wrong_shape = vec![metadata("first", &[9], GgmlType::F32), manifest[1].clone()];
+        assert!(validate_manifest_metadata(&wrong_shape, &manifest).is_err());
+
+        let wrong_dtype = vec![metadata("first", &[2], GgmlType::F16), manifest[1].clone()];
+        assert!(validate_manifest_metadata(&wrong_dtype, &manifest).is_err());
+    }
+
+    #[test]
+    fn parsed_reordered_checkpoint_is_accepted() {
+        let header = r#"{"second":{"dtype":"F16","shape":[3],"data_offsets":[0,6]},"first":{"dtype":"F32","shape":[2],"data_offsets":[6,14]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&[0u8; 14]);
+        let checkpoint = SafetensorsFile::parse(bytes).expect("synthetic checkpoint");
+        let manifest = vec![
+            metadata("first", &[2], GgmlType::F32),
+            metadata("second", &[3], GgmlType::F16),
+        ];
+        assert_eq!(checkpoint.tensors()[0].name, "second");
+        assert!(validate_checkpoint(&checkpoint, &manifest).is_ok());
     }
 }
