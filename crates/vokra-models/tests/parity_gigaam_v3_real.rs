@@ -232,11 +232,7 @@ fn real_gigaam_v3_cpu_trace_matches_official() {
         expected_symbols
     );
     assert_eq!(
-        trace
-            .decision_argmax
-            .iter()
-            .map(|v| *v as u32)
-            .collect::<Vec<_>>(),
+        trace.decision_argmax.iter().copied().collect::<Vec<_>>(),
         expected_argmax
     );
     assert_eq!(trace.token_ids, expected_tokens);

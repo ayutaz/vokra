@@ -676,7 +676,7 @@ mod tests {
             CONFIG_SHA256,
             "c830232c7d51688a630a221517b52585ab5ee57e1d3c21bcbae01759351d2653"
         );
-        assert!(!PREPROCESSOR_CENTER);
+        const _: () = assert!(!PREPROCESSOR_CENTER);
     }
 
     #[test]
