@@ -27,6 +27,7 @@ ARCHIVE_SIZE = 6_358_958_080
 ARCHIVE_SHA256 = "ae5ef1bf06812a95a1594a8f5f0ee9c51f35418e5ba96939fa6b98ab00431094"
 MAIN_CHECKPOINT_MEMBER = "./model_weights.ckpt"
 MAIN_CHECKPOINT_SIZE = 3_853_798_427
+MAIN_TOKENIZER_MEMBER = "./801fe64cd0ff4903a06b74cd771645c0_tokenizer.vocab"
 CONFIG_SHA256 = "202542a45eb4ad656a47044c5db8c02926259d7232b436d77ca6af21dc84deae"
 VOCAB_SHA256 = "4d10723a8bef5b8b186c3d2bb1449c849cc25c6b811969a7d170261b0ceed178"
 FLOAT_TENSOR_COUNT = 1_478
@@ -116,6 +117,34 @@ def validate_stripped_manifest(manifest: dict[str, object]) -> list[int]:
     return layers
 
 
+def select_main_tokenizer_member(members: list[tarfile.TarInfo]) -> tarfile.TarInfo:
+    """Select the one tokenizer member referenced by the pinned main config."""
+    matches = [member for member in members if member.name == MAIN_TOKENIZER_MEMBER]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one main tokenizer member {MAIN_TOKENIZER_MEMBER!r}, "
+            f"found {len(matches)}"
+        )
+    if not matches[0].isfile():
+        raise ValueError(
+            f"main tokenizer member is not a regular file: {MAIN_TOKENIZER_MEMBER!r}"
+        )
+    return matches[0]
+
+
+def validate_tokenizer_vocab(
+    payload: bytes, expected_sha256: str = VOCAB_SHA256
+) -> None:
+    """Validate the exact released tokenizer bytes and line count."""
+    actual_sha256 = digest_bytes(payload)
+    if actual_sha256 != expected_sha256:
+        raise ValueError(
+            f"tokenizer vocabulary SHA-256 {actual_sha256} != pinned {expected_sha256}"
+        )
+    if len(payload.splitlines()) != 16_384:
+        raise ValueError("released aggregate tokenizer must contain 16,384 lines")
+
+
 def extract_small_assets(archive: Path, output_dir: Path) -> tuple[Path, Path, str]:
     with tarfile.open(archive, "r:") as bundle:
         members = bundle.getmembers()
@@ -142,24 +171,13 @@ def extract_small_assets(archive: Path, output_dir: Path) -> tuple[Path, Path, s
         if digest_bytes(config) != CONFIG_SHA256:
             raise ValueError("model_config.yaml does not match the pinned SHA-256")
 
-        vocab_matches: list[tuple[str, bytes]] = []
-        for member in members:
-            if not member.isfile() or not member.name.endswith(".vocab"):
-                continue
-            stream = bundle.extractfile(member)
-            if stream is None:
-                raise ValueError(f"could not read tokenizer member {member.name}")
-            payload = stream.read()
-            if digest_bytes(payload) == VOCAB_SHA256:
-                vocab_matches.append((member.name, payload))
-        if len(vocab_matches) != 1:
-            raise ValueError(
-                "expected one tokenizer vocabulary matching the pinned SHA-256; "
-                f"found {[name for name, _ in vocab_matches]}"
-            )
-        vocab_member, vocab = vocab_matches[0]
-        if len(vocab.splitlines()) != 16_384:
-            raise ValueError("released aggregate tokenizer must contain 16,384 lines")
+        vocab_info = select_main_tokenizer_member(members)
+        stream = bundle.extractfile(vocab_info)
+        if stream is None:
+            raise ValueError(f"could not read tokenizer member {vocab_info.name}")
+        vocab = stream.read()
+        validate_tokenizer_vocab(vocab)
+        vocab_member = vocab_info.name
 
     config_path = output_dir / "model_config.yaml"
     vocab_path = output_dir / "tokenizer.vocab"
@@ -188,6 +206,28 @@ def self_test() -> None:
         ],
     }
     assert validate_stripped_manifest(manifest) == list(range(COUNTER_COUNT))
+
+    exact = tarfile.TarInfo(MAIN_TOKENIZER_MEMBER)
+    exact.type = tarfile.REGTYPE
+    assert select_main_tokenizer_member([exact]) is exact
+    try:
+        select_main_tokenizer_member([])
+    except ValueError as error:
+        assert "exactly one main tokenizer member" in str(error)
+    else:
+        raise AssertionError("missing main tokenizer member must fail")
+    try:
+        select_main_tokenizer_member([exact, tarfile.TarInfo(MAIN_TOKENIZER_MEMBER)])
+    except ValueError as error:
+        assert "exactly one main tokenizer member" in str(error)
+    else:
+        raise AssertionError("duplicate main tokenizer member must fail")
+    try:
+        validate_tokenizer_vocab(b"wrong", expected_sha256=digest_bytes(b"expected"))
+    except ValueError as error:
+        assert "SHA-256" in str(error)
+    else:
+        raise AssertionError("wrong tokenizer digest must fail")
 
     for invalid_pairs, label in (
         ([], "missing shared pair"),
