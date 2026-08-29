@@ -60,6 +60,7 @@ SOURCE_ROLE_BLOBS = {
     "vibevoice/modular/modeling_vibevoice_streaming.py": "c4488c8850dc210cba677bfc61c3c4a654b6c2a5",
     "vibevoice/modular/modeling_vibevoice_streaming_inference.py": "70a489582b88105998281209866d919e738dfc0a",
     "vibevoice/modular/modular_vibevoice_diffusion_head.py": "59de50fb2fe80d6b1ba5a50c9de1ef9cffc4f614",
+    "vibevoice/modular/modular_vibevoice_text_tokenizer.py": "9532d9ffe7120eb47b18c52c0a23db9e2d4e3bbf",
     "vibevoice/modular/modular_vibevoice_tokenizer.py": "454f9c13094ae42b186ed49e22227cea18189ee1",
     "vibevoice/modular/streamer.py": "5dd7892aed2a416b2eff670c93bc137b3fc216aa",
     "vibevoice/processor/vibevoice_streaming_processor.py": "39c262b1b9859a396b9ea133bf62d782eae1b361",
@@ -763,6 +764,36 @@ def self_test() -> None:
         assert positive_inventory["source"]["status"] == "AUTHENTICATED" and positive_inventory["transformers"]["status"] == "AUTHENTICATED"
         safe_links = [row for row in positive_inventory["source"]["tracked_files"] if row["path"] == "safe-link"]
         assert len(safe_links) == 1 and safe_links[0]["mode"] == "120000" and safe_links[0]["symlink_target_hex"] == b"LICENSE".hex()
+        text_tokenizer = "vibevoice/modular/modular_vibevoice_text_tokenizer.py"
+        missing_source = root / "missing-text-tokenizer-source"
+        missing_revision, _ = authenticated_fixture(
+            missing_source,
+            SOURCE_REPOSITORY,
+            tuple(role for role in SOURCE_ROLE_BLOBS if role != text_tokenizer),
+            mit_text,
+        )
+        missing_inventory = source_inventory(
+            missing_source,
+            positive_transformers,
+            source_revision=missing_revision,
+            source_roles=SOURCE_ROLE_BLOBS,
+            transformers_revision=positive_transformers_revision,
+            transformers_roles=positive_transformers_roles,
+        )
+        assert missing_inventory["source"]["status"] == "BLOCKED"
+        assert any(f"missing/untracked role: {text_tokenizer}" in item for item in missing_inventory["source"]["blockers"])
+        (positive_source / text_tokenizer).write_text("tampered role\n", encoding="utf-8")
+        tampered_inventory = source_inventory(
+            positive_source,
+            positive_transformers,
+            source_revision=positive_source_revision,
+            source_roles=positive_source_roles,
+            transformers_revision=positive_transformers_revision,
+            transformers_roles=positive_transformers_roles,
+        )
+        assert tampered_inventory["source"]["status"] == "BLOCKED"
+        assert any(f"tracked object mismatch: {text_tokenizer}" in item for item in tampered_inventory["source"]["blockers"])
+        (positive_source / text_tokenizer).write_text(f"fixture role {text_tokenizer}\n", encoding="utf-8")
         (positive_source / "escape-link").symlink_to("../outside")
         subprocess.run(["git", "-C", str(positive_source), "add", "escape-link"], check=True)
         subprocess.run(["git", "-C", str(positive_source), "commit", "-q", "-m", "unsafe symlink fixture"], check=True)
