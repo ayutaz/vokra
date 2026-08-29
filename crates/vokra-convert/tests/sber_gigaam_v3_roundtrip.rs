@@ -7,13 +7,13 @@ use vokra_convert::convert_sber_gigaam_v3_file;
 #[test]
 fn v3_arbitrary_input_and_license_override_are_refused_without_output() {
     let output = std::env::temp_dir().join(format!("gigaam-v3-{}.gguf", std::process::id()));
-    const PREPARED_SHA_BLOCKER: &str = "usage error: GigaAM v3 prepared SHA-256 is not independently authenticated; obtain VAST evidence first";
+    const MISSING_INPUT_ERROR: &str = "I/O error: No such file or directory (os error 2)";
     for license in [None, Some("mit"), Some("MIT")] {
         let _ = std::fs::remove_file(&output);
         let error = convert_sber_gigaam_v3_file(Path::new("missing"), &output, license)
             .unwrap_err()
             .to_string();
-        assert_eq!(error, PREPARED_SHA_BLOCKER);
+        assert_eq!(error, MISSING_INPUT_ERROR);
         assert!(!output.exists());
     }
     const INCOMPATIBLE_LICENSE: &str =

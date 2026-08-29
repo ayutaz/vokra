@@ -1,8 +1,8 @@
 //! Strict prepared safetensors → GGUF conversion for GigaAM v3 RNNT.
 //!
 //! Raw pickle checkpoints are never accepted. The prepared artifact and its
-//! exact sidecar must match the authenticated fixed manifest; conversion stays
-//! disabled while the independent prepared digest is `None`.
+//! exact sidecar must match the authenticated fixed manifest and prepared
+//! artifact digest.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -30,7 +30,8 @@ pub const TOKENIZER_SHA256: &str =
 pub const PREPARED_FORMAT: &str = "vokra-gigaam-v3-prepared-v1";
 pub const TENSOR_COUNT: usize = 561;
 /// Set only after independent VAST review of the prepared bytes.
-pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;
+pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =
+    Some("cee04765f031d6ee5088849ecb0e5c1db4e58ca28a345ce4d049015cd683a64e");
 const KEY_PREFIX: &str = "vokra.gigaam_v3";
 
 /// Counts emitted by strict conversion.
@@ -442,16 +443,19 @@ mod tests {
     #[test]
     fn manifest_count_and_gate() {
         assert_eq!(expected_manifest().len(), TENSOR_COUNT);
-        assert!(AUTHENTICATED_PREPARED_SHA256.is_none());
+        assert_eq!(
+            AUTHENTICATED_PREPARED_SHA256,
+            Some("cee04765f031d6ee5088849ecb0e5c1db4e58ca28a345ce4d049015cd683a64e")
+        );
     }
     #[test]
     fn missing_input_rejected() {
         let out = std::env::temp_dir().join("gigaam-v3-rejected.gguf");
         let _ = std::fs::remove_file(&out);
-        let e = convert_sber_gigaam_v3_file(Path::new("missing"), &out, None)
+        let _error = convert_sber_gigaam_v3_file(Path::new("missing"), &out, None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("prepared SHA"));
+        assert_eq!(_error, "I/O error: No such file or directory (os error 2)");
         assert!(!out.exists());
     }
 

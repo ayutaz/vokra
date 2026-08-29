@@ -2,8 +2,8 @@
 //!
 //! The graph and decoding loop are transcribed from the authenticated
 //! `ai-sage/GigaAM-v3` remote code at revision
-//! `ec1dc1f01d0d627ab2c0d3acc1e235702300d95e`.  Binding remains fail-closed
-//! until an independently reviewed prepared-artifact digest is recorded.
+//! `ec1dc1f01d0d627ab2c0d3acc1e235702300d95e`. Binding remains fail-closed
+//! against any prepared artifact other than the independently reviewed digest.
 
 use std::collections::BTreeSet;
 use vokra_core::backend::BackendKind;
@@ -47,7 +47,8 @@ pub const MAX_SYMBOLS_PER_STEP: usize = 10;
 /// Required audio sample rate.
 pub const SAMPLE_RATE: u32 = 16_000;
 /// Filled only after independent VAST review of the prepared artifact.
-pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;
+pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =
+    Some("cee04765f031d6ee5088849ecb0e5c1db4e58ca28a345ce4d049015cd683a64e");
 
 type LstmState = (Vec<f32>, Vec<f32>);
 
@@ -736,7 +737,10 @@ mod tests {
         assert_eq!(BLANK_ID, NUM_CLASSES - 1);
         assert_eq!(MAX_SYMBOLS_PER_STEP, 10);
         assert_eq!(VOCAB_SIZE + 1, NUM_CLASSES);
-        assert!(AUTHENTICATED_PREPARED_SHA256.is_none());
+        assert_eq!(
+            AUTHENTICATED_PREPARED_SHA256,
+            Some("cee04765f031d6ee5088849ecb0e5c1db4e58ca28a345ce4d049015cd683a64e")
+        );
     }
 
     #[test]
