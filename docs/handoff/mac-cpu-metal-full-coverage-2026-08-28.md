@@ -168,6 +168,69 @@ The small evidence trees and logs were copied to
 artifact was retained locally. No Hugging Face upload or Scaleway execution
 occurred in this closure.
 
+### 2026-08-30 authenticated CPU lock before Scaleway
+
+This later lock supersedes the pending GigaAM/OmniASR wording below without
+promoting any unsupported Metal route. The code-bearing VAST checkout was
+`d06ab75f560d194f44dc0449c1cc50e9d917af80`; the following documentation-only
+ABI record advanced the checkout to `568dc192d5fc20b43441f861235c88b2b7af84cf`.
+No Hugging Face upload occurred.
+
+- GigaAM v3 completed conversion and independent official CPU parity. The
+  prepared safetensors SHA-256 is
+  `cee04765f031d6ee5088849ecb0e5c1db4e58ca28a345ce4d049015cd683a64e`,
+  the GGUF SHA-256 is
+  `287c3657d0ebc41637b6ce7535af2eae9fbb9a8d4a2faa0fb848540b536da1b8`,
+  and the reference-manifest SHA-256 is
+  `9e20afc5d9155a9b4ed38169f4a54c5cfd0ee2e7beefce628ddfb5e6f0ea9d43`.
+  The CPU gate recorded maximum absolute errors of `1.335144043e-4` for
+  log-mel, `4.753470421e-6` for the encoded trace and `1.296997070e-4`
+  for RNNT logits, with exact decision/token output. Metal remains
+  `OPEN_UNSUPPORTED`; no CPU fallback is treated as a Metal verdict.
+- GigaAM Multilingual completed conversion and independent official CPU
+  parity. The prepared safetensors SHA-256 is
+  `1c4aa78524c87edce9ad4fab7e8fdfeebdb2dc7c546c826b37cd59f8d2541995`,
+  the GGUF SHA-256 is
+  `e80019e784d345e16e28a2b4441ad88c6a14209f315426a2dd7fc5a2900a10cf`,
+  and the reference-manifest SHA-256 is
+  `f71b3d53a662ebee9604dcd457c0d4c02c9251092f0cbedf860c80f2e255e38d`.
+  The CPU gate recorded maximum absolute errors of `1.007579267e-4` for
+  the encoded trace and `4.072189331e-4` for logits, with exact token IDs.
+  Its Apple worker remains an explicit `OPEN_UNSUPPORTED` contract until the
+  learned-op Metal route is wired; it cannot emit a false PASS.
+- OmniASR CTC 1B completed the authenticated 807-tensor conversion and real
+  CPU parity against the pinned official implementation, using the first
+  second of the committed public-domain JFK fixture. The prepared checkpoint
+  SHA-256 is
+  `cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`,
+  the GGUF SHA-256 is
+  `abf6f0ee8c028e7c79955f68d841d4445fa9664a2e87ff26c80a37a3b4a3561e`,
+  and the reference-manifest SHA-256 is
+  `7a37e36e56c90370390c741bac421e211834116f14c4d0305a84f8b87552dd1b`.
+  The 49-frame CPU gate recorded maximum absolute errors of
+  `2.918243408e-4` for the frontend, `1.520276070e-3` for the encoder and
+  `1.450002193e-3` for logits; the five emitted token IDs matched exactly.
+  Apple CPU repetition and Metal execution remain pending the authenticated
+  Apple Silicon worker.
+- At the code-bearing commit, `cargo test --locked --workspace`, strict
+  workspace Clippy over all targets/features, `cargo deny check licenses
+  advisories bans` and `cargo audit` all pass on VAST. At the ABI-record
+  commit, all 37 applicable no-argument check scripts pass; the same four
+  external-input/distribution checks listed above remain non-applicable. The
+  expanded VAST worker matrix is 100 total: 99 pass and only the expected
+  CosyVoice3 dedicated-lock refusal exits 2. The expanded portable Apple
+  contract matrix is 43 of 43 passing. These portable tests are not
+  Apple-hardware verdicts.
+- The remote-only Apple transfer packet is
+  `/root/scratchpad/apple-transfer-568dc192` on VAST: 4.9 GB across 33 files.
+  Every file verifies against the relative-path manifest
+  `/root/scratchpad/apple-transfer-568dc192.SHA256SUMS`, whose SHA-256 is
+  `fa36488ad7cf93e62b3d4f3899b122b989ade98c4415bbbd7ac5bc344659304d`.
+  The packet has not been pulled to the maintainer Mac. The current VAST
+  instance is retained intentionally only for direct transfer to the approved
+  Scaleway Apple worker and must be destroyed after that transfer/evidence
+  handoff.
+
 ### Branch preparation status
 
 The following source work is present and locally reviewed on this branch. None
