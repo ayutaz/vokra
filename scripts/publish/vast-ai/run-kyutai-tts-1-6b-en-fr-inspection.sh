@@ -47,13 +47,35 @@ self_test() {
     '09b782f0629851a271227fb9d36db65c041790365f11bbe5d3d59369cf863f50' \
     'cd87dd5d17169151782ac700280ec057e5d658a9afbe238a048ea5ff318cce69' \
     'bc79b0162c94862aadd6c5d351b5b4984274af0616e3a56b0df9973ff7c793c7' \
-    'model_info' 'list_repo_tree' 'lfs_sha256' 'git_blob_sha1' 'weights_only=True' \
+    'model_info' 'list_repo_tree' 'path_in_repo' 'lfs_sha256' 'git_blob_sha1' 'weights_only=True' \
     '64' '40' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'evidence_stage' 'NO_UPLOAD' 'exit 2'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
       fail=1
     fi
   done
+  if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 \
+    python - "$path" <<'PY'
+import inspect
+import sys
+from pathlib import Path
+
+from huggingface_hub import HfApi
+
+parameters = inspect.signature(HfApi.list_repo_tree).parameters
+if "path_in_repo" not in parameters or "path" in parameters:
+    raise SystemExit(f"unexpected frozen HfApi.list_repo_tree signature: {parameters}")
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+tree_calls = [line for line in source.splitlines() if "for item in api.list_repo_tree" in line]
+if not any("path_in_repo=path" in line for line in tree_calls):
+    raise SystemExit("Kyutai tree walk does not use path_in_repo")
+if any(("path=" + "path") in line for line in tree_calls):
+    raise SystemExit("Kyutai tree walk still uses removed path keyword")
+PY
+  then
+    log 'self-test FAIL: frozen HfApi.list_repo_tree contract regression'
+    fail=1
+  fi
   if grep -En '^[[:space:]]*git[[:space:]]+push|^[[:space:]]*(curl|wget)[^#]*(upload|push)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'
     fail=1
@@ -142,7 +164,7 @@ while pending:
     if path in visited:
         continue
     visited.add(path)
-    for item in api.list_repo_tree(repository, revision=revision, path=path, recursive=False):
+    for item in api.list_repo_tree(repository, revision=revision, path_in_repo=path, recursive=False):
         item_path = getattr(item, "path", None)
         item_type = getattr(item, "type", None)
         if not isinstance(item_path, str) or item_type not in {"file", "directory"}:
