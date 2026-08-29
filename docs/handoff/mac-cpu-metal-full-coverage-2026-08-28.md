@@ -90,10 +90,11 @@ of these bullets closes a model row until the named real run succeeds:
   summary and exit-code contract.
 - `vastai-safe.sh` redacts credential-valued URL query parameters and
   credential fields in JSON or `key=value` output, including upper- and
-  lower-case instance/Jupyter/container keys, while preserving the wrapped CLI
-  exit status. Its hermetic regression and a live status probe both report the
-  sensitive value as `[REDACTED]`. The lifecycle runbook and `run-one.sh` route
-  local Vast CLI commands through it.
+  lower-case instance/Jupyter/container keys, plus single-quoted Python-dict
+  and unquoted dict-field diagnostics, while preserving the wrapped CLI exit
+  status. Its hermetic regression and live lifecycle probes report sensitive
+  values as `[REDACTED]`. The lifecycle runbook and `run-one.sh` route local
+  Vast CLI commands through it.
 - `provision.sh` no longer resolves HF dependencies by running `uv add` in the
   checkout. `run-one.sh` owns its pinned transient HF environment instead. A
   hermetic regression proves that provision self-test leaves the checkout file
@@ -1657,6 +1658,16 @@ queries, JSON fields and `key=value` records, including upper- and lower-case
 instance/Jupyter/container variants. Its network-free regression passes, and
 a live status probe showed `[REDACTED]` instead of the credential while
 preserving the real command exit status.
+
+The first fresh-instance creation attempt then returned `instance_api_key` in
+a single-quoted Python-dict diagnostic, a format not covered by the second
+wrapper version. The value is not recorded here. Instance `49106108` was never
+used: no checkout, bundle, model, conversion or validation reached it, and it
+was immediately destroyed; a subsequent list probe confirmed its removal.
+The wrapper now recognizes `instance_api_key` and all credential keys in both
+quoted Python dictionaries and unquoted dict-like fields. Hermetic stdout and
+stderr regressions cover those formats before any replacement instance is
+created.
 
 ## Final branch exit gates
 
