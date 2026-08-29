@@ -61,6 +61,8 @@ EXPECTED_INDEX_METADATA = {"total_parameters": 8_674_021_857, "total_size": 17_3
 HF_CACHE = Path(".cache/huggingface")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+TRANSPORT_CACHE_PATH = Path(".cache/huggingface")
+TRANSPORT_CACHE_SCOPE = "snapshot_root_exact_transport_subtree"
 
 
 def sha256(path: Path) -> str:
@@ -215,6 +217,37 @@ def parsed_json_companions(snapshot: Path, companions: list[dict[str, Any]]) -> 
     return selected
 
 
+def transport_cache_scope(snapshot: Path) -> tuple[Path | None, dict[str, Any]]:
+    """Validate and describe the one non-identity snapshot transport subtree."""
+
+    evidence: dict[str, Any] = {
+        "path": TRANSPORT_CACHE_PATH.as_posix(),
+        "scope": TRANSPORT_CACHE_SCOPE,
+        "present": False,
+        "identity_role": "NON_IDENTITY_TRANSPORT_METADATA",
+        "status": "ABSENT",
+    }
+    cache = snapshot / ".cache"
+    if cache.is_symlink() or (cache.exists() and not cache.is_dir()):
+        raise RuntimeError(f"HF snapshot root .cache must be a real directory: {cache}")
+    if not cache.exists():
+        return None, evidence
+    transport = cache / "huggingface"
+    if transport.is_symlink() or (transport.exists() and not transport.is_dir()):
+        raise RuntimeError(
+            f"HF snapshot root .cache/huggingface must be a real directory: {transport}"
+        )
+    if not transport.exists():
+        return None, evidence
+    evidence["present"] = True
+    evidence["status"] = "EXCLUDED"
+    try:
+        evidence["entry_count"] = sum(1 for _ in transport.rglob("*"))
+    except OSError as error:
+        raise RuntimeError(f"HF transport cache inventory failed: {transport}: {error}") from error
+    return transport, evidence
+
+
 def server_inventory(snapshot: Path, packet: Path) -> dict[str, Any]:
     envelope = json.loads(packet.read_text(encoding="utf-8"), object_pairs_hook=strict_pairs)
     if not isinstance(envelope, dict) or set(envelope) != {"repository", "requested_revision", "resolved_revision", "walk", "files"}:
@@ -244,15 +277,19 @@ def server_inventory(snapshot: Path, packet: Path) -> dict[str, Any]:
             raise RuntimeError(f"HF canonical LFS pointer mismatch: {name}")
         expected[name] = row
     actual: set[str] = set()
-    transport = Path(".cache/huggingface")
+    excluded_transport, transport_evidence = transport_cache_scope(snapshot)
     for path in snapshot.rglob("*"):
-        relative = path.relative_to(snapshot); parts = relative.parts
-        if relative == transport:
-            if path.is_symlink() or not path.is_dir():
-                raise RuntimeError("HF transport cache must be a real directory")
+        relative = path.relative_to(snapshot)
+        parts = relative.parts
+        if relative == Path(".cache"):
             continue
-        if transport in relative.parents:
-            continue
+        if excluded_transport is not None:
+            try:
+                relative.relative_to(excluded_transport.relative_to(snapshot))
+            except ValueError:
+                pass
+            else:
+                continue
         if ".cache" in parts:
             raise RuntimeError(f"unexpected cache path: {path}")
         if path.is_symlink():
@@ -275,7 +312,7 @@ def server_inventory(snapshot: Path, packet: Path) -> dict[str, Any]:
         elif digest != row["lfs_sha256"]:
             raise RuntimeError(f"HF local LFS payload mismatch: {name}")
         records.append({**row, "payload_sha256": digest, "payload_bytes": path.stat().st_size})
-    return {"repository": envelope["repository"], "requested_revision": envelope["requested_revision"], "resolved_revision": envelope["resolved_revision"], "walk": envelope["walk"], "files": records}
+    return {"repository": envelope["repository"], "requested_revision": envelope["requested_revision"], "resolved_revision": envelope["resolved_revision"], "walk": envelope["walk"], "files": records, "transport_cache": transport_evidence}
 
 
 def safetensors_header(path: Path) -> dict[str, Any]:
@@ -511,8 +548,68 @@ def self_test() -> None:
         tree_rows.append({"path": lfs_path.name, "type": "file", "size": lfs_path.stat().st_size, "git_blob_sha1": None, "lfs_pointer_git_blob_sha1": lfs_pointer_sha1(sha256(lfs_path), lfs_path.stat().st_size), "lfs_sha256": sha256(lfs_path)})
         tree_path = Path(directory) / "server-tree.json"
         tree_path.write_text(json.dumps({"repository": UPSTREAM_REPOSITORY, "requested_revision": UPSTREAM_REVISION, "resolved_revision": UPSTREAM_REVISION, "walk": "recursive_file_only", "files": tree_rows}), encoding="utf-8")
+        transport = snapshot / ".cache" / "huggingface"
+        transport.mkdir(parents=True)
+        (transport / "download-metadata.json").write_text("transport-only", encoding="utf-8")
         tree_evidence = server_inventory(snapshot, tree_path)
         assert len(tree_evidence["files"]) == len(tree_rows)
+        assert tree_evidence["transport_cache"] == {
+            "path": ".cache/huggingface",
+            "scope": "snapshot_root_exact_transport_subtree",
+            "present": True,
+            "identity_role": "NON_IDENTITY_TRANSPORT_METADATA",
+            "status": "EXCLUDED",
+            "entry_count": 1,
+        }
+        nested_cache = snapshot / "nested" / ".cache"
+        nested_cache.mkdir(parents=True)
+        (nested_cache / "extra").write_bytes(b"extra")
+        try:
+            server_inventory(snapshot, tree_path)
+        except RuntimeError as error:
+            assert "unexpected cache path" in str(error)
+        else:
+            raise AssertionError("nested .cache was incorrectly excluded")
+        (nested_cache / "extra").unlink()
+        nested_cache.rmdir()
+        transport_file = snapshot / ".cache" / "huggingface"
+        (transport_file / "download-metadata.json").unlink()
+        transport_file.rmdir()
+        transport_file.write_bytes(b"not-a-directory")
+        try:
+            server_inventory(snapshot, tree_path)
+        except RuntimeError as error:
+            assert "real directory" in str(error)
+        else:
+            raise AssertionError("non-directory transport cache was accepted")
+        transport_file.unlink()
+        transport_file.symlink_to(root / "outside-transport", target_is_directory=True)
+        (root / "outside-transport").mkdir()
+        try:
+            server_inventory(snapshot, tree_path)
+        except RuntimeError as error:
+            assert "real directory" in str(error)
+        else:
+            raise AssertionError("symlinked transport cache was accepted")
+        transport_file.unlink()
+        (snapshot / ".cache").rmdir()
+        (snapshot / ".cache").symlink_to(root / "outside-cache", target_is_directory=True)
+        (root / "outside-cache").mkdir()
+        try:
+            server_inventory(snapshot, tree_path)
+        except RuntimeError as error:
+            assert "root .cache" in str(error)
+        else:
+            raise AssertionError("symlinked root cache was accepted")
+        (snapshot / ".cache").unlink()
+        (snapshot / ".cache").write_bytes(b"not-a-directory")
+        try:
+            server_inventory(snapshot, tree_path)
+        except RuntimeError as error:
+            assert "root .cache" in str(error)
+        else:
+            raise AssertionError("non-directory root cache was accepted")
+        (snapshot / ".cache").unlink()
         assert weight_license(snapshot, companion_inventory(snapshot))["license"] == "MIT"
         bad_card = snapshot / "README.md"; bad_card.write_text("prose license: mit\n", encoding="utf-8")
         try:

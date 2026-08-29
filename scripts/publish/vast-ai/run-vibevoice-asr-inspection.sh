@@ -50,7 +50,7 @@ run_self_test() {
     "$SOURCE_REVISION" "$TRANSFORMERS_REPOSITORY" "$TRANSFORMERS_TAG" "$TRANSFORMERS_REVISION" "$INSPECTOR" "safe_open" "SHARD_COUNT" \
     "model.safetensors.index.json" "INSPECTION_ONLY" \
     "BLOCKED" "Exception" "--transformers-source" "resident_scope" "allow_patterns=[\"*\"]" "companion-inventory" "source-inventory" "transformers-inventory" "MIN_VAST_MEM_KIB" \
-    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED"; do
+    "MIN_FREE_DISK_KIB" "tmpfs" "server-tree.json" "local_dir" "requested_revision" "resolved_revision" "recursive_file_only" "RepoFolder" "expand=True" "lfs_pointer_git_blob_sha1" "UNSELECTED_BLOCKER" "NOT_DOWNLOADED" "transport_cache" "snapshot_root_exact_transport_subtree" "NON_IDENTITY_TRANSPORT_METADATA"; do
     if ! grep -Fq -- "$required" "$script_path" && ! grep -Fq -- "$required" "$repo_root/$INSPECTOR"; then
       echo "run-vibevoice-asr-inspection: self-test FAIL: missing contract: $required" >&2
       fail=1
@@ -286,6 +286,12 @@ if manifest.get("runtime_status") != "NOT_IMPLEMENTED_FAIL_CLOSED" or manifest.g
 dependency = manifest.get("external_dependency", {})
 if dependency != {"repository": "Qwen/Qwen2.5-7B", "revision": "UNSELECTED_BLOCKER", "selection_status": "BLOCKED", "files": "NOT_DOWNLOADED", "model_weights": "NOT_DOWNLOADED"}: raise SystemExit("Qwen external dependency was not fail-closed")
 if manifest.get("tensor_count", 0) <= 0 or manifest.get("upstream", {}).get("shard_count") != 8: raise SystemExit("incomplete shard/tensor evidence")
+transport = manifest.get("hf_server_tree", {}).get("transport_cache")
+if not isinstance(transport, dict) or transport.get("path") != ".cache/huggingface" or transport.get("scope") != "snapshot_root_exact_transport_subtree" or transport.get("identity_role") != "NON_IDENTITY_TRANSPORT_METADATA": raise SystemExit("transport cache evidence is missing or has the wrong scope")
+if transport.get("status") not in {"ABSENT", "EXCLUDED"} or not isinstance(transport.get("present"), bool): raise SystemExit("invalid transport cache evidence")
+if transport["status"] == "ABSENT" and transport["present"] is not False: raise SystemExit("absent transport cache was marked present")
+if transport["status"] == "EXCLUDED" and transport["present"] is not True: raise SystemExit("excluded transport cache was not marked present")
+if transport["status"] == "EXCLUDED" and (not isinstance(transport.get("entry_count"), int) or isinstance(transport.get("entry_count"), bool) or transport["entry_count"] < 0): raise SystemExit("transport cache entry count is invalid")
 PY
 
 {
