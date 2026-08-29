@@ -1,8 +1,8 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Inspection-only evidence collector for ESPnet OWSM v4 medium 1B."""
 from __future__ import annotations
-import argparse, hashlib, json, re, struct, subprocess, tempfile, zipfile
-from pathlib import Path
+import argparse, hashlib, json, os, posixpath, re, struct, subprocess, tempfile, zipfile
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 HF_REPOSITORY="espnet/owsm_v4_medium_1B"; HF_REVISION="e10985c8f1d592e905c24d2ac2b2c53e3feb24dc"
@@ -22,6 +22,8 @@ def sha256(path:Path)->str:
  return d.hexdigest()
 def git_blob_sha1(path:Path)->str:
  data=path.read_bytes(); return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
+def git_blob_sha1_bytes(data:bytes)->str:
+ return hashlib.sha1(f"blob {len(data)}\0".encode()+data).hexdigest()
 def files(root:Path)->list[Path]:
  if not root.is_dir(): raise RuntimeError(f"missing root: {root}")
  out=[]; base=root.resolve()
@@ -42,6 +44,40 @@ def no_dupes(pairs):
   if key in out: raise ValueError(f"duplicate key: {key}")
   out[key]=value
  return out
+def normalized_symlink_target(relative:str,target_bytes:bytes)->tuple[str,str]:
+ if not target_bytes or b"\x00" in target_bytes: raise ValueError("NUL in symlink target")
+ if target_bytes.startswith(b"/"): raise ValueError("absolute symlink target")
+ target=os.fsdecode(target_bytes)
+ normalized=posixpath.normpath(posixpath.join(posixpath.dirname(relative),target))
+ if normalized==".." or normalized.startswith("../"): raise ValueError("symlink target escapes checkout")
+ return target,normalized
+def tracked_symlink(root:Path,relative:str,index_object_id:str,blockers:list[str])->dict[str,Any]|None:
+ """Authenticate a tracked symlink from Git blobs without dereferencing it."""
+ try:
+  relative_path=PurePosixPath(relative)
+  if (not relative or "\x00" in relative or "\\" in relative or relative_path.is_absolute()
+      or ".." in relative_path.parts): raise ValueError("unsafe tracked symlink path")
+  if not re.fullmatch(r"[0-9a-f]{40}",index_object_id): raise ValueError("invalid index blob object ID")
+  path=root/relative
+  if not path.is_symlink(): raise ValueError("working tree entry is not a symlink")
+  index_bytes=subprocess.run(["git","-C",str(root),"cat-file","blob",index_object_id],check=True,capture_output=True).stdout
+  if git_blob_sha1_bytes(index_bytes)!=index_object_id: raise ValueError("index blob object does not match target bytes")
+  target,normalized=normalized_symlink_target(relative,index_bytes)
+  head_spec=f"HEAD:{relative}"
+  head_object_id=subprocess.run(["git","-C",str(root),"rev-parse","--verify",head_spec],check=True,capture_output=True,text=True).stdout.strip()
+  if not re.fullmatch(r"[0-9a-f]{40}",head_object_id): raise ValueError("invalid HEAD blob object ID")
+  head_bytes=subprocess.run(["git","-C",str(root),"cat-file","blob",head_spec],check=True,capture_output=True).stdout
+  if head_bytes!=index_bytes: raise ValueError("HEAD blob differs from index blob")
+  working_target=os.readlink(path); working_bytes=os.fsencode(working_target)
+  _,working_normalized=normalized_symlink_target(relative,working_bytes)
+  if working_bytes!=index_bytes: raise ValueError("working-tree symlink target differs from Git blobs")
+  return {"path":relative,"index_object_id":index_object_id,"head_object_id":head_object_id,
+          "index_target":target,"head_target":target,"working_target":working_target,
+          "normalized_target":normalized,"working_normalized_target":working_normalized,"target_scope":"CHECKOUT_RELATIVE_NO_DEREFERENCE",
+          "target_git_blob_sha1":git_blob_sha1_bytes(index_bytes)}
+ except (OSError,UnicodeError,ValueError,subprocess.CalledProcessError) as error:
+  blockers.append(f"unsafe tracked symlink {relative}: {error}")
+  return None
 def server_tree(snapshot:Path,packet:Path,blockers:list[str])->dict[str,Any]:
  remote=json.loads(packet.read_text(),object_pairs_hook=no_dupes)
  all_rows=remote.get("files",[])
@@ -245,23 +281,35 @@ def source_inventory(root:Path,repo:str,revision:str,roles:tuple[str,...],blocke
  try:
   head=subprocess.run(["git","-C",str(root),"rev-parse","HEAD"],check=True,capture_output=True,text=True).stdout.strip(); origin=subprocess.run(["git","-C",str(root),"remote","get-url","origin"],check=True,capture_output=True,text=True).stdout.strip(); entries=subprocess.run(["git","-C",str(root),"ls-files","-s","-z"],check=True,capture_output=True).stdout.split(b"\0")
   tags=subprocess.run(["git","-C",str(root),"tag","--points-at",head],check=True,capture_output=True,text=True).stdout.splitlines()
-  tracked=set(); paths=[]
+  tracked=set(); paths=[]; symlinks=[]; gitlinks=[]
   for raw in entries:
    if not raw: continue
-   meta,rel=raw.split(b"\t",1); mode=meta.split()[0].decode(); relative=rel.decode(); tracked.add(relative); path=root/relative
-   if mode not in ("100644","100755"): blockers.append(f"source nonregular/gitlink: {path}")
-   elif path.is_file(): paths.append(path)
+   meta,rel=raw.split(b"\t",1); fields=meta.split(); mode=fields[0].decode(); object_id=fields[1].decode() if len(fields)>1 else ""; relative=rel.decode(); tracked.add(relative); path=root/relative
+   if mode=="160000":
+    gitlinks.append({"path":relative,"object_id":object_id,"status":"GITLINK_NOT_CHECKED_OUT"}); blockers.append(f"source nonregular/gitlink: {path}")
+   elif mode=="120000":
+    record=tracked_symlink(root,relative,object_id,blockers)
+    if record is not None: symlinks.append(record)
+   elif mode not in ("100644","100755"): blockers.append(f"source nonregular/gitlink: {path}")
+   elif path.is_file() and not path.is_symlink(): paths.append(path)
+   else: blockers.append(f"source tracked file missing/nonregular: {path}")
   clean=subprocess.run(["git","-C",str(root),"status","--porcelain","--untracked-files=all"],check=True,capture_output=True,text=True).stdout
   if head!=revision or origin!=repo: blockers.append(f"source identity mismatch: {repo}")
   if SOURCE_TAG not in tags: blockers.append(f"source tag missing at fixed revision: {SOURCE_TAG}")
   if clean: blockers.append(f"source checkout is dirty: {repo}")
   role_files=[]
   for role in roles:
-   if role not in tracked or not (root/role).is_file(): blockers.append(f"source role is not tracked/present: {role}")
-   else: role_files.append(identity(root/role,root))
-  licenses=[p for p in sorted(root.glob("LICENSE*")) if p.is_file()]
+   path=root/role
+   if role not in tracked or not path.is_file() or path.is_symlink(): blockers.append(f"source role is not tracked/present/nonregular: {role}")
+   else:
+    actual_blob=git_blob_sha1(path)
+    index_blob=subprocess.run(["git","-C",str(root),"rev-parse","--verify",f":{role}"],check=True,capture_output=True,text=True).stdout.strip()
+    head_blob=subprocess.run(["git","-C",str(root),"rev-parse","--verify",f"HEAD:{role}"],check=True,capture_output=True,text=True).stdout.strip()
+    if actual_blob!=index_blob or actual_blob!=head_blob: blockers.append(f"source role Git blob mismatch: {role}")
+    role_files.append({**identity(path,root),"index_git_blob_sha1":index_blob,"head_git_blob_sha1":head_blob})
+  licenses=[p for p in sorted(root.glob("LICENSE*")) if p.is_file() and not p.is_symlink()]
   if not licenses: blockers.append(f"source license missing: {repo}")
-  result.update({"resolved_revision":head,"origin":origin,"tags_at_revision":tags,"clean_status":"CLEAN" if not clean else "DIRTY","tracked_files":[identity(p,root) for p in sorted(paths)],"role_files":role_files,"license_files":[identity(p,root) for p in licenses]})
+  result.update({"resolved_revision":head,"origin":origin,"tags_at_revision":tags,"clean_status":"CLEAN" if not clean else "DIRTY","tracked_files":[identity(p,root) for p in sorted(paths)],"symlinks":symlinks,"gitlinks":gitlinks,"role_files":role_files,"license_files":[identity(p,root) for p in licenses]})
  except Exception as e: blockers.append(f"source inventory blocked: {e}")
  return result
 def inspect(snapshot:Path,source:Path,tree:Path,out:Path)->int:
@@ -318,6 +366,20 @@ def self_test()->None:
   config=root/"config.yaml"; config.write_text("encoder_conf:\n  output_size: 1024\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["contract_status"]=="BLOCKED_FACTS" and bad
   config.write_text("model: wrong\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["contract_status"]=="BLOCKED_FACTS" and any("mismatch" in x for x in bad)
   config.write_text("model: espnet\ntoken_list: [1]\n"); bad=[]; packet=config_evidence(config,root,bad); assert packet["token_list"]["status"]=="BLOCKED_TOKEN_LIST" and any("string array" in x for x in bad)
+  symlink_tmp=tempfile.TemporaryDirectory(prefix="owsm-symlink-"); symlink_repo=Path(symlink_tmp.name)
+  subprocess.run(["git","init","-q",str(symlink_repo)],check=True,capture_output=True)
+  subprocess.run(["git","-C",str(symlink_repo),"config","user.email","test@example.invalid"],check=True)
+  subprocess.run(["git","-C",str(symlink_repo),"config","user.name","OWSM self-test"],check=True)
+  (symlink_repo/"README.md").write_text("ok\n"); (symlink_repo/"docs").mkdir(); link=symlink_repo/"docs"/"README.md"; link.symlink_to("../README.md")
+  subprocess.run(["git","-C",str(symlink_repo),"add","README.md","docs/README.md"],check=True,capture_output=True); subprocess.run(["git","-C",str(symlink_repo),"commit","-qm","initial"],check=True,capture_output=True)
+  index_record=subprocess.run(["git","-C",str(symlink_repo),"ls-files","-s","--","docs/README.md"],check=True,capture_output=True,text=True).stdout.strip(); index_fields,index_path=index_record.split("\t",1); index_object=index_fields.split()[1]
+  symlink_bad=[]; symlink_packet=tracked_symlink(symlink_repo,index_path,index_object,symlink_bad)
+  assert symlink_packet is not None and symlink_packet["index_target"]=="../README.md" and symlink_packet["head_object_id"]==index_object and not symlink_bad
+  link.unlink(); link.symlink_to("../../outside"); symlink_bad=[]; assert tracked_symlink(symlink_repo,index_path,index_object,symlink_bad) is None and any("escapes checkout" in item for item in symlink_bad)
+  link.unlink(); link.symlink_to("/outside"); symlink_bad=[]; assert tracked_symlink(symlink_repo,index_path,index_object,symlink_bad) is None and any("absolute" in item for item in symlink_bad)
+  link.unlink(); link.symlink_to("../README.md"); nul_object=subprocess.run(["git","-C",str(symlink_repo),"hash-object","-w","--stdin"],input=b"../README\x00",check=True,capture_output=True).stdout.decode().strip(); symlink_bad=[]; assert tracked_symlink(symlink_repo,index_path,nul_object,symlink_bad) is None and any("NUL" in item for item in symlink_bad)
+  link.unlink(); link.symlink_to("README.md"); symlink_bad=[]; assert tracked_symlink(symlink_repo,index_path,index_object,symlink_bad) is None and any("differs" in item for item in symlink_bad)
+  gitlink_tmp=tempfile.TemporaryDirectory(prefix="owsm-gitlink-"); gitlink_repo=Path(gitlink_tmp.name); subprocess.run(["git","init","-q",str(gitlink_repo)],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"remote","add","origin","wrong/repository"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"config","user.email","test@example.invalid"],check=True); subprocess.run(["git","-C",str(gitlink_repo),"config","user.name","OWSM self-test"],check=True); (gitlink_repo/"README").write_text("ok\n"); subprocess.run(["git","-C",str(gitlink_repo),"add","README"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"commit","-qm","initial"],check=True,capture_output=True); subprocess.run(["git","-C",str(gitlink_repo),"update-index","--add","--cacheinfo","160000,"+"1"*40+",submodule"],check=True,capture_output=True); gitlink_bad=[]; gitlink_packet=source_inventory(gitlink_repo,"wrong/repository","0"*40,tuple(),gitlink_bad); assert gitlink_packet["gitlinks"] and any("source nonregular/gitlink" in item for item in gitlink_bad)
   readme=root/README; readme.write_bytes(b"not a model card\xff"); bad=[]; packet=readme_evidence(readme,root,bad); assert packet["status"]=="BLOCKED_README" and bad
   card="---\nlicense: cc-by-4.0\ndatasets:\n- espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; bad=[]; parsed=model_card_frontmatter(card,bad); contract=validate_model_card(parsed,card,bad); assert parsed["datasets"]==["espnet/yodas_owsmv4"] and contract["status"]=="AUTHENTICATED_MODEL_CARD" and not bad
   bad=[]; string_card="---\nlicense: cc-by-4.0\ndatasets: espnet/yodas_owsmv4\n---\nLanguage identification, recognition, translation, timestamp and long-form.\n"; parsed=model_card_frontmatter(string_card,bad); contract=validate_model_card(parsed,string_card,bad); assert parsed["datasets"]=="espnet/yodas_owsmv4" and contract["status"]=="BLOCKED_MODEL_CARD" and any("README dataset declaration mismatch" in item for item in bad)
