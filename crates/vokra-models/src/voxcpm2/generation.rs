@@ -1570,8 +1570,8 @@ mod tests {
             .unwrap();
         assert_eq!(seen_prefix, vec![0.0, 1.0, 2.0]);
         // The stop callback stays false, so all three generated patches update
-        // the residual input before the next iteration.
-        assert_eq!(residual_input, vec![11.0, 22.0, 11.0, 22.0, 11.0, 22.0]);
+        // the residual input with fsq_hidden + curr_embed = [13, 24].
+        assert_eq!(residual_input, vec![13.0, 24.0, 13.0, 24.0, 13.0, 24.0]);
         assert_eq!(patches, vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
     }
 
