@@ -10,6 +10,7 @@ HF_REPOSITORY="nvidia/canary-qwen-2.5b"; HF_REVISION="b1469e1bba1cfe140205529c79
 SOURCE_REPOSITORY="https://github.com/NVIDIA/NeMo.git"; SOURCE_TAG="v2.5.0"; SOURCE_REVISION="ddcb2d6935045a556329f1afa653b8d918c36479"
 TOKENIZER_REPOSITORY="Qwen/Qwen3-1.7B"; TOKENIZER_REVISION="70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 FORMAT="vokra-canary-qwen-2.5b-inspection-v1"; MAX_HEADER_BYTES=64*1024*1024
+CANONICAL_INPUT_LENGTH_MARKER="**Input length.** The maximum audio duration in training was 40s, and the maximum token sequence length was 1024 tokens (including prompt, audio, and response)."
 MODEL_FILES={
     ".eval_results/open_asr_leaderboard.yaml":(2128,"9dc5e54acc69f650c5b9cb40492baadf6bb05430",None,"1b0dbb55d8d897f107baed2a8a57fa9b81e259141e45fd1d45ca8533079527bd"),
     ".gitattributes":(1627,"33f879d5e8f1c01e682db7c50613d2aae540b5d8",None,None),
@@ -74,6 +75,8 @@ def read_front_matter(text:str)->dict[str,Any]:
         return False
     if not isinstance(model_index,list) or not has_asr_task(model_index): raise RuntimeError("README model-index ASR task contract failed")
     return parsed
+def require_canonical_input_length(text:str)->None:
+    if CANONICAL_INPUT_LENGTH_MARKER not in text: raise RuntimeError("Canary exact input-length contract missing")
 def safe_path(value:str,label:str)->None:
     p=Path(value)
     if not value or "\0" in value or "\\" in value or p.is_absolute() or ".." in p.parts: raise RuntimeError(f"unsafe {label}: {value!r}")
@@ -210,9 +213,7 @@ def inspect(snapshot:Path,tokenizer:Path,source:Path,model_tree:Path,tok_tree:Pa
     front_matter=read_front_matter(readme)
     if "cc-by-4.0" not in readme.lower(): raise RuntimeError("HF CC-BY-4.0 card declaration missing")
     if "Transcribe the following: <|audioplaceholder|>" not in readme: raise RuntimeError("Canary prompt marker missing")
-    if not any(token in readme.lower() for token in ("40 seconds", "40s", "40 sec")): raise RuntimeError("Canary 40-second audio contract missing")
-    readme_lower=readme.lower()
-    if "1024" not in readme_lower or not ("max_tokens" in readme_lower or "max sequence" in readme_lower): raise RuntimeError("Canary max-sequence contract missing")
+    require_canonical_input_length(readme)
     parsed={p.relative_to(snapshot).as_posix():{"sha256":sha256(p),"json":load(p)} for p in snapshot.rglob("*.json") if p.is_file() and ".cache" not in p.relative_to(snapshot).parts}; config=inspect_config(parsed.get("config.json",{}).get("json"))
     eval_evidence=load_yaml(snapshot/".eval_results/open_asr_leaderboard.yaml")
     if not isinstance(eval_evidence,dict): raise RuntimeError("leaderboard YAML is not a mapping")
@@ -242,6 +243,15 @@ def self_test()->None:
     except RuntimeError: pass
     else: raise AssertionError("duplicate JSON accepted")
     assert read_front_matter("---\nlicense: cc-by-4.0\nlanguage: [en]\nlibrary_name: nemo\ndatasets:\n  - librispeech\ntags:\n  - automatic-speech-recognition\nmodel-index:\n  - results:\n      - task:\n          type: automatic-speech-recognition\n---\nbody")["license"]=="cc-by-4.0"
+    require_canonical_input_length(CANONICAL_INPUT_LENGTH_MARKER)
+    for legacy_readme in (
+        "1024",
+        "The maximum audio duration was 40 seconds and max_tokens was 1024.",
+        "The maximum audio duration was 40s and the max sequence was 1024.",
+    ):
+        try: require_canonical_input_length(legacy_readme)
+        except RuntimeError: pass
+        else: raise AssertionError("ambiguous input-length README marker was accepted")
     try: yaml.load("x: 1\nx: 2\n",Loader=StrictLoader)
     except RuntimeError: pass
     else: raise AssertionError("duplicate YAML accepted")
