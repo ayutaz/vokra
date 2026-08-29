@@ -13,11 +13,8 @@ import argparse
 import hashlib
 import json
 import re
+import tempfile
 from pathlib import Path
-
-import torch
-from safetensors.torch import load_file
-
 
 REPOSITORY = "facebook/mms-1b-all"
 REVISION = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
@@ -32,6 +29,17 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def load_json(path: Path) -> object:
+    def reject(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+
+
 def self_test() -> None:
     assert REVISION.isascii() and len(REVISION) == 40
     assert LANGUAGE_RE.fullmatch("eng")
@@ -39,6 +47,16 @@ def self_test() -> None:
     assert LANGUAGE_RE.fullmatch("cac-dialect_sanmateoixtatan")
     for invalid in ("English", "eng/../x", "eng.txt", "../eng", "eng."):
         assert not LANGUAGE_RE.fullmatch(invalid)
+    assert load_json.__name__ == "load_json"
+    with tempfile.TemporaryDirectory() as directory:
+        duplicate = Path(directory) / "duplicate.json"
+        duplicate.write_text('{"x":1,"x":2}', encoding="utf-8")
+        try:
+            load_json(duplicate)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted duplicate JSON key")
 
 
 def manifest(tensors: dict[str, torch.Tensor]) -> dict[str, dict[str, object]]:
@@ -61,12 +79,16 @@ def prepare(snapshot: Path, language: str, evidence: Path) -> None:
         if not path.is_file() or path.is_symlink():
             raise FileNotFoundError(f"required pinned checkpoint asset is missing: {path}")
     try:
-        vocab_payload = json.loads(vocab_json.read_text(encoding="utf-8"))
+        vocab_payload = load_json(vocab_json)
         selected_vocab = vocab_payload[language]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise ValueError(f"vocab.json has no valid selected vocabulary for {language!r}") from None
     if not isinstance(selected_vocab, dict) or not selected_vocab:
         raise ValueError(f"selected vocabulary is empty or malformed for {language!r}")
+
+    # Heavy checkpoint imports stay out of parser/path self-tests.
+    import torch
+    from safetensors.torch import load_file
 
     root = load_file(str(root_path), device="cpu")
     adapter = load_file(str(adapter_path), device="cpu")
@@ -84,8 +106,8 @@ def prepare(snapshot: Path, language: str, evidence: Path) -> None:
         "revision": REVISION,
         "language": language,
         "source_files": {
-            root_path.name: {"sha256": sha256(root_path), "tensor_manifest": manifest(root)},
-            adapter_path.name: {"sha256": sha256(adapter_path), "tensor_manifest": manifest(adapter)},
+            root_path.name: {"sha256": sha256(root_path), "bytes": root_path.stat().st_size, "tensor_manifest": manifest(root)},
+            adapter_path.name: {"sha256": sha256(adapter_path), "bytes": adapter_path.stat().st_size, "tensor_manifest": manifest(adapter)},
             "vocabs/" + vocab_path.name: {
                 "sha256": sha256(vocab_path),
                 "bytes": vocab_path.stat().st_size,
@@ -118,7 +140,10 @@ def main() -> int:
         return 0
     if None in (args.snapshot_dir, args.language, args.evidence_dir):
         parser.error("normal runs require --snapshot-dir, --language, and --evidence-dir")
-    prepare(args.snapshot_dir, args.language, args.evidence_dir)
+    try:
+        prepare(args.snapshot_dir, args.language, args.evidence_dir)
+    except (OSError, ValueError) as error:
+        parser.error(f"MMS checkpoint validation blocked: {error}")
     return 0
 
 

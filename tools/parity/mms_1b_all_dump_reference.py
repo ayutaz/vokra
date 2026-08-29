@@ -11,17 +11,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import inspect
 import json
 import platform
 import re
 import sys
+import tempfile
 from pathlib import Path
-
-import numpy as np
-import torch
-from transformers import AutoProcessor, Wav2Vec2ForCTC, __version__ as transformers_version
-
 
 REPOSITORY = "facebook/mms-1b-all"
 REVISION = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
@@ -34,6 +29,17 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def load_json(path: Path) -> object:
+    def reject(items: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
 
 
 def tensor_manifest(state_dict: dict[str, torch.Tensor]) -> dict[str, dict[str, object]]:
@@ -51,7 +57,17 @@ def self_test() -> None:
     assert LANGUAGE_RE.fullmatch("cac-dialect_sanmateoixtatan")
     for invalid in ("English", "eng/../x", "eng.txt", "../eng", "eng."):
         assert not LANGUAGE_RE.fullmatch(invalid)
-    assert "Wav2Vec2ForCTC" in inspect.getsource(Wav2Vec2ForCTC)
+    assert "Wav2Vec2ForCTC" in Path(__file__).read_text(encoding="utf-8")
+    assert load_json.__name__ == "load_json"
+    with tempfile.TemporaryDirectory() as directory:
+        duplicate = Path(directory) / "duplicate.json"
+        duplicate.write_text('{"x":1,"x":2}', encoding="utf-8")
+        try:
+            load_json(duplicate)
+        except ValueError:
+            pass
+        else:
+            raise SystemExit("self-test accepted duplicate JSON key")
 
 
 def dump_reference(snapshot: Path, language: str, output: Path) -> None:
@@ -70,12 +86,18 @@ def dump_reference(snapshot: Path, language: str, output: Path) -> None:
     if not vocab_txt.is_file() or vocab_txt.is_symlink():
         raise FileNotFoundError(f"pinned snapshot is missing selected vocabulary sidecar {vocab_txt}")
     try:
-        vocab_payload = json.loads(vocab_json.read_text(encoding="utf-8"))
+        vocab_payload = load_json(vocab_json)
         selected_vocab = vocab_payload[language]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         raise ValueError(f"vocab.json has no valid selected vocabulary for {language!r}") from None
     if not isinstance(selected_vocab, dict) or not selected_vocab:
         raise ValueError(f"selected vocabulary is empty or malformed for {language!r}")
+
+    # Heavy imports stay below parser/path self-tests.
+    import inspect
+    import numpy as np
+    import torch
+    from transformers import AutoProcessor, Wav2Vec2ForCTC, __version__ as transformers_version
 
     # `target_lang` is the official Transformers MMS composition surface.  It
     # invokes Wav2Vec2ForCTC.load_adapter for this one language; do not merge
@@ -127,6 +149,8 @@ def dump_reference(snapshot: Path, language: str, output: Path) -> None:
         for path in source_paths
     }
     source_file = Path(inspect.getsourcefile(Wav2Vec2ForCTC) or "")
+    if not source_file.is_absolute() or not source_file.is_file() or source_file.is_symlink() or any(parent.is_symlink() for parent in source_file.parents):
+        raise ValueError("Transformers source file is not an absolute regular symlink-free file")
     evidence = {
         "contract": "vokra-mms-1b-all-backbone-adapter-v1",
         "repository": REPOSITORY,
@@ -154,6 +178,7 @@ def dump_reference(snapshot: Path, language: str, output: Path) -> None:
         },
         "state_dict_tensor_manifest": tensor_manifest(model.state_dict()),
         "logits_shape": list(logits.shape),
+        "logits_dtype": str(logits.dtype),
         "logits_finite": bool(torch.isfinite(logits).all()),
         "logits_nonzero": bool(torch.any(logits != 0)),
         "greedy_token_ids_sha256": hashlib.sha256(
@@ -185,7 +210,10 @@ def main() -> int:
         return 0
     if None in (args.snapshot_dir, args.language, args.output_dir):
         parser.error("normal runs require --snapshot-dir, --language, and --output-dir")
-    dump_reference(args.snapshot_dir, args.language, args.output_dir)
+    try:
+        dump_reference(args.snapshot_dir, args.language, args.output_dir)
+    except (OSError, ValueError) as error:
+        parser.error(f"MMS reference validation blocked: {error}")
     return 0
 
 

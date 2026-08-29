@@ -7,9 +7,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VOKRA_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
+PARITY_PROJECT="$VOKRA_ROOT/tools/parity/mms_1b_all"
 PREPARER="tools/parity/mms_1b_all_prepare_checkpoint.py"
 REFERENCE_DUMPER="tools/parity/mms_1b_all_dump_reference.py"
+PREFLIGHT_GATE="$PARITY_PROJECT/license_gate.py"
+PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 UPSTREAM_REPO="facebook/mms-1b-all"
 UPSTREAM_REVISION="3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
 MIN_VAST_MEM_KIB=$((64 * 1024 * 1024))
@@ -32,33 +34,11 @@ EOF
 }
 
 license_preflight() {
-  local approval="$1" project_sha lock_sha
-  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die 'approval evidence must be a nonempty regular non-symlink file'
-  project_sha="$(sha256sum "$PARITY_PROJECT/pyproject.toml" | awk '{print $1}')"
-  lock_sha="$(sha256sum "$PARITY_PROJECT/uv.lock" | awk '{print $1}')"
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" <<'PY'
-import hashlib, json, pathlib, sys
-def reject(pairs):
-    out = {}
-    for key, value in pairs:
-        if key in out: raise ValueError("duplicate JSON key: " + key)
-        out[key] = value
-    return out
-try:
-    data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=reject)
-    expected = {"schema", "model", "upstream_repo", "upstream_revision", "license_spdx", "project_sha256", "lock_sha256", "no_upload", "decision", "signer", "scope_sha256"}
-    if set(data) != expected: raise ValueError("approval schema is not exact")
-    if data["schema"] != "vokra-validation-approval-v1" or data["model"] != "mms-1b-all": raise ValueError("approval model mismatch")
-    if data["upstream_repo"] != "facebook/mms-1b-all" or data["upstream_revision"] != "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd": raise ValueError("upstream identity mismatch")
-    if data["license_spdx"] != "cc-by-nc-4.0" or data["project_sha256"] != sys.argv[2] or data["lock_sha256"] != sys.argv[3] or data["no_upload"] is not True or data["decision"] != "APPROVED": raise ValueError("approval facts mismatch")
-    if not isinstance(data["signer"], str) or not data["signer"].strip() or data["signer"].strip().upper() in {"TODO", "UNRESOLVED", "OWNER_SIGNOFF_REQUIRED"}: raise ValueError("approval signer unresolved")
-    scope = {"license_spdx": data["license_spdx"], "lock_sha256": sys.argv[3], "model": data["model"], "no_upload": True, "project_sha256": sys.argv[2], "upstream_repo": data["upstream_repo"], "upstream_revision": data["upstream_revision"]}
-    if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest(): raise ValueError("approval scope digest mismatch")
-except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-    raise SystemExit("approval gate BLOCKED: " + str(exc))
-PY
-  then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/scripts/publish/signoff_match.py" --check-repo mms-1b-all --audit "$VOKRA_ROOT/docs/license-audit.md"; then :; else die 'MMS license/noncommercial signoff is unresolved'; fi
+  local language="$1" approval="$2"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
+    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" --language "$language" \
+    || die 'dedicated MMS closure/license/approval gate is unresolved'
 }
 
 canonical_absent_path() {
@@ -68,9 +48,10 @@ canonical_absent_path() {
   while [[ -n "$rest" ]]; do
     component="${rest%%/*}"; rest="${rest#*/}"
     [[ "$component" == "$rest" ]] && rest=''
-    [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
+    [[ -n "$component" && "$component" != . ]] || continue
+    [[ "$component" != .. ]] || return 1
     scan="$scan/$component"
-    [[ ! -L "$scan" || "$scan" == /var ]] || return 1
+    [[ ! -L "$scan" ]] || return 1
   done
   while [[ ! -d "$path" || -L "$path" ]]; do
     name="${path##*/}"; [[ -n "$name" ]] && suffix="/$name$suffix"
@@ -93,6 +74,7 @@ require_absent_work_dir() {
 
 self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token
+  # shellcheck disable=SC2016 # literal source contract tokens
   for token in \
     'VOKRA_PUBLISH_ON_VAST=1' 'uname -s' 'uname -m' 'MIN_VAST_MEM_KIB' \
     '/proc/meminfo' 'df -Pk' 'CARGO_BUILD_JOBS=1' 'cargo fmt --all -- --check' \
@@ -103,6 +85,8 @@ self_test() {
     'prepared_manifest.json' 'reference_manifest.json' 'tensor_manifest' \
     'INSPECTION_ONLY' 'no upload' 'MMS_LANGUAGE' 'azj-script_cyrillic' \
     'cac-dialect_sanmateoixtatan' 'vocabs/' 'git status --porcelain' \
+    'tools/parity/mms_1b_all/license_gate.py' '--prepared-manifest' '--reference-manifest' \
+    '--language "$language"' 'work_disk_root' 'nearest existing canonical ancestor' \
     'mms_1b_all_prepare_checkpoint.py --self-test' \
     'mms_1b_all_dump_reference.py --self-test'; do
     if ! grep -Fq -- "$token" "$path"; then
@@ -110,6 +94,11 @@ self_test() {
       fail=1
     fi
   done
+  # shellcheck disable=SC2016 # literal source contract token
+  if ! grep -Fq -- 'license_preflight "$language" "$approval_evidence"' "$path"; then
+    log 'self-test FAIL: approval scope is not bound to selected language'
+    fail=1
+  fi
   if grep -Fq 'ignore_mismatched_sizes=True' "$VOKRA_ROOT/$REFERENCE_DUMPER"; then
     log 'self-test FAIL: reference dumper permits silent composition mismatch'
     fail=1
@@ -132,13 +121,31 @@ self_test() {
       fail=1
     fi
   done
-  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --offline --frozen --project "$PARITY_PROJECT" \
-    --python 3.12 python "$VOKRA_ROOT/$PREPARER" --self-test >/dev/null; then
+  local gate_line host_line path_line
+  # shellcheck disable=SC2016 # match literal source token
+  gate_line="$(grep -n 'license_preflight "\$language" "\$approval_evidence"' "$path" | tail -n 1 | cut -d: -f1)"
+  host_line="$(grep -n 'uname -s' "$path" | tail -n 1 | cut -d: -f1)"
+  # shellcheck disable=SC2016 # match literal source token
+  path_line="$(grep -n 'require_absent_work_dir "\$work_dir"' "$path" | tail -n 1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$path_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$gate_line" -lt "$path_line" && "$path_line" -lt "$host_line" ]] || {
+    log 'self-test FAIL: closure/path gate is not before host probe'
+    fail=1
+  }
+  local temporary nested canonical disk_root
+  temporary="$(cd -P "$(mktemp -d)" && pwd)"
+  nested="$temporary/nested/deeper/work"
+  canonical="$(canonical_absent_path "$nested")" || fail=1
+  disk_root="$canonical"
+  while [[ ! -d "$disk_root" ]]; do disk_root="$(dirname "$disk_root")"; done
+  [[ "$disk_root" == "$temporary" ]] || { log 'self-test FAIL: disk probe did not use nearest existing ancestor'; fail=1; }
+  rm -rf "$temporary"
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
+    python "$VOKRA_ROOT/$PREPARER" --self-test >/dev/null; then
     log 'self-test FAIL: preparer self-test failed'
     fail=1
   fi
-  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --offline --frozen --project "$PARITY_PROJECT" \
-    --python 3.12 python "$VOKRA_ROOT/$REFERENCE_DUMPER" --self-test >/dev/null; then
+  if ! UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 \
+    python "$VOKRA_ROOT/$REFERENCE_DUMPER" --self-test >/dev/null; then
     log 'self-test FAIL: independent dumper self-test failed'
     fail=1
   fi
@@ -167,24 +174,27 @@ if (( self )); then
   exit $?
 fi
 [[ "$seen_approval" == 1 ]] || die '--approval-evidence is required'
-license_preflight "$approval_evidence"
 [[ -n "$language" ]] || die '--language is required; refusing to assume English'
 [[ "$language" =~ ^[a-z0-9]+([_-][a-z0-9]+)*$ ]] || die '--language contains unsafe filename characters'
+license_preflight "$language" "$approval_evidence"
+require_absent_work_dir "$work_dir" "$approval_evidence"
 [[ "$(uname -s)" == Linux ]] || die 'inspection is Linux/VAST-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
 [[ -f "$VOKRA_ROOT/Cargo.toml" && -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
-[[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die 'locked parity project is missing'
+[[ -f "$PREFLIGHT_GATE" ]] || die 'dedicated MMS license gate is missing'
 [[ -f "$VOKRA_ROOT/$PREPARER" && -f "$VOKRA_ROOT/$REFERENCE_DUMPER" ]] || die 'MMS parity tools are missing'
-
-require_absent_work_dir "$work_dir" "$approval_evidence"
 
 mem_kib="$(awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo)"
 [[ "$mem_kib" =~ ^[0-9]+$ ]] || die 'VAST memory value is invalid'
 (( mem_kib >= MIN_VAST_MEM_KIB )) || die 'VAST memory guard failed'
 [[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die 'work-dir must be empty'
-free_kib="$(df -Pk "$(dirname "$work_dir")" | awk 'NR == 2 {print $4}')"
+canonical_work_dir="$(canonical_absent_path "$work_dir")" || die 'work-dir cannot be canonicalized'
+# Disk probe uses the nearest existing canonical ancestor of nested absent work-dir.
+work_disk_root="$canonical_work_dir"
+while [[ ! -d "$work_disk_root" ]]; do work_disk_root="$(dirname "$work_disk_root")"; done
+free_kib="$(df -Pk "$work_disk_root" | awk 'NR == 2 {print $4}')"
 [[ "$free_kib" =~ ^[0-9]+$ ]] || die 'VAST disk value is invalid'
 (( free_kib >= MIN_FREE_DISK_KIB )) || die 'VAST disk guard failed'
 for tool in cargo git uv sha256sum awk find df; do command -v "$tool" >/dev/null 2>&1 || die "missing tool: $tool"; done
@@ -261,6 +271,12 @@ UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --frozen --proj
 UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --frozen --project "$PARITY_PROJECT" --python 3.12 python \
   "$VOKRA_ROOT/$REFERENCE_DUMPER" --snapshot-dir "$snapshot_dir" --language "$language" \
   --output-dir "$work_dir/reference" >> "$work_dir/validation.log"
+UV_NO_CACHE=1 UV_CACHE_DIR="$MMS_UV_CACHE_DIR" uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+  --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
+  --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval_evidence" --language "$language" \
+  --prepared-manifest "$work_dir/prepared/prepared_manifest.json" \
+  --reference-manifest "$work_dir/reference/reference_manifest.json" \
+  >> "$work_dir/validation.log" || die 'generated MMS manifests failed strict validation'
 for required in config.json preprocessor_config.json tokenizer_config.json vocab.json \
   special_tokens_map.json model.safetensors "adapter.$language.safetensors" \
   "vocabs/$language.txt"; do
