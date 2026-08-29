@@ -9231,15 +9231,17 @@ mod tests {
     }
 
     #[test]
-    fn s2s_host_only_smoke_batch_dialog_writes_a_wav() {
-        // T20: explicit CPU backend, synthesized-fixture GGUF, explicit
-        // fixture tokenizer (opt-in flag) → e2e run + WAV out.
+    fn s2s_host_only_smoke_rejects_incomplete_composite() {
+        // The old host-only smoke used synthesized CSM/Mimi weights. CSM is
+        // now explicitly INSPECTION_ONLY until the complete composite and
+        // parity evidence are authenticated, so no WAV may be written.
         let model = csm_fixture_gguf("batch");
         let out = std::env::temp_dir().join(format!(
             "vokra-cli-csm-smoke-out-{}.wav",
             std::process::id()
         ));
-        let code = main(&args(&[
+        let _ = std::fs::remove_file(&out);
+        let err = main(&args(&[
             "--model",
             model.to_str().unwrap(),
             "--text",
@@ -9249,18 +9251,25 @@ mod tests {
             "--output",
             out.to_str().unwrap(),
         ]))
-        .expect("s2s smoke runs");
-        assert_eq!(code, ExitCode::SUCCESS);
-        let clip = wav::read_wav(out.to_str().unwrap()).expect("output WAV parses");
-        assert!(!clip.samples.is_empty());
+        .unwrap_err();
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
+        assert!(
+            !out.exists(),
+            "inspection-only CSM must not fabricate a WAV output"
+        );
         let _ = std::fs::remove_file(&model);
         let _ = std::fs::remove_file(&out);
     }
 
     #[test]
-    fn s2s_streaming_barge_in_demo_stops_after_n_frames() {
+    fn s2s_streaming_barge_in_demo_rejects_incomplete_composite() {
+        // Streaming/barging cannot use a synthesized partial CSM handle.
         let model = csm_fixture_gguf("interrupt");
-        let code = main(&args(&[
+        let err = main(&args(&[
             "--model",
             model.to_str().unwrap(),
             "--text",
@@ -9270,13 +9279,20 @@ mod tests {
             "--interrupt-after",
             "2",
         ]))
-        .expect("s2s barge-in demo runs");
-        assert_eq!(code, ExitCode::SUCCESS);
+        .unwrap_err();
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
         let _ = std::fs::remove_file(&model);
     }
 
     #[test]
-    fn s2s_without_text_is_a_contract_error() {
+    fn s2s_without_text_is_inspection_only_before_text_contract() {
+        // Session loading precedes the S2S `--text` check. The incomplete
+        // composite therefore has to fail closed at the authenticated-loader
+        // boundary, without claiming the text contract was reached.
         let model = csm_fixture_gguf("no-text");
         let err = main(&args(&[
             "--model",
@@ -9284,7 +9300,11 @@ mod tests {
             "--fixture-tokenizer",
         ]))
         .unwrap_err();
-        assert!(err.contains("--text"), "actionable: {err}");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
+        );
         let _ = std::fs::remove_file(&model);
     }
 
@@ -10084,11 +10104,14 @@ mod tests {
         );
     }
 
-    /// (a) `--backend cuda` on the CSM (S2S) arch is a loud FR-EX-08 error.
-    /// The guard fires before the `--text` contract check, so no --text is
-    /// needed to trip it.
+    /// (a) `--backend cuda` on the CSM (S2S) arch still reaches the explicit
+    /// inspection-only composite boundary. Loading fails before backend
+    /// dispatch, so this test must not claim the old CPU-only guard ran.
     #[test]
-    fn non_cpu_backend_on_csm_s2s_is_rejected_loudly() {
+    fn non_cpu_backend_on_csm_s2s_is_rejected_at_composite_boundary() {
+        // Loading the CSM artifact is intentionally fail-closed before
+        // backend dispatch. Keep the `--backend cuda` option in the fixture,
+        // but assert the stronger authenticated-composite refusal now.
         let model = csm_fixture_gguf("backend-guard");
         let err = main(&args(&[
             "--model",
@@ -10098,13 +10121,10 @@ mod tests {
         ]))
         .unwrap_err();
         let _ = std::fs::remove_file(&model);
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
         assert!(
-            err.contains("--backend cuda is not supported"),
-            "names the backend: {err}"
-        );
-        assert!(
-            err.contains("CSM speech-to-speech"),
-            "names the engine: {err}"
+            err.contains("authenticated CSM"),
+            "composite blocker: {err}"
         );
     }
 

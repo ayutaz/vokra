@@ -2463,10 +2463,11 @@ mod tests {
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_measures_rtf_without_a_gguf_fixture() {
-        // The T24 scaffold: no --model, no --input, deterministic
-        // synthetic path. The measurement must run to completion and
-        // report well-formed RTF / latency stats.
+    fn bench_cosyvoice2_synthetic_requires_authenticated_composite() {
+        // The standalone synthetic path used to construct a partial GGUF and
+        // run it through the pipeline. CosyVoice2 is now explicitly
+        // INSPECTION_ONLY until its complete composite is authenticated, so
+        // the bench must refuse before reporting fabricated RTF statistics.
         let a = BenchArgs {
             model: None,
             segmentation_model: None,
@@ -2487,34 +2488,18 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
-        assert_eq!(outcome.report.task, "cosyvoice2-synthetic");
-        assert_eq!(outcome.report.iters, 2);
-        assert_eq!(outcome.report.latency.count, 2);
-        // Audio duration is the fixed 1 s target-frame budget.
-        assert!(
-            (outcome.report.audio_seconds - 1.0).abs() < 1e-9,
-            "audio_seconds should be exactly 1.0, got {}",
-            outcome.report.audio_seconds
-        );
-        // RTF must be a finite non-negative — the identity Mimi decoder
-        // path is fast, so we expect RTF << 1.0 on any modern CPU, but
-        // we do NOT assert a hard upper bound here (that's the T24
-        // deferred always-on gate against a self-hosted CUDA runner —
-        // mirrors M2-14 defer, `docs/m2-cuda-rtf-variance-2026-07-08.md`).
-        assert!(outcome.report.rtf.is_finite() && outcome.report.rtf >= 0.0);
-        assert!(outcome.regression.is_none());
-        // The report round-trips through the baseline parser (same shape
-        // any future baseline comparison consumes).
-        let rtf = report::parse_baseline_rtf(outcome.report.to_json().as_bytes()).unwrap();
-        assert!(rtf.is_finite());
+        let err = execute(&a)
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_ignores_input_flag_gracefully() {
-        // Passing --input for the synthetic path is a no-op (the standalone
-        // path does not read the WAV) — the current implementation simply
-        // does not consult args.input. Verify the outcome is unchanged.
+    fn bench_cosyvoice2_synthetic_rejects_incomplete_composite_with_input_flag() {
+        // `--input` remains a valid parsed option, but it cannot turn an
+        // inspection-only CosyVoice2 partial artifact into a runnable
+        // composite. The refusal must happen before the input is consumed.
         let mut wav_path = std::env::temp_dir();
         wav_path.push(format!(
             "vokra-cli-bench-cosyv2-noise-{}.wav",
@@ -2541,18 +2526,19 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let outcome = execute(&a).expect("cosyvoice2-synthetic bench runs");
+        let err = execute(&a)
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
         let _ = std::fs::remove_file(&wav_path);
-        // Audio duration is still the fixed 1 s target — the input WAV is
-        // not consulted for the synthetic path.
-        assert!((outcome.report.audio_seconds - 1.0).abs() < 1e-9);
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]
-    fn bench_cosyvoice2_synthetic_reports_deterministic_target_seconds() {
-        // Two runs with identical BenchArgs report identical target
-        // seconds (the deterministic-fixture invariant). Latencies will
-        // differ (CPU scheduling), but the audio window is fixed.
+    fn bench_cosyvoice2_synthetic_refuses_before_measurement() {
+        // No deterministic target report may be emitted until the complete
+        // CosyVoice2 composite is authenticated; this test pins that the
+        // synthetic path fails closed instead of measuring a partial handle.
         let mk = || BenchArgs {
             model: None,
             segmentation_model: None,
@@ -2573,9 +2559,11 @@ mod tests {
             budget_ms: 75,
             timeout_secs: 30,
         };
-        let a1 = execute(&mk()).expect("run 1");
-        let a2 = execute(&mk()).expect("run 2");
-        assert_eq!(a1.report.audio_seconds, a2.report.audio_seconds);
+        let err = execute(&mk())
+            .err()
+            .expect("incomplete CosyVoice2 composite must be rejected");
+        assert!(err.contains("INSPECTION_ONLY"), "explicit refusal: {err}");
+        assert!(err.contains("composite"), "composite blocker: {err}");
     }
 
     #[test]
