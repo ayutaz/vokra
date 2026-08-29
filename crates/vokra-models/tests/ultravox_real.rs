@@ -212,7 +212,7 @@ fn sha256_file(path: &Path) -> String {
     h.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-fn manifest_hash(manifest: &BTreeMap<String, String>, file: &str) -> &str {
+fn manifest_hash<'a>(manifest: &'a BTreeMap<String, String>, file: &str) -> &'a str {
     manifest_value(manifest, &format!("sha256_{}", file.replace('.', "_")))
 }
 
