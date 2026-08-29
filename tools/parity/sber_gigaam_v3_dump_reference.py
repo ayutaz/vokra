@@ -139,10 +139,60 @@ def validate_decision_lengths(logits, frames, symbols, argmax) -> None:
         raise ValueError("RNNT decision trace lengths disagree")
 
 
+def load_official_model(auto_model, model_dir: Path):
+    """Load the pinned remote-code model with CPU-safe Transformers 5 init.
+
+    Transformers 5.16 unconditionally enters a ``meta`` device context while
+    constructing custom models.  The pinned official FeatureExtractor creates
+    torchaudio filter-bank buffers in its constructor, which must be allocated
+    on CPU.  Appending an explicit CPU context preserves the official
+    ``AutoModel.from_pretrained`` loader and still lets it load every weight.
+    The temporary legacy tied-weight shim is needed because this official
+    remote class predates the renamed Transformers 5.16 attribute; v3 has no
+    tied parameters, so its empty mapping is semantically inert.
+    """
+    import torch
+    from transformers.modeling_utils import PreTrainedModel
+
+    original_context = PreTrainedModel.__dict__["get_init_context"]
+    original_tied = PreTrainedModel.__dict__.get("all_tied_weights_keys")
+    had_tied = "all_tied_weights_keys" in PreTrainedModel.__dict__
+    add_tied = not hasattr(PreTrainedModel, "all_tied_weights_keys")
+
+    def cpu_safe_init_context(cls, dtype, is_quantized, is_ds_init_called, allow_all_kernels):
+        contexts = original_context.__func__(
+            cls, dtype, is_quantized, is_ds_init_called, allow_all_kernels
+        )
+        contexts.append(torch.device("cpu"))
+        return contexts
+
+    PreTrainedModel.get_init_context = classmethod(cpu_safe_init_context)
+    if add_tied:
+        PreTrainedModel.all_tied_weights_keys = property(
+            lambda self: getattr(self, "_tied_weights_keys", {}) or {}
+        )
+    try:
+        return auto_model.from_pretrained(
+            model_dir,
+            revision=HF_REVISION,
+            trust_remote_code=True,
+            local_files_only=True,
+            low_cpu_mem_usage=False,
+        )
+    finally:
+        PreTrainedModel.get_init_context = original_context
+        if had_tied:
+            PreTrainedModel.all_tied_weights_keys = original_tied
+        elif add_tied:
+            del PreTrainedModel.all_tied_weights_keys
+
+
 def self_test() -> None:
     source = Path(__file__).read_text(encoding="utf-8")
     assert source.count("            decision_frames.append(frame)\n") == 1
     assert "decision_argmax.u32le" in source
+    assert "contexts.append(torch.device(\"cpu\"))" in source
+    assert "low_cpu_mem_usage=False" in source
     assert len(HF_REVISION) == 40 and len(SOURCE_REVISION) == 40
     assert len(CONFIG_SHA256) == len(MODELING_SHA256) == len(CHECKPOINT_SHA256) == 64
     assert BLANK_ID == NUM_CLASSES - 1 and MAX_SYMBOLS_PER_STEP == 10
@@ -261,9 +311,7 @@ def main() -> int:
     pcm = fixed_pcm()
     if hashlib.sha256(pcm.astype("<f4").tobytes()).hexdigest() != PCM_F32LE_SHA256:
         raise SystemExit("fixed PCM digest mismatch")
-    model = AutoModel.from_pretrained(
-        args.model_dir, revision=HF_REVISION, trust_remote_code=True, local_files_only=True
-    ).eval()
+    model = load_official_model(AutoModel, args.model_dir).eval()
     inner = getattr(model, "model", None)
     head = getattr(inner, "head", None)
     if type(model).__name__ != "GigaAMModel" or inner is None or head is None:
