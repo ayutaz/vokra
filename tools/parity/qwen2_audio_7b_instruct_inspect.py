@@ -44,6 +44,7 @@ EXPECTED_COMPONENT_FIELDS = {
     "text_vocab": ("text_config", "vocab_size", 156032),
     "text_context": ("text_config", "max_position_embeddings", 8192),
     "text_ffn": ("text_config", "intermediate_size", 11008),
+    "text_eos": ("text_config", "eos_token_id", 151645),
 }
 
 
@@ -164,6 +165,18 @@ def require_exact(document: Any, path: tuple[str, ...], expected: Any) -> str:
     return ".".join(path)
 
 
+def require_exact_int_list(document: Any, path: tuple[str, ...], expected: list[int]) -> str:
+    """Require an integer list with exact type, length, order, and values."""
+    value = document
+    for component in path:
+        if not isinstance(value, dict) or component not in value:
+            raise RuntimeError(f"canonical JSON lacks exact field {'.'.join(path)}")
+        value = value[component]
+    if type(value) is not list or len(value) != len(expected) or any(type(item) is not int for item in value) or value != expected:
+        raise RuntimeError(f"canonical JSON field {'.'.join(path)} mismatch: expected exact integer list {expected!r}, actual={value!r}")
+    return ".".join(path)
+
+
 def parse_model_json(snapshot: Path) -> dict[str, Any]:
     config = snapshot / "config.json"
     processor = snapshot / "preprocessor_config.json"
@@ -187,7 +200,7 @@ def parse_model_json(snapshot: Path) -> dict[str, Any]:
         "max_frames": require_exact(documents["preprocessor"], ("nb_max_frames",), 3000),
     }
     generation_paths = {
-        "eos_token_id": require_exact(documents["generation"], ("eos_token_id",), 151645),
+        "eos_token_id": require_exact_int_list(documents["generation"], ("eos_token_id",), [151643, 151645]),
         "pad_token_id": require_exact(documents["generation"], ("pad_token_id",), 151643),
     }
     tokenizer_paths = {
@@ -558,14 +571,32 @@ def self_test() -> None:
         else:
             raise AssertionError("boolean tensor offset was accepted")
         for name, value in {
-            "config.json": {"architectures": ["Qwen2AudioForConditionalGeneration"], "audio_config": {"encoder_layers": 32, "encoder_attention_heads": 20, "d_model": 1280, "encoder_ffn_dim": 5120, "num_mel_bins": 128, "max_source_positions": 1500}, "audio_token_index": 151646, "text_config": {"vocab_size": 156032, "max_position_embeddings": 8192, "intermediate_size": 11008}},
+            "config.json": {"architectures": ["Qwen2AudioForConditionalGeneration"], "audio_config": {"encoder_layers": 32, "encoder_attention_heads": 20, "d_model": 1280, "encoder_ffn_dim": 5120, "num_mel_bins": 128, "max_source_positions": 1500}, "audio_token_index": 151646, "text_config": {"vocab_size": 156032, "max_position_embeddings": 8192, "intermediate_size": 11008, "eos_token_id": 151645}},
             "preprocessor_config.json": {"sampling_rate": 16000, "n_fft": 400, "hop_length": 160, "chunk_length": 30, "feature_size": 128, "nb_max_frames": 3000},
-            "generation_config.json": {"eos_token_id": 151645, "pad_token_id": 151643},
+            "generation_config.json": {"eos_token_id": [151643, 151645], "pad_token_id": 151643},
             "tokenizer_config.json": {"tokenizer_class": "Qwen2Tokenizer", "model_max_length": 8192, "eos_token": "<|im_end|>", "pad_token": "<|endoftext|>"},
         }.items():
             (root / name).write_text(json.dumps(value), encoding="utf-8")
         parsed = parse_model_json(root)
         assert parsed["config"]["audio_token_index"] == 151646
+        assert parsed["config"]["text_config"]["eos_token_id"] == 151645
+        assert type(parsed["generation"]["eos_token_id"]) is list and parsed["generation"]["eos_token_id"] == [151643, 151645]
+        generation_path = root / "generation_config.json"
+        for invalid_generation in (
+            {"eos_token_id": [151645, 151643], "pad_token_id": 151643},
+            {"eos_token_id": [151643], "pad_token_id": 151643},
+            {"pad_token_id": 151643},
+            {"eos_token_id": 151643, "pad_token_id": 151643},
+            {"eos_token_id": [True, 151645], "pad_token_id": 151643},
+        ):
+            generation_path.write_text(json.dumps(invalid_generation), encoding="utf-8")
+            try:
+                parse_model_json(root)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("non-canonical generation eos_token_id was accepted")
+        generation_path.write_text(json.dumps({"eos_token_id": [151643, 151645], "pad_token_id": 151643}), encoding="utf-8")
         (root / "README.md").write_text("license: unknown\n", encoding="utf-8")
         try:
             find_license(root)
