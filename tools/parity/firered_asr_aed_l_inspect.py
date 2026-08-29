@@ -40,6 +40,11 @@ README_MARKERS = (
     "it utilizes an attention-based encoder-decoder (aed) architecture.",
     "beam_size", "nbest", "decode_max_len", "smoothing", "aed_length_penalty", "eos_penalty",
 )
+EXPECTED_UNSAFE_GLOBALS = ["argparse.Namespace"]
+
+
+class UnsafeFixture:
+    pass
 
 
 def digest(path: Path, algorithm: str = "sha256") -> str:
@@ -185,6 +190,14 @@ def summarize(value: Any, path: str = "$", state: dict[str, Any] | None = None, 
         state = {"active": set(), "count": 0, "nonfinite": False}
     if depth > 32 or len(path) > 4096 or state["count"] >= 100_000:
         raise ValueError("checkpoint inventory depth/item bound exceeded")
+    if isinstance(value, argparse.Namespace):
+        identity = id(value)
+        if identity in state["active"]:
+            raise ValueError(f"checkpoint metadata cycle at {path}")
+        state["active"].add(identity)
+        rows = summarize(vars(value), path, state, depth + 1)
+        state["active"].remove(identity)
+        return rows
     if isinstance(value, (dict, list, tuple)):
         identity = id(value)
         if identity in state["active"]:
@@ -224,10 +237,11 @@ def inspect_checkpoint(path: Path) -> dict[str, Any]:
     inventory = archive_inventory(path)
     try:
         import torch
-        unsafe = torch.serialization.get_unsafe_globals_in_checkpoint(str(path))
-        if unsafe:
-            raise ValueError(f"unsafe globals present: {unsafe!r}")
-        object_loaded = torch.load(path, map_location="cpu", weights_only=True)
+        unsafe = list(torch.serialization.get_unsafe_globals_in_checkpoint(str(path)))
+        if unsafe != EXPECTED_UNSAFE_GLOBALS:
+            raise ValueError(f"unsafe globals are not the exact approved set: {unsafe!r}")
+        with torch.serialization.safe_globals([argparse.Namespace]):
+            object_loaded = torch.load(path, map_location="cpu", weights_only=True)
         state = {"active": set(), "count": 0, "nonfinite": False}
         inventory["object_inventory"] = summarize(object_loaded, state=state)
         inventory["nonfinite_tensor"] = state["nonfinite"]
@@ -405,6 +419,17 @@ def self_test() -> None:
         nested = {"outer": [{"weights": torch.tensor([1.0, 2.0]), "meta": ("ok", 3)}]}
         rows = summarize(nested)
         assert {row["path"] for row in rows} >= {"$.outer[0].weights", "$.outer[0].meta[0]", "$.outer[0].meta[1]"}
+        namespace = argparse.Namespace(meta="ok")
+        namespace_rows = summarize(argparse.Namespace(payload=namespace))
+        assert any(row["path"] == "$.payload.meta" and row["value"] == "ok" for row in namespace_rows)
+        unsafe_namespace = argparse.Namespace(**{"../bad": 1})
+        try: summarize(unsafe_namespace)
+        except ValueError: pass
+        else: raise AssertionError("unsafe Namespace attribute accepted")
+        cyclic_namespace = argparse.Namespace(); cyclic_namespace.self = cyclic_namespace
+        try: summarize(cyclic_namespace)
+        except ValueError: pass
+        else: raise AssertionError("cyclic Namespace accepted")
         finite_state = {"active": set(), "count": 0, "nonfinite": False}
         nonfinite = summarize({"bad": torch.tensor([float("nan")]), "good": torch.tensor([1.0])}, state=finite_state)
         assert nonfinite[0]["finite"] is False and finite_state["nonfinite"] is True
@@ -423,6 +448,15 @@ def self_test() -> None:
         try: parse_cmvn("[\n0\n0\n]\n", 9, "synthetic")
         except ValueError: pass
         else: raise AssertionError("malformed CMVN accepted")
+        namespace_checkpoint = Path(directory) / "namespace.pth.tar"
+        torch.save({"namespace": argparse.Namespace(label="fixture"), "tensor": torch.tensor([1.0])}, namespace_checkpoint)
+        checkpoint_evidence = inspect_checkpoint(namespace_checkpoint)
+        assert any(row["path"] == "$.namespace.label" and row["value"] == "fixture" for row in checkpoint_evidence["object_inventory"])
+        unsafe_checkpoint = Path(directory) / "unsafe-global.pth.tar"
+        torch.save(UnsafeFixture(), unsafe_checkpoint)
+        try: inspect_checkpoint(unsafe_checkpoint)
+        except ValueError as error: assert "exact approved set" in str(error)
+        else: raise AssertionError("unknown checkpoint global accepted")
         manifest_dir = Path(directory) / "evidence"
         rc = inspect(argparse.Namespace(snapshot=str(root / "missing"), server_tree=str(root / "missing.json"), source=None, evidence=str(manifest_dir)))
         assert rc == 2
