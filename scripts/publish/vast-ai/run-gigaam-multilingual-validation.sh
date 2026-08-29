@@ -96,6 +96,38 @@ for index, block in enumerate(blocks):
     )
     if json_imports > 1 or pathlib_imports > 1:
         raise SystemExit(f"duplicate embedded imports in block {index}")
+
+pattern = re.compile(
+    r'\bpub\s+const\s+AUTHENTICATED_PREPARED_SHA256\s*:\s*'
+    r'Option\s*<\s*&str\s*>\s*=\s*Some\s*\(\s*"([0-9a-f]{64})"\s*\)\s*;',
+    re.DOTALL,
+)
+
+
+def extract(source):
+    matches = pattern.findall(source)
+    if len(matches) != 1:
+        raise ValueError("AUTHENTICATED_PREPARED_SHA256 must be exactly one Some(lowercase SHA-256)")
+    return matches[0]
+
+
+sha = "0123456789abcdef" * 4
+assert extract(
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =\n'
+    f'    Some("{sha}");\n'
+) == sha
+for invalid in (
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;\n',
+    f'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("{sha}");\n'
+    f'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("{sha}");\n',
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("short");\n',
+):
+    try:
+        extract(invalid)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("invalid AUTHENTICATED_PREPARED_SHA256 layout was accepted")
 print(f"embedded Python compile: OK ({len(blocks)} blocks)")
 PY
   echo "run-gigaam-multilingual-validation.sh self-test: OK (NO_UPLOAD)"
@@ -220,37 +252,33 @@ SIDECAR_BYTES="$(stat -c '%s' "$SIDECAR")"
 [[ "$SIDECAR_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "sidecar SHA-256 is not lowercase hex"
 [[ "$PREPARED_BYTES" =~ ^[0-9]+$ && "$SIDECAR_BYTES" =~ ^[0-9]+$ ]] || die "artifact size is not numeric"
 if [[ "$PHASE" == parity ]]; then
-  CODE_SHA256="$(uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$ROOT/crates/vokra-models/src/gigaam/multilingual.rs" <<'PY'
+  APPROVED_SHAS="$(uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - \
+    "$ROOT/crates/vokra-models/src/gigaam/multilingual.rs" \
+    "$ROOT/crates/vokra-convert/src/models/sber_gigaam_multilingual.rs" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-matches = re.findall(
-    r'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some\("([0-9a-f]{64})"\);',
-    source,
+pattern = re.compile(
+    r'\bpub\s+const\s+AUTHENTICATED_PREPARED_SHA256\s*:\s*'
+    r'Option\s*<\s*&str\s*>\s*=\s*Some\s*\(\s*"([0-9a-f]{64})"\s*\)\s*;',
+    re.DOTALL,
 )
-if len(matches) != 1:
-    raise SystemExit("AUTHENTICATED_PREPARED_SHA256 must be exactly one Some(lowercase SHA-256)")
-print(matches[0])
+for filename in sys.argv[1:]:
+    source = Path(filename).read_text(encoding="utf-8")
+    matches = pattern.findall(source)
+    if len(matches) != 1:
+        raise SystemExit(
+            f"{filename}: AUTHENTICATED_PREPARED_SHA256 must be exactly one "
+            "Some(lowercase SHA-256)"
+        )
+    print(matches[0])
 PY
-  )"
+  )" || die "approved prepared SHA cannot be parsed from converter/runtime"
+  [[ "$APPROVED_SHAS" == *$'\n'* ]] || die "approved prepared SHA parser returned fewer than two values"
+  CODE_SHA256="${APPROVED_SHAS%%$'\n'*}"
+  CONVERTER_CODE_SHA256="${APPROVED_SHAS#*$'\n'}"
   [[ "$CODE_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "prepared SHA constant is not lowercase hex"
-  CONVERTER_CODE_SHA256="$(uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$ROOT/crates/vokra-convert/src/models/sber_gigaam_multilingual.rs" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-source = Path(sys.argv[1]).read_text(encoding="utf-8")
-matches = re.findall(
-    r'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some\("([0-9a-f]{64})"\);',
-    source,
-)
-if len(matches) != 1:
-    raise SystemExit("converter AUTHENTICATED_PREPARED_SHA256 must be exactly one Some(lowercase SHA-256)")
-print(matches[0])
-PY
-  )"
   [[ "$CONVERTER_CODE_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "converter prepared SHA constant is not lowercase hex"
   [[ "$PREPARED_SHA256" == "$CODE_SHA256" && "$CODE_SHA256" == "$CONVERTER_CODE_SHA256" ]] || die "prepared bytes and reviewed code SHA constants disagree"
   [[ "$SIDECAR_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "sidecar digest is not lowercase hex"

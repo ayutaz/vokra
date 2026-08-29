@@ -38,6 +38,41 @@ if [[ "${1:-}" == --self-test ]]; then
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/sber_gigaam_v3_dump_reference.py" --self-test >/dev/null || die "reference dumper self-test failed"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/gigaam_v3_validation.py" --self-test >/dev/null || die "validator self-test failed"
   UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/sber_gigaam_v3_prepare_checkpoint.py" --self-test >/dev/null || die "preparer self-test failed"
+  UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/vokra-gigaam-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+import re
+
+PATTERN = re.compile(
+    r'\bpub\s+const\s+AUTHENTICATED_PREPARED_SHA256\s*:\s*'
+    r'Option\s*<\s*&str\s*>\s*=\s*Some\s*\(\s*"([0-9a-f]{64})"\s*\)\s*;',
+    re.DOTALL,
+)
+
+
+def extract(source):
+    matches = PATTERN.findall(source)
+    if len(matches) != 1:
+        raise ValueError("AUTHENTICATED_PREPARED_SHA256 must be exactly one Some(lowercase SHA-256)")
+    return matches[0]
+
+
+sha = "0123456789abcdef" * 4
+assert extract(
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> =\n'
+    f'    Some("{sha}");\n'
+) == sha
+for invalid in (
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = None;\n',
+    f'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("{sha}");\n'
+    f'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("{sha}");\n',
+    'pub const AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("short");\n',
+):
+    try:
+        extract(invalid)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("invalid AUTHENTICATED_PREPARED_SHA256 layout was accepted")
+PY
   echo "run-gigaam-v3-validation.sh self-test: OK (NO_UPLOAD; parity OPEN)"
   exit 0
 fi
@@ -145,8 +180,32 @@ disjoint "$EVIDENCE_REAL" "$REFERENCE_REAL"
 disjoint "$EVIDENCE_REAL" "$GGUF_REAL"
 disjoint "$PREPARED_REAL" "$REFERENCE_REAL"
 disjoint "$PREPARED_REAL" "$GGUF_REAL"
-CONVERTER_APPROVED_SHA="$(sed -n 's/.*AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("\([0-9a-f]\{64\}\)").*/\1/p' "$ROOT/crates/vokra-convert/src/models/sber_gigaam_v3.rs")"
-RUNTIME_APPROVED_SHA="$(sed -n 's/.*AUTHENTICATED_PREPARED_SHA256: Option<&str> = Some("\([0-9a-f]\{64\}\)").*/\1/p' "$ROOT/crates/vokra-models/src/gigaam/v3.rs")"
+APPROVED_SHAS="$(uv run --frozen --project "$V3_PROJECT" --python 3.12 python - \
+  "$ROOT/crates/vokra-convert/src/models/sber_gigaam_v3.rs" \
+  "$ROOT/crates/vokra-models/src/gigaam/v3.rs" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+pattern = re.compile(
+    r'\bpub\s+const\s+AUTHENTICATED_PREPARED_SHA256\s*:\s*'
+    r'Option\s*<\s*&str\s*>\s*=\s*Some\s*\(\s*"([0-9a-f]{64})"\s*\)\s*;',
+    re.DOTALL,
+)
+for filename in sys.argv[1:]:
+    source = Path(filename).read_text(encoding="utf-8")
+    matches = pattern.findall(source)
+    if len(matches) != 1:
+        raise SystemExit(
+            f"{filename}: AUTHENTICATED_PREPARED_SHA256 must be exactly one "
+            "Some(lowercase SHA-256)"
+        )
+    print(matches[0])
+PY
+)" || die "approved prepared SHA cannot be parsed from converter/runtime"
+[[ "$APPROVED_SHAS" == *$'\n'* ]] || die "approved prepared SHA parser returned fewer than two values"
+CONVERTER_APPROVED_SHA="${APPROVED_SHAS%%$'\n'*}"
+RUNTIME_APPROVED_SHA="${APPROVED_SHAS#*$'\n'}"
 [[ "$CONVERTER_APPROVED_SHA" =~ ^[0-9a-f]{64}$ && "$RUNTIME_APPROVED_SHA" =~ ^[0-9a-f]{64}$ ]] || die "approved prepared SHA is not stamped in converter/runtime"
 [[ "$CONVERTER_APPROVED_SHA" == "$RUNTIME_APPROVED_SHA" && "$CONVERTER_APPROVED_SHA" == "$PREPARED_SHA256" ]] || die "approved SHA does not equal prepared bytes"
 uv run --frozen --project "$V3_PROJECT" --python 3.12 python "$ROOT/tools/parity/gigaam_v3_validation.py" "$GIGAAM_REFERENCE_DIR"
