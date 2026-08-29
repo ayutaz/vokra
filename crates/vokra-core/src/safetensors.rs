@@ -97,7 +97,7 @@ impl From<SafetensorsError> for crate::VokraError {
 pub struct SafeTensorInfo {
     /// Tensor name (the header key).
     pub name: String,
-    /// Element type mapped into the GGUF dtype space (`F32` / `F16`).
+    /// Element type mapped into the GGUF dtype space (`F32` / `F16` / `BF16`).
     pub dtype: GgmlType,
     /// Shape, outermost dimension first (as stored by safetensors).
     pub shape: Vec<u64>,
