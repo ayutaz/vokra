@@ -162,7 +162,7 @@ run_self_test() {
     echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: missing --nemo value accepted" >&2
     fail=1
   fi
-  if "$script_path" --nemo -bad >/dev/null 2>&1 || "$script_path" --nemo a --nemo b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
+  if "$script_path" --nemo -bad >/dev/null 2>&1 || "$script_path" --nemo a --nemo b >/dev/null 2>&1 || "$script_path" --approval-evidence >/dev/null 2>&1 || "$script_path" --self-test --self-test >/dev/null 2>&1 || "$script_path" --self-test --approval-evidence x >/dev/null 2>&1; then
     echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: malformed or duplicate options accepted" >&2
     fail=1
   fi
@@ -197,7 +197,7 @@ seen_approval=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --self-test)
-      (( seen_self_test++ ))
+      seen_self_test=$((seen_self_test + 1))
       self_test=1
       shift
       ;;

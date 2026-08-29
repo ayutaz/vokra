@@ -44,6 +44,42 @@ sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
 
+json_scalar() {
+  local reference_json="$1" key="$2"
+  if [[ "${VOKRA_SPEECHT5_SELF_TEST:-0}" == 1 && "$(uname -s)" == Linux ]]; then
+    command -v uv >/dev/null 2>&1 || die "uv is required for the Linux self-test JSON fallback"
+    UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$reference_json" "$key" <<'PY'
+import json
+import pathlib
+import sys
+
+path, key = sys.argv[1:]
+
+def reject(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError(f"duplicate JSON key: {name}")
+        result[name] = value
+    return result
+
+with pathlib.Path(path).open(encoding="utf-8") as handle:
+    data = json.load(handle, object_pairs_hook=reject)
+if key not in data:
+    raise ValueError(f"missing JSON key: {key}")
+value = data[key]
+if key == "text":
+    if not isinstance(value, str) or not value:
+        raise ValueError("text must be a non-empty string")
+elif type(value) is not int or value < 0:
+    raise ValueError(f"{key} must be a non-negative integer")
+print(value)
+PY
+    return
+  fi
+  plutil -extract "$key" raw -o - "$reference_json"
+}
+
 license_preflight() {
   local approval="$1"
   [[ -f "$PARITY_PROJECT/uv.lock" && ! -L "$PARITY_PROJECT/uv.lock" && -f "$PARITY_PROJECT/pyproject.toml" && ! -L "$PARITY_PROJECT/pyproject.toml" && -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] || die "SpeechT5 preflight inputs are missing or symlinked"
@@ -154,7 +190,7 @@ verify_reference_scalars() {
 
   text_lines="$(grep -Ec '^[[:space:]]+"text": "[^"\\]*(\\\\.[^"\\\\]*)*",?$' "$reference_json" || true)"
   [[ "$text_lines" == 1 ]] || { die "reference text field missing or duplicated"; return 2; }
-  if ! json_text="$(plutil -extract text raw -o - "$reference_json" 2>/dev/null)"; then
+  if ! json_text="$(json_scalar "$reference_json" text 2>/dev/null)"; then
     die "reference text field is not valid JSON"
     return 2
   fi
@@ -167,7 +203,7 @@ verify_reference_scalars() {
 
   frames_lines="$(grep -Ec '^[[:space:]]+"frames": [0-9]+,?$' "$reference_json" || true)"
   [[ "$frames_lines" == 1 ]] || { die "reference frames field missing or duplicated"; return 2; }
-  if ! json_frames="$(plutil -extract frames raw -o - "$reference_json" 2>/dev/null)"; then
+  if ! json_frames="$(json_scalar "$reference_json" frames 2>/dev/null)"; then
     die "reference frames field is not valid JSON"
     return 2
   fi
@@ -177,7 +213,7 @@ verify_reference_scalars() {
 
   steps_lines="$(grep -Ec '^[[:space:]]+"decoder_steps": [0-9]+,?$' "$reference_json" || true)"
   [[ "$steps_lines" == 1 ]] || { die "reference decoder_steps field missing or duplicated"; return 2; }
-  if ! json_steps="$(plutil -extract decoder_steps raw -o - "$reference_json" 2>/dev/null)"; then
+  if ! json_steps="$(json_scalar "$reference_json" decoder_steps 2>/dev/null)"; then
     die "reference decoder_steps field is not valid JSON"
     return 2
   fi
@@ -258,6 +294,7 @@ record_environment() {
 run_self_test() (
   # shellcheck disable=SC2016
   grep -Fq 'require_absent_evidence_dir "$evidence_dir" "$gguf" "$reference" "$approval"' "$0" || return 1
+  VOKRA_SPEECHT5_SELF_TEST=1
   local temporary script_path
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-speecht5-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
@@ -317,6 +354,16 @@ EOF
   printf '3\n' > "$temporary/scalars/frames.txt"
   if verify_reference_scalars "$temporary/scalars" >/dev/null 2>&1; then
     die "reference scalar tamper self-test failed"
+  fi
+  cat > "$temporary/scalars/reference.json" <<'EOF'
+{
+  "text": "Hello, SpeechT5!",
+  "decoder_steps": 1,
+  "frames": 2,
+}
+EOF
+  if verify_reference_scalars "$temporary/scalars" >/dev/null 2>&1; then
+    die "invalid JSON scalar self-test failed"
   fi
   local cargo_log
   cargo_log="$temporary/cargo.log"

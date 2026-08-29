@@ -119,7 +119,7 @@ canonicalize_uncreated() {
     [[ "$component" == "$rest" ]] && rest=''
     [[ -n "$component" && "$component" != . && "$component" != .. ]] || continue
     scan="$scan/$component"
-    [[ ! -L "$scan" || "$scan" == "/var" ]] || return 1
+    [[ ! -L "$scan" || "$scan" == "/var" || "$scan" == "/tmp" ]] || return 1
   done
   while [[ ! -d "$path" || -L "$path" ]]; do
     name="${path##*/}"; [[ -n "$name" ]] && suffix="/$name$suffix"
@@ -150,7 +150,7 @@ require_absent_evidence_dir() {
   return 0
 }
 run_self_test() {
-  local tmp="$TMPDIR/wespeaker-apple-selftest.$$"
+  local tmp="${TMPDIR:-/tmp}/wespeaker-apple-selftest.$$"
   SELFTEST_TMP="$tmp"
   mkdir "$tmp"; trap 'rm -rf -- "$SELFTEST_TMP"' EXIT
   mkdir "$tmp/reference"

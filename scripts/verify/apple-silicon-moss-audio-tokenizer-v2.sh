@@ -117,13 +117,19 @@ require_reference() {
   local path="$1" index count
   require_file 'MOSS v2 independent reference' "$path"
   awk -F, -v source_row="source,v2,OpenMOSS-Team/MOSS-Audio-Tokenizer-v2,$OFFICIAL_REVISION" '
+    function codes_row(    i) {
+      if ($1 != "codes" || NF != 25) return 0
+      for (i = 2; i <= NF; i++) if ($i !~ /^[0-9]+$/) return 0
+      return 1
+    }
     $0 == source_row ||
     $0 ~ /^runtime,torch-[^,]+,transformers-[^,]+$/ ||
     $0 ~ /^environment,cpu,[^,]+,machine-[^,]+,logical-[0-9]+,torch-capability-[^,]+$/ ||
     $0 == "environment,device,cuda" ||
-    $0 ~ /^source_file,(model|config),transformers_modules\/[^,]+,[0-9a-f]{64}$/ ||
+    ($1 == "source_file" && ($2 == "model" || $2 == "config") && NF == 4 &&
+      $3 ~ /^transformers_modules\/[^,]+$/ && length($4) == 64 && $4 !~ /[^0-9a-f]/) ||
     $0 == "contract,2,12,1024,48000,2,3840" ||
-    $0 ~ /^codes,[0-9]+(,[0-9]+){23}$/ ||
+    codes_row() ||
     $0 ~ /^tensor,(quantizer|decoder_([0-9]|1[01])),[0-9]+(x[0-9]+)+,[-+0-9.eE]+(,[-+0-9.eE]+)*$/ ||
     $0 ~ /^tensor,audio,1x2x7680,[-+0-9.eE]+(,[-+0-9.eE]+)*$/ { next }
     { exit 1 }
@@ -286,6 +292,12 @@ run_self_test() (
   for index in $(seq 0 11); do printf 'tensor,decoder_%s,1x1,0\n' "$index" >> "$reference"; done
   printf 'tensor,audio,1x2x7680,0\n' >> "$reference"
   require_reference "$reference"
+  sed 's/^\(source_file,model,[^,]*,\)./\1A/' "$reference" > "$temporary/malformed-hash-reference.csv"
+  if require_reference "$temporary/malformed-hash-reference.csv"; then die 'uppercase source-file hash was accepted'; fi
+  sed 's/^codes,.*/codes,0/' "$reference" > "$temporary/malformed-code-count-reference.csv"
+  if require_reference "$temporary/malformed-code-count-reference.csv"; then die 'wrong code count was accepted'; fi
+  sed 's/^codes,/codes,x,/' "$reference" > "$temporary/malformed-code-value-reference.csv"
+  if require_reference "$temporary/malformed-code-value-reference.csv"; then die 'non-numeric code was accepted'; fi
   cp "$reference" "$temporary/extra-reference.csv"
   printf 'unexpected,row\n' >> "$temporary/extra-reference.csv"
   if require_reference "$temporary/extra-reference.csv"; then die 'extra reference row was accepted'; fi

@@ -120,7 +120,8 @@ require_reference() {
     $0 ~ /^runtime,torch-[^,]+,transformers-[^,]+$/ ||
     $0 ~ /^environment,cpu,[^,]+,machine-[^,]+,logical-[0-9]+,torch-capability-[^,]+$/ ||
     $0 == "environment,device,cpu" ||
-    $0 ~ /^source_file,(model|config),transformers_modules\/[^,]+,[0-9a-f]{64}$/ ||
+    ($1 == "source_file" && ($2 == "model" || $2 == "config") && NF == 4 &&
+      $3 ~ /^transformers_modules\/[^,]+$/ && length($4) == 64 && $4 !~ /[^0-9a-f]/) ||
     $0 == "contract,2,16,1024,48000,2,3840" ||
     $0 == codes_row ||
     $0 ~ /^tensor,(quantizer|decoder_[0-9]+),[0-9]+(x[0-9]+)+,[-+0-9.eE]+(,[-+0-9.eE]+)*$/ ||
@@ -130,7 +131,7 @@ require_reference() {
   count="$(awk -F, -v wanted="source,nano,$OFFICIAL_REPO,$OFFICIAL_REVISION" '$0 == wanted {count++} END {print count + 0}' "$path")"; [[ "$count" == 1 ]] || { die 'reference must contain exactly one pinned official source row'; return 2; }
   for role in model config; do
     count="$(awk -F, -v role="$role" '$1 == "source_file" && $2 == role {count++} END {print count + 0}' "$path")"; [[ "$count" == 1 ]] || { die "reference must contain exactly one $role source row"; return 2; }
-    awk -F, -v role="$role" '$1 == "source_file" && $2 == role {if (NF != 4 || $3 !~ /^transformers_modules\/[^,]+$/ || $4 !~ /^[0-9a-f]{64}$/) exit 1; found=1} END {exit(found ? 0 : 1)}' "$path" || { die "reference $role source row is not authenticated"; return 2; }
+    awk -F, -v role="$role" '$1 == "source_file" && $2 == role {if (NF != 4 || $3 !~ /^transformers_modules\/[^,]+$/ || length($4) != 64 || $4 ~ /[^0-9a-f]/) exit 1; found=1} END {exit(found ? 0 : 1)}' "$path" || { die "reference $role source row is not authenticated"; return 2; }
   done
   runtime="$(awk -F, '$1 == "runtime" {print; count++} END {if (count != 1) exit 1}' "$path")" || { die 'reference must contain exactly one runtime row'; return 2; }
   [[ "$runtime" == "runtime,torch-${EXPECTED_TORCH_VERSION},transformers-${EXPECTED_TRANSFORMERS_VERSION}" ]] || { die 'reference Transformers route is not the reviewed exact route'; return 2; }
@@ -289,13 +290,14 @@ run_self_test() (
     'tensor,quantizer,1x1,0' 'tensor,decoder_0,1x1,0' \
     'tensor,decoder_1,1x2,0' 'tensor,audio,1x2x7680,0' > "$temporary/reference.csv"
   require_reference "$temporary/reference.csv" || die 'valid decoder shape contract rejected'
-  for tamper in shape order extra missing; do
+  for tamper in shape order extra missing hash; do
     cp "$temporary/reference.csv" "$temporary/reference-$tamper.csv"
     case "$tamper" in
       shape) sed 's/tensor,decoder_1,1x2/tensor,decoder_1,9x9/' "$temporary/reference-$tamper.csv" > "$temporary/reference-$tamper.tmp" ;;
       order) sed -e 's/tensor,decoder_0,1x1/tensor,decoder_0,1x2/' -e 's/tensor,decoder_1,1x2/tensor,decoder_1,1x1/' "$temporary/reference-$tamper.csv" > "$temporary/reference-$tamper.tmp" ;;
       extra) printf 'tensor,decoder_2,1x3,0\n' >> "$temporary/reference-$tamper.csv"; cp "$temporary/reference-$tamper.csv" "$temporary/reference-$tamper.tmp" ;;
       missing) sed '/tensor,decoder_1,/d' "$temporary/reference-$tamper.csv" > "$temporary/reference-$tamper.tmp" ;;
+      hash) sed 's/^\(source_file,model,[^,]*,\)./\1A/' "$temporary/reference-$tamper.csv" > "$temporary/reference-$tamper.tmp" ;;
     esac
     mv "$temporary/reference-$tamper.tmp" "$temporary/reference-$tamper.csv"
     if require_reference "$temporary/reference-$tamper.csv"; then die "decoder $tamper tamper accepted"; fi

@@ -171,7 +171,8 @@ require_reference() {
     $0 ~ /^runtime,torch-[^,]+,transformers-[^,]+$/ ||
     $0 ~ /^environment,cpu,[^,]+,machine-[^,]+,logical-[0-9]+,torch-capability-[^,]+$/ ||
     $0 == "environment,device,cpu" ||
-    $0 ~ /^source_file,(model|config),transformers_modules\/[^,]+,[0-9a-f]{64}$/ ||
+    ($1 == "source_file" && ($2 == "model" || $2 == "config") && NF == 4 &&
+      $3 ~ /^transformers_modules\/[^,]+$/ && length($4) == 64 && $4 !~ /[^0-9a-f]/) ||
     $0 == "contract,2,16,1024,48000,2,3840" ||
     $0 == codes_row ||
     $0 ~ /^tensor,(quantizer|decoder_[0-9]+),[0-9]+(x[0-9]+)+,[-+0-9.eE]+(,[-+0-9.eE]+)*$/ ||
@@ -183,7 +184,7 @@ require_reference() {
   for role in model config; do
     count="$(awk -F, -v role="$role" '$1 == "source_file" && $2 == role {count++} END {print count + 0}' "$path")"
     [[ "$count" == 1 ]] || { die "reference must contain exactly one $role source row"; return 2; }
-    awk -F, -v role="$role" '$1 == "source_file" && $2 == role {if (NF != 4 || $3 !~ /^transformers_modules\/[^,]+$/ || $4 !~ /^[0-9a-f]{64}$/) exit 1; found=1} END {exit(found ? 0 : 1)}' "$path" \
+    awk -F, -v role="$role" '$1 == "source_file" && $2 == role {if (NF != 4 || $3 !~ /^transformers_modules\/[^,]+$/ || length($4) != 64 || $4 ~ /[^0-9a-f]/) exit 1; found=1} END {exit(found ? 0 : 1)}' "$path" \
       || { die "reference $role source row is not authenticated"; return 2; }
   done
   runtime="$(awk -F, '$1 == "runtime" {print; count++} END {if (count != 1) exit 1}' "$path")" || { die 'reference must contain exactly one runtime row'; return 2; }
@@ -364,13 +365,14 @@ run_self_test() {
     'tensor,quantizer,1x1,0' 'tensor,decoder_0,1x1,0' \
     'tensor,decoder_1,1x2,0' 'tensor,audio,1x2x7680,0' > "$tmp/reference.csv"
   require_reference "$tmp/reference.csv" || { log 'self-test FAIL: valid decoder shape contract rejected'; fail=1; }
-  for tamper in shape order extra missing; do
+  for tamper in shape order extra missing hash; do
     cp "$tmp/reference.csv" "$tmp/reference-$tamper.csv"
     case "$tamper" in
       shape) sed 's/tensor,decoder_1,1x2/tensor,decoder_1,9x9/' "$tmp/reference-$tamper.csv" > "$tmp/reference-$tamper.tmp" ;;
       order) sed -e 's/tensor,decoder_0,1x1/tensor,decoder_0,1x2/' -e 's/tensor,decoder_1,1x2/tensor,decoder_1,1x1/' "$tmp/reference-$tamper.csv" > "$tmp/reference-$tamper.tmp" ;;
       extra) printf 'tensor,decoder_2,1x3,0\n' >> "$tmp/reference-$tamper.csv"; cp "$tmp/reference-$tamper.csv" "$tmp/reference-$tamper.tmp" ;;
       missing) sed '/tensor,decoder_1,/d' "$tmp/reference-$tamper.csv" > "$tmp/reference-$tamper.tmp" ;;
+      hash) sed 's/^\(source_file,model,[^,]*,\)./\1A/' "$tmp/reference-$tamper.csv" > "$tmp/reference-$tamper.tmp" ;;
     esac
     mv "$tmp/reference-$tamper.tmp" "$tmp/reference-$tamper.csv"
     if require_reference "$tmp/reference-$tamper.csv"; then log "self-test FAIL: decoder $tamper tamper accepted"; fail=1; fi

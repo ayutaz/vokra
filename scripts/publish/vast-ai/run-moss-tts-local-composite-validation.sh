@@ -164,14 +164,14 @@ require_tools() {
 }
 
 assert_fixed_contract() {
-  rg -F 'REVISION = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"' "$VOKRA_ROOT/tools/audit/moss_audio_tokenizer_v2_manifest.py" >/dev/null \
+  grep -F 'REVISION = "f6e20e543b33d2c252a7ef71bdf8aa71e5ff9169"' "$VOKRA_ROOT/tools/audit/moss_audio_tokenizer_v2_manifest.py" >/dev/null \
     || die "v2 revision is not pinned in the auditor"
-  rg -F 'TENSOR_COUNT = 2_094' "$VOKRA_ROOT/tools/audit/moss_audio_tokenizer_v2_manifest.py" >/dev/null \
+  grep -F 'TENSOR_COUNT = 2_094' "$VOKRA_ROOT/tools/audit/moss_audio_tokenizer_v2_manifest.py" >/dev/null \
     || die "v2 tensor count is not pinned in the auditor"
-  rg -F 'MossTtsLocalSynthesis' "$VOKRA_ROOT/crates/vokra-models/src/moss_tts/local_transformer.rs" >/dev/null \
+  grep -F 'MossTtsLocalSynthesis' "$VOKRA_ROOT/crates/vokra-models/src/moss_tts/local_transformer.rs" >/dev/null \
     || die "Local synthesis API is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "Local official reference dumper is missing"
-  rg -F 'MEASURED_NOT_GATED' "$VOKRA_ROOT/crates/vokra-models/src/moss_audio_tokenizer/full_decoder.rs" >/dev/null \
+  grep -F 'MEASURED_NOT_GATED' "$VOKRA_ROOT/crates/vokra-models/src/moss_audio_tokenizer/full_decoder.rs" >/dev/null \
     || die "measurement-only posture is missing"
 }
 
@@ -357,41 +357,42 @@ validate_work_dir() {
   printf '%s\n' "$canonical_work"
 }
 
+# shellcheck disable=SC2016
 self_test() {
   local gate_line host_line sync_line command_file probe_root
   gate_line="$(grep -n '^  pre_sync_gates ' "$0" | tail -1 | cut -d: -f1)"
   host_line="$(grep -n '^  require_host$' "$0" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  run_remote_validation' "$0" | tail -1 | cut -d: -f1)"
   (( gate_line > 0 && gate_line < host_line && gate_line < sync_line )) || die 'preflight gates are not first'
-  rg -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12' "$0" >/dev/null || die 'gates must disable UV cache'
-  rg -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE"' "$0" >/dev/null || die 'v2 gate must disable UV cache'
-  rg -F -- '--approval-evidence "$local_approval_path"' "$0" >/dev/null || die 'Local external approval evidence option is missing'
-  rg -F -- '--approval "$v2_approval_path"' "$0" >/dev/null || die 'v2 external approval evidence option is missing'
-  rg -F 'uv sync --project "$LOCAL_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'Local closure sync is missing'
-  rg -F 'uv sync --project "$V2_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'v2 closure sync is missing'
-  rg -F '"$CODEC_REFERENCE_DUMPER" --variant v2 --frames 1 --num-quantizers 12 --device cuda' "$0" >/dev/null || die 'v2 reference must run on CUDA'
+  grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12' "$0" >/dev/null || die 'gates must disable UV cache'
+  grep -F 'UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$V2_GATE"' "$0" >/dev/null || die 'v2 gate must disable UV cache'
+  grep -F -- '--approval-evidence "$local_approval_path"' "$0" >/dev/null || die 'Local external approval evidence option is missing'
+  grep -F -- '--approval "$v2_approval_path"' "$0" >/dev/null || die 'v2 external approval evidence option is missing'
+  grep -F 'uv sync --project "$LOCAL_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'Local closure sync is missing'
+  grep -F 'uv sync --project "$V2_PROJECT" --frozen --python 3.12' "$0" >/dev/null || die 'v2 closure sync is missing'
+  grep -F '"$CODEC_REFERENCE_DUMPER" --variant v2 --frames 1 --num-quantizers 12 --device cuda' "$0" >/dev/null || die 'v2 reference must run on CUDA'
   ! sed -n '/^run_remote_validation()/,/^pre_sync_gates()/p' "$0" | grep -Fq "\"$CODEC_REFERENCE_DUMPER\" --variant v2 --frames 1 --num-quantizers 12 --device cpu" || die 'v2 reference must not run on CPU'
   ! sed -n '/^run_remote_validation()/,/^pre_sync_gates()/p' "$0" | grep -Fq 'uv run --with' || die 'composite gate must not use dynamic uv dependencies'
   ! sed -n '/^run_remote_validation()/,/^pre_sync_gates()/p' "$0" | grep -Eq 'uv sync --project "[^"]*moss_audio' || die 'composite gate must use only the dedicated Local project'
   assert_fixed_contract
-  if rg -n '(^|[[:space:]])(curl|wget|huggingface-cli)[[:space:]].*(upload|push)' "$0" >/dev/null; then
+  if grep -En '(^|[[:space:]])(curl|wget|huggingface-cli)[[:space:]].*(upload|push)' "$0" >/dev/null; then
     die 'self-test found a download/upload command'
   fi
-  if rg -n '(^|[[:space:]])(git[[:space:]]+push|--push|--upload)' "$0" >/dev/null; then
+  if grep -En '(^|[[:space:]])(git[[:space:]]+push|--push|--upload)' "$0" >/dev/null; then
     die 'self-test found a publication command'
   fi
-  rg -F "$LOCAL_REPO" "$0" >/dev/null
-  rg -F "$LOCAL_REVISION" "$0" >/dev/null
-  rg -F "$CODEC_REPO" "$0" >/dev/null
-  rg -F 'MEASURED_NOT_GATED' "$0" >/dev/null
-  rg -F 'moss_tts::local_transformer::tests::measure_local_real_cpu_and_optional_metal_against_official' "$0" >/dev/null
-  rg -F 'COMPOSITE_PCM_NOT_RUN' "$0" >/dev/null
-  rg -F 'V2_CODEC_INDEPENDENT_MEASURED' "$0" >/dev/null
-  rg -F 'require_local_reference' "$0" >/dev/null || die 'strict Local reference validator is missing'
-  rg -F 'require_v2_reference' "$0" >/dev/null || die 'strict v2 CSV validator is missing'
-  rg -F 'require_resolver_artifacts "$V2_PROJECT/uv.lock"' "$0" >/dev/null || die 'v2 resolver artifact validation is missing'
-  rg -F 'exact=true' "$0" >/dev/null
-  rg -F 'exact_to_cpu=true' "$0" >/dev/null
+  grep -F "$LOCAL_REPO" "$0" >/dev/null
+  grep -F "$LOCAL_REVISION" "$0" >/dev/null
+  grep -F "$CODEC_REPO" "$0" >/dev/null
+  grep -F 'MEASURED_NOT_GATED' "$0" >/dev/null
+  grep -F 'moss_tts::local_transformer::tests::measure_local_real_cpu_and_optional_metal_against_official' "$0" >/dev/null
+  grep -F 'COMPOSITE_PCM_NOT_RUN' "$0" >/dev/null
+  grep -F 'V2_CODEC_INDEPENDENT_MEASURED' "$0" >/dev/null
+  grep -F 'require_local_reference' "$0" >/dev/null || die 'strict Local reference validator is missing'
+  grep -F 'require_v2_reference' "$0" >/dev/null || die 'strict v2 CSV validator is missing'
+  grep -F 'require_resolver_artifacts "$V2_PROJECT/uv.lock"' "$0" >/dev/null || die 'v2 resolver artifact validation is missing'
+  grep -F 'exact=true' "$0" >/dev/null
+  grep -F 'exact_to_cpu=true' "$0" >/dev/null
   if "$0" --self-test unexpected >/dev/null 2>&1; then die '--self-test accepted an extra argument'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" --work-dir >/dev/null 2>&1; then die 'missing work-dir value was accepted'; fi
   if VOKRA_PUBLISH_ON_VAST=1 "$0" --work-dir a --work-dir b >/dev/null 2>&1; then die 'duplicate work-dir was accepted'; fi
