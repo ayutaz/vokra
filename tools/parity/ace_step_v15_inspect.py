@@ -37,6 +37,7 @@ COMPONENTS = (
     "Qwen3-Embedding-0.6B",
     "acestep-5Hz-lm-1.7B",
 )
+CANONICAL_SILENCE_PATH = "acestep-v15-turbo/silence_latent.pt"
 DEPENDENCIES = ("transformers", "diffusers")
 TEXT_COMPONENTS = {"Qwen3-Embedding-0.6B", "acestep-5Hz-lm-1.7B"}
 
@@ -649,12 +650,16 @@ def validate_snapshot_tree(snapshot: Path) -> list[dict[str, Any]]:
         raise RuntimeError("HF bundle lacks root config.json companion")
     if not any(path.name == "README.md" for path in root_files):
         raise RuntimeError("HF bundle lacks root README.md companion")
-    silence = [path for path in root_files if path.name == "silence_latent.pt"]
+    silence = [
+        path
+        for path in regular_files(snapshot)
+        if path.relative_to(snapshot).as_posix() == CANONICAL_SILENCE_PATH
+    ]
     if len(silence) != 1:
-        raise RuntimeError("HF bundle must contain exactly one root silence_latent.pt")
+        raise RuntimeError(f"HF bundle must contain exactly one canonical {CANONICAL_SILENCE_PATH}")
     pt_files = [path for path in regular_files(snapshot) if path.suffix.lower() == ".pt"]
     if pt_files != silence:
-        raise RuntimeError("HF bundle contains an extra, nested, or duplicate PyTorch container")
+        raise RuntimeError(f"HF bundle contains an extra, nested, duplicate, or misplaced PyTorch container; canonical path is {CANONICAL_SILENCE_PATH}")
     return [{"path": path.relative_to(snapshot).as_posix(), "bytes": path.stat().st_size, "sha256": sha256(path)} for path in sorted(root_files)]
 
 
@@ -673,9 +678,9 @@ def inspect(snapshot: Path, source: Path, output: Path, tree_packet: Path) -> No
     if any(not item["license_records"] for item in components):
         tree_blockers.append("component repository-level licenses are unauthenticated")
     containers = [inspect_container(path, snapshot) for path in regular_files(snapshot) if path.suffix.lower() == ".pt"]
-    silence = [record for record in containers if Path(record["path"]).name == "silence_latent.pt"]
+    silence = [record for record in containers if record["path"] == CANONICAL_SILENCE_PATH]
     if len(silence) != 1:
-        raise RuntimeError("canonical bundle must contain exactly one safe silence_latent.pt container")
+        raise RuntimeError(f"canonical bundle must contain exactly one safe {CANONICAL_SILENCE_PATH} container")
     sources = source_inventory(source)
     tensor_inventory = {"components": [{"name": item["name"], "tensor_count": len(item["tensors"]), "tensors": item["tensors"]} for item in components], "containers": containers}
     component_inventory = {"components": components}
@@ -703,6 +708,7 @@ def inspect(snapshot: Path, source: Path, output: Path, tree_packet: Path) -> No
         "server_tree": tree,
         "components": [{"name": item["name"], "shards": item["shards"], "tensor_count": len(item["tensors"])} for item in components],
         "pytorch_containers": containers,
+        "canonical_silence_latent": {"path": CANONICAL_SILENCE_PATH, "evidence": silence[0]},
         "root_companions": root_companions,
         "official_source": sources,
         "license_evidence": {
@@ -919,7 +925,7 @@ def self_test() -> None:
         assert ".cache/huggingface/metadata.json" in transport_metadata(root)
         assert all(path.relative_to(root).as_posix() != ".cache/huggingface/metadata.json" for path in regular_files(root))
         for shape in ("cache-file", "cache-symlink", "transport-file", "transport-symlink"):
-            malformed = root.parent / shape
+            malformed = root.parent / f"{shape}-{root.name}"
             malformed.mkdir()
             malformed_cache = malformed / ".cache"
             if shape.startswith("cache-"):
@@ -949,8 +955,28 @@ def self_test() -> None:
         else:
             raise AssertionError("nested component cache was accepted")
         nested_cache.rmdir()
-        torch.save({"latent": torch.zeros((1, 2), dtype=torch.float32)}, root / "silence_latent.pt")
-        assert len(validate_snapshot_tree(root)) == 4
+        canonical_silence = root / CANONICAL_SILENCE_PATH
+        torch.save({"latent": torch.zeros((1, 2), dtype=torch.float32)}, canonical_silence)
+        assert len(validate_snapshot_tree(root)) == 3
+        assert CANONICAL_SILENCE_PATH == "acestep-v15-turbo/silence_latent.pt"
+        misplaced_root_silence = root / "silence_latent.pt"
+        misplaced_root_silence.write_bytes(b"not the canonical silence container")
+        try:
+            validate_snapshot_tree(root)
+        except RuntimeError as error:
+            assert "canonical" in str(error) or "misplaced" in str(error)
+        else:
+            raise AssertionError("root silence container was accepted")
+        misplaced_root_silence.unlink()
+        misplaced_name = root / COMPONENTS[0] / "silence_latent_wrong.pt"
+        misplaced_name.write_bytes(b"wrong suffix")
+        try:
+            validate_snapshot_tree(root)
+        except RuntimeError as error:
+            assert "canonical" in str(error)
+        else:
+            raise AssertionError("misnamed silence container was accepted")
+        misplaced_name.unlink()
         packet_rows = []
         for path in regular_files(root):
             identity = stream_file_identity(path, block_size=2)
@@ -1001,6 +1027,14 @@ def self_test() -> None:
         else:
             raise AssertionError("nested silence container was accepted")
         duplicate_silence.unlink()
+        canonical_silence.unlink()
+        try:
+            validate_snapshot_tree(root)
+        except RuntimeError as error:
+            assert "canonical" in str(error)
+        else:
+            raise AssertionError("missing canonical silence container was accepted")
+        torch.save({"latent": torch.zeros((1, 2), dtype=torch.float32)}, canonical_silence)
         duplicate_config = root / COMPONENTS[0] / "config.json"
         duplicate_config.write_text('{"model_type":"a","model_type":"b"}\n', encoding="utf-8")
         try:
