@@ -1,5 +1,44 @@
 # tools/parity/microwakeword
 
+> **Current status (2026-08-29): BLOCKED.** The dedicated Python 3.12 lock
+> is present and records the complete 17-package closure. Exact source/model
+> Git identities are recorded below, but license policy review remains open:
+> ai-edge-litert's precompiled-wheel notices, certifi/MPL, NumPy's composite
+> bundled notices, protobuf precompiled-wheel metadata, PyYAML
+> native-extension notices, tqdm/MPL, typing-extensions/PSF, and the
+> ml-dtypes wheel's Eigen/MPL notice. The VAST worker therefore exits before environment sync
+> or acquisition; the target's byte SHA-256 is also pending that acquisition:
+> `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
+>
+> The dedicated lock SHA-256 is
+> `43e17e20616bc06072424abadaaed520244673db2f964a29ea2472e22e72afbe`;
+> its 17-row package/dependency digest is
+> `3250cac13ab9f8cf0a67ffc1f590988afa8cac3b346edf52d0e03924ec08ef06`,
+> and its version-keyed license digest is
+> `2bcae92a909b92617e1ddc96a7cf4704a6c9305dcd94651584da4b68c49a7906`.
+
+License evidence is version-keyed in `microwakeword_inspect.py`. Each row was
+checked against the exact PyPI JSON record, preferring `license_expression`,
+then `license`, then the exact wheel METADATA/classifiers when needed. Thus
+ai-edge-litert is Apache-2.0 but its precompiled TFLite runtime wheel still
+requires bundled-notice review; charset-normalizer is MIT, idna is BSD-3-Clause, NumPy records its exact
+`BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` expression,
+typing-extensions is PSF-2.0, and urllib3 is MIT. The ml-dtypes description /
+license section says Apache-2.0 but also requires review of the Eigen/MPL-2.0
+notice shipped by precompiled wheels. Protobuf's exact metadata also remains
+subject to precompiled-wheel notice review. No source archive was fetched; a
+resolved lock is not license approval, and policy-sensitive rows remain
+blocked.
+
+For auditability, every non-first-party lock row has its exact package/version
+and primary PyPI JSON URL in `LICENSE_ROWS`: `license_expression` supplies
+idna, NumPy, typing-extensions, and urllib3; `license` supplies ai-edge-litert,
+backports-strenum, certifi, charset-normalizer, flatbuffers, protobuf, PyYAML,
+requests, and tqdm; and exact wheel METADATA/classifiers supply colorama and
+gguf. The ml-dtypes row uses the exact PyPI description/license section and
+records its precompiled-wheel Eigen/MPL-2.0 notice. No license is inferred
+from a lock or from an unversioned project page.
+
 Offline sidecar for **kahrendt/microWakeWord** (Apache-2.0) → Vokra GGUF
 conversion. Bridges the upstream TFLite artefacts (INT8-quantized
 MC-MobileNet designed for Cortex-M55 / RP2040 / ESP32-S3 microcontrollers)
@@ -14,12 +53,10 @@ reader parses on both host and thumbv8m targets.
 
 ## What this directory contains
 
-- `prepare_checkpoint.py` — the actual converter. DL the canonical
-  `hey_jarvis` release from ESPHome / kahrendt (parametrisable via
-  `--url` / `--input`), extract weight tensors via
-  `ai-edge-litert.Interpreter.get_tensor_details()`, dequantize INT8 →
-  F32, and emit a GGUF via `gguf.GGUFWriter` with the `vokra.kws.*`
-  metadata keys documented in the script's module docstring.
+- `prepare_checkpoint.py` — a future converter design. It would extract
+  tensors with `ai-edge-litert.Interpreter.get_tensor_details()`, dequantize
+  INT8 → F32, and emit a GGUF via `gguf.GGUFWriter`; it is not a local
+  acquisition or execution procedure while this gate is blocked.
 - `dump_reference.py` — Phase 4 host-parity reference dumper. Given a
   `.tflite` and a fixed-seed synthesised PCM window, emits
   `input_pcm.bin` + `features_ref.bin` + `output_ref.bin` +
@@ -35,70 +72,53 @@ reader parses on both host and thumbv8m targets.
 
 ## Prerequisites
 
-- **`uv`** ([[feedback-python-uses-uv]]) — the sidecar toolchain manager
-  the Vokra project standardises on. Install via
-  `curl -LsSf https://astral.sh/uv/install.sh | sh` or `brew install uv`.
-- **Python 3.12** — pinned in `.python-version`. `uv sync` will download
-  it if absent.
+- **`uv`** ([[feedback-python-uses-uv]]) and **Python 3.12** are the sidecar
+  toolchain. The project is isolated from the parent workspace and its exact
+  lock is checked by `microwakeword_inspect.py`.
+- Conversion, reference generation, and any artifact acquisition are
+  VAST-only. The local Mac path is deliberately terminally blocked; do not
+  install, sync, acquire, or convert from this directory.
 
-The `ai-edge-litert` package (Apache-2.0) is the direct successor of
-`tflite-runtime` — Google renamed it in Q3 2024 when the old package
-stopped shipping wheels for Python ≥ 3.12. The Interpreter API surface
-is unchanged (`interpreter.allocate_tensors()`,
-`interpreter.get_tensor_details()`, `interpreter.get_tensor(idx)`).
+The `ai-edge-litert` package reports Apache-2.0 in exact PyPI metadata and is
+the direct successor of `tflite-runtime` — Google renamed it in Q3 2024 when
+the old package stopped shipping wheels for Python ≥ 3.12. Its precompiled
+TFLite runtime wheel still requires bundled-notice review, so this fact does
+not clear the gate. The future Interpreter API surface is expected to remain
+(`interpreter.allocate_tensors()`, `interpreter.get_tensor_details()`,
+`interpreter.get_tensor(idx)`).
 
-## Owner walkthrough — DL + convert
+## Historical conversion notes (not an execution procedure)
 
-1. **Sync deps** (once per checkout):
+Earlier drafts described local dependency sync, raw GitHub model retrieval,
+and direct `prepare_checkpoint.py` conversion. Those notes are retained only
+to explain the intended future sidecar shape. They are not runnable guidance:
+all conversion/reference execution and all source/model acquisition must be
+performed by an owner-approved VAST workflow after the dependency and license
+gate clears. The current worker has no acquisition or conversion path.
 
-   ```
-   cd tools/parity/microwakeword
-   uv sync
-   ```
+The future GGUF is expected to carry `vokra.kws.arch = "microwakeword"`,
+`vokra.kws.model = "hey_jarvis"`, the 16 kHz / 40-band front-end metadata,
+the acquired artifact's byte SHA-256, and the immutable upstream identity.
+Those fields are design targets, not a conversion or parity result.
 
-2. **Download + convert the canonical hey_jarvis model** (~200 KB
-   TFLite, produces ~150 KB GGUF after F32 dequantization):
+## Authenticated upstream identities
 
-   ```
-   uv run python prepare_checkpoint.py \
-       --url    https://github.com/esphome/micro-wake-word-models/raw/main/models/v2/hey_jarvis.tflite \
-       --name   hey_jarvis \
-       --output ~/.cache/vokra-eval/weights/microwakeword/hey_jarvis.gguf \
-       --verbose
-   ```
+The following identities were observed from the upstream Git repositories on
+2026-08-29. The values labelled `Git blob` are Git object IDs, not file
+SHA-256 digests. The actual model-byte SHA-256 is intentionally unset until a
+VAST acquisition records it.
 
-   The output GGUF is Vokra-native (`vokra_core::gguf::GgufFile::parse`
-   opens it directly) and stamps the following metadata:
-
-   - `vokra.kws.arch` = `"microwakeword"` (distinct from `openwakeword`)
-   - `vokra.kws.model` = `"hey_jarvis"` (or your `--name`)
-   - `vokra.kws.threshold` = f32 (default `0.5`)
-   - `vokra.kws.sample_rate` = 16000, `hop_ms` = 10, `window_ms` = 32,
-     `n_mels` = 40, `feature_dim` = 40
-   - `vokra.kws.tflite_sha256` = provenance (source hex digest)
-   - `vokra.kws.upstream` = source URL
-   - `vokra.provenance.license` = `"apache-2.0"`, `license_class` =
-     `"Permissive"`, `upstream_hf` = `"kahrendt/microWakeWord"`,
-     `upstream_name` = your `--name`
-
-3. **Convert a different wake-word or a locally-downloaded model**:
-
-   ```
-   # local file:
-   uv run python prepare_checkpoint.py \
-       --input  /path/to/alexa.tflite \
-       --name   alexa \
-       --output ./alexa.gguf
-
-   # override front-end defaults if the model was trained with a
-   # different mel front-end (rare — the microWakeWord canonical
-   # configuration is 40-band 10-ms hop 32-ms window @ 16 kHz):
-   uv run python prepare_checkpoint.py \
-       --input  ./custom.tflite \
-       --name   custom \
-       --output ./custom.gguf \
-       --hop-ms 20 --window-ms 40 --n-mels 32
-   ```
+| Role | Repository revision | Path | Git blob | Size |
+| --- | --- | --- | --- | ---: |
+| Source license | `kahrendt/microWakeWord@4665173cd35f1cff9a61e06fc427f124766c488e` | `LICENSE` | `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64` | 11357 |
+| Source inference | same | `microwakeword/inference.py` | `ec0634376accb8e7832205c117149f4acb3e6cf0` | — |
+| Source network | same | `microwakeword/mixednet.py` | `75cbb9fa950fa4135a0e3a4171b9fba84c4b989c` | — |
+| Source streaming | same | `microwakeword/layers/stream.py` | `37b77702c8ee8038c4e6e91979560e264e7555c1` | — |
+| Source spectrogram | same | `microwakeword/audio/spectrograms.py` | `5adb585ab3a650dfd17728a0e200a143d41c23f7` | — |
+| Source metadata | same | `pyproject.toml` | `e2156f94b8a2bc4821cccd72492889016e40b532` | — |
+| Model license | `esphome/micro-wake-word-models@05b65922cc433c9df13e98e32a7fe520758c837e` | `LICENSE` | `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64` | 11357 |
+| Target model | same | `models/v2/hey_jarvis.tflite` | `0075302434cc72a460ced0b8f6c09c69214e5cf0` | 52272 |
+| Target metadata | same | `models/v2/hey_jarvis.json` | `e6733fe13852f04a5a3ae83e0d39b5726aee62cc` | 388 |
 
 ## Phase roadmap (updated 2026-08-13, Phase 4 lands)
 
@@ -163,17 +183,18 @@ the full write-up):
 ## License / distribution note
 
 The **kahrendt/microWakeWord** upstream and **ESPHome micro-wake-word-models**
-mirror ship Apache-2.0 code + Apache-2.0 model weights (canonical
-release notes verify — the LICENSE file is Apache-2.0 in both repos).
+mirror each have the authenticated `LICENSE` blob recorded above; the
+repository policy review identifies both as Apache-2.0. This is provenance
+evidence, not permission to acquire or distribute the model from the local
+Mac.
 The Vokra runtime consumes the produced GGUF as an opaque numeric
 artefact; no Python / TFLite / ESPHome / TensorFlow code enters the
 runtime (FR-LD-05 sidecar isolation).
 
 **esphome/esphome** itself is GPL-3.0 licensed — never imported, never
 inspected. Vokra's Apache-2.0 posture forbids referencing GPL-3.0 code
-for clean-room reasons (see CLAUDE.md "Piper (piper1-gpl)" red-line);
-this converter's `--url` default is only the model-file mirror
-(`esphome/micro-wake-word-models`), which is Apache-2.0.
+for clean-room reasons (see CLAUDE.md "Piper (piper1-gpl)" red-line). The
+future converter must use only the authenticated model mirror above.
 
 ## Related
 
