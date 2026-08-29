@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1132,6 +1133,32 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("duplicate JSON key was accepted")
+    with tempfile.TemporaryDirectory(prefix="vieneu-source-self-test-") as directory:
+        source = Path(directory) / "source"
+        source.mkdir()
+        (source / "README.md").write_text("fixture\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "init", "--quiet"], check=True)
+        subprocess.run(["git", "-C", str(source), "add", "README.md"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(source),
+                "-c",
+                "user.name=Vokra self-test",
+                "-c",
+                "user.email=vokra-self-test@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+            check=True,
+        )
+        source_blockers: list[str] = []
+        source_result = source_evidence(source, source_blockers)
+        assert source_result["tracked_files"]
+        assert any("fixed role is missing" in blocker for blocker in source_blockers)
     try:
         validate_external_location("../weights.bin")
     except ValueError:
