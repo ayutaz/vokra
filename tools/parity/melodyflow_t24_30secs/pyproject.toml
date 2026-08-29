@@ -1,33 +1,67 @@
 [project]
-name = "melodyflow-t24-30secs-prep"
+name = "vokra-melodyflow-t24-30secs-reference"
 version = "0.1.0"
-description = "Offline sidecar: facebook/melodyflow-t24-30secs upstream checkpoint → flat safetensors (torch pickle bridge + dedup + int/f64/bool strip). Bridges the upstream Meta AudioCraft MelodyFlow release (~4.0 GB bundle = 1B flow-matching DiT transformer + 48 kHz RVQ codec + T5-base text encoder, dual text + audio prefix conditioning for music editing, Le Lan et al. 2024 arXiv:2407.03648) to the Rust converter (crates/vokra-convert/src/models/melodyflow_t24_30secs.rs), which consumes single-file safetensors only. NOT shipped as part of vokra-* runtime (FR-LD-05, zero-dep NFR-DS-02)."
-requires-python = ">=3.12"
-dependencies = [
-    # torch: unwraps the audiocraft-published .th torch pickle bundle
-    #        (or a mirror-hosted safetensors) via `torch.load` + explicit
-    #        pickle_module gate, plus data-pointer tracking for the
-    #        shared-storage dedup pass (memory
-    #        `[[reference-safetensors-shared-tensor-dedup]]`) that
-    #        `safetensors.torch.save_file` demands. Range mirrors the
-    #        sibling `magnet_small_10secs/pyproject.toml` /
-    #        `magnet_medium_30secs/pyproject.toml`.
-    "torch>=2.0",
-    # safetensors: canonical Python writer for the flat output the Rust
-    #        converter consumes.
-    "safetensors>=0.4",
-    # huggingface-hub: convenience for the download path the README
-    #        documents (`hf download facebook/melodyflow-t24-30secs
-    #        --local-dir ...`). Per phase task the ~4.0 GB scale is
-    #        vast.ai-flagged (owner path for weights ≥ 2 GB per memory
-    #        `[[feedback-large-models-on-vast-ai]]`); the huggingface-hub
-    #        pin `<0.30` used by the vast.ai runbook (memory
-    #        `[[reference-huggingface-hub-lt-030-vast-ai]]`) is NOT
-    #        applied here — `uv sync` locks whatever the machine picks,
-    #        and vast.ai's provision.sh Wave 12 re-pins the sibling
-    #        constraint at run time. Local convert (~4 GB) can technically
-    #        run on M1 iMac 16 GB but the phase task pins vast.ai as the
-    #        conservative default for weights at this scale to avoid the
-    #        Voxtral-Small-24B / hf_config.pth shim class of surprises.
-    "huggingface-hub>=0.26",
+description = "VAST-only AudioCraft MelodyFlow T24 checkpoint bridge; no runtime dependency."
+requires-python = "==3.12.*"
+dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+
+[tool.uv]
+package = false
+environments = ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.vokra.audiocraft_reference]
+operator_approval = { decision = "PENDING_OWNER_SIGNOFF", signer = "", digest = "" }
+model = "facebook/melodyflow-t24-30secs"
+source_license = "MIT"
+weight_license = "CC-BY-NC-4.0"
+source_repository = "facebook/MelodyFlow"
+source_revision = "9d0d223e9a63bbb8c20b9f57c5afcb4de297e6da"
+source_license_evidence = "LICENSE:1088:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+weight_license_evidence = "facebook/melodyflow-t24-30secs@77bcfce24371bf29a06152c72169162c6f2791de"
+status = "BLOCKED_LICENSE_REVIEW_VAST_ONLY"
+publication = "NO_UPLOAD"
+runtime_status = "CONVERTER_ONLY_RUNTIME_BINDER_UNRESOLVED"
+lock_policy = "Every uv.lock package row (name/version/source, resolver markers when present, dependency name+source+version+marker, and complete artifact URL/hash/size rows) plus each version-keyed primary-source license record is audited before sync or acquisition."
+forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
+license_blocker = "Owner clearance is required for CC-BY-NC-4.0 weights and any non-Apache/MIT/BSD or bundled/native notices; no local model or pickle access is permitted."
+owner_clearance = "UNRESOLVED_OWNER_SIGNOFF"
+dependencies = ["huggingface-hub==1.27.0", "safetensors==0.7.0", "torch==2.7.1"]
+model_identity = { repo = "facebook/melodyflow-t24-30secs", revision = "77bcfce24371bf29a06152c72169162c6f2791de", license_spdx = "CC-BY-NC-4.0", readme_bytes = 6560, readme_sha256 = "ab790ac275d6035184dabfa467be8ec8aa08a762ee3610cf43a061db45a8f0a1", compression_bytes = 238776630, compression_sha256 = "c075ee7c5b13d50937d1e4f197f3e940c3f3b74207857cb0e1e17891010fdc6d", state_bytes = 3849817990, state_sha256 = "e9f95857aa1e0906fb44017ca2e4e8205395599693d6e80e5c3b8b7fc16498ef" }
+source_identity = { repo = "facebook/MelodyFlow", revision = "9d0d223e9a63bbb8c20b9f57c5afcb4de297e6da", license_spdx = "MIT", license_path = "LICENSE", license_bytes = 1088, license_sha256 = "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93", license_weights_path = "LICENSE_weights", license_weights_bytes = 19333, license_weights_sha256 = "336255dc30193e8e15d689d9481bb05673d89055718f3a96923a7ffb99adbbaf", roles = [{ path = "models/__init__.py", bytes = 735, sha256 = "79a3de6fa1f606bb058150aa0a8959b0c0d2fef84d7fc5b4b72bcd80becfa866" }, { path = "flow.py", bytes = 21274, sha256 = "06d148fd8e40ada00a034c6d5189a35b5cb3b01f7ee140b6b6a94e02905a9892" }, { path = "loaders.py", bytes = 9509, sha256 = "d4cdc731e145fb2c5257f8691b2330034d99b604bfdcb4da49f9fc7cc718f31b" }, { path = "melodyflow.py", bytes = 13083, sha256 = "655c9d697b698b8c2dcdc560062dcbc32423b4468912bab3e5f4094b08071a43" }, { path = "requirements.txt", bytes = 375, sha256 = "6766a3bb39e304094e1ca651b3acbeccf53130221afbfe933b31f1b25e2aa35" }] }
+license_records = [
+    { name = "filelock", version = "3.32.4", license = "Unlicense", primary_source = "https://pypi.org/pypi/filelock/3.32.4/json" },
+    { name = "fsspec", version = "2026.7.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/fsspec/2026.7.0/json" },
+    { name = "jinja2", version = "3.1.6", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/Jinja2/3.1.6/json" },
+    { name = "markupsafe", version = "3.0.3", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/MarkupSafe/3.0.3/json" },
+    { name = "mpmath", version = "1.3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/mpmath/1.3.0/json" },
+    { name = "networkx", version = "3.6.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/networkx/3.6.1/json" },
+    { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json" },
+    { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json" },
+    { name = "sympy", version = "1.14.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/sympy/1.14.0/json" },
+    { name = "torch", version = "2.7.1+cpu", license = "BSD-3-Clause", primary_source = "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl" },
+    { name = "typing-extensions", version = "4.16.0", license = "PSF-2.0", primary_source = "https://pypi.org/pypi/typing-extensions/4.16.0/json" },
+    { name = "anyio", version = "4.14.2", license = "MIT", primary_source = "https://pypi.org/pypi/anyio/4.14.2/json" },
+    { name = "certifi", version = "2026.7.22", license = "MPL-2.0_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json" },
+    { name = "click", version = "8.5.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/click/8.5.0/json" },
+    { name = "h11", version = "0.16.0", license = "MIT", primary_source = "https://pypi.org/pypi/h11/0.16.0/json" },
+    { name = "hf-xet", version = "1.6.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/hf-xet/1.6.0/json" },
+    { name = "httpcore", version = "1.0.9", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpcore/1.0.9/json" },
+    { name = "httpx", version = "0.28.1", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/httpx/0.28.1/json" },
+    { name = "huggingface-hub", version = "1.27.0", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/huggingface-hub/1.27.0/json" },
+    { name = "idna", version = "3.19", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/idna/3.19/json" },
+    { name = "packaging", version = "26.3", license = "Apache-2.0_REVIEWED", primary_source = "https://pypi.org/pypi/packaging/26.3/json" },
+    { name = "pyyaml", version = "6.0.3", license = "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json" },
+    { name = "tqdm", version = "4.70.0", license = "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", primary_source = "https://pypi.org/pypi/tqdm/4.70.0/json" },
 ]
+lock_sha256 = "1b56809119e614f6b88869d95789f01a0e2806cbc13971ce1e4bc9b8d868d821"
+package_rows_sha256 = "0cd3350b8dc84fea7bd65eeda8d1d605f771603c5da9fd9203ab1157b3e374e9"
+approval_scope_sha256 = "90475233b43464d07c9a899b41a2dc92dd333d520038265e39984de8bf8fa81c"
+license_rows_sha256 = "c19b1c2c9d4ec83d8ca6a0500b40c706f9fe5ea90d7fb63416d448b63c9c1d63"

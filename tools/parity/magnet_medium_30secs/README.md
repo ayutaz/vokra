@@ -1,7 +1,8 @@
 # tools/parity/magnet_medium_30secs
 
 Offline sidecar for **facebook/magnet-medium-30secs** (Meta AudioCraft
-MAGNeT Medium 30secs, CC-BY-NC-4.0, ~5.7 GB = 1.5B params
+MAGNeT Medium 30secs, CC-BY-NC-4.0, 3,913,673,878-byte fixed bundle;
+1.5B params
 non-autoregressive masked-LM transformer + bundled EnCodec 32 kHz codec
 + T5-base text encoder) — bridges the upstream torch-pickle bundle to
 the flat safetensors the Rust converter
@@ -9,7 +10,8 @@ the flat safetensors the Rust converter
 
 Sibling of:
 
-- `../magnet_small_10secs/prepare_checkpoint.py` (~2 GB, 500 M / 10 sec
+- `../magnet_small_10secs/prepare_checkpoint.py` (1,076,848,566-byte fixed
+  bundle, 300 M / 10 sec
   — same non-autoregressive masked-LM decoding op path, narrower
   hidden width, shorter span)
 - `../musicgen_medium_prepare_checkpoint.py` (11.4 GB, vast.ai
@@ -20,98 +22,41 @@ Sibling of:
 
 ## What this directory contains
 
-- `prepare_checkpoint.py` — the actual torch-pickle → flat safetensors
-  bridge. Loads `state_dict.bin` (or `*.th` / `*.bin`) under
-  `--input-dir` via `torch.load(..., weights_only=True)` (safe path),
+- `prepare_checkpoint.py` — the VAST-only torch-pickle → flat safetensors
+  bridge. Loads only the exact authenticated `state_dict.bin` under
+  `--input-dir` only via `torch.load(..., weights_only=True)`; failures
+  stop without an unsafe retry,
   dedupes tied tensors (data_ptr collision → clone + audit trail),
   strips non-float training scaffold (`.num_batches_tracked` /
   `.total_ops` / `.total_params`), rejects unexpected non-float
   dtypes loudly (FR-EX-08). Emits `<output>` + `<output>.sha256` +
   `<output>.shared_pairs.json`. See the script's module docstring
   for the honest write-up.
-- `pyproject.toml` — uv project spec (Python 3.12 pinned per
-  `[[feedback-python-3-12]]`; deps = `torch>=2.0` + `safetensors>=0.4`
-  + `huggingface-hub>=0.26`).
+- `pyproject.toml` + `uv.lock` — exact Python 3.12 CPU-only reference
+  closure, including the pinned `huggingface-hub==1.27.0` acquisition
+  closure, with lock/package/license digests and a fail-closed audit. The
+  worker allows only `README.md`, `compression_state_dict.bin`, and the
+  exact `state_dict.bin` payload.
 - `.python-version` — `3.12`.
 
-## Prerequisites
+## VAST-only workflow
 
-- **`uv`** (`[[feedback-python-uses-uv]]`) — install via
-  `curl -LsSf https://astral.sh/uv/install.sh | sh` or
-  `brew install uv`.
-- **Python 3.12** — pinned in `.python-version`. `uv sync` downloads
-  it if absent.
-- **~12 GB free RAM** — the bridger loads the whole ~5.7 GB checkpoint
-  into a single in-memory state dict before calling
-  `safetensors.torch.save_file` on the merged output, plus a
-  serialisation buffer. The CC laptop (M1 iMac 16 GB) is **sufficient**
-  for this release per memory `[[feedback-large-models-on-vast-ai]]`
-  (below the 8 GB owner cutoff that pushes work to vast.ai — sibling
-  small was ~2 GB with ~4 GB working set, medium is ~5.7 GB with
-  ~12 GB working set, still within the 16 GB local ceiling with modest
-  margin). No vast.ai handoff needed.
+The aggregate checkpoint exceeds the repository's 2 GB threshold. Do not
+download it, create a model work directory, run `uv sync`, load pickle,
+or run conversion on the maintainer Mac. On an authorized Linux x86_64
+VAST worker, first run `run-magnet-medium-30secs-inspection.sh` or
+`run-magnet-medium-30secs-validation.sh`; each invokes the stdlib-only
+`audiocraft_safe_gate.py` with `uv run --no-project` before any future
+sync/download/work step. The fixed model revision is
+`2559c5978450f62782cf1d17826d384fb93fb64b`; the authenticated source is
+`facebookresearch/audiocraft@905371a779f608169353fe6ad42bb5fc10c5c9a8`.
+Both workers intentionally exit 2 until external owner clearance is supplied,
+and perform no acquisition.
 
-## Local owner walkthrough (M1 iMac safe, no vast.ai)
-
-Per memory `[[feedback-large-models-on-vast-ai]]` the ~5.7 GB scale is
-below the 8 GB local-safe threshold, so the entire path runs on the CC
-laptop — no rental cost.
-
-1. **Download** the release:
-   ```bash
-   hf download facebook/magnet-medium-30secs \
-     --local-dir ./checkpoints/magnet-medium-30secs
-   ```
-
-2. **Prepare (torch pickle → flat safetensors)** — from this
-   directory:
-   ```bash
-   cd tools/parity/magnet_medium_30secs
-   uv sync
-   uv run python prepare_checkpoint.py \
-     --input-dir ../../../checkpoints/magnet-medium-30secs \
-     --output    ../../../checkpoints/magnet-medium-30secs/flat.safetensors
-   ```
-
-   Alternatively, if the release ships as native safetensors from a
-   mirror publisher:
-   ```bash
-   uv run python prepare_checkpoint.py \
-     --input-safetensors ../../../checkpoints/magnet-medium-30secs/model.safetensors \
-     --output            ../../../checkpoints/magnet-medium-30secs/flat.safetensors
-   ```
-
-3. **Convert** to Vokra GGUF:
-   ```bash
-   cd ../../..
-   ./target/release/vokra-cli convert \
-     --model magnet-medium-30secs \
-     --input ./checkpoints/magnet-medium-30secs/flat.safetensors \
-     --output ./out/magnet-medium-30secs.gguf
-   ```
-
-4. **Publish** — T4 tier (Research-only), `--allow-noncommercial`
-   **mandatory** per MusicGen family / X-Codec-2 /
-   jasco_400m_chords_drums / sibling `magnet_small_10secs` precedent:
-   ```bash
-   bash scripts/publish/publish-one.sh \
-     --gguf ./out/magnet-medium-30secs.gguf \
-     --repo vokra/magnet-medium-30secs \
-     --license-spdx cc-by-nc-4.0 \
-     --allow-noncommercial \
-     --push
-   ```
-
-   **Publish will refuse** unless the `docs/license-audit.md` §3.1 row
-   `Meta MAGNeT Medium 30secs (\`facebook/magnet-medium-30secs\`)` has
-   an Approval cell filled in with ☑ Commercial or ☑ Research-only
-   (owner fail-closed default per memory
-   `[[feedback-license-signoff-primary-source]]`).
-
-5. **Verify**:
-   ```bash
-   curl -sI https://huggingface.co/vokra/magnet-medium-30secs | head -1
-   ```
+Publication is a separate permission and is currently prohibited by the
+worker (`NO_UPLOAD`). The weight is CC-BY-NC-4.0 / Research-only and the
+owner's license sign-off, training-data review, and publication gate must
+be handled independently.
 
 ## What the script does NOT do
 
@@ -133,18 +78,17 @@ laptop — no rental cost.
 
 ## Owner critical path (post-land)
 
-- **§3.1 sign-off**: fill the `Meta MAGNeT Medium 30secs` row Approval
-  cell in `docs/license-audit.md` §3.1. Primary source =
-  `https://huggingface.co/facebook/magnet-medium-30secs` cardData
-  `license: cc-by-nc-4.0` + audiocraft LICENSE file + arXiv:2401.04577.
-  Consider **bundling** sign-off with sibling `magnet_small_10secs`
-  row — same license, same publisher, same training-data audit
-  posture; a single owner audit session can cover both rows.
+- **License/source gate**: the weight is CC-BY-NC-4.0 / Research-only,
+  but this sidecar remains blocked until the owner confirms the
+  versioned primary-source evidence and the fixed source/HF revisions.
 - **training-data audit** (medium-high risk): Meta MusicGen family
   shares training corpus with Suno / Udio litigation cloud. Legal
-  review before publish (same posture as sibling small).
+  review before any separately authorized distribution (same posture as
+  sibling small); this staging worker remains `NO_UPLOAD`.
 - **runtime binder ADR** (FR-OP-85): decide whether MAGNeT masked-LM
   parallel decoding gets a first-class op path or stays as a
   loud-partial defer. Owner judgement. The ADR outcome applies to
   BOTH small and medium variants — the op path is shared, only
   hparams differ.
+- **parity**: no real-weight reference or runtime parity has run; this
+  remains an explicit blocker after the source and license gates clear.
