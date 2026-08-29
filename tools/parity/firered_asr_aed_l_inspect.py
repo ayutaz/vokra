@@ -125,6 +125,22 @@ def validate_server_tree(packet: Any, root: Path) -> dict[str, Any]:
             raise ValueError(f"content identity mismatch: {path}")
     return {"repository": REPOSITORY, "revision": REVISION, "files": sorted(remote.values(), key=lambda x: x["path"]), "identity": "LFS SHA256 plus Git blob SHA1"}
 
+
+def validate_artifact_identity(name: str, path: Path, expected: tuple[int, str, str | None], server_entry: dict[str, Any]) -> dict[str, Any]:
+    """Validate one artifact without treating an LFS payload as its Git blob."""
+    size, expected_blob, expected_lfs = expected
+    if server_entry.get("path") != name or server_entry.get("size") != size or server_entry.get("git_blob_sha1") != expected_blob or server_entry.get("lfs_sha256") != expected_lfs:
+        raise ValueError(f"server artifact identity mismatch: {name}")
+    if path.stat().st_size != size:
+        raise ValueError(f"fixed artifact size mismatch: {name}")
+    payload_sha = digest(path)
+    if expected_lfs is None:
+        if git_blob_sha1(path) != expected_blob:
+            raise ValueError(f"fixed non-LFS Git blob mismatch: {name}")
+    elif payload_sha != expected_lfs:
+        raise ValueError(f"fixed LFS payload SHA-256 mismatch: {name}")
+    return {"bytes": size, "git_blob_sha1": expected_blob, "lfs_sha256": expected_lfs, "sha256": payload_sha}
+
 def archive_inventory(path: Path) -> dict[str, Any]:
     members: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -315,11 +331,10 @@ def inspect(args: argparse.Namespace) -> int:
         markers = require_readme_markers(card)
         manifest["model_card"] = {"path": "README.md", "bytes": readme.stat().st_size, "sha256": digest(readme), "markers": markers}
         manifest["artifacts"] = {}
+        server_artifacts = {entry["path"]: entry for entry in manifest["server_tree"]["files"]}
         for name, (size, blob, lfs) in ARTIFACTS.items():
             path = files[name]
-            if path.stat().st_size != size or git_blob_sha1(path) != blob or (lfs and digest(path) != lfs):
-                raise ValueError(f"fixed artifact identity mismatch: {name}")
-            manifest["artifacts"][name] = {"bytes": size, "git_blob_sha1": blob, "lfs_sha256": lfs, "sha256": digest(path)}
+            manifest["artifacts"][name] = validate_artifact_identity(name, path, (size, blob, lfs), server_artifacts.get(name, {}))
         manifest["artifacts"]["train_bpe1000.model"].update({"structure": inspect_sentencepiece(files["train_bpe1000.model"]), "status": "STRUCTURE_AUTHENTICATED"})
         manifest["artifacts"]["dict.txt"].update({"structure": inspect_dict(files["dict.txt"])})
         manifest["artifacts"]["cmvn.txt"].update({"structure": inspect_cmvn(files["cmvn.txt"]), "status": "STRUCTURE_AUTHENTICATED"})
@@ -368,6 +383,14 @@ def self_test() -> None:
         assert set(local_files(root)) == {"x"}
         packet = {"repository": REPOSITORY, "revision": REVISION, "resolved_revision": REVISION, "files": [{"path": "x", "type": "file", "size": 1, "git_blob_sha1": "1" * 40, "lfs_sha256": digest(payload)}]}
         validate_server_tree(packet, root)
+        lfs_identity = validate_artifact_identity("x", payload, (1, "1" * 40, digest(payload)), packet["files"][0])
+        assert lfs_identity["git_blob_sha1"] == "1" * 40 and lfs_identity["lfs_sha256"] == digest(payload)
+        try:
+            validate_artifact_identity("x", payload, (1, git_blob_sha1(payload), digest(payload)), packet["files"][0])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("LFS payload Git blob was accepted as the authenticated pointer blob")
         for malformed in (dict(packet, files=[dict(packet["files"][0], lfs_sha256="bad")]), dict(packet, files=[]), dict(packet, repository="wrong/repo")):
             try: validate_server_tree(malformed, root)
             except ValueError: pass
