@@ -182,7 +182,10 @@ fn sha256_file(path: &Path) -> String {
     ];
     let mut file = File::open(path).unwrap_or_else(|error| panic!("read {path:?}: {error}"));
     let mut pending = Vec::with_capacity(64);
-    let mut chunk = [0u8; 8 * 1024 * 1024];
+    // Keep the streaming buffer on the heap: integration-test threads have a
+    // much smaller stack than this 8 MiB I/O chunk, and the SHA-256 known
+    // vector must exercise this helper without overflowing that stack.
+    let mut chunk = vec![0u8; 8 * 1024 * 1024];
     let mut bit_len = 0u64;
     loop {
         let read = file
