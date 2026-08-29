@@ -24,6 +24,31 @@ self_test() {
     fail=1
   fi
   UV_CACHE_DIR="${SORTFORMER_UV_CACHE_DIR:-/tmp/vokra-sortformer-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$INSPECTOR" --self-test >/dev/null || fail=1
+  if ! UV_CACHE_DIR="${SORTFORMER_UV_CACHE_DIR:-/tmp/vokra-sortformer-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - <<'PY'
+from huggingface_hub import RepoFile, RepoFolder
+
+def classify(entry):
+    if isinstance(entry, RepoFolder):
+        return "directory"
+    if isinstance(entry, RepoFile):
+        return "file"
+    raise RuntimeError(f"unexpected entry: {entry!r}")
+
+file_entry = RepoFile(path=".gitattributes", size=1584, oid="a" * 40)
+file_entry.type = None
+assert classify(file_entry) == "file"
+assert classify(RepoFolder(path="nested", oid="b" * 40)) == "directory"
+try:
+    classify(object())
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unexpected server-tree entry was accepted")
+PY
+  then
+    echo 'hermetic RepoFile/RepoFolder regression failed' >&2
+    fail=1
+  fi
   (( fail == 0 )) || return 1
   echo 'run-sortformer-diar-4spk-v1-inspection.sh self-test: OK'
 }
@@ -81,18 +106,18 @@ printf '%s\n' "snapshot_path=$snapshot" | tee -a "$WORK/evidence/validation.log"
 uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$REPO" "$HF_REVISION" "$snapshot" "$WORK/server-tree.json" <<'PY' >> "$WORK/evidence/validation.log" 2>&1
 import json, re, sys
 from pathlib import Path
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, RepoFile, RepoFolder
 repo, revision, snapshot, output = sys.argv[1:]
 api = HfApi(); info = api.model_info(repo, revision=revision)
 if info.sha != revision: raise RuntimeError("resolved revision mismatch")
 rows=[]
 for entry in api.list_repo_tree(repo, revision=revision, recursive=True):
-    kind = getattr(entry, "type", None)
-    if kind in {"directory", "folder", "dir"}: continue
+    if isinstance(entry, RepoFolder): continue
+    if not isinstance(entry, RepoFile): raise RuntimeError(f"unexpected HF tree entry: {entry!r}")
     path = getattr(entry, "path", None); blob = getattr(entry, "blob_id", None) or getattr(entry, "oid", None); size = getattr(entry, "size", None)
     lfs = getattr(entry, "lfs", None); lfs_sha = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
     local = Path(snapshot) / path if isinstance(path, str) else None
-    if kind != "file" or local is None or not local.is_file() or local.is_symlink() or not isinstance(size, int) or local.stat().st_size != size or not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob) or (lfs_sha is not None and not re.fullmatch(r"[0-9a-f]{64}", lfs_sha)):
+    if local is None or not local.is_file() or local.is_symlink() or not isinstance(size, int) or local.stat().st_size != size or not isinstance(blob, str) or not re.fullmatch(r"[0-9a-f]{40}", blob) or (lfs_sha is not None and not re.fullmatch(r"[0-9a-f]{64}", lfs_sha)):
         raise RuntimeError(f"incomplete or unmaterialized HF row: {path}")
     rows.append({"path": path, "type": "file", "size": size, "git_blob_sha1": blob if lfs_sha is None else None, "lfs_pointer_git_blob_sha1": blob if lfs_sha is not None else None, "lfs_sha256": lfs_sha})
 if len({row["path"] for row in rows}) != len(rows): raise RuntimeError("duplicate HF tree path")
