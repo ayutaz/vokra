@@ -114,6 +114,60 @@ the maintainer Mac.
   audit unit tests pass. No Hugging Face upload was performed, so the live
   public-artifact counts are expected to remain unchanged.
 
+### 2026-08-30 pre-Scaleway closure
+
+The remaining feasible Linux-side collection was completed on VAST at code
+commit `0ba68abb331275dbf2b42919ac644b6734632bdd`. This section supersedes the
+pre-run wording in the preparation notes below. No model row is promoted by an
+inspection-only result: every unsupported runtime remains fail-closed, and no
+CPU or Metal verdict is inferred from an authenticated file inventory.
+
+- The final authenticated, no-upload inspection wave includes Canary-Qwen
+  2.5B, FireRedASR-AED-L, Kyutai STT 2.6B EN, GigaAM v3 and GigaAM
+  Multilingual. The broader completed inspection set also includes the
+  no-binder or composite Qwen2-Audio, ACE-Step 1.5 and VibeVoice-ASR routes,
+  together with the earlier inspection families recorded in this ledger.
+  Successful collection is recorded as `AUTHENTICATED_EVIDENCE_COMPLETE` plus
+  `INSPECTION_ONLY`; native binders, parity and publication remain blocked.
+- Canary-Qwen's exact bounded safetensors inventory contains 1,718 tensors:
+  1,686 BF16 and 32 I64 tensors, with 2,559,447,600 parameters. The corrected
+  contract binds the actual Qwen config identity, input length, leaderboard,
+  tensor dtypes and generation EOS instead of accepting nearby metadata.
+- FireRed's 4.67-GB checkpoint is admitted only through
+  `torch.load(..., weights_only=True)`. The sole additional safe global is the
+  checkpoint's observed `argparse.Namespace`; no broad or unsafe pickle
+  fallback was added.
+- GigaAM v3 binds the live 1,024-piece tokenizer and therefore the exact
+  1,025-class RNNT head. GigaAM Multilingual separately retains its 71-class
+  CTC contract. Kyutai STT now binds the authenticated live tokenizer identity
+  `tokenizer_en_audio_4000.model`; no silent filename alias is used.
+- The final VAST gates at `0ba68abb...` pass `cargo test --locked --workspace`,
+  strict workspace Clippy, `cargo deny check licenses advisories bans` and
+  `cargo audit`. The VAST worker matrix reports 95 total, 94 passing, one
+  expected CosyVoice3 block for the absent dedicated lock, and zero failures.
+  The portable Apple-worker contract matrix reports 41 of 41 passing. These
+  remain self-tests and portable contracts, not Apple-hardware verdicts.
+- All 37 no-argument check scripts applicable to this checkout pass in one
+  final run. Four scripts are explicitly non-applicable without their required
+  external input or generated distribution tree:
+  `check-no-market-claims.sh`, `check-model-size.sh`,
+  `check-cpu-vulkan-only-no-nvidia.sh` and
+  `check-godot-package-no-nvidia.sh`.
+- The repeated live audit remains unchanged at 194 public repositories, 193
+  GGUF-bearing repositories and 198 GGUF files. CPU is `full=128`,
+  `partial=45`, `no-runtime-binder=20`, `not-artifact=1`; Metal is `full=128`,
+  `blocked-by-cpu=65`, `not-artifact=1`. Thus all presently unblocked,
+  in-scope work feasible before an Apple worker is collected, but the 65
+  blocked repositories are not closed. Their remaining gates require real
+  Apple hardware, native binder/parity implementation, exact external inputs
+  or reference packets, owner license and dependency approvals, or some
+  combination of those requirements.
+
+The small evidence trees and logs were copied to
+`/private/tmp/vokra-evidence-e3cd475b`; no checkpoint or generated model
+artifact was retained locally. No Hugging Face upload or Scaleway execution
+occurred in this closure.
+
 ### Branch preparation status
 
 The following source work is present and locally reviewed on this branch. None
