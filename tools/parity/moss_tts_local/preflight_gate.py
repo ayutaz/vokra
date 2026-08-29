@@ -92,13 +92,15 @@ def reviewed(value: Any) -> bool:
 
 
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
-PACKAGE_KEYS = (
+REGISTRY_PACKAGE_KEYS = (
     frozenset({"name", "version", "source", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "wheels"}),
-    frozenset({"name", "version", "source", "dependencies", "metadata"}),
 )
+VIRTUAL_PACKAGE_KEYS = frozenset({"name", "version", "source", "dependencies", "metadata"})
+DEPENDENCY_KEYS = {"name", "marker"}
+REQUIRES_DIST_KEYS = (frozenset({"name", "specifier"}), frozenset({"name", "specifier", "index"}))
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 REGISTRY_URLS = {
     "https://pypi.org/simple": "files.pythonhosted.org",
@@ -157,7 +159,7 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
     for package in packages:
         if not isinstance(package, dict) or not isinstance(package.get("name"), str) or not isinstance(package.get("version"), str):
             raise ValueError("malformed lock package row")
-        if frozenset(package) not in PACKAGE_KEYS or not package["name"].strip() or not package["version"].strip():
+        if not package["name"].strip() or not package["version"].strip():
             raise ValueError("malformed lock package schema")
         identity = (package["name"], package["version"])
         if identity in identities:
@@ -169,9 +171,13 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         if "registry" in source and (not isinstance(source["registry"], str) or source["registry"] not in REGISTRY_URLS):
             raise ValueError("lock registry source must be HTTPS")
         if "virtual" in source:
+            if frozenset(package) != VIRTUAL_PACKAGE_KEYS:
+                raise ValueError("malformed virtual project package schema")
             virtual_count += 1
             if source["virtual"] != ".":
                 raise ValueError("lock virtual source must be '.'")
+        elif frozenset(package) not in REGISTRY_PACKAGE_KEYS:
+            raise ValueError("malformed registry package schema")
         markers = package.get("resolution-markers", [])
         if not isinstance(markers, list) or any(not isinstance(item, str) for item in markers):
             raise ValueError("malformed lock package markers")
@@ -179,7 +185,7 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(dependencies, list):
             raise ValueError("malformed lock dependencies")
         for dependency in dependencies:
-            if not isinstance(dependency, dict) or set(dependency) != {"name", "marker"} or not isinstance(dependency["name"], str) or not dependency["name"].strip() or not isinstance(dependency["marker"], str):
+            if not isinstance(dependency, dict) or set(dependency) != DEPENDENCY_KEYS or not isinstance(dependency["name"], str) or not dependency["name"].strip() or not isinstance(dependency["marker"], str) or not dependency["marker"].strip():
                 raise ValueError("malformed lock dependency row")
         if "sdist" in package and not _artifact_valid(package["sdist"]):
             raise ValueError("malformed lock sdist artifact")
@@ -192,10 +198,10 @@ def lock_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
                 raise ValueError("lock artifact host is not bound to its registry")
         if "virtual" in source:
             metadata = package.get("metadata")
-            if "sdist" in package or "wheels" in package or not isinstance(metadata, dict) or set(metadata) != {"requires-dist"} or not isinstance(metadata["requires-dist"], list):
+            if "sdist" in package or "wheels" in package or not isinstance(metadata, dict) or set(metadata) != {"requires-dist"} or not isinstance(metadata["requires-dist"], list) or not metadata["requires-dist"]:
                 raise ValueError("virtual project metadata/artifacts malformed")
             for requirement in metadata["requires-dist"]:
-                if not isinstance(requirement, dict) or set(requirement) not in ({"name", "specifier"}, {"name", "specifier", "index"}) or not isinstance(requirement.get("name"), str) or not requirement["name"].strip() or not isinstance(requirement.get("specifier"), str) or ("index" in requirement and requirement["index"] != "https://download.pytorch.org/whl/cu126"):
+                if not isinstance(requirement, dict) or frozenset(requirement) not in REQUIRES_DIST_KEYS or not isinstance(requirement.get("name"), str) or not requirement["name"].strip() or not isinstance(requirement.get("specifier"), str) or not requirement["specifier"].strip() or ("index" in requirement and (requirement["name"] != "torch" or requirement["index"] != "https://download.pytorch.org/whl/cu126")):
                     raise ValueError("malformed virtual requires-dist metadata")
         elif "metadata" in package:
             raise ValueError("non-virtual package metadata is not allowed")
@@ -254,9 +260,10 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
         "requires-python": "==3.12.*",
         "dependencies": ["huggingface-hub==1.27.0", "numpy==2.3.5", "safetensors==0.8.0", "torch==2.7.1", "transformers==5.5.0"],
     }
-    if (set(project_data) != {"project", "tool"} or project_data.get("project") != expected_project
-            or set(project_data.get("tool", {})) != {"uv"}
-            or project_data["tool"]["uv"] != {
+    project_tool = project_data.get("tool") if isinstance(project_data, dict) else None
+    if (not isinstance(project_data, dict) or set(project_data) != {"project", "tool"} or project_data.get("project") != expected_project
+            or not isinstance(project_tool, dict) or set(project_tool) != {"uv"}
+            or project_tool["uv"] != {
                 "package": False,
                 "environments": ["python_full_version == '3.12.*' and platform_machine == 'x86_64' and sys_platform == 'linux'"],
                 "index": [{"name": "pytorch-cuda", "url": "https://download.pytorch.org/whl/cu126", "explicit": True}],
@@ -280,10 +287,27 @@ def validate(project: Path, manifest_path: Path, approval_evidence: Path | None 
         return blocked("Local canonical package graph drifted")
     reviews = manifest.get("package_review_rows")
     expected = [(row["name"], row["version"], row["source"]) for row in rows]
-    if not isinstance(reviews, list) or any(not isinstance(row, dict) or set(row) != {"name", "version", "source", "license", "status", "native_bundled_review"} for row in reviews):
+    review_keys = {"name", "version", "source", "license", "status", "native_bundled_review"}
+    if not isinstance(reviews, list) or any(
+        not isinstance(row, dict)
+        or set(row) != review_keys
+        or not isinstance(row["name"], str)
+        or not row["name"].strip()
+        or not isinstance(row["version"], str)
+        or not row["version"].strip()
+        or not isinstance(row["source"], dict)
+        or len(row["source"]) != 1
+        or set(row["source"]) not in ({"registry"}, {"virtual"})
+        or ("registry" in row["source"] and (not isinstance(row["source"]["registry"], str) or row["source"]["registry"] not in REGISTRY_URLS))
+        or ("virtual" in row["source"] and row["source"]["virtual"] != ".")
+        or not isinstance(row["license"], str)
+        or not isinstance(row["status"], str)
+        or not isinstance(row["native_bundled_review"], str)
+        for row in reviews
+    ):
         return blocked("Local package review rows are not the exact lock set/schema")
     actual = [(row["name"], row["version"], row["source"]) for row in reviews]
-    if sorted(actual) != sorted(expected) or len({(item[0], item[1]) for item in actual}) != len(expected):
+    if len(actual) != len(expected) or sorted(actual, key=lambda item: (item[0], item[1])) != sorted(expected, key=lambda item: (item[0], item[1])) or len({(item[0], item[1]) for item in actual}) != len(expected):
         return blocked("Local package review rows are not the exact lock set/schema")
     if manifest.get("package_review_rows_sha256") != canonical(reviews):
         return blocked("Local package review rows digest drifted")
@@ -336,16 +360,25 @@ def self_test() -> int:
         package for package in lock_data["package"]
         if package.get("source", {}).get("registry") and package.get("wheels")
     )
-    artifact = registry_package["wheels"][0]
+    artifact_packages = {
+        field: next(
+            package for package in lock_data["package"]
+            if package.get("source", {}).get("registry") and package.get(field)
+        )
+        for field in ("sdist", "wheels")
+    }
+    artifact = artifact_packages["wheels"]["wheels"][0]
 
-    def reject_artifact_tamper(label: str, mutate: Any) -> bool:
+    def reject_artifact_tamper(label: str, mutate: Any, artifact_field: str = "wheels") -> bool:
         altered = json.loads(json.dumps(lock_data))
+        source_package = artifact_packages[artifact_field]
         altered_package = next(
             package for package in altered["package"]
-            if package.get("name") == registry_package["name"]
-            and package.get("version") == registry_package["version"]
+            if package.get("name") == source_package["name"]
+            and package.get("version") == source_package["version"]
         )
-        mutate(altered_package["wheels"][0])
+        artifact_value = altered_package[artifact_field]
+        mutate(artifact_value[0] if isinstance(artifact_value, list) else artifact_value)
         try:
             lock_rows(altered)
         except ValueError:
@@ -353,30 +386,31 @@ def self_test() -> int:
         print(f"artifact tamper accepted: {label}", file=sys.stderr)
         return False
 
-    for field in sorted(ARTIFACT_KEYS):
-        if not reject_artifact_tamper(f"missing-{field}", lambda value, field=field: value.pop(field)):
+    for artifact_field in ("sdist", "wheels"):
+        for field in sorted(ARTIFACT_KEYS):
+            if not reject_artifact_tamper(f"{artifact_field}-missing-{field}", lambda value, field=field: value.pop(field), artifact_field):
+                return 1
+        if not reject_artifact_tamper(f"{artifact_field}-extra-field", lambda value: value.update({"unexpected": True}), artifact_field):
             return 1
-    if not reject_artifact_tamper("extra-field", lambda value: value.update({"unexpected": True})):
-        return 1
-    for label, value in (
-        ("bad-url", "https://files.pythonhosted.org"),
-        ("malformed-url", "https://["),
-        ("wrong-host", "https://download-r2.pytorch.org/packages/invalid.whl"),
-        ("url-port", "https://files.pythonhosted.org:443/packages/invalid.whl"),
-        ("url-query", artifact["url"] + "?tampered=1"),
-        ("empty-upload-time", "   "),
-    ):
-        if label == "empty-upload-time":
-            mutate = lambda item, value=value: item.update({"upload-time": value})
-        else:
-            mutate = lambda item, value=value: item.update({"url": value})
-        if not reject_artifact_tamper(label, mutate):
+        for label, value in (
+            ("bad-url", "https://files.pythonhosted.org"),
+            ("malformed-url", "https://["),
+            ("wrong-host", "https://download-r2.pytorch.org/packages/invalid.whl"),
+            ("url-port", "https://files.pythonhosted.org:443/packages/invalid.whl"),
+            ("url-query", artifact["url"] + "?tampered=1"),
+            ("empty-upload-time", "   "),
+        ):
+            if label == "empty-upload-time":
+                mutate = lambda item, value=value: item.update({"upload-time": value})
+            else:
+                mutate = lambda item, value=value: item.update({"url": value})
+            if not reject_artifact_tamper(f"{artifact_field}-{label}", mutate, artifact_field):
+                return 1
+        for label, value in (("bool-size", True), ("zero-size", 0), ("negative-size", -1), ("float-size", 1.5), ("string-size", "1")):
+            if not reject_artifact_tamper(f"{artifact_field}-{label}", lambda item, value=value: item.update({"size": value}), artifact_field):
+                return 1
+        if not reject_artifact_tamper(f"{artifact_field}-bad-hash", lambda item: item.update({"hash": "sha256:tampered"}), artifact_field):
             return 1
-    for label, value in (("bool-size", True), ("zero-size", 0), ("negative-size", -1), ("float-size", 1.5), ("string-size", "1")):
-        if not reject_artifact_tamper(label, lambda item, value=value: item.update({"size": value})):
-            return 1
-    if not reject_artifact_tamper("bad-hash", lambda item: item.update({"hash": "sha256:tampered"})):
-        return 1
 
     for field in ("name", "version", "source", "wheels"):
         altered = json.loads(json.dumps(lock_data))
@@ -391,9 +425,18 @@ def self_test() -> int:
     strict_cases: list[tuple[str, Any]] = []
     strict_cases.append(("top-level", {**json.loads(json.dumps(lock_data)), "unexpected": True}))
     malformed_package = json.loads(json.dumps(lock_data)); malformed_package["package"][0]["unexpected"] = True; strict_cases.append(("package-schema", malformed_package))
+    missing_package_field = json.loads(json.dumps(lock_data)); missing_package_field["package"][0].pop("name"); strict_cases.append(("package-missing-field", missing_package_field))
     malformed_source = json.loads(json.dumps(lock_data)); malformed_source["package"][0]["source"] = {"registry": True}; strict_cases.append(("source-schema", malformed_source))
+    extra_source = json.loads(json.dumps(lock_data)); extra_source["package"][0]["source"]["unexpected"] = True; strict_cases.append(("source-extra-field", extra_source))
     malformed_dependency = json.loads(json.dumps(lock_data)); dependency_package = next(item for item in malformed_dependency["package"] if item.get("dependencies")); dependency_package["dependencies"][0]["marker"] = True; strict_cases.append(("dependency-schema", malformed_dependency))
+    missing_dependency_field = json.loads(json.dumps(lock_data)); dependency_package = next(item for item in missing_dependency_field["package"] if item.get("dependencies")); dependency_package["dependencies"][0].pop("name"); strict_cases.append(("dependency-missing-field", missing_dependency_field))
+    extra_dependency_field = json.loads(json.dumps(lock_data)); dependency_package = next(item for item in extra_dependency_field["package"] if item.get("dependencies")); dependency_package["dependencies"][0]["unexpected"] = True; strict_cases.append(("dependency-extra-field", extra_dependency_field))
+    malformed_dependency_row = json.loads(json.dumps(lock_data)); dependency_package = next(item for item in malformed_dependency_row["package"] if item.get("dependencies")); dependency_package["dependencies"][0] = "not-a-row"; strict_cases.append(("dependency-row-type", malformed_dependency_row))
     malformed_virtual = json.loads(json.dumps(lock_data)); virtual_package = next(item for item in malformed_virtual["package"] if item.get("source") == {"virtual": "."}); virtual_package["source"] = {"virtual": "other"}; strict_cases.append(("virtual-source", malformed_virtual))
+    extra_virtual_metadata = json.loads(json.dumps(lock_data)); virtual_package = next(item for item in extra_virtual_metadata["package"] if item.get("source") == {"virtual": "."}); virtual_package["metadata"]["unexpected"] = True; strict_cases.append(("virtual-metadata-schema", extra_virtual_metadata))
+    missing_virtual_requirement = json.loads(json.dumps(lock_data)); virtual_package = next(item for item in missing_virtual_requirement["package"] if item.get("source") == {"virtual": "."}); virtual_package["metadata"]["requires-dist"][0].pop("name"); strict_cases.append(("virtual-metadata-missing-field", missing_virtual_requirement))
+    extra_virtual_requirement = json.loads(json.dumps(lock_data)); virtual_package = next(item for item in extra_virtual_requirement["package"] if item.get("source") == {"virtual": "."}); virtual_package["metadata"]["requires-dist"][0]["unexpected"] = True; strict_cases.append(("virtual-metadata-extra-field", extra_virtual_requirement))
+    malformed_virtual_requirement = json.loads(json.dumps(lock_data)); virtual_package = next(item for item in malformed_virtual_requirement["package"] if item.get("source") == {"virtual": "."}); virtual_package["metadata"]["requires-dist"][0] = "not-a-row"; strict_cases.append(("virtual-metadata-row-type", malformed_virtual_requirement))
     for label, malformed in strict_cases:
         try:
             lock_rows(malformed)
@@ -422,6 +465,31 @@ def self_test() -> int:
             ok, reason = validate(root, candidate)
             if ok or "package review rows" not in reason:
                 print(f"malformed package review {label} bypass accepted: {reason}", file=sys.stderr); return 1
+        def reject_package_review_tamper(label: str, mutate: Any) -> bool:
+            altered = json.loads(json.dumps(manifest))
+            mutate(altered["package_review_rows"][0])
+            candidate.write_text(json.dumps(altered), encoding="utf-8")
+            ok, reason = validate(root, candidate)
+            if ok or ("package review rows" not in reason and "unresolved" not in reason):
+                print(f"package review row tamper accepted: {label}: {reason}", file=sys.stderr)
+                return False
+            return True
+
+        for label, mutate in (
+            ("row-missing-field", lambda row: row.pop("status")),
+            ("row-extra-field", lambda row: row.update({"unexpected": True})),
+            ("source-non-dict", lambda row: row.update({"source": "https://pypi.org/simple"})),
+            ("source-extra-field", lambda row: row.update({"source": {"registry": "https://pypi.org/simple", "unexpected": True}})),
+            ("source-unknown-registry", lambda row: row.update({"source": {"registry": "https://pypi.example.invalid/simple"}})),
+            ("source-unknown-virtual", lambda row: row.update({"source": {"virtual": "other"}})),
+            ("name-non-string", lambda row: row.update({"name": None})),
+            ("version-non-string", lambda row: row.update({"version": 7})),
+            ("license-non-string", lambda row: row.update({"license": None})),
+            ("status-non-string", lambda row: row.update({"status": False})),
+            ("native-bundled-review-non-string", lambda row: row.update({"native_bundled_review": 1})),
+        ):
+            if not reject_package_review_tamper(label, mutate):
+                return 1
         candidate.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
         ok, reason = validate(root, candidate)
         if ok or "duplicate JSON key" not in reason:
