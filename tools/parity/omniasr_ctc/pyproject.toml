@@ -8,6 +8,7 @@ dependencies = [
   "numpy>=1.26,<3",
   "soundfile>=0.13,<1",
   "torch>=2.2,<3",
+  "torchaudio==2.8.0",
 ]
 
 [tool.uv]
