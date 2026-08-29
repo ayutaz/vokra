@@ -1,0 +1,98 @@
+[project]
+name = "vokra-chatterbox-t3-reference"
+version = "0.1.0"
+description = "Locked isolated reference environment for the pinned Chatterbox T3 source."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy==1.26.4",
+    "huggingface-hub==1.27.0",
+    "einops==0.8.2",
+    "safetensors==0.5.3",
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "tqdm==4.67.1",
+    "transformers==5.2.0",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu" }]
+torchaudio = [{ index = "pytorch-cpu" }]
+
+# The source package metadata below is exact for the fixed Chatterbox source
+# pyproject (5de7a54...), restricted to the Python 3.12 branch.  The isolated
+# T3 loader deliberately omits the source's optional/full-pipeline packages
+# (mutable Perth master, S3 tokenizer, Diffusers, Gradio, etc.): it imports
+# only the authenticated T3/tokenizer modules and their actual dependencies.
+#
+# `huggingface-hub`, `einops`, and `tqdm` are direct import requirements of
+# the selected loader; their exact versions, plus all transitive versions and
+# hashes, are recorded in uv.lock.  The lock is generated from package index
+# metadata and must be checked with `uv lock --check` before VAST use.
+
+[tool.vokra.chatterbox_t3_reference]
+source_repository = "https://github.com/resemble-ai/chatterbox.git"
+source_revision = "5de7a54aa4e5e2baadb0182dde554908b48b85c2"
+source_project_version = "0.1.7"
+source_exact_dependencies = [
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "transformers==5.2.0",
+    "safetensors==0.5.3",
+]
+isolated_loader_dependencies = [
+    "numpy==1.26.4",
+    "huggingface-hub==1.27.0",
+    "einops==0.8.2",
+    "tqdm==4.67.1",
+]
+excluded_mutable_or_full_pipeline = [
+    "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@master",
+    "s3tokenizer",
+    "diffusers==0.29.0",
+    "gradio==6.8.0",
+]
+lock_status = "AUTHENTICATED_CPU_INDEX_METADATA_LOCKED"
+torch_index = "https://download.pytorch.org/whl/cpu"
+torch_distribution = "2.6.0+cpu"
+torchaudio_distribution = "2.6.0+cpu"
+
+[tool.vokra.chatterbox_t3_reference.license_audit]
+# The CPU-only lock avoids CUDA/NVIDIA and Triton packages.  The remaining
+# licenses still require the separate reviews recorded below; this status is
+# intentionally fail-closed before uv sync, model acquisition, or reference.
+status = "BLOCKED_UNRESOLVED"
+primary_metadata = "Version-specific PyPI JSON metadata, upstream license files, NumPy wheel notices, and the official PyTorch CPU index; reference-only acceptance is non-redistribution scoped"
+reviewed_packages = [
+    "annotated-doc", "anyio", "certifi", "click", "colorama", "einops", "filelock", "fsspec", "h11", "hf-xet", "httpcore", "httpx", "huggingface-hub", "idna", "jinja2", "markdown-it-py", "markupsafe", "mdurl", "mpmath", "networkx", "numpy", "packaging", "pygments", "pyyaml", "regex", "rich", "safetensors", "setuptools", "shellingham", "sympy", "tokenizers", "torch", "torchaudio", "tqdm", "transformers", "typer", "typer-slim", "typing-extensions",
+]
+blockers = [
+    "typing-extensions==4.16.0 upstream pyproject declares PSF-2.0, outside the repository Apache/MIT/BSD allowlist; owner policy clearance is required",
+]
+accepted_reference_only = [
+    "certifi==2026.7.22: upstream bundle carries MPL-2.0 file-level notices; unmodified VAST-only environment, no Vokra redistribution",
+    "tqdm==4.67.1: upstream LICENCE identifies MIT for most files and MPL-2.0 for the listed files; unmodified VAST-only environment, no Vokra redistribution",
+    "numpy==1.26.4: upstream BSD-3-Clause notices identify bundled OpenBLAS/LAPACK plus GCC libgfortran GPL-3.0-with-GCC-exception and libquadmath LGPL-2.1; these remain external reference wheels and are not shipped by Vokra",
+]
+primary_evidence = [
+    "https://pypi.org/pypi/certifi/2026.7.22/json",
+    "https://github.com/certifi/python-certifi/blob/master/LICENSE",
+    "https://pypi.org/pypi/tqdm/4.67.1/json",
+    "https://github.com/tqdm/tqdm/blob/v4.67.1/LICENCE",
+    "https://pypi.org/pypi/numpy/1.26.4/json",
+    "https://github.com/numpy/numpy/blob/v1.26.4/LICENSE.txt",
+    "https://pypi.org/pypi/typing-extensions/4.16.0/json",
+    "https://github.com/python/typing_extensions/blob/4.16.0/LICENSE",
+]
+license_conclusion_map = "version-keyed name==version mapping emitted by chatterbox_t3_reference.py from the authenticated package_rows"
+license_conclusion_count = 41
+triton_status = "NOT_IN_LOCK; CPU index closure excludes Triton"
+cuda_status = "NOT_IN_LOCK; CPU index closure excludes NVIDIA CUDA distributions"
+soxr_status = "NOT_IN_LOCK"
