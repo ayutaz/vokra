@@ -51,6 +51,42 @@ def no_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def validate_fixed_config(config: object) -> None:
+    """Validate the exact nested config emitted by the official checkpoint."""
+
+    def mapping(value: object, label: str) -> dict[str, object]:
+        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+            raise ValueError(f"fixed config {label} must be an object")
+        return value
+
+    root = mapping(config, "root")
+    outer = mapping(root.get("cfg"), "cfg")
+    model = mapping(outer.get("model"), "cfg.model")
+    inner = mapping(model.get("cfg"), "cfg.model.cfg")
+    model_class = inner.get("model_class")
+    sample_rate = inner.get("sample_rate")
+    if not isinstance(model_class, str) or model_class != "rnnt":
+        raise ValueError("fixed config RNNT model_class mismatch")
+    if type(sample_rate) is not int or sample_rate != SAMPLE_RATE_HZ:
+        raise ValueError("fixed config sample_rate mismatch")
+
+    preprocessor = mapping(inner.get("preprocessor"), "cfg.model.cfg.preprocessor")
+    expected = {
+        "sample_rate": SAMPLE_RATE_HZ,
+        "center": False,
+        "mel_scale": "htk",
+        "mel_norm": None,
+        "n_fft": 320,
+        "win_length": 320,
+        "hop_length": 160,
+        "features": 64,
+    }
+    for name, expected_value in expected.items():
+        actual = preprocessor.get(name)
+        if type(actual) is not type(expected_value) or actual != expected_value:
+            raise ValueError(f"fixed preprocessor {name} mismatch")
+
+
 def reject_symlink_ancestry(path: Path, label: str) -> None:
     absolute = path if path.is_absolute() else Path.cwd() / path
     for ancestor in (absolute, *absolute.parents):
@@ -112,6 +148,41 @@ def self_test() -> None:
     assert BLANK_ID == NUM_CLASSES - 1 and MAX_SYMBOLS_PER_STEP == 10
     assert len(fixed_pcm()) == PCM_SAMPLES
     assert hashlib.sha256(fixed_pcm().astype("<f4").tobytes()).hexdigest() == PCM_F32LE_SHA256
+    nested_config = {
+        "cfg": {
+            "model": {
+                "cfg": {
+                    "model_class": "rnnt",
+                    "sample_rate": SAMPLE_RATE_HZ,
+                    "preprocessor": {
+                        "sample_rate": SAMPLE_RATE_HZ,
+                        "center": False,
+                        "mel_scale": "htk",
+                        "mel_norm": None,
+                        "n_fft": 320,
+                        "win_length": 320,
+                        "hop_length": 160,
+                        "features": 64,
+                    },
+                }
+            }
+        }
+    }
+    validate_fixed_config(nested_config)
+    for malformed in (
+        {
+            "model_class": "rnnt",
+            "sample_rate": SAMPLE_RATE_HZ,
+            "preprocessor": nested_config["cfg"]["model"]["cfg"]["preprocessor"],
+        },
+        {"cfg": {"model": {"model_class": "rnnt"}}},
+    ):
+        try:
+            validate_fixed_config(malformed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("wrong or missing config nesting was accepted")
     row = [0.0] * NUM_CLASSES
     row[3] = 2.0
     row[BLANK_ID] = 3.0
@@ -177,29 +248,10 @@ def main() -> int:
         config = json.loads(paths["config"].read_text(encoding="utf-8"), object_pairs_hook=no_duplicate_keys)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid fixed config: {exc}") from exc
-    if config.get("model_class") != "rnnt" or config.get("sample_rate") != SAMPLE_RATE_HZ:
-        raise SystemExit("fixed config RNNT/sample-rate contract mismatch")
-    preprocessor = config.get("preprocessor")
-    if not isinstance(preprocessor, dict) or {
-        "center": preprocessor.get("center"),
-        "mel_scale": preprocessor.get("mel_scale"),
-        "mel_norm": preprocessor.get("mel_norm"),
-        "power": preprocessor.get("power"),
-        "n_fft": preprocessor.get("n_fft"),
-        "win_length": preprocessor.get("win_length"),
-        "hop_length": preprocessor.get("hop_length"),
-        "n_mels": preprocessor.get("n_mels"),
-    } != {
-        "center": False,
-        "mel_scale": "htk",
-        "mel_norm": None,
-        "power": 2,
-        "n_fft": 320,
-        "win_length": 320,
-        "hop_length": 160,
-        "n_mels": 64,
-    }:
-        raise SystemExit("fixed preprocessor contract mismatch")
+    try:
+        validate_fixed_config(config)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     import numpy as np
     import torch
