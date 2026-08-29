@@ -1108,7 +1108,7 @@ impl ZonosSamplingParams {
                 .is_some_and(|p| !p.is_finite() || p <= 0.0 || p > 1.0)
             || self
                 .min_p
-                .is_some_and(|p| !p.is_finite() || p < 0.0 || p > 1.0)
+                .is_some_and(|p| !p.is_finite() || !(0.0..=1.0).contains(&p))
             || !self.unified_linear.is_finite()
             || !(0.0..=1.0).contains(&self.unified_linear)
             || !self.unified_confidence.is_finite()

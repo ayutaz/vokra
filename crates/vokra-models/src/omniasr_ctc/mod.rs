@@ -1512,7 +1512,7 @@ fn materialize_positional_weight_values(
         ));
     }
     let mut output = vec![0.0; v.len()];
-    for kernel in 0..kernel_size {
+    for (kernel, &g_value) in g.iter().enumerate() {
         let mut norm_sq = 0.0f32;
         for out in 0..out_channels {
             for input in 0..in_channels {
@@ -1521,12 +1521,12 @@ fn materialize_positional_weight_values(
             }
         }
         let norm = norm_sq.sqrt();
-        if !norm.is_finite() || norm == 0.0 || !g[kernel].is_finite() {
+        if !norm.is_finite() || norm == 0.0 || !g_value.is_finite() {
             return Err(VokraError::ModelLoad(format!(
                 "omniasr-ctc: positional Conv1D weight_norm kernel {kernel} has invalid norm/g"
             )));
         }
-        let scale = g[kernel] / norm;
+        let scale = g_value / norm;
         for out in 0..out_channels {
             for input in 0..in_channels {
                 let index = (out * in_channels + input) * kernel_size + kernel;

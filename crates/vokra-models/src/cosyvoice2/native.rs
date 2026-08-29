@@ -610,13 +610,11 @@ impl SpeechGeneration {
                 ));
             }
             match last_step {
-                None => {
-                    if call.generation_step != 0 {
-                        return Err(VokraError::InvalidArgument(
-                            "cosyvoice2 native: sampling trace does not start at outer step zero"
-                                .into(),
-                        ));
-                    }
+                None if call.generation_step != 0 => {
+                    return Err(VokraError::InvalidArgument(
+                        "cosyvoice2 native: sampling trace does not start at outer step zero"
+                            .into(),
+                    ));
                 }
                 Some(previous) if call.generation_step > previous + 1 => {
                     return Err(VokraError::InvalidArgument(
