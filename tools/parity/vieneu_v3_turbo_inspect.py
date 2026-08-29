@@ -42,7 +42,7 @@ FORMAT = "vokra-vieneu-v3-turbo-inspection-v2"
 # a local self-authored packet.
 SOURCE_ROLE_BLOBS: dict[str, str] = {
     "LICENSE": "261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64",
-    "pyproject.toml": "1fe2997dc8ef8c9aa2a379d2a9ba65295afcea4",
+    "pyproject.toml": "1fe2997dc8ef8ec9aa2a379d2a9ba65295afcea4",
     "uv.lock": "276a29b03a351367657225f0119c97a10c98b160",
     "src/vieneu/_v3_turbo_engine/__init__.py": "4a9cfd1e899bd334630ab49098df533b3b8ba5f9",
     "src/vieneu/_v3_turbo_engine/configuration_v3_turbo.py": "6ce05ecb686426ae73bab18e2b5bc2a0ac46eaaf",
@@ -1254,6 +1254,7 @@ def self_test() -> None:
         "src/vieneu/_v3_turbo_engine/onnx_runtime_lite.py",
         "src/vieneu/_v3_turbo_engine/prompt_v3_turbo.py",
     }
+    assert SOURCE_ROLE_BLOBS["pyproject.toml"] == "1fe2997dc8ef8ec9aa2a379d2a9ba65295afcea4"
     synthetic_roles = {
         relative: {"mode": "100644", "git_blob_sha1": blob}
         for relative, blob in SOURCE_ROLE_BLOBS.items()
