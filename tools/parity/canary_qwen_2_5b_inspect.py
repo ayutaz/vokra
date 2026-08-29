@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --frozen --project tools/parity --python 3.12 python
 """Fail-closed VAST evidence inspector for NVIDIA Canary-Qwen-2.5B."""
 from __future__ import annotations
-import argparse, hashlib, json, math, subprocess, sys, tempfile
+import argparse, datetime, hashlib, json, math, subprocess, sys, tempfile
 from pathlib import Path
 from typing import Any
 import yaml
@@ -11,6 +11,7 @@ SOURCE_REPOSITORY="https://github.com/NVIDIA/NeMo.git"; SOURCE_TAG="v2.5.0"; SOU
 TOKENIZER_REPOSITORY="Qwen/Qwen3-1.7B"; TOKENIZER_REVISION="70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
 FORMAT="vokra-canary-qwen-2.5b-inspection-v1"; MAX_HEADER_BYTES=64*1024*1024
 CANONICAL_INPUT_LENGTH_MARKER="**Input length.** The maximum audio duration in training was 40s, and the maximum token sequence length was 1024 tokens (including prompt, audio, and response)."
+OPEN_ASR_LEADERBOARD_VALUES={"mean_wer":5.63,"rtfx":418.28,"ami_wer":10.19,"earnings22_wer":10.45,"gigaspeech_wer":9.43,"librispeech_clean_wer":1.61,"librispeech_other_wer":3.1,"spgispeech_wer":1.9,"tedlium_wer":2.71,"voxpopuli_wer":5.66}
 MODEL_FILES={
     ".eval_results/open_asr_leaderboard.yaml":(2128,"9dc5e54acc69f650c5b9cb40492baadf6bb05430",None,"1b0dbb55d8d897f107baed2a8a57fa9b81e259141e45fd1d45ca8533079527bd"),
     ".gitattributes":(1627,"33f879d5e8f1c01e682db7c50613d2aae540b5d8",None,None),
@@ -58,6 +59,23 @@ StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,yaml
 def load_yaml(path:Path)->Any:
     try: return yaml.load(path.read_text(encoding="utf-8"),Loader=StrictLoader)
     except (OSError,UnicodeError,yaml.YAMLError,RuntimeError) as e: raise RuntimeError(f"strict YAML failure at {path}: {e}") from e
+def validate_open_asr_leaderboard(value:Any)->list[dict[str,Any]]:
+    if type(value) is not list or len(value)!=len(OPEN_ASR_LEADERBOARD_VALUES): raise RuntimeError("open ASR leaderboard must be the exact ten-element list")
+    expected_keys={"dataset","value","date","source"}; dataset_keys={"id","task_id"}; source_keys={"url","name","user"}; seen=set(); validated=[]
+    for entry in value:
+        if type(entry) is not dict or set(entry)!=expected_keys: raise RuntimeError("open ASR leaderboard entry schema is not exact")
+        dataset,source=entry["dataset"],entry["source"]
+        if type(dataset) is not dict or set(dataset)!=dataset_keys or dataset["id"]!="hf-audio/open-asr-leaderboard" or type(dataset["task_id"]) is not str: raise RuntimeError("open ASR leaderboard dataset schema is invalid")
+        task=dataset["task_id"]
+        if task in seen or task not in OPEN_ASR_LEADERBOARD_VALUES: raise RuntimeError(f"open ASR leaderboard task is duplicate or unknown: {task!r}")
+        expected_value=OPEN_ASR_LEADERBOARD_VALUES[task]
+        if type(entry["value"]) is not type(expected_value) or entry["value"]!=expected_value: raise RuntimeError(f"open ASR leaderboard value mismatch: {task}")
+        date=entry["date"]
+        if not ((type(date) is str and date=="2025-06-26") or (type(date) is datetime.date and date.isoformat()=="2025-06-26")): raise RuntimeError(f"open ASR leaderboard date mismatch: {task}")
+        if type(source) is not dict or set(source)!=source_keys or source!={"url":"https://huggingface.co/hf-audio","name":"open-asr-leaderboard","user":"hf-audio"}: raise RuntimeError(f"open ASR leaderboard source mismatch: {task}")
+        seen.add(task); validated.append(entry)
+    if seen!=set(OPEN_ASR_LEADERBOARD_VALUES): raise RuntimeError("open ASR leaderboard task set is incomplete")
+    return validated
 def read_front_matter(text:str)->dict[str,Any]:
     lines=text.splitlines()
     if not lines or lines[0].strip()!="---": raise RuntimeError("README YAML front matter missing")
@@ -215,8 +233,7 @@ def inspect(snapshot:Path,tokenizer:Path,source:Path,model_tree:Path,tok_tree:Pa
     if "Transcribe the following: <|audioplaceholder|>" not in readme: raise RuntimeError("Canary prompt marker missing")
     require_canonical_input_length(readme)
     parsed={p.relative_to(snapshot).as_posix():{"sha256":sha256(p),"json":load(p)} for p in snapshot.rglob("*.json") if p.is_file() and ".cache" not in p.relative_to(snapshot).parts}; config=inspect_config(parsed.get("config.json",{}).get("json"))
-    eval_evidence=load_yaml(snapshot/".eval_results/open_asr_leaderboard.yaml")
-    if not isinstance(eval_evidence,dict): raise RuntimeError("leaderboard YAML is not a mapping")
+    eval_evidence=validate_open_asr_leaderboard(load_yaml(snapshot/".eval_results/open_asr_leaderboard.yaml"))
     licenses=(snapshot/"LICENSES").read_text(encoding="utf-8")
     if "Canary" not in licenses or "CC-BY-4.0" not in licenses or "Qwen3-1.7B" not in licenses or "Apache-2.0" not in licenses: raise RuntimeError("component license declarations are incomplete")
     tokcomplete=packet(tok_tree,TOKENIZER_REPOSITORY,TOKENIZER_REVISION,TOKENIZER_COMPLETE_FILES)
@@ -252,6 +269,21 @@ def self_test()->None:
         try: require_canonical_input_length(legacy_readme)
         except RuntimeError: pass
         else: raise AssertionError("ambiguous input-length README marker was accepted")
+    leaderboard_source={"url":"https://huggingface.co/hf-audio","name":"open-asr-leaderboard","user":"hf-audio"}
+    valid_leaderboard=[{"dataset":{"id":"hf-audio/open-asr-leaderboard","task_id":task},"value":value,"date":"2025-06-26","source":dict(leaderboard_source)} for task,value in OPEN_ASR_LEADERBOARD_VALUES.items()]
+    assert len(validate_open_asr_leaderboard(valid_leaderboard))==10
+    date_object_leaderboard=[dict(entry) for entry in valid_leaderboard]
+    date_object_leaderboard[0]={**date_object_leaderboard[0],"date":datetime.date(2025,6,26)}
+    assert len(validate_open_asr_leaderboard(date_object_leaderboard))==10
+    duplicate_task=[dict(entry) for entry in valid_leaderboard]
+    duplicate_task[1]={**duplicate_task[1],"dataset":{**duplicate_task[1]["dataset"],"task_id":duplicate_task[0]["dataset"]["task_id"]}}
+    bool_value=[dict(entry) for entry in valid_leaderboard]
+    bool_value[0]={**bool_value[0],"value":True}
+    extra_field=[dict(entry,unexpected=True) for entry in valid_leaderboard]
+    for invalid in (duplicate_task,bool_value,extra_field):
+        try: validate_open_asr_leaderboard(invalid)
+        except RuntimeError: pass
+        else: raise AssertionError("invalid leaderboard evidence was accepted")
     try: yaml.load("x: 1\nx: 2\n",Loader=StrictLoader)
     except RuntimeError: pass
     else: raise AssertionError("duplicate YAML accepted")
