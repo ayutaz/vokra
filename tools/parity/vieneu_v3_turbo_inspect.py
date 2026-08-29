@@ -21,6 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from urllib.parse import urlsplit
 
 
 MODEL_REPOSITORY = "pnnbao-ump/VieNeu-TTS-v3-Turbo"
@@ -658,6 +659,35 @@ def validate_source_tag_identity(
     return blockers
 
 
+def canonical_source_origin(origin: str) -> tuple[str | None, str | None]:
+    """Return the pinned HTTPS URL and repository slug for an exact origin.
+
+    Git remotes are untrusted evidence.  Keep this deliberately stricter than
+    URL normalization: only the exact pinned GitHub host and path are valid.
+    This rejects SSH remotes, credentials, ports, alternate hosts, query or
+    fragment suffixes, path traversal, and whitespace ambiguity.
+    """
+
+    if not origin or origin != origin.strip():
+        return None, None
+    try:
+        parsed = urlsplit(origin)
+        pinned = urlsplit(SOURCE_URL)
+    except ValueError:
+        return None, None
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.path != pinned.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None, None
+    return SOURCE_URL, SOURCE_REPOSITORY
+
+
 def git_tag_identity(root: Path, blockers: list[str]) -> dict[str, Any]:
     result: dict[str, Any] = {
         "pinned_tag_object": SOURCE_TAG_OBJECT,
@@ -749,6 +779,9 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
         "pinned_peeled_commit": SOURCE_PEELED_COMMIT,
         "resolved_revision": None,
         "origin": None,
+        "origin_raw": None,
+        "origin_canonical": None,
+        "origin_repository": None,
         "worktree_status": "UNKNOWN",
         "tracked_files": [],
         "license_files": [],
@@ -762,13 +795,19 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
     if not (root / ".git").exists():
         blockers.append("VieNeu source checkout lacks .git metadata")
     try:
-        origin = git_output(root, "remote", "get-url", "origin").strip().removesuffix("/").removesuffix(".git")
+        origin = git_output(root, "remote", "get-url", "origin").rstrip("\r\n")
     except (OSError, subprocess.CalledProcessError) as error:
         blockers.append(f"VieNeu source origin unavailable: {error}")
     else:
         result["origin"] = origin
-        if origin != SOURCE_REPOSITORY:
-            blockers.append(f"VieNeu source origin {origin!r} != pinned {SOURCE_REPOSITORY!r}")
+        result["origin_raw"] = origin
+        canonical_url, canonical_repository = canonical_source_origin(origin)
+        result["origin_canonical"] = canonical_url
+        result["origin_repository"] = canonical_repository
+        if canonical_url != SOURCE_URL or canonical_repository != SOURCE_REPOSITORY:
+            blockers.append(
+                f"VieNeu source origin {origin!r} is not the pinned HTTPS GitHub origin"
+            )
     try:
         dirty = git_output(root, "status", "--porcelain", "--untracked-files=all")
     except (OSError, subprocess.CalledProcessError) as error:
@@ -820,7 +859,8 @@ def source_evidence(root: Path, blockers: list[str]) -> dict[str, Any]:
         result["resolved_tag_object"] == SOURCE_TAG_OBJECT
         and result["resolved_peeled_commit"] == SOURCE_PEELED_COMMIT
         and result["resolved_revision"] == SOURCE_PEELED_COMMIT
-        and result["origin"] == SOURCE_REPOSITORY
+        and result["origin_canonical"] == SOURCE_URL
+        and result["origin_repository"] == SOURCE_REPOSITORY
         and result["worktree_status"] == "CLEAN"
         and len(tracked) == len(files)
     )
@@ -1172,6 +1212,19 @@ def self_test() -> None:
     assert SOURCE_REVISION == SOURCE_TAG_OBJECT
     assert SOURCE_TAG_NAME == "v3.0.0"
     assert SOURCE_PEELED_COMMIT == "28392eee571db0da31632882ac7226faa2d09d5d"
+    assert canonical_source_origin(SOURCE_URL) == (SOURCE_URL, SOURCE_REPOSITORY)
+    for invalid_origin in (
+        "git@github.com:pnnbao97/VieNeu-TTS.git",
+        "https://github.com.evil.example/pnnbao97/VieNeu-TTS.git",
+        "https://user:token@github.com/pnnbao97/VieNeu-TTS.git",
+        "https://github.com/pnnbao97/other-repository.git",
+        "https://github.com/pnnbao97/VieNeu-TTS.git/extra",
+        "https://github.com/pnnbao97/VieNeu-TTS.git?ref=main",
+        "https://github.com/pnnbao97/VieNeu-TTS.git#readme",
+        "https://github.com:443/pnnbao97/VieNeu-TTS.git",
+        " https://github.com/pnnbao97/VieNeu-TTS.git",
+    ):
+        assert canonical_source_origin(invalid_origin) == (None, None)
     tag_content = f"object {SOURCE_PEELED_COMMIT}\ntype commit\ntag {SOURCE_TAG_NAME}\n\n"
     assert not validate_source_tag_identity(
         SOURCE_TAG_OBJECT, "tag", tag_content, SOURCE_PEELED_COMMIT
