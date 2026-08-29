@@ -21,8 +21,8 @@ run_case() {
   set +e
   # Values are exported to the offline `sh -c` fixture below.
   # shellcheck disable=SC2016,SC2034
-  FAKE_STDOUT='ordinary output https://example.test/?api_key=dummy-secret&keep=1;tokenizer=kept-tokenizer' \
-    FAKE_STDERR="ordinary warning 'https://example.test/?keep=1;access_token=another-dummy;tokenizer=kept-tokenizer'" \
+  FAKE_STDOUT='ordinary output https://example.test/?api_key=dummy-secret&keep=1;tokenizer=kept-tokenizer json={"extra_env": "JUPYTER_TOKEN=dummy-jupyter\\n", "TOKEN": "dummy-json", "tokenizer": "kept-tokenizer"}' \
+    FAKE_STDERR="ordinary warning 'https://example.test/?keep=1;ACCESS_TOKEN=another-dummy;tokenizer=kept-tokenizer' kv CONTAINER_API_KEY=dummy-kv token_value=keep onstart='IMAGE_LOGIN_PASS=dummy-image'" \
   FAKE_STATUS="$expected_status" VASTAI_BIN=sh "$wrapper" -c \
     'printf "%s\\n" "$FAKE_STDOUT"; printf "%s\\n" "$FAKE_STDERR" >&2; exit "$FAKE_STATUS"' \
     >"$stdout_file" 2>"$stderr_file"
@@ -44,17 +44,46 @@ run_case() {
   if grep -Fq -- 'api_key=dummy-secret' "$stdout_file" || \
      grep -Fq -- 'api_key=dummy-secret' "$stderr_file" || \
      grep -Fq -- 'access_token=another-dummy' "$stdout_file" || \
-     grep -Fq -- 'access_token=another-dummy' "$stderr_file"; then
+     grep -Fq -- 'access_token=another-dummy' "$stderr_file" || \
+     grep -Fq -- 'dummy-jupyter' "$stdout_file" || \
+     grep -Fq -- 'dummy-json' "$stdout_file" || \
+     grep -Fq -- 'dummy-kv' "$stderr_file" || \
+     grep -Fq -- 'dummy-image' "$stderr_file"; then
     echo "vastai-safe self-test: credential fixture survived redaction" >&2
     return 1
   fi
 }
 
 run_case 0 \
-  'ordinary output https://example.test/?api_key=[REDACTED]&keep=1;tokenizer=kept-tokenizer' \
-  "ordinary warning 'https://example.test/?keep=1;access_token=[REDACTED];tokenizer=kept-tokenizer'"
+  'ordinary output https://example.test/?api_key=[REDACTED]&keep=1;tokenizer=kept-tokenizer json={"extra_env": "JUPYTER_TOKEN=[REDACTED]", "TOKEN": "[REDACTED]", "tokenizer": "kept-tokenizer"}' \
+  "ordinary warning 'https://example.test/?keep=1;ACCESS_TOKEN=[REDACTED];tokenizer=kept-tokenizer' kv CONTAINER_API_KEY=[REDACTED] token_value=keep onstart='IMAGE_LOGIN_PASS=[REDACTED]'"
 run_case 7 \
-  'ordinary output https://example.test/?api_key=[REDACTED]&keep=1;tokenizer=kept-tokenizer' \
-  "ordinary warning 'https://example.test/?keep=1;access_token=[REDACTED];tokenizer=kept-tokenizer'"
+  'ordinary output https://example.test/?api_key=[REDACTED]&keep=1;tokenizer=kept-tokenizer json={"extra_env": "JUPYTER_TOKEN=[REDACTED]", "TOKEN": "[REDACTED]", "tokenizer": "kept-tokenizer"}' \
+  "ordinary warning 'https://example.test/?keep=1;ACCESS_TOKEN=[REDACTED];tokenizer=kept-tokenizer' kv CONTAINER_API_KEY=[REDACTED] token_value=keep onstart='IMAGE_LOGIN_PASS=[REDACTED]'"
+
+run_json_key_cases() {
+  local key actual_status
+  for key in api_key API_KEY apikey APIKEY api-key API-KEY container_api_key CONTAINER_API_KEY \
+    access_token ACCESS_TOKEN auth_token AUTH_TOKEN client_secret CLIENT_SECRET \
+    hf_token HF_TOKEN jupyter_token JUPYTER_TOKEN token TOKEN secret SECRET \
+    password PASSWORD docker_login_pass DOCKER_LOGIN_PASS image_login_pass IMAGE_LOGIN_PASS; do
+    set +e
+    # shellcheck disable=SC2016
+    FAKE_STDOUT="{\"$key\":\"secret-$key\"}" FAKE_STDERR="json warning {\"$key\": \"secret-$key\"}" \
+      VASTAI_BIN=sh "$wrapper" -c \
+      'printf "%s\\n" "$FAKE_STDOUT"; printf "%s\\n" "$FAKE_STDERR" >&2' \
+      >"$stdout_file" 2>"$stderr_file"
+    actual_status=$?
+    set -e
+    [[ "$actual_status" == 0 ]] || { echo "vastai-safe self-test: $key status changed" >&2; return 1; }
+    grep -Fqx -- "{\"$key\":\"[REDACTED]\"}" "$stdout_file" || return 1
+    grep -Fqx -- "json warning {\"$key\": \"[REDACTED]\"}" "$stderr_file" || return 1
+    if grep -Fq -- "secret-$key" "$stdout_file" "$stderr_file"; then
+      return 1
+    fi
+  done
+}
+
+run_json_key_cases
 
 echo 'test-vastai-safe.sh: OK (redaction + exit-status preservation)'
