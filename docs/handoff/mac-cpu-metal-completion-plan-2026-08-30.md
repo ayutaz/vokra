@@ -107,6 +107,32 @@ authorized public replacement remain open, so the live 63-row CPU-open count
 does not change. The other Wave B-D source/VAST/license tasks are also still
 open; Scaleway alone cannot complete them.
 
+The next Wave B dependency-evidence checkpoint completed without model
+acquisition on temporary VAST instance `49232927`.  The reviewed source HEAD is
+`afe0b77551290ba8525edb7baf581e0c221fbdda`; Bark and Parler-TTS were audited at
+its immediate Qwen-only predecessor `152a4cccec785f4f419433f2f95eb234772fe163`.
+The exact Linux closures matched: Qwen3-ASR 91 installed rows plus four explicit
+inactive rows out of 95 lock rows, Bark 34 installed rows plus one virtual row,
+and Parler-TTS 26 installed rows plus one virtual row.  Exact locked PyPI sdist
+inspection recovered publisher bytes for Qwen Cython/tokenizers, Bark
+safetensors/tokenizers and Parler tokenizers.  It also proved that the exact
+`tqdm==4.70.0` sdist has no bounded LICENSE/COPYING/NOTICE/COPYRIGHT candidate;
+Qwen additionally retains one no-sdist blocker (`dynet38==2.2`) and four other
+exact-sdist no-candidate blockers.  Fixed HF model/DAC LICENSE paths remain 404
+for both Qwen checkpoints, both Bark checkpoints and all three Parler model/DAC
+objects; Bark also lacks a pinned source-license revision.  No license class or
+owner sign-off was inferred from those facts.
+
+The recovered JSON SHA-256 values are
+`052a11f747b6840b6179f3f85044a9585e151a3349d349bbffa96b63cc8ce07f`
+(Qwen),
+`3e589a4d74cce49a12674840a745a7f8b911ccfbcaf54638ebb50593feace517`
+(Bark) and
+`ef2c7631d18d644750d1d485ef81f58368cd38f8c1ecb6a011d27ee144224f03`
+(Parler-TTS).  No checkpoint, model weight, Cargo command or upload was part of
+the job.  Instance `49232927` was destroyed after evidence recovery; retained
+Scaleway-transfer instance `49168183` remains stopped and unchanged.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps

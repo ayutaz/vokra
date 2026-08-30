@@ -313,6 +313,49 @@ partial until a separately authorized replacement is published through the
 gated workflow. No model artifact was copied to or executed on the maintainer
 Mac, and no Hugging Face upload occurred.
 
+### 2026-08-30 model-free dependency evidence lock
+
+The Qwen3-ASR, Bark and Parler-TTS dependency audits then ran on temporary VAST
+instance `49232927` without downloading or executing a model and without Cargo.
+The implementation commits are `4e34f67c` (Parler exact locked-sdist evidence),
+`b09c92a6` (Bark), `152a4ccc` (Qwen), and `afe0b775` (the Qwen virtual-project
+row correction discovered by the first real audit).  Every local manager
+self-test and pre-commit static gate passed.  The temporary VAST checkout was
+clean and matched the named commit supplied by verified incremental git
+bundles; no branch was pushed.
+
+- Qwen accounts for all 95 lock rows: 91 exact Linux installed rows and four
+  inactive rows (the virtual root, Darwin Torch alternative, `colorama` and
+  `tzdata`).  The closure has no missing or unexpected distribution.  Exact
+  locked sdists yielded bounded publisher bytes for `cython==3.3.0` and
+  `tokenizers==0.22.2`.  `dynet38==2.2` has no locked sdist; the exact
+  `gradio-client==2.5.0`, `qwen-omni-utils==0.0.9`, `soynlp==0.0.493` and
+  `tqdm==4.70.0` sdists contain no accepted LICENSE/COPYING/NOTICE/COPYRIGHT
+  candidate.  Both fixed Qwen model `LICENSE` paths return 404.
+- Bark accounts for 34 exact Linux installed rows plus its virtual project row.
+  Exact sdists yielded publisher bytes for `safetensors==0.4.5` and
+  `tokenizers==0.22.2`; the exact `tqdm==4.70.0` sdist has no accepted license
+  candidate.  Both fixed Bark model `LICENSE` paths return 404, and the existing
+  identity contract still has no pinned Bark source-license revision.
+- Parler-TTS accounts for 26 exact Linux installed rows plus its virtual row.
+  The `tokenizers==0.20.3` exact sdist yielded publisher bytes while the same
+  `tqdm==4.70.0` sdist remained blocked.  The fixed Parler source LICENSE was
+  acquired as factual, unclassified primary-source bytes; both model LICENSE
+  paths and the DAC LICENSE path return 404.
+
+The small recovered reports are
+`qwen3-asr-v4.json` SHA-256
+`052a11f747b6840b6179f3f85044a9585e151a3349d349bbffa96b63cc8ce07f`,
+`bark-v4.json` SHA-256
+`3e589a4d74cce49a12674840a745a7f8b911ccfbcaf54638ebb50593feace517`
+and `parler-tts-v3.json` SHA-256
+`ef2c7631d18d644750d1d485ef81f58368cd38f8c1ecb6a011d27ee144224f03`.
+These reports preserve blockers rather than inferring a license class or owner
+approval.  Instance `49232927` was destroyed after recovery; stopped retained
+instance `49168183` and its Scaleway packets were not changed.  Consequently
+all Qwen, Bark and Parler CPU/Metal rows remain open pending the remaining
+license/operator decisions, real model validation and Apple execution.
+
 ### Branch preparation status
 
 The following source work is present and locally reviewed on this branch. None
