@@ -159,6 +159,17 @@ guess the binding and is forbidden.  The BiCodec inspection must therefore run
 on VAST before its native decode implementation begins; the converter remains
 `INSPECTION_ONLY` and no support row is promoted.
 
+The complete Wave D model-free worker preflight is also green at management
+HEAD `50635dca`. Nineteen fixed-revision VAST workers cover all twenty Wave D
+rows (the single MOSS-Audio worker covers both historical 4B and 8B files).
+With `UV_OFFLINE=1`, `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, every
+worker's explicit `--self-test` passed, followed by Bash syntax and ShellCheck
+for the same nineteen files. These tests exercised only fake/materialized
+trees, argument and fail-closed contracts; no checkpoint, model execution,
+dependency synchronization, conversion, Cargo command or network access was
+used. This proves the remote launch contracts are staged, not that any tensor
+inventory, native runtime, CPU parity or Metal parity is complete.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps
