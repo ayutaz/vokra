@@ -109,6 +109,7 @@ require_absent_output() {
     echo "parler dependency audit: output overlaps parity project" >&2
     return 2
   }
+  return 0
 }
 
 run_audit() {
@@ -146,7 +147,8 @@ run_audit() {
 }
 
 self_test() {
-  local failed=0 probe_root
+  local failed=0 probe_root probe_parent=/tmp
+  [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'four exact primary-source' "$0" || failed=1
   grep -Fq -- 'never downloads model weights' "$0" || failed=1
@@ -155,9 +157,11 @@ self_test() {
   if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/parler-dependency-audit-self-test.json >/dev/null 2>&1; then
     failed=1
   fi
-  probe_root="$(mktemp -d "${TMPDIR:-/tmp}/parler-dependency-audit-wrapper.XXXXXX")"
+  probe_root="$(mktemp -d "$probe_parent/parler-dependency-audit-wrapper.XXXXXX")"
   if require_absent_output "$VOKRA_ROOT" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$PARITY_PROJECT" >/dev/null 2>&1; then failed=1; fi
+  if ! require_absent_output "$probe_root/nested/audit.json" >/dev/null 2>&1; then failed=1; fi
+  [[ ! -e "$probe_root/nested" ]] || failed=1
   touch "$probe_root/existing.json"
   if require_absent_output "$probe_root/existing.json" >/dev/null 2>&1; then failed=1; fi
   if require_absent_output "$probe_root/../escaped.json" >/dev/null 2>&1; then failed=1; fi
