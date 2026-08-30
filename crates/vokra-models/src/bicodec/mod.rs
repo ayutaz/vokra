@@ -1369,8 +1369,31 @@ mod tests {
     }
 
     #[test]
+    fn parity_backend_selector_accepts_only_cpu_or_metal() {
+        assert_eq!(parse_parity_backend(Some("cpu")), Ok(BackendKind::Cpu));
+        assert_eq!(parse_parity_backend(Some("metal")), Ok(BackendKind::Metal));
+        assert!(parse_parity_backend(None).is_err());
+        assert!(parse_parity_backend(Some("")).is_err());
+        assert!(parse_parity_backend(Some("cuda")).is_err());
+        assert!(parse_parity_backend(Some("CPU")).is_err());
+    }
+
+    #[test]
+    fn parity_backend_pass_sentinel_is_exact_and_backend_specific() {
+        assert_eq!(
+            parity_backend_pass_sentinel(BackendKind::Cpu),
+            "BICODEC_MEASURED_PARITY_BACKEND backend=cpu verdict=PASS"
+        );
+        assert_eq!(
+            parity_backend_pass_sentinel(BackendKind::Metal),
+            "BICODEC_MEASURED_PARITY_BACKEND backend=metal verdict=PASS"
+        );
+    }
+
+    #[test]
     #[ignore = "VAST-only: requires authenticated GGUF and official reference outputs"]
     fn official_reference_measured_parity() {
+        let backend = parity_backend_from_env();
         let Ok(gguf_path) = std::env::var("VOKRA_BICODEC_PARITY_GGUF") else {
             eprintln!("BiCodec measured parity skipped: VOKRA_BICODEC_PARITY_GGUF is unset");
             return;
@@ -1405,7 +1428,9 @@ mod tests {
                 "reference manifest lacks {required:?}"
             );
         }
-        let model = Bicodec::open(&gguf_path).expect("authenticated BiCodec GGUF must bind");
+        let gguf = GgufFile::open(&gguf_path).expect("authenticated BiCodec GGUF must open");
+        let model = Bicodec::from_gguf_with_backend(&gguf, backend)
+            .expect("authenticated BiCodec GGUF must bind selected backend");
         let semantic_values = [0, 1, 4_096, 8_191];
         let global_values = [
             0, 1, 4_095, 16, 255, 1_024, 2_048, 3_072, 0, 1, 4_095, 16, 255, 1_024, 2_048, 3_072,
@@ -1427,8 +1452,8 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let compute = Compute::for_backend(BackendKind::Cpu, BICODEC_DECODE_HOT_OPS)
-            .expect("CPU BiCodec hot-op preflight");
+        let compute = Compute::for_backend(backend, BICODEC_DECODE_HOT_OPS)
+            .expect("selected BiCodec hot-op preflight");
         let semantic = model
             .semantic_decode(&semantic_values, &compute)
             .expect("semantic decode");
@@ -1477,6 +1502,34 @@ mod tests {
             &[1, 1, semantic_values.len() * FRAME_HOP],
             &waveform,
         );
+        println!("{}", parity_backend_pass_sentinel(backend));
+    }
+
+    fn parity_backend_from_env() -> BackendKind {
+        parse_parity_backend(std::env::var("VOKRA_BICODEC_PARITY_BACKEND").ok()).unwrap_or_else(
+            |error| {
+                panic!(
+                    "VOKRA_BICODEC_PARITY_BACKEND is required and must be exactly cpu or metal: {error}"
+                )
+            },
+        )
+    }
+
+    fn parse_parity_backend(value: Option<&str>) -> std::result::Result<BackendKind, &'static str> {
+        match value {
+            Some("cpu") => Ok(BackendKind::Cpu),
+            Some("metal") => Ok(BackendKind::Metal),
+            _ => return Err("backend must be exactly cpu or metal"),
+        }
+    }
+
+    fn parity_backend_pass_sentinel(backend: BackendKind) -> String {
+        let label = match backend {
+            BackendKind::Cpu => "cpu",
+            BackendKind::Metal => "metal",
+            _ => unreachable!("BiCodec parity selector only admits CPU or Metal"),
+        };
+        format!("BICODEC_MEASURED_PARITY_BACKEND backend={label} verdict=PASS")
     }
 
     fn compare_reference_stage(
