@@ -70,6 +70,114 @@
 
 use vokra_core::{Result, VokraError};
 
+/// Backend seam for the learned Conformer graph.
+///
+/// The operator crate deliberately does not depend on a concrete backend (or
+/// on `vokra-models`).  Model crates provide this trait for their imperative
+/// `Compute` dispatcher, while the default scalar implementation below keeps
+/// the historical CPU path available.  Every learned matrix, reduction,
+/// activation, and convolution in [`ConformerEncoder`] goes through this seam
+/// when [`ConformerEncoder::forward_with_compute`] is used; an implementation
+/// must return an error for an unsupported backend rather than falling back to
+/// scalar execution.
+pub trait ConformerCompute {
+    /// Row-major linear projection with `weight` laid out `[out_dim, in_dim]`.
+    fn linear_row(
+        &self,
+        input: &[f32],
+        rows: usize,
+        in_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Row-major GEMM (`a[m,k] × b[k,n] = out[m,n]`).
+    fn gemm(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Row-wise affine LayerNorm.
+    fn layer_norm(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()>;
+
+    /// Row-wise softmax.
+    fn softmax(&self, input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Result<()>;
+
+    /// Row-wise log-softmax. Implementations may use a device softmax and a
+    /// host logarithm, but CPU implementations must retain max-shifted
+    /// normalization so underflow does not alter the established route.
+    fn log_softmax(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()>;
+
+    /// Elementwise ReLU.
+    fn relu(&self, input: &[f32], output: &mut [f32]) -> Result<()>;
+
+    /// Elementwise SiLU / Swish.
+    fn silu(&self, input: &[f32], output: &mut [f32]) -> Result<()>;
+
+    /// Elementwise sigmoid. GPU implementations may derive this from their
+    /// native SiLU kernel and perform only the final division on the host.
+    fn sigmoid(&self, input: &[f32], output: &mut [f32]) -> Result<()>;
+
+    /// Elementwise hyperbolic tangent.
+    fn tanh(&self, input: &[f32], output: &mut [f32]) -> Result<()>;
+
+    /// Time-major Conv1d. Input/output are `[time, channels]`; weight is
+    /// `[out_channels, in_channels, kernel]`.
+    fn conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+
+    /// Grouped time-major Conv1d.  Depthwise convolution is represented by
+    /// `groups == in_channels == out_channels`.
+    fn grouped_conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        output: &mut [f32],
+    ) -> Result<()>;
+}
+
 // ---------------------------------------------------------------------------
 // Public config
 // ---------------------------------------------------------------------------
@@ -778,6 +886,289 @@ pub struct ConformerEncoder {
     weights: ConformerWeights,
 }
 
+/// Historical scalar implementation used by [`ConformerEncoder::forward`].
+/// Keeping it behind the same seam makes the default CPU route behaviorally
+/// identical while allowing model crates to inject a real GPU dispatcher.
+struct ScalarConformerCompute;
+
+impl ConformerCompute for ScalarConformerCompute {
+    fn linear_row(
+        &self,
+        input: &[f32],
+        rows: usize,
+        in_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if input.len() != rows * in_dim
+            || output.len() != rows * out_dim
+            || weight.len() != out_dim * in_dim
+            || bias.len() != out_dim
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer linear shape mismatch".to_owned(),
+            ));
+        }
+        for row in 0..rows {
+            linear_row(
+                &input[row * in_dim..(row + 1) * in_dim],
+                weight,
+                bias,
+                out_dim,
+                in_dim,
+                &mut output[row * out_dim..(row + 1) * out_dim],
+            );
+        }
+        Ok(())
+    }
+
+    fn gemm(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if a.len() != m * k || b.len() != k * n || output.len() != m * n {
+            return Err(VokraError::InvalidArgument(
+                "Conformer GEMM shape mismatch".to_owned(),
+            ));
+        }
+        if bias.is_some_and(|value| value.len() != n) {
+            return Err(VokraError::InvalidArgument(
+                "Conformer GEMM bias shape mismatch".to_owned(),
+            ));
+        }
+        for row in 0..m {
+            for col in 0..n {
+                let mut value = bias.map_or(0.0, |bias| bias[col]);
+                for inner in 0..k {
+                    value += a[row * k + inner] * b[inner * n + col];
+                }
+                output[row * n + col] = value;
+            }
+        }
+        Ok(())
+    }
+
+    fn layer_norm(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        _eps: f32,
+    ) -> Result<()> {
+        if input.len() != rows * cols || output.len() != rows * cols {
+            return Err(VokraError::InvalidArgument(
+                "Conformer LayerNorm shape mismatch".to_owned(),
+            ));
+        }
+        output.copy_from_slice(input);
+        for row in output.chunks_exact_mut(cols) {
+            layer_norm_inplace(row, gamma, beta);
+        }
+        Ok(())
+    }
+
+    fn softmax(&self, input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Result<()> {
+        if input.len() != rows * cols || output.len() != rows * cols {
+            return Err(VokraError::InvalidArgument(
+                "Conformer softmax shape mismatch".to_owned(),
+            ));
+        }
+        for row in 0..rows {
+            softmax_row(
+                &input[row * cols..(row + 1) * cols],
+                &mut output[row * cols..(row + 1) * cols],
+            );
+        }
+        Ok(())
+    }
+
+    fn log_softmax(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        if input.len() != rows * cols || output.len() != rows * cols || cols == 0 {
+            return Err(VokraError::InvalidArgument(
+                "Conformer log-softmax shape mismatch".to_owned(),
+            ));
+        }
+        for row in 0..rows {
+            let src = &input[row * cols..(row + 1) * cols];
+            let dst = &mut output[row * cols..(row + 1) * cols];
+            let max = src.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let sum = src.iter().map(|value| (*value - max).exp()).sum::<f32>();
+            if !sum.is_finite() || sum <= 0.0 {
+                return Err(VokraError::ModelLoad(
+                    "Conformer log-softmax normalization failed".into(),
+                ));
+            }
+            let log_sum = max + sum.ln();
+            for (dst, &value) in dst.iter_mut().zip(src) {
+                *dst = value - log_sum;
+            }
+        }
+        Ok(())
+    }
+
+    fn relu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer ReLU shape mismatch".to_owned(),
+            ));
+        }
+        output.copy_from_slice(input);
+        relu_inplace(output);
+        Ok(())
+    }
+
+    fn silu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer SiLU shape mismatch".to_owned(),
+            ));
+        }
+        for (dst, &src) in output.iter_mut().zip(input) {
+            *dst = swish(src);
+        }
+        Ok(())
+    }
+
+    fn sigmoid(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer sigmoid shape mismatch".to_owned(),
+            ));
+        }
+        for (dst, &src) in output.iter_mut().zip(input) {
+            *dst = sigmoid(src);
+        }
+        Ok(())
+    }
+
+    fn tanh(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer tanh shape mismatch".to_owned(),
+            ));
+        }
+        for (dst, &src) in output.iter_mut().zip(input) {
+            *dst = src.tanh();
+        }
+        Ok(())
+    }
+
+    fn conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let output_len = padded_conv_out_len(input_len, kernel, stride, padding)?;
+        if input.len() != input_len * in_channels
+            || weight.len() != out_channels * in_channels * kernel
+            || output.len() != output_len * out_channels
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        if bias.is_some_and(|value| value.len() != out_channels) {
+            return Err(VokraError::InvalidArgument(
+                "Conformer Conv1d bias shape mismatch".to_owned(),
+            ));
+        }
+        conv1_padded_time_major(
+            input,
+            weight,
+            bias.unwrap_or(&[]),
+            PaddedConv1dSpec {
+                input_len,
+                in_ch: in_channels,
+                out_ch: out_channels,
+                kernel,
+                stride,
+                padding,
+            },
+            output,
+        )
+    }
+
+    fn grouped_conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if groups != in_channels || groups != out_channels {
+            return Err(VokraError::InvalidArgument(
+                "Conformer depthwise convolution requires one group per channel".to_owned(),
+            ));
+        }
+        let output_len = padded_conv_out_len(input_len, kernel, stride, padding)?;
+        if input.len() != input_len * in_channels
+            || weight.len() != out_channels * kernel
+            || output.len() != output_len * out_channels
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer depthwise Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        let bias = bias.ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer depthwise Conv1d bias is required".to_owned())
+        })?;
+        if bias.len() != out_channels {
+            return Err(VokraError::InvalidArgument(
+                "Conformer depthwise Conv1d bias shape mismatch".to_owned(),
+            ));
+        }
+        for time in 0..output_len {
+            for channel in 0..out_channels {
+                let mut value = bias[channel];
+                for tap in 0..kernel {
+                    let source = time * stride + tap;
+                    if source >= padding {
+                        let source = source - padding;
+                        if source < input_len {
+                            value += input[source * in_channels + channel]
+                                * weight[channel * kernel + tap];
+                        }
+                    }
+                }
+                output[time * out_channels + channel] = value;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ConformerEncoder {
     /// Build an encoder from its config + weights. Fails loudly on any
     /// shape mismatch, on `d_model % n_heads != 0`, on `n_layers == 0`, on
@@ -873,7 +1264,22 @@ impl ConformerEncoder {
     /// floor-division and Conv1d uses its checked padded-convolution formula
     /// (the authenticated two-stage GigaAM stem ceil-halves twice).
     pub fn forward(&self, mel: &[f32], mel_frames: usize) -> Result<(Vec<f32>, usize)> {
-        self.forward_internal(mel, mel_frames, None)
+        self.forward_with_compute(mel, mel_frames, None, &ScalarConformerCompute)
+    }
+
+    /// Full forward pass through a caller-provided backend seam.
+    ///
+    /// This is the only entry point used by model runtimes that select Metal
+    /// or another accelerator.  The caller's implementation must cover every
+    /// operation in the graph; unsupported operations are surfaced as errors.
+    pub fn forward_with_compute<C: ConformerCompute>(
+        &self,
+        mel: &[f32],
+        mel_frames: usize,
+        valid_frames: Option<usize>,
+        compute: &C,
+    ) -> Result<(Vec<f32>, usize)> {
+        self.forward_internal(mel, mel_frames, valid_frames, compute)
     }
 
     /// Forward a single padded sample while preserving its valid frame
@@ -894,7 +1300,12 @@ impl ConformerEncoder {
             )));
         }
         let valid_out = self.cfg.subsample_type.output_len(valid_frames)?;
-        let (hidden, t_out) = self.forward_internal(mel, mel_frames, Some(valid_frames))?;
+        let (hidden, t_out) = self.forward_with_compute(
+            mel,
+            mel_frames,
+            Some(valid_frames),
+            &ScalarConformerCompute,
+        )?;
         Ok((hidden, t_out, valid_out))
     }
 
@@ -903,6 +1314,7 @@ impl ConformerEncoder {
         mel: &[f32],
         mel_frames: usize,
         valid_frames: Option<usize>,
+        compute: &impl ConformerCompute,
     ) -> Result<(Vec<f32>, usize)> {
         let in_dim = self.cfg.in_dim as usize;
         if mel_frames == 0 {
@@ -924,7 +1336,7 @@ impl ConformerEncoder {
         }
 
         // Subsample → hidden [T_out, d_model].
-        let (mut hidden, t_out) = self.subsample(mel, mel_frames, valid_frames)?;
+        let (mut hidden, t_out) = self.subsample(mel, mel_frames, valid_frames, compute)?;
         if t_out == 0 {
             return Err(VokraError::InvalidArgument(format!(
                 "ConformerEncoder::forward: subsampled sequence is empty \
@@ -938,7 +1350,7 @@ impl ConformerEncoder {
             let valid_out = valid_frames
                 .map(|frames| self.cfg.subsample_type.output_len(frames))
                 .transpose()?;
-            hidden = self.conformer_layer(&hidden, t_out, layer, valid_out)?;
+            hidden = self.conformer_layer(&hidden, t_out, layer, valid_out, compute)?;
             if let Some(valid_frames) = valid_frames {
                 let valid_out = self.cfg.subsample_type.output_len(valid_frames)?;
                 let valid_size = valid_out
@@ -965,6 +1377,7 @@ impl ConformerEncoder {
         mel: &[f32],
         mel_frames: usize,
         valid_frames: Option<usize>,
+        compute: &impl ConformerCompute,
     ) -> Result<(Vec<f32>, usize)> {
         let in_dim = self.cfg.in_dim as usize;
         let d_model = self.cfg.d_model as usize;
@@ -978,16 +1391,15 @@ impl ConformerEncoder {
                     )
                 })?;
                 let mut out = vec![0.0f32; out_len];
-                for t in 0..mel_frames {
-                    linear_row(
-                        &mel[t * in_dim..(t + 1) * in_dim],
-                        &sub.linear_w,
-                        &sub.linear_b,
-                        d_model,
-                        in_dim,
-                        &mut out[t * d_model..(t + 1) * d_model],
-                    );
-                }
+                compute.linear_row(
+                    mel,
+                    mel_frames,
+                    in_dim,
+                    &sub.linear_w,
+                    &sub.linear_b,
+                    d_model,
+                    &mut out,
+                )?;
                 Ok((out, mel_frames))
             }
             ConvSubsampleKind::Stacking { factor } | ConvSubsampleKind::StackingNorm { factor } => {
@@ -1006,19 +1418,29 @@ impl ConformerEncoder {
                 let mut out = vec![0.0f32; out_len];
                 for t in 0..t_out {
                     let src = t * factor * in_dim;
-                    linear_row(
+                    compute.linear_row(
                         &mel[src..src + proj_in],
+                        1,
+                        proj_in,
                         &sub.linear_w,
                         &sub.linear_b,
                         d_model,
-                        proj_in,
                         &mut out[t * d_model..(t + 1) * d_model],
-                    );
+                    )?;
                 }
                 if let (Some(gamma), Some(beta)) = (&sub.norm_gamma, &sub.norm_beta) {
                     for t in 0..t_out {
-                        let row = &mut out[t * d_model..(t + 1) * d_model];
-                        layer_norm_inplace(row, gamma, beta);
+                        let start = t * d_model;
+                        let row = out[start..start + d_model].to_vec();
+                        compute.layer_norm(
+                            &row,
+                            &mut out[start..start + d_model],
+                            1,
+                            d_model,
+                            gamma,
+                            beta,
+                            1e-5,
+                        )?;
                     }
                 }
                 Ok((out, t_out))
@@ -1070,21 +1492,20 @@ impl ConformerEncoder {
                     })?;
                     masked_mel[start..].fill(0.0);
                 }
-                conv1_padded_time_major(
+                compute.conv1d_time_major(
                     &masked_mel,
+                    in_dim,
+                    mel_frames,
                     conv1_w,
-                    conv1_b,
-                    PaddedConv1dSpec {
-                        input_len: mel_frames,
-                        in_ch: in_dim,
-                        out_ch: d_model,
-                        kernel,
-                        stride,
-                        padding,
-                    },
+                    d_model,
+                    kernel,
+                    Some(conv1_b),
+                    stride,
+                    padding,
                     &mut conv1,
                 )?;
-                relu_inplace(&mut conv1);
+                let conv1_input = conv1.clone();
+                compute.relu(&conv1_input, &mut conv1)?;
                 if let Some(valid_input_len) = valid_frames {
                     let valid_stage_len =
                         padded_conv_out_len(valid_input_len, kernel, stride, padding)?;
@@ -1116,21 +1537,20 @@ impl ConformerEncoder {
                     )
                 })?;
                 let mut out = vec![0.0f32; out_size];
-                conv1_padded_time_major(
+                compute.conv1d_time_major(
                     &conv1,
+                    d_model,
+                    out1_len,
                     conv2_w,
-                    conv2_b,
-                    PaddedConv1dSpec {
-                        input_len: out1_len,
-                        in_ch: d_model,
-                        out_ch: d_model,
-                        kernel,
-                        stride,
-                        padding,
-                    },
+                    d_model,
+                    kernel,
+                    Some(conv2_b),
+                    stride,
+                    padding,
                     &mut out,
                 )?;
-                relu_inplace(&mut out);
+                let conv2_input = out.clone();
+                compute.relu(&conv2_input, &mut out)?;
                 if let Some(valid_input_len) = valid_frames {
                     let valid_stage1 =
                         padded_conv_out_len(valid_input_len, kernel, stride, padding)?;
@@ -1159,6 +1579,7 @@ impl ConformerEncoder {
         t: usize,
         w: &ConformerLayerWeights,
         valid_t: Option<usize>,
+        compute: &impl ConformerCompute,
     ) -> Result<Vec<f32>> {
         let d_model = self.cfg.d_model as usize;
         let ffn_dim = self.cfg.ffn_dim as usize;
@@ -1171,37 +1592,41 @@ impl ConformerEncoder {
         // ---- FF1 branch: residual += 0.5 * FF1(LN1(x)) --------------------
         let mut residual = input.to_vec();
         let mut buf = residual.clone();
-        for row_off in (0..residual.len()).step_by(d_model) {
-            layer_norm_inplace(
-                &mut buf[row_off..row_off + d_model],
-                &w.ln1_gamma,
-                &w.ln1_beta,
-            );
-        }
-        let ff1_out = feed_forward(&buf, t, d_model, ffn_dim, &w.ff1);
+        compute.layer_norm(
+            &residual,
+            &mut buf,
+            t,
+            d_model,
+            &w.ln1_gamma,
+            &w.ln1_beta,
+            1e-5,
+        )?;
+        let ff1_out = feed_forward(&buf, t, d_model, ffn_dim, &w.ff1, compute)?;
         add_scaled_inplace(&mut residual, &ff1_out, 0.5);
 
         // ---- MHA branch: residual += MHA(LN2(residual)) --------------------
-        buf.copy_from_slice(&residual);
-        for row_off in (0..buf.len()).step_by(d_model) {
-            layer_norm_inplace(
-                &mut buf[row_off..row_off + d_model],
-                &w.ln2_gamma,
-                &w.ln2_beta,
-            );
-        }
-        let attn_out = self.multi_head_attention(&buf, t, valid_t, &w.mha)?;
+        compute.layer_norm(
+            &residual,
+            &mut buf,
+            t,
+            d_model,
+            &w.ln2_gamma,
+            &w.ln2_beta,
+            1e-5,
+        )?;
+        let attn_out = self.multi_head_attention(&buf, t, valid_t, &w.mha, compute)?;
         add_inplace(&mut residual, &attn_out);
 
         // ---- Conv branch: residual += Conv(LN3(residual)) ------------------
-        buf.copy_from_slice(&residual);
-        for row_off in (0..buf.len()).step_by(d_model) {
-            layer_norm_inplace(
-                &mut buf[row_off..row_off + d_model],
-                &w.ln3_gamma,
-                &w.ln3_beta,
-            );
-        }
+        compute.layer_norm(
+            &residual,
+            &mut buf,
+            t,
+            d_model,
+            &w.ln3_gamma,
+            &w.ln3_beta,
+            1e-5,
+        )?;
         let conv_out = conformer_conv(
             &buf,
             t,
@@ -1209,29 +1634,34 @@ impl ConformerEncoder {
             d_model,
             self.cfg.kernel_size as usize,
             &w.conv,
+            compute,
         )?;
         add_inplace(&mut residual, &conv_out);
 
         // ---- FF2 branch: residual += 0.5 * FF2(LN4(residual)) --------------
-        buf.copy_from_slice(&residual);
-        for row_off in (0..buf.len()).step_by(d_model) {
-            layer_norm_inplace(
-                &mut buf[row_off..row_off + d_model],
-                &w.ln4_gamma,
-                &w.ln4_beta,
-            );
-        }
-        let ff2_out = feed_forward(&buf, t, d_model, ffn_dim, &w.ff2);
+        compute.layer_norm(
+            &residual,
+            &mut buf,
+            t,
+            d_model,
+            &w.ln4_gamma,
+            &w.ln4_beta,
+            1e-5,
+        )?;
+        let ff2_out = feed_forward(&buf, t, d_model, ffn_dim, &w.ff2, compute)?;
         add_scaled_inplace(&mut residual, &ff2_out, 0.5);
 
         // ---- Final per-layer norm ------------------------------------------
-        for row_off in (0..residual.len()).step_by(d_model) {
-            layer_norm_inplace(
-                &mut residual[row_off..row_off + d_model],
-                &w.ln_out_gamma,
-                &w.ln_out_beta,
-            );
-        }
+        let input = residual.clone();
+        compute.layer_norm(
+            &input,
+            &mut residual,
+            t,
+            d_model,
+            &w.ln_out_gamma,
+            &w.ln_out_beta,
+            1e-5,
+        )?;
         Ok(residual)
     }
 
@@ -1241,6 +1671,7 @@ impl ConformerEncoder {
         t: usize,
         valid_t: Option<usize>,
         w: &MhaWeights,
+        compute: &impl ConformerCompute,
     ) -> Result<Vec<f32>> {
         let d_model = self.cfg.d_model as usize;
         let n_heads = self.cfg.n_heads as usize;
@@ -1268,33 +1699,25 @@ impl ConformerEncoder {
         let mut q = vec![0.0f32; t * d_model];
         let mut k = vec![0.0f32; t * d_model];
         let mut v = vec![0.0f32; t * d_model];
-        for ti in 0..t {
-            let qk_src = &qk_projection_input[ti * d_model..(ti + 1) * d_model];
-            linear_row(
-                qk_src,
-                &w.wq,
-                &w.bq,
-                d_model,
-                d_model,
-                &mut q[ti * d_model..(ti + 1) * d_model],
-            );
-            linear_row(
-                qk_src,
-                &w.wk,
-                &w.bk,
-                d_model,
-                d_model,
-                &mut k[ti * d_model..(ti + 1) * d_model],
-            );
-            linear_row(
-                &x[ti * d_model..(ti + 1) * d_model],
-                &w.wv,
-                &w.bv,
-                d_model,
-                d_model,
-                &mut v[ti * d_model..(ti + 1) * d_model],
-            );
-        }
+        compute.linear_row(
+            &qk_projection_input,
+            t,
+            d_model,
+            &w.wq,
+            &w.bq,
+            d_model,
+            &mut q,
+        )?;
+        compute.linear_row(
+            &qk_projection_input,
+            t,
+            d_model,
+            &w.wk,
+            &w.bk,
+            d_model,
+            &mut k,
+        )?;
+        compute.linear_row(x, t, d_model, &w.wv, &w.bv, d_model, &mut v)?;
 
         // Optional RoPE overlay on Q / K.
         if let PositionEncoding::Rope { theta } = self.cfg.position_encoding {
@@ -1310,54 +1733,45 @@ impl ConformerEncoder {
         for h in 0..n_heads {
             let head_off = h * head_dim;
             // scores[i, j] = (Q[i, h, :] · K[j, h, :]) * scale
+            let mut k_t = vec![0.0f32; t * head_dim];
+            for j in 0..t {
+                for d in 0..head_dim {
+                    k_t[d * t + j] = k[j * d_model + head_off + d];
+                }
+            }
+            let q_head = q
+                .chunks_exact(d_model)
+                .flat_map(|row| row[head_off..head_off + head_dim].iter().copied())
+                .collect::<Vec<_>>();
+            compute.gemm(t, t, head_dim, &q_head, &k_t, None, &mut scores)?;
             for i in 0..t {
-                let q_row = &q[i * d_model + head_off..i * d_model + head_off + head_dim];
                 for j in 0..t {
                     if valid_t.is_some_and(|valid_t| j >= valid_t) {
                         scores[i * t + j] = f32::NEG_INFINITY;
                         continue;
                     }
-                    let k_row = &k[j * d_model + head_off..j * d_model + head_off + head_dim];
-                    let mut acc = 0.0f32;
-                    for d in 0..head_dim {
-                        acc += q_row[d] * k_row[d];
-                    }
-                    scores[i * t + j] = acc * scale;
+                    scores[i * t + j] *= scale;
                 }
             }
             // Row-wise softmax → probs.
-            for i in 0..t {
-                softmax_row(&scores[i * t..(i + 1) * t], &mut probs[i * t..(i + 1) * t]);
-            }
+            compute.softmax(&scores, &mut probs, t, t)?;
             // context[i, h, :] = Σ_j probs[i, j] * V[j, h, :]
+            let mut v_head = vec![0.0f32; t * head_dim];
+            for j in 0..t {
+                v_head[j * head_dim..(j + 1) * head_dim]
+                    .copy_from_slice(&v[j * d_model + head_off..j * d_model + head_off + head_dim]);
+            }
+            let mut context = vec![0.0f32; t * head_dim];
+            compute.gemm(t, head_dim, t, &probs, &v_head, None, &mut context)?;
             for i in 0..t {
-                for j in 0..t {
-                    let p = probs[i * t + j];
-                    if p == 0.0 {
-                        continue;
-                    }
-                    let v_row = &v[j * d_model + head_off..j * d_model + head_off + head_dim];
-                    let ctx_row =
-                        &mut output[i * d_model + head_off..i * d_model + head_off + head_dim];
-                    for d in 0..head_dim {
-                        ctx_row[d] += p * v_row[d];
-                    }
-                }
+                output[i * d_model + head_off..i * d_model + head_off + head_dim]
+                    .copy_from_slice(&context[i * head_dim..(i + 1) * head_dim]);
             }
         }
 
         // Output projection Wo · context + bo (per-row linear).
         let mut proj = vec![0.0f32; t * d_model];
-        for i in 0..t {
-            linear_row(
-                &output[i * d_model..(i + 1) * d_model],
-                &w.wo,
-                &w.bo,
-                d_model,
-                d_model,
-                &mut proj[i * d_model..(i + 1) * d_model],
-            );
-        }
+        compute.linear_row(&output, t, d_model, &w.wo, &w.bo, d_model, &mut proj)?;
         Ok(proj)
     }
 }
@@ -1372,26 +1786,15 @@ fn feed_forward(
     d_model: usize,
     ffn_dim: usize,
     w: &FeedForwardWeights,
-) -> Vec<f32> {
+    compute: &impl ConformerCompute,
+) -> Result<Vec<f32>> {
     let mut hidden = vec![0.0f32; t * ffn_dim];
     let mut out = vec![0.0f32; t * d_model];
-    for ti in 0..t {
-        let src = &x[ti * d_model..(ti + 1) * d_model];
-        let mid = &mut hidden[ti * ffn_dim..(ti + 1) * ffn_dim];
-        linear_row(src, &w.w1, &w.b1, ffn_dim, d_model, mid);
-        for v in mid.iter_mut() {
-            *v = swish(*v);
-        }
-        linear_row(
-            mid,
-            &w.w2,
-            &w.b2,
-            d_model,
-            ffn_dim,
-            &mut out[ti * d_model..(ti + 1) * d_model],
-        );
-    }
-    out
+    compute.linear_row(x, t, d_model, &w.w1, &w.b1, ffn_dim, &mut hidden)?;
+    let pre_activation = hidden.clone();
+    compute.silu(&pre_activation, &mut hidden)?;
+    compute.linear_row(&hidden, t, ffn_dim, &w.w2, &w.b2, d_model, &mut out)?;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1405,28 +1808,37 @@ fn conformer_conv(
     d_model: usize,
     kernel_size: usize,
     w: &ConformerConvWeights,
+    compute: &impl ConformerCompute,
 ) -> Result<Vec<f32>> {
     let two_d = 2 * d_model;
     // Step 1 — pointwise_conv1: `[T, d_model]` → `[T, 2*d_model]`
     let mut expanded = vec![0.0f32; t * two_d];
-    for ti in 0..t {
-        linear_row(
-            &x[ti * d_model..(ti + 1) * d_model],
-            &w.pointwise1_w,
-            &w.pointwise1_b,
-            two_d,
-            d_model,
-            &mut expanded[ti * two_d..(ti + 1) * two_d],
-        );
-    }
+    compute.linear_row(
+        x,
+        t,
+        d_model,
+        &w.pointwise1_w,
+        &w.pointwise1_b,
+        two_d,
+        &mut expanded,
+    )?;
 
     // Step 2 — GLU along the channel axis: `[T, 2*d_model]` → `[T, d_model]`
     let mut glued = vec![0.0f32; t * d_model];
+    let mut gate_input = vec![0.0f32; t * d_model];
+    for ti in 0..t {
+        let row = &expanded[ti * two_d..(ti + 1) * two_d];
+        for c in 0..d_model {
+            gate_input[ti * d_model + c] = row[d_model + c];
+        }
+    }
+    let mut gate = vec![0.0f32; t * d_model];
+    compute.sigmoid(&gate_input, &mut gate)?;
     for ti in 0..t {
         let row = &expanded[ti * two_d..(ti + 1) * two_d];
         let out_row = &mut glued[ti * d_model..(ti + 1) * d_model];
         for c in 0..d_model {
-            out_row[c] = row[c] * sigmoid(row[d_model + c]);
+            out_row[c] = row[c] * gate[ti * d_model + c];
         }
     }
     // A padded batch tail may be regenerated by the pointwise bias/GLU.
@@ -1436,68 +1848,55 @@ fn conformer_conv(
         glued[valid_t * d_model..].fill(0.0);
     }
 
-    // Step 3 — depthwise conv along time (transpose to `[d_model, T]` first).
-    let mut ct = vec![0.0f32; d_model * t]; // channel-first
-    for ti in 0..t {
-        for c in 0..d_model {
-            ct[c * t + ti] = glued[ti * d_model + c];
-        }
-    }
+    // Step 3 — depthwise conv along time. The seam accepts time-major
+    // buffers and performs any backend-specific layout conversion.
     if kernel_size == 0 {
         return Err(VokraError::InvalidArgument(
             "conformer_conv: kernel_size must be > 0".to_owned(),
         ));
     }
     let padding = kernel_size / 2; // odd kernel_size ⇒ symmetric same-padding
-    let mut conv_out_ct = vec![0.0f32; d_model * t];
-    let t_i = t as isize;
-    let pad_i = padding as isize;
-    for c in 0..d_model {
-        let filter = &w.depthwise_w[c * kernel_size..(c + 1) * kernel_size];
-        let bias = w.depthwise_b[c];
-        let src_row = &ct[c * t..(c + 1) * t];
-        let dst_row = &mut conv_out_ct[c * t..(c + 1) * t];
-        for (ti, dst_slot) in dst_row.iter_mut().enumerate() {
-            let mut acc = bias;
-            for (k, &tap) in filter.iter().enumerate() {
-                let src = ti as isize + k as isize - pad_i;
-                if src < 0 || src >= t_i {
-                    continue;
-                }
-                acc += src_row[src as usize] * tap;
-            }
-            *dst_slot = acc;
-        }
-    }
+    let mut conv_out = vec![0.0f32; t * d_model];
+    compute.grouped_conv1d_time_major(
+        &glued,
+        d_model,
+        t,
+        &w.depthwise_w,
+        d_model,
+        kernel_size,
+        Some(&w.depthwise_b),
+        1,
+        padding,
+        d_model,
+        &mut conv_out,
+    )?;
 
     // Step 4 — transpose back to `[T, d_model]` before per-frame LN + Swish +
     // pointwise2 (matches upstream `.transpose(1, 2)` at the exit).
     let mut normed = vec![0.0f32; t * d_model];
-    for c in 0..d_model {
-        for ti in 0..t {
-            normed[ti * d_model + c] = conv_out_ct[c * t + ti];
-        }
-    }
-    for ti in 0..t {
-        let row = &mut normed[ti * d_model..(ti + 1) * d_model];
-        layer_norm_inplace(row, &w.norm_gamma, &w.norm_beta);
-        for v in row.iter_mut() {
-            *v = swish(*v);
-        }
-    }
+    compute.layer_norm(
+        &conv_out,
+        &mut normed,
+        t,
+        d_model,
+        &w.norm_gamma,
+        &w.norm_beta,
+        1e-5,
+    )?;
+    let pre_activation = normed.clone();
+    compute.silu(&pre_activation, &mut normed)?;
 
     // Step 5 — pointwise_conv2: `[T, d_model]` → `[T, d_model]`
     let mut out = vec![0.0f32; t * d_model];
-    for ti in 0..t {
-        linear_row(
-            &normed[ti * d_model..(ti + 1) * d_model],
-            &w.pointwise2_w,
-            &w.pointwise2_b,
-            d_model,
-            d_model,
-            &mut out[ti * d_model..(ti + 1) * d_model],
-        );
-    }
+    compute.linear_row(
+        &normed,
+        t,
+        d_model,
+        &w.pointwise2_w,
+        &w.pointwise2_b,
+        d_model,
+        &mut out,
+    )?;
     Ok(out)
 }
 
@@ -2817,7 +3216,7 @@ mod tests {
         };
         let hidden = vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0];
         let output = encoder
-            .multi_head_attention(&hidden, 2, None, &mha)
+            .multi_head_attention(&hidden, 2, None, &mha, &ScalarConformerCompute)
             .unwrap();
 
         // Both query rows attend uniformly to the two original V rows.
@@ -2826,5 +3225,29 @@ mod tests {
         assert!(output[2].abs() < 1e-6);
         assert!(output[3].abs() < 1e-6);
         assert!(output[7].abs() < 1e-6, "V was rotated: {:?}", output);
+    }
+
+    #[test]
+    fn scalar_depthwise_seam_matches_time_major_contract() {
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // three frames, two channels
+        let weight = vec![2.0, 3.0, 5.0, 7.0]; // one [k=2] filter per channel
+        let bias = vec![0.5, -0.5];
+        let mut output = vec![0.0; 4];
+        ScalarConformerCompute
+            .grouped_conv1d_time_major(
+                &input,
+                2,
+                2,
+                &weight,
+                2,
+                2,
+                Some(&bias),
+                1,
+                0,
+                2,
+                &mut output,
+            )
+            .unwrap();
+        assert_eq!(output, vec![11.5, 37.5, 21.5, 61.5]);
     }
 }

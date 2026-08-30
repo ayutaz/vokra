@@ -29,9 +29,9 @@ reject_path_overlap() {
 validate_parity_log() {
   local log_file="$1"
   local named_count summary_count exact_summary_count target_count test_line_count
-  local logits_count token_pass_count isolated_ok_count
+  local logits_count token_pass_count backend_pass_count isolated_ok_count
   local metric='[+-]?[0-9]+(\.[0-9]+)?e[+-][0-9]+'
-  local target="^test real_gigaam_multilingual_cpu_trace_matches_official \.\.\. GIGAAM_MULTILINGUAL_PARITY encoded max_abs=${metric} index=[0-9]+ mean_abs=${metric}$"
+  local target="^test real_gigaam_multilingual_trace_matches_official \.\.\. GIGAAM_MULTILINGUAL_PARITY encoded max_abs=${metric} index=[0-9]+ mean_abs=${metric}$"
   local summary='^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in [0-9]+(\.[0-9]+)?s$'
   [[ -f "$log_file" ]] || return 1
   named_count="$(grep -Ec '^test [^ ]+ \.\.\. ' "$log_file" || true)"
@@ -41,6 +41,7 @@ validate_parity_log() {
   exact_summary_count="$(grep -Ec "$summary" "$log_file" || true)"
   logits_count="$(grep -Ec "^GIGAAM_MULTILINGUAL_PARITY logits max_abs=${metric} index=[0-9]+ mean_abs=${metric}$" "$log_file" || true)"
   token_pass_count="$(grep -Ec '^GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS$' "$log_file" || true)"
+  backend_pass_count="$(grep -Ec '^GIGAAM_MULTILINGUAL_PARITY backend=Cpu PASS$' "$log_file" || true)"
   isolated_ok_count="$(grep -Ec '^ok$' "$log_file" || true)"
   [[ "$named_count" == 1 ]] || return 1
   [[ "$summary_count" == 1 ]] || return 1
@@ -49,6 +50,7 @@ validate_parity_log() {
   [[ "$test_line_count" == $((named_count + summary_count)) ]] || return 1
   [[ "$logits_count" == 1 ]] || return 1
   [[ "$token_pass_count" == 1 ]] || return 1
+  [[ "$backend_pass_count" == 1 ]] || return 1
   [[ "$isolated_ok_count" == 1 ]] || return 1
 }
 
@@ -68,7 +70,7 @@ if [[ "${1:-}" == --self-test ]]; then
   fi
   rg -n -- "safe_open|read_safetensors_header|actual_names|phase (measure|parity)|snapshot_download|parity_gigaam_multilingual_real" "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "phase/header/parity validation missing"
   [[ "$(rg -Fxc -- '  cat > "$EVIDENCE_DIR/source.json" <<EOF' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh")" == 1 ]] || die "source evidence heredoc must occur exactly once"
-  rg -n -- 'real_gigaam_multilingual_cpu_trace_matches_official' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity test filter is missing"
+  rg -n -- 'real_gigaam_multilingual_trace_matches_official' "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity test filter is missing"
   rg -n -- --exact "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity command must require exact test matching"
   rg -n -- --ignored "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity command must run the ignored real-weight test"
   rg -n -- --nocapture "$ROOT/scripts/publish/vast-ai/run-gigaam-multilingual-validation.sh" >/dev/null || die "parity command must preserve the test log"
@@ -88,16 +90,17 @@ if [[ "${1:-}" == --self-test ]]; then
   parity_log_test_dir="$(mktemp -d)"
   trap 'rm -rf "$parity_log_test_dir"' EXIT
   cat > "$parity_log_test_dir/good.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
 GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
 GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
+GIGAAM_MULTILINGUAL_PARITY backend=Cpu PASS
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   validate_parity_log "$parity_log_test_dir/good.log" || die "valid cargo parity log was rejected"
   cat > "$parity_log_test_dir/duplicate.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
 GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
 GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
 ok
@@ -106,7 +109,7 @@ EOF
   if validate_parity_log "$parity_log_test_dir/duplicate.log"; then die "duplicate named parity test was accepted"; fi
   cat > "$parity_log_test_dir/extra.log" <<'EOF'
 test another_test ... ok
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
 GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
 GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
 ok
@@ -114,19 +117,19 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 EOF
   if validate_parity_log "$parity_log_test_dir/extra.log"; then die "extra named parity test was accepted"; fi
   cat > "$parity_log_test_dir/failed.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... FAILED
+test real_gigaam_multilingual_trace_matches_official ... FAILED
 test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/failed.log"; then die "failed parity test was accepted"; fi
   cat > "$parity_log_test_dir/missing-ok.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=1.007579267e-4 index=17 mean_abs=8.337474355e-6
 GIGAAM_MULTILINGUAL_PARITY logits max_abs=4.072189331e-4 index=42 mean_abs=6.948341615e-5
 GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/missing-ok.log"; then die "missing isolated parity ok was accepted"; fi
   cat > "$parity_log_test_dir/spoof.log" <<'EOF'
-test real_gigaam_multilingual_cpu_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=0e0 index=0 mean_abs=0e0
+test real_gigaam_multilingual_trace_matches_official ... GIGAAM_MULTILINGUAL_PARITY encoded max_abs=0e0 index=0 mean_abs=0e0
 GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
@@ -148,7 +151,7 @@ if len(blocks) < 5:
     raise SystemExit(f"expected embedded Python blocks, found {len(blocks)}")
 if not re.search(
     r"--test parity_gigaam_multilingual_real[\\\s]+"
-    r"real_gigaam_multilingual_cpu_trace_matches_official[\\\s]+"
+    r"real_gigaam_multilingual_trace_matches_official[\\\s]+"
     r"-- --exact --ignored --nocapture --test-threads=1",
     source,
 ):
@@ -580,7 +583,7 @@ cat > "$EVIDENCE_DIR/digest.json" <<EOF
   "phase": "$PHASE",
   "status": "$DIGEST_STATUS",
   "cpu_parity_status": "$CPU_PARITY_STATUS",
-  "metal_apple_status": "OPEN_UNSUPPORTED",
+  "metal_apple_status": "PENDING_APPLE",
   "git_commit": "$GIT_COMMIT",
   "repository": "ai-sage/GigaAM-Multilingual",
   "revision": "2f8a57144e6ec3adfd32fe0484d9ea9913305bc8",
@@ -636,6 +639,7 @@ reject_path_overlap "$GGUF_REAL" "$EVIDENCE_REAL"
 export GIGAAM_MULTILINGUAL_GGUF="$GIGAAM_GGUF"
 export GIGAAM_MULTILINGUAL_REFERENCE_DIR="$REFERENCE_DIR"
 export GIGAAM_MULTILINGUAL_PARITY_REPORT="$EVIDENCE_DIR/parity.json"
+export GIGAAM_BACKEND=cpu
 cargo run --locked -p vokra-cli -- convert \
   --model sber-gigaam-multilingual \
   --input "$GIGAAM_PREPARED_SAFETENSORS" \
@@ -644,7 +648,7 @@ cargo run --locked -p vokra-cli -- convert \
 [[ -f "$GIGAAM_GGUF" && ! -L "$GIGAAM_GGUF" ]] || die "converter did not create a regular GGUF"
 CARGO_BUILD_JOBS=1 cargo test --locked -p vokra-models \
   --test parity_gigaam_multilingual_real \
-  real_gigaam_multilingual_cpu_trace_matches_official \
+  real_gigaam_multilingual_trace_matches_official \
   -- --exact --ignored --nocapture --test-threads=1 \
   > "$EVIDENCE_DIR/parity.log" 2>&1
 [[ -f "$EVIDENCE_DIR/parity.json" && ! -L "$EVIDENCE_DIR/parity.json" ]] || die "native parity report is missing"
@@ -675,7 +679,9 @@ for key in ("encoded_max_abs", "encoded_mean_abs", "logits_max_abs", "logits_mea
         raise SystemExit(f"parity metric exceeds registered bound: {key}")
 PY
 validate_parity_log "$EVIDENCE_DIR/parity.log" || die "parity.log must contain exactly one passing named GigaAM test and one exact one-test result"
-uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$EVIDENCE_DIR/digest.json" <<'PY'
+GGUF_SHA256="$(sha256sum "$GIGAAM_GGUF" | awk '{print $1}')"
+[[ "$GGUF_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "GGUF digest is not lowercase hex"
+uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$EVIDENCE_DIR/digest.json" "$GGUF_SHA256" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -686,6 +692,7 @@ if document.get("status") != "PREPARED_ARTIFACT_DIGEST_MEASURED_NOT_GATED" or do
     raise SystemExit("digest evidence was not in the expected pre-parity state")
 document["status"] = "CPU_PARITY_PASS"
 document["cpu_parity_status"] = "PASS"
+document["gguf_sha256"] = sys.argv[2]
 path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 def no_duplicates(pairs):
     result = {}
@@ -695,10 +702,10 @@ def no_duplicates(pairs):
         result[key] = value
     return result
 document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=no_duplicates)
-if document.get("status") != "CPU_PARITY_PASS" or document.get("cpu_parity_status") != "PASS" or document.get("metal_apple_status") != "OPEN_UNSUPPORTED" or document.get("publication") != "NO_UPLOAD":
+if document.get("status") != "CPU_PARITY_PASS" or document.get("cpu_parity_status") != "PASS" or document.get("metal_apple_status") != "PENDING_APPLE" or document.get("publication") != "NO_UPLOAD" or document.get("gguf_sha256") != sys.argv[2]:
     raise SystemExit("digest parity status mismatch")
 PY
 echo "GigaAM Multilingual real CPU parity PASS; evidence: $EVIDENCE_DIR."
-echo "CPU parity: PASS; Metal/Apple: OPEN_UNSUPPORTED; publication: NO_UPLOAD."
+echo "CPU parity: PASS; Metal/Apple: PENDING_APPLE; publication: NO_UPLOAD."
 echo "NO_UPLOAD: dataset provenance is not authenticated."
 echo "GigaAM Multilingual prepared artifact digest recorded at $EVIDENCE_DIR/digest.json."

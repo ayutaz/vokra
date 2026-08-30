@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use vokra_core::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_models::gigaam::v3::GigaamV3;
 
@@ -155,7 +156,7 @@ fn compare(label: &str, actual: &[f32], expected: &[f32], max_bound: f32, mean_b
 
 #[test]
 #[ignore = "real checkpoint parity runs only on a disposable VAST worker"]
-fn real_gigaam_v3_cpu_trace_matches_official() {
+fn real_gigaam_v3_trace_matches_official() {
     let gguf = PathBuf::from(std::env::var("GIGAAM_V3_GGUF").expect("GIGAAM_V3_GGUF"));
     let reference =
         PathBuf::from(std::env::var("GIGAAM_V3_REFERENCE_DIR").expect("GIGAAM_V3_REFERENCE_DIR"));
@@ -175,7 +176,15 @@ fn real_gigaam_v3_cpu_trace_matches_official() {
         "approved reference manifest digest"
     );
     let file = GgufFile::open(&gguf).expect("open converted GigaAM v3 GGUF");
-    let model = GigaamV3::from_gguf(&file).expect("strict GigaAM v3 bind");
+    let backend = match std::env::var("GIGAAM_BACKEND").as_deref() {
+        Ok("cpu") | Err(_) => BackendKind::Cpu,
+        Ok("metal") => BackendKind::Metal,
+        Ok(other) => panic!("unsupported GIGAAM_BACKEND={other:?}"),
+    };
+    let model = GigaamV3::from_gguf(&file)
+        .expect("strict GigaAM v3 bind")
+        .with_backend(backend)
+        .expect("authenticated GigaAM v3 backend preflight");
     let pcm = f32_file(&reference.join("pcm.f32le"));
     let expected_log_mel = f32_file(&reference.join("log_mel.f32le"));
     let expected_encoded = f32_file(&reference.join("encoded.f32le"));
@@ -233,5 +242,5 @@ fn real_gigaam_v3_cpu_trace_matches_official() {
     );
     assert_eq!(trace.decision_argmax.to_vec(), expected_argmax);
     assert_eq!(trace.token_ids, expected_tokens);
-    eprintln!("GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD");
+    eprintln!("GIGAAM_V3_PARITY backend={backend:?} PASS; publication NO_UPLOAD");
 }

@@ -1,17 +1,17 @@
 //! Native GigaAM Multilingual CTC model binding.
 //!
 //! This module binds only the converter's authenticated 552-tensor GGUF
-//! contract. It intentionally exposes CPU execution today; requesting Metal
-//! returns `UnsupportedOp` until the complete learned op set is dispatched
-//! through `Compute`.
+//! contract. The learned encoder and CTC head dispatch through `Compute`, so
+//! requesting Metal never silently falls back to scalar CPU execution.
 
+use crate::compute::{Compute, HotOp};
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgufFile, chunks};
 use vokra_core::{Result, VokraError};
 use vokra_ops::conformer::{
-    ConformerConfig, ConformerConvWeights, ConformerEncoder, ConformerLayerWeights,
-    ConformerSubsampleWeights, ConformerWeights, ConvSubsampleKind, FeedForwardWeights, MhaWeights,
-    PositionEncoding,
+    ConformerCompute, ConformerConfig, ConformerConvWeights, ConformerEncoder,
+    ConformerLayerWeights, ConformerSubsampleWeights, ConformerWeights, ConvSubsampleKind,
+    FeedForwardWeights, MhaWeights, PositionEncoding,
 };
 use vokra_ops::ctc_decode_greedy;
 
@@ -23,6 +23,16 @@ pub const NAME: &str = "sber-gigaam-multilingual";
 pub const VOCAB_SIZE: usize = 71;
 /// CTC blank class index; the 70 vocabulary symbols occupy indices `0..70`.
 pub const BLANK_ID: usize = 70;
+/// Complete learned operation set for the Multilingual CTC graph.
+pub const GIGAAM_MULTILINGUAL_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Silu,
+    HotOp::Relu,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+];
 /// Required input PCM sample rate in hertz.
 pub const SAMPLE_RATE: u32 = 16_000;
 /// Fixed upstream source revision used to authenticate the model topology.
@@ -201,6 +211,7 @@ fn bind_norm(file: &GgufFile, prefix: &str) -> Result<(Vec<f32>, Vec<f32>)> {
     ))
 }
 
+#[cfg(test)]
 fn log_softmax_rows(values: &mut [f32], classes: usize) -> Result<()> {
     if classes == 0 || values.len() % classes != 0 {
         return Err(VokraError::InvalidArgument(
@@ -461,9 +472,7 @@ impl GigaamMultilingual {
     /// return [`VokraError::UnsupportedOp`] rather than silently falling back
     /// to scalar CPU execution.
     pub fn with_backend(mut self, backend: BackendKind) -> Result<Self> {
-        if backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp("gigaam multilingual Metal/CUDA backend is not wired for the complete learned frontend and encoder op set".into()));
-        }
+        Compute::for_backend(backend, GIGAAM_MULTILINGUAL_HOT_OPS)?;
         self.backend = backend;
         Ok(self)
     }
@@ -542,25 +551,19 @@ impl GigaamMultilingual {
         frames: usize,
         valid_frames: Option<usize>,
     ) -> Result<GigaamMultilingualTrace> {
-        if self.backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(
-                "gigaam multilingual backend is not available".into(),
-            ));
-        }
+        let compute = Compute::for_backend(self.backend, GIGAAM_MULTILINGUAL_HOT_OPS)?;
         if !mel.iter().all(|value| value.is_finite()) {
             return Err(VokraError::InvalidArgument(
                 "GigaAM log-mel input contains non-finite values".into(),
             ));
         }
-        let (hidden, time, valid_time) = if let Some(valid_frames) = valid_frames {
-            let (hidden, time, valid_time) =
-                self.encoder
-                    .forward_with_valid_frames(mel, frames, valid_frames)?;
-            (hidden, time, valid_time)
-        } else {
-            let (hidden, time) = self.encoder.forward(mel, frames)?;
-            (hidden, time, time)
-        };
+        let (hidden, time) =
+            self.encoder
+                .forward_with_compute(mel, frames, valid_frames, &compute)?;
+        let valid_time = valid_frames
+            .map(|valid| self.encoder.config().subsample_type.output_len(valid))
+            .transpose()?
+            .unwrap_or(time);
         if valid_time == 0 || valid_time > time {
             return Err(VokraError::InvalidArgument(
                 "GigaAM valid CTC length is outside encoded bounds".into(),
@@ -580,16 +583,17 @@ impl GigaamMultilingual {
             VokraError::InvalidArgument("GigaAM CTC logits shape overflows usize".into())
         })?;
         let mut logits = vec![0.0; logits_len];
-        for t in 0..valid_time {
-            for class in 0..VOCAB_SIZE {
-                let mut value = self.head_b[class];
-                for d in 0..768 {
-                    value += self.head_w[class * 768 + d] * hidden[t * 768 + d];
-                }
-                logits[t * VOCAB_SIZE + class] = value;
-            }
-        }
-        log_softmax_rows(&mut logits, VOCAB_SIZE)?;
+        compute.linear_row(
+            &hidden,
+            valid_time,
+            768,
+            &self.head_w,
+            &self.head_b,
+            VOCAB_SIZE,
+            &mut logits,
+        )?;
+        let raw_logits = logits.clone();
+        compute.log_softmax(&raw_logits, &mut logits, valid_time, VOCAB_SIZE)?;
         let raw_argmax = logits
             .chunks_exact(VOCAB_SIZE)
             .map(|row| {
@@ -620,11 +624,6 @@ impl GigaamMultilingual {
     }
 
     fn log_mel_from_pcm(&self, pcm: &[f32]) -> Result<(Vec<f32>, usize)> {
-        if self.backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(
-                "gigaam multilingual backend is not available".into(),
-            ));
-        }
         if !pcm.iter().all(|value| value.is_finite()) {
             return Err(VokraError::InvalidArgument(
                 "GigaAM PCM input contains non-finite values".into(),
@@ -664,6 +663,17 @@ impl GigaamMultilingual {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_registry_covers_every_learned_multilingual_operation() {
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::Gemm));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::Softmax));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::LayerNorm));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::Silu));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::Relu));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::Conv1d));
+        assert!(GIGAAM_MULTILINGUAL_HOT_OPS.contains(&HotOp::GroupedConv1d));
+    }
 
     #[test]
     fn authenticated_ctc_contract_is_fixed() {

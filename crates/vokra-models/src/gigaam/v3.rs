@@ -5,15 +5,28 @@
 //! `ec1dc1f01d0d627ab2c0d3acc1e235702300d95e`. Binding remains fail-closed
 //! against any prepared artifact other than the independently reviewed digest.
 
+use crate::compute::{Compute, HotOp};
 use std::collections::BTreeSet;
 use vokra_core::backend::BackendKind;
 use vokra_core::gguf::{GgmlType, GgufFile, chunks};
 use vokra_core::{Result, VokraError};
 use vokra_ops::conformer::{
-    ConformerConfig, ConformerConvWeights, ConformerEncoder, ConformerLayerWeights,
-    ConformerSubsampleWeights, ConformerWeights, ConvSubsampleKind, FeedForwardWeights, MhaWeights,
-    PositionEncoding,
+    ConformerCompute, ConformerConfig, ConformerConvWeights, ConformerEncoder,
+    ConformerLayerWeights, ConformerSubsampleWeights, ConformerWeights, ConvSubsampleKind,
+    FeedForwardWeights, MhaWeights, PositionEncoding,
 };
+
+/// Complete learned operation set for the GigaAM v3 RNNT graph.
+pub const GIGAAM_V3_HOT_OPS: &[HotOp] = &[
+    HotOp::Gemm,
+    HotOp::Softmax,
+    HotOp::LayerNorm,
+    HotOp::Silu,
+    HotOp::Relu,
+    HotOp::Tanh,
+    HotOp::Conv1d,
+    HotOp::GroupedConv1d,
+];
 
 /// GGUF architecture marker for the v3 RNNT route.
 pub const ARCH: &str = "sber_gigaam_v3";
@@ -82,6 +95,7 @@ pub struct GigaamV3Trace {
     pub token_ids: Vec<u32>,
 }
 
+#[cfg(test)]
 fn row_log_softmax(row: &mut [f32]) -> Result<usize> {
     let mut max = f32::NEG_INFINITY;
     let mut argmax = 0;
@@ -526,11 +540,7 @@ impl GigaamV3 {
 
     /// Select only a backend that implements the complete learned graph.
     pub fn with_backend(mut self, backend: BackendKind) -> Result<Self> {
-        if backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(
-                "GigaAM v3 Metal/CUDA route is not implemented".into(),
-            ));
-        }
+        Compute::for_backend(backend, GIGAAM_V3_HOT_OPS)?;
         self.backend = backend;
         Ok(self)
     }
@@ -548,13 +558,11 @@ impl GigaamV3 {
 
     /// Return frontend, encoder, and per-decision greedy RNNT diagnostics.
     pub fn trace_pcm(&self, pcm: &[f32]) -> Result<GigaamV3Trace> {
-        if self.backend != BackendKind::Cpu {
-            return Err(VokraError::UnsupportedOp(
-                "GigaAM v3 backend is unavailable".into(),
-            ));
-        }
+        let compute = Compute::for_backend(self.backend, GIGAAM_V3_HOT_OPS)?;
         let (mel, frames) = self.log_mel_from_pcm(pcm)?;
-        let (hidden, encoded_frames) = self.encoder.forward(&mel, frames)?;
+        let (hidden, encoded_frames) = self
+            .encoder
+            .forward_with_compute(&mel, frames, None, &compute)?;
         if hidden.len() != encoded_frames * 768 {
             return Err(VokraError::ModelLoad(
                 "GigaAM v3 encoder output shape mismatch".into(),
@@ -574,9 +582,17 @@ impl GigaamV3 {
                 if symbols >= MAX_SYMBOLS_PER_STEP {
                     break;
                 }
-                let (g, next_state) = self.predict(last_label, state.as_ref())?;
-                let mut row = self.joint_logits(f, &g)?;
-                let k = row_log_softmax(&mut row)?;
+                let (g, next_state) = self.predict(last_label, state.as_ref(), &compute)?;
+                let mut row = self.joint_logits(f, &g, &compute)?;
+                let mut log_probs = vec![0.0; row.len()];
+                compute.log_softmax(&row, &mut log_probs, 1, NUM_CLASSES)?;
+                let k = log_probs
+                    .iter()
+                    .enumerate()
+                    .max_by(|left, right| left.1.total_cmp(right.1))
+                    .map(|(index, _)| index)
+                    .ok_or_else(|| VokraError::ModelLoad("GigaAM v3 empty joint row".into()))?;
+                row.copy_from_slice(&log_probs);
                 rnnt_logits.extend_from_slice(&row);
                 decision_frames.push(t);
                 decision_symbols.push(symbols);
@@ -616,6 +632,7 @@ impl GigaamV3 {
         &self,
         label: Option<usize>,
         state: Option<&LstmState>,
+        compute: &impl ConformerCompute,
     ) -> Result<(Vec<f32>, LstmState)> {
         let mut input = vec![0.0; 320];
         if let Some(label) = label {
@@ -630,56 +647,96 @@ impl GigaamV3 {
             || (vec![0.0; 320], vec![0.0; 320]),
             |(h, c)| (h.clone(), c.clone()),
         );
+        let mut input_gates = vec![0.0; 1280];
+        let mut recurrent_gates = vec![0.0; 1280];
+        compute.linear_row(
+            &input,
+            1,
+            320,
+            &self.weight_ih,
+            &self.bias_ih,
+            1280,
+            &mut input_gates,
+        )?;
+        compute.linear_row(
+            &prev_h,
+            1,
+            320,
+            &self.weight_hh,
+            &self.bias_hh,
+            1280,
+            &mut recurrent_gates,
+        )?;
         let mut gates = vec![0.0; 1280];
-        for (g, (&bias_ih, &bias_hh)) in self.bias_ih.iter().zip(self.bias_hh.iter()).enumerate() {
-            let mut v = bias_ih + bias_hh;
-            for i in 0..320 {
-                v += self.weight_ih[g * 320 + i] * input[i]
-                    + self.weight_hh[g * 320 + i] * prev_h[i];
-            }
-            gates[g] = v;
+        for ((gate, input_gate), recurrent_gate) in
+            gates.iter_mut().zip(input_gates).zip(recurrent_gates)
+        {
+            *gate = input_gate + recurrent_gate;
         }
         let mut h = vec![0.0; 320];
         let mut c = vec![0.0; 320];
+        let mut input_gate_values = vec![0.0; 320];
+        let mut forget_gate_values = vec![0.0; 320];
+        let mut output_gate_values = vec![0.0; 320];
+        compute.sigmoid(&gates[..320], &mut input_gate_values)?;
+        compute.sigmoid(&gates[320..640], &mut forget_gate_values)?;
+        compute.sigmoid(&gates[960..], &mut output_gate_values)?;
+        let mut cell_gates = vec![0.0; 320];
+        compute.tanh(&gates[640..960], &mut cell_gates)?;
+        let mut cell_states = vec![0.0; 320];
         for (i, (h_value, c_value)) in h.iter_mut().zip(c.iter_mut()).enumerate() {
-            let sigmoid = |x: f32| {
-                if x >= 0.0 {
-                    1.0 / (1.0 + (-x).exp())
-                } else {
-                    let e = x.exp();
-                    e / (1.0 + e)
-                }
-            };
-            let input_gate = sigmoid(gates[i]);
-            let forget_gate = sigmoid(gates[320 + i]);
-            let cell_gate = gates[640 + i].tanh();
-            let output_gate = sigmoid(gates[960 + i]);
+            let input_gate = input_gate_values[i];
+            let forget_gate = forget_gate_values[i];
+            let cell_gate = cell_gates[i];
+            let output_gate = output_gate_values[i];
             *c_value = forget_gate * prev_c[i] + input_gate * cell_gate;
-            *h_value = output_gate * c_value.tanh();
+            cell_states[i] = *c_value;
+            *h_value = output_gate;
+        }
+        let mut state_tanh = vec![0.0; 320];
+        compute.tanh(&cell_states, &mut state_tanh)?;
+        for (i, h_value) in h.iter_mut().enumerate() {
+            *h_value *= state_tanh[i];
         }
         Ok((h.clone(), (h, c)))
     }
 
-    fn joint_logits(&self, enc: &[f32], pred: &[f32]) -> Result<Vec<f32>> {
+    fn joint_logits(
+        &self,
+        enc: &[f32],
+        pred: &[f32],
+        compute: &impl ConformerCompute,
+    ) -> Result<Vec<f32>> {
         let mut hidden = vec![0.0; 320];
-        for (j, hidden_value) in hidden.iter_mut().enumerate() {
-            let mut v = self.enc_b[j] + self.pred_b[j];
-            for (i, &enc_value) in enc.iter().enumerate() {
-                v += self.enc_w[j * 768 + i] * enc_value;
-            }
-            for (i, &pred_value) in pred.iter().enumerate() {
-                v += self.pred_w[j * 320 + i] * pred_value;
-            }
-            *hidden_value = v.max(0.0);
+        let mut enc_hidden = vec![0.0; 320];
+        let mut pred_hidden = vec![0.0; 320];
+        compute.linear_row(enc, 1, 768, &self.enc_w, &self.enc_b, 320, &mut enc_hidden)?;
+        compute.linear_row(
+            pred,
+            1,
+            320,
+            &self.pred_w,
+            &self.pred_b,
+            320,
+            &mut pred_hidden,
+        )?;
+        for ((hidden_value, enc_value), pred_value) in
+            hidden.iter_mut().zip(enc_hidden).zip(pred_hidden)
+        {
+            *hidden_value = enc_value + pred_value;
         }
+        let pre_activation = hidden.clone();
+        compute.relu(&pre_activation, &mut hidden)?;
         let mut logits = vec![0.0; NUM_CLASSES];
-        for (k, logit) in logits.iter_mut().enumerate() {
-            let mut v = self.out_b[k];
-            for (j, &hidden_value) in hidden.iter().enumerate() {
-                v += self.out_w[k * 320 + j] * hidden_value;
-            }
-            *logit = v;
-        }
+        compute.linear_row(
+            &hidden,
+            1,
+            320,
+            &self.out_w,
+            &self.out_b,
+            NUM_CLASSES,
+            &mut logits,
+        )?;
         Ok(logits)
     }
 
@@ -724,6 +781,18 @@ impl GigaamV3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_registry_covers_every_learned_v3_operation() {
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Gemm));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Softmax));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::LayerNorm));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Silu));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Relu));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Tanh));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::Conv1d));
+        assert!(GIGAAM_V3_HOT_OPS.contains(&HotOp::GroupedConv1d));
+    }
 
     fn row(class: usize, value: f32) -> Vec<f32> {
         let mut row = vec![0.0; NUM_CLASSES];

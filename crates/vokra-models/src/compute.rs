@@ -3779,6 +3779,334 @@ pub fn make_backend(kind: BackendKind) -> Result<Box<dyn Backend>> {
     }
 }
 
+/// Adapter for the shared Conformer primitive.  The primitive stores linear
+/// weights in the natural model layout `[out, in]`, while the backend GEMM
+/// seam consumes `[m, k] × [k, n]`; this adapter performs only the required
+/// host-side layout conversion and sends every learned operation itself to
+/// `Compute`.
+impl vokra_ops::conformer::ConformerCompute for Compute {
+    fn linear_row(
+        &self,
+        input: &[f32],
+        rows: usize,
+        in_dim: usize,
+        weight: &[f32],
+        bias: &[f32],
+        out_dim: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        if input.len()
+            != rows.checked_mul(in_dim).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer linear input shape overflows usize".into())
+            })?
+            || output.len()
+                != rows.checked_mul(out_dim).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "Conformer linear output shape overflows usize".into(),
+                    )
+                })?
+            || weight.len()
+                != out_dim.checked_mul(in_dim).ok_or_else(|| {
+                    VokraError::InvalidArgument(
+                        "Conformer linear weight shape overflows usize".into(),
+                    )
+                })?
+            || bias.len() != out_dim
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer linear shape mismatch".to_owned(),
+            ));
+        }
+        let mut transposed = vec![0.0f32; weight.len()];
+        for out_index in 0..out_dim {
+            for in_index in 0..in_dim {
+                transposed[in_index * out_dim + out_index] = weight[out_index * in_dim + in_index];
+            }
+        }
+        self.gemm_f32(
+            rows,
+            out_dim,
+            in_dim,
+            input,
+            &transposed,
+            Some(bias),
+            output,
+        )
+    }
+
+    fn gemm(
+        &self,
+        m: usize,
+        n: usize,
+        k: usize,
+        a: &[f32],
+        b: &[f32],
+        bias: Option<&[f32]>,
+        output: &mut [f32],
+    ) -> Result<()> {
+        self.gemm_f32(m, n, k, a, b, bias, output)
+    }
+
+    fn layer_norm(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        self.layer_norm_f32(input, output, rows, cols, gamma, beta, eps)
+    }
+
+    fn softmax(&self, input: &[f32], output: &mut [f32], rows: usize, cols: usize) -> Result<()> {
+        self.softmax_f32(input, output, rows, cols)
+    }
+
+    fn log_softmax(
+        &self,
+        input: &[f32],
+        output: &mut [f32],
+        rows: usize,
+        cols: usize,
+    ) -> Result<()> {
+        let row_values = rows.checked_mul(cols).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer log-softmax shape overflows usize".into())
+        })?;
+        if input.len() != row_values || output.len() != row_values || cols == 0 {
+            return Err(VokraError::InvalidArgument(
+                "Conformer log-softmax shape mismatch".to_owned(),
+            ));
+        }
+        if self.backend_name() == "cpu" {
+            for row in 0..rows {
+                let src = &input[row * cols..(row + 1) * cols];
+                let dst = &mut output[row * cols..(row + 1) * cols];
+                let max = src.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let sum = src.iter().map(|value| (*value - max).exp()).sum::<f32>();
+                if !sum.is_finite() || sum <= 0.0 {
+                    return Err(VokraError::ModelLoad(
+                        "Conformer log-softmax normalization failed".into(),
+                    ));
+                }
+                let log_sum = max + sum.ln();
+                for (dst, &value) in dst.iter_mut().zip(src) {
+                    *dst = value - log_sum;
+                }
+            }
+            return Ok(());
+        }
+        self.softmax_f32(input, output, rows, cols)?;
+        if output
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return Err(VokraError::ModelLoad(
+                "Conformer log-softmax device normalization failed".into(),
+            ));
+        }
+        for value in output {
+            *value = value.ln();
+        }
+        Ok(())
+    }
+
+    fn relu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.relu_f32(input, output)
+    }
+
+    fn silu(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.silu_f32(input, output)
+    }
+
+    fn sigmoid(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        if input.len() != output.len() {
+            return Err(VokraError::InvalidArgument(
+                "Conformer sigmoid shape mismatch".to_owned(),
+            ));
+        }
+        if self.backend_name() == "cpu" {
+            for (dst, &src) in output.iter_mut().zip(input) {
+                *dst = if src >= 0.0 {
+                    1.0 / (1.0 + (-src).exp())
+                } else {
+                    let exp = src.exp();
+                    exp / (1.0 + exp)
+                };
+            }
+            return Ok(());
+        }
+        // Metal has a native SiLU kernel but no standalone sigmoid kernel.
+        // Since sigmoid(x) = SiLU(x) / x (with sigmoid(0)=1/2), this keeps
+        // the exponential on the selected device and performs only a scalar
+        // finalization on the host; it never dispatches the op to CPU.
+        self.silu_f32(input, output)?;
+        for (dst, &src) in output.iter_mut().zip(input) {
+            *dst = if src == 0.0 { 0.5 } else { *dst / src };
+        }
+        Ok(())
+    }
+
+    fn tanh(&self, input: &[f32], output: &mut [f32]) -> Result<()> {
+        self.tanh_f32(input, output)
+    }
+
+    fn conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let output_len = input_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer padding shape overflows usize".into())
+            })?)
+            .and_then(|value| value.checked_sub(kernel))
+            .and_then(|value| value.checked_div(stride))
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d output shape is invalid".into())
+            })?;
+        let input_values = input_len.checked_mul(in_channels).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer Conv1d input shape overflows usize".into())
+        })?;
+        let weight_values = out_channels
+            .checked_mul(in_channels)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d weight shape overflows usize".into())
+            })?;
+        let output_values = output_len.checked_mul(out_channels).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer Conv1d output shape overflows usize".into())
+        })?;
+        if input.len() != input_values
+            || weight.len() != weight_values
+            || output.len() != output_values
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        let mut channel_major = vec![0.0f32; input.len()];
+        for time in 0..input_len {
+            for channel in 0..in_channels {
+                channel_major[channel * input_len + time] = input[time * in_channels + channel];
+            }
+        }
+        let mut channel_output = vec![0.0f32; output.len()];
+        self.conv1d_f32(
+            &channel_major,
+            in_channels,
+            input_len,
+            weight,
+            out_channels,
+            kernel,
+            bias,
+            stride,
+            padding,
+            &mut channel_output,
+        )?;
+        for time in 0..output_len {
+            for channel in 0..out_channels {
+                output[time * out_channels + channel] = channel_output[channel * output_len + time];
+            }
+        }
+        Ok(())
+    }
+
+    fn grouped_conv1d_time_major(
+        &self,
+        input: &[f32],
+        in_channels: usize,
+        input_len: usize,
+        weight: &[f32],
+        out_channels: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        groups: usize,
+        output: &mut [f32],
+    ) -> Result<()> {
+        let output_len = input_len
+            .checked_add(padding.checked_mul(2).ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer padding shape overflows usize".into())
+            })?)
+            .and_then(|value| value.checked_sub(kernel))
+            .and_then(|value| value.checked_div(stride))
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("Conformer Conv1d output shape is invalid".into())
+            })?;
+        let input_values = input_len.checked_mul(in_channels).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "Conformer grouped Conv1d input shape overflows usize".into(),
+            )
+        })?;
+        let channels_per_group = in_channels.checked_div(groups).ok_or_else(|| {
+            VokraError::InvalidArgument("Conformer grouped Conv1d group shape is invalid".into())
+        })?;
+        let weight_values = out_channels
+            .checked_mul(channels_per_group)
+            .and_then(|value| value.checked_mul(kernel))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "Conformer grouped Conv1d weight shape overflows usize".into(),
+                )
+            })?;
+        let output_values = output_len.checked_mul(out_channels).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "Conformer grouped Conv1d output shape overflows usize".into(),
+            )
+        })?;
+        if groups == 0
+            || in_channels % groups != 0
+            || out_channels % groups != 0
+            || input.len() != input_values
+            || weight.len() != weight_values
+            || output.len() != output_values
+        {
+            return Err(VokraError::InvalidArgument(
+                "Conformer grouped Conv1d shape mismatch".to_owned(),
+            ));
+        }
+        let mut channel_major = vec![0.0f32; input.len()];
+        for time in 0..input_len {
+            for channel in 0..in_channels {
+                channel_major[channel * input_len + time] = input[time * in_channels + channel];
+            }
+        }
+        let mut channel_output = vec![0.0f32; output.len()];
+        self.grouped_conv1d_f32(
+            &channel_major,
+            in_channels,
+            input_len,
+            weight,
+            out_channels,
+            kernel,
+            bias,
+            stride,
+            padding,
+            groups,
+            &mut channel_output,
+        )?;
+        for time in 0..output_len {
+            for channel in 0..out_channels {
+                output[time * out_channels + channel] = channel_output[channel * output_len + time];
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

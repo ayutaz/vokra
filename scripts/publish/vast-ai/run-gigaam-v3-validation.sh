@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-target_prefix = "test real_gigaam_v3_cpu_trace_matches_official ... "
+target_prefix = "test real_gigaam_v3_trace_matches_official ... "
 target_lines = [line for line in lines if line.startswith(target_prefix)]
 if len(target_lines) != 1:
     raise SystemExit("parity log must contain exactly one target test start")
@@ -71,7 +71,7 @@ if len(markers) != 4:
     raise SystemExit("parity log must contain exactly four GigaAM markers")
 metrics = []
 for marker in markers:
-    if marker == "GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD":
+    if marker == "GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD":
         continue
     match = metric_re.fullmatch(marker)
     if match is None:
@@ -95,7 +95,7 @@ if [[ "${1:-}" == --self-test ]]; then
     crates/vokra-models/src/gigaam/v3.rs; do
     [[ -f "$ROOT/$path" ]] || die "missing contract: $path"
   done
-  rg -n -- 'AUTHENTICATED_PREPARED_SHA256|--exact --ignored --nocapture --test-threads=1|OPEN_UNSUPPORTED|GigaAM-v3' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "phase contract missing"
+  rg -n -- 'AUTHENTICATED_PREPARED_SHA256|GIT_COMMIT=|git_commit|--exact --ignored --nocapture --test-threads=1|PENDING_APPLE|GigaAM-v3' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "phase/commit contract missing"
   rg -n -- 'cargo run --locked -p vokra-cli -- convert --model sber-gigaam-v3|export GIGAAM_V3_GGUF|export GIGAAM_V3_REFERENCE_DIR|CONVERTER_APPROVED_SHA|RUNTIME_APPROVED_SHA' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" >/dev/null || die "converter/env approval chain missing"
   rg -n -- 'decision_argmax\.u32le|decision_frames.*decision_symbols|joint_output.*log_softmax' "$ROOT/tools/parity/sber_gigaam_v3_dump_reference.py" "$ROOT/tools/parity/gigaam_v3_validation.py" >/dev/null || die "decision trace contract missing"
   if rg -n -- 'git push|upload\.sh|publish-one\.sh' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-validation.sh" | grep -v 'if rg -n' >/dev/null; then die "upload command found"; fi
@@ -142,10 +142,10 @@ PY
   cat > "$parity_log_test_dir/good.log" <<'EOF'
 running 1 test
 
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
-GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD
 ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
@@ -153,8 +153,8 @@ EOF
   validate_parity_log "$parity_log_test_dir/good.log" || die "valid interleaved parity log was rejected"
   cat > "$parity_log_test_dir/duplicate-test.log" <<'EOF'
 running 1 test
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
 EOF
@@ -162,45 +162,45 @@ EOF
   cat > "$parity_log_test_dir/extra-test.log" <<'EOF'
 running 1 test
 test another_test ... ok
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/extra-test.log"; then die "extra named test was accepted"; fi
   cat > "$parity_log_test_dir/duplicate-marker.log" <<'EOF'
 running 1 test
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
-GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
-GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD
+GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/duplicate-marker.log"; then die "duplicate CPU marker was accepted"; fi
   cat > "$parity_log_test_dir/malformed-marker.log" <<'EOF'
 running 1 test
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=nan mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=nan mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
-GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/malformed-marker.log"; then die "malformed metric marker was accepted"; fi
   cat > "$parity_log_test_dir/malformed-summary.log" <<'EOF'
 running 1 test
-test real_gigaam_v3_cpu_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
+test real_gigaam_v3_trace_matches_official ... GIGAAM_V3_PARITY log_mel max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY encoded max_abs=1.000000000e-03 mean_abs=2.000000000e-04
 GIGAAM_V3_PARITY rnnt_logits max_abs=1.000000000e-03 mean_abs=2.000000000e-04
-GIGAAM_V3_PARITY CPU PASS; Metal OPEN_UNSUPPORTED; publication NO_UPLOAD
+GIGAAM_V3_PARITY backend=Cpu PASS; publication NO_UPLOAD
 ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; -1 filtered out; finished in 0.01s
 EOF
   if validate_parity_log "$parity_log_test_dir/malformed-summary.log"; then die "malformed summary was accepted"; fi
   rm -rf "$parity_log_test_dir"
   trap - EXIT
-  echo "run-gigaam-v3-validation.sh self-test: OK (NO_UPLOAD; parity OPEN)"
+  echo "run-gigaam-v3-validation.sh self-test: OK (NO_UPLOAD; Apple pending)"
   exit 0
 fi
 
@@ -215,6 +215,8 @@ for tool in git realpath sha256sum stat free df awk uv; do require_tool "$tool";
 [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || die "VAST requires Linux x86_64"
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is absent"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die "checkout must be clean"
+GIT_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+[[ "$GIT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "invalid checkout commit"
 # The broad parity environment is not an approved production dependency
 # closure. Keep both phases fail-closed until this dedicated project and lock
 # are reviewed and committed.
@@ -339,17 +341,18 @@ uv run --frozen --project "$V3_PROJECT" --python 3.12 python "$ROOT/tools/parity
 [[ -d "$(dirname "$GIGAAM_GGUF")" ]] || die "GGUF parent must already exist"
 export GIGAAM_V3_GGUF="$GIGAAM_GGUF"
 export GIGAAM_V3_REFERENCE_DIR="$GIGAAM_REFERENCE_DIR"
+export GIGAAM_BACKEND=cpu
 GIGAAM_V3_REFERENCE_MANIFEST_SHA256="$(sha256sum "$GIGAAM_REFERENCE_DIR/manifest.json" | awk '{print $1}')"
 export GIGAAM_V3_REFERENCE_MANIFEST_SHA256
 [[ "$GIGAAM_V3_REFERENCE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "reference manifest digest is invalid"
 cargo run --locked -p vokra-cli -- convert --model sber-gigaam-v3 --input "$GIGAAM_PREPARED_SAFETENSORS" --output "$GIGAAM_GGUF" --license mit
 [[ -f "$GIGAAM_GGUF" && ! -L "$GIGAAM_GGUF" ]] || die "converter did not create GGUF"
 mkdir "$GIGAAM_EVIDENCE_DIR"
-cargo test --locked -p vokra-models --test parity_gigaam_v3_real real_gigaam_v3_cpu_trace_matches_official -- --exact --ignored --nocapture --test-threads=1 > "$GIGAAM_EVIDENCE_DIR/parity.log" 2>&1
+cargo test --locked -p vokra-models --test parity_gigaam_v3_real real_gigaam_v3_trace_matches_official -- --exact --ignored --nocapture --test-threads=1 > "$GIGAAM_EVIDENCE_DIR/parity.log" 2>&1
 validate_parity_log "$GIGAAM_EVIDENCE_DIR/parity.log" || die "parity log shape or PASS markers are invalid"
 GGUF_SHA256="$(sha256sum "$GIGAAM_GGUF" | awk '{print $1}')"
 [[ "$GGUF_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "GGUF digest is invalid"
 cat > "$GIGAAM_EVIDENCE_DIR/validation-summary.json" <<EOF
-{"format":"vokra-gigaam-v3-validation-v1","phase":"parity","status":"CPU_PARITY_PASS","publication":"NO_UPLOAD","prepared_sha256":"$PREPARED_SHA256","sidecar_sha256":"$SIDECAR_SHA256","gguf_sha256":"$GGUF_SHA256","reference_manifest_sha256":"$GIGAAM_V3_REFERENCE_MANIFEST_SHA256","metal_apple_status":"OPEN_UNSUPPORTED"}
+{"format":"vokra-gigaam-v3-validation-v1","phase":"parity","status":"CPU_PARITY_PASS","publication":"NO_UPLOAD","git_commit":"$GIT_COMMIT","prepared_sha256":"$PREPARED_SHA256","sidecar_sha256":"$SIDECAR_SHA256","gguf_sha256":"$GGUF_SHA256","reference_manifest_sha256":"$GIGAAM_V3_REFERENCE_MANIFEST_SHA256","metal_apple_status":"PENDING_APPLE"}
 EOF
-echo "GigaAM v3 parity: CPU PASS; Metal/Apple OPEN_UNSUPPORTED; publication NO_UPLOAD"
+echo "GigaAM v3 parity: CPU PASS; Metal/Apple PENDING_APPLE; publication NO_UPLOAD"

@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use vokra_core::BackendKind;
 use vokra_core::gguf::GgufFile;
 use vokra_models::gigaam::GigaamMultilingual;
 
@@ -98,7 +99,7 @@ fn compare(
 
 #[test]
 #[ignore = "real checkpoint parity runs only on a disposable VAST worker"]
-fn real_gigaam_multilingual_cpu_trace_matches_official() {
+fn real_gigaam_multilingual_trace_matches_official() {
     let gguf =
         PathBuf::from(std::env::var("GIGAAM_MULTILINGUAL_GGUF").expect("GIGAAM_MULTILINGUAL_GGUF"));
     let reference = PathBuf::from(
@@ -114,7 +115,15 @@ fn real_gigaam_multilingual_cpu_trace_matches_official() {
     }
 
     let file = GgufFile::open(&gguf).expect("open converted GigaAM GGUF");
-    let model = GigaamMultilingual::from_gguf(&file).expect("strict GigaAM Multilingual bind");
+    let backend = match std::env::var("GIGAAM_BACKEND").as_deref() {
+        Ok("cpu") | Err(_) => BackendKind::Cpu,
+        Ok("metal") => BackendKind::Metal,
+        Ok(other) => panic!("unsupported GIGAAM_BACKEND={other:?}"),
+    };
+    let model = GigaamMultilingual::from_gguf(&file)
+        .expect("strict GigaAM Multilingual bind")
+        .with_backend(backend)
+        .expect("authenticated GigaAM Multilingual backend preflight");
     let pcm = read_f32(&reference.join("pcm.f32le"));
     let expected_encoded = read_f32(&reference.join("encoded.f32le"));
     let expected_logits = read_f32(&reference.join("logits.f32le"));
@@ -144,6 +153,7 @@ fn real_gigaam_multilingual_cpu_trace_matches_official() {
         "collapsed CTC token IDs"
     );
     eprintln!("GIGAAM_MULTILINGUAL_PARITY token_ids=exact PASS");
+    eprintln!("GIGAAM_MULTILINGUAL_PARITY backend={backend:?} PASS");
 
     if let Some(path) = report {
         let body = format!(
