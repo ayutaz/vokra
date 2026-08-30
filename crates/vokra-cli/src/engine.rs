@@ -2570,6 +2570,14 @@ const BOUND_ARCHES: &[BoundArch] = &[
     // BigVGAN and Vocos left this registry on 2026-08-21 after strict
     // loaders, real forwards, parity, and explicit feature-file CLI
     // contracts landed.
+    BoundArch {
+        // Keep this literal in sync with `vokra_models::bicodec::ARCH`: the
+        // bound-arch coverage gate intentionally scans registry literals.
+        arch: "bicodec",
+        module: "vokra_models::bicodec",
+        entry: "Bicodec::from_gguf → Bicodec::decode",
+        probe: Some(|g: &GgufFile| vokra_models::bicodec::Bicodec::from_gguf(g).map(|_| ())),
+    },
     // --- Text / alignment side-cars ---------------------------------------
     // --- Wave H (2026-08-15) — five binders this registry had missed -------
     //

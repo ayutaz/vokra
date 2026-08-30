@@ -20,7 +20,9 @@ dependencies = [
     "transformers==4.41.2",
     "vector-quantize-pytorch==1.27.15",
     "vocos==0.1.0",
-    "requests==2.32.5",
+    # GHSA-gc5v-m9x4-r6x2 affects requests <2.33.0; keep the reference
+    # environment on the first upstream patched release.
+    "requests==2.33.0",
 ]
 
 [tool.uv]
@@ -64,9 +66,9 @@ excluded_upstream_optional = [
 ]
 torch_index = "https://download.pytorch.org/whl/cpu"
 forbidden_packages = ["soxr", "rubberband", "triton", "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12"]
-lock_sha256 = "36986402c3badb45b50c9d18ffbc811409be618cf45e2438f97e99c6751235db"
-package_inventory_sha256 = "f8b00a8226662347ccf2e0ef7420922614ec570524ca6216852ee699f32db98a"
-lock_package_rows_sha256 = "9714e1a005af4800608f608c9617e0ce90dec0c563427e7c693d9c603ea2cf52"
+lock_sha256 = "265acb8b9ea68bdc7d5a1e8247e44a8410dfe6c4e3736fff9a5e6ef8d0ed5619"
+package_inventory_sha256 = "a4d2d83a5b1d95419c9c913262cc596ea63e90f4532ad09e8d021c3ad07097bd"
+lock_package_rows_sha256 = "22247bf02552f4d31b613fa9a2944a339a0c066f652d7d2f25c8fe72b10d2307"
 
 [tool.vokra.chattts_reference.license_audit]
 status = "BLOCKED_UNRESOLVED"
@@ -74,7 +76,7 @@ primary_metadata = "PyPI JSON release metadata, upstream package LICENSE files, 
 source_route = "AGPLv3+ source is independent VAST-only reference code and must never be copied into Vokra runtime/product artifacts."
 weight_route = "CC-BY-NC-4.0 weights are inspection/reference-only and are not eligible for model-zoo publication."
 blocker = "Owner approval is required before dedicated uv sync or authenticated model/source acquisition. The lock contains PSF-2.0 typing-extensions, MPL-2.0 certifi/tqdm files, Unlicense filelock, and bundled numerical-library notices; no project exception/sign-off exists."
-record_sha256 = "38d0b49ad2b3fafd34bf19eaf1c955e53f0d7b5eb362612d0292a23d3e59148a"
+record_sha256 = "364ca38d14d269705641c9ccf0a350085fbfbe05705b98a09ee6ba1636f95fc5"
 package_records = [
     { name = "certifi", version = "2026.7.22", license = "MPL-2.0", primary_source = "https://pypi.org/pypi/certifi/2026.7.22/json", route = "reference-only" },
     { name = "cffi", version = "2.1.1", license = "MIT", primary_source = "https://pypi.org/pypi/cffi/2.1.1/json", route = "reference-only" },
@@ -101,7 +103,7 @@ package_records = [
     { name = "pycparser", version = "3.0", license = "BSD-3-Clause", primary_source = "https://pypi.org/pypi/pycparser/3.0/json", route = "reference-only" },
     { name = "pyyaml", version = "6.0.3", license = "MIT", primary_source = "https://pypi.org/pypi/PyYAML/6.0.3/json", route = "reference-only" },
     { name = "regex", version = "2026.7.19", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/regex/2026.7.19/json", route = "reference-only" },
-    { name = "requests", version = "2.32.5", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/requests/2.32.5/json", route = "reference-only" },
+    { name = "requests", version = "2.33.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/requests/2.33.0/json", route = "reference-only" },
     { name = "safetensors", version = "0.7.0", license = "Apache-2.0", primary_source = "https://pypi.org/pypi/safetensors/0.7.0/json", route = "reference-only" },
     { name = "scipy", version = "1.18.1", license = "BSD-3-Clause-plus-bundled-notices", primary_source = "https://pypi.org/pypi/scipy/1.18.1/json", route = "reference-only" },
     { name = "setuptools", version = "84.0.0", license = "MIT", primary_source = "https://pypi.org/pypi/setuptools/84.0.0/json", route = "reference-only" },

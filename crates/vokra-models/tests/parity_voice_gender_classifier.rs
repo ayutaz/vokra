@@ -113,9 +113,13 @@ fn real_voice_gender_classifier_matches_official_reference() {
             "male"
         }
     );
-    eprintln!(
-        "VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED frames={frames} feature_max_abs={feature_error:.6e} embedding_max_abs={embedding_error:.6e} logits_max_abs={logit_error:.6e} probabilities_max_abs={probability_error:.6e}"
-    );
+    // The errors above are intentionally computed and asserted in-process so
+    // this remains a useful independent parity check. Do not emit them:
+    // they are derived from caller-supplied PCM and CodeQL correctly treats
+    // them as sensitive tainted data. The fixed sentinel keeps CI's
+    // report-only phase observable without copying voice-derived values into
+    // logs.
+    eprintln!("VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED");
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     {
@@ -129,8 +133,6 @@ fn real_voice_gender_classifier_matches_official_reference() {
         assert!(metal_error.is_finite());
         let metal_prediction = metal.classify_pcm(&pcm, 16_000).expect("Metal prediction");
         assert_eq!(metal_prediction.label, prediction.label);
-        eprintln!(
-            "VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED frames={frames} logits_max_abs={metal_error:.6e}"
-        );
+        eprintln!("VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED");
     }
 }

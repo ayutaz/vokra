@@ -152,5 +152,7 @@ jobs:
             --timeout 20
             --exclude '^file://.*/docs/(system-requirements\.md|adr/(0004-ios-build|M2-03-followup-rtf)\.md)$'
             --exclude '^https://www\.tn\.gov/governor/news/2024/1/10/tennessee-first-in-the-nation-to-address-ai-impact-on-music-industry\.html$'
+            --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/covered-entities/index\.html$'
+            --exclude '^https://www\.hhs\.gov/hipaa/for-professionals/privacy/guidance/business-associates/index\.html$'
             README.md CONTRIBUTING.md .github docs
           fail: true

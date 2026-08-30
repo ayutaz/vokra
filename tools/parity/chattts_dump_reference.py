@@ -32,22 +32,22 @@ FORMAT = "vokra-chattts-reference-v1"
 REFERENCE_PROJECT = Path(__file__).parent / "chattts"
 PROJECT_VERSIONS = {
     "huggingface-hub": "0.36.2", "numba": "0.63.1", "numpy": "2.3.5",
-    "pybase16384": "0.3.0", "pyyaml": "6.0.3", "requests": "2.32.5", "safetensors": "0.7.0",
+    "pybase16384": "0.3.0", "pyyaml": "6.0.3", "requests": "2.33.0", "safetensors": "0.7.0",
     "torch": "2.7.1",
     "torchaudio": "2.7.1", "tqdm": "4.67.1", "transformers": "4.41.2",
     "vector-quantize-pytorch": "1.27.15", "vocos": "0.1.0",
 }
 REFERENCE_LOCK = REFERENCE_PROJECT / "uv.lock"
-REFERENCE_LOCK_SHA256 = "36986402c3badb45b50c9d18ffbc811409be618cf45e2438f97e99c6751235db"
+REFERENCE_LOCK_SHA256 = "265acb8b9ea68bdc7d5a1e8247e44a8410dfe6c4e3736fff9a5e6ef8d0ed5619"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 FORBIDDEN_PACKAGES = {"soxr", "rubberband", "triton"}
 REFERENCE_DISTRIBUTION_VERSIONS = {
     "torch": {"2.7.1", "2.7.1+cpu"},
     "torchaudio": {"2.7.1", "2.7.1+cpu"},
 }
-REFERENCE_PACKAGE_INVENTORY_SHA256 = "f8b00a8226662347ccf2e0ef7420922614ec570524ca6216852ee699f32db98a"
-REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "9714e1a005af4800608f608c9617e0ce90dec0c563427e7c693d9c603ea2cf52"
-REFERENCE_LICENSE_AUDIT_SHA256 = "38d0b49ad2b3fafd34bf19eaf1c955e53f0d7b5eb362612d0292a23d3e59148a"
+REFERENCE_PACKAGE_INVENTORY_SHA256 = "a4d2d83a5b1d95419c9c913262cc596ea63e90f4532ad09e8d021c3ad07097bd"
+REFERENCE_LOCK_PACKAGE_ROWS_SHA256 = "22247bf02552f4d31b613fa9a2944a339a0c066f652d7d2f25c8fe72b10d2307"
+REFERENCE_LICENSE_AUDIT_SHA256 = "364ca38d14d269705641c9ccf0a350085fbfbe05705b98a09ee6ba1636f95fc5"
 SOURCE_LICENSE_EVIDENCE = "https://raw.githubusercontent.com/2noise/ChatTTS/77b89ee281cd479f5b1a787ada330dc975ca1f2a/LICENSE"
 WEIGHT_LICENSE_EVIDENCE = "https://huggingface.co/api/models/2Noise/ChatTTS?revision=1a3c04a8b0651689bd9242fbb55b1f4b5a9aef84"
 AUDIT_PRIMARY_METADATA = "PyPI JSON release metadata, upstream package LICENSE files, and official PyTorch CPU index metadata; wheel/native notices are reviewed separately."
@@ -83,7 +83,7 @@ REFERENCE_PACKAGE_INVENTORY = (
     ("pycparser", "3.0", "https://pypi.org/simple", ()),
     ("pyyaml", "6.0.3", "https://pypi.org/simple", ()),
     ("regex", "2026.7.19", "https://pypi.org/simple", ()),
-    ("requests", "2.32.5", "https://pypi.org/simple", ()),
+    ("requests", "2.33.0", "https://pypi.org/simple", ()),
     ("safetensors", "0.7.0", "https://pypi.org/simple", ()),
     ("scipy", "1.18.1", "https://pypi.org/simple", ()),
     ("setuptools", "84.0.0", "https://pypi.org/simple", ()),
@@ -111,7 +111,7 @@ REFERENCE_DEPENDENCY_DETAILS = {
     ("jinja2", "3.1.6"): (("markupsafe", None, None, None),),
     ("numba", "0.63.1"): (("llvmlite", None, None, None), ("numpy", None, None, None)),
     ("pybase16384", "0.3.0"): (("cffi", None, None, None),),
-    ("requests", "2.32.5"): (("certifi", None, None, None), ("charset-normalizer", None, None, None), ("idna", None, None, None), ("urllib3", None, None, None)),
+    ("requests", "2.33.0"): (("certifi", None, None, None), ("charset-normalizer", None, None, None), ("idna", None, None, None), ("urllib3", None, None, None)),
     ("scipy", "1.18.1"): (("numpy", None, None, None),),
     ("sympy", "1.14.0"): (("mpmath", None, None, None),),
     ("tokenizers", "0.19.1"): (("huggingface-hub", None, None, None),),
