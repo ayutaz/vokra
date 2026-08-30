@@ -1,0 +1,17 @@
+{
+  "schema": "vokra-xy-tokenizer-license-gate-v1",
+  "status": "BLOCKED",
+  "publication": "NO_UPLOAD",
+  "owner_signoff": "REQUIRED",
+  "blockers": [
+    "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER",
+    "EXACT_UV_LOCK_NOT_GENERATED",
+    "LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED"
+  ],
+  "project": {
+    "pyproject_sha256": null,
+    "uv_lock_sha256": null,
+    "active_package_count": 0
+  },
+  "source": null
+}
