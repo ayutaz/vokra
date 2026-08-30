@@ -307,6 +307,7 @@ METAL_CODE_ARCHES = {
     "nemotron_asr_streaming",
     "nisqa_v2_weight",
     "nsnet2",
+    "omniasr-ctc",
     "parakeet-ctc",
     "parakeet-tdt",
     "parakeet-tdt-1_1b",

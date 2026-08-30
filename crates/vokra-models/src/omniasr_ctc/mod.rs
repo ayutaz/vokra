@@ -3236,6 +3236,30 @@ mod tests {
         assert_eq!(OMNIASR_CTC_NUM_FEATURE_EXTRACTOR_LAYERS, 7);
     }
 
+    /// The authenticated 1B topology reaches only these learned operators.
+    /// Keep this registry in lock-step with the forward below: every learned
+    /// tensor application must be represented here so a non-CPU backend is
+    /// rejected before execution if one of the required kernels is absent.
+    /// GroupNorm is deliberately absent: the authenticated `large_lv60k`
+    /// configuration is `LayerAll`, and `from_gguf` rejects any other config.
+    #[test]
+    fn authenticated_1b_declares_only_compute_dispatched_learned_ops() {
+        assert_eq!(
+            OMNIASR_CTC_HOT_OPS,
+            &[
+                HotOp::Gemm,
+                HotOp::Softmax,
+                HotOp::LayerNorm,
+                HotOp::Gelu,
+                HotOp::Conv1d,
+                HotOp::GroupedConv1d,
+            ]
+        );
+        let cfg = OmniasrCtcConfig::omniasr_ctc_1b();
+        assert!(cfg.encoder.feature_extractor_layer_norm_convs);
+        assert!(!OMNIASR_CTC_HOT_OPS.contains(&HotOp::GroupNorm));
+    }
+
     // ---- SoTA reuse bundle (2026-07-30): variant enum + 300M / 7B ----
 
     #[test]

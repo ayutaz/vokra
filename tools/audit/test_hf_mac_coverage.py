@@ -600,6 +600,19 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertIn("sbv2", audit.METAL_CODE_ARCHES)
         self.assertNotIn("sbv2", audit.ROUTED_PARTIAL_ARCHES)
         self.assertIn("voice_gender_classifier", audit.METAL_CODE_ARCHES)
+        self.assertIn("omniasr-ctc", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("omniasr-ctc", audit.ROUTED_PARTIAL_ARCHES)
+
+    def test_omniasr_ctc_is_classified_full_when_artifact_is_routed(self):
+        record = audit.RepoRecord(
+            "vokra/omniasr-ctc-1b",
+            "abc",
+            ("omniasr-ctc-1b.gguf",),
+            "omniasr-ctc",
+        )
+        coverage = audit.classify(record, {"omniasr-ctc"}, set())
+        self.assertEqual(coverage.cpu_code, "full")
+        self.assertEqual(coverage.metal_code, "full")
 
     def test_parsed_metal_registry_has_no_invalid_arches(self):
         root = Path(__file__).resolve().parents[2]

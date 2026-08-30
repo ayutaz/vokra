@@ -86,6 +86,7 @@ for file in validation-summary.txt omniasr-ctc-1b.gguf reference/manifest.json \
   reference/ctc_logits.f32le reference/tokens.u32le; do
   [[ -f "$bundle/$file" && ! -L "$bundle/$file" ]] || die "bundle file missing/symlinked: $file"
 done
+[[ -d "$bundle/reference" && ! -L "$bundle/reference" ]] || die "reference directory missing/symlinked"
 
 summary="$bundle/validation-summary.txt"
 summary_keys=(
