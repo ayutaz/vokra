@@ -490,6 +490,20 @@ wheels = [
 ]
 
 [[package]]
+name = "einx"
+version = "0.4.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "frozendict" },
+    { name = "numpy" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/96/df2cfa7418b175dddcf30a88711d01b79a32c3ac4d64b379ed89a3de2c08/einx-0.4.3.tar.gz", hash = "sha256:be7d81ea1908b9f00e4a467840998fc483c33aa32aaaaa3ada6c8386f693edf9", size = 120087, upload-time = "2026-04-01T09:50:41.473Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d0/28/6768d342b2b888f9facdddbd430daf015cab936e2598281ab436b1be1b4a/einx-0.4.3-py3-none-any.whl", hash = "sha256:47ce54a0144f6dffcfacdd8fe2cc9e2e5e6485dda2471330ab75ee747dd22f39", size = 163766, upload-time = "2026-04-01T09:50:40.165Z" },
+]
+
+[[package]]
 name = "encodec"
 version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -508,6 +522,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c0/80/8232b582c4b318b817cf1274ba74976b07b34d35ef439b3eb948f98645a1/filelock-3.32.0.tar.gz", hash = "sha256:7be2ad23a14607ccc71808e68fe30848aeace7058ace17852f68e2a68e310402", size = 213757, upload-time = "2026-07-21T13:17:42.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/06/79/b4c714bef36bc4ec2beeae1e0c124f0223888cd8c6feb1cdc56038116920/filelock-3.32.0-py3-none-any.whl", hash = "sha256:d396bea984af47333ef05e50eae7eff88c84256de6112aea0ec48a233c064fe3", size = 97732, upload-time = "2026-07-21T13:17:41.55Z" },
+]
+
+[[package]]
+name = "frozendict"
+version = "2.4.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/b2/2a3d1374b7780999d3184e171e25439a8358c47b481f68be883c14086b4c/frozendict-2.4.7.tar.gz", hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd", size = 317082, upload-time = "2025-11-11T22:40:14.251Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/74/f94141b38a51a553efef7f510fc213894161ae49b88bffd037f8d2a7cb2f/frozendict-2.4.7-py3-none-any.whl", hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550", size = 16264, upload-time = "2025-11-11T22:40:12.836Z" },
 ]
 
 [[package]]
@@ -3069,6 +3092,7 @@ name = "vokra-parity-tools"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "einx" },
     { name = "gguf" },
     { name = "h5py" },
     { name = "huggingface-hub" },
@@ -3105,6 +3129,7 @@ titanet = [
 
 [package.metadata]
 requires-dist = [
+    { name = "einx", specifier = "==0.4.3" },
     { name = "gguf", specifier = ">=0.19.0" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "huggingface-hub", specifier = ">=1.24.0" },

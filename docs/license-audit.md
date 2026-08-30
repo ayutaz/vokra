@@ -939,3 +939,10 @@ This correction supersedes the stale topology and local-size statements in the Q
 - [NVIDIA BigVGAN (MIT、2024 変更後)](https://github.com/NVIDIA/BigVGAN/blob/main/LICENSE)
 - [F5-TTS SWivid (weight CC-BY-NC 4.0)](https://github.com/SWivid/F5-TTS)
 - [Fish-Speech LICENSE](https://github.com/fishaudio/fish-speech)
+
+### BiCodec reference-only parity dependencies
+
+The official SparkAudio source worker imports `einx==0.4.3` (MIT) and its
+transitive `frozendict==2.4.7` (MIT), pinned in `tools/parity/uv.lock`. These
+packages are sidecar reference dependencies only: they never enter the Vokra
+runtime and no model or dependency artifact is uploaded.

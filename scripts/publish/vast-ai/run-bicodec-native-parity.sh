@@ -29,9 +29,21 @@ require_cpu_parity_pass() {
 }
 
 run_self_test() (
-  local temporary
+  local temporary project lock
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-bicodec-vast.XXXXXX")"
   trap 'rm -rf -- "$temporary"' EXIT
+  project="$(cd "$(dirname "$0")/../../.." && pwd)/tools/parity/pyproject.toml"
+  lock="$(dirname "$project")/uv.lock"
+  [[ -f "$project" && -f "$lock" ]] || die 'parity project or lock is missing'
+  grep -Fq 'reference-only' "$project" || die 'reference-only dependency posture is missing'
+  grep -Fq 'no-upload' "$project" || die 'no-upload dependency posture is missing'
+  grep -Fq '"einx==0.4.3"' "$project" || die 'exact einx dependency is missing'
+  grep -Fq 'name = "einx"' "$lock" || die 'exact einx lock row is missing'
+  grep -Fq 'hash = "sha256:be7d81ea1908b9f00e4a467840998fc483c33aa32aaaaa3ada6c8386f693edf9"' "$lock" || die 'einx sdist digest is not pinned'
+  grep -Fq 'hash = "sha256:47ce54a0144f6dffcfacdd8fe2cc9e2e5e6485dda2471330ab75ee747dd22f39"' "$lock" || die 'einx wheel digest is not pinned'
+  grep -Fq 'name = "frozendict"' "$lock" || die 'exact frozendict lock row is missing'
+  grep -Fq 'hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd"' "$lock" || die 'frozendict sdist digest is not pinned'
+  grep -Fq 'hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550"' "$lock" || die 'frozendict wheel digest is not pinned'
   printf '%s\n' \
     'test bicodec::tests::official_reference_measured_parity ... ok' \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2975 filtered out' \
