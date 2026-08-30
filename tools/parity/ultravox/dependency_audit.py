@@ -720,6 +720,19 @@ def _dependency_acquisition(packages: list[dict[str, Any]]) -> dict[str, Any]:
     return {"policy": "exact locked PyPI sdist only when installed publisher evidence is missing", "in_memory_archive_inspection": True, "requests": sorted(requests, key=lambda item: (item["identity"], item["requested_url"] or "")), "out_of_scope_requests": [], "model_files": []}
 
 
+def _manifest_reviews(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Expose the recorded and independently recomputed review digests."""
+    return {
+        "package_review_rows": manifest["package_review_rows"],
+        "package_review_rows_sha256": manifest["package_review_rows_sha256"],
+        "license_rows": manifest["license_rows"],
+        "license_rows_sha256": manifest["license_rows_sha256"],
+        "license_rows_computed_sha256": license_gate.canonical_digest(manifest["license_rows"]),
+        "approval": manifest["approval"],
+        "publication": manifest["publication"],
+    }
+
+
 def _fixed_license_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     identities = manifest["identities"]
     return [{"id": "ultravox-public", "repo": identities["public_repo"], "revision": identities["public_revision"]}, {"id": "ultravox-upstream", "repo": identities["upstream_repo"], "revision": identities["upstream_revision"]}, {"id": "llama-companion", "repo": identities["companion_repo"], "revision": identities["companion_revision"]}]
@@ -801,7 +814,7 @@ def audit_environment(project: Path, fetch_model_licenses: bool = True, sdist_fe
             try: model_files.append(_fetch_license(item))
             except AuditError as exc: model_files.append({**item, "requested_url": _license_url(item), "final_url": None, "status": "BLOCKED_FACTUAL_LICENSE_PATH", "error": str(exc)}); model_failures.append(f"{item['id']}: {exc}")
     failures.extend(model_failures)
-    return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "publication_permitted": False, "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "readelf_required": True}, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "manifest_reviews": {"package_review_rows": manifest["package_review_rows"], "package_review_rows_sha256": manifest["package_review_rows_sha256"], "license_rows": manifest["license_rows"], "license_rows_sha256": manifest["license_rows_sha256"], "license_rows_computed_sha256": license_gate.canonical_digest(manifest["license_rows"]), "approval": manifest["approval"], "publication": manifest["publication"]}, "approval_blockers": sorted(set(_approval_blockers(manifest))), "lock_rows": {"accounted_rows": len(lock["package"]), "active_linux_installed": active_rows, "inactive_or_virtual": inactive_rows, "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"])}, "closure": closure, "packages": packages, "dependency_acquisition": _dependency_acquisition(packages), "fixed_source_model_companion_identities": _fixed_license_items(manifest), "model_license_files": model_files, "model_acquisition": {"scope": "fixed source/model/Meta companion LICENSE paths only", "policy": "allow-listed exact primary-source LICENSE-only fetch", "requested_files": [item["requested_url"] for item in model_files], "non_license_requests": [], "non_license_files": []}, "failures": sorted(set(failures))}
+    return {"schema": SCHEMA, "status": "BLOCKED" if failures else "PASS", "publication_permitted": False, "environment": {"python": platform.python_version(), "platform": sys.platform, "machine": platform.machine(), "model_code_imported": False, "cargo_invoked": False, "readelf_required": True}, "project": {"name": project_data["project"]["name"], "version": project_data["project"]["version"], "pyproject_bytes": len(project_bytes), "pyproject_sha256": sha256_bytes(project_bytes), "uv_lock_bytes": len(lock_bytes), "uv_lock_sha256": sha256_bytes(lock_bytes)}, "manifest_reviews": _manifest_reviews(manifest), "approval_blockers": sorted(set(_approval_blockers(manifest))), "lock_rows": {"accounted_rows": len(lock["package"]), "active_linux_installed": active_rows, "inactive_or_virtual": inactive_rows, "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"])}, "closure": closure, "packages": packages, "dependency_acquisition": _dependency_acquisition(packages), "fixed_source_model_companion_identities": _fixed_license_items(manifest), "model_license_files": model_files, "model_acquisition": {"scope": "fixed source/model/Meta companion LICENSE paths only", "policy": "allow-listed exact primary-source LICENSE-only fetch", "requested_files": [item["requested_url"] for item in model_files], "non_license_requests": [], "non_license_files": []}, "failures": sorted(set(failures))}
 
 
 def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
@@ -830,6 +843,14 @@ def self_test() -> int:
     assert {row["id"] for row in checked_manifest["license_rows"]} == {"ultravox-audio-weight", "llama-companion-meta-conditional", "python-closure"}
     assert checked_manifest["approval"] == {"status": "OWNER_SIGNOFF_REQUIRED", "signer": None, "digest": None}
     assert checked_manifest["publication"] == "NO_UPLOAD"
+    manifest_reviews = _manifest_reviews(checked_manifest)
+    assert set(manifest_reviews) == {"package_review_rows", "package_review_rows_sha256", "license_rows", "license_rows_sha256", "license_rows_computed_sha256", "approval", "publication"}
+    assert manifest_reviews["license_rows_sha256"] == manifest_reviews["license_rows_computed_sha256"]
+    assert "manifest:license_rows_sha256 does not match the recorded license_rows bytes" not in _approval_blockers(checked_manifest)
+    stale_manifest = {**checked_manifest, "license_rows_sha256": "0" * 64}
+    stale_reviews = _manifest_reviews(stale_manifest)
+    assert stale_reviews["license_rows_sha256"] != stale_reviews["license_rows_computed_sha256"]
+    assert "manifest:license_rows_sha256 does not match the recorded license_rows bytes" in _approval_blockers(stale_manifest)
     assert _approval_blockers(checked_manifest)
     item = _fixed_license_items(manifest)[0]; body = b"self-test LICENSE\n"; url = _license_url(item)
     assert _is_license_path("LICENSE.txt") and _is_license_path("NOTICE-3")

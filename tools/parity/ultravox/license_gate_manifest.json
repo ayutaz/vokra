@@ -161,7 +161,7 @@
       "required_identity": "lock_sha256/project_sha256/package_rows_sha256"
     }
   ],
-  "license_rows_sha256": "dac079a4ddb7547e2cf0b40e44427f1b4494550df5ad37055ff8788a9bacccd2",
+  "license_rows_sha256": "4d5db673dc476c2a273da95431912a90c0c8d2c445122a06396171ca775ef257",
   "approval": {
     "status": "OWNER_SIGNOFF_REQUIRED",
     "signer": null,
