@@ -497,10 +497,8 @@ mod tests {
     fn missing_input_rejected() {
         let out = std::env::temp_dir().join("gigaam-v3-rejected.gguf");
         let _ = std::fs::remove_file(&out);
-        let _error = convert_sber_gigaam_v3_file(Path::new("missing"), &out, None)
-            .unwrap_err()
-            .to_string();
-        assert_eq!(_error, "I/O error: No such file or directory (os error 2)");
+        let error = convert_sber_gigaam_v3_file(Path::new("missing"), &out, None).unwrap_err();
+        assert!(matches!(error, ConvertError::Io(_)));
         assert!(!out.exists());
     }
 

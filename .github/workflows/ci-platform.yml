@@ -119,6 +119,17 @@ jobs:
         run: cargo clippy -p vokra-models -p vokra-cli --features ${{ matrix.feature }} --all-targets -- -D warnings
       - name: Test (--features ${{ matrix.feature }})
         run: cargo test -p vokra-models --features ${{ matrix.feature }}
+      # M2-01-T21: the model crate tests above do not guarantee that
+      # vokra-backend-metal's own probe and integration parity targets are
+      # selected. Keep this Apple-only and explicit so the CI log proves that
+      # the real-device probe plus every Metal backend integration target ran.
+      # A missing device is intentionally a test failure in the probe target;
+      # it must not be converted into a green skip by this workflow.
+      - name: Test Metal backend crate (probe + integration parity)
+        if: matrix.feature == 'metal'
+        run: |
+          echo 'Metal backend crate test: probe + integration parity (--nocapture)'
+          cargo test -p vokra-backend-metal -- --nocapture
       # 2026-08-14 (C ABI backend selector): vokra-capi's GPU arms only compile
       # when vokra-capi itself carries the feature, so without this leg every
       # CI configuration short-circuits on `ensure_backend_available` and the
@@ -622,6 +633,22 @@ jobs:
         # NFR-DS-02: the server tiers are std::arch + inline asm only — no
         # new crate may appear in the root Cargo.lock.
         run: git diff --exit-code Cargo.lock
+
+  # Apple worker contract coverage is deliberately separate from the CPU ISA
+  # job above: it checks all 44 (and any future) worker scripts without
+  # compiling the model crate or running a model. The real CPU/Metal execution
+  # remains owned by the authenticated worker and gpu-backends Metal arm.
+  apple-silicon-worker-contracts:
+    name: apple-silicon-worker-contracts
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - name: Check every Apple worker syntax and --self-test contract
+        run: bash scripts/check-apple-silicon-contracts.sh
 
   # Performance regression gate (NFR-PF-13, M2-04). Runs the fused log-mel
   # `mel-frontend` bench through `vokra-cli bench --baseline` against a

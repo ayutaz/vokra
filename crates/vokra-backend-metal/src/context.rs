@@ -3407,6 +3407,7 @@ impl MetalContext {
         // SAFETY: `device` valid; `klib` owns each named function below.
         let gemm_f32_bf16_bits_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_gemm_f32_bf16_bits") }?;
+        // SAFETY: `device` is valid and `klib` owns the named function.
         let gemv_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gemv_f32") }?;
         // SAFETY: as above.
         let softmax_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_softmax_f32") }?;
@@ -7793,7 +7794,7 @@ impl MetalContext {
     /// marker prevents use-after-drop, while this identity check prevents
     /// mixing queues/devices from independent Metal contexts.
     fn expect_owner(&self, tensor: &MetalDeviceTensor<'_>, name: &str) -> Result<()> {
-        if tensor.owner != self as *const MetalContext {
+        if !std::ptr::eq(tensor.owner, self as *const MetalContext) {
             return Err(VokraError::InvalidArgument(format!(
                 "{name} belongs to a different MetalContext"
             )));
@@ -7805,7 +7806,7 @@ impl MetalContext {
     /// separate from [`Self::expect_owner`] prevents accidentally accepting a
     /// typed FP32 tensor where a `ushort` storage buffer is required.
     fn expect_owner_bf16(&self, tensor: &MetalBf16DeviceTensor<'_>, name: &str) -> Result<()> {
-        if tensor.owner != self as *const MetalContext {
+        if !std::ptr::eq(tensor.owner, self as *const MetalContext) {
             return Err(VokraError::InvalidArgument(format!(
                 "{name} belongs to a different MetalContext"
             )));
@@ -8130,6 +8131,7 @@ impl MetalContext {
     /// input length); `false` implements ReplicationPad1d. The operation is a
     /// pure device copy and never performs an intermediate D2H transfer. It
     /// is submitted synchronously as one commit/wait.
+    #[allow(clippy::too_many_arguments)] // intrinsic padding shape + device tensors
     pub fn pad1d_dev(
         &self,
         out: &mut MetalDeviceTensor<'_>,
@@ -8360,6 +8362,7 @@ impl MetalContext {
     /// Device-resident anti-aliased upsample. FIR taps are uploaded once by
     /// the caller and can be shared by every invocation. Each invocation is a
     /// single synchronous commit/wait and performs no intermediate readback.
+    #[allow(clippy::too_many_arguments)] // intrinsic FIR upsample shape + device tensors
     pub fn anti_aliased_upsample_dev(
         &self,
         out: &mut MetalDeviceTensor<'_>,
@@ -8421,6 +8424,7 @@ impl MetalContext {
     /// FIR filtering, and strided decimation. The filter and all tensors are
     /// channel-major; only an explicit final `download` crosses D2H. This
     /// primitive is one synchronous commit/wait, not an async/fused graph.
+    #[allow(clippy::too_many_arguments)] // intrinsic FIR downsample shape + device tensors
     pub fn anti_aliased_downsample_dev(
         &self,
         out: &mut MetalDeviceTensor<'_>,
@@ -11501,7 +11505,11 @@ mod tests {
     fn conv_transpose2d_validates_output_padding_and_rejects_bad_shapes() {
         let input = [0.0; 4];
         let weight = [0.0; 8];
-        let out = [0.0; 16];
+        // Output shape follows
+        // `(in - 1) * stride + dilation * (kernel - 1) + 1
+        //  + output_padding - 2 * padding` per spatial axis:
+        // height = 3, width = 6, with two output channels => 36 values.
+        let out = [0.0; 36];
         assert_eq!(
             validate_conv_transpose2d(
                 &input,
@@ -11521,7 +11529,7 @@ mod tests {
                 &out,
             )
             .unwrap(),
-            (3, 4)
+            (3, 6)
         );
         // ATen permits output_padding == stride when it remains smaller than
         // dilation on that axis.

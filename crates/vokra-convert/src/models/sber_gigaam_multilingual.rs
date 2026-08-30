@@ -423,9 +423,8 @@ mod tests {
         let output = std::env::temp_dir().join("gigaam-multilingual-rejected.gguf");
         let error =
             convert_sber_gigaam_multilingual_file(Path::new("missing.safetensors"), &output, None)
-                .unwrap_err()
-                .to_string();
-        assert_eq!(error, "I/O error: No such file or directory (os error 2)");
+                .unwrap_err();
+        assert!(matches!(error, ConvertError::Io(_)));
         assert!(!output.exists());
     }
 

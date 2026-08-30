@@ -1151,6 +1151,7 @@ fn validate_mixed_bf16_isa(isa: IsaPath) -> Result<()> {
     }
 }
 
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 fn round_up_bf16_bits(value: usize, multiple: usize) -> Result<usize> {
     let rem = value % multiple;
     value
@@ -2520,6 +2521,7 @@ mod tests {
                 Err(VokraError::UnsupportedOp(_))
             ));
         }
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         assert!(round_up_bf16_bits(usize::MAX, 32).is_err());
         assert!(matches!(
             gemm_bf16_bits_on(IsaPath::Scalar, usize::MAX, 1, 2, &[], &[], &mut []),

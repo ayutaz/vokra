@@ -7,25 +7,14 @@
 #   * dia    — nari-labs/Dia-1.6B            (Apache-2.0, DAC 44.1 kHz)
 #   * zonos  — Zyphra/Zonos-v0.1-transformer (Apache-2.0, DAC 44.1 kHz)
 #
-# Both native modules ship as SCAFFOLDS on this branch (`DiaTts` / `ZonosTts`
-# validate shape and refuse to synthesize off `*Weights::synthesized`,
-# FR-EX-08 — no fabricated audio from synthesized weights). What THIS
-# workflow verifies today, honestly:
-#
-#   1. `vokra-cli convert --model <arch>` succeeds on the real upstream
-#      safetensors (converter-e2e).
-#   2. The emitted GGUF's `vokra.<arch>.*` metadata chunk values match the
-#      primary-source Rust config transcribed from the upstream `config.json`
-#      (`DiaConfig::dia_1_6b` / `ZonosConfig::zonos_v0_1_transformer`).
-#   3. Every advertised tensor has a well-formed shape and every F32
-#      passthrough payload is finite.
-#
-# The flip-the-switch step is the harness's `VOKRA_<ARCH>_REFDIR` gate: it
-# panics loudly (never a fabricated pass) until the scaffold gains a real
-# `<Arch>Tts::from_gguf` + stage-tap accessors. This workflow does NOT set
-# `VOKRA_<ARCH>_REFDIR`; the owner sets it after the follow-up wave lands the
-# real forward. The env var pattern lets us activate stage-tap parity by
-# editing this workflow alone once the forward is ready.
+# Both native modules are deliberately `INSPECTION_ONLY` on this branch. Their
+# converters fail closed until the upstream checkpoint, tensor manifest, and
+# DAC composition have independent VAST evidence; the runtime scaffolds also
+# refuse to synthesize from `*Weights::synthesized` (FR-EX-08). Therefore a PR
+# touching this family runs only the lightweight inspection contract below:
+# it does not download multi-GB checkpoints, invoke `vokra-cli convert`, or
+# claim converter/parity evidence. The real conversion/parity matrix remains
+# owner-controlled for a future revision in which both converters are opened.
 #
 # Design (parity-kokoro-real.yml / parity-rvq-real.yml discipline):
 #
@@ -43,9 +32,11 @@
 #     fabricated pass 禁止, a skip is always visibly a skip.
 #
 #   * workflow_dispatch exposes per-model `include_dia` / `include_zonos`
-#     inputs so the owner can dispatch either alone (each safetensors is
-#     multi-GB; the runner has ~14 GiB free on ubuntu-latest after the
-#     dotnet/android/ghc reclamation the codec workflow uses).
+#     inputs so the owner can dispatch either alone once the converters are
+#     opened (each safetensors is multi-GB; the runner has ~14 GiB free on
+#     ubuntu-latest after the dotnet/android/ghc reclamation the codec
+#     workflow uses). Dispatching while they remain inspection-only is not a
+#     parity verdict and is expected to remain disabled by repository policy.
 #
 #   * HF snapshot pins live in `env.DIA_REVISION` / `env.ZONOS_REVISION`
 #     (fetched 2026-07-25 via huggingface.co/api/models/... — the SAME SHAs
@@ -86,13 +77,18 @@ on:
     - cron: '15 10 * * 1'
   pull_request:
     # Narrow paths filter — this job only fires when the PR touches dia/zonos
-    # code, the converter shims, the harness itself, or this workflow. Every
+    # code, inspection scripts/reference tools, converter shims, the harness
+    # itself, or this workflow. Every
     # other PR flows through the fast per-PR `parity` check in ci.yml (fixture-
     # only, no HF DL).
     paths:
       - '.github/workflows/parity-tts-dac-real.yml'
       - 'crates/vokra-convert/src/models/dia.rs'
       - 'crates/vokra-convert/src/models/zonos.rs'
+      - 'scripts/verify/apple-silicon-dia-1-6b.sh'
+      - 'scripts/verify/apple-silicon-zonos-inspection.sh'
+      - 'tools/parity/dia_1_6b_dump_reference.py'
+      - 'tools/parity/dia_1_6b_validate_evidence.py'
       - 'crates/vokra-models/src/dia/**'
       - 'crates/vokra-models/src/zonos/**'
       - 'crates/vokra-models/tests/parity_tts_dac.rs'
@@ -163,11 +159,11 @@ jobs:
               ;;
             pull_request)
               {
-                echo "run_parity=true"
-                echo "run_dia=true"
-                echo "run_zonos=true"
+                echo "run_parity=false"
+                echo "run_dia=false"
+                echo "run_zonos=false"
               } >> "$GITHUB_OUTPUT"
-              echo "pull_request: proceeding with both legs (path filter matched)"
+              echo "::notice title=parity-tts-dac-real inspection-only::pull_request: Dia/Zonos converters are INSPECTION_ONLY; skipping the multi-GB snapshot, build, conversion, and parity legs. The inspection contract job records this as a clean skip, not a parity pass."
               ;;
             schedule|*)
               if [ "${ENABLE_VAR}" = "1" ]; then
@@ -187,6 +183,39 @@ jobs:
               fi
               ;;
           esac
+
+  inspection-contract:
+    name: inspection-only contract (tts-dac)
+    needs: setup
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install uv (no project or model dependencies)
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+
+      - name: Run Dia/Zonos inspection contracts
+        env:
+          RUN_PARITY: ${{ needs.setup.outputs.run_parity }}
+          RUN_DIA: ${{ needs.setup.outputs.run_dia }}
+          RUN_ZONOS: ${{ needs.setup.outputs.run_zonos }}
+        run: |
+          set -euo pipefail
+          test "${RUN_PARITY}" = false
+          test "${RUN_DIA}" = false
+          test "${RUN_ZONOS}" = false
+          bash -n scripts/verify/apple-silicon-dia-1-6b.sh
+          bash -n scripts/verify/apple-silicon-zonos-inspection.sh
+          bash scripts/verify/apple-silicon-dia-1-6b.sh --self-test
+          bash scripts/verify/apple-silicon-zonos-inspection.sh --self-test
+          rg -q 'INSPECTION_ONLY' crates/vokra-convert/src/models/dia.rs
+          rg -q 'INSPECTION_ONLY' crates/vokra-convert/src/models/zonos.rs
+          echo '::notice title=tts-dac inspection-only::Dia/Zonos PR contract verified; no checkpoint was downloaded and no converter/parity result is claimed.'
 
   parity:
     name: parity (${{ matrix.arch }})
