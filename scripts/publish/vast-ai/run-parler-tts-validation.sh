@@ -14,6 +14,7 @@ PARLER_SOURCE_REPO="https://github.com/huggingface/parler-tts.git"
 PARLER_SOURCE_REVISION="d108732cd57788ec86bc857d99a6cabd66663d68"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT_WRAPPER="$VOKRA_ROOT/scripts/publish/vast-ai/audit-parler-tts-dependencies.sh"
 
 ENGLISH_PUBLIC_REPO="vokra/parler-tts-mini-v1"
 ENGLISH_PUBLIC_REVISION="cb02a124c8d125231b396a293608f2488ae2e4d2"
@@ -187,6 +188,7 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "Parler parity uv.lock is missing"
   [[ -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] || die "Parler preflight files are missing"
   [[ -f "$PARITY_PROJECT/dump_reference.py" ]] || die "Parler reference dumper is missing"
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die "Parler dependency audit wrapper is missing"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
@@ -216,7 +218,15 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 gate_line host_line sync_line
+  local tmp payload actual script_path cases=0 fail=0 gate_line host_line sync_line deleted_script audit_token
+  check_dependency_audit_order() {
+    local candidate="$1" candidate_sync candidate_audit candidate_download
+    candidate_sync="$(grep -nF "  uv sync --project \"\$PARITY_PROJECT\" --frozen --python 3.12" "$candidate" | tail -1 | cut -d: -f1)"
+    candidate_audit="$(grep -nF "$audit_token" "$candidate" | tail -1 | cut -d: -f1)"
+    candidate_download="$(grep -n '^  download_variant ' "$candidate" | head -1 | cut -d: -f1)"
+    [[ "$candidate_sync" =~ ^[0-9]+$ && "$candidate_audit" =~ ^[0-9]+$ && "$candidate_download" =~ ^[0-9]+$ ]] \
+      && (( candidate_sync < candidate_audit && candidate_audit < candidate_download ))
+  }
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -282,7 +292,8 @@ run_self_test() {
     "parler_tts/dump_reference.py" "parity_parler_tts_real" \
     "load_session_routes_only_named_parler_releases_to_tts" \
     "aarch64-apple-darwin" "--test-threads=1" "--frozen --python 3.12" \
-    "preflight_gate.py" "license_gate_manifest.json" "--no-project --offline" \
+    "preflight_gate.py" "license_gate_manifest.json" "dependency_audit.py" \
+    "audit-parler-tts-dependencies.sh" "dependency_audit_json" "--no-project --offline" \
     "PARLER_SOURCE_DIR" "git -C" "fetch --depth 1 origin" "--approval-evidence" \
     "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>"; do
     if ! grep -Fq -- "$required" "$script_path"; then
@@ -307,6 +318,15 @@ run_self_test() {
   sync_line="$(grep -n '  uv sync --project' "$script_path" | tail -1 | cut -d: -f1)"
   if [[ ! "$gate_line" =~ ^[0-9]+$ || ! "$host_line" =~ ^[0-9]+$ || ! "$sync_line" =~ ^[0-9]+$ ]] || (( gate_line >= host_line || gate_line >= sync_line )); then
     log "self-test FAIL: preflight gate is not before host/sync operations"; fail=1
+  fi
+  audit_token="  \"\$DEPENDENCY_AUDIT_WRAPPER\" --output \"\$dependency_audit_json\""
+  if ! check_dependency_audit_order "$script_path"; then
+    log "self-test FAIL: dependency audit is not an anchored post-sync/pre-model call"; fail=1
+  fi
+  deleted_script="$tmp/run-parler-without-dependency-audit.sh"
+  grep -vF "$audit_token" "$script_path" > "$deleted_script"
+  if check_dependency_audit_order "$deleted_script"; then
+    log "self-test FAIL: deleting the dependency-audit call escaped the ordering regression"; fail=1
   fi
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
@@ -383,7 +403,7 @@ download_variant() {
 main() {
   local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir inputs_dir logs_dir reference_dir
   local english_public english_upstream multilingual_public multilingual_upstream
-  local run_log env_log compile_log apple_log cli_log summary_file
+  local run_log env_log compile_log apple_log cli_log dependency_audit_json summary_file
   local parler_source reference_hashes_file
   local seen_work_dir=0 seen_approval=0 seen_self_test=0
   while [[ $# -gt 0 ]]; do
@@ -436,6 +456,7 @@ main() {
   compile_log="$logs_dir/compile.log"
   apple_log="$logs_dir/apple-cross-check.log"
   cli_log="$logs_dir/cli-route.log"
+  dependency_audit_json="$logs_dir/dependency-audit.json"
   summary_file="$logs_dir/summary.txt"
   reference_hashes_file="$logs_dir/reference-hashes.txt"
   exec > >(tee -a "$run_log") 2>&1
@@ -452,6 +473,9 @@ main() {
 
   step "Sync locked Python 3.12 official-reference environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+
+  step "Audit the synchronized Parler dependency closure without acquiring weights"
+  "$DEPENDENCY_AUDIT_WRAPPER" --output "$dependency_audit_json"
 
   step "Download exact public and upstream English Mini inputs"
   download_variant "$ENGLISH_PUBLIC_REPO" "$ENGLISH_PUBLIC_REVISION" \
@@ -548,6 +572,7 @@ main() {
     echo "parler_source_revision=$PARLER_SOURCE_REVISION"
     echo "parler_source_repo=$PARLER_SOURCE_REPO"
     echo "reference_hashes_file=$reference_hashes_file"
+    echo "dependency_audit_json=$dependency_audit_json"
     echo "apple_verifier_command_file=$reference_hashes_file"
     echo "english_reference_manifest_sha256=$(sha256_file "$reference_dir/english/manifest.json")"
     echo "multilingual_reference_manifest_sha256=$(sha256_file "$reference_dir/multilingual/manifest.json")"

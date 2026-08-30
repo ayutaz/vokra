@@ -58,3 +58,15 @@ The worker has no upload or push option. Pull its `logs/` and `reference/`
 directories before destroying the VAST instance. Metal execution is a separate
 remote Apple Silicon run using the same GGUF and reference; never execute these
 real models on the maintainer Mac.
+
+After the authorized frozen `uv sync`, the worker invokes
+`scripts/publish/vast-ai/audit-parler-tts-dependencies.sh` before acquiring any
+checkpoint or building Cargo. The audit is VAST/Linux x86_64-only and uses
+`--frozen --no-sync`; it records every lock row, the exact normalized installed
+name/version multiset, package license/NOTICE bytes and hashes, and native ELF
+`readelf -d` `NEEDED` entries. It fetches only the exact `LICENSE` paths for the
+Parler source, two pinned models, and DAC revision. Missing or redirected
+non-license paths are factual blockers, and no license class is inferred from
+the returned bytes. The audit can inspect only an environment synchronized by a
+separately authorized, named VAST job; it does not download weights, import
+model/Torch code, or invoke Cargo.

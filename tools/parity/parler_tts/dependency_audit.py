@@ -1,0 +1,792 @@
+#!/usr/bin/env python3
+"""Model-free factual audit for the pinned Parler-TTS reference closure.
+
+The preflight gate authenticates the files and approval before synchronization.
+This module is deliberately a second, post-sync operation: it inspects only
+``importlib.metadata`` records and installed files.  It does not import
+Parler-TTS, Transformers, Torch, DAC, or any other model implementation.  The
+only network operation is an allow-listed request for the four exact primary
+source ``LICENSE`` files in the existing Parler contract.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+from collections import Counter
+import hashlib
+import importlib.metadata as metadata
+import json
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+import tomllib
+
+try:
+    import preflight_gate
+except ModuleNotFoundError:  # pragma: no cover - direct script execution uses this path
+    from tools.parity.parler_tts import preflight_gate
+
+
+SCHEMA = "vokra-parler-tts-dependency-audit-v1"
+MAX_LICENSE_BYTES = 2 * 1024 * 1024
+ELF_MAGIC = b"\x7fELF"
+NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
+LICENSE_FILE_NAMES = {"license", "copying", "notice", "copyright"}
+HF_LICENSE_HOSTS = {
+    "huggingface.co",
+    "hf.co",
+    "cdn-lfs.huggingface.co",
+    "cdn-lfs-us-1.hf.co",
+}
+
+
+class AuditError(ValueError):
+    """A fail-closed contract or factual environment error."""
+
+
+def sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    """Hash in bounded chunks so a large native library is never read eagerly."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def normalized_name(name: str) -> str:
+    """PEP 503 normalization used for the exact installed closure multiset."""
+    return re.sub(r"[-_.]+", "-", name.strip()).casefold()
+
+
+def normalized_version(version: str) -> str:
+    # uv records the exact PEP 440 spelling.  Case folding is only presentation
+    # normalization; it does not discard a local version such as +cpu.
+    return re.sub(r"\s+", "", version.strip()).casefold()
+
+
+def identity(name: str, version: str) -> str:
+    return f"{normalized_name(name)}=={normalized_version(version)}"
+
+
+def load_json(path: Path) -> Any:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AuditError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeError, json.JSONDecodeError, AuditError) as exc:
+        raise AuditError(f"cannot read JSON {path}: {exc}") from exc
+
+
+def regular_file(path: Path) -> bool:
+    return path.is_file() and not path.is_symlink()
+
+
+def _contract(project: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bytes, bytes]:
+    project_path = project / "pyproject.toml"
+    lock_path = project / "uv.lock"
+    manifest_path = project / "license_gate_manifest.json"
+    if not all(regular_file(path) for path in (project_path, lock_path, manifest_path)):
+        raise AuditError("Parler pyproject.toml, uv.lock, or gate manifest is missing/symlinked")
+    try:
+        project_bytes = project_path.read_bytes()
+        lock_bytes = lock_path.read_bytes()
+        project_data = tomllib.loads(project_bytes.decode("utf-8"))
+        lock_data = tomllib.loads(lock_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise AuditError(f"Parler closure bytes are unreadable: {exc}") from exc
+    manifest = load_json(manifest_path)
+    if not isinstance(manifest, dict) or manifest.get("gate_version") != preflight_gate.GATE_VERSION:
+        raise AuditError("Parler gate manifest version is unsupported")
+    if sha256_bytes(project_bytes) != preflight_gate.PYPROJECT_SHA256:
+        raise AuditError("pyproject.toml bytes differ from the reviewed Parler contract")
+    if sha256_bytes(lock_bytes) != preflight_gate.LOCK_SHA256:
+        raise AuditError("uv.lock bytes differ from the reviewed Parler contract")
+    try:
+        preflight_gate.validate_project_schema(project_data)
+        rows = preflight_gate.canonical_package_rows(lock_data, project_data["project"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AuditError(f"Parler pyproject/uv.lock schema is invalid: {exc}") from exc
+    if preflight_gate.canonical_digest(rows) != manifest.get("package_rows_sha256"):
+        raise AuditError("canonical Parler lock rows differ from the manifest")
+    if manifest.get("source_identity") != {
+        "repo": preflight_gate.SOURCE_REPO,
+        "revision": preflight_gate.SOURCE_REVISION,
+        "license": "Apache-2.0",
+    }:
+        raise AuditError("Parler source identity drifted from the reviewed manifest")
+    if manifest.get("variants") != preflight_gate.VARIANTS:
+        raise AuditError("Parler model variant identities drifted from the reviewed manifest")
+    if manifest.get("dac_identity") != preflight_gate.DAC_IDENTITY:
+        raise AuditError("Parler DAC identity drifted from the reviewed manifest")
+    return project_data, lock_data, manifest, project_bytes, lock_bytes
+
+
+def _expected_packages(lock: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = lock.get("package")
+    if not isinstance(rows, list) or not rows:
+        raise AuditError("uv.lock has no package rows")
+    registry = [row for row in rows if row.get("source") != {"virtual": "."}]
+    if not registry:
+        raise AuditError("uv.lock has no registry package rows")
+    for row in registry:
+        source = row.get("source")
+        if not isinstance(source, dict) or source.get("registry") not in {
+            "https://pypi.org/simple",
+            "https://download.pytorch.org/whl/cpu",
+        }:
+            raise AuditError(f"uv.lock has an unapproved package index: {row.get('name')}")
+    return sorted(registry, key=lambda row: (normalized_name(row["name"]), normalized_version(row["version"])))
+
+
+def classify_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Account for every row, including the virtual project row.
+
+    This exact lock is constrained to Linux x86_64 by pyproject.toml.  Registry
+    rows are therefore active-installed candidates; the virtual project row is
+    explicitly inactive and must not be mistaken for an installed wheel.
+    """
+    active: list[dict[str, Any]] = []
+    inactive: list[dict[str, Any]] = []
+    for row in sorted(lock["package"], key=lambda item: (normalized_name(item["name"]), normalized_version(item["version"]))):
+        item = {"name": row["name"], "version": row["version"], "source": row["source"]}
+        if row.get("source") == {"virtual": "."}:
+            inactive.append({
+                "identity": identity(row["name"], row["version"]),
+                "source": row["source"],
+                "status": "INACTIVE_VIRTUAL_PROJECT",
+                "reason": "virtual project row; no installed distribution is expected",
+            })
+        else:
+            active.append({
+                **item,
+                "identity": identity(row["name"], row["version"]),
+                "status": "ACTIVE_LINUX_INSTALLED",
+                "reason": "registry row is active under the locked Linux x86_64 environment",
+            })
+    return active, inactive
+
+
+def _distribution_records() -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for dist in metadata.distributions():
+        name = dist.metadata.get("Name")
+        version = dist.version
+        if not name or not version:
+            continue
+        records.append({
+            "distribution": dist,
+            "identity": identity(name, version),
+            "name": name,
+            "version": version,
+            "location": str(Path(dist.locate_file(""))),
+        })
+    return sorted(records, key=lambda item: (item["identity"], item["location"]))
+
+
+def compare_multiset(expected: list[str], actual: list[str]) -> dict[str, Any]:
+    expected_counts = Counter(expected)
+    actual_counts = Counter(actual)
+    missing = sorted((expected_counts - actual_counts).elements())
+    unexpected = sorted((actual_counts - expected_counts).elements())
+    duplicate_identities = sorted(item for item, count in actual_counts.items() if count > 1)
+    return {
+        "expected": sorted(expected),
+        "installed": sorted(actual),
+        "missing": missing,
+        "unexpected": unexpected,
+        "duplicate_identities": duplicate_identities,
+        "exact": not missing and not unexpected,
+    }
+
+
+def _metadata_fields(dist: metadata.Distribution) -> dict[str, Any]:
+    classifiers = sorted(
+        value.removeprefix("License :: ")
+        for value in (dist.metadata.get_all("Classifier") or [])
+        if value.startswith("License :: ")
+    )
+    expression = dist.metadata.get("License-Expression")
+    declared = dist.metadata.get("License")
+    return {
+        "license": declared.strip() if isinstance(declared, str) and declared.strip() else None,
+        "license_expression": expression.strip() if isinstance(expression, str) and expression.strip() else None,
+        "license_classifiers": classifiers,
+    }
+
+
+def _entry_path(dist: metadata.Distribution, entry: Any) -> Path | None:
+    path = Path(dist.locate_file(entry))
+    root = Path(dist.locate_file(""))
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return path
+
+
+def _is_license_path(relative: str) -> bool:
+    basename = Path(relative).name.casefold()
+    stem = Path(basename).stem
+    return stem in LICENSE_FILE_NAMES or any(
+        token in basename for token in ("license", "copying", "notice", "copyright")
+    )
+
+
+def _publisher_files(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], list[str]]:
+    result: list[dict[str, Any]] = []
+    unsafe: list[str] = []
+    for entry in sorted(dist.files or [], key=str):
+        relative = str(entry)
+        if not _is_license_path(relative):
+            continue
+        path = _entry_path(dist, entry)
+        if path is None or path.is_symlink() or not path.is_file():
+            unsafe.append(relative)
+            continue
+        result.append({"path": relative, "size": path.stat().st_size, "sha256": sha256_file(path)})
+    return result, unsafe
+
+
+def _first_four(path: Path) -> bytes:
+    with path.open("rb") as handle:
+        return handle.read(4)
+
+
+def _elf_needed(path: Path) -> dict[str, Any]:
+    magic = _first_four(path)
+    if magic != ELF_MAGIC:
+        return {"format": "non-elf", "needed": [], "inspection": "not-applicable"}
+    try:
+        completed = subprocess.run(
+            ["readelf", "-d", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"format": "elf", "needed": [], "inspection": "error", "error": str(exc)}
+    output = f"{completed.stdout}\n{completed.stderr}"
+    needed = sorted(
+        match.group(1)
+        for line in completed.stdout.splitlines()
+        if (match := re.search(r"\(NEEDED\).*\[([^]]+)\]", line))
+    )
+    if completed.returncode == 0:
+        inspection = "ok"
+    elif "no dynamic section" in output.casefold():
+        inspection = "no-dynamic-section"
+    else:
+        inspection = "error"
+    result: dict[str, Any] = {
+        "format": "elf",
+        "needed": needed,
+        "inspection": inspection,
+        "readelf_returncode": completed.returncode,
+    }
+    if inspection == "error":
+        result["error"] = output.strip()[-2000:]
+    return result
+
+
+def _native_files(dist: metadata.Distribution) -> tuple[list[dict[str, Any]], list[str]]:
+    result: list[dict[str, Any]] = []
+    unsafe: list[str] = []
+    for entry in sorted(dist.files or [], key=str):
+        relative = str(entry)
+        entry_name = Path(relative).name.casefold()
+        suffix_candidate = (
+            Path(entry_name).suffix.casefold() in NATIVE_SUFFIXES
+            or ".so." in entry_name
+            or entry_name.endswith(".dll")
+        )
+        try:
+            path = _entry_path(dist, entry)
+        except (OSError, ValueError) as exc:
+            if suffix_candidate:
+                unsafe.append(f"{relative}:locate-failed:{exc}")
+            continue
+        if path is None:
+            if suffix_candidate:
+                unsafe.append(f"{relative}:out-of-distribution-root")
+            continue
+        if path.is_symlink():
+            if suffix_candidate:
+                unsafe.append(f"{relative}:symlink")
+            continue
+        if not path.is_file():
+            if suffix_candidate:
+                unsafe.append(f"{relative}:missing-or-not-regular")
+            continue
+        try:
+            magic = _first_four(path)
+        except OSError as exc:
+            if suffix_candidate:
+                unsafe.append(f"{relative}:magic-read-failed:{exc}")
+            continue
+        if not suffix_candidate and magic != ELF_MAGIC:
+            continue
+        try:
+            inspection = _elf_needed(path)
+            size = path.stat().st_size
+            digest = sha256_file(path)
+        except OSError as exc:
+            unsafe.append(f"{relative}:native-read-failed:{exc}")
+            continue
+        result.append({
+            "distribution_shipped": True,
+            "bundled": True,
+            "origin": "installed-distribution",
+            "path": relative,
+            "size": size,
+            "sha256": digest,
+            "candidate": "elf-magic" if magic == ELF_MAGIC and not suffix_candidate else "native-suffix",
+            "needed": inspection,
+        })
+    return result, unsafe
+
+
+def _inspect_package(row: dict[str, Any], record: dict[str, Any] | None, duplicate: bool) -> tuple[dict[str, Any], list[str]]:
+    lock_data = {
+        "name": row["name"],
+        "version": row["version"],
+        "source": row["source"],
+        "artifacts": {"sdist": row.get("sdist"), "wheels": row.get("wheels", [])},
+    }
+    if record is None:
+        return {"lock": lock_data, "installed": None}, [f"installed closure missing: {identity(row['name'], row['version'])}"]
+    dist = record["distribution"]
+    publisher, unsafe_publisher = _publisher_files(dist)
+    native, unsafe_native = _native_files(dist)
+    installed = {
+        "name": dist.metadata.get("Name"),
+        "version": dist.version,
+        "normalized_identity": record["identity"],
+        "location": record["location"],
+        **_metadata_fields(dist),
+        "publisher_files": publisher,
+        "native_files": native,
+        "bundled_libraries": [
+            {
+                "distribution": dist.metadata.get("Name"),
+                "path": item["path"],
+                "size": item["size"],
+                "sha256": item["sha256"],
+                "needed": item["needed"],
+            }
+            for item in native
+        ],
+    }
+    failures: list[str] = []
+    if not installed["license"] and not installed["license_expression"] and not installed["license_classifiers"]:
+        failures.append(f"missing package license metadata: {record['identity']}")
+    if not publisher:
+        failures.append(f"missing publisher LICENSE/NOTICE evidence: {record['identity']}")
+    failures.extend(f"unsafe publisher path: {record['identity']}:{path}" for path in unsafe_publisher)
+    failures.extend(f"unsafe native path: {record['identity']}:{path}" for path in unsafe_native)
+    if any(item["needed"]["inspection"] == "error" for item in native):
+        failures.append(f"ELF NEEDED inspection failed: {record['identity']}")
+    if duplicate:
+        failures.append(f"duplicate installed distribution: {record['identity']}")
+    return {"lock": lock_data, "installed": installed}, failures
+
+
+def _license_url(item: dict[str, Any]) -> str:
+    if item["kind"] == "github":
+        return f"https://raw.githubusercontent.com/{item['repo']}/{item['revision']}/LICENSE"
+    return f"https://huggingface.co/{item['repo']}/raw/{item['revision']}/LICENSE"
+
+
+def _allowed_license_urls(item: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Return exact (host, path, scheme) tuples bound to one fixed identity."""
+    raw = urlsplit(_license_url(item))
+    allowed = {(raw.hostname or "", raw.path, raw.scheme)}
+    if item["kind"] == "huggingface":
+        path = f"/{item['repo']}/resolve/{item['revision']}/LICENSE"
+        allowed.update(
+            (host, path, "https")
+            for host in HF_LICENSE_HOSTS
+            if host.startswith("cdn-lfs")
+        )
+    return allowed
+
+
+def _validate_license_url(item: dict[str, Any], url: str, *, initial: bool = False) -> None:
+    parsed = urlsplit(url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise AuditError(f"LICENSE URL has an invalid port: {url}") from exc
+    if parsed.scheme != "https" or port not in (None, 443):
+        raise AuditError(f"non-allow-listed LICENSE host or scheme: {url}")
+    if parsed.username is not None or parsed.password is not None:
+        raise AuditError(f"LICENSE URL contains userinfo: {url}")
+    if parsed.query or parsed.fragment:
+        raise AuditError(f"LICENSE URL contains query or fragment: {url}")
+    expected = _license_url(item)
+    if initial and url != expected:
+        raise AuditError(f"initial LICENSE URL is not the generated fixed URL: {url}")
+    if (parsed.hostname, parsed.path, parsed.scheme) not in _allowed_license_urls(item):
+        raise AuditError(f"LICENSE URL is not the exact pinned identity path: {url}")
+
+
+class _LicenseRedirects(HTTPRedirectHandler):
+    def __init__(self, item: dict[str, Any], trace: list[str]) -> None:
+        super().__init__()
+        self.item = item
+        self.trace = trace
+
+    def redirect_request(self, request: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        _validate_license_url(self.item, newurl)
+        self.trace.append(newurl)
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def _fetch_license(
+    item: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None
+) -> dict[str, Any]:
+    requested_url = _license_url(item)
+    _validate_license_url(item, requested_url, initial=True)
+    trace = [requested_url]
+    if fetcher is None:
+        opener = build_opener(_LicenseRedirects(item, trace))
+        request = Request(requested_url, headers={"Accept": "text/plain", "User-Agent": "vokra-parler-tts-audit/1"})
+        try:
+            with opener.open(request, timeout=30) as response:  # noqa: S310 - exact host/path is validated
+                final_url = response.geturl()
+                _validate_license_url(item, final_url)
+                if final_url not in trace:
+                    trace.append(final_url)
+                content_length = response.headers.get("Content-Length")
+                if content_length and content_length.isdigit() and int(content_length) > MAX_LICENSE_BYTES:
+                    raise AuditError("upstream LICENSE Content-Length exceeds the bounded audit size")
+                body = response.read(MAX_LICENSE_BYTES + 1)
+        except AuditError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - network failures become factual blockers
+            raise AuditError(f"exact LICENSE path is not retrievable: {exc}") from exc
+    else:
+        final_url, body = fetcher(requested_url)
+        _validate_license_url(item, final_url)
+        trace.append(final_url)
+    if not isinstance(body, bytes):
+        raise AuditError("upstream LICENSE response was not bytes")
+    if len(body) > MAX_LICENSE_BYTES:
+        raise AuditError("upstream LICENSE response exceeds the bounded audit size")
+    return {
+        "id": item["id"],
+        "kind": item["kind"],
+        "repo": item["repo"],
+        "revision": item["revision"],
+        "claimed_license": item["claimed_license"],
+        "requested_url": requested_url,
+        "final_url": final_url,
+        "url_trace": trace,
+        "acquired_file": "LICENSE",
+        "size": len(body),
+        "sha256": sha256_bytes(body),
+        "content_base64": base64.b64encode(body).decode("ascii"),
+        "license_classification": "UNCLASSIFIED_PRIMARY_SOURCE_BYTES_ONLY",
+    }
+
+
+def _fixed_license_items(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    source = manifest["source_identity"]
+    variants = manifest["variants"]
+    dac = manifest["dac_identity"]
+    source_repo = source["repo"].removeprefix("https://github.com/").removesuffix(".git")
+    return [
+        {
+            "id": f"parler-tts-source@{source['revision']}",
+            "kind": "github",
+            "repo": source_repo,
+            "revision": source["revision"],
+            "claimed_license": source["license"],
+        },
+        *[
+            {
+                "id": f"{variant['upstream_repo']}@{variant['upstream_revision']}",
+                "kind": "huggingface",
+                "repo": variant["upstream_repo"],
+                "revision": variant["upstream_revision"],
+                "claimed_license": variant["upstream_license"],
+            }
+            for variant in variants
+        ],
+        {
+            "id": f"{dac['repo']}@{dac['revision']}",
+            "kind": "huggingface",
+            "repo": dac["repo"],
+            "revision": dac["revision"],
+            "claimed_license": dac["license"],
+        },
+    ]
+
+
+def audit_model_licenses(
+    manifest: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    files: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for item in _fixed_license_items(manifest):
+        try:
+            files.append(_fetch_license(item, fetcher))
+        except AuditError as exc:
+            files.append({
+                "id": item["id"],
+                "kind": item["kind"],
+                "repo": item["repo"],
+                "revision": item["revision"],
+                "claimed_license": item["claimed_license"],
+                "requested_url": _license_url(item),
+                "final_url": None,
+                "acquired_file": None,
+                "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+                "error": str(exc),
+            })
+            failures.append(f"{item['id']}: {exc}")
+    return files, failures
+
+
+def _repository_identity(project: Path) -> dict[str, Any]:
+    repository = project.parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise AuditError(f"git commit identity unavailable: {exc}") from exc
+    return {"root": str(repository), "commit": commit, "audit_script_sha256": sha256_file(Path(__file__).resolve())}
+
+
+def audit_environment(project: Path, fetch_model_licenses: bool = True) -> dict[str, Any]:
+    project_data, lock, manifest, project_bytes, lock_bytes = _contract(project)
+    expected_rows = _expected_packages(lock)
+    active_rows, inactive_rows = classify_lock_rows(lock)
+    records = _distribution_records()
+    expected_ids = [identity(row["name"], row["version"]) for row in expected_rows]
+    actual_ids = [record["identity"] for record in records]
+    closure = compare_multiset(expected_ids, actual_ids)
+    by_identity: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        by_identity.setdefault(record["identity"], []).append(record)
+    packages: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for row in expected_rows:
+        key = identity(row["name"], row["version"])
+        candidates = by_identity.get(key, [])
+        package, package_failures = _inspect_package(row, candidates[0] if len(candidates) == 1 else None, len(candidates) > 1)
+        packages.append(package)
+        failures.extend(package_failures)
+    if not closure["exact"]:
+        failures.append("installed normalized name+version multiset does not exactly match uv.lock")
+    if sys.version_info[:2] != (3, 12):
+        failures.append(f"Python runtime is not 3.12: {platform.python_version()}")
+    if sys.platform != "linux" or platform.machine().casefold() not in {"x86_64", "amd64"}:
+        failures.append(f"audit host is not Linux x86_64: {sys.platform}/{platform.machine()}")
+    model_license_files, license_failures = audit_model_licenses(manifest) if fetch_model_licenses else ([], [])
+    failures.extend(license_failures)
+    return {
+        "schema": SCHEMA,
+        "status": "BLOCKED" if failures else "PASS",
+        "repository": _repository_identity(project),
+        "environment": {
+            "python": platform.python_version(),
+            "platform": sys.platform,
+            "machine": platform.machine(),
+            "readelf_required": True,
+            "model_code_imported": False,
+            "cargo_invoked": False,
+        },
+        "project": {
+            "name": project_data["project"]["name"],
+            "version": project_data["project"]["version"],
+            "pyproject_bytes": len(project_bytes),
+            "pyproject_sha256": sha256_bytes(project_bytes),
+            "uv_lock_bytes": len(lock_bytes),
+            "uv_lock_sha256": sha256_bytes(lock_bytes),
+        },
+        "lock_rows": {
+            "accounted_rows": len(lock["package"]),
+            "active_linux_installed": active_rows,
+            "inactive_or_virtual": inactive_rows,
+            "all_rows_accounted": len(active_rows) + len(inactive_rows) == len(lock["package"]),
+        },
+        "closure": closure,
+        "packages": packages,
+        "fixed_source_model_dac_identities": _fixed_license_items(manifest),
+        "model_license_files": model_license_files,
+        "model_acquisition": {
+            "policy": "allow-listed exact primary-source LICENSE-only fetch",
+            "requested_files": [item["requested_url"] for item in model_license_files],
+            "non_license_requests": [],
+            "non_license_files": [],
+            "proof": "audit code has no model-weight acquisition path and imports no model/Torch code",
+        },
+        "failures": sorted(set(failures)),
+    }
+
+
+def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
+    try:
+        report = audit_environment(project, fetch_model_licenses)
+    except (AuditError, OSError, UnicodeError, ValueError) as exc:
+        report = {
+            "schema": SCHEMA,
+            "status": "BLOCKED",
+            "environment": {"model_code_imported": False, "cargo_invoked": False},
+            "model_acquisition": {"requested_files": [], "non_license_requests": [], "non_license_files": []},
+            "failures": [str(exc)],
+        }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(canonical_json(report) + "\n", encoding="utf-8")
+    if report["failures"]:
+        print("parler dependency audit: BLOCKED: " + "; ".join(report["failures"]), file=sys.stderr)
+        return 2
+    print(f"parler dependency audit: PASS ({output})")
+    return 0
+
+
+def self_test() -> int:
+    expected = ["foo-bar==1.0", "torch==2.11.0+cpu"]
+    exact = compare_multiset(expected, ["torch==2.11.0+cpu", "foo-bar==1.0"])
+    assert exact["exact"] and not exact["missing"] and not exact["unexpected"]
+    assert identity("foo_bar", "1.0") == "foo-bar==1.0"
+    assert identity("torch", "2.11.0+CPU") == "torch==2.11.0+cpu"
+    mismatch = compare_multiset(expected, ["foo-bar==1.0", "torch==2.10.0+cpu"])
+    assert mismatch["missing"] == ["torch==2.11.0+cpu"]
+    assert mismatch["unexpected"] == ["torch==2.10.0+cpu"]
+    duplicate = compare_multiset(["foo-bar==1.0"], ["foo-bar==1.0", "foo-bar==1.0"])
+    assert duplicate["duplicate_identities"] == ["foo-bar==1.0"]
+    assert duplicate["unexpected"] == ["foo-bar==1.0"]
+    assert canonical_json({"b": 2, "a": 1}) == '{"a":1,"b":2}'
+
+    manifest = load_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
+    items = _fixed_license_items(manifest)
+    assert len(items) == 4
+    assert all(_license_url(item).endswith("/LICENSE") for item in items)
+    body = b"primary source bytes\n"
+    result = _fetch_license(items[0], lambda url: (url, body))
+    assert result["requested_url"] == result["final_url"]
+    assert result["size"] == len(body) and result["sha256"] == sha256_bytes(body)
+    assert result["license_classification"] == "UNCLASSIFIED_PRIMARY_SOURCE_BYTES_ONLY"
+    hf_raw = _license_url(items[1])
+    hf_cdn = f"https://cdn-lfs.huggingface.co/{items[1]['repo']}/resolve/{items[1]['revision']}/LICENSE"
+    assert _fetch_license(items[1], lambda _url: (hf_cdn, body))["final_url"] == hf_cdn
+    hf_port_443 = hf_raw.replace("https://huggingface.co/", "https://huggingface.co:443/")
+    assert _fetch_license(items[1], lambda _url: (hf_port_443, body))["final_url"] == hf_port_443
+    unsafe_urls = (
+        hf_raw.replace("/raw/", "/raw/other-repo/", 1),
+        hf_raw.replace(items[1]["revision"], "0" * 40, 1),
+        hf_raw.replace("https://", "https://audit-user@", 1),
+        hf_raw.replace("https://huggingface.co/", "https://huggingface.co:8443/", 1),
+        hf_raw + "?download=true",
+        hf_raw + "#fragment",
+        hf_raw.replace("/LICENSE", "/LICENSE.txt", 1),
+        hf_raw.replace("/LICENSE", "/model.safetensors", 1),
+    )
+    for bad in unsafe_urls:
+        try:
+            _fetch_license(items[1], lambda _url, bad=bad: (bad, body))
+        except AuditError:
+            pass
+        else:
+            raise AssertionError(f"accepted unsafe LICENSE redirect: {bad}")
+    try:
+        _validate_license_url(items[1], hf_raw.replace(items[1]["repo"], "nearby/repo", 1), initial=True)
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted a non-fixed initial LICENSE URL")
+    source_raw = _license_url(items[0])
+    for bad in (
+        source_raw.replace("huggingface/parler-tts", "nearby/repo", 1),
+        source_raw.replace(items[0]["revision"], "0" * 40, 1),
+        source_raw.replace("raw.githubusercontent.com", "github.com", 1),
+    ):
+        try:
+            _fetch_license(items[0], lambda _url, bad=bad: (bad, body))
+        except AuditError:
+            pass
+        else:
+            raise AssertionError(f"accepted unsafe source LICENSE redirect: {bad}")
+    try:
+        _fetch_license(items[0], lambda url: (url, b"x" * (MAX_LICENSE_BYTES + 1)))
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("accepted an over-sized LICENSE response")
+    with tempfile.TemporaryDirectory(prefix="parler-audit-self-test-") as directory:
+        root = Path(directory)
+        path = root / "short"
+        path.write_bytes(b"not an ELF")
+        assert _elf_needed(path)["format"] == "non-elf"
+        native = root / "native.so"
+        native.write_bytes(b"native")
+
+        class FakeDistribution:
+            files = ["native.so", "../escaped.so"]
+
+            def locate_file(self, entry: Any) -> Path:
+                return root if str(entry) == "" else root / str(entry)
+
+        original_first_four = _first_four
+
+        def fail_magic_read(_path: Path) -> bytes:
+            raise OSError("self-test magic read failure")
+
+        try:
+            globals()["_first_four"] = fail_magic_read
+            _, unsafe = _native_files(FakeDistribution())
+        finally:
+            globals()["_first_four"] = original_first_four
+        assert any(item.startswith("../escaped.so:out-of-distribution-root") for item in unsafe)
+        assert any(item.startswith("native.so:magic-read-failed:") for item in unsafe)
+        assert canonical_json(json.loads(canonical_json({"z": 1, "a": 2}))) == '{"a":2,"z":1}'
+    print("parler dependency audit: self-test PASS")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--fetch-model-licenses", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
+        if args.project is not None or args.output is not None or args.fetch_model_licenses:
+            parser.error("--self-test accepts no project/output/fetch arguments")
+        return self_test()
+    if args.project is None or args.output is None:
+        parser.error("--project and --output are required")
+    return run(args.project, args.output, args.fetch_model_licenses)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
