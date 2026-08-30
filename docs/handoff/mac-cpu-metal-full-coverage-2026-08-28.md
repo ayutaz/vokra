@@ -26,16 +26,18 @@ The authoritative pre-documentation implementation/code snapshot observed on
 The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 The live public-artifact audit reports 194 repositories, 193 GGUF-bearing
 repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
-`no-runtime-binder=20`, `not-artifact=1`; Metal `full=128`,
-`blocked-by-cpu=62`, `cpu-only=3`, `not-artifact=1`. The three exact
-CPU-complete/Metal-unsupported repositories are `vokra/omniasr-ctc-1b`,
+`no-runtime-binder=20`, `not-artifact=1`; Metal `full=129`,
+`blocked-by-cpu=62`, `cpu-only=2`, `not-artifact=1`. The two exact
+CPU-complete/Metal-unsupported repositories are
 `vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`; therefore the old
 zero-CPU-only invariant is not currently achieved.
 
 GigaAM v3, GigaAM Multilingual and OmniASR CTC 1B have strict native CPU
-routes and independent official real-weight CPU parity on VAST. Their Apple
-CPU repetition and Metal execution remain pending; this snapshot makes no
-Metal completion claim. The authenticated 4.9 GB / 33-file Apple transfer
+routes and independent official real-weight CPU parity on VAST. OmniASR now
+has a complete Metal code route, while both GigaAM variants remain explicitly
+CPU-only. Apple CPU repetition and real Metal execution remain pending for the
+prepared rows; this snapshot makes no real-hardware Metal completion claim.
+The authenticated 4.9 GB / 33-file Apple transfer
 packet remains on VAST at `/root/scratchpad/apple-transfer-568dc192` for
 direct VAST-to-Scaleway transfer. Scaleway has not run, and no Hugging Face
 upload has occurred. After the transfer completes, the manifest/checksum is
@@ -355,6 +357,72 @@ approval.  Instance `49232927` was destroyed after recovery; stopped retained
 instance `49168183` and its Scaleway packets were not changed.  Consequently
 all Qwen, Bark and Parler CPU/Metal rows remain open pending the remaining
 license/operator decisions, real model validation and Apple execution.
+
+### 2026-08-31 final VAST/source batch before Scaleway
+
+The final code-bearing commit for this batch is
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`. The clean VAST checkout on
+instance `49261078` reached that exact commit only through verified incremental
+git bundles. No branch was pushed and no Hugging Face upload occurred.
+
+- BiCodec's official SparkAudio worker now has an exact Python 3.12 reference
+  lock for `einx==0.4.3` and transitive `frozendict==2.4.7`; both are
+  reference-only MIT dependencies and never enter the Rust runtime or an
+  upload. The complete no-upload worker passed at code commit `1e4e27e8`.
+  It reproduced GGUF SHA-256
+  `a77004b9a85aa1619abb9413de2d7158d6603d8097f1eeebb83a4bb8bd26637c`
+  and reference-manifest SHA-256
+  `8d159e0e8b19cc7ad88a925f072ae56cf870a180e3e7b2acecb82023b103c696`.
+  The CPU comparison passed semantic latent (`max_abs=1.907348633e-6`,
+  `rmse=3.059676605e-7`), d-vector (`1.847743988e-6`, `2.558271893e-7`),
+  prenet (`7.539987564e-6`, `1.297758877e-6`) and waveform
+  (`6.183981895e-7`, `1.134617555e-7`) with the pre-registered bounds and one
+  exact `backend=cpu` PASS sentinel. The later `9f69277d` change is only the
+  Clippy-equivalent removal of a needless `return`; it changes no selector or
+  numerical behavior. Real Apple CPU/Metal execution remains pending.
+- The model-free XY-Tokenizer dependency collector accounts for all 57 active
+  lock rows. It collected exact artifact, primary-license and bounded native
+  evidence for 51 rows. The six retained fail-closed rows are SciPy and SymPy
+  (compound license documents that cannot be reduced to one SPDX class),
+  setuptools (vendored LGPLv3 metadata), soxr (LGPL-2.1-or-later), and
+  tokenizers/tqdm (no accepted distribution-owned primary license bytes).
+  The collection-report SHA-256 is
+  `604e9cc74a5814f97bcd2be106e1f620f5f4d2d45052ce3c78fb485583f17210`;
+  the partial evidence SHA-256 is
+  `3e2471835be2b5cb767f3181050c98ff82dc12e039c9b4257af684d713306ffc`.
+  No model, checkpoint or Torch source route was imported by this audit.
+- HT-Demucs Multi remains blocked before model execution because its exact
+  upstream `torchaudio>=0.8,<2.1` constraint has no Python 3.12-compatible
+  release. More RAM, VAST or Scaleway cannot resolve that upstream dependency
+  contradiction; the worker remains `BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO`
+  and `NO_UPLOAD`.
+- At exact final commit `9f69277d`, VAST `cargo test --locked --workspace`
+  has 310 passing result groups and zero failed result groups (log SHA-256
+  `c6a9c5b1604ed53c02902bd311062f7a4646f7f9a455993489f625c96769b139`).
+  Strict workspace Clippy has zero errors (SHA-256
+  `373ce57e806cb33ec0a7b16e49174ffcf0b274b38cfbb8d02bb7813b976aa33c`),
+  `cargo deny check licenses advisories bans` passes (SHA-256
+  `43ba882d8949aa5a6145e86a1bdf66d602057591b4d462390aa8c4519c0e9666`),
+  and `cargo audit` passes (SHA-256
+  `82e60f15564fdf549048e5f14a0d6a8e97a09b05fc875a389efe7da180d60c36`).
+- The repeated live public-artifact inventory remains 194 repositories, 193
+  GGUF-bearing repositories and 198 GGUF files. CPU is `full=131`,
+  `partial=42`, `no-runtime-binder=20`, `not-artifact=1`; Metal is `full=129`,
+  `blocked-by-cpu=62`, `cpu-only=2`, `not-artifact=1`. The zero-CPU-only
+  invariant therefore correctly refuses the two GigaAM rows. The fail-closed
+  inventory log SHA-256 is
+  `276ea4e27b5feb97199e42327c277a61c8d7db708baf6c6a78ab15d65f32c619`;
+  the explicit summary SHA-256 is
+  `99272fead6ada58ef0e11628bc411ef71b0c011f64fbf341945d50e187f40370`.
+
+This closes the current unblocked Linux/VAST evidence batch, not all 62
+repositories blocked by incomplete CPU artifacts or binders. Scaleway can
+close only Apple-ready CPU/Metal packets. Missing native binders, unresolved
+dependency or weight licenses, gated companion access, owner sign-off and
+publication authorization remain separate blockers and are not solved by
+Apple hardware. VAST `49261078` is intentionally retained only until the
+BiCodec Apple packet and final bundle are verified and the required packets
+are transferred; stopped instance `49168183` remains untouched.
 
 ### Branch preparation status
 
