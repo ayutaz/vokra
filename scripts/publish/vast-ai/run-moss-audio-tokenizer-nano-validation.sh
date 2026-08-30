@@ -341,6 +341,19 @@ run_self_test() {
   run_self_test_work_paths
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
+  expect_exit_2_no_path() {
+    local label="$1" path="$2" status
+    shift 2
+    if "$@" >/dev/null 2>&1; then
+      status=0
+    else
+      status=$?
+    fi
+    if [[ $status -ne 2 || -e "$path" || -L "$path" ]]; then
+      log "self-test FAIL: $label was not a controlled reject without output"
+      return 1
+    fi
+  }
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CORRECTED_MODEL_NAME" \
     "$CORRECTED_VARIANT" "$LEGACY_PUBLIC_REPO" \
@@ -350,13 +363,17 @@ run_self_test() {
     "license_preflight" "--no-project --offline" "license_gate.py" "moss_audio_tokenizer_nano" \
     "parity_moss_audio_tokenizer_nano_real" \
     "official_nano_decode_matches_cpu_and_optional_metal" \
-    "numeric_bounds=UNSET" "MEASURED_NOT_GATED"; do
+    "numeric_bounds=UNSET" "MEASURED_NOT_GATED" "object_pairs_hook=reject"; do
     cases=$((cases + 1))
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
       fail=1
     fi
   done
+  if ! grep -Fq 'object_pairs_hook=reject_duplicate_json_keys' "$PREPARER"; then
+    log 'self-test FAIL: checkpoint index duplicate-key rejection is missing'
+    fail=1
+  fi
   cases=$((cases + 1))
   if ! grep -Fq "REVISION = \"$UPSTREAM_REVISION\"" "$NANO_PROJECT/license_gate.py" \
     || ! grep -Fq "\"revision\": \"$UPSTREAM_REVISION\"" "$REFERENCE_DUMPER" \
@@ -430,60 +447,49 @@ run_self_test() {
     log 'self-test FAIL: symlink approval was accepted'; fail=1
   fi
   cases=$((cases + 1))
-  if "$script_path" --self-test --self-test >/dev/null 2>&1; then
-    log 'self-test FAIL: duplicate --self-test accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'duplicate --self-test' "$tmp/duplicate-self-test-output" \
+    "$script_path" --self-test --self-test || fail=1
   cases=$((cases + 1))
-  if "$script_path" --work-dir --self-test >/dev/null 2>&1; then
-    log 'self-test FAIL: bare --work-dir value accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'bare --work-dir' "$tmp/bare-work-output" \
+    "$script_path" --work-dir --self-test || fail=1
   cases=$((cases + 1))
-  if "$script_path" --work-dir -x >/dev/null 2>&1; then
-    log 'self-test FAIL: negative --work-dir value accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'negative --work-dir' "$tmp/negative-work-output" \
+    "$script_path" --work-dir -x || fail=1
   cases=$((cases + 1))
-  if "$script_path" --work-dir "" >/dev/null 2>&1; then
-    log 'self-test FAIL: empty --work-dir value accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'empty --work-dir' "$tmp/empty-work-output" \
+    "$script_path" --work-dir "" || fail=1
   cases=$((cases + 1))
-  if "$script_path" --self-test trailing >/dev/null 2>&1; then
-    log 'self-test FAIL: trailing argument accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'trailing argument' "$tmp/trailing-output" \
+    "$script_path" --self-test trailing || fail=1
   mkdir -p "$tmp/real/existing"
   ln -s "$tmp/real" "$tmp/link"
   printf '{}\n' > "$tmp/approval.json"
   cases=$((cases + 1))
-  if validate_work_dir 'relative-nano-work' "$tmp/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: relative work directory accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'relative work path' 'relative-nano-work' \
+    validate_work_dir 'relative-nano-work' "$tmp/approval.json" || fail=1
   cases=$((cases + 1))
-  if validate_work_dir "$tmp/link/existing/nested/new" "$tmp/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: descendant under symlink ancestor accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'work path under symlink ancestor' "$tmp/link/existing/nested/new" \
+    validate_work_dir "$tmp/link/existing/nested/new" "$tmp/approval.json" || fail=1
   mkdir -p "$tmp/approval-real"
   printf '{}\n' > "$tmp/approval-real/evidence.json"
   ln -s "$tmp/approval-real" "$tmp/approval-parent-link"
   cases=$((cases + 1))
-  if validate_work_dir "$tmp/approval-work" "$tmp/approval-parent-link/evidence.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: approval under symlink ancestor accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'approval path under symlink ancestor' "$tmp/approval-work" \
+    validate_work_dir "$tmp/approval-work" "$tmp/approval-parent-link/evidence.json" || fail=1
   cases=$((cases + 1))
-  if validate_work_dir "$NANO_PROJECT/../nano-lexical-work" "$tmp/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: lexical checkout overlap accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'lexical checkout overlap' "$NANO_PROJECT/../nano-lexical-work" \
+    validate_work_dir "$NANO_PROJECT/../nano-lexical-work" "$tmp/approval.json" || fail=1
   mkdir "$tmp/empty-work"
   cases=$((cases + 1))
   if validate_work_dir "$tmp/empty-work" "$tmp/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: pre-existing empty Nano work directory accepted'; fail=1
   fi
   cases=$((cases + 1))
-  if validate_work_dir "$VOKRA_ROOT/nano-self-test-work" "$tmp/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: checkout-overlapping Nano work directory accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'checkout-overlapping work path' "$VOKRA_ROOT/nano-self-test-work" \
+    validate_work_dir "$VOKRA_ROOT/nano-self-test-work" "$tmp/approval.json" || fail=1
   cases=$((cases + 1))
-  if validate_work_dir "$tmp/approval.json/child" "$tmp/approval.json" >/dev/null 2>&1; then
-    log 'self-test FAIL: approval-overlapping Nano work directory accepted'; fail=1
-  fi
+  expect_exit_2_no_path 'approval-overlapping work path' "$tmp/approval.json/child" \
+    validate_work_dir "$tmp/approval.json/child" "$tmp/approval.json" || fail=1
   cases=$((cases + 1))
   printf 'test parity_moss_audio_tokenizer_nano_real::official_nano_decode_matches_cpu_and_optional_metal ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\nMOSS_AUDIO_TOKENIZER_NANO_MEASUREMENT_ONLY backend=cpu numeric_bounds=UNSET verdict=MEASURED_NOT_GATED max_abs=1.0e-9 rms=1.0e-9 index=0 actual=1.0e-9 reference=1.0e-9\n' > "$tmp/cpu.log"
   require_cpu_test_evidence "$tmp/cpu.log" || { log 'self-test FAIL: valid CPU evidence rejected'; fail=1; }

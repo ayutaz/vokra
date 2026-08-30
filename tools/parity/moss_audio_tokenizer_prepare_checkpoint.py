@@ -139,6 +139,16 @@ INT_DTYPES = {
 KEEP_DTYPES = {"torch.float32", "torch.float16", "torch.bfloat16"}
 
 
+def reject_duplicate_json_keys(pairs):
+    """Reject duplicate object keys in authenticated checkpoint metadata."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def _partition(sd: dict, allow_strip_any: bool):
     """Split into ``(kept, dropped_int, unknown_other)`` — same taxonomy
     the ``nemo_pt_to_safetensors.py`` / ``sepformer_prepare_checkpoint.py``
@@ -370,7 +380,7 @@ def main() -> int:
             return 3
     else:
         with index_path.open("r", encoding="utf-8") as f:
-            index = json.load(f)
+            index = json.load(f, object_pairs_hook=reject_duplicate_json_keys)
         wm = index.get("weight_map")
         if not isinstance(wm, dict) or not wm:
             print(

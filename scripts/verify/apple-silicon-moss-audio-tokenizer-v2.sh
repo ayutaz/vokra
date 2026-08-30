@@ -259,6 +259,29 @@ run_self_test() (
   temporary_parent="$(cd -P "${TMPDIR:-/tmp}" && pwd -P)" || die 'temporary test parent is unavailable'
   temporary="$(mktemp -d "$temporary_parent/vokra-moss-tokenizer-v2-apple.XXXXXX")"
   trap 'rm -rf "$temporary"' EXIT
+  expect_exit_2_no_path() {
+    local label="$1" path="$2" status
+    shift 2
+    if "$@" >/dev/null 2>&1; then
+      status=0
+    else
+      status=$?
+    fi
+    if [[ $status -ne 2 || -e "$path" || -L "$path" ]]; then
+      die "self-test $label was not a controlled reject without evidence"
+      return 1
+    fi
+  }
+  expect_exit_2() {
+    local label="$1" status
+    shift
+    if "$@" >/dev/null 2>&1; then
+      status=0
+    else
+      status=$?
+    fi
+    [[ $status -eq 2 ]] || die "self-test $label did not return controlled exit 2"
+  }
   printf 'abc' > "$temporary/value"
   [[ "$(sha256_file "$temporary/value")" == \
     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ]] \
@@ -268,16 +291,21 @@ run_self_test() (
   mkdir -p "$temporary/root/nested"
   cp "$temporary/value" "$temporary/root/gguf"
   cp "$temporary/value" "$temporary/root/reference.csv"
-  if require_disjoint_evidence "$temporary/root/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'checkout-contained evidence was accepted'; fi
-  if require_disjoint_evidence "$temporary/root/nested/../lexical-alias-evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'lexical checkout overlap was accepted'; fi
-  if require_disjoint_evidence "$temporary/root/gguf" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"; then die 'evidence/input equality was accepted'; fi
+  expect_exit_2_no_path 'checkout-contained evidence' "$temporary/root/nested/evidence" \
+    require_disjoint_evidence "$temporary/root/nested/evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"
+  expect_exit_2_no_path 'lexical checkout overlap' "$temporary/root/nested/../lexical-alias-evidence" \
+    require_disjoint_evidence "$temporary/root/nested/../lexical-alias-evidence" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"
+  expect_exit_2 'evidence/input equality' \
+    require_disjoint_evidence "$temporary/root/gguf" "$temporary/root/gguf" "$temporary/root/reference.csv" "$temporary/root" "$temporary/value"
   ln -s "$temporary/value" "$temporary/input-link"
   if require_file input "$temporary/input-link"; then die 'symlink input was accepted'; fi
   ln -s "$temporary/value" "$temporary/approval-link"
-  if require_disjoint_evidence "$temporary/disjoint-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/approval-link"; then die 'symlink approval was accepted'; fi
+  expect_exit_2_no_path 'symlink approval' "$temporary/disjoint-evidence" \
+    require_disjoint_evidence "$temporary/disjoint-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/approval-link"
   mkdir -p "$temporary/real-parent/child"
   ln -s "$temporary/real-parent" "$temporary/link-parent"
-  if require_disjoint_evidence "$temporary/link-parent/child/new-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/value"; then die 'symlink evidence ancestor was accepted'; fi
+  expect_exit_2_no_path 'symlink evidence ancestor' "$temporary/link-parent/child/new-evidence" \
+    require_disjoint_evidence "$temporary/link-parent/child/new-evidence" "$temporary/value" "$temporary/value" "$temporary" "$temporary/value"
   mkdir -p "$temporary/existing"
   if require_absent_evidence_directory "$temporary/existing"; then die 'pre-existing evidence directory was accepted'; fi
   ln -s "$temporary/value" "$temporary/evidence-link"
@@ -286,14 +314,14 @@ run_self_test() (
   fake_root="$temporary/fake-root"
   mkdir -p "$fake_root/tools/parity/moss_audio_tokenizer_v2"
   cp "$V2_PROJECT/license_gate.py" "$V2_PROJECT/license_gate_manifest.json" "$V2_PROJECT/uv.lock" "$V2_PROJECT/pyproject.toml" "$fake_root/tools/parity/moss_audio_tokenizer_v2/"
-  if VOKRA_ROOT="$fake_root" VOKRA_REMOTE_APPLE_SILICON=0 "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "$fake_root/missing-approval" --evidence-dir "$temporary/missing-evidence" >/dev/null 2>&1; then
-    die 'Apple verifier accepted missing approval evidence'
-  fi
-  [[ ! -e "$temporary/missing-evidence" ]] || die 'Apple verifier created evidence before approval gate'
-  if "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --evidence-dir "$temporary/missing-option-evidence" >/dev/null 2>&1; then die 'missing approval option was accepted'; fi
-  [[ ! -e "$temporary/missing-option-evidence" ]] || die 'missing approval option created evidence'
-  if "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "$temporary/value" --approval-evidence "$temporary/value" --evidence-dir "$temporary/duplicate-approval-evidence" >/dev/null 2>&1; then die 'duplicate approval option was accepted'; fi
-  if "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "" --evidence-dir "$temporary/empty-approval-evidence" >/dev/null 2>&1; then die 'empty approval value was accepted'; fi
+  expect_exit_2_no_path 'missing approval evidence' "$temporary/missing-evidence" \
+    env VOKRA_ROOT="$fake_root" VOKRA_REMOTE_APPLE_SILICON=0 "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "$fake_root/missing-approval" --evidence-dir "$temporary/missing-evidence"
+  expect_exit_2_no_path 'missing approval option' "$temporary/missing-option-evidence" \
+    "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --evidence-dir "$temporary/missing-option-evidence"
+  expect_exit_2_no_path 'duplicate approval option' "$temporary/duplicate-approval-evidence" \
+    "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "$temporary/value" --approval-evidence "$temporary/value" --evidence-dir "$temporary/duplicate-approval-evidence"
+  expect_exit_2_no_path 'empty approval value' "$temporary/empty-approval-evidence" \
+    "$script_path" --gguf "$temporary/value" --reference "$temporary/value" --gguf-sha256 "$(printf '%064d' 0)" --reference-sha256 "$(printf '%064d' 0)" --approval-evidence "" --evidence-dir "$temporary/empty-approval-evidence"
   for required in \
     'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
@@ -308,6 +336,8 @@ run_self_test() (
     grep -Fq -- "$required" "$script_path" \
       || die "self-test contract token is missing: $required"
   done
+  grep -Fq 'object_pairs_hook=reject' "$LICENSE_GATE" \
+    || die 'approval gate duplicate-key rejection is missing'
   if grep -En -- '(^|[[:space:]])(curl|wget|pip|git[[:space:]]+(clone|fetch|pull|push))([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     die "download, conversion, or publication command found"
