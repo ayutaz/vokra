@@ -14,17 +14,12 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 
 MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=20000000
-UPSTREAM_HF="reazon-research/reazonspeech-nemo-v2"
-UPSTREAM_REVISION="33693408be76b7cba9fd4a7546a0a8772430211b"
-REFERENCE_FORMAT="vokra-reazonspeech-nemo-v2-reference-v1"
-REFERENCE_IMPLEMENTATION="nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from"
-REFERENCE_PACKAGE="nemo-toolkit[asr]==3.0.0"
 GGUF_ENV="VOKRA_REAZONSPEECH_NEMO_V2_GGUF"
 REFERENCE_DIR_ENV="VOKRA_REAZONSPEECH_NEMO_V2_REFERENCE_DIR"
 PARITY_SOURCE="$VOKRA_ROOT/crates/vokra-models/tests/parity_reazonspeech_nemo_v2.rs"
 PARITY_TARGET="parity_reazonspeech_nemo_v2"
-CPU_TEST="released_cpu_encoder_and_tokens_match_official_nemo"
-METAL_TEST="released_metal_matches_cpu_encoder_and_tokens"
+CPU_TEST="released_cpu_encoder_and_alsd_tokens_text_match_official_nemo"
+METAL_TEST="released_metal_matches_cpu_encoder_and_alsd_tokens_text"
 
 log() { printf '[reazonspeech-nemo-v2-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -140,15 +135,167 @@ require_reference() {
 
 require_reference_metadata() {
   local path="$1"
-  for field in \
-    "\"format\": \"$REFERENCE_FORMAT\"" \
-    "\"reference_implementation\": \"$REFERENCE_IMPLEMENTATION\"" \
-    "\"reference_package\": \"$REFERENCE_PACKAGE\"" \
-    "\"upstream_hf\": \"$UPSTREAM_HF\"" \
-    "\"upstream_revision\": \"$UPSTREAM_REVISION\""; do
-    grep -Fq -- "$field" "$path" \
-      || die "reference.json is missing exact metadata field: $field"
-  done
+  local directory="${path%/reference.json}"
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$path" "$directory" <<'PY'
+import hashlib
+import json
+import math
+import pathlib
+import struct
+import sys
+
+REFERENCE_FORMAT = "vokra-reazonspeech-nemo-v2-reference-v1"
+REFERENCE_IMPLEMENTATION = "nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from"
+REFERENCE_PACKAGE = "nemo-toolkit[asr]==3.0.0"
+UPSTREAM_HF = "reazon-research/reazonspeech-nemo-v2"
+UPSTREAM_REVISION = "33693408be76b7cba9fd4a7546a0a8772430211b"
+ARCHIVE_SHA256 = "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae"
+JFK_SHA256 = "58adb4ea501d955fcd40bfbb69128f8f40428b81d8716b9ed337949773be253f"
+EXPECTED_KEYS = {
+    "format", "reference_implementation", "reference_package", "nemo_version",
+    "torch_version", "environment", "upstream_hf", "upstream_revision",
+    "checkpoint_sha256", "audio", "audio_sha256", "sample_rate", "sample_count",
+    "pcm_sha256", "decoding_strategy", "decoding_beam_size",
+    "decoding_alsd_max_target_len", "decoding_score_norm", "decoding_search_type",
+    "decoding_softmax_temperature", "decoding_return_best_hypothesis",
+    "decoding_preserve_alignments", "encoder_frames", "encoder_width",
+    "encoder_sha256", "tokens", "tokens_sha256", "text", "text_file_sha256",
+}
+EXPECTED_ENVIRONMENT_KEYS = {
+    "platform", "machine", "cpu_model", "logical_cpu_count",
+    "torch_cpu_capability", "device", "cuda_device",
+}
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+def require_string(data, key):
+    value = data[key]
+    if type(value) is not str:
+        raise ValueError(f"{key} must be a string")
+    return value
+
+def require_hash(data, key, expected=None):
+    value = require_string(data, key)
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise ValueError(f"{key} is not a lowercase SHA-256 digest")
+    if expected is not None and value != expected:
+        raise ValueError(f"{key} identity mismatch")
+    return value
+
+def require_int(data, key, positive=False):
+    value = data[key]
+    if type(value) is not int or (positive and value <= 0):
+        raise ValueError(f"{key} must be a positive integer")
+    return value
+
+def require_float(data, key, expected):
+    value = data[key]
+    if type(value) is not float or not math.isfinite(value) or value != expected:
+        raise ValueError(f"{key} must be the exact finite float {expected}")
+    return value
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+def fail(message):
+    raise ValueError(message)
+
+try:
+    report_path = pathlib.Path(sys.argv[1])
+    directory = pathlib.Path(sys.argv[2])
+    report = json.loads(
+        report_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates
+    )
+    if type(report) is not dict:
+        fail("reference.json top level must be an object")
+    if set(report) != EXPECTED_KEYS:
+        fail("reference.json schema is not exact")
+    exact_strings = {
+        "format": REFERENCE_FORMAT,
+        "reference_implementation": REFERENCE_IMPLEMENTATION,
+        "reference_package": REFERENCE_PACKAGE,
+        "upstream_hf": UPSTREAM_HF,
+        "upstream_revision": UPSTREAM_REVISION,
+        "audio": "tests/fixtures/audio/jfk-30s.wav",
+        "decoding_strategy": "alsd",
+        "decoding_search_type": "default",
+    }
+    for key, expected in exact_strings.items():
+        if require_string(report, key) != expected:
+            fail(f"{key} identity mismatch")
+    for key in ("nemo_version", "torch_version"):
+        require_string(report, key)
+    environment = report["environment"]
+    if type(environment) is not dict or set(environment) != EXPECTED_ENVIRONMENT_KEYS:
+        fail("reference environment schema is not exact")
+    for key in ("platform", "machine", "cpu_model", "torch_cpu_capability", "device"):
+        if type(environment[key]) is not str:
+            fail(f"environment.{key} must be a string")
+    if type(environment["logical_cpu_count"]) is not int or environment["logical_cpu_count"] <= 0:
+        fail("environment.logical_cpu_count must be a positive integer")
+    if environment["cuda_device"] is not None and type(environment["cuda_device"]) is not str:
+        fail("environment.cuda_device must be a string or null")
+    require_hash(report, "checkpoint_sha256", ARCHIVE_SHA256)
+    require_hash(report, "audio_sha256", JFK_SHA256)
+    if require_int(report, "sample_rate") != 16000:
+        fail("sample_rate identity mismatch")
+    sample_count = require_int(report, "sample_count", positive=True)
+    require_hash(report, "pcm_sha256")
+    if require_string(report, "decoding_strategy") != "alsd":
+        fail("decoding_strategy identity mismatch")
+    if require_int(report, "decoding_beam_size") != 4:
+        fail("decoding_beam_size identity mismatch")
+    require_float(report, "decoding_alsd_max_target_len", 1.0)
+    if type(report["decoding_score_norm"]) is not bool or report["decoding_score_norm"] is not True:
+        fail("decoding_score_norm identity mismatch")
+    require_string(report, "decoding_search_type")
+    require_float(report, "decoding_softmax_temperature", 1.0)
+    if type(report["decoding_return_best_hypothesis"]) is not bool or report["decoding_return_best_hypothesis"] is not True:
+        fail("decoding_return_best_hypothesis identity mismatch")
+    if type(report["decoding_preserve_alignments"]) is not bool or report["decoding_preserve_alignments"] is not False:
+        fail("decoding_preserve_alignments identity mismatch")
+    encoder_frames = require_int(report, "encoder_frames", positive=True)
+    if require_int(report, "encoder_width", positive=True) != 1024:
+        fail("encoder_width identity mismatch")
+    require_hash(report, "encoder_sha256")
+    tokens = report["tokens"]
+    if type(tokens) is not list or not tokens or any(type(token) is not int or not 0 <= token < 3000 for token in tokens):
+        fail("tokens must be a nonempty list of nonblank token integers")
+    require_hash(report, "tokens_sha256")
+    text = report["text"]
+    if type(text) is not str:
+        fail("text must be a string")
+    require_hash(report, "text_file_sha256")
+
+    pcm = directory / "pcm.f32"
+    encoder = directory / "encoder.f32"
+    token_file = directory / "tokens.u32"
+    text_file = directory / "text.txt"
+    frames_file = directory / "encoder.frames.txt"
+    if len(pcm.read_bytes()) != sample_count * 4 or digest(pcm) != report["pcm_sha256"]:
+        fail("pcm.f32 shape or hash does not match reference.json")
+    if len(encoder.read_bytes()) != encoder_frames * report["encoder_width"] * 4 or digest(encoder) != report["encoder_sha256"]:
+        fail("encoder.f32 shape or hash does not match reference.json")
+    token_bytes = token_file.read_bytes()
+    if len(token_bytes) != len(tokens) * 4 or digest(token_file) != report["tokens_sha256"]:
+        fail("tokens.u32 shape or hash does not match reference.json")
+    if list(struct.unpack(f"<{len(tokens)}I", token_bytes)) != tokens:
+        fail("tokens.u32 values do not match reference.json")
+    text_bytes = text_file.read_bytes()
+    if text_bytes != (text + "\n").encode("utf-8") or digest(text_file) != report["text_file_sha256"]:
+        fail("text.txt content or hash does not match reference.json")
+    if frames_file.read_text(encoding="utf-8").strip() != str(encoder_frames):
+        fail("encoder.frames.txt does not match reference.json")
+except (OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError, struct.error) as exc:
+    raise SystemExit("reference gate BLOCKED: " + str(exc))
+PY
+  then :; else die 'reference.json is invalid, incomplete, or does not bind staged artifacts'; fi
 }
 
 require_remote_apple_host() {
@@ -171,7 +318,7 @@ require_remote_apple_host() {
 
 require_tooling() {
   local tool
-  for tool in cargo rustc git shasum awk find tee grep sysctl sw_vers \
+  for tool in cargo rustc git shasum awk find tee grep uv sysctl sw_vers \
     system_profiler xcrun; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
@@ -189,7 +336,7 @@ require_tooling() {
     || die "ReazonSpeech parity source lacks an explicit Metal backend"
   grep -Fq 'Metal encoder max_abs' "$PARITY_SOURCE" \
     || die "ReazonSpeech parity source lacks the Metal-vs-CPU metric assertion"
-  grep -Fq 'Metal RNN-T token sequence must match CPU exactly' "$PARITY_SOURCE" \
+  grep -Fq 'Metal ALSD RNN-T token sequence must match CPU exactly' "$PARITY_SOURCE" \
     || die "ReazonSpeech parity source lacks the exact token assertion"
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
     || die "remote Apple checkout must be clean so evidence names one exact commit"
@@ -246,11 +393,14 @@ run_self_test() (
     'vokra-reazonspeech-nemo-v2-reference-v1' \
     'nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from' \
     'nemo-toolkit[asr]==3.0.0' \
+    'uv run --no-cache --no-project --offline --python 3.12' \
+    'object_pairs_hook=reject_duplicates' 'reference.json schema is not exact' \
+    'pcm_sha256' 'text_file_sha256' \
     'xcrun -f metal' "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
     "$PARITY_TARGET" "$CPU_TEST" "$METAL_TEST" \
     '--features metal' '-- --exact --nocapture' \
-    'test released_cpu_encoder_and_tokens_match_official_nemo ... ok' \
-    'test released_metal_matches_cpu_encoder_and_tokens ... ok' \
+    'test released_cpu_encoder_and_alsd_tokens_text_match_official_nemo ... ok' \
+    'test released_metal_matches_cpu_encoder_and_alsd_tokens_text ... ok' \
     'test result: ok. 1 passed' 'ReazonSpeech-NeMo-v2 CPU encoder:' \
     'REAZONSPEECH_NEMO_V2_CPU_VS_OFFICIAL PASS' \
     'REAZONSPEECH_NEMO_V2_METAL_VS_CPU PASS' \
@@ -260,6 +410,15 @@ run_self_test() (
       fail=1
     fi
   done
+  mkdir "$temporary/duplicate" "$temporary/typed"
+  printf '%s\n' '{"format":"x","format":"y"}' > "$temporary/duplicate/reference.json"
+  printf '%s\n' '{"format":7,"extra":true}' > "$temporary/typed/reference.json"
+  if require_reference_metadata "$temporary/duplicate/reference.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate JSON key accepted'; fail=1
+  fi
+  if require_reference_metadata "$temporary/typed/reference.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: wrong typed/extra JSON field accepted'; fail=1
+  fi
   if grep -En -- '^[[:space:]]*(curl|wget|python3?|pip|git[[:space:]]+(clone|fetch|pull))([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     log "self-test FAIL: download, direct Python, or publication command found"

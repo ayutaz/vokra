@@ -27,7 +27,7 @@ die() {
 UPSTREAM_REPO="reazon-research/reazonspeech-nemo-v2"
 UPSTREAM_REVISION="33693408be76b7cba9fd4a7546a0a8772430211b"
 MODEL_KIND="reazonspeech-nemo-v2"
-PARITY_TEST="released_cpu_encoder_and_tokens_match_official_nemo"
+PARITY_TEST="released_cpu_encoder_and_alsd_tokens_text_match_official_nemo"
 GGUF_ENV="VOKRA_REAZONSPEECH_NEMO_V2_GGUF"
 REFERENCE_DIR_ENV="VOKRA_REAZONSPEECH_NEMO_V2_REFERENCE_DIR"
 PROJECT_FILE="tools/parity/pyproject.toml"
@@ -124,6 +124,9 @@ run_self_test() {
     "tools/parity/reazonspeech_nemo_v2_prepare_checkpoint.py" \
     "tools/parity/reazonspeech_nemo_v2_dump_reference.py" \
     "--frozen --project tools/parity --python 3.12 python" \
+    "run_logged env \"\$GGUF_ENV=" "\"\$REFERENCE_DIR_ENV=" \
+    "cargo test --locked --release -p vokra-models" \
+    "env -u \"\$GGUF_ENV\" -u \"\$REFERENCE_DIR_ENV\"" \
     "--test parity_reazonspeech_nemo_v2"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: contract lost token: $required" >&2
@@ -140,6 +143,10 @@ run_self_test() {
   if grep -En -- '^[[:space:]]*(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh)([[:space:]]|$)' \
     "$script_path" >/dev/null; then
     echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: publication command found" >&2
+    fail=1
+  fi
+  if grep -Fq "export \"\$GGUF_ENV=" "$script_path" || grep -Fq "export \"\$REFERENCE_DIR_ENV=" "$script_path"; then
+    echo "run-reazonspeech-nemo-v2-validation: self-test FAIL: model environment globally exported" >&2
     fail=1
   fi
 
@@ -306,9 +313,9 @@ run_logged uv run --frozen --project tools/parity --extra titanet --python 3.12 
   tools/parity/reazonspeech_nemo_v2_dump_reference.py \
   --nemo "$nemo_path" --output-dir "$reference_dir"
 
-export "$GGUF_ENV=$work_dir/reazonspeech-nemo-v2.gguf"
-export "$REFERENCE_DIR_ENV=$reference_dir"
-run_logged cargo test --locked -p vokra-models \
+run_logged env "$GGUF_ENV=$work_dir/reazonspeech-nemo-v2.gguf" \
+  "$REFERENCE_DIR_ENV=$reference_dir" \
+  cargo test --locked --release -p vokra-models \
   --test parity_reazonspeech_nemo_v2 \
   "$PARITY_TEST" -- --nocapture
 require_cargo_result "$log_path" "$PARITY_TEST"
@@ -317,7 +324,8 @@ run_logged target/release/vokra-cli run \
   --model "$work_dir/reazonspeech-nemo-v2.gguf" \
   --input tests/fixtures/audio/jfk-30s.wav --backend cpu
 
-run_logged cargo test --locked --workspace
+run_logged env -u "$GGUF_ENV" -u "$REFERENCE_DIR_ENV" \
+  cargo test --locked --workspace
 run_logged cargo clippy --locked --workspace --all-targets -- -D warnings
 run_logged cargo deny check licenses advisories bans
 run_logged cargo audit
