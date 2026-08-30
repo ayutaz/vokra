@@ -50,9 +50,20 @@ scripts/publish/vast-ai/audit-qwen3-asr-dependencies.sh \
 The audit consumes only the committed project/lock and the synchronized
 Python environment. It records all exact distribution metadata, publisher
 license/notice file hashes, native artifact hashes and ELF `NEEDED` entries.
+For pinned distributions whose wheels omit publisher files, it may fetch only
+an exact locked `files.pythonhosted.org` release sdist when that lock row
+provides one (the lock artifact must contain exactly `url`, `hash`, `size`, and
+non-empty `upload-time`), then inspect bounded LICENSE/COPYING/NOTICE/COPYRIGHT
+members in memory; archive bytes are never extracted or executed. A missing
+locked sdist (currently the `dynet38` row) remains a structured factual blocker; there is
+no README, alternate release, or wheel fallback. The two fixed model
+revisions permit only their exact HF `LICENSE` paths. No weights, model
+imports, or Cargo are part of this audit, and `uv sync` is performed only by
+the separately authorized setup step above.
 The VAST host must provide `readelf`; the wrapper refuses to run without it.
-Its only model requests are the two fixed-revision `LICENSE` URLs; a redirect
-to a non-`LICENSE` path or host is rejected before response bytes are read.
+Any sdist or LICENSE redirect to a non-allowlisted path, archive traversal or
+link, size/hash mismatch, or non-license model response is rejected before
+unbounded bytes are accepted.
 The expected successful output is:
 `qwen3-asr dependency audit: PASS (...)`. A missing license, native inspection
 failure, closure drift, or any non-license model response exits 2.

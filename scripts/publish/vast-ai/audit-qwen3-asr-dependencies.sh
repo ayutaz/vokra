@@ -20,8 +20,10 @@ usage: audit-qwen3-asr-dependencies.sh --output <audit.json>
 The target environment must already have been synchronized by the named,
 authorized VAST Qwen3-ASR worker after its approval gate. This command is
 VAST/Linux-only, never runs uv sync, and never downloads model weights. The
-audit itself fetches only the two exact upstream LICENSE URLs and rejects any
-redirected non-LICENSE path.
+audit itself fetches only exact locked PyPI sdist URLs when present for a
+missing wheel license file, plus the two fixed upstream LICENSE URLs. It
+never fetches weights, imports model packages, or runs Cargo, and rejects
+unsafe or redirected non-license paths.
 EOF
 }
 
@@ -155,6 +157,7 @@ self_test() {
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- '--fetch-model-licenses' "$0" || failed=1
+  grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
   grep -Fq -- 'never downloads model' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv sync|snapshot_download|cargo (build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   if VOKRA_PUBLISH_ON_VAST=0 run_audit /private/tmp/qwen3-asr-audit-self-test.json >/dev/null 2>&1; then failed=1; fi

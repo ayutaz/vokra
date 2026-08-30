@@ -4,8 +4,8 @@
 The audit is intentionally separate from :mod:`preflight_gate`: the gate
 authenticates the inputs before synchronization, while this script inspects
 the already synchronized, exact environment.  It never imports qwen-asr,
-torch, or any model code.  The only upstream model requests it can make are
-the two allow-listed LICENSE URLs below.
+torch, or any model code.  It only inspects exact locked PyPI sdists for
+missing publisher files and the two allow-listed model LICENSE URLs below.
 """
 
 from __future__ import annotations
@@ -16,17 +16,23 @@ import copy
 from collections import Counter
 import hashlib
 import importlib.metadata as metadata
+from io import BytesIO
 import json
 import platform
 import re
+from pathlib import PurePosixPath
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
+from urllib.parse import urljoin
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 import tomllib
 
@@ -51,6 +57,23 @@ LICENSE_FILE_NAMES = {"license", "copying", "notice", "copyright"}
 NATIVE_SUFFIXES = {".so", ".dylib", ".dll", ".pyd"}
 ELF_MAGIC = b"\x7fELF"
 MAX_LICENSE_BYTES = 2 * 1024 * 1024
+MAX_SDIST_BYTES = 64 * 1024 * 1024
+MAX_SDIST_MEMBERS = 4096
+MAX_SDIST_MEMBER_BYTES = 32 * 1024 * 1024
+MAX_SDIST_UNCOMPRESSED_BYTES = 128 * 1024 * 1024
+MAX_SDIST_LICENSE_TOTAL_BYTES = 4 * 1024 * 1024
+MISSING_PUBLISHER_LICENSE_ROWS = frozenset(
+    {
+        ("cython", "3.3.0"),
+        ("dynet38", "2.2"),
+        ("gradio-client", "2.5.0"),
+        ("qwen-omni-utils", "0.0.9"),
+        ("soynlp", "0.0.493"),
+        ("tokenizers", "0.22.2"),
+        ("tqdm", "4.70.0"),
+    }
+)
+PYPI_SDIST_HOST = "files.pythonhosted.org"
 HF_LICENSE_REDIRECT_HOSTS = {
     "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co",
@@ -120,11 +143,7 @@ def _publisher_files(dist: metadata.Distribution) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for entry in sorted(dist.files or [], key=lambda value: str(value)):
         relative = str(entry)
-        basename = Path(relative).name.casefold()
-        stem = Path(basename).stem
-        if stem not in LICENSE_FILE_NAMES and not any(
-            marker in basename for marker in ("license", "copying", "notice", "copyright")
-        ):
+        if not _is_license_candidate(relative):
             continue
         path = dist.locate_file(entry)
         if path.is_file() and not path.is_symlink():
@@ -194,6 +213,21 @@ def _license_fields(dist: metadata.Distribution) -> dict[str, Any]:
         "license_expression": dist.metadata.get("License-Expression"),
         "license_classifiers": classifiers,
     }
+
+
+def _license_metadata_satisfied(
+    license_data: dict[str, Any],
+    sdist_license_evidence: dict[str, Any] | None,
+) -> bool:
+    return bool(
+        license_data["license"]
+        or license_data["license_classifiers"]
+        or (
+            sdist_license_evidence is not None
+            and sdist_license_evidence.get("status") == "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES"
+            and bool(sdist_license_evidence.get("license_files"))
+        )
+    )
 
 
 _MARKER_VARIABLES = {"implementation_name", "platform_machine", "sys_platform"}
@@ -393,6 +427,420 @@ def _active_lock_packages(
     return _active_lock_graph(lock, environment)[0]
 
 
+class _SdistAuditError(ValueError):
+    def __init__(self, message: str, *, stage: str, observation: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.observation = observation or {
+            "stage": stage,
+            "bytes_acquired": False,
+            "observed_size": None,
+            "observed_sha256": None,
+            "size_verified": False,
+            "sha256_verified": False,
+            "final_url": None,
+            "redirect_trace": [],
+        }
+
+
+MAX_SDIST_REDIRECTS = 3
+
+
+class _BoundedSdistRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, expected: str) -> None:
+        super().__init__()
+        self.expected = expected
+        self.trace = [expected]
+
+    def _validated_target(self, current: str, target: str) -> str:
+        if len(self.trace) - 1 >= MAX_SDIST_REDIRECTS:
+            raise _SdistAuditError(
+                "locked sdist redirect limit exceeded",
+                stage="redirect_validation",
+            )
+        resolved = urljoin(current, target)
+        _validate_sdist_url(resolved, self.expected, initial=False)
+        self.trace.append(resolved)
+        return resolved
+
+    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request:
+        resolved = self._validated_target(req.full_url, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _validate_sdist_url(url: str, expected: str, *, initial: bool) -> None:
+    if initial and url != expected:
+        raise ValueError(f"unexpected initial locked sdist URL: {url}")
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid locked sdist URL: {url}") from exc
+    expected_path = urlparse(expected).path
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != PYPI_SDIST_HOST
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.query
+        or parsed.fragment
+        or parsed.path != expected_path
+    ):
+        raise ValueError(f"unsafe locked sdist URL: {url}")
+
+
+def _archive_format(url: str) -> tuple[str, str]:
+    lower = url.casefold()
+    for suffix, mode in (
+        ((".tar.gz", ".tgz"), ("tar.gz", "r:gz")),
+        ((".tar.bz2", ".tbz2"), ("tar.bz2", "r:bz2")),
+        ((".tar.xz", ".txz"), ("tar.xz", "r:xz")),
+        ((".zip",), ("zip", "zip")),
+    ):
+        if lower.endswith(suffix):
+            return mode
+    raise ValueError("unsupported locked sdist archive format")
+
+
+def _safe_archive_path(name: str) -> str:
+    if not isinstance(name, str) or not name or "\x00" in name or "\\" in name:
+        raise ValueError("unsafe archive member path")
+    raw_parts = name[:-1].split("/") if name.endswith("/") else name.split("/")
+    if not raw_parts or any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError("unsafe archive member path")
+    path = PurePosixPath(name)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("unsafe archive member path")
+    if path.parts[0].endswith(":"):
+        raise ValueError("unsafe archive member path")
+    return str(path)
+
+
+def _is_license_candidate(path: str) -> bool:
+    basename = PurePosixPath(path).name.casefold()
+    if basename in LICENSE_FILE_NAMES:
+        return True
+    return any(
+        basename.startswith(f"{marker}{separator}")
+        for marker in LICENSE_FILE_NAMES
+        for separator in (".", "-", "_")
+    )
+
+
+def _bounded_license_bytes(data: bytes, total: int) -> tuple[dict[str, Any], int]:
+    if len(data) > MAX_LICENSE_BYTES:
+        raise ValueError("locked sdist license candidate exceeds the bounded size")
+    total += len(data)
+    if total > MAX_SDIST_LICENSE_TOTAL_BYTES:
+        raise ValueError("locked sdist license candidates exceed the bounded total size")
+    return {
+        "size": len(data),
+        "sha256": sha256_bytes(data),
+        "content_base64": base64.b64encode(data).decode("ascii"),
+    }, total
+
+
+def _archive_license_files(body: bytes, url: str) -> tuple[str, list[dict[str, Any]]]:
+    archive_format, mode = _archive_format(url)
+    if len(body) > MAX_SDIST_BYTES:
+        raise ValueError("locked sdist archive exceeds the bounded size")
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total = 0
+    member_count = 0
+    uncompressed_total = 0
+
+    if archive_format == "zip":
+        with zipfile.ZipFile(BytesIO(body)) as archive:
+            members = archive.infolist()
+            if len(members) > MAX_SDIST_MEMBERS:
+                raise ValueError("locked sdist has too many archive members")
+            for member in members:
+                member_count += 1
+                if member_count > MAX_SDIST_MEMBERS:
+                    raise ValueError("locked sdist has too many archive members")
+                safe_name = _safe_archive_path(member.filename)
+                if safe_name in seen:
+                    raise ValueError("duplicate locked sdist archive member")
+                seen.add(safe_name)
+                mode_bits = (member.external_attr >> 16) & 0o170000
+                if mode_bits == stat.S_IFLNK or (mode_bits and mode_bits not in {stat.S_IFREG, stat.S_IFDIR}):
+                    raise ValueError("links or special files are not allowed in locked sdists")
+                name_is_dir = member.filename.endswith("/")
+                if (mode_bits == stat.S_IFREG and name_is_dir) or (mode_bits == stat.S_IFDIR and not name_is_dir):
+                    raise ValueError("ZIP member type contradicts its directory name")
+                if member.file_size < 0 or member.file_size > MAX_SDIST_MEMBER_BYTES:
+                    raise ValueError("locked sdist member exceeds the bounded size")
+                uncompressed_total += member.file_size
+                if uncompressed_total > MAX_SDIST_UNCOMPRESSED_BYTES:
+                    raise ValueError("locked sdist members exceed the bounded total size")
+                if member.is_dir() or mode_bits == stat.S_IFDIR:
+                    continue
+                if _is_license_candidate(safe_name):
+                    with archive.open(member, "r") as handle:
+                        data = handle.read(MAX_LICENSE_BYTES + 1)
+                    if len(data) != member.file_size:
+                        raise ValueError("ZIP license member size does not match its declaration")
+                    evidence, total = _bounded_license_bytes(data, total)
+                    candidates.append({"path": safe_name, **evidence})
+    else:
+        with tarfile.open(fileobj=BytesIO(body), mode=mode) as archive:
+            for member in archive:
+                member_count += 1
+                if member_count > MAX_SDIST_MEMBERS:
+                    raise ValueError("locked sdist has too many archive members")
+                safe_name = _safe_archive_path(member.name)
+                if safe_name in seen:
+                    raise ValueError("duplicate locked sdist archive member")
+                seen.add(safe_name)
+                if member.issym() or member.islnk() or not (member.isdir() or member.isreg()):
+                    raise ValueError("links or special files are not allowed in locked sdists")
+                if member.size < 0 or member.size > MAX_SDIST_MEMBER_BYTES:
+                    raise ValueError("locked sdist member exceeds the bounded size")
+                uncompressed_total += member.size
+                if uncompressed_total > MAX_SDIST_UNCOMPRESSED_BYTES:
+                    raise ValueError("locked sdist members exceed the bounded total size")
+                if member.isdir() or not _is_license_candidate(safe_name):
+                    continue
+                if member.size > MAX_LICENSE_BYTES:
+                    raise ValueError("locked sdist license candidate exceeds the bounded size")
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise ValueError("locked sdist license member cannot be read")
+                with handle:
+                    data = handle.read(MAX_LICENSE_BYTES + 1)
+                if len(data) != member.size:
+                    raise ValueError("tar license member size does not match its declaration")
+                evidence, total = _bounded_license_bytes(data, total)
+                candidates.append({"path": safe_name, **evidence})
+    if not candidates:
+        raise ValueError("locked sdist contains no bounded license/notice candidate")
+    return archive_format, sorted(candidates, key=lambda item: item["path"])
+
+
+def _controlled_sdist_error(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, _SdistAuditError):
+        error = (
+            _controlled_sdist_error(exc.__cause__)
+            if exc.__cause__ is not None
+            else {"kind": "VALIDATION_ERROR"}
+        )
+        error["stage"] = exc.stage
+        return error
+    if isinstance(exc, HTTPError):
+        return {"kind": "HTTP_ERROR", "status": exc.code}
+    if isinstance(exc, URLError):
+        return {"kind": "URL_ERROR"}
+    if isinstance(exc, ValueError):
+        return {"kind": "VALIDATION_ERROR"}
+    if isinstance(exc, OSError):
+        return {"kind": "OS_ERROR"}
+    return {"kind": "UNEXPECTED_ERROR"}
+
+
+def _fetch_sdist_license(
+    row: dict[str, Any],
+    fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+) -> dict[str, Any]:
+    artifact = row.get("sdist")
+    if not isinstance(artifact, dict):
+        raise _SdistAuditError(
+            f"locked sdist is missing: {row.get('name')}=={row.get('version')}",
+            stage="identity",
+        )
+    if set(artifact) != {"url", "hash", "size", "upload-time"}:
+        raise _SdistAuditError("locked sdist artifact schema is not exact", stage="identity")
+    url = artifact.get("url")
+    expected_hash = artifact.get("hash")
+    expected_size = artifact.get("size")
+    upload_time = artifact.get("upload-time")
+    if (
+        not isinstance(url, str)
+        or not isinstance(expected_hash, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_hash)
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or not isinstance(upload_time, str)
+        or not upload_time.strip()
+        or expected_size <= 0
+        or expected_size > MAX_SDIST_BYTES
+        or row.get("source") != {"registry": "https://pypi.org/simple"}
+    ):
+        raise _SdistAuditError("locked sdist identity is malformed", stage="identity")
+    try:
+        _validate_sdist_url(url, url, initial=True)
+    except ValueError as exc:
+        raise _SdistAuditError(str(exc), stage="initial_url_validation") from exc
+    redirect_trace = [url]
+    if fetcher is None:
+        request = Request(url, headers={"Accept": "application/octet-stream", "User-Agent": "vokra-qwen3-asr-audit/1"})
+        redirect_handler = _BoundedSdistRedirectHandler(url)
+        opener = build_opener(redirect_handler)
+        try:
+            with opener.open(request, timeout=30) as response:
+                final_url = response.geturl()
+                redirect_trace = list(redirect_handler.trace)
+                try:
+                    _validate_sdist_url(final_url, url, initial=False)
+                except ValueError as exc:
+                    raise _SdistAuditError(
+                        str(exc),
+                        stage="response_url_validation",
+                        observation={
+                            "stage": "response_url_validation",
+                            "bytes_acquired": False,
+                            "observed_size": None,
+                            "observed_sha256": None,
+                            "size_verified": False,
+                            "sha256_verified": False,
+                            "final_url": final_url,
+                            "redirect_trace": redirect_trace,
+                        },
+                    ) from exc
+                body = response.read(MAX_SDIST_BYTES + 1)
+        except _SdistAuditError as exc:
+            # Redirect validation can fail inside the handler before a response
+            # exists. Preserve the exact trace accumulated up to that point.
+            if isinstance(exc.observation, dict) and not exc.observation.get("redirect_trace"):
+                exc.observation["redirect_trace"] = list(redirect_handler.trace)
+            raise
+        except (OSError, UnicodeError) as exc:
+            raise _SdistAuditError(
+                "locked sdist fetch failed",
+                stage="fetch",
+                observation={
+                    "stage": "fetch",
+                    "bytes_acquired": False,
+                    "observed_size": None,
+                    "observed_sha256": None,
+                    "size_verified": False,
+                    "sha256_verified": False,
+                    "final_url": None,
+                    "redirect_trace": list(redirect_handler.trace),
+                },
+            ) from exc
+    else:
+        body: Any = None
+        final_url: str | None = None
+        try:
+            final_url, body = fetcher(url)
+            _validate_sdist_url(final_url, url, initial=False)
+            redirect_trace = [url] if final_url == url else [url, final_url]
+        except ValueError as exc:
+            acquired = isinstance(body, bytes)
+            observed_size = len(body) if acquired else None
+            observed_sha256 = sha256_bytes(body) if acquired and observed_size <= MAX_SDIST_BYTES else None
+            raise _SdistAuditError(
+                str(exc),
+                stage="response_url_validation",
+                observation={
+                    "stage": "response_url_validation",
+                    "bytes_acquired": acquired,
+                    "observed_size": observed_size,
+                    "observed_sha256": observed_sha256,
+                    "size_verified": False,
+                    "sha256_verified": False,
+                    "final_url": final_url,
+                    "redirect_trace": [url, final_url] if final_url is not None else [url],
+                },
+            ) from exc
+    if not isinstance(body, bytes):
+        raise _SdistAuditError("locked sdist response is not bytes", stage="response_received", observation={
+            "stage": "response_received",
+            "bytes_acquired": False,
+            "observed_size": None,
+            "observed_sha256": None,
+            "size_verified": False,
+            "sha256_verified": False,
+            "final_url": final_url,
+            "redirect_trace": redirect_trace,
+        })
+    observed_size = len(body)
+    observed_sha256 = sha256_bytes(body) if observed_size <= MAX_SDIST_BYTES else None
+    observation = {
+        "stage": "response_received",
+        "bytes_acquired": True,
+        "observed_size": observed_size,
+        "observed_sha256": observed_sha256,
+        "size_verified": observed_size == expected_size,
+        "sha256_verified": observed_sha256 == expected_hash.removeprefix("sha256:"),
+        "final_url": final_url,
+        "redirect_trace": redirect_trace,
+    }
+    if observed_size != expected_size:
+        raise _SdistAuditError("locked sdist response size does not match the lock", stage="size_verification", observation=observation)
+    actual_hash = sha256_bytes(body)
+    if actual_hash != expected_hash.removeprefix("sha256:"):
+        raise _SdistAuditError("locked sdist response hash does not match the lock", stage="hash_verification", observation=observation)
+    observation["stage"] = "archive_inspection"
+    try:
+        archive_format, license_files = _archive_license_files(body, url)
+    except Exception as exc:
+        raise _SdistAuditError(str(exc), stage="archive_inspection", observation=observation) from exc
+    return {
+        "status": "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES",
+        "package": row["name"],
+        "version": row["version"],
+        "archive": {
+            "url": url,
+            "final_url": final_url,
+            "redirect_trace": redirect_trace,
+            "size": expected_size,
+            "hash": expected_hash,
+            "upload-time": upload_time,
+            "format": archive_format,
+        },
+        "license_files": license_files,
+    }
+
+
+def _blocked_sdist_record(row: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    artifact = row.get("sdist") if isinstance(row.get("sdist"), dict) else {}
+    observation = getattr(exc, "observation", None)
+    if not isinstance(observation, dict):
+        observation = {
+            "stage": "fetch",
+            "bytes_acquired": False,
+            "observed_size": None,
+            "observed_sha256": None,
+            "size_verified": False,
+            "sha256_verified": False,
+            "final_url": None,
+            "redirect_trace": [artifact.get("url")],
+        }
+    else:
+        observation = {
+            "stage": "fetch",
+            "bytes_acquired": False,
+            "observed_size": None,
+            "observed_sha256": None,
+            "size_verified": False,
+            "sha256_verified": False,
+            "final_url": None,
+            "redirect_trace": [artifact.get("url")],
+            **observation,
+        }
+    return {
+        "status": "BLOCKED_FACTUAL_SDIST_LICENSE_PATH",
+        "package": row.get("name"),
+        "version": row.get("version"),
+        "requested_url": artifact.get("url"),
+        "archive": {
+            "url": artifact.get("url"),
+            "final_url": observation.get("final_url"),
+            "redirect_trace": observation.get("redirect_trace", [artifact.get("url")]),
+            "size": artifact.get("size"),
+            "hash": artifact.get("hash"),
+            "upload-time": artifact.get("upload-time"),
+        },
+        "acquired_archive_bytes": observation.get("bytes_acquired", False),
+        "archive_observation": observation,
+        "license_files": [],
+        "error": _controlled_sdist_error(exc),
+    }
+
+
 def _distribution_map() -> dict[str, list[metadata.Distribution]]:
     result: dict[str, list[metadata.Distribution]] = {}
     for dist in metadata.distributions():
@@ -431,7 +879,10 @@ def _repository_identity(project: Path) -> dict[str, Any]:
     }
 
 
-def audit_environment(project: Path) -> dict[str, Any]:
+def audit_environment(
+    project: Path,
+    sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+) -> dict[str, Any]:
     lock_path = project / "uv.lock"
     pyproject_path = project / "pyproject.toml"
     lock_bytes = lock_path.read_bytes()
@@ -459,6 +910,18 @@ def audit_environment(project: Path) -> dict[str, Any]:
     missing, unexpected = _closure_differences(expected_identities, actual_identities)
     packages: list[dict[str, Any]] = []
     failures: list[str] = []
+    dependency_acquisition_rows: list[dict[str, Any]] = []
+    dependency_acquisition_not_needed: list[dict[str, Any]] = []
+
+    def acquisition_row(row: dict[str, Any]) -> dict[str, Any]:
+        artifact = row.get("sdist") if isinstance(row.get("sdist"), dict) else {}
+        return {
+            "package": row["name"],
+            "version": row["version"],
+            "url": artifact.get("url"),
+            "status": "REQUESTED",
+        }
+
     for row in expected:
         key = row["name"].casefold().replace("-", "_")
         candidates = [dist for dist in distributions.get(key, []) if dist.version == row["version"]]
@@ -470,10 +933,41 @@ def audit_environment(project: Path) -> dict[str, Any]:
         license_data = _license_fields(dist)
         publisher_files = _publisher_files(dist)
         native_files = _native_files(dist)
-        if not license_data["license"] and not license_data["license_classifiers"]:
-            failures.append(f"missing publisher license metadata: {row['name']}=={row['version']}")
+        sdist_license_evidence: dict[str, Any] | None = None
+        metadata_missing = not license_data["license"] and not license_data["license_classifiers"]
+        acquisition_key = (row["name"], row["version"])
+        if acquisition_key in MISSING_PUBLISHER_LICENSE_ROWS and publisher_files:
+            dependency_acquisition_not_needed = [
+                item for item in dependency_acquisition_not_needed
+                if (item["package"], item["version"]) != acquisition_key
+            ]
+            dependency_acquisition_not_needed.append(
+                {
+                    "package": row["name"],
+                    "version": row["version"],
+                    "url": row.get("sdist", {}).get("url") if isinstance(row.get("sdist"), dict) else None,
+                    "status": "NOT_NEEDED",
+                }
+            )
         if not publisher_files:
-            failures.append(f"missing publisher license/notice files: {row['name']}=={row['version']}")
+            if acquisition_key in MISSING_PUBLISHER_LICENSE_ROWS:
+                request = acquisition_row(row)
+                dependency_acquisition_rows.append(request)
+                try:
+                    sdist_license_evidence = _fetch_sdist_license(row, sdist_fetcher)
+                    request["status"] = sdist_license_evidence["status"]
+                except Exception as exc:
+                    sdist_license_evidence = _blocked_sdist_record(row, exc)
+                    request["status"] = sdist_license_evidence["status"]
+                    failures.append(
+                        "BLOCKED_FACTUAL_SDIST_LICENSE_PATH: "
+                        f"{row['name']}=={row['version']}: "
+                        f"{canonical_json(_controlled_sdist_error(exc))}"
+                    )
+            else:
+                failures.append(f"missing publisher license/notice files: {row['name']}=={row['version']}")
+        if metadata_missing and not _license_metadata_satisfied(license_data, sdist_license_evidence):
+            failures.append(f"missing publisher license metadata: {row['name']}=={row['version']}")
         if any("error" in item["needed"] for item in native_files):
             failures.append(f"ELF NEEDED inspection failed: {row['name']}=={row['version']}")
         packages.append(
@@ -489,6 +983,7 @@ def audit_environment(project: Path) -> dict[str, Any]:
                     "version": dist.version,
                     **license_data,
                     "publisher_files": publisher_files,
+                    "sdist_license_evidence": sdist_license_evidence,
                     "native_files": native_files,
                     "bundled_libraries": [item for item in native_files if item["bundled"]],
                 },
@@ -546,6 +1041,21 @@ def audit_environment(project: Path) -> dict[str, Any]:
         "locked_rows": [_lock_identity(row) for row in all_rows],
         "active_installed_rows": expected_identities,
         "inactive_rows": inactive_rows,
+        "dependency_acquisition": {
+            "policy": "exact locked PyPI sdist URLs only for missing publisher files",
+            "scope": "active installed rows whose wheel lacks publisher license files",
+            "rows": sorted(dependency_acquisition_rows, key=lambda item: (item["package"], item["version"])),
+            "attempted_requests": sorted(
+                dependency_acquisition_rows,
+                key=lambda item: (item["package"], item["version"]),
+            ),
+            "not_needed": sorted(
+                dependency_acquisition_not_needed,
+                key=lambda item: (item["package"], item["version"]),
+            ),
+            "out_of_scope_requests": [],
+            "model_files": [],
+        },
         "packages": packages,
         "failures": sorted(failures),
     }
@@ -672,6 +1182,15 @@ def _minimal_blocked_report(project: Path, exc: Exception) -> dict[str, Any]:
         "locked_rows": [],
         "active_installed_rows": [],
         "inactive_rows": [],
+        "dependency_acquisition": {
+            "policy": "exact locked PyPI sdist URLs only for missing publisher files",
+            "scope": "active installed rows whose wheel lacks publisher license files",
+            "rows": [],
+            "attempted_requests": [],
+            "not_needed": [],
+            "out_of_scope_requests": [],
+            "model_files": [],
+        },
         "packages": [],
         "failures": [failure],
     }
@@ -693,6 +1212,7 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
         "policy": "allowlist-only LICENSE URLs",
         "requested_files": [item["requested_url"] if "requested_url" in item else item["url"] for item in records],
         "non_license_files": [],
+        "model_files": [],
     }
     report["failures"] = sorted([*report.get("failures", []), *license_failures])
     report["status"] = "BLOCKED" if report["failures"] else "PASS"
@@ -871,6 +1391,258 @@ def self_test() -> int:
     assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records)
     assert len(failures) == 2
 
+    sdist_source_row = copy.deepcopy(next(row for row in lock["package"] if row["name"] == "cython"))
+
+    def synthetic_tar(
+        member_names: list[str],
+        payload: bytes,
+        *,
+        symlink: bool = False,
+        special: bool = False,
+    ) -> bytes:
+        archive_bytes = BytesIO()
+        with tarfile.open(fileobj=archive_bytes, mode="w:gz") as archive:
+            for member_name in member_names:
+                member = tarfile.TarInfo(member_name)
+                if special:
+                    member.type = tarfile.FIFOTYPE
+                elif symlink:
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = "target"
+                else:
+                    member.size = len(payload)
+                archive.addfile(member, None if (symlink or special) else BytesIO(payload))
+        return archive_bytes.getvalue()
+
+    def synthetic_row(body: bytes, *, suffix: str = ".tar.gz") -> dict[str, Any]:
+        row = copy.deepcopy(sdist_source_row)
+        row["sdist"]["url"] = row["sdist"]["url"].removesuffix(".tar.gz") + suffix
+        row["sdist"]["size"] = len(body)
+        row["sdist"]["hash"] = "sha256:" + sha256_bytes(body)
+        return row
+
+    archive_body = synthetic_tar(["cython-3.3.0/LICENSE"], b"Apache License\n")
+    archive_row = synthetic_row(archive_body)
+    archive_evidence = _fetch_sdist_license(archive_row, lambda url: (url, archive_body))
+    assert archive_evidence["status"] == "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES"
+    assert archive_evidence["archive"]["format"] == "tar.gz"
+    assert archive_evidence["archive"]["final_url"] == archive_row["sdist"]["url"]
+    assert archive_evidence["archive"]["redirect_trace"] == [archive_row["sdist"]["url"]]
+    assert archive_evidence["archive"]["upload-time"] == archive_row["sdist"]["upload-time"]
+    assert archive_evidence["license_files"][0]["path"] == "cython-3.3.0/LICENSE"
+    assert _is_license_candidate("LICENSE")
+    assert _is_license_candidate("license.txt")
+    assert _is_license_candidate("LICENSE-notice")
+    assert not _is_license_candidate("unlicensed-file")
+    assert not _is_license_candidate("project-license")
+    for artifact_mutation in ("missing", "extra", "bool-size", "empty-upload-time"):
+        malformed_row = copy.deepcopy(archive_row)
+        if artifact_mutation == "missing":
+            del malformed_row["sdist"]["upload-time"]
+        elif artifact_mutation == "extra":
+            malformed_row["sdist"]["unexpected"] = "reject"
+        elif artifact_mutation == "bool-size":
+            malformed_row["sdist"]["size"] = True
+        else:
+            malformed_row["sdist"]["upload-time"] = "  "
+        try:
+            _fetch_sdist_license(malformed_row, lambda url: (url, archive_body))
+        except ValueError:
+            pass
+        else:
+            print(f"qwen3-asr dependency audit: malformed sdist {artifact_mutation} accepted", file=sys.stderr)
+            return 1
+    dynet_row = next(row for row in lock["package"] if row["name"] == "dynet38")
+    assert "sdist" not in dynet_row
+    dynet_blocked = _blocked_sdist_record(
+        dynet_row,
+        _SdistAuditError("locked sdist is missing", stage="identity"),
+    )
+    assert dynet_blocked["status"] == "BLOCKED_FACTUAL_SDIST_LICENSE_PATH"
+    assert dynet_blocked["requested_url"] is None
+    assert dynet_blocked["acquired_archive_bytes"] is False
+    assert dynet_blocked["archive_observation"]["stage"] == "identity"
+    assert dynet_blocked["error"]["stage"] == "identity"
+    post_fetch_blocked = _blocked_sdist_record(
+        archive_row,
+        _SdistAuditError(
+            "hash mismatch",
+            stage="hash_verification",
+            observation={
+                "stage": "hash_verification",
+                "bytes_acquired": True,
+                "observed_size": len(archive_body),
+                "observed_sha256": sha256_bytes(archive_body),
+                "size_verified": True,
+                "sha256_verified": False,
+                "final_url": archive_row["sdist"]["url"],
+                "redirect_trace": [archive_row["sdist"]["url"]],
+            },
+        ),
+    )
+    assert post_fetch_blocked["acquired_archive_bytes"] is True
+    assert post_fetch_blocked["archive_observation"]["sha256_verified"] is False
+    null_license_metadata = {"license": None, "license_classifiers": []}
+    assert _license_metadata_satisfied(null_license_metadata, archive_evidence)
+    assert not _license_metadata_satisfied(
+        null_license_metadata,
+        {"status": "ACQUIRED_LOCKED_SDIST_LICENSE_BYTES", "license_files": []},
+    )
+    assert not _license_metadata_satisfied(null_license_metadata, dynet_blocked)
+    zip_bytes = BytesIO()
+    with zipfile.ZipFile(zip_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("cython-3.3.0/LICENSE", b"Apache License\n")
+    zip_body = zip_bytes.getvalue()
+    zip_row = synthetic_row(zip_body, suffix=".zip")
+    assert _fetch_sdist_license(zip_row, lambda url: (url, zip_body))["archive"]["format"] == "zip"
+    zip_many_bytes = BytesIO()
+    with zipfile.ZipFile(zip_many_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("cython-3.3.0/LICENSE", b"license")
+        archive.writestr("cython-3.3.0/NOTICE", b"notice")
+    zip_many_body = zip_many_bytes.getvalue()
+    zip_special_bytes = BytesIO()
+    with zipfile.ZipFile(zip_special_bytes, "w") as archive:
+        special_member = zipfile.ZipInfo("cython-3.3.0/LICENSE")
+        special_member.external_attr = stat.S_IFIFO << 16
+        archive.writestr(special_member, b"license")
+    zip_special_body = zip_special_bytes.getvalue()
+    zip_contradictory_bytes = BytesIO()
+    with zipfile.ZipFile(zip_contradictory_bytes, "w") as archive:
+        regular_directory = zipfile.ZipInfo("cython-3.3.0/LICENSE/")
+        regular_directory.external_attr = stat.S_IFREG << 16
+        archive.writestr(regular_directory, b"")
+        directory_file = zipfile.ZipInfo("cython-3.3.0/NOTICE")
+        directory_file.external_attr = stat.S_IFDIR << 16
+        archive.writestr(directory_file, b"")
+    zip_contradictory_body = zip_contradictory_bytes.getvalue()
+
+    for mutation in ("url", "hash", "size"):
+        tampered_row = copy.deepcopy(archive_row)
+        if mutation == "url":
+            tampered_row["sdist"]["url"] += "?download=1"
+        elif mutation == "hash":
+            tampered_row["sdist"]["hash"] = "sha256:" + "0" * 64
+        else:
+            tampered_row["sdist"]["size"] += 1
+        try:
+            _fetch_sdist_license(tampered_row, lambda url: (url, archive_body))
+        except ValueError:
+            pass
+        else:
+            print(f"qwen3-asr dependency audit: tampered sdist {mutation} accepted", file=sys.stderr)
+            return 1
+    try:
+        _fetch_sdist_license(archive_row, lambda url: (url + "?download=1", archive_body))
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: redirected sdist query accepted", file=sys.stderr)
+        return 1
+    for unsafe_redirect in (
+        archive_row["sdist"]["url"].replace("https://", "https://user:password@", 1),
+        archive_row["sdist"]["url"].replace("files.pythonhosted.org", "files.pythonhosted.org:8443", 1),
+        archive_row["sdist"]["url"].removesuffix(".tar.gz") + "/LICENSE.txt",
+    ):
+        try:
+            _fetch_sdist_license(archive_row, lambda url, unsafe=unsafe_redirect: (unsafe, archive_body))
+        except ValueError:
+            pass
+        else:
+            print("qwen3-asr dependency audit: unsafe sdist redirect accepted", file=sys.stderr)
+            return 1
+    redirect_handler = _BoundedSdistRedirectHandler(archive_row["sdist"]["url"])
+    assert redirect_handler._validated_target(archive_row["sdist"]["url"], archive_row["sdist"]["url"]) == archive_row["sdist"]["url"]
+    try:
+        redirect_handler._validated_target(
+            archive_row["sdist"]["url"],
+            archive_row["sdist"]["url"] + "?download=1",
+        )
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: redirect handler accepted query", file=sys.stderr)
+        return 1
+    redirect_handler = _BoundedSdistRedirectHandler(archive_row["sdist"]["url"])
+    for _ in range(MAX_SDIST_REDIRECTS):
+        redirect_handler._validated_target(archive_row["sdist"]["url"], archive_row["sdist"]["url"])
+    try:
+        redirect_handler._validated_target(archive_row["sdist"]["url"], archive_row["sdist"]["url"])
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: redirect limit not enforced", file=sys.stderr)
+        return 1
+
+    for invalid_body in (
+        synthetic_tar(["../LICENSE"], b"license"),
+        synthetic_tar(["/LICENSE"], b"license"),
+        synthetic_tar(["cython-3.3.0/a//b"], b"payload"),
+        synthetic_tar(["cython-3.3.0/a/./b"], b"payload"),
+        synthetic_tar(["cython-3.3.0/README.md"], b"readme"),
+        synthetic_tar(["cython-3.3.0/LICENSE", "cython-3.3.0/LICENSE"], b"license"),
+        synthetic_tar(["cython-3.3.0/LICENSE"], b"license", symlink=True),
+        synthetic_tar(["cython-3.3.0/LICENSE"], b"license", special=True),
+        synthetic_tar(["cython-3.3.0/LICENSE"], b"x" * (MAX_LICENSE_BYTES + 1)),
+    ):
+        try:
+            _archive_license_files(invalid_body, archive_row["sdist"]["url"])
+        except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile):
+            pass
+        else:
+            print("qwen3-asr dependency audit: unsafe or unlicensed sdist accepted", file=sys.stderr)
+            return 1
+    old_member_limit = globals()["MAX_SDIST_MEMBERS"]
+    old_total_limit = globals()["MAX_SDIST_UNCOMPRESSED_BYTES"]
+    try:
+        globals()["MAX_SDIST_MEMBERS"] = 1
+        for limited_body, limited_url in (
+            (synthetic_tar(["cython-3.3.0/LICENSE", "cython-3.3.0/README.md"], b"license"), archive_row["sdist"]["url"]),
+            (zip_many_body, zip_row["sdist"]["url"]),
+        ):
+            try:
+                _archive_license_files(limited_body, limited_url)
+            except ValueError:
+                continue
+            print("qwen3-asr dependency audit: archive member limit not enforced", file=sys.stderr)
+            return 1
+    finally:
+        globals()["MAX_SDIST_MEMBERS"] = old_member_limit
+    try:
+        globals()["MAX_SDIST_UNCOMPRESSED_BYTES"] = 1
+        for limited_body, limited_url in (
+            (synthetic_tar(["cython-3.3.0/LICENSE", "cython-3.3.0/NOTICE"], b"license"), archive_row["sdist"]["url"]),
+            (zip_many_body, zip_row["sdist"]["url"]),
+        ):
+            try:
+                _archive_license_files(limited_body, limited_url)
+            except ValueError:
+                continue
+            print("qwen3-asr dependency audit: archive aggregate limit not enforced", file=sys.stderr)
+            return 1
+    finally:
+        globals()["MAX_SDIST_UNCOMPRESSED_BYTES"] = old_total_limit
+    try:
+        _archive_license_files(zip_special_body, zip_row["sdist"]["url"])
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: ZIP special member accepted", file=sys.stderr)
+        return 1
+    try:
+        _archive_license_files(zip_contradictory_body, zip_row["sdist"]["url"])
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: ZIP type/name contradiction accepted", file=sys.stderr)
+        return 1
+    try:
+        _archive_license_files(archive_body, archive_row["sdist"]["url"].removesuffix(".tar.gz") + ".whl")
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: unsupported sdist archive accepted", file=sys.stderr)
+        return 1
+
     with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-blocked-") as directory:
         output = Path(directory) / "blocked.json"
         original_audit_environment = globals()["audit_environment"]
@@ -878,6 +1650,25 @@ def self_test() -> int:
         globals()["audit_environment"] = lambda project: {
             "schema": SCHEMA,
             "closure": {"expected": ["closure==facts"], "installed": ["closure==facts"]},
+            "dependency_acquisition": {
+                "policy": "exact locked PyPI sdist URLs only for missing publisher files",
+                "scope": "active installed rows whose wheel lacks publisher license files",
+                "rows": [],
+                "attempted_requests": [],
+                "not_needed": [],
+                "out_of_scope_requests": [],
+                "model_files": [],
+            },
+            "packages": [
+                {
+                    "installed": {
+                        "sdist_license_evidence": {
+                            "status": "BLOCKED_FACTUAL_SDIST_LICENSE_PATH",
+                            "acquired_archive_bytes": False,
+                        }
+                    }
+                }
+            ],
             "failures": [],
         }
         blocked = {
@@ -897,6 +1688,9 @@ def self_test() -> int:
         written = json.loads(output.read_text(encoding="utf-8"))
         assert written["status"] == "BLOCKED"
         assert written["closure"]["expected"] == ["closure==facts"]
+        assert written["dependency_acquisition"]["out_of_scope_requests"] == []
+        assert written["dependency_acquisition"]["model_files"] == []
+        assert written["packages"][0]["installed"]["sdist_license_evidence"]["status"] == "BLOCKED_FACTUAL_SDIST_LICENSE_PATH"
         assert written["model_license_files"][0]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
 
     with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-invalid-") as directory:
@@ -905,6 +1699,15 @@ def self_test() -> int:
         written = json.loads(output.read_text(encoding="utf-8"))
         assert written["status"] == "BLOCKED"
         assert written["failures"]
+        assert written["dependency_acquisition"] == {
+            "policy": "exact locked PyPI sdist URLs only for missing publisher files",
+            "scope": "active installed rows whose wheel lacks publisher license files",
+            "rows": [],
+            "attempted_requests": [],
+            "not_needed": [],
+            "out_of_scope_requests": [],
+            "model_files": [],
+        }
     with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-") as directory:
         output = Path(directory) / "audit.json"
         short = output.with_name("short")
