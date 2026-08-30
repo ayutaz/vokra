@@ -133,6 +133,32 @@ The recovered JSON SHA-256 values are
 the job.  Instance `49232927` was destroyed after evidence recovery; retained
 Scaleway-transfer instance `49168183` remains stopped and unchanged.
 
+The following MOSS/Ultravox/NeuTTS dependency-audit correction checkpoint is
+clean at `f22bfdfd98c47218057bf435f2aef5dc49fb0057`.  MOSS now retains the raw
+lock artifact rows needed to authenticate exact sdists (`0d5e3c9a`), while
+NeuTTS (`2f01d6c4`) and Ultravox (`f22bfdfd`) derive their Linux x86_64
+installed closures by marker-aware traversal from the virtual project root.
+All six model-free audit/wrapper/worker self-tests, shell syntax, ShellCheck,
+zero-dependency, forbidden-symbol, fixture-EOL and pipefail gates passed.  No
+model, Torch import, conversion or Cargo model build ran on the maintainer Mac.
+The verified incremental transfer bundle is
+`/private/tmp/vokra-dependency-audit-corrections-f22bfdfd.bundle`, requires
+`d2ef5cfb8373a640f438a199fa779b3daaadc103`, and has SHA-256
+`a56d9632319a4a4c2ece3b1813e77b8048750a5efd842b39ffa84000a9d5beb8`.
+Disposable audit instance `49242592` is stopped by owner request; the corrected
+three-family Linux audit has therefore not run yet.
+
+A source-only BiCodec review reached the same remote-evidence boundary without
+editing implementation files.  The pinned Spark-TTS source/config proves that
+the complete decoder can reuse existing FSQ, grouped/ordinary Conv1d,
+zero-insertion ConvTranspose1d, LayerNorm, GELU, Snake and tanh paths, so no new
+operator is presently identified.  However, the tracked inspection contract
+does not contain the authenticated checkpoint's complete tensor name/shape/
+dtype inventory.  A strict loader written before that VAST inventory would
+guess the binding and is forbidden.  The BiCodec inspection must therefore run
+on VAST before its native decode implementation begins; the converter remains
+`INSPECTION_ONLY` and no support row is promoted.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps
