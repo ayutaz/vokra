@@ -44,6 +44,7 @@ SPDX_ALIASES = {
     "mit": "MIT",
     "isc license": "ISC",
     "isc": "ISC",
+    "mpl-2.0": "MPL-2.0",
     "python software foundation license": "PSF-2.0",
     "python-2.0": "Python-2.0",
 }
@@ -57,6 +58,13 @@ CLASSIFIER_ALIASES = {
     "License :: OSI Approved :: Python Software Foundation License": "PSF-2.0",
     "License :: OSI Approved :: zlib/libpng License": "Zlib",
 }
+GENERIC_BSD_LEGACY = {"bsd", "bsd license"}
+GENERIC_BSD_CLASSIFIER = "License :: OSI Approved :: BSD License"
+BSD_SOURCE_CLAUSE = "Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:"
+BSD_SOURCE_RETENTION_CLAUSE = "Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer."
+BSD_BINARY_CLAUSE = "Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution."
+BSD_AS_IS_CLAUSE = 'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES'
+BSD_NON_ENDORSE_CLAUSE = "nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission."
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -112,7 +120,40 @@ def _spdx_expression(value: str) -> str:
         raise ValueError(f"License-Expression {_bounded_declaration(value)!r}: {error}") from error
 
 
-def _metadata_license(metadata: bytes, label: str = "METADATA") -> str:
+def _classify_generic_bsd(primary_license: bytes | None, label: str) -> str:
+    if primary_license is None:
+        raise ValueError(f"{label} generic BSD declaration has no primary license bytes")
+    if len(primary_license) > 4096:
+        raise ValueError(f"{label} generic BSD primary license exceeds 4096 bytes")
+    try:
+        text = primary_license.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{label} generic BSD primary license is not UTF-8") from error
+    if any(ord(character) < 32 and character not in "\n\r\t" for character in text):
+        raise ValueError(f"{label} generic BSD primary license is not readable text")
+    normalized = " ".join(text.split())
+    lowered = normalized.lower()
+    if any(token in lowered for token in ("gpl", "lgpl", "agpl")):
+        raise ValueError(f"{label} generic BSD primary license contains a GPL-family declaration")
+    required = {
+        BSD_SOURCE_CLAUSE: normalized.count(BSD_SOURCE_CLAUSE),
+        BSD_SOURCE_RETENTION_CLAUSE: normalized.count(BSD_SOURCE_RETENTION_CLAUSE),
+        BSD_BINARY_CLAUSE: normalized.count(BSD_BINARY_CLAUSE),
+        BSD_AS_IS_CLAUSE: normalized.count(BSD_AS_IS_CLAUSE),
+    }
+    if any(count != 1 for count in required.values()):
+        raise ValueError(f"{label} generic BSD primary license has invalid required clause counts {required}")
+    if "advertising" in lowered:
+        raise ValueError(f"{label} generic BSD primary license contains an advertising clause")
+    non_endorse_count = normalized.count(BSD_NON_ENDORSE_CLAUSE)
+    if non_endorse_count == 1:
+        return "BSD-3-Clause"
+    if non_endorse_count == 0:
+        return "BSD-2-Clause"
+    raise ValueError(f"{label} generic BSD primary license has ambiguous non-endorsement clause count {non_endorse_count}")
+
+
+def _metadata_license(metadata: bytes, label: str = "METADATA", primary_license: bytes | None = None) -> str:
     expressions: list[str] = []
     legacy: list[str] = []
     classifiers: list[str] = []
@@ -145,17 +186,28 @@ def _metadata_license(metadata: bytes, label: str = "METADATA") -> str:
         return parsed[0]
     if legacy:
         parsed_legacy = []
+        generic_legacy = True
         for value in legacy:
             lowered = value.lower().strip()
             if lowered not in SPDX_ALIASES:
-                raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
+                if lowered not in GENERIC_BSD_LEGACY:
+                    raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
+                generic_legacy = generic_legacy and True
+                continue
+            generic_legacy = False
             parsed_legacy.append(SPDX_ALIASES[lowered])
-        if len(set(parsed_legacy)) != 1:
+        if parsed_legacy and len(parsed_legacy) == len(legacy) and len(set(parsed_legacy)) == 1:
+            return parsed_legacy[0]
+        if not parsed_legacy and generic_legacy and (not classifiers or all(value == GENERIC_BSD_CLASSIFIER for value in classifiers)):
+            return _classify_generic_bsd(primary_license, label)
+        if parsed_legacy:
             raise ValueError(f"{label} has ambiguous legacy license declarations ({summary})")
-        return parsed_legacy[0]
+        raise ValueError(f"{label} has ambiguous generic BSD/legacy license declarations ({summary})")
     if classifiers:
         mapped = [CLASSIFIER_ALIASES[value] for value in classifiers if value in CLASSIFIER_ALIASES]
         unknown = [value for value in classifiers if value not in CLASSIFIER_ALIASES]
+        if classifiers and all(value == GENERIC_BSD_CLASSIFIER for value in classifiers):
+            return _classify_generic_bsd(primary_license, label)
         if unknown and not mapped:
             raise ValueError(f"{label} has no recognized classifier license ({summary})")
         if unknown and mapped:
@@ -270,7 +322,7 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
     metadata_errors: list[str] = []
     for metadata_name, metadata in metadata_entries:
         try:
-            parsed_metadata.append(_metadata_license(metadata, metadata_name))
+            parsed_metadata.append(_metadata_license(metadata, metadata_name, license_bytes))
         except ValueError as error:
             metadata_errors.append(str(error))
     if metadata_errors:
@@ -418,10 +470,15 @@ def self_test() -> None:
         assert _metadata_license(b"License-Expression: Apache-2.0 WITH LLVM-exception\n") == "Apache-2.0 WITH LLVM-exception"
         assert _metadata_license(b"License-Expression: MIT-0\n") == "MIT-0"
         assert _metadata_license(b"License-Expression: CC0-1.0 OR BSL-1.0\n") == "CC0-1.0 OR BSL-1.0"
+        assert _metadata_license(b"License: mpl-2.0\n") == "MPL-2.0"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: CNRI Python License\n") == "CNRI-Python"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: ISC License (ISCL)\n") == "ISC"
         assert _metadata_license(b"License: Python Software Foundation License\n") == "PSF-2.0"
         assert _metadata_license(b"License: BSD-3-Clause\nClassifier: License :: OSI Approved :: BSD License\n") == "BSD-3-Clause"
+        bsd2_text = (BSD_SOURCE_CLAUSE + "\n" + BSD_SOURCE_RETENTION_CLAUSE + "\n" + BSD_BINARY_CLAUSE + "\n" + BSD_AS_IS_CLAUSE + " and all implied warranties are disclaimed.\n")
+        bsd3_text = bsd2_text + BSD_NON_ENDORSE_CLAUSE + "\n"
+        assert _metadata_license(b"License: BSD\n", primary_license=bsd2_text.encode()) == "BSD-2-Clause"
+        assert _metadata_license(b"Classifier: License :: OSI Approved :: BSD License\n", primary_license=bsd3_text.encode()) == "BSD-3-Clause"
         for malformed in (
             b"License: BSD\n",
             b"License: BSD License\n",
@@ -442,6 +499,20 @@ def self_test() -> None:
                 pass
             else:
                 raise AssertionError("invalid or ambiguous metadata license accepted")
+        for invalid_bsd in (
+            (bsd3_text + bsd3_text).encode(),
+            (bsd2_text + " GPL-3.0\n").encode(),
+            bsd2_text.replace(BSD_AS_IS_CLAUSE, "", 1).encode(),
+            bsd2_text.replace(BSD_SOURCE_RETENTION_CLAUSE, "", 1).encode(),
+            (bsd2_text + "Advertising materials must display an acknowledgement.\n").encode(),
+            b"x" * 4097,
+        ):
+            try:
+                _metadata_license(b"License: BSD\n", primary_license=invalid_bsd)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid generic BSD license bytes accepted")
         metadata_conflict = root / "metadata-conflict.whl"
         with zipfile.ZipFile(metadata_conflict, "w") as archive:
             archive.writestr("a-1.0.dist-info/METADATA", "License-Expression: MIT\n")
