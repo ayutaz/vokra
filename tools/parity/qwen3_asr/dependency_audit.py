@@ -74,6 +74,8 @@ MISSING_PUBLISHER_LICENSE_ROWS = frozenset(
     }
 )
 PYPI_SDIST_HOST = "files.pythonhosted.org"
+INACTIVE_VIRTUAL_PROJECT = "INACTIVE_VIRTUAL_PROJECT"
+VIRTUAL_PROJECT_INACTIVE_REASON = "virtual project row; no installed distribution is expected"
 HF_LICENSE_REDIRECT_HOSTS = {
     "cdn-lfs.huggingface.co",
     "cdn-lfs-us-1.hf.co",
@@ -405,11 +407,14 @@ def _active_lock_graph(
     inactive_reasons: dict[tuple[str, str, str], str] = {}
     for row in rows:
         key = _row_key(row)
+        if row.get("source") == {"virtual": "."}:
+            # The root participates in traversal but is not an installed
+            # distribution, so retain its explicit inactive evidence row.
+            inactive_reasons[key] = VIRTUAL_PROJECT_INACTIVE_REASON
+            continue
         if key in active:
             continue
-        if row.get("source") == {"virtual": "."}:
-            inactive_reasons[key] = "virtual project row; no installed distribution is expected"
-        elif "resolution-markers" in row and not _resolved_for_environment(row, environment):
+        if "resolution-markers" in row and not _resolved_for_environment(row, environment):
             inactive_reasons[key] = "package resolution-marker is false for the current environment"
         else:
             inactive_reasons[key] = "not reachable from the virtual project dependency graph for the current environment"
@@ -1003,6 +1008,7 @@ def audit_environment(
             continue
         reason = inactive_reasons[key]
         inactive_rows.append({"identity": _lock_identity(row), "reason": reason})
+        audit_status = INACTIVE_VIRTUAL_PROJECT if row.get("source") == {"virtual": "."} else "INACTIVE_LOCK_ROW"
         packages.append(
             {
                 "lock": {
@@ -1011,7 +1017,7 @@ def audit_environment(
                     "source": row["source"],
                     "artifacts": {"sdist": row.get("sdist"), "wheels": row.get("wheels", [])},
                 },
-                "audit_status": "INACTIVE_LOCK_ROW",
+                "audit_status": audit_status,
                 "inactive_reason": reason,
                 "installed": None,
             }
@@ -1242,6 +1248,11 @@ def self_test() -> int:
     }
     linux_active, linux_inactive = _active_lock_graph(lock, linux_environment)
     assert len(linux_active) == 91
+    assert len(lock["package"]) == 95
+    assert len(linux_active) + len(linux_inactive) == 95
+    assert len(linux_inactive) == 4
+    virtual_key = next(_row_key(row) for row in lock["package"] if row["source"] == {"virtual": "."})
+    assert linux_inactive[virtual_key] == VIRTUAL_PROJECT_INACTIVE_REASON
     assert {row["version"] for row in linux_active if row["name"] == "torch"} == {"2.13.0+cpu"}
     assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "colorama")] == (
         "not reachable from the virtual project dependency graph for the current environment"
