@@ -10,6 +10,7 @@ VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/bark"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 TRANSFORMERS_REVISION="c1c34249fa27deefbd4a377dfbf883a39baf5c6d"
@@ -57,6 +58,7 @@ usage: run-bark-validation.sh --approval-evidence <file> [--work-dir <absent-dir
 VAST-only, non-publishing Bark Small/Full validation. The worker downloads and
 verifies both exact public Vokra GGUFs and exact immutable Suno checkpoints,
 uses locked official Transformers 5.5.0 for independent greedy references,
+audits the already synchronized Python closure without importing model code,
 compiles the workspace plus Apple target, verifies CLI routing, and compares
 native CPU generated codes plus embedded-codec PCM.
 
@@ -215,7 +217,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git curl awk find tee wc tr; do
+  for tool in uv cargo rustc rustup git curl awk find tee wc tr readelf; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -248,7 +250,7 @@ record_environment() {
 }
 
 run_self_test() {
-  local tmp payload actual script_path cases=0 fail=0 fake_root fake_home fake_log rc test_log
+  local tmp payload actual script_path cases=0 fail=0 fake_root fake_home fake_log rc test_log audit_removed
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$tmp'" EXIT
@@ -294,7 +296,7 @@ run_self_test() {
     "$SMALL_UPSTREAM_REVISION" "$FULL_UPSTREAM_REVISION" \
     "$TRANSFORMERS_REVISION" "$SMALL_PUBLIC_SHA256" "$FULL_PUBLIC_SHA256" \
     "$SMALL_CHECKPOINT_SHA256" "$FULL_CHECKPOINT_SHA256" \
-    "bark/dump_reference.py" "license_preflight" "--offline" "scripts/verify/apple-silicon-bark.sh" \
+    "bark/dump_reference.py" "license_preflight" "dependency_audit.py" "--no-sync" "--offline" "scripts/verify/apple-silicon-bark.sh" \
     "--approval-evidence" "<APPLE_APPROVAL_EVIDENCE>" "<APPLE_EVIDENCE_DIR>" \
     "real_bark_small_matches_official_transformers" \
     "real_bark_full_matches_official_transformers" \
@@ -317,6 +319,31 @@ run_self_test() {
       log "self-test FAIL: invalid argument accepted: $bad_args"; fail=1
     fi
   done
+  # Keep these checks tied to the actual command sites.  A function-definition
+  # mention is insufficient: removing or moving the production audit must
+  # fail this regression before a real VAST run can acquire model files.
+  local gate_call_line sync_call_line audit_call_line download_call_line cargo_call_line
+  gate_call_line="$(grep -nF "python \"\$LICENSE_GATE\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  sync_call_line="$(grep -nF 'uv sync --project' "$script_path" | tail -n 1 | cut -d: -f1)"
+  audit_call_line="$(grep -nF "python \"\$DEPENDENCY_AUDIT\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  download_call_line="$(grep -nF "download_hf_file \"\$SMALL_PUBLIC_REPO\"" "$script_path" | tail -n 1 | cut -d: -f1)"
+  cargo_call_line="$(grep -nF 'cargo test --manifest-path' "$script_path" | tail -n 1 | cut -d: -f1)"
+  if [[ -z "$gate_call_line" || -z "$sync_call_line" || -z "$audit_call_line" || -z "$download_call_line" || -z "$cargo_call_line" ]] \
+    || ! (( gate_call_line < sync_call_line && sync_call_line < audit_call_line \
+      && audit_call_line < download_call_line && download_call_line < cargo_call_line )); then
+    log "self-test FAIL: gate/sync/audit/download/Cargo actual-call order drifted"
+    fail=1
+  fi
+  # Delete the exact production audit invocation from a temporary worker and
+  # prove the self-test rejects that worker, catching deletion as well as
+  # simple command reordering.
+  audit_removed="$tmp/run-bark-without-audit.sh"
+  sed '/step "Audit the synchronized Python closure without model acquisition"/,+4d' "$script_path" > "$audit_removed"
+  chmod +x "$audit_removed"
+  if VOKRA_ROOT="$VOKRA_ROOT" "$audit_removed" --self-test >/dev/null 2>&1; then
+    log "self-test FAIL: deleting the production audit invocation was accepted"
+    fail=1
+  fi
   cases=$((cases + 1))
   if grep -En '^[[:space:]]*(python3|python|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test FAIL: direct Python/pip command found"; fail=1
@@ -389,7 +416,7 @@ write_failure_summary_on_exit() {
 main() {
   local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir inputs_dir logs_dir reference_dir
   local small_public small_upstream full_public full_upstream
-  local run_log env_log compile_log apple_log cli_log small_cpu_log full_cpu_log summary_file
+  local run_log env_log compile_log apple_log cli_log dependency_audit_log small_cpu_log full_cpu_log summary_file
   local seen_work_dir=0 seen_approval=0 seen_self_test=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -439,6 +466,7 @@ main() {
   compile_log="$logs_dir/compile.log"
   apple_log="$logs_dir/apple-cross-check.log"
   cli_log="$logs_dir/cli-route.log"
+  dependency_audit_log="$logs_dir/dependency-audit.log"
   small_cpu_log="$logs_dir/small-cpu.log"
   full_cpu_log="$logs_dir/full-cpu.log"
   summary_file="$logs_dir/summary.txt"
@@ -447,6 +475,11 @@ main() {
 
   step "Sync locked Python 3.12 official-reference environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+
+  step "Audit the synchronized Python closure without model acquisition"
+  UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python "$DEPENDENCY_AUDIT" \
+    --project "$PARITY_PROJECT" \
+    --output "$logs_dir/dependency-audit.json" --fetch-model-licenses 2>&1 | tee "$dependency_audit_log"
 
   step "Download exact public and upstream Bark Small inputs"
   download_hf_file "$SMALL_PUBLIC_REPO" "$SMALL_PUBLIC_REVISION" model.gguf "$small_public"
