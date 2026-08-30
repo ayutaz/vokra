@@ -170,6 +170,24 @@ dependency synchronization, conversion, Cargo command or network access was
 used. This proves the remote launch contracts are staged, not that any tensor
 inventory, native runtime, CPU parity or Metal parity is complete.
 
+The corresponding model-free preflight for the currently open Wave B/C
+families exercised forty-four inspection/validation workers at management HEAD
+`52c52d29`: forty-three `--self-test` paths passed and the CosyVoice3 inspector
+alone returned its intentional exit 2 before acquisition because its dedicated
+reference lock is forbidden and absent. All forty-four files passed Bash
+syntax and ShellCheck. The fixed upstream
+`examples/libritts/cosyvoice3/conf/cosyvoice3.yaml` binds
+`matcha.utils.audio.mel_spectrogram` in both the GAN and feature-extractor
+graphs, matching the recorded `librosa`/`soxr` closure blocker. Although the
+same fixed source exposes lower-level flow and HiFT classes, no reviewed,
+dependency-clean independent-reference import route has yet been
+authenticated, so a VAST run alone must not clear that gate.
+
+All forty-three staged Apple worker `--self-test` paths also passed at the same
+management HEAD, followed by Bash syntax and ShellCheck for the same files.
+Those are offline launch/evidence-contract tests only: no Apple hardware,
+checkpoint, model execution, Cargo command or numerical verdict was involved.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps
