@@ -617,7 +617,16 @@ of these bullets closes a model row until the named real run succeeds:
   and the fixed source/config/checkpoint identities. The manifest still marks
   `TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER`: tensor names and config axes do not
   authenticate the forward order, frontend/RVQ/Vocos semantics, or an
-  independent parity fixture. The public converter therefore remains an
+  independent parity fixture. A VAST-only official-reference adapter now
+  calls the pinned upstream `XY_Tokenizer.inference_tokenize` and
+  `inference_detokenize` methods and captures frontend, encoder, RVQ, decoder,
+  Vocos, and waveform f32 taps; it does not mirror the equations or run locally.
+  Its execution is fail-closed behind a separate exact lock and
+  version-keyed primary-source dependency/license audit. The current source
+  `requirements.txt` is unpinned and the broad parity lock does not provide
+  that XY-specific closure review, so the worker stops with
+  `DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER` before source/model import.
+  The public converter therefore remains an
   unconditional `INSPECTION_ONLY` refusal; a self-asserted sidecar cannot
   authorize a GGUF or native binder.
 - ACE-Step 1.5 now rejects its historical pass-through conversion path and
