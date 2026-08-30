@@ -164,7 +164,7 @@ fn sha256_hex(data: &[u8]) -> String {
         0xbef9_a3f7,
         0xc671_78f2,
     ];
-    let mut h = [
+    let mut h: [u32; 8] = [
         0x6a09_e667,
         0xbb67_ae85,
         0x3c6e_f372,
@@ -214,7 +214,7 @@ fn sha256_hex(data: &[u8]) -> String {
             (hh, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(t1), c, b, a, t1.wrapping_add(t2));
         }
         for (slot, value) in h.iter_mut().zip([a, b, c, d, e, f, g, hh]) {
-            *slot = slot.wrapping_add(value);
+            *slot = (*slot).wrapping_add(value);
         }
     }
     h.iter().map(|word| format!("{word:08x}")).collect()
