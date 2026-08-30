@@ -24,6 +24,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import tomllib
@@ -370,6 +371,36 @@ def audit_environment(project: Path) -> dict[str, Any]:
     }
 
 
+def _controlled_license_error(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, HTTPError):
+        return {"kind": "HTTP_ERROR", "status": exc.code}
+    if isinstance(exc, URLError):
+        return {"kind": "URL_ERROR"}
+    if isinstance(exc, ValueError):
+        return {"kind": "VALIDATION_ERROR"}
+    if isinstance(exc, OSError):
+        return {"kind": "OS_ERROR"}
+    return {"kind": "UNEXPECTED_ERROR"}
+
+
+def _blocked_license_record(repo: str, revision: str, exc: Exception) -> dict[str, Any]:
+    url = model_license_url(repo, revision)
+    return {
+        "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+        "repo": repo,
+        "revision": revision,
+        "requested_url": url,
+        "url": url,
+        "resolved_host": None,
+        "resolved_path": None,
+        "acquired_bytes": False,
+        "size": None,
+        "sha256": None,
+        "content_base64": None,
+        "error": _controlled_license_error(exc),
+    }
+
+
 def _fetch_license(
     repo: str,
     revision: str,
@@ -405,25 +436,93 @@ def _fetch_license(
     }
 
 
-def audit_model_licenses(fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> list[dict[str, Any]]:
-    return [_fetch_license(item["repo"], item["revision"], fetcher) for item in MODEL_LICENSES]
+def audit_model_licenses(
+    fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    records: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for item in MODEL_LICENSES:
+        try:
+            records.append(_fetch_license(item["repo"], item["revision"], fetcher))
+        except (OSError, UnicodeError, ValueError) as exc:
+            records.append(_blocked_license_record(item["repo"], item["revision"], exc))
+            error = _controlled_license_error(exc)
+            failures.append(
+                "BLOCKED_FACTUAL_LICENSE_PATH: "
+                f"{item['repo']}@{item['revision']}: {canonical_json(error)}"
+            )
+    return records, failures
+
+
+def _minimal_blocked_report(project: Path, exc: Exception) -> dict[str, Any]:
+    project_data: dict[str, Any] = {
+        "name": project.name,
+        "version": None,
+        "pyproject_sha256": None,
+        "lock_sha256": None,
+    }
+    for filename, field in (("pyproject.toml", "pyproject_sha256"), ("uv.lock", "lock_sha256")):
+        path = project / filename
+        try:
+            project_data[field] = sha256_file(path)
+        except OSError:
+            pass
+    try:
+        project_data["name"] = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))["project"]["name"]
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        pass
+    try:
+        repository = _repository_identity(project)
+    except Exception:
+        repository = {"commit": None, "audit_script_sha256": sha256_file(Path(__file__).resolve())}
+    failure = f"ENVIRONMENT_AUDIT_BLOCKED: {_controlled_license_error(exc)['kind']}"
+    return {
+        "schema": SCHEMA,
+        "status": "BLOCKED",
+        "repository": repository,
+        "project": project_data,
+        "closure": {
+            "platform": sys.platform,
+            "python": platform.python_version(),
+            "expected": [],
+            "installed": [],
+            "missing": [],
+            "unexpected": [],
+        },
+        "locked_rows": [],
+        "active_installed_rows": [],
+        "inactive_rows": [],
+        "packages": [],
+        "failures": [failure],
+    }
 
 
 def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
+    environment_blocked = False
     try:
         report = audit_environment(project)
-        report["model_license_files"] = audit_model_licenses() if fetch_model_licenses else []
-        report["model_acquisition"] = {
-            "policy": "allowlist-only LICENSE URLs",
-            "requested_files": [item["url"] for item in report["model_license_files"]],
-            "non_license_files": [],
-        }
-    except (OSError, UnicodeError, ValueError) as exc:
-        print(f"qwen3-asr dependency audit: BLOCKED: {exc}", file=sys.stderr)
+    except Exception as exc:  # fail closed while preserving a reviewable blocked report
+        report = _minimal_blocked_report(project, exc)
+        environment_blocked = True
+    if fetch_model_licenses and not environment_blocked:
+        records, license_failures = audit_model_licenses()
+    else:
+        records, license_failures = [], []
+    report["model_license_files"] = records
+    report["model_acquisition"] = {
+        "policy": "allowlist-only LICENSE URLs",
+        "requested_files": [item["requested_url"] if "requested_url" in item else item["url"] for item in records],
+        "non_license_files": [],
+    }
+    report["failures"] = sorted([*report.get("failures", []), *license_failures])
+    report["status"] = "BLOCKED" if report["failures"] else "PASS"
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(canonical_json(report) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"qwen3-asr dependency audit: BLOCKED: report write failed ({type(exc).__name__})", file=sys.stderr)
         return 2
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(canonical_json(report) + "\n", encoding="utf-8")
-    if report["failures"]:
+    if report["status"] == "BLOCKED":
         print("qwen3-asr dependency audit: BLOCKED: " + "; ".join(report["failures"]), file=sys.stderr)
         return 2
     print(f"qwen3-asr dependency audit: PASS ({output})")
@@ -448,7 +547,9 @@ def self_test() -> int:
         requested_urls.append(url)
         return url, good_body
 
-    assert audit_model_licenses(fetch_good)[0]["sha256"] == sha256_bytes(good_body)
+    good_records, good_failures = audit_model_licenses(fetch_good)
+    assert good_records[0]["sha256"] == sha256_bytes(good_body)
+    assert not good_failures
     assert requested_urls == [
         model_license_url(item["repo"], item["revision"]) for item in MODEL_LICENSES
     ]
@@ -461,13 +562,64 @@ def self_test() -> int:
         MODEL_LICENSES[0]["revision"],
         lambda url: (valid_cdn, good_body),
     )["size"] == len(good_body)
-    try:
-        audit_model_licenses(lambda url: (url.replace("LICENSE", "model.safetensors"), b"weights"))
-    except ValueError:
-        pass
-    else:
-        print("qwen3-asr dependency audit: non-license model response accepted", file=sys.stderr)
-        return 1
+    second_url = model_license_url(MODEL_LICENSES[1]["repo"], MODEL_LICENSES[1]["revision"])
+
+    def blocked_record_test(
+        fetcher: Callable[[str], tuple[str, bytes]],
+        blocked_count: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        records, failures = audit_model_licenses(fetcher)
+        assert len(records) == len(MODEL_LICENSES)
+        assert len(failures) == blocked_count
+        assert sum(item.get("status") == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records) == blocked_count
+        for item in records:
+            if item.get("status") == "BLOCKED_FACTUAL_LICENSE_PATH":
+                assert item["acquired_bytes"] is False
+                assert item["content_base64"] is None
+        return records, failures
+
+    def fail_first(url: str) -> tuple[str, bytes]:
+        if url == good_url:
+            raise HTTPError(url, 404, "not found", {}, None)
+        return url, good_body
+
+    first_failed, first_failures = blocked_record_test(fail_first, 1)
+    assert first_failed[0]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+    assert first_failed[1]["sha256"] == sha256_bytes(good_body)
+    assert first_failures[0].startswith("BLOCKED_FACTUAL_LICENSE_PATH:")
+
+    def fail_second(url: str) -> tuple[str, bytes]:
+        if url == second_url:
+            raise URLError("offline")
+        return url, good_body
+
+    second_failed, second_failures = blocked_record_test(fail_second, 1)
+    assert second_failed[0]["sha256"] == sha256_bytes(good_body)
+    assert second_failed[1]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+    assert second_failures[0].startswith("BLOCKED_FACTUAL_LICENSE_PATH:")
+
+    both_failed, both_failures = blocked_record_test(
+        lambda url: (_ for _ in ()).throw(ValueError("blocked path")), 2
+    )
+    assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in both_failed)
+    assert len(both_failures) == 2
+
+    partial_records, partial_failures = blocked_record_test(
+        lambda url: (valid_cdn, good_body) if url == good_url else (_ for _ in ()).throw(URLError("offline")),
+        1,
+    )
+    assert partial_records[0]["resolved_host"] == "cdn-lfs.huggingface.co"
+    assert partial_records[1]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+    assert len(partial_failures) == 1
+
+    blocked_responses = (
+        lambda url: (url.replace("LICENSE", "model.safetensors"), b"weights"),
+        lambda url: ("https://example.invalid/LICENSE", good_body),
+    )
+    for blocked_response in blocked_responses:
+        records, failures = blocked_record_test(blocked_response, 2)
+        assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records)
+        assert len(failures) == 2
     for redirected in (
         "https://huggingface.co/Qwen/Qwen3-ASR-0.6B/raw/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/LICENSE.txt",
         "https://cdn-lfs.huggingface.co/Qwen/Qwen3-ASR-0.6B/model.safetensors",
@@ -478,27 +630,47 @@ def self_test() -> int:
         "https://cdn-lfs.huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/LICENSE.txt",
         "https://cdn-lfs.huggingface.co/Qwen/Qwen3-ASR-0.6B/resolve/5eb144179a02acc5e5ba31e748d22b0cf3e303b0/model.safetensors",
     ):
+        records, failures = blocked_record_test(lambda url, redirected=redirected: (redirected, good_body), 2)
+        assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records)
+        assert len(failures) == 2
+    records, failures = blocked_record_test(lambda url: (url, b"x" * (MAX_LICENSE_BYTES + 1)), 2)
+    assert all(item["status"] == "BLOCKED_FACTUAL_LICENSE_PATH" for item in records)
+    assert len(failures) == 2
+
+    with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-blocked-") as directory:
+        output = Path(directory) / "blocked.json"
+        original_audit_environment = globals()["audit_environment"]
+        original_audit_model_licenses = globals()["audit_model_licenses"]
+        globals()["audit_environment"] = lambda project: {
+            "schema": SCHEMA,
+            "closure": {"expected": ["closure==facts"], "installed": ["closure==facts"]},
+            "failures": [],
+        }
+        blocked = {
+            "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+            "repo": MODEL_LICENSES[0]["repo"],
+            "revision": MODEL_LICENSES[0]["revision"],
+            "requested_url": good_url,
+            "acquired_bytes": False,
+            "content_base64": None,
+        }
+        globals()["audit_model_licenses"] = lambda: ([blocked], ["BLOCKED_FACTUAL_LICENSE_PATH: test"])
         try:
-            audit_model_licenses(lambda url, redirected=redirected: (redirected, good_body))
-        except ValueError:
-            pass
-        else:
-            print("qwen3-asr dependency audit: non-license redirect/path accepted", file=sys.stderr)
-            return 1
-    try:
-        audit_model_licenses(lambda url: (url, b"x" * (MAX_LICENSE_BYTES + 1)))
-    except ValueError:
-        pass
-    else:
-        print("qwen3-asr dependency audit: oversized LICENSE accepted", file=sys.stderr)
-        return 1
-    try:
-        audit_model_licenses(lambda url: ("https://example.invalid/LICENSE", good_body))
-    except ValueError:
-        pass
-    else:
-        print("qwen3-asr dependency audit: non-allowlisted model host accepted", file=sys.stderr)
-        return 1
+            assert run(Path(directory) / "project", output, True) == 2
+        finally:
+            globals()["audit_environment"] = original_audit_environment
+            globals()["audit_model_licenses"] = original_audit_model_licenses
+        written = json.loads(output.read_text(encoding="utf-8"))
+        assert written["status"] == "BLOCKED"
+        assert written["closure"]["expected"] == ["closure==facts"]
+        assert written["model_license_files"][0]["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+
+    with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-invalid-") as directory:
+        output = Path(directory) / "blocked.json"
+        assert run(Path(directory) / "missing-project", output, False) == 2
+        written = json.loads(output.read_text(encoding="utf-8"))
+        assert written["status"] == "BLOCKED"
+        assert written["failures"]
     with tempfile.TemporaryDirectory(prefix="qwen3-asr-audit-") as directory:
         output = Path(directory) / "audit.json"
         short = output.with_name("short")
