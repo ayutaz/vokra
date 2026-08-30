@@ -1522,7 +1522,7 @@ mod tests {
         match value {
             Some("cpu") => Ok(BackendKind::Cpu),
             Some("metal") => Ok(BackendKind::Metal),
-            _ => return Err("backend must be exactly cpu or metal"),
+            _ => Err("backend must be exactly cpu or metal"),
         }
     }
 
