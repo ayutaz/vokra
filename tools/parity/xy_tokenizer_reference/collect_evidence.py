@@ -18,6 +18,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, BinaryIO
+from urllib.parse import urlsplit
 
 from audit import NATIVE_PACKAGES, active_closure, lock_rows, repository_license, sha256, supported_wheel
 
@@ -62,9 +63,29 @@ def _license_member(name: str) -> bool:
     return any(base == token or base.startswith(token + ".") or base.startswith(token + "-") for token in PRIMARY_LICENSE_NAMES)
 
 
-def _license_priority(name: str) -> int:
-    base = Path(name).name.lower()
-    return 0 if base == "license" or base.startswith("license.") or base.startswith("license-") else 1
+def _license_rank(name: str, kind: str) -> tuple[int, int, int, str]:
+    """Rank distribution-owned license locations before bundled components.
+
+    Wheels place the project license at the archive root or in the project's
+    ``*.dist-info/licenses`` directory.  Sdists have one package-root prefix,
+    so that prefix is ignored for the same decision.  Everything below those
+    locations is retained as bundled evidence but cannot become the primary
+    license merely because its basename is ``LICENSE``.
+    """
+    parts = Path(name).parts
+    if kind == "sdist" and len(parts) > 1:
+        parts = parts[1:]
+    lowered = tuple(part.lower() for part in parts)
+    base = lowered[-1]
+    basename_rank = 0 if base == "license" else 1 if base.startswith("license.") or base.startswith("license-") else 2
+    for index, part in enumerate(lowered[:-1]):
+        if part.endswith(".dist-info") and index + 1 < len(lowered) and lowered[index + 1] == "licenses":
+            return (0, len(lowered) - index - 2, basename_rank, name.lower())
+    if len(lowered) == 1:
+        return (1, 0, basename_rank, name.lower())
+    if lowered[-2].endswith(".dist-info"):
+        return (2, len(lowered), basename_rank, name.lower())
+    return (3, len(lowered), basename_rank, name.lower())
 
 
 def _metadata_license(metadata: bytes) -> str | None:
@@ -116,8 +137,8 @@ def _stream_digest(stream: BinaryIO, limit: int, label: str) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, Any]]]:
-    """Return one license byte stream, SPDX hint, and native payloads."""
+def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return primary license, SPDX, native payloads, and bundled licenses."""
     license_entries: list[tuple[str, bytes]] = []
     metadata_entries: list[bytes] = []
     native_entries: list[dict[str, Any]] = []
@@ -163,23 +184,35 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
         raise ValueError(f"unsupported artifact kind: {kind}")
     if not license_entries:
         raise ValueError(f"{path.name} has no unambiguous license bytes")
-    license_entries.sort(key=lambda item: (_license_priority(item[0]), item[0]))
-    primary_priority = _license_priority(license_entries[0][0])
-    primary_entries = [item for item in license_entries if _license_priority(item[0]) == primary_priority]
-    if len(primary_entries) > 1 and any(item[1] != primary_entries[0][1] for item in primary_entries[1:]):
+    ranked = sorted(enumerate(license_entries), key=lambda item: _license_rank(item[1][0], kind))
+    primary_index = ranked[0][0]
+    primary_rank = _license_rank(license_entries[primary_index][0], kind)
+    if primary_rank[0] == 3:
+        raise ValueError(f"{path.name} has no distribution-owned primary license location")
+    primary_entries = [item for item in ranked if _license_rank(item[1][0], kind) == primary_rank]
+    if len(primary_entries) > 1 and any(item[1][1] != primary_entries[0][1] for item in primary_entries[1:]):
         raise ValueError(f"{path.name} has conflicting license files")
-    license_bytes = primary_entries[0][1]
+    license_bytes = license_entries[primary_index][1]
+    bundled_licenses = [
+        {"path": name, "sha256": _sha256_bytes(data), "bytes": len(data)}
+        for index, (name, data) in enumerate(license_entries)
+        if index != primary_index
+    ]
     metadata = metadata_entries[0] if metadata_entries else b""
     spdx = _metadata_license(metadata)
     if spdx is None:
         raise ValueError(f"{path.name} has no recognized SPDX license metadata")
-    return license_bytes, spdx, native_entries
+    return license_bytes, spdx, native_entries, bundled_licenses
 
 
 def _download(url: str, destination: Path) -> int:
     digest = hashlib.sha256()
     total = 0
-    with urllib.request.urlopen(url, timeout=120) as response, destination.open("wb") as stream:
+    request = urllib.request.Request(url, headers={"User-Agent": "vokra-xy-tokenizer-dependency-audit/1"})
+    with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as stream:
+        final_url = response.geturl()
+        if urlsplit(final_url).scheme != "https" or not urlsplit(final_url).netloc:
+            raise ValueError("artifact download redirect did not remain HTTPS")
         while True:
             block = response.read(CHUNK_SIZE)
             if not block:
@@ -210,11 +243,12 @@ def _collect_package(row: dict[str, Any], artifacts_dir: Path, licenses_dir: Pat
             actual_hash = "sha256:" + sha256(artifact_path)
             if actual_hash != lock_artifact["hash"] or ("size" in lock_artifact and size != lock_artifact["size"]) or size <= 0:
                 raise ValueError("downloaded artifact does not match uv.lock")
-            license_bytes, spdx, native_entries = inspect_archive(artifact_path, kind)
+            license_bytes, spdx, native_entries, bundled_licenses = inspect_archive(artifact_path, kind)
             if identity[0] in NATIVE_PACKAGES and not native_entries:
                 raise ValueError("selected native package has no bundled native payload")
             license_path.write_bytes(license_bytes)
             payloads = [{"name": native["name"], "sha256": native["sha256"], "bytes": native["bytes"], "license_source": lock_artifact["url"], "license_revision": lock_artifact["hash"], "artifact_sha256": lock_artifact["hash"]} for native in native_entries]
+            bundled = [{**license, "artifact_sha256": actual_hash} for license in bundled_licenses]
             if kind == "wheel":
                 metadata = b""
                 try:
@@ -234,6 +268,7 @@ def _collect_package(row: dict[str, Any], artifacts_dir: Path, licenses_dir: Pat
                 "license": {"kind": "locked-sdist" if kind == "sdist" else "publisher", "source": license_source, "revision": lock_artifact["hash"], "sha256": _sha256_bytes(license_bytes), "bytes": len(license_bytes), "spdx": spdx},
                 "artifact": {"kind": kind, "url": lock_artifact["url"], "sha256": lock_artifact["hash"], "bytes": size},
                 "native_payloads": payloads,
+                "bundled_licenses": bundled,
             }
         except Exception as error:  # preserve each exact candidate's failure before fallback
             candidate_errors.append(f"{kind} {lock_artifact['url']}: {error}")
@@ -268,8 +303,8 @@ def collect(project: Path, output: Path) -> dict[str, Any]:
                 package_evidence.append({
                     "name": identity[0], "version": identity[1],
                     "license": {"kind": "local-file", "source": "LICENSE", "revision": sha256(repository_license_path), "sha256": _sha256_bytes(license_bytes), "bytes": len(license_bytes), "spdx": "Apache-2.0"},
-                    "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": _sha256_bytes(project_file), "bytes": len(project_bytes)},
-                    "native_payloads": [],
+                    "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": _sha256_bytes(project_bytes), "bytes": len(project_bytes)},
+                    "native_payloads": [], "bundled_licenses": [],
                 })
             else:
                 package_evidence.append(_collect_package(row, artifacts_dir, licenses_dir))
@@ -293,14 +328,16 @@ def self_test() -> None:
             archive.writestr("demo-1.0.dist-info/COPYING", b"A different attribution/license copy is lower priority.\n")
             archive.writestr("demo-1.0.dist-info/NOTICE", b"Attribution text may differ from the license.\n")
             archive.writestr("demo-1.0.dist-info/COPYRIGHT", b"Copyright notices are not license bytes.\n")
+            archive.writestr("demo/vendor/LICENSE", b"Bundled component license.\n")
             archive.writestr("demo/native.so", b"native")
-        license_bytes, spdx, native = inspect_archive(wheel, "wheel")
+        license_bytes, spdx, native, bundled = inspect_archive(wheel, "wheel")
         assert license_bytes == b"MIT License\n" and spdx == "MIT" and native[0]["name"] == "demo/native.so"
+        assert {entry["path"] for entry in bundled} == {"demo-1.0.dist-info/COPYING", "demo/vendor/LICENSE"}
         ambiguous = root / "ambiguous.whl"
         with zipfile.ZipFile(ambiguous, "w") as archive:
             archive.writestr("demo-1.0.dist-info/METADATA", "License: MIT\n")
             archive.writestr("demo-1.0.dist-info/LICENSE", b"one\n")
-            archive.writestr("demo-1.0.dist-info/LICENSE.txt", b"two\n")
+            archive.writestr("demo-1.0.dist-info/license", b"two\n")
         try:
             inspect_archive(ambiguous, "wheel")
         except ValueError as error:
@@ -330,6 +367,50 @@ def self_test() -> None:
             assert (licenses_dir / "demo-1.0").read_bytes() == b"MIT License\n"
         finally:
             _download = original_download
+        class FakeResponse:
+            def __init__(self, payload: bytes, final_url: str) -> None:
+                self.payload, self.final_url = payload, final_url
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_: Any) -> None:
+                return None
+
+            def read(self, size: int = -1) -> bytes:
+                payload, self.payload = self.payload, b""
+                return payload
+
+            def geturl(self) -> str:
+                return self.final_url
+
+        original_urlopen = urllib.request.urlopen
+        seen_request: list[urllib.request.Request] = []
+
+        def fake_urlopen(request: urllib.request.Request, timeout: int) -> FakeResponse:
+            seen_request.append(request)
+            return FakeResponse(b"downloaded", "https://download-r2.pytorch.org/whl/cpu/demo.whl")
+
+        urllib.request.urlopen = fake_urlopen
+        try:
+            downloaded = root / "downloaded.whl"
+            assert _download("https://download-r2.pytorch.org/whl/cpu/demo.whl", downloaded) == len(b"downloaded")
+            assert seen_request[0].headers.get("User-agent") == "vokra-xy-tokenizer-dependency-audit/1"
+        finally:
+            urllib.request.urlopen = original_urlopen
+        def fake_http_urlopen(request: urllib.request.Request, timeout: int) -> FakeResponse:
+            return FakeResponse(b"downloaded", "http://download-r2.pytorch.org/whl/cpu/demo.whl")
+
+        urllib.request.urlopen = fake_http_urlopen
+        try:
+            try:
+                _download("https://download-r2.pytorch.org/whl/cpu/demo.whl", root / "http-redirect.whl")
+            except ValueError as error:
+                assert "HTTPS" in str(error)
+            else:
+                raise AssertionError("HTTP artifact redirect accepted")
+        finally:
+            urllib.request.urlopen = original_urlopen
         project = root / "project"
         project.mkdir()
         (project / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
@@ -338,7 +419,7 @@ def self_test() -> None:
         output = root / "partial-report"
         original_lock_rows, original_active, original_repository_license, original_collect_package = lock_rows, active_closure, repository_license, _collect_package
         fake_rows = [
-            {"name": "demo", "version": "1.0", "source": {"registry": "https://pypi.org/simple"}},
+            {"name": "vokra-xy-tokenizer-reference", "version": "0.1.0", "source": {"virtual": "."}},
             {"name": "broken", "version": "1.0", "source": {"registry": "https://pypi.org/simple"}},
         ]
 
@@ -354,13 +435,15 @@ def self_test() -> None:
         def fake_collect_package(row: dict[str, Any], artifacts: Path, licenses: Path) -> dict[str, Any]:
             if row["name"] == "broken":
                 raise ValueError("candidate one failed; candidate two failed")
-            return {"name": "demo", "version": "1.0", "license": {}, "artifact": {}, "native_payloads": []}
+            raise AssertionError("virtual row was not handled locally")
 
         lock_rows, active_closure, repository_license, _collect_package = fake_lock_rows, fake_active, fake_repository_license, fake_collect_package
         try:
             partial = collect(project, output)
             assert partial["status"] == "BLOCKED" and partial["active_package_count"] == 2 and partial["successful_package_count"] == 1 and len(partial["failures"]) == 1
             assert json.loads((output / "collection_report.json").read_text(encoding="utf-8"))["failures"][0]["name"] == "broken"
+            virtual_evidence = json.loads((output / "license_evidence.json").read_text(encoding="utf-8"))["packages"][0]
+            assert virtual_evidence["artifact"]["sha256"] == _sha256_bytes((project / "pyproject.toml").read_bytes())
         finally:
             lock_rows, active_closure, repository_license, _collect_package = original_lock_rows, original_active, original_repository_license, original_collect_package
         try:

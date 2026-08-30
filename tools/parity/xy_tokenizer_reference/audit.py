@@ -413,7 +413,7 @@ def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], 
     seen: set[tuple[str, str]] = set()
     out: list[dict[str, Any]] = []
     for row in evidence["packages"]:
-        if not isinstance(row, dict) or set(row) != {"name", "version", "license", "artifact", "native_payloads"}:
+        if not isinstance(row, dict) or set(row) != {"name", "version", "license", "artifact", "native_payloads", "bundled_licenses"}:
             raise ValueError("license evidence row schema mismatch")
         identity = (row.get("name"), row.get("version"))
         if not all(isinstance(item, str) and item for item in identity) or identity in seen:
@@ -454,6 +454,12 @@ def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], 
             lock_artifacts = lock_row.get("wheels", []) if artifact["kind"] == "wheel" else ([lock_row["sdist"]] if "sdist" in lock_row else [])
             if not any(candidate.get("url") == artifact["url"] and candidate.get("hash") == artifact["sha256"] and ("size" not in candidate or candidate["size"] == artifact["bytes"]) for candidate in lock_artifacts):
                 raise ValueError("selected artifact is not bound to uv.lock")
+        bundled = row["bundled_licenses"]
+        if not isinstance(bundled, list):
+            raise ValueError("bundled license evidence is missing")
+        for bundled_license in bundled:
+            if not isinstance(bundled_license, dict) or set(bundled_license) != {"path", "sha256", "bytes", "artifact_sha256"} or not isinstance(bundled_license.get("path"), str) or not bundled_license["path"] or Path(bundled_license["path"]).is_absolute() or ".." in Path(bundled_license["path"]).parts or not isinstance(bundled_license.get("sha256"), str) or len(bundled_license["sha256"]) != 64 or any(character not in "0123456789abcdef" for character in bundled_license["sha256"]) or isinstance(bundled_license.get("bytes"), bool) or not isinstance(bundled_license.get("bytes"), int) or bundled_license["bytes"] <= 0 or bundled_license.get("artifact_sha256") != artifact["sha256"]:
+                raise ValueError("bundled license evidence is incomplete or unbound")
         payloads = row["native_payloads"]
         if not isinstance(payloads, list):
             raise ValueError("native bundled payload evidence is missing")
@@ -462,7 +468,7 @@ def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], 
         for payload in payloads:
             if not isinstance(payload, dict) or set(payload) != {"name", "sha256", "bytes", "license_source", "license_revision", "artifact_sha256"} or not isinstance(payload.get("name"), str) or not isinstance(payload.get("sha256"), str) or len(payload["sha256"]) != 64 or any(character not in "0123456789abcdef" for character in payload["sha256"]) or not isinstance(payload.get("bytes"), int) or payload["bytes"] <= 0 or not isinstance(payload.get("license_source"), str) or not payload["license_source"].startswith("https://") or not isinstance(payload.get("license_revision"), str) or not payload["license_revision"] or payload.get("artifact_sha256") != artifact["sha256"]:
                 raise ValueError("native bundled payload evidence is incomplete")
-        out.append({"name": identity[0], "version": identity[1], "license": license_row, "artifact": artifact, "native_payloads": payloads})
+        out.append({"name": identity[0], "version": identity[1], "license": license_row, "artifact": artifact, "native_payloads": payloads, "bundled_licenses": bundled})
     lock_identity = {(row["name"], row["version"]) for row in rows}
     if seen != lock_identity:
         raise ValueError("license evidence does not cover the active closure exactly")
@@ -724,11 +730,11 @@ requires-dist = [
         repository_license_file.write_bytes(b"Apache License\n")
         license_base = {"kind": "publisher", "source": "https://example.invalid/license", "revision": "r1", "sha256": "b" * 64, "bytes": 1, "spdx": "BSD-3-Clause"}
         artifact_base = {"kind": "wheel", "url": "https://example.invalid/numpy-1-py3-none-manylinux_2_17_x86_64.whl", "sha256": "sha256:" + "a" * 64, "bytes": 1}
-        rich = {"name": "numpy", "version": "1", "license": license_base, "artifact": artifact_base, "native_payloads": [{"name": "numpy.core", "sha256": "c" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": artifact_base["sha256"]}]}
-        virtual_rich = {"name": "vokra-xy-tokenizer-reference", "version": "0.1.0", "license": {"kind": "local-file", "source": "LICENSE", "revision": sha256(repository_license_file), "sha256": sha256(repository_license_file), "bytes": repository_license_file.stat().st_size, "spdx": "Apache-2.0"}, "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": sha256(project_file), "bytes": project_file.stat().st_size}, "native_payloads": []}
+        rich = {"name": "numpy", "version": "1", "license": license_base, "artifact": artifact_base, "native_payloads": [{"name": "numpy.core", "sha256": "c" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": artifact_base["sha256"]}], "bundled_licenses": [{"path": "vendor/LICENSE", "sha256": "f" * 64, "bytes": 1, "artifact_sha256": artifact_base["sha256"]}]}
+        virtual_rich = {"name": "vokra-xy-tokenizer-reference", "version": "0.1.0", "license": {"kind": "local-file", "source": "LICENSE", "revision": sha256(repository_license_file), "sha256": sha256(repository_license_file), "bytes": repository_license_file.stat().st_size, "spdx": "Apache-2.0"}, "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": sha256(project_file), "bytes": project_file.stat().st_size}, "native_payloads": [], "bundled_licenses": []}
         assert len(validate_license_rows(artifact_active, {"packages": [virtual_rich, rich]}, project_file, repository_license_file)) == 2
         cpu_artifact = {"kind": "wheel", "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.0-cp312-cp312-manylinux_2_17_x86_64.whl", "sha256": "sha256:" + "d" * 64, "bytes": 1}
-        cpu_rich = {"name": "torch", "version": "2.0", "license": license_base, "artifact": cpu_artifact, "native_payloads": [{"name": "torch._C", "sha256": "e" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": cpu_artifact["sha256"]}]}
+        cpu_rich = {"name": "torch", "version": "2.0", "license": license_base, "artifact": cpu_artifact, "native_payloads": [{"name": "torch._C", "sha256": "e" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": cpu_artifact["sha256"]}], "bundled_licenses": []}
         assert len(validate_license_rows(r2_active, {"packages": [virtual_rich, cpu_rich]}, project_file, repository_license_file)) == 2
         registry_virtual_bypass = dict(rich, name="numpy", artifact=virtual_rich["artifact"])
         try:
@@ -753,6 +759,13 @@ requires-dist = [
             assert "artifact" in str(error)
         else:
             raise AssertionError("wrong artifact digest accepted")
+        wrong_bundled = dict(rich, bundled_licenses=[dict(rich["bundled_licenses"][0], artifact_sha256="sha256:" + "d" * 64)])
+        try:
+            validate_license_rows(artifact_package, {"packages": [wrong_bundled]})
+        except ValueError as error:
+            assert "bundled" in str(error)
+        else:
+            raise AssertionError("unbound bundled license accepted")
         gpl = dict(rich, license=dict(license_base, spdx="GPL-3.0"))
         try:
             validate_license_rows(artifact_package, {"packages": [gpl]})
