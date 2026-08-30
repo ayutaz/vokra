@@ -1,0 +1,35 @@
+{
+  "schema": "vokra-speecht5-dependency-audit-compact-v1",
+  "full_audit_sha256": "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d",
+  "audit_scope": "VAST instance 49225703 fresh-cache, model-free Linux x86_64 Python 3.12 environment audit",
+  "inputs": {
+    "pyproject_sha256": "71260140341f4b4f47ee5116e79b9560aff3b63f719fac01c1d21352bea709e9",
+    "uv_lock_sha256": "7af99972fbf9c2935a74031cfc92d7fbe61db354f5185decf1d46f2d7ee2a1d1"
+  },
+  "numpy_source_build": {
+    "version": "1.26.4",
+    "no_binary_package": ["numpy"],
+    "setup_args": ["-Dblas=none", "-Dlapack=none"],
+    "numpy_libs_entries": 0,
+    "forbidden_bundled_libraries": [],
+    "native_link_allowlist": ["libc.so.6", "libgcc_s.so.1", "libm.so.6"]
+  },
+  "build_constraints": [
+    {"name": "Cython", "version": "3.0.12", "license": "Apache-2.0", "scope": "isolated-build-only"},
+    {"name": "meson-python", "version": "0.15.0", "license": "MIT", "scope": "isolated-build-only"},
+    {"name": "meson", "version": "1.12.0", "license": "Apache-2.0", "scope": "isolated-build-only"},
+    {"name": "pyproject-metadata", "version": "0.12.1", "license": "MIT", "scope": "isolated-build-only"},
+    {"name": "ninja", "version": "1.13.0", "license": "Apache-2.0", "scope": "isolated-build-only"},
+    {"name": "packaging", "version": "26.3", "license": "Apache-2.0 OR BSD-2-Clause", "scope": "isolated-build-only"},
+    {"name": "patchelf", "version": "0.19.1.0", "license": "GPL-3.0-or-later", "scope": "isolated-build-only", "operator_approval_required": true}
+  ],
+  "final_environment_requirements": {
+    "build_only_absent": ["Cython", "meson-python", "meson", "pyproject-metadata", "ninja", "patchelf"],
+    "torch_bundled_library": {
+      "path": "torch/lib/libgomp-a34b3233.so.1",
+      "sha256": "570455c2902d6cc2a7f367703c06dac07495dd7f8a1ed2c8fc4cea628c881b13",
+      "operator_approval_required": true
+    }
+  },
+  "operator_approval": "PENDING_REVIEW"
+}

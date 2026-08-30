@@ -16,9 +16,31 @@ from typing import Any
 import tomllib
 from urllib.parse import urlparse
 
-GATE_VERSION = 1
-LOCK_SHA256 = "32d372461b63302e58e7ed3f5b7da1495f472a496717e5b85f6767911ad703cb"
-PYPROJECT_SHA256 = "814d6445596fe0f778cc4efd4ce42cf54db0d90d040b1c8661ccec6cbd0ba6a1"
+GATE_VERSION = 2
+# These are the VAST-reviewed inputs.  The lock hash is intentionally updated
+# only after uv has regenerated the lock for the exact pyproject below.
+LOCK_SHA256 = "7af99972fbf9c2935a74031cfc92d7fbe61db354f5185decf1d46f2d7ee2a1d1"
+PYPROJECT_SHA256 = "71260140341f4b4f47ee5116e79b9560aff3b63f719fac01c1d21352bea709e9"
+FULL_AUDIT_SHA256 = "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d"
+COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
+EXPECTED_BUILD_CONSTRAINTS = [
+    "Cython==3.0.12",
+    "meson-python==0.15.0",
+    "meson==1.12.0",
+    "pyproject-metadata==0.12.1",
+    "ninja==1.13.0",
+    "patchelf==0.19.1.0",
+    "packaging==26.3",
+]
+BUILD_DEPENDENCY_ROWS = [
+    {"id": "Cython@3.0.12", "name": "Cython", "version": "3.0.12", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "Apache-2.0", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+    {"id": "meson-python@0.15.0", "name": "meson-python", "version": "0.15.0", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "MIT", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+    {"id": "meson@1.12.0", "name": "meson", "version": "1.12.0", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "Apache-2.0", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+    {"id": "pyproject-metadata@0.12.1", "name": "pyproject-metadata", "version": "0.12.1", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "MIT", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+    {"id": "ninja@1.13.0", "name": "ninja", "version": "1.13.0", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "Apache-2.0", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+    {"id": "patchelf@0.19.1.0", "name": "patchelf", "version": "0.19.1.0", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "GPL-3.0-or-later", "native_review": "VAST isolated build-only tool; not installed in final environment", "bundled_review": "GPL build tool is not redistributed by Vokra; operator approval required", "approval_required": True},
+    {"id": "packaging@26.3", "name": "packaging", "version": "26.3", "source": {"registry": "https://pypi.org/simple"}, "status": "REVIEWED", "license": "Apache-2.0 OR BSD-2-Clause", "native_review": "VAST isolated NumPy build dependency; not installed in final environment", "bundled_review": "VAST build-only; not redistributed", "approval_required": False},
+]
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 DEPENDENCY_KEYS = (
@@ -78,19 +100,23 @@ def strict_json_loads(text: str) -> Any:
 def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
     if not isinstance(project, dict) or not isinstance(project.get("project"), dict) or not isinstance(project.get("tool"), dict):
         raise ValueError("pyproject root schema drifted")
-    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}:
+    if set(lock) != {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "manifest", "package"}:
         raise ValueError("uv.lock top-level schema drifted")
     if not isinstance(lock["version"], int) or isinstance(lock["version"], bool) or lock["version"] != 1 or not isinstance(lock["revision"], int) or lock["revision"] != 3:
         raise ValueError("uv.lock version/revision types drifted")
     if not isinstance(lock["requires-python"], str) or not isinstance(lock["resolution-markers"], list) or not isinstance(lock["supported-markers"], list) or not isinstance(lock["package"], list):
         raise ValueError("uv.lock top-level value types drifted")
+    if lock.get("manifest") != {"build-constraints": [{"name": "cython", "specifier": "==3.0.12"}, {"name": "meson", "specifier": "==1.12.0"}, {"name": "meson-python", "specifier": "==0.15.0"}, {"name": "ninja", "specifier": "==1.13.0"}, {"name": "packaging", "specifier": "==26.3"}, {"name": "patchelf", "specifier": "==0.19.1.0"}, {"name": "pyproject-metadata", "specifier": "==0.12.1"}]}:
+        raise ValueError("uv.lock build-constraint manifest drifted")
     if set(project) != {"project", "tool"} or set(project["project"]) != {"name", "version", "description", "requires-python", "dependencies"}:
         raise ValueError("pyproject schema drifted")
     if not isinstance(project["project"]["dependencies"], list) or set(project["tool"]) != {"uv"}:
         raise ValueError("pyproject dependency/tool schema drifted")
     uv = project["tool"]["uv"]
-    if not isinstance(uv, dict) or set(uv) != {"package", "environments", "sources", "index"} or not isinstance(uv["package"], bool) or not isinstance(uv["environments"], list) or not isinstance(uv["sources"], dict) or not isinstance(uv["index"], list):
+    if not isinstance(uv, dict) or set(uv) != {"package", "no-binary-package", "config-settings-package", "build-constraint-dependencies", "environments", "sources", "index"} or not isinstance(uv["package"], bool) or not isinstance(uv["no-binary-package"], list) or not isinstance(uv["config-settings-package"], dict) or not isinstance(uv["build-constraint-dependencies"], list) or not isinstance(uv["environments"], list) or not isinstance(uv["sources"], dict) or not isinstance(uv["index"], list):
         raise ValueError("pyproject uv configuration drifted")
+    if uv["no-binary-package"] != ["numpy"] or uv["config-settings-package"] != {"numpy": {"setup-args": ["-Dblas=none", "-Dlapack=none"]}} or uv["build-constraint-dependencies"] != EXPECTED_BUILD_CONSTRAINTS:
+        raise ValueError("NumPy source-build policy or isolated build constraints drifted")
     seen: set[tuple[str, str, str]] = set()
     virtual = 0
     for package in lock["package"]:
@@ -139,12 +165,24 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
             if not artifacts:
                 raise ValueError("uv.lock package has no artifacts")
             for artifact in artifacts:
-                if (not isinstance(artifact, dict) or set(artifact) != {"url", "hash", "size", "upload-time"}
-                        or not isinstance(artifact["url"], str) or not artifact["url"].startswith("https://") or urlparse(artifact["url"]).hostname not in {"files.pythonhosted.org", "download-r2.pytorch.org", "download.pytorch.org"}
-                        or not isinstance(artifact["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"])
-                        or not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0
-                        or not isinstance(artifact["upload-time"], str) or not artifact["upload-time"].strip()):
+                if not isinstance(artifact, dict) or not set(artifact).issubset({"url", "hash", "size", "upload-time"}) or not {"url", "hash", "upload-time"}.issubset(artifact):
                     raise ValueError("uv.lock artifact schema drifted")
+                if (not isinstance(artifact["url"], str) or not artifact["url"].startswith("https://") or urlparse(artifact["url"]).hostname not in {"files.pythonhosted.org", "download-r2.pytorch.org", "download.pytorch.org"}
+                        or not isinstance(artifact["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact["hash"])
+                        or not isinstance(artifact["upload-time"], str) or not artifact["upload-time"].strip()):
+                    raise ValueError("uv.lock artifact fields are malformed")
+                if "size" not in artifact:
+                    allowed_missing_size = (
+                        registry == "https://download.pytorch.org/whl/cpu"
+                        and package["name"] == "torch"
+                        and package["version"] == "2.4.1+cpu"
+                        and artifact["url"] == "https://download-r2.pytorch.org/whl/cpu/torch-2.4.1%2Bcpu-cp312-cp312-linux_x86_64.whl"
+                        and artifact["hash"] == "sha256:8800deef0026011d502c0c256cc4b67d002347f63c3a38cd8e45f1f445c61364"
+                    )
+                    if not allowed_missing_size:
+                        raise ValueError("uv.lock artifact size is missing outside the reviewed PyTorch CPU identity")
+                elif not isinstance(artifact["size"], int) or isinstance(artifact["size"], bool) or artifact["size"] <= 0:
+                    raise ValueError("uv.lock artifact size is malformed")
                 expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
                 if urlparse(artifact["url"]).hostname != expected_host:
                     raise ValueError("uv.lock artifact host is not bound to its registry")
@@ -216,7 +254,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked(f"gate input is unreadable: {exc}")
     if not isinstance(manifest, dict):
         return blocked("gate manifest root is not an object")
-    if set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "dependency_reviews", "dependency_reviews_sha256", "model_reviews", "tts_identity", "vocoder_identity", "public_tts_identity", "transformers_route", "approval_scope_sha256", "operator_approval"}:
+    if set(manifest) != {"gate_version", "lock_sha256", "pyproject_sha256", "package_rows_sha256", "dependency_reviews", "dependency_reviews_sha256", "build_dependency_reviews", "build_dependency_reviews_sha256", "dependency_audit_evidence", "model_reviews", "tts_identity", "vocoder_identity", "public_tts_identity", "transformers_route", "approval_scope_sha256", "operator_approval"}:
         return blocked("gate manifest schema drifted")
     if manifest.get("gate_version") != GATE_VERSION:
         return blocked("unsupported gate version")
@@ -265,6 +303,39 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
             or any(is_unresolved(row.get(field)) for field in ("native_review", "bundled_review"))
         ):
             return blocked(f"dependency review is unresolved: {row.get('id')}")
+    build_reviews = manifest.get("build_dependency_reviews")
+    build_fields = {"id", "name", "version", "source", "status", "license", "native_review", "bundled_review", "approval_required"}
+    if build_reviews != BUILD_DEPENDENCY_ROWS or canonical(build_reviews) != manifest.get("build_dependency_reviews_sha256"):
+        return blocked("NumPy isolated build dependency review rows drifted")
+    for row in build_reviews:
+        if (
+            not isinstance(row, dict) or set(row) != build_fields
+            or is_unresolved(row.get("status")) or row.get("status") != "REVIEWED"
+            or not isinstance(row.get("license"), str) or is_unresolved(row.get("license"))
+            or any(is_unresolved(row.get(field)) for field in ("native_review", "bundled_review"))
+            or not isinstance(row.get("approval_required"), bool)
+        ):
+            return blocked(f"isolated build dependency review is unresolved: {row.get('id')}")
+    audit_ref = manifest.get("dependency_audit_evidence")
+    if not isinstance(audit_ref, dict) or set(audit_ref) != {"schema", "path", "sha256", "full_audit_sha256"}:
+        return blocked("compact dependency audit reference is malformed")
+    if audit_ref.get("schema") != COMPACT_AUDIT_SCHEMA or audit_ref.get("path") != "dependency_audit_evidence.json" or audit_ref.get("full_audit_sha256") != FULL_AUDIT_SHA256:
+        return blocked("compact dependency audit is not bound to the reviewed VAST report")
+    audit_path = manifest_path.parent / audit_ref["path"]
+    if audit_path.is_symlink() or not audit_path.is_file() or digest(audit_path.read_bytes()) != audit_ref.get("sha256"):
+        return blocked("compact dependency audit bytes are missing or tampered")
+    try:
+        compact_audit = strict_json_loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return blocked(f"compact dependency audit is unreadable: {exc}")
+    if (
+        not isinstance(compact_audit, dict)
+        or compact_audit.get("schema") != COMPACT_AUDIT_SCHEMA
+        or compact_audit.get("full_audit_sha256") != FULL_AUDIT_SHA256
+        or compact_audit.get("inputs") != {"pyproject_sha256": PYPROJECT_SHA256, "uv_lock_sha256": LOCK_SHA256}
+        or compact_audit.get("operator_approval") != "PENDING_REVIEW"
+    ):
+        return blocked("compact dependency audit content is not bound to exact reviewed inputs")
     model_reviews = manifest.get("model_reviews")
     model_fields = {"id", "kind", "status", "license", "native_review", "bundled_review"}
     if not isinstance(model_reviews, list) or len(model_reviews) != len(MODEL_ROWS) or any(
@@ -301,7 +372,7 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
         return blocked("public SpeechT5 GGUF identity drifted")
     if manifest.get("transformers_route") != "transformers==5.5.0 / SpeechT5ForTextToSpeech.generate_speech":
         return blocked("Transformers lock/dumper route is not bound")
-    scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": manifest["package_rows_sha256"], "dependency_reviews": reviews, "model_reviews": model_reviews, "tts_identity": expected_tts, "vocoder_identity": expected_vocoder, "public_tts_identity": manifest["public_tts_identity"], "transformers_route": manifest["transformers_route"]}
+    scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": manifest["package_rows_sha256"], "dependency_reviews": reviews, "dependency_reviews_sha256": manifest["dependency_reviews_sha256"], "build_dependency_reviews": build_reviews, "build_dependency_reviews_sha256": manifest["build_dependency_reviews_sha256"], "dependency_audit_evidence": audit_ref, "model_reviews": model_reviews, "tts_identity": expected_tts, "vocoder_identity": expected_vocoder, "public_tts_identity": manifest["public_tts_identity"], "transformers_route": manifest["transformers_route"]}
     scope_sha = canonical(scope)
     if manifest.get("approval_scope_sha256") != scope_sha:
         return blocked("approval scope is not bound to exact closure")
@@ -325,12 +396,15 @@ def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest = project / "license_gate_manifest.json"
     ok, reason = validate(project, manifest)
-    if ok or not ("unresolved" in reason or "canonicalization" in reason):
+    if ok or not any(token in reason for token in ("unresolved", "canonicalization", "approval")):
         print(f"speecht5 preflight gate: expected pending review, got {reason}", file=sys.stderr)
         return 1
     with tempfile.TemporaryDirectory(prefix="speecht5-gate-") as directory:
         root = Path(directory); test_project = root / "project"; test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock"); shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
+        compact_audit = json.loads((project / "dependency_audit_evidence.json").read_text(encoding="utf-8"))
+        audit_path = root / "dependency_audit_evidence.json"
+        audit_path.write_text(json.dumps(compact_audit, sort_keys=True, separators=(",", ":")), encoding="utf-8")
         complete_lock = re.sub(
             r'(hash = "sha256:[0-9a-f]{64}")(, upload-time =)',
             r'\1, size = 1\2',
@@ -350,7 +424,10 @@ def self_test() -> int:
         base["dependency_reviews"][0]["native_review"] = False
         base["model_reviews"][0]["bundled_review"] = False
         base["dependency_reviews_sha256"] = canonical(base["dependency_reviews"])
-        scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": base["package_rows_sha256"], "dependency_reviews": base["dependency_reviews"], "model_reviews": base["model_reviews"], "tts_identity": base["tts_identity"], "vocoder_identity": base["vocoder_identity"], "public_tts_identity": base["public_tts_identity"], "transformers_route": base["transformers_route"]}
+        compact_audit["inputs"]["uv_lock_sha256"] = LOCK_SHA256
+        audit_path.write_text(json.dumps(compact_audit, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        base["dependency_audit_evidence"]["sha256"] = digest(audit_path.read_bytes())
+        scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": base["package_rows_sha256"], "dependency_reviews": base["dependency_reviews"], "dependency_reviews_sha256": base["dependency_reviews_sha256"], "build_dependency_reviews": base["build_dependency_reviews"], "build_dependency_reviews_sha256": base["build_dependency_reviews_sha256"], "dependency_audit_evidence": base["dependency_audit_evidence"], "model_reviews": base["model_reviews"], "tts_identity": base["tts_identity"], "vocoder_identity": base["vocoder_identity"], "public_tts_identity": base["public_tts_identity"], "transformers_route": base["transformers_route"]}
         base["approval_scope_sha256"] = canonical(scope); base["operator_approval"] = {"decision":"APPROVED", "signer":"self-test", "digest":base["approval_scope_sha256"]}
         approved = root / "manifest.json"; approved.write_text(json.dumps(base), encoding="utf-8")
         evidence = root / "license_gate_evidence.json"; evidence.write_text(json.dumps({"scope_sha256":base["approval_scope_sha256"], "manifest_sha256":digest(approved.read_bytes()), "signer":"self-test", "digest":base["approval_scope_sha256"], "decision":"APPROVED"}), encoding="utf-8")
@@ -390,7 +467,7 @@ def self_test() -> int:
             for field in ("status", "license", "native_review", "bundled_review"):
                 candidate = json.loads(approved.read_text(encoding="utf-8"))
                 candidate["model_reviews"][0][field] = placeholder
-                scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": candidate["package_rows_sha256"], "dependency_reviews": candidate["dependency_reviews"], "model_reviews": candidate["model_reviews"], "tts_identity": candidate["tts_identity"], "vocoder_identity": candidate["vocoder_identity"], "public_tts_identity": candidate["public_tts_identity"], "transformers_route": candidate["transformers_route"]}
+                scope = {"lock_sha256": LOCK_SHA256, "pyproject_sha256": PYPROJECT_SHA256, "package_rows_sha256": candidate["package_rows_sha256"], "dependency_reviews": candidate["dependency_reviews"], "dependency_reviews_sha256": candidate["dependency_reviews_sha256"], "build_dependency_reviews": candidate["build_dependency_reviews"], "build_dependency_reviews_sha256": candidate["build_dependency_reviews_sha256"], "dependency_audit_evidence": candidate["dependency_audit_evidence"], "model_reviews": candidate["model_reviews"], "tts_identity": candidate["tts_identity"], "vocoder_identity": candidate["vocoder_identity"], "public_tts_identity": candidate["public_tts_identity"], "transformers_route": candidate["transformers_route"]}
                 candidate["approval_scope_sha256"] = canonical(scope)
                 bad.write_text(json.dumps(candidate), encoding="utf-8")
                 ok, _ = validate(test_project, bad, evidence)

@@ -11,6 +11,8 @@ VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/speecht5_tts"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+POST_SYNC_AUDIT="$PARITY_PROJECT/post_sync_audit.py"
+COMPACT_AUDIT="$PARITY_PROJECT/dependency_audit_evidence.json"
 PARITY_DUMPER="$VOKRA_ROOT/tools/parity/speecht5_tts_dump_reference.py"
 TTS_PREP="$VOKRA_ROOT/tools/parity/speecht5_tts_prepare_checkpoint.py"
 VOCODER_PREP="$VOKRA_ROOT/tools/parity/speecht5_hifigan_prepare_checkpoint.py"
@@ -126,7 +128,7 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/uv.lock" ]] || die "dedicated parity uv.lock is missing"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PREFLIGHT_GATE" && \
     -f "$PREFLIGHT_MANIFEST" ]] || die "SpeechT5 preflight gate inputs are missing"
-  for path in "$PARITY_DUMPER" "$TTS_PREP" "$VOCODER_PREP"; do
+  for path in "$PARITY_DUMPER" "$TTS_PREP" "$VOCODER_PREP" "$POST_SYNC_AUDIT" "$COMPACT_AUDIT"; do
     [[ -f "$path" ]] || die "required SpeechT5 tool is missing: $path"
   done
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] \
@@ -217,6 +219,7 @@ run_self_test() {
     "$VOCODER_SOURCE_SHA256" "$PUBLIC_TTS_REVISION" "$PUBLIC_TTS_SHA256" \
     "SPEECHT5_TTS_OFFICIAL_PARITY backend=cpu" \
     "--vocoder" "--speaker-embedding" "--frozen --python 3.12" \
+    "post_sync_audit.py" "SPEECHT5_POST_SYNC_AUDIT" "build-only" \
     "write_apple_invocation" "--reference-sha256" "<APPLE_SPEECHT5_REFERENCE>" "--approval-evidence"; do
     if ! grep -Fq -- "$required" "$script_path"; then
       log "self-test FAIL: worker contract lost token: $required"
@@ -279,12 +282,13 @@ run_self_test() {
   grep -F -- "--reference-sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" "$apple_args" >/dev/null || fail=1
   grep -F -- "--approval-evidence '<APPLE_SPEECHT5_APPROVAL_EVIDENCE>'" "$apple_args" >/dev/null || fail=1
   grep -F -- "--evidence-dir '<APPLE_SPEECHT5_EVIDENCE_DIR>'" "$apple_args" >/dev/null || fail=1
-  local gate_line sync_line build_line pre_gate_block
+  local gate_line sync_line audit_line build_line pre_gate_block
   gate_line="$(grep -n '^  pre_sync_gate ' "$script_path" | head -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  uv sync --project' "$script_path" | tail -1 | cut -d: -f1)"
+  audit_line="$(grep -n "^    \\\"\$POST_SYNC_AUDIT\\\" --compact-evidence" "$script_path" | tail -1 | cut -d: -f1)"
   build_line="$(grep -n '^  cargo build --manifest-path' "$script_path" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || fail=1
-  (( gate_line < sync_line && gate_line < build_line )) || fail=1
+  [[ "$gate_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || fail=1
+  (( gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || fail=1
   pre_gate_block="$(awk '/^main\(\)/,/^  pre_sync_gate / {print}' "$script_path")"
   [[ "$pre_gate_block" != *"uv sync"* && "$pre_gate_block" != *"cargo build"* && "$pre_gate_block" != *"download_checkpoint"* ]] || fail=1
 
@@ -384,7 +388,7 @@ main() {
   local tts_source vocoder_source tts_gguf public_tts_gguf vocoder_gguf output_wav
   local public_output_wav parity_text public_url public_bytes
   local run_log env_log compile_log parity_log public_parity_log cli_log public_cli_log
-  local workspace_log clippy_log summary_file input_hashes_file reference_manifest_sha256 apple_args_file
+  local workspace_log clippy_log summary_file input_hashes_file reference_manifest_sha256 apple_args_file post_sync_audit_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --work-dir)
@@ -441,12 +445,17 @@ main() {
   clippy_log="$logs_dir/workspace-clippy.log"
   summary_file="$logs_dir/summary.txt"
   input_hashes_file="$logs_dir/input-hashes.txt"
+  post_sync_audit_log="$logs_dir/post-sync-audit.json"
   exec > >(tee -a "$run_log") 2>&1
   # shellcheck disable=SC2154
   trap 'rc=$?; if [[ -n "${summary_file:-}" && ! -f "$summary_file" ]]; then printf "execution_status=FAIL\nexit_code=%s\n" "$rc" > "$summary_file"; fi; exit "$rc"' EXIT
 
   step "Sync pinned Python 3.12 parity environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
+
+  step "Audit fresh synchronized environment before source/model acquisition"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
+    "$POST_SYNC_AUDIT" --compact-evidence "$COMPACT_AUDIT" --output "$post_sync_audit_log"
 
   step "Prepare immutable SpeechT5 text and HiFi-GAN sources"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python \
