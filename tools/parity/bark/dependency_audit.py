@@ -23,6 +23,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -548,15 +549,75 @@ def _fetch_license(
     }
 
 
+def _controlled_license_error(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, HTTPError):
+        return {"kind": "HTTP_ERROR", "status": exc.code}
+    if isinstance(exc, URLError):
+        return {"kind": "URL_ERROR"}
+    if isinstance(exc, ValueError):
+        return {"kind": "VALIDATION_ERROR"}
+    if isinstance(exc, OSError):
+        return {"kind": "OS_ERROR"}
+    return {"kind": "UNEXPECTED_ERROR"}
+
+
+def _blocked_license_record(
+    item: dict[str, str], claimed_license: str | None, exc: Exception
+) -> dict[str, Any]:
+    requested_url = _license_url(item["repo"], item["revision"])
+    return {
+        "status": "BLOCKED_FACTUAL_LICENSE_PATH",
+        "id": item["id"],
+        "repo": item["repo"],
+        "revision": item["revision"],
+        "requested_url": requested_url,
+        "final_url": None,
+        "url_trace": [requested_url],
+        "acquired_bytes": False,
+        "size": None,
+        "bytes": None,
+        "sha256": None,
+        "primary_source_bytes": None,
+        "primary_source_sha256": None,
+        "content_base64": None,
+        "claimed_license": claimed_license,
+        "claimed_license_source": "existing manifest only; unresolved claims are recorded as null",
+        "license_classification": "UNAVAILABLE_FACTUAL_LICENSE_PATH",
+        "acquired_file": None,
+        "error": _controlled_license_error(exc),
+    }
+
+
 def audit_model_licenses(
     manifest: dict[str, Any], fetcher: Callable[[str], tuple[str, bytes]] | None = None
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     claims = {
         row.get("id"): row.get("license")
         for row in manifest.get("license_rows", [])
         if isinstance(row, dict) and row.get("id") in {item["id"] for item in MODEL_LICENSES}
     }
-    return [_fetch_license(item, fetcher, claims.get(item["id"]) if claims.get(item["id"]) not in {None, "UNRESOLVED"} else None) for item in MODEL_LICENSES]
+    records: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for item in MODEL_LICENSES:
+        claimed = claims.get(item["id"])
+        try:
+            records.append(
+                _fetch_license(
+                    item,
+                    fetcher,
+                    claimed if claimed not in {None, "UNRESOLVED"} else None,
+                )
+            )
+        except (HTTPError, OSError, UnicodeError, ValueError) as exc:
+            controlled_error = _controlled_license_error(exc)
+            records.append(_blocked_license_record(
+                item, claimed if claimed not in {None, "UNRESOLVED"} else None, exc
+            ))
+            failures.append(
+                f"BLOCKED_FACTUAL_LICENSE_PATH: {item['repo']}@{item['revision']}: "
+                f"{canonical_json(controlled_error)}"
+            )
+    return records, failures
 
 
 def audit_environment(project: Path, fetch_model_licenses: bool = True) -> dict[str, Any]:
@@ -627,7 +688,11 @@ def audit_environment(project: Path, fetch_model_licenses: bool = True) -> dict[
         "license_file": "LICENSE",
     }
     failures.append("Bark source-code LICENSE revision is absent from the existing identity contract")
-    model_license_files = audit_model_licenses(manifest) if fetch_model_licenses else []
+    if fetch_model_licenses:
+        model_license_files, model_license_failures = audit_model_licenses(manifest)
+        failures.extend(model_license_failures)
+    else:
+        model_license_files = []
     git = _git_identity(project)
     report: dict[str, Any] = {
         "schema": SCHEMA,
@@ -754,6 +819,96 @@ def self_test() -> int:
         pass
     else:
         raise AssertionError("accepted an over-sized LICENSE response")
+
+    def failing_fetcher(
+        failures_by_index: dict[int, Callable[[str], BaseException]]
+    ) -> tuple[Callable[[str], tuple[str, bytes]], list[str]]:
+        calls: list[str] = []
+
+        def fetch(url: str) -> tuple[str, bytes]:
+            index = len(calls)
+            calls.append(url)
+            if index in failures_by_index:
+                raise failures_by_index[index](url)
+            return url, body
+
+        return fetch, calls
+
+    failure_cases = {
+        "first": {0: lambda _url: ValueError("first LICENSE path is unavailable")},
+        "second": {1: lambda _url: HTTPError(good, 404, "second LICENSE path is unavailable", {}, None)},
+        "both": {
+            0: lambda _url: OSError("first LICENSE transport failed"),
+            1: lambda _url: ValueError("second LICENSE path is unavailable"),
+        },
+        "partial": {0: lambda _url: HTTPError(good, 503, "partial LICENSE outage", {}, None)},
+        "none": {},
+    }
+    for case, failure_factories in failure_cases.items():
+        fetcher, calls = failing_fetcher(failure_factories)
+        license_records, license_failures = audit_model_licenses(
+            {"license_rows": []}, fetcher
+        )
+        assert len(calls) == len(MODEL_LICENSES) == len(license_records)
+        assert len(license_failures) == len(failure_factories)
+        assert [record["repo"] for record in license_records] == [
+            item["repo"] for item in MODEL_LICENSES
+        ]
+        for index, record in enumerate(license_records):
+            if index in failure_factories:
+                assert record["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+                assert record["requested_url"] == calls[index]
+                assert record["acquired_bytes"] is False
+                assert record["bytes"] is None and record["sha256"] is None
+                assert record["primary_source_bytes"] is None
+                assert record["primary_source_sha256"] is None
+                assert record["error"]["kind"] in {"HTTP_ERROR", "URL_ERROR", "OS_ERROR", "VALIDATION_ERROR"}
+            else:
+                assert "status" not in record
+        if case == "none":
+            assert all(record.get("status") is None for record in license_records)
+
+    # Exercise the actual report writer with both fixed paths failing.  Patch
+    # only this self-test's call sites so it cannot contact the network or scan
+    # the host's installed distributions, while the real contract parser still
+    # contributes the complete closure facts to the report.
+    original_fetch_license = globals()["_fetch_license"]
+    original_distribution_records = globals()["_distribution_records"]
+
+    def blocked_fetch(
+        item: dict[str, str],
+        _fetcher: Callable[[str], tuple[str, bytes]] | None = None,
+        claimed_license: str | None = None,
+    ) -> dict[str, Any]:
+        del claimed_license
+        raise ValueError(f"self-test unavailable LICENSE path: {item['repo']}")
+
+    globals()["_fetch_license"] = blocked_fetch
+    globals()["_distribution_records"] = lambda: []
+    try:
+        with tempfile.TemporaryDirectory(prefix="bark-audit-report-self-test-") as directory:
+            output = Path(directory) / "blocked-report.json"
+            result_code = run(Path(__file__).resolve().parent, output, True)
+            blocked_report = json.loads(output.read_text(encoding="utf-8"))
+            assert result_code == 2
+            assert blocked_report["status"] == "BLOCKED"
+            assert blocked_report["locked_rows"]
+            assert len(blocked_report["packages"]) == len(blocked_report["locked_rows"])
+            assert blocked_report["source_license_contract"]["status"] == "BLOCKED_MISSING_PINNED_SOURCE_REVISION"
+            assert len(blocked_report["model_license_files"]) == len(MODEL_LICENSES)
+            assert all(
+                record["status"] == "BLOCKED_FACTUAL_LICENSE_PATH"
+                and record["acquired_bytes"] is False
+                and record["size"] is None
+                and record["bytes"] is None
+                and record["sha256"] is None
+                and record["content_base64"] is None
+                for record in blocked_report["model_license_files"]
+            )
+            assert len(blocked_report["failures"]) >= len(MODEL_LICENSES)
+    finally:
+        globals()["_fetch_license"] = original_fetch_license
+        globals()["_distribution_records"] = original_distribution_records
 
     with tempfile.TemporaryDirectory(prefix="bark-audit-self-test-") as directory:
         path = Path(directory) / "not-native"
