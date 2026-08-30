@@ -1667,6 +1667,39 @@ artifact sizes, and tamper cases for every missing/extra field. This is a gate
 hardening task only; it does not change the already separate Local main/codec
 runtime boundary or claim model parity.
 
+### 2026-08-30 cross-gate hardening closure
+
+The reopened worker-contract findings above were re-audited at clean commit
+`c3a653e4`. This closes only the gate-hardening findings; it does not promote
+any public model row or infer a VAST/Apple parity result.
+
+- Conv-TasNet now uses the dedicated frozen project, binds one explicit
+  external approval document to the exact manifest/lock/project scope, rejects
+  duplicate or tampered approval/reference JSON, and validates absent,
+  non-symlink, canonically disjoint input/work/evidence/fixture paths before
+  any cache, download or output creation. The approval digest is rechecked
+  after validation. Its unresolved CC-BY-SA-3.0/4.0 versus WHAM
+  CC-BY-NC-4.0 policy and Asteroid dependency review remain fail-closed, so
+  the production license gate still exits 2.
+- MOSS Audio Tokenizer v2 and Nano now reject duplicate keys in every staged
+  manifest/approval/snapshot index path and assert controlled exit 2 with no
+  work/evidence side effects for missing, duplicate, relative, symlinked or
+  overlapping inputs. Explicit approval, gate-first ordering and `NO_UPLOAD`
+  remain mandatory. Nano's custom-code identity and numerical bound remain
+  unresolved; v2 and Nano still require real VAST and Apple runs.
+- SpeechBrain Lang-ID, YuE XCodec Mini and MOSS TTS Local were found to already
+  contain the strict duplicate-JSON, controlled-exit, exact-lock and disjoint
+  path contracts described by the reopened findings. Manager-repeated Python
+  and shell self-tests passed; no source edit was needed. MOSS Local still has
+  its separate 48-kHz stereo companion and real-weight boundaries.
+
+The manager repeated Bash syntax, ShellCheck, the focused VAST/Apple worker
+self-tests, the Conv-TasNet and MOSS license-gate self-tests, and
+`git diff --check` without running a model, downloading weights, synchronizing
+a parity environment or invoking Cargo. The implementation commits are
+`358fe1b2` (MOSS tokenizer staging gates) and `c3a653e4` (Conv-TasNet approval
+binding).
+
 SBV2 likewise has prior real CPU evidence rather than an unproven forward.
 The 2026-08-18 VAST records cover the JP-Extra main model with JA/EN BERT and
 the optional ZH BERT leg through the final waveform without widening bounds.

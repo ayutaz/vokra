@@ -23,18 +23,21 @@ no `--push`, repo deletion or public replacement is authorized by this plan.
 
 ## Audited baseline
 
-The live read-only Hugging Face audit was repeated at branch HEAD
-`e312b997b3c92f434a75cdc63fa00d06e79adf2d` on 2026-08-30.  It returned 194
+The live read-only Hugging Face audit was repeated at clean branch commit
+`c3a653e4` on 2026-08-30.  It returned 194
 public repositories, 193 GGUF-bearing repositories and 198 GGUF files:
 
 | Dimension | Complete | Remaining |
 |---|---:|---:|
 | Mac CPU | 131 | 42 partial + 20 no-runtime-binder + 1 non-artifact |
-| Apple Metal | 128 | 62 blocked by CPU + 3 CPU-only + 1 non-artifact |
+| Apple Metal | 129 | 62 blocked by CPU + 2 CPU-only + 1 non-artifact |
 
-The three CPU-complete/Metal-open repositories are
-`vokra/omniasr-ctc-1b`, `vokra/sber-gigaam-multilingual` and
-`vokra/sber-gigaam-v3`.
+The two CPU-complete repositories still classified as source-level CPU-only are
+`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`.  OmniASR-CTC-1B
+is now classified as a complete Metal code route, raising source-level Metal
+coverage from 128 to 129, but it still needs the same authenticated Apple CPU
+and Metal hardware evidence as the two GigaAM rows.  The Wave A Scaleway packet
+therefore deliberately still contains all three models.
 
 The 63 CPU-open rows split into execution classes rather than one misleading
 flat list:
