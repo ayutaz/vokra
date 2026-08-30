@@ -179,6 +179,22 @@ curl -sI https://huggingface.co/vokra/voxtral-small-24b-2507 | head -1
 
 vast.ai UI から即 destroy、または `scripts/publish/vast-ai/vastai-safe.sh destroy instance <instance-id>` (CLI 使用時)。dry-run/evidence だけなら完了後すぐ destroy。upload が明示承認された場合は **upload 完了 → live 確認 → destroy** の順で、GGUF は remote に残さない。ローカルから Vast CLI を呼ぶ場合は必ず `vastai-safe.sh` を経由すること。stdout/stderr に誤って出る URL クエリの `api_key` 等を `[REDACTED]` に置換し、CLI の終了コードは保持する。
 
+#### retained handoff の一時停止例外
+
+通常は work 完了後に destroy する。例外として、直近の再開予定が明示された
+retained handoff（別環境への転送待ちなど）に限り、外部 backup を済ませた上で
+一時的に Stop を選べる。Stop は compute 課金を止めデータを保持するが、storage
+課金は継続し、再開時に GPU を確保できる保証はない。重要データは外部 backup
+にも保持し、handoff・再開・検証が完了したら必ず destroy する。Destroy は
+データを削除して全課金を停止する。仕様は [Vast Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
+および [Vast Storage types](https://docs.vast.ai/guides/instances/storage/types)
+を参照。
+
+**2026-08-30 の retained handoff**: instance `49168183`
+(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage, `$0.3074/h`) は
+Scaleway 転送 packet 保持のためだけに稼働中である。転送完了後に destroy する。
+今回の更新では stop/destroy 操作は行わない。
+
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
 一部 checkpoint に `num_batches_tracked` (BatchNorm training-only int64 counter) 等の inference-inert int tensor が入っている。Vokra converter は F32/F16/BF16 のみ受け付けるため、**convert 前に strip する**:

@@ -1,7 +1,7 @@
 # 四半期 Go/No-go review 運用手順 runbook
 
 **文書 ID**: VOKRA-GOV-002
-**最終更新**: 2026-08-18（現行文書体系・履歴参照を再照合）
+**最終更新**: 2026-08-30（現行文書体系・release cadence実装・履歴参照を再照合）
 **位置付け**: 本runbookのKill switch表（撤退条件 A〜L）と
 system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review をリリース
 プロセスに組み込む）の**手動 review 運用手順**。判定そのものは依頼者（`ayutaz`）が
@@ -28,6 +28,18 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 - **WP レイヤ**: M2-15（`docs/tickets/m2/M2-15-quarterly-review.md`）が v0.5 期の
   四半期 review の実体 WP。M3 以降も同型で M3-19 等が四半期 review イベントを
   担う（`docs/milestones.md` §7）。
+
+### 0.1.1 現行のrelease cadence実装
+
+X-07の cadence 機構は **land済み**: `.github/workflows/release-cadence.yml`
+が実行され、`tools/release/test_cadence.py` が判定ロジックを検証する。
+ただし現時点の実測は **git tag 0 / GitHub release 0 / quarterly review record 0** であり、
+4週間の安定運用はまだ established ではない。実装の存在をreview verdictや
+リリース実績と混同しない。
+
+Kill switch/DoDの「Claude Codeを除く」表記は、ownerが定めた**規範上の閾値**として
+保持する。現行Codex運用の説明（agentが作業を支援すること）に読み替えて閾値を変更
+してはならず、contributorsの集計定義は各reviewで明記する。
 
 ### 0.2 廃止された自動監視（重要）
 
@@ -77,9 +89,9 @@ system-requirements.md **NFR-MT-05**（Kill switch 四半期 Go/No-go review を
 これらは判定日到来した四半期 review に合流させ、独立 review を起こさない |
 
 **カレンダー登録は依頼者責任**（本 runbook は自動 CI に載せない = 2026-07-04
-依頼者決定の遵守）。v0.1 MVP release tag `v0.1.0` を打った日、v0.5 release
-tag `v0.5.0` を打った日を起点にカレンダー登録する運用を推奨（兄弟 runbook §5
-と同じ扱い）。
+依頼者決定の遵守）。v0.1 MVP / v0.5 の release tag を実際に発行した日を起点に
+登録する。**2026-08-30現在はgit tagもGitHub releaseも0件のため、起点日は未確定**。
+旧文書にある `v0.1.0` / `v0.5.0` は予定上の名前であり、発行済みtagとして扱わない。
 
 ---
 

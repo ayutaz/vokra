@@ -1,11 +1,27 @@
-# Vokra ABI Changelog (pre-1.0 prerelease window: v0.9 + v1.0-rc)
+# Vokra ABI Changelog (historical prerelease buckets; current line: v0.2.0)
 
-This file tracks **binary-facing** surface changes between v0.1.0 (the M0/M1
-baseline, tagged 2026-07-04) and v1.0 GA (the IF-01 freeze point, owned by
-**M5-13** — 2026-07-14 v-label reassignment #2, see the note below; M4-12
-before that date). It is **narrower and machine-checkable** vs. the
-human-readable `CHANGELOG.md`: only symbols that cross the ABI boundary
-belong here.
+This file tracks **binary-facing** surface changes on the way to v1.0 GA (the
+IF-01 freeze point, owned by **M5-13** — see the historical reassignment note
+below). It is **narrower and machine-checkable** than the human-readable
+`CHANGELOG.md`: only symbols that cross the ABI boundary belong here.
+
+> **Current state (2026-08-30):** The authoritative workspace version is
+> **`0.2.0`** (`Cargo.toml`). The 2026-08-30 documentation refresh
+> cross-checked the pre-documentation implementation/code baseline at
+> `c64b7b7237b70c5dc70ffd60394af325016d9a8d`; GitHub `main` is
+> `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. There are **0 git tags and 0
+> GitHub releases**. The former description of a `v0.1.0` tag on 2026-07-04
+> was incorrect; no such release/tag was created.
+>
+> The existing `v0.9` and `v1.0-rc` entry headings and snapshot filenames are
+> **historical milestone buckets and tooling anchors**, not current Cargo
+> versions or published releases. They remain as dated ABI history and because
+> `scripts/check-abi-changelog.sh` still compares the header against the
+> `docs/abi/vokra.h.v1.0-rc-baseline.symbols` anchor. As of this date,
+> `bash scripts/check-abi-changelog.sh --list` reports the current header as
+> **57 FUNC / 15 TYPEDEF**; that live count must not be confused with the
+> historical v1.0-rc snapshot count. The ABI freeze at **v1.0 GA** remains the
+> planned policy and is unchanged.
 
 > **2026-07-14 v-label reassignment #2** (owner decision): M4 = **v1.0-rc**
 > (was v1.0 GA), M5 = **v1.0 GA** (was v2.0 GA); the scope through the former
@@ -2124,8 +2140,9 @@ without a major bump.
    could not be chosen from C.
 2. **Speaker embedding** (`speaker_encode` / `speaker_verify`, FR-OP-80 /
    FR-OP-81). `SpeakerEncoder::embed` and `speaker_verify` had no C entry.
-   CLAUDE.md design note 8 keeps voice *cloning* in the separate
-   `vokra-voiceclone-experimental` repo under the ELVIS Act split while
+   The current `docs/legal-compliance.md` §§3–4 and
+   `docs/system-requirements.md` FR-CP-04 keep voice *cloning* in the separate
+   `vokra-voiceclone-experimental` repo under the legal/scope split while
    speaker *embedding* stays in core; exposing it here is that decision's
    consequence, and it is what makes zero-shot TTS usable from a binding.
 

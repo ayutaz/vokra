@@ -1,5 +1,12 @@
 # Codex operations handoff (2026-08-28)
 
+> **Superseded current-state note (2026-08-30):** This document remains a
+> dated 2026-08-28 historical record. For the current Mac CPU/Metal baseline,
+> branch state, VAST evidence, and remaining work, read
+> [`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`](mac-cpu-metal-full-coverage-2026-08-28.md).
+> The historical baseline and session narrative below are intentionally not
+> rewritten into present tense.
+
 ## Current baseline
 
 - Repository: `ayutaz/vokra`

@@ -39,7 +39,29 @@ description: メモリを食う作業を vast.ai へ逃がすときに使う。*
 1. **rent**: vast.ai 上で GPU instance を借りる（cheapest でも RAM ≥64 GB / disk ≥200 GB は必須、convert 用途なら GPU は 4090 で十分、H100 は FA v3 bench 用）
 2. **provision**: `scripts/publish/vast-ai/provision.sh` を SSH 上で実行（4 gotcha を pre-handle）
 3. **work**: `run-one.sh` per model or 直接 cargo コマンド
-4. **destroy**: **必ず `vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）
+4. **destroy**: **必ず `vastai-safe.sh destroy instance <instance-id>` で auto-destroy**（走らせっぱなしは $/h で課金継続、ADR §D6）。ただし、直近に再開することが明示された retained handoff（たとえば別環境への転送待ち）に限り、一時的な `stop` を許可できる。Stop は compute 課金を止めてデータを保持するが storage 課金は継続し、再開時の GPU 確保は保証されない。重要データは外部にも backup し、handoff 完了後は必ず destroy する。
+
+### 一時停止の限定例外（retained handoff のみ）
+
+通常原則は **work 完了後に destroy** であり、アイドル時間の節約を理由に
+借りっぱなしの instance を一般的に stop してよい、という意味ではない。次の
+条件をすべて満たす場合だけ、直近の再開予定が明示された retained handoff
+として stop を選べる:
+
+- 保持するデータと再開目的（例: Scaleway への転送待ち）が記録されている。
+- 重要データを外部 backup 済みである（stop は backup の代替ではない）。
+- stop 後も storage 課金が続くこと、再開時に GPU を確保できないリスクを了承する。
+- 転送・再開・検証が完了したら、直ちに `destroy` する。
+
+Vast の公式仕様では、Stop は compute 課金を止めてデータを保持しますが、
+storage 課金は継続し、再開時の GPU 確保は保証されません。Destroy はデータを
+削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
+と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
+
+**現在の retained handoff (2026-08-30)**: instance `49168183`
+(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage, `$0.3074/h`) は
+Scaleway 転送 packet を保持する目的でのみ稼働中である。転送完了後に destroy
+し、今回の文書更新では stop/destroy 操作自体は行わない。
 
 ## 2. Rent phase（vast.ai 側）
 

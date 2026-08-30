@@ -1,6 +1,6 @@
 # Codex operations handoff (2026-08-18)
 
-## Current baseline
+## Historical baseline at handoff (2026-08-18; superseded)
 
 - Repository: `ayutaz/vokra`
 - Current branch: `main`
@@ -15,6 +15,19 @@
 This file records the decisions carried from the Claude Code session into
 Codex. Reusable policy belongs in `AGENTS.md`, `.agents/skills/`, and hooks;
 this file keeps the dated evidence and branch history.
+
+## Current-state supersession notice (2026-08-30)
+
+This handoff is history-only. The baseline branch name was
+`feat/mac-cpu-metal-full-coverage-2026-08-28`. The 2026-08-30 documentation
+refresh cross-checked the pre-documentation implementation/code baseline at
+`c64b7b7237b70c5dc70ffd60394af325016d9a8d`; workspace `0.2.0`, with C ABI
+57 functions / 15 typedefs and M5 49 checked / 33 unchecked. The GitHub `main`
+reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. Current model,
+VAST and Scaleway status is authoritative only in
+`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` and
+`docs/m5-owner-verification-checklist.md`; the dated baseline and all later
+history in this file are not current-state claims.
 
 ## Mainline history used for the reconciliation
 

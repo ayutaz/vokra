@@ -11,7 +11,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 - **スコープ判定**: 音声 AI 全域が in-scope（2026-07-30 依頼者 override、旧「TTS/ASR/VAD/Speaker-ID のみ」の絞りは廃止）。**新たに含まれる**: 音楽生成（MusicGen / Stable Audio / ACE-Step 等）／音声分離（SepFormer / Demucs / TIGER 等）／音声 LLM（Voxtral / Qwen2-Audio / Moshi 等）。**out-of-scope 継続**: 汎用 LLM、CV、multimodal（vision 側）— [[project-scope-expansion-2026-07-30]]。
 - **ライセンス audit を先に通す** → skill `license-audit`。weight が **CC-BY-NC / CC-BY-NC-SA / 学習データ権利不明**なら公式 model zoo から除外し、engine 対応のみ・research flag 分離（例: F5-TTS, Fish-Speech は weight 非配布）。
-- 用途が **voice cloning（RVC / VC / speaker cloning の trigger 側）** なら core に入れない → 別リポジトリ `vokra-voiceclone-experimental`（ELVIS Act / NO FAKES Act、AGENTS.md 設計判断 #8）。**speaker embedding 抽出は core に残す**（zero-shot TTS 必須）。voice-clone の共通 op（F0 抽出等）は core に残し、trigger model のみ別リポへ。
+- 用途が **voice cloning（RVC / VC / speaker cloning の trigger 側）** なら core に入れない → 別リポジトリ `vokra-voiceclone-experimental`（境界の根拠: `docs/legal-compliance.md` §3/§4、および `docs/system-requirements.md` FR-CP-04）。**speaker embedding 抽出は core に残す**（zero-shot TTS 必須）。voice-clone の共通 op（F0 抽出等）は core に残し、trigger model のみ別リポへ。
 
 ## 1. native 自前再実装（whisper.cpp 型）
 
@@ -26,7 +26,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 ## 2. GGUF オフライン変換（`vokra-convert`）
 
 - 上流 checkpoint → GGUF 変換は `crates/vokra-convert/` に追加。ONNX / protobuf を扱うのはこの**オフラインツールのみ**（runtime 側には持ち込まない）。
-- 音声固有 metadata は **`vokra.*` prefix の独自 chunk** で焼き込む（llama.cpp 本体との命名衝突回避、AGENTS.md 設計判断 #3）。frontend を持つモデルは `vokra.frontend.*`（n_fft/hop/win_length/window_type/mel_norm/htk_mode/fmin/fmax/n_mels/pad_mode/sample_rate 等）を必須で書く（bit-exact 再現、レビュアー C 指摘 #2）。
+- 音声固有 metadata は **`vokra.*` prefix の独自 chunk** で焼き込む（llama.cpp 本体との命名衝突回避。仕様は `docs/design/vokra-gguf-chunks.md`、キー定数は `crates/vokra-core/src/gguf/chunks.rs` 等のコードをSoTとする）。frontend を持つモデルは `vokra.frontend.*`（n_fft/hop/win_length/window_type/mel_norm/htk_mode/fmin/fmax/n_mels/pad_mode/sample_rate 等）を必須で書く（bit-exact 再現、レビュアー C 指摘 #2）。
 
 ### 2.1 事前 merge が要る checkpoint 形状
 
@@ -71,7 +71,7 @@ description: Vokra に新しい音声モデル（TTS / ASR / S2S / VC / Speaker-
 
 - `docs/license-audit.md` に行追加（code/weight ライセンス・商用可否・学習データ由来）。
 - attribution / 配布条件があれば `NOTICE` に追記（例: Mimi は CC-BY 4.0 で credit 要）。
-- 対応表（AGENTS.md の「対応モデル」）と対応時期を更新。
+- 対応モデルのstatusは `docs/license-audit.md` §3.1、現行M5/mac handoff（`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`）、および `scripts/publish/check-catalog-reality.sh` の実測を突合して更新。
 - 調査値・レイテンシ・パラメータ数は **出典必須**（ハルシネーション厳禁）。不明なら `docs/_research/*.md` を読み返す。
 
 ## 7. 検証してコミット

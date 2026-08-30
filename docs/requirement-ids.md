@@ -29,7 +29,8 @@ guessing.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-10 — 103 IDs cited across the public documents (NFR-PF-12 refresh landed with WP-15 NPU / H100 bakeoff harness).**
+**Last verified: 2026-08-30 — 110 IDs cited across the public documents and 33
+architecture anchors (the mechanically derived current sets).**
 
 The set this page must cover is mechanically derived, not curated by hand.
 Regenerate it with:
