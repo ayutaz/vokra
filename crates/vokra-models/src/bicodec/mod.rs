@@ -1506,13 +1506,16 @@ mod tests {
     }
 
     fn parity_backend_from_env() -> BackendKind {
-        parse_parity_backend(std::env::var("VOKRA_BICODEC_PARITY_BACKEND").ok()).unwrap_or_else(
-            |error| {
-                panic!(
-                    "VOKRA_BICODEC_PARITY_BACKEND is required and must be exactly cpu or metal: {error}"
-                )
-            },
+        parse_parity_backend(
+            std::env::var("VOKRA_BICODEC_PARITY_BACKEND")
+                .ok()
+                .as_deref(),
         )
+        .unwrap_or_else(|error| {
+            panic!(
+                "VOKRA_BICODEC_PARITY_BACKEND is required and must be exactly cpu or metal: {error}"
+            )
+        })
     }
 
     fn parse_parity_backend(value: Option<&str>) -> std::result::Result<BackendKind, &'static str> {
