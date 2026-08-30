@@ -542,7 +542,7 @@ def self_test() -> None:
     assert gate["dependency_audit"]["lock_sha256"] is None
     assert len(gate["weights"]) == 5
     dependency = json.loads((PROJECT / "dependency_audit.json").read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
-    assert dependency["compatibility"]["status"] == "BLOCKED_UNVERIFIED"
+    assert dependency["compatibility"]["status"] == "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO"
     assert "scanner" in dependency["compatibility"]["reason"]
     assert marker_reaches("sys_platform == 'linux' and platform_machine == 'x86_64'")
     assert not marker_reaches("sys_platform == 'darwin'")

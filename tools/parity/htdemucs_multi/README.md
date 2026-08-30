@@ -34,9 +34,16 @@ never converts or uploads a model. A fixed public audio
 fixture must be supplied by the VAST operator with an independently recorded
 SHA-256; no fixture bytes are bundled or invented here.
 
-The dependency audit row file is deliberately empty and unreviewed. Before a
-reference run, VAST must fill exact package rows (`name`, `version`, artifact
-SHA-256, license) and license rows (`name`, license, status, source, SHA-256),
+The dependency audit row file is deliberately empty and blocked. A VAST
+Python 3.12.14 resolution run proved that the unchanged upstream
+`torchaudio>=0.8,<2.1` constraint is unsatisfiable: available releases are
+`<=2.0.2+cpu` and `>=2.1`, and `2.0.2+cpu` has only cp38/cp39/cp310/cp311
+wheels. The evidence log SHA-256 is
+`ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba`, recorded
+at run commit `73307e99c83fdd59ca9693abdc343b929fb518de`. No
+model/checkpoint/Torch import was performed. Do not loosen the upstream pin.
+Before a future compatible source-specific decision, VAST must fill exact
+package rows (`name`, `version`, artifact SHA-256, license) and license rows (`name`, license, status, source, SHA-256),
 then pin each canonical row-array digest and the uv lock digest. Each active
 package row binds a selected artifact `{kind,url,sha256,bytes}`; its license
 evidence repeats that exact artifact identity and binds separate license

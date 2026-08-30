@@ -1,6 +1,6 @@
 {
   "schema": "vokra-htdemucs-multi-dependency-audit-v1",
-  "status": "UNREVIEWED",
+  "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
   "python": "==3.12.*",
   "platform": "linux-x86_64",
   "direct_requirements_source": {
@@ -8,9 +8,9 @@
     "sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29"
   },
   "compatibility": {
-    "status": "BLOCKED_UNVERIFIED",
+    "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
     "constraint": "torchaudio>=0.8,<2.1",
-    "reason": "The upstream constraint predates Python 3.12; VAST must prove that an exact torch/torchaudio pair has compatible Linux x86_64 wheels before model execution. PyTorch releases before the scanner API (including likely torch<2.1 candidates) cannot perform the required static-global inspection, so the scanner capability must also be proven. Do not loosen this constraint without a source-specific owner decision."
+    "reason": "VAST Python 3.12.14 cannot resolve the unchanged upstream torchaudio>=0.8,<2.1 constraint: available releases are <=2.0.2+cpu and >=2.1, while 2.0.2+cpu has cp38/cp39/cp310/cp311 wheels only and no cp312 wheel. Do not loosen the upstream constraint. The compatibility run also requires the Torch scanner API; its log SHA-256 is ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba at commit 73307e99c83fdd59ca9693abdc343b929fb518de. No model/checkpoint/Torch import was performed."
   },
   "package_rows": [],
   "license_rows": [],
@@ -25,7 +25,8 @@
   "blockers": [
     "uv.lock has not been generated on VAST",
     "exact package artifact bytes and primary license rows are not audited",
-    "Python 3.12 torchaudio<2.1 compatibility is unverified",
+    "Python 3.12.14 torchaudio>=0.8,<2.1 is unsatisfiable: no cp312 wheel exists",
+    "compatibility evidence log ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba was recorded at run commit 73307e99c83fdd59ca9693abdc343b929fb518de",
     "lameenc is included by the upstream requirements contract and remains unreviewed"
   ]
 }
