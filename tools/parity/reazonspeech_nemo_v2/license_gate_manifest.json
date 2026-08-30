@@ -1,0 +1,17 @@
+{
+  "schema": "vokra-reazonspeech-nemo-v2-preflight-v1",
+  "model": "reazonspeech-nemo-v2",
+  "upstream_repo": "reazon-research/reazonspeech-nemo-v2",
+  "upstream_revision": "33693408be76b7cba9fd4a7546a0a8772430211b",
+  "archive_bytes": 2477946880,
+  "archive_sha256": "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae",
+  "license_spdx": "Apache-2.0",
+  "no_upload": true,
+  "dependency_project": "tools/parity/pyproject.toml",
+  "dependency_lock": "tools/parity/uv.lock",
+  "reference_implementation": "nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from",
+  "vast_route": "VAST-only conversion and official-NeMo reference; no upload",
+  "apple_route": "Darwin arm64 CPU and Metal parity; staged inputs only",
+  "operator_approval": "PENDING_EXTERNAL",
+  "approval_scope_sha256": "66eff2c404a4b3b5a9f2f31426deaa2529cf150297f7c4bce78687e31ced5928"
+}

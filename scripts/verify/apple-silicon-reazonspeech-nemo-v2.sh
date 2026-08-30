@@ -20,6 +20,8 @@ PARITY_SOURCE="$VOKRA_ROOT/crates/vokra-models/tests/parity_reazonspeech_nemo_v2
 PARITY_TARGET="parity_reazonspeech_nemo_v2"
 CPU_TEST="released_cpu_encoder_and_alsd_tokens_text_match_official_nemo"
 METAL_TEST="released_metal_matches_cpu_encoder_and_alsd_tokens_text"
+PREFLIGHT_GATE="$VOKRA_ROOT/tools/parity/reazonspeech_nemo_v2/preflight_gate.py"
+PREFLIGHT_MANIFEST="$VOKRA_ROOT/tools/parity/reazonspeech_nemo_v2/license_gate_manifest.json"
 
 log() { printf '[reazonspeech-nemo-v2-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -52,32 +54,12 @@ require_file() {
 }
 
 license_preflight() {
-  local approval="$1" project="$VOKRA_ROOT/tools/parity/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/uv.lock" project_sha lock_sha
-  [[ -f "$project" && ! -L "$project" && -f "$lock" && ! -L "$lock" ]] || die "locked parity project is missing or symlinked"
-  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] || die "approval evidence must be a nonempty regular non-symlink file"
-  project_sha="$(shasum -a 256 "$project" | awk '{print $1}')"
-  lock_sha="$(shasum -a 256 "$lock" | awk '{print $1}')"
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" <<'PY'
-import hashlib, json, pathlib, sys
-def hook(pairs):
-    out = {}
-    for key, value in pairs:
-        if key in out: raise ValueError("duplicate JSON key: " + key)
-        out[key] = value
-    return out
-try:
-    data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=hook)
-    expected = {"schema", "model", "upstream_repo", "upstream_revision", "license_spdx", "project_sha256", "lock_sha256", "no_upload", "decision", "signer", "scope_sha256"}
-    if set(data) != expected: raise ValueError("approval schema is not exact")
-    if data["schema"] != "vokra-validation-approval-v1" or data["model"] != "reazonspeech-nemo-v2" or data["upstream_repo"] != "reazon-research/reazonspeech-nemo-v2" or data["upstream_revision"] != "33693408be76b7cba9fd4a7546a0a8772430211b": raise ValueError("approval identity mismatch")
-    if data["license_spdx"] != "apache-2.0" or data["project_sha256"] != sys.argv[2] or data["lock_sha256"] != sys.argv[3] or data["no_upload"] is not True or data["decision"] != "APPROVED": raise ValueError("approval facts mismatch")
-    if not isinstance(data["signer"], str) or not data["signer"].strip() or data["signer"].strip().upper() in {"TODO", "UNRESOLVED", "OWNER_SIGNOFF_REQUIRED"}: raise ValueError("approval signer unresolved")
-    scope = {"license_spdx": data["license_spdx"], "lock_sha256": sys.argv[3], "model": data["model"], "no_upload": True, "project_sha256": sys.argv[2], "upstream_repo": data["upstream_repo"], "upstream_revision": data["upstream_revision"]}
-    if data["scope_sha256"] != hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest(): raise ValueError("approval scope digest mismatch")
-except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-    raise SystemExit("approval gate BLOCKED: " + str(exc))
-PY
-  then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
+  local approval="$1" project="$VOKRA_ROOT/tools/parity/pyproject.toml" lock="$VOKRA_ROOT/tools/parity/uv.lock"
+  [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] || die "ReazonSpeech preflight gate/manifest is missing or symlinked"
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" \
+    --project "$project" --lock "$lock"
+  then :; else die 'external ReazonSpeech approval preflight is unresolved'; fi
   if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$VOKRA_ROOT/scripts/publish/signoff_match.py" --check-repo reazonspeech-nemo-v2 --audit "$VOKRA_ROOT/docs/license-audit.md"
   then :; else die 'repository signoff is unresolved'; fi
 }
@@ -107,6 +89,16 @@ require_absent_evidence_dir() {
     paths_overlap "$candidate" "$other" && { die "evidence directory overlaps a protected input"; return 2; }
   done
   return 0
+}
+
+production_order_ok() {
+  local script_path="$1" gate_pattern="$2" host_pattern="$3" scratch_pattern="$4"
+  local gate_line host_line scratch_line
+  gate_line="$(grep -nE "$gate_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  host_line="$(grep -nE "$host_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  scratch_line="$(grep -nE "$scratch_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  [[ -n "$gate_line" && -n "$host_line" && -n "$scratch_line" \
+    && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$scratch_line" ]]
 }
 
 require_cargo_result() {
@@ -372,6 +364,7 @@ hash_reference_directory() {
       done > "$output"
 }
 
+# shellcheck disable=SC2016
 run_self_test() (
   local script_path="${BASH_SOURCE[0]}" temporary fail=0 required
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-reazonspeech-apple.XXXXXX")"
@@ -390,6 +383,11 @@ run_self_test() (
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
     'reazon-research/reazonspeech-nemo-v2' \
     '33693408be76b7cba9fd4a7546a0a8772430211b' \
+    'd196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae' \
+    'tools/parity/reazonspeech_nemo_v2/preflight_gate.py' \
+    'tools/parity/reazonspeech_nemo_v2/license_gate_manifest.json' \
+    '--manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval"' \
+    'PENDING_EXTERNAL' 'no_upload' \
     'vokra-reazonspeech-nemo-v2-reference-v1' \
     'nemo.collections.asr.models.EncDecRNNTBPEModel.restore_from' \
     'nemo-toolkit[asr]==3.0.0' \
@@ -410,6 +408,18 @@ run_self_test() (
       fail=1
     fi
   done
+  local gate_pattern='^[[:space:]]*license_preflight "\$approval"[[:space:]]*$'
+  local host_pattern='^[[:space:]]*require_remote_apple_host[[:space:]]*$'
+  local scratch_pattern='^[[:space:]]*mkdir -p "\$evidence_dir"[[:space:]]*$'
+  if ! production_order_ok "$script_path" "$gate_pattern" "$host_pattern" "$scratch_pattern"; then
+    log 'self-test FAIL: preflight is not before host/scratch'
+    fail=1
+  fi
+  if grep -vE "$gate_pattern" "$script_path" > "$temporary/without-preflight.sh" \
+    && production_order_ok "$temporary/without-preflight.sh" "$gate_pattern" "$host_pattern" "$scratch_pattern"; then
+    log 'self-test FAIL: deleted production preflight was accepted'
+    fail=1
+  fi
   mkdir "$temporary/duplicate" "$temporary/typed"
   printf '%s\n' '{"format":"x","format":"y"}' > "$temporary/duplicate/reference.json"
   printf '%s\n' '{"format":7,"extra":true}' > "$temporary/typed/reference.json"

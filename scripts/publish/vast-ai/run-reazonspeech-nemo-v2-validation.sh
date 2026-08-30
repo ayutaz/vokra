@@ -33,45 +33,17 @@ REFERENCE_DIR_ENV="VOKRA_REAZONSPEECH_NEMO_V2_REFERENCE_DIR"
 PROJECT_FILE="tools/parity/pyproject.toml"
 LOCK_FILE="tools/parity/uv.lock"
 SIGNOFF_REPO="reazonspeech-nemo-v2"
+PREFLIGHT_GATE="tools/parity/reazonspeech_nemo_v2/preflight_gate.py"
+PREFLIGHT_MANIFEST="tools/parity/reazonspeech_nemo_v2/license_gate_manifest.json"
 
 license_preflight() {
-  local approval="$1" project_sha lock_sha
-  [[ -f "$PROJECT_FILE" && ! -L "$PROJECT_FILE" && -f "$LOCK_FILE" && ! -L "$LOCK_FILE" ]] \
-    || die "locked parity project is missing or symlinked"
-  [[ -f "$approval" && ! -L "$approval" && -s "$approval" ]] \
-    || die "--approval-evidence must be a nonempty regular non-symlink file"
-  project_sha="$(sha256sum "$PROJECT_FILE" | awk '{print $1}')"
-  lock_sha="$(sha256sum "$LOCK_FILE" | awk '{print $1}')"
-  # Dependency-free, duplicate-key rejecting approval contract.  The digest
-  # binds the exact committed lock/project bytes, fixed model identity, the
-  # separate license decision, and the no-upload policy.
-  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$approval" "$project_sha" "$lock_sha" <<'PY'
-import hashlib, json, pathlib, sys
-
-path, project_sha, lock_sha = sys.argv[1:]
-def reject(pairs):
-    out = {}
-    for key, value in pairs:
-        if key in out:
-            raise ValueError("duplicate JSON key: " + key)
-        out[key] = value
-    return out
-try:
-    data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"), object_pairs_hook=reject)
-    expected = {"schema", "model", "upstream_repo", "upstream_revision", "license_spdx", "project_sha256", "lock_sha256", "no_upload", "decision", "signer", "scope_sha256"}
-    if set(data) != expected:
-        raise ValueError("approval schema is not exact")
-    if data["schema"] != "vokra-validation-approval-v1" or data["model"] != "reazonspeech-nemo-v2": raise ValueError("approval identity mismatch")
-    if data["upstream_repo"] != "reazon-research/reazonspeech-nemo-v2" or data["upstream_revision"] != "33693408be76b7cba9fd4a7546a0a8772430211b": raise ValueError("upstream identity mismatch")
-    if data["license_spdx"] != "apache-2.0" or data["project_sha256"] != project_sha or data["lock_sha256"] != lock_sha or data["no_upload"] is not True or data["decision"] != "APPROVED": raise ValueError("approval facts mismatch")
-    if not isinstance(data["signer"], str) or not data["signer"].strip() or data["signer"].strip().upper() in {"TODO", "UNRESOLVED", "OWNER_SIGNOFF_REQUIRED"}: raise ValueError("approval signer unresolved")
-    scope = {"license_spdx": data["license_spdx"], "lock_sha256": lock_sha, "model": data["model"], "no_upload": True, "project_sha256": project_sha, "upstream_repo": data["upstream_repo"], "upstream_revision": data["upstream_revision"]}
-    digest = hashlib.sha256(json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    if data["scope_sha256"] != digest: raise ValueError("approval scope digest mismatch")
-except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-    raise SystemExit(f"approval gate BLOCKED: {exc}")
-PY
-  then :; else die 'approval evidence is invalid or offline Python is unavailable'; fi
+  local approval="$1"
+  [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] \
+    || die "ReazonSpeech preflight gate/manifest is missing or symlinked"
+  if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" \
+    --manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval" \
+    --project "$PROJECT_FILE" --lock "$LOCK_FILE"
+  then :; else die 'external ReazonSpeech approval preflight is unresolved'; fi
   if UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python scripts/publish/signoff_match.py --check-repo "$SIGNOFF_REPO" \
     --audit docs/license-audit.md
   then :; else die 'repository signoff is unresolved'; fi
@@ -111,6 +83,17 @@ require_absent_work_dir() {
   return 0
 }
 
+production_order_ok() {
+  local script_path="$1" gate_pattern="$2" host_pattern="$3" scratch_pattern="$4"
+  local gate_line host_line scratch_line
+  gate_line="$(grep -nE "$gate_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  host_line="$(grep -nE "$host_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  scratch_line="$(grep -nE "$scratch_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  [[ -n "$gate_line" && -n "$host_line" && -n "$scratch_line" \
+    && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$scratch_line" ]]
+}
+
+# shellcheck disable=SC2016
 run_self_test() {
   local script_path="${BASH_SOURCE[0]}" tmp fail=0 cases=0 required
   tmp="$(mktemp -d)"
@@ -121,6 +104,11 @@ run_self_test() {
   for required in \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$MODEL_KIND" "$PARITY_TEST" \
     "$GGUF_ENV" "$REFERENCE_DIR_ENV" \
+    "tools/parity/reazonspeech_nemo_v2/preflight_gate.py" \
+    "tools/parity/reazonspeech_nemo_v2/license_gate_manifest.json" \
+    '--manifest "$PREFLIGHT_MANIFEST" --approval-evidence "$approval"' \
+    "d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae" \
+    "no_upload" "PENDING_EXTERNAL" \
     "tools/parity/reazonspeech_nemo_v2_prepare_checkpoint.py" \
     "tools/parity/reazonspeech_nemo_v2_dump_reference.py" \
     "--frozen --project tools/parity --python 3.12 python" \
@@ -159,6 +147,19 @@ run_self_test() {
       fail=1
     fi
   done
+
+  local gate_pattern='^[[:space:]]*license_preflight "\$approval_evidence"[[:space:]]*$'
+  local host_pattern='^[[:space:]]*\[\[ "\$\(uname -s\)" == "Linux" \]\]'
+  local scratch_pattern='^[[:space:]]*mkdir -p "\$work_dir"[[:space:]]*$'
+  if ! production_order_ok "$script_path" "$gate_pattern" "$host_pattern" "$scratch_pattern"; then
+    echo 'run-reazonspeech-nemo-v2-validation: self-test FAIL: preflight is not before host/scratch' >&2
+    fail=1
+  fi
+  if grep -vE "$gate_pattern" "$script_path" > "$tmp/without-preflight.sh" \
+    && production_order_ok "$tmp/without-preflight.sh" "$gate_pattern" "$host_pattern" "$scratch_pattern"; then
+    echo 'run-reazonspeech-nemo-v2-validation: self-test FAIL: deleted production preflight was accepted' >&2
+    fail=1
+  fi
 
   cases=$((cases + 1))
   if "$script_path" --self-test --work-dir "$tmp/nonempty" >/dev/null 2>&1; then
