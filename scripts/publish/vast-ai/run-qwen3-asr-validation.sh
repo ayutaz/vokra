@@ -9,6 +9,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/qwen3_asr"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 REFERENCE_AUDIO="$VOKRA_ROOT/tests/parity/utmos/ref-clip.wav"
@@ -160,7 +161,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git awk find tee wc df; do
+  for tool in uv cargo rustc rustup git awk find tee wc df readelf; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -168,6 +169,8 @@ require_tooling() {
   [[ -f "$PARITY_PROJECT/pyproject.toml" ]] || die "Qwen3-ASR parity pyproject.toml is missing"
   [[ -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
     || die "Qwen3-ASR preflight gate inputs are missing"
+  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] \
+    || die "Qwen3-ASR dependency audit is missing or symlinked"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
   [[ -f "$REFERENCE_AUDIO" ]] || die "reference audio is missing"
   local audio_hash
@@ -318,7 +321,7 @@ run_variant() {
 }
 
 run_self_test() {
-  local failed=0 gate_line host_line tooling_line sync_line build_line pre_gate_block probe_root probe_output
+  local failed=0 gate_line host_line tooling_line sync_line audit_line build_line pre_gate_block probe_root probe_output fake_worker
   [[ "$(variant_repo 0.6b)" == "Qwen/Qwen3-ASR-0.6B" ]] || failed=1
   [[ "$(variant_revision 0.6b)" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$(variant_model_kind 1.7b)" == "qwen3-asr-1.7b" ]] || failed=1
@@ -330,9 +333,15 @@ run_self_test() {
   host_line="$(grep -n '^  require_vast_host$' "$0" | tail -1 | cut -d: -f1)"
   tooling_line="$(grep -n '^  require_tooling$' "$0" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  uv sync --project' "$0" | tail -1 | cut -d: -f1)"
+  local audit_anchor fetch_anchor
+  audit_anchor="    \"\$DEPENDENCY_AUDIT\" \\"
+  fetch_anchor="    --fetch-model-licenses \\"
+  audit_line="$(grep -nF -- "$audit_anchor" "$0" | tail -1 | cut -d: -f1)"
   build_line="$(grep -n '^  cargo build --manifest-path' "$0" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
-  (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line && gate_line < build_line )) || failed=1
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$build_line" =~ ^[0-9]+$ ]] || failed=1
+  (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line && sync_line < audit_line && audit_line < build_line )) || failed=1
+  grep -Fq -- "$audit_anchor" "$0" || failed=1
+  grep -Fq -- "$fetch_anchor" "$0" || failed=1
   pre_gate_block="$(awk '/^main\(\)/,/^  pre_sync_gate / {print}' "$0")"
   [[ "$pre_gate_block" != *"require_vast_host"* && "$pre_gate_block" != *"require_tooling"* && \
     "$pre_gate_block" != *"uv sync"* && "$pre_gate_block" != *"cargo build"* && \
@@ -375,6 +384,19 @@ run_self_test() {
     fi
   done
   rm -rf "$probe_root"
+  if [[ -z "${QWEN3_ASR_SKIP_ORDERING_PROBE:-}" ]]; then
+    probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-qwen3-asr-audit-order.XXXXXX")"
+    fake_worker="$probe_root/fake-worker.sh"
+    local audit_step audit_end audit_start audit_stop
+    audit_step="  step \"Audit the synchronized Qwen3-ASR closure before model acquisition\""
+    audit_end="    2>&1 | tee \"\$evidence_dir/dependency-audit.log\""
+    audit_start="$(grep -nF -- "$audit_step" "$0" | tail -1 | cut -d: -f1)"
+    audit_stop="$(grep -nF -- "$audit_end" "$0" | tail -1 | cut -d: -f1)"
+    sed "${audit_start},${audit_stop}d" "$0" > "$fake_worker"
+    chmod +x "$fake_worker"
+    if QWEN3_ASR_SKIP_ORDERING_PROBE=1 bash "$fake_worker" --self-test >/dev/null 2>&1; then failed=1; fi
+    rm -rf "$probe_root"
+  fi
   if command -v uv >/dev/null 2>&1; then
     UV_CACHE_DIR="${QWEN3_ASR_UV_CACHE_DIR:-/private/tmp/vokra-qwen3-asr-uv-cache}" \
       UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PREFLIGHT_GATE" --self-test || failed=1
@@ -458,6 +480,14 @@ main() {
   step "Install the locked official reference environment"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
     2>&1 | tee "$evidence_dir/uv-sync.log"
+
+  step "Audit the synchronized Qwen3-ASR closure before model acquisition"
+  uv run --project "$PARITY_PROJECT" --frozen --no-sync --python 3.12 python \
+    "$DEPENDENCY_AUDIT" \
+    --project "$PARITY_PROJECT" \
+    --output "$evidence_dir/dependency-audit.json" \
+    --fetch-model-licenses \
+    2>&1 | tee "$evidence_dir/dependency-audit.log"
 
   step "Build the current Vokra CLI on VAST"
   cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli \

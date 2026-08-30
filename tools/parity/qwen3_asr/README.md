@@ -30,6 +30,40 @@ human review records an approval digest equal to the complete scope digest.
 The gate also rejects `UNRESOLVED` rows even if an approval-shaped value is
 later supplied.
 
+The factual-audit route is a separately authorized, named VAST/Linux setup
+step. It performs only the exact frozen environment sync (no model download,
+reference execution, or Cargo):
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 \
+  uv sync --project tools/parity/qwen3_asr --frozen --python 3.12
+```
+
+After that setup step, run the model-free closure audit before any checkpoint
+acquisition:
+
+```sh
+scripts/publish/vast-ai/audit-qwen3-asr-dependencies.sh \
+  --output /root/scratchpad/qwen3-asr-dependency-audit.json
+```
+
+The audit consumes only the committed project/lock and the synchronized
+Python environment. It records all exact distribution metadata, publisher
+license/notice file hashes, native artifact hashes and ELF `NEEDED` entries.
+The VAST host must provide `readelf`; the wrapper refuses to run without it.
+Its only model requests are the two fixed-revision `LICENSE` URLs; a redirect
+to a non-`LICENSE` path or host is rejected before response bytes are read.
+The expected successful output is:
+`qwen3-asr dependency audit: PASS (...)`. A missing license, native inspection
+failure, closure drift, or any non-license model response exits 2.
+
+The same audit is invoked by `run-qwen3-asr-validation.sh` immediately after
+its frozen sync and before the Vokra build, snapshot download, reference
+dumper, or Cargo parity test. That production path becomes reachable only
+after the audit facts have populated the review rows and an owner has approved
+the resulting scope. The production manifest remains
+`PENDING_REVIEW`; no audit result is an operator approval.
+
 No numerical fixture is committed before an actual run. The Rust consumer in
 `crates/vokra-models/tests/qwen3_asr_real.rs` is environment-gated and uses the
 repository FP32 bound `atol=0.01` for projected audio. Greedy token ids,

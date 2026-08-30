@@ -28,6 +28,33 @@ PYPROJECT_SHA256 = "adf757e1349d365dcda13c4944dbdd435470e9db4c201049e8f49bfba60b
 REFERENCE_AUDIO_SHA256 = "241c0d93cc7ed8792c85c525d1e02b8c33850b791902a5e75b79c2d500e71a1a"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+PYTORCH_CPU_REGISTRY = "https://download.pytorch.org/whl/cpu"
+PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = {
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl",
+        "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-linux_s390x.whl",
+        "sha256:ffadde149901c8afa138daa38d898264003cfcf1a3336ca5cd964b5af227d867",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl",
+        "sha256:6f307c2c32d764ffc6ff6893b801fad6d4752f3e67966cb8abf1843427c02604",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_amd64.whl",
+        "sha256:a8b450c1e58e5800e5b4691dac412f8d2d65a1dc3298166f91596603a3531e6f",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_arm64.whl",
+        "sha256:fa0762705b933624d59f6823db9ce7ec2e35b3e1e9c319c9db51fbeecfc3e319",
+    ),
+}
 DEPENDENCY_KEYS = (
     frozenset({"name"}),
     frozenset({"name", "marker"}),
@@ -103,14 +130,17 @@ def strict_json_loads(text: str) -> Any:
     return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
 
 
-def _artifact(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"url", "hash", "size", "upload-time"}:
+def _artifact(value: Any, *, allow_missing_size: bool = False) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) not in ({"url", "hash", "size", "upload-time"}, {"url", "hash", "upload-time"}):
         raise ValueError("uv.lock artifact must have exactly url/hash/size/upload-time")
+    if "size" not in value and (not allow_missing_size or (value.get("url"), value.get("hash")) not in PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE):
+        raise ValueError("uv.lock artifact size is missing outside the reviewed PyTorch CPU exception")
     if (not isinstance(value["url"], str) or not value["url"].startswith("https://")
             or urlparse(value["url"]).hostname not in {"files.pythonhosted.org", "download-r2.pytorch.org", "download.pytorch.org"}
             or not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"])
-            or not isinstance(value["size"], int) or isinstance(value["size"], bool) or value["size"] <= 0
             or not isinstance(value["upload-time"], str) or not value["upload-time"].strip()):
+        raise ValueError("uv.lock artifact has invalid URL/hash/size/upload-time")
+    if "size" in value and (not isinstance(value["size"], int) or isinstance(value["size"], bool) or value["size"] <= 0):
         raise ValueError("uv.lock artifact has invalid URL/hash/size/upload-time")
     return value
 
@@ -178,12 +208,18 @@ def _validate_lock_shape(lock: dict[str, Any], project: dict[str, Any]) -> None:
             if "sdist" in package and not isinstance(package["sdist"], dict):
                 raise ValueError("uv.lock sdist is malformed")
             if "sdist" in package:
-                _artifact(package["sdist"])
+                _artifact(
+                    package["sdist"],
+                    allow_missing_size=registry == PYTORCH_CPU_REGISTRY and package["name"] == "torch",
+                )
             if "wheels" in package:
                 if not isinstance(package["wheels"], list):
                     raise ValueError("uv.lock wheels are malformed")
                 for wheel in package["wheels"]:
-                    _artifact(wheel)
+                    _artifact(
+                        wheel,
+                        allow_missing_size=registry == PYTORCH_CPU_REGISTRY and package["name"] == "torch",
+                    )
             expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
             for artifact in ([package["sdist"]] if "sdist" in package else []) + package.get("wheels", []):
                 if urlparse(artifact["url"]).hostname != expected_host:
@@ -382,6 +418,21 @@ def self_test() -> int:
     if reviewed_value("  PENDING_REVIEW  ") or not reviewed_value("reviewed citation: TODO was resolved"):
         print("qwen3-asr preflight gate: placeholder normalization self-test failed", file=sys.stderr)
         return 1
+    reviewed_url, reviewed_hash = next(iter(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE))
+    _artifact(
+        {"url": reviewed_url, "hash": reviewed_hash, "upload-time": "2026-07-08T12:26:18Z"},
+        allow_missing_size=True,
+    )
+    try:
+        _artifact(
+            {"url": reviewed_url + ".tampered", "hash": reviewed_hash, "upload-time": "2026-07-08T12:26:18Z"},
+            allow_missing_size=True,
+        )
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr preflight gate: unreviewed missing-size artifact accepted", file=sys.stderr)
+        return 1
     ok, reason = validate(project, manifest)
     if ok or not ("operator approval" in reason or "unresolved" in reason or "artifact" in reason):
         print("qwen3-asr preflight gate: self-test expected pending approval", file=sys.stderr)
@@ -392,10 +443,10 @@ def self_test() -> int:
         test_project.mkdir()
         shutil.copy2(project / "uv.lock", test_project / "uv.lock")
         shutil.copy2(project / "pyproject.toml", test_project / "pyproject.toml")
-        # The checked-in lock intentionally remains fail-closed while older
-        # resolver records lack wheel sizes.  Complete only the disposable
-        # baseline with positive fixture sizes; production still requires the
-        # reviewed lock bytes and rejects those records.
+        # Complete only the disposable baseline with positive fixture sizes so
+        # this self-test exercises the approved path as well as the strict
+        # missing-size rejection above. Production accepts missing sizes only
+        # for the six exact PyTorch CPU URL/hash identities.
         complete_lock = re.sub(
             r'(hash = "sha256:[0-9a-f]{64}")(, upload-time =)',
             r'\1, size = 1\2',
