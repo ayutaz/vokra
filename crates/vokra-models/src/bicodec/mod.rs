@@ -1332,14 +1332,51 @@ mod tests {
     }
 
     #[test]
+    fn measured_parity_bounds_cover_pass_and_fail_cases() {
+        let semantic = parity_bounds("semantic_latent");
+        assert!(parity_passes(
+            "semantic_latent",
+            &[semantic.rmse as f32 * 0.5],
+            &[0.0]
+        ));
+        let mut max_spike_actual = vec![0.0f32; 64];
+        max_spike_actual[0] = semantic.max_abs as f32 * 1.1;
+        let max_spike_reference = vec![0.0f32; 64];
+        let (max_spike, max_spike_rmse) = parity_metrics(&max_spike_actual, &max_spike_reference);
+        assert!(max_spike > semantic.max_abs);
+        assert!(max_spike_rmse < semantic.rmse);
+        assert!(!parity_passes(
+            "semantic_latent",
+            &max_spike_actual,
+            &max_spike_reference
+        ));
+
+        // Keep each element below the max bound while exceeding the RMSE
+        // bound, so the systematic-drift gate is exercised independently.
+        let prenet = parity_bounds("prenet_output");
+        let rmse_actual = [prenet.rmse as f32 * 1.5, prenet.rmse as f32 * 1.5];
+        let rmse_reference = [0.0, 0.0];
+        let (rmse_max, rmse_value) = parity_metrics(&rmse_actual, &rmse_reference);
+        assert!(rmse_max < prenet.max_abs);
+        assert!(rmse_value > prenet.rmse);
+        assert!(!parity_passes(
+            "prenet_output",
+            &rmse_actual,
+            &rmse_reference
+        ));
+        assert!(!parity_passes("waveform", &[f32::NAN], &[0.0]));
+        assert!(!parity_passes("waveform", &[0.0], &[]));
+    }
+
+    #[test]
     #[ignore = "VAST-only: requires authenticated GGUF and official reference outputs"]
-    fn official_reference_report_only() {
+    fn official_reference_measured_parity() {
         let Ok(gguf_path) = std::env::var("VOKRA_BICODEC_PARITY_GGUF") else {
-            eprintln!("BiCodec parity report skipped: VOKRA_BICODEC_PARITY_GGUF is unset");
+            eprintln!("BiCodec measured parity skipped: VOKRA_BICODEC_PARITY_GGUF is unset");
             return;
         };
         let Ok(reference_dir) = std::env::var("VOKRA_BICODEC_PARITY_REFERENCE") else {
-            eprintln!("BiCodec parity report skipped: VOKRA_BICODEC_PARITY_REFERENCE is unset");
+            eprintln!("BiCodec measured parity skipped: VOKRA_BICODEC_PARITY_REFERENCE is unset");
             return;
         };
         let manifest_path = std::path::Path::new(&reference_dir).join("manifest.json");
@@ -1488,18 +1525,85 @@ mod tests {
             reference.iter().all(|value| value.is_finite()),
             "BiCodec {role} reference is non-finite"
         );
+        let (max_abs, rmse) = parity_metrics(actual, &reference);
+        let bounds = parity_bounds(role);
+        assert!(
+            max_abs <= bounds.max_abs,
+            "BiCodec {role} max_abs={max_abs:.9e} exceeds bound {:.9e}",
+            bounds.max_abs
+        );
+        assert!(
+            rmse <= bounds.rmse,
+            "BiCodec {role} rmse={rmse:.9e} exceeds bound {:.9e}",
+            bounds.rmse
+        );
+        println!(
+            "BICODEC_MEASURED_PARITY stage={role} elements={} max_abs={max_abs:.9e} rmse={rmse:.9e} max_abs_bound={:.9e} rmse_bound={:.9e} verdict=PASS",
+            actual.len(),
+            bounds.max_abs,
+            bounds.rmse
+        );
+    }
+
+    #[derive(Clone, Copy)]
+    struct ParityBounds {
+        max_abs: f64,
+        rmse: f64,
+    }
+
+    fn parity_bounds(role: &str) -> ParityBounds {
+        // These are stage-specific ceilings rounded upward from the exact-head
+        // 641ac312 VAST measurements (max_abs/rmse): semantic
+        // 1.907348633e-6/3.059676605e-7 -> 4.0e-6/7.0e-7; d-vector
+        // 1.847743988e-6/2.558271893e-7 -> 4.0e-6/6.0e-7; prenet
+        // 7.539987564e-6/1.297758877e-6 -> 16.0e-6/3.0e-6; waveform
+        // 6.183981895e-7/1.134617555e-7 -> 1.5e-6/2.5e-7.  The
+        // independent official-source reference was CPU F32; no generic
+        // 0.01 tolerance is used because these measured bounds are tighter.
+        match role {
+            "semantic_latent" => ParityBounds {
+                max_abs: 4.0e-6,
+                rmse: 7.0e-7,
+            },
+            "d_vector" => ParityBounds {
+                max_abs: 4.0e-6,
+                rmse: 6.0e-7,
+            },
+            "prenet_output" => ParityBounds {
+                max_abs: 16.0e-6,
+                rmse: 3.0e-6,
+            },
+            "waveform" => ParityBounds {
+                max_abs: 1.5e-6,
+                rmse: 2.5e-7,
+            },
+            _ => panic!("unknown BiCodec parity stage {role}"),
+        }
+    }
+
+    fn parity_passes(role: &str, actual: &[f32], reference: &[f32]) -> bool {
+        if actual.len() != reference.len()
+            || actual.iter().any(|value| !value.is_finite())
+            || reference.iter().any(|value| !value.is_finite())
+            || actual.is_empty()
+        {
+            return false;
+        }
+        let (max_abs, rmse) = parity_metrics(actual, reference);
+        let bounds = parity_bounds(role);
+        max_abs <= bounds.max_abs && rmse <= bounds.rmse
+    }
+
+    fn parity_metrics(actual: &[f32], reference: &[f32]) -> (f64, f64) {
         let mut max_abs = 0.0f64;
         let mut sum_squared = 0.0f64;
-        for (left, right) in actual.iter().zip(&reference) {
+        for (left, right) in actual.iter().zip(reference) {
             let delta = f64::from(*left) - f64::from(*right);
             max_abs = max_abs.max(delta.abs());
             sum_squared += delta * delta;
         }
         let rmse = (sum_squared / actual.len() as f64).sqrt();
-        println!(
-            "BICODEC_PARITY_REPORT stage={role} elements={} max_abs={max_abs:.9e} rmse={rmse:.9e} tolerance=UNSET",
-            actual.len()
-        );
+        (max_abs, rmse)
     }
 
     fn reference_record<'a>(

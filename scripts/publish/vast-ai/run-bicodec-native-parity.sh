@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # VAST-only official-reference evidence worker for native BiCodec decode.
 #
-# This worker does not upload weights or select tolerances. The Python dumper
-# authenticates the exact Spark-TTS source/checkpoint/config and records the
-# official semantic latent, d-vector, prenet output, and waveform for manager
-# review before any Rust parity gate is chosen.
+# This worker does not upload weights. The Python dumper authenticates the
+# exact Spark-TTS source/checkpoint/config and records the official semantic
+# latent, d-vector, prenet output, and waveform; the Rust test then applies
+# the reviewed, stage-specific measured parity gate to those records.
 set -euo pipefail
 
 die() {
@@ -65,5 +65,5 @@ target/release/vokra-cli convert \
 VOKRA_BICODEC_PARITY_GGUF="$gguf_path" \
 VOKRA_BICODEC_PARITY_REFERENCE="$output" \
   cargo test --locked -p vokra-models \
-    bicodec::tests::official_reference_report_only -- --ignored --nocapture
+    bicodec::tests::official_reference_measured_parity -- --ignored --nocapture
 echo "BiCodec official reference evidence: $output"
