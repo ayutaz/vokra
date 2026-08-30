@@ -35,6 +35,25 @@ then runs the official CPU comparison and workspace/Metal cross-build gates.
 Pull only its small evidence/reference directory before destroying the VAST
 instance; do not pull model payloads to the maintainer Mac.
 
+The separately authorized factual route first performs the exact frozen Linux
+environment sync, then runs the model-free audit before any model or source
+acquisition:
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 uv sync --project tools/parity/neutts_air --frozen --python 3.12
+scripts/publish/vast-ai/audit-neutts-air-dependencies.sh \
+  --output /root/scratchpad/neutts-air-dependency-audit.json
+```
+
+The audit records every locked row, including the inactive Torch variant and
+virtual project row, installed metadata/license files, native ELF inventories,
+and bounded exact-sdist fallback evidence. It requests only fixed LICENSE
+paths plus exact locked PyPI sdists when publisher files are absent; it never
+fetches weights, imports model code, or runs Cargo. The validation worker runs
+the same audit immediately after its frozen sync and before model download or
+Cargo. Missing publisher evidence or unresolved fixed LICENSE facts remains a
+blocker; no license class is inferred from raw bytes.
+
 The VAST worker is fail-closed behind the standard-library-only
 `preflight_gate.py`. Its 39-package lock, public GGUF/companion identities,
 official source identity and the gated upstream's seven-file contract are all

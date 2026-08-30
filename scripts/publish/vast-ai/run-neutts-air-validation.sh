@@ -9,6 +9,8 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity/neutts_air"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
+DEPENDENCY_AUDIT="$PARITY_PROJECT/dependency_audit.py"
+DEPENDENCY_AUDIT_WRAPPER="$VOKRA_ROOT/scripts/publish/vast-ai/audit-neutts-air-dependencies.sh"
 PREFLIGHT_GATE="$PARITY_PROJECT/preflight_gate.py"
 PREFLIGHT_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 
@@ -91,7 +93,7 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git awk find tee wc df grep; do
+  for tool in uv cargo rustc rustup git awk find tee wc df grep readelf; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
@@ -100,6 +102,8 @@ require_tooling() {
   [[ -f "$PREFLIGHT_GATE" && -f "$PREFLIGHT_MANIFEST" ]] \
     || die "NeuTTS Air preflight gate inputs are missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
+  [[ -f "$DEPENDENCY_AUDIT" && ! -L "$DEPENDENCY_AUDIT" ]] || die "dependency audit is missing or symlinked"
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] || die "dependency audit wrapper is missing or symlinked"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
     die "VAST checkout must be clean so evidence names one exact commit"
   fi
@@ -262,7 +266,7 @@ require_one_named_test_passed() {
 }
 
 run_self_test() {
-  local failed=0 probe_root probe_output gate_line host_line tooling_line sync_line identity_size identity_sha
+  local failed=0 probe_root probe_output gate_line host_line tooling_line sync_line audit_line download_line identity_size identity_sha
   [[ "$PUBLIC_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$UPSTREAM_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
@@ -273,8 +277,10 @@ run_self_test() {
   host_line="$(grep -n '^  require_vast_host$' "$0" | tail -1 | cut -d: -f1)"
   tooling_line="$(grep -n '^  require_tooling$' "$0" | tail -1 | cut -d: -f1)"
   sync_line="$(grep -n '^  uv sync --project' "$0" | tail -1 | cut -d: -f1)"
-  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ ]] || failed=1
-  (( gate_line < host_line && gate_line < tooling_line && gate_line < sync_line )) || failed=1
+  audit_line="$(grep -n 'DEPENDENCY_AUDIT_WRAPPER.*--output' "$0" | tail -1 | cut -d: -f1)"
+  download_line="$(grep -n '^  download_hf_file' "$0" | tail -1 | cut -d: -f1)"
+  [[ "$gate_line" =~ ^[0-9]+$ && "$host_line" =~ ^[0-9]+$ && "$tooling_line" =~ ^[0-9]+$ && "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$download_line" =~ ^[0-9]+$ ]] || failed=1
+  (( gate_line < host_line && gate_line < tooling_line && tooling_line < sync_line && sync_line < audit_line && audit_line < download_line )) || failed=1
   probe_root="$(mktemp -d "${TMPDIR:-/tmp}/vokra-neutts-air-sentinel.XXXXXX")"
   printf '{}\n' > "$probe_root/path-approval.json"
   mkdir -p "$probe_root/nested-parent"
@@ -408,6 +414,14 @@ main() {
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
 
+  step "Install locked official reference environment"
+  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
+    2>&1 | tee "$evidence_dir/uv-sync.log"
+
+  step "Audit exact synchronized dependency closure before model acquisition"
+  VOKRA_PUBLISH_ON_VAST=1 VOKRA_ROOT="$VOKRA_ROOT" \
+    "$DEPENDENCY_AUDIT_WRAPPER" --output "$evidence_dir/dependency-audit.json"
+
   step "Download and authenticate exact public GGUFs"
   download_hf_file "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" "$public_dir"
   download_hf_file "$COMPANION_REPO" "$COMPANION_REVISION" "$COMPANION_FILE" "$companion_dir"
@@ -418,10 +432,6 @@ main() {
   step "Download exact gated upstream snapshot and official source"
   download_upstream_snapshot "$upstream_dir"
   checkout_source "$source_dir"
-
-  step "Install locked official reference environment"
-  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
-    2>&1 | tee "$evidence_dir/uv-sync.log"
 
   step "Generate independent official FP32 reference"
   VOKRA_REFERENCE_TORCH_THREADS="${VOKRA_REFERENCE_TORCH_THREADS:-8}" \
