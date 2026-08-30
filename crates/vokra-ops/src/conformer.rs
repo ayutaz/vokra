@@ -3237,7 +3237,7 @@ mod tests {
             .grouped_conv1d_time_major(
                 &input,
                 2,
-                2,
+                3,
                 &weight,
                 2,
                 2,
