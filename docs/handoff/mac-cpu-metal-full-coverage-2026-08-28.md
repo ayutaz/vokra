@@ -599,7 +599,7 @@ of these bullets closes a model row until the named real run succeeds:
   `5df5609c5883e555bd39a2d0b1005ca8f1a8f12e` is authenticated by Git blob
   SHA-1 `cfe231b384040a2162a516c400fbd9282b3317b7` and SHA-256
   `c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7`;
-  its `## License` section explicitly declares `XY-Tokenizer is released under
+  its `## License 📜` section explicitly declares `XY-Tokenizer is released under
   the Apache 2.0 license.` No full `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT`
   file is tracked, and that absence remains an evidence fact rather than a
   source-license-absent claim. The separate fixed HF weight README declares

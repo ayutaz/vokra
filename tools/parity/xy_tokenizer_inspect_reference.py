@@ -55,6 +55,7 @@ SELECTED_MODEL_FILES = {".gitattributes", "README.md", CHECKPOINT_RELATIVE.as_po
 SOURCE_README_PATH = "readme.md"
 SOURCE_README_BLOB_SHA1 = "cfe231b384040a2162a516c400fbd9282b3317b7"
 SOURCE_README_SHA256 = "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+SOURCE_LICENSE_HEADING = "## License 📜"
 SOURCE_LICENSE_DECLARATION = "XY-Tokenizer is released under the Apache 2.0 license."
 SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE = "SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE"
 SOURCE_LICENSE_EVIDENCE_UNAVAILABLE = "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE"
@@ -258,14 +259,21 @@ def parse_source_license_readme(text: str) -> dict[str, str]:
     section intentionally narrow so an unrelated README mention cannot be
     promoted to a license declaration.
     """
-    match = re.search(r"(?ms)^## License[ \t]*\r?\n(?P<body>.*?)(?=^##\s|\Z)", text)
-    if match is None:
-        raise RuntimeError("official source README lacks an exact ## License section")
-    lines = [line.strip() for line in match.group("body").splitlines() if line.strip()]
+    readme_lines = text.splitlines()
+    heading_indices = [index for index, line in enumerate(readme_lines) if line == SOURCE_LICENSE_HEADING]
+    if len(heading_indices) != 1:
+        raise RuntimeError("official source README lacks the unique exact ## License 📜 section")
+    body_lines: list[str] = []
+    for line in readme_lines[heading_indices[0] + 1 :]:
+        if line.startswith("## "):
+            break
+        body_lines.append(line)
+    lines = [line.strip() for line in body_lines if line.strip()]
     if lines != [SOURCE_LICENSE_DECLARATION]:
         raise RuntimeError("official source README license declaration is not exact Apache-2.0")
     return {
         "path": SOURCE_README_PATH,
+        "heading": SOURCE_LICENSE_HEADING,
         "declaration": SOURCE_LICENSE_DECLARATION,
         "status": SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE,
     }
@@ -492,19 +500,28 @@ def self_test() -> None:
     assert SOURCE_README_PATH == "readme.md"
     assert SOURCE_README_BLOB_SHA1 == "cfe231b384040a2162a516c400fbd9282b3317b7"
     assert SOURCE_README_SHA256 == "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+    assert SOURCE_LICENSE_HEADING == "## License 📜"
     assert SOURCE_LICENSE_DECLARATION == "XY-Tokenizer is released under the Apache 2.0 license."
     assert SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE in source
     assert SOURCE_LICENSE_EVIDENCE_UNAVAILABLE in source
     assert TOPOLOGY_UNVERIFIED_BLOCKER in source
     assert parse_source_license_readme(
-        "# XY-Tokenizer\n\n## License\n\n"
+        "# XY-Tokenizer\n\n## License 📜\n\n"
         "XY-Tokenizer is released under the Apache 2.0 license.\n\n"
         "## Usage\n"
-    )["status"] == SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE
+    ) == {
+        "path": SOURCE_README_PATH,
+        "heading": SOURCE_LICENSE_HEADING,
+        "declaration": SOURCE_LICENSE_DECLARATION,
+        "status": SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE,
+    }
     for invalid_readme in (
-        "## License\n\nMIT License\n",
-        "## License\n\nXY-Tokenizer is released under the Apache 2.0 license.\nAdditional terms\n",
-        "## License\n",
+        "## License\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📄\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📜 extra\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+        "## License 📜\n\nMIT License\n",
+        "## License 📜\n\nXY-Tokenizer is released under the Apache 2.0 license.\nAdditional terms\n",
+        "## License 📜\n",
         "### License\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
     ):
         try:
