@@ -96,6 +96,11 @@ jobs:
           #   qwen3_asr : qwen-asr==0.0.6   requires transformers==4.57.6
           #   parler_tts: parler-tts==0.2.2 requires transformers==4.46.1
           #   xcodec2   : xcodec2==0.1.5    requires torch==2.5.0
+          #   cosyvoice2_reference: diffusers==0.29.0 is an immutable
+          #     blocked upstream inventory with no uv.lock; its dedicated
+          #     sync/model-download path is forbidden before license and
+          #     soxr review. The exact diffusers advisories below are retained
+          #     only for this fail-closed, non-executable inventory.
           # Those trees only dump independent reference tensors on VAST.
           # torch and Transformers appear nowhere else in the repository:
           # the Rust runtime carries no dependencies (check-zero-deps.sh)
@@ -123,7 +128,9 @@ jobs:
             GHSA-qxrp-vhvm-j765,
             GHSA-rcv9-qm8p-9p6j,
             GHSA-vgrw-7cvw-pwgx,
-            GHSA-wrfc-pvp9-mr9g
+            GHSA-wrfc-pvp9-mr9g,
+            GHSA-98h9-4798-4q5v,
+            GHSA-7wx4-6vff-v64p
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true

@@ -28,15 +28,29 @@ canonical_path() {
   fi
 }
 
+# The self-test only audits this script's static contract and must run on a
+# vanilla macOS runner, where ripgrep is not guaranteed. The production path
+# below still requires rg explicitly because its remote-worker gate is part of
+# the reviewed execution environment.
+contract_search() {
+  local pattern="$1"
+  shift
+  if command -v rg >/dev/null 2>&1; then
+    rg -n -- "$pattern" "$@" >/dev/null
+  else
+    grep -En -- "$pattern" "$@" >/dev/null
+  fi
+}
+
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die "--self-test accepts no other arguments"
-  rg -n -- 'VOKRA_REMOTE_APPLE_SILICON=1|VOKRA_EXPECTED_COMMIT|git rev-parse HEAD|status --porcelain|GIGAAM_BACKEND|METAL_PARITY_PASS|REMOTE_BUNDLE_NO_LOCAL_PULL|parity_gigaam_multilingual_real|validation-summary.json|GIGAAM_MULTILINGUAL_APPLE_EVIDENCE_DIR|GIGAAM_MULTILINGUAL_APPROVAL_JSON' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "authenticated Apple contract missing"
-  rg -n -- 'uname -s.*Darwin|uname -m.*arm64|xcrun -f metal' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "Apple platform/tool gate missing"
-  rg -n -- '--features metal' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "Metal feature build gate missing"
-  rg -n -- 'EVIDENCE_REAL=|REMOTE_PACKET_REAL/\*|PENDING_APPLE|fingerprint.txt|input_metal_apple_status' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "evidence/approval contract missing"
-  rg -n -- 'backend=\$EXPECTED_BACKEND_SENTINEL|backend=\{backend:\?\}' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" "$ROOT/crates/vokra-models/tests/parity_gigaam_multilingual_real.rs" >/dev/null || die "backend sentinel gate missing"
-  rg -n -- 'uv run --no-project --python 3.12 python' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "stdlib-only approval parser environment missing"
-  rg -n -- 'cargo test .*--exact --ignored --nocapture --test-threads=1' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" >/dev/null || die "serial exact parity command missing"
+  contract_search 'VOKRA_REMOTE_APPLE_SILICON=1|VOKRA_EXPECTED_COMMIT|git rev-parse HEAD|status --porcelain|GIGAAM_BACKEND|METAL_PARITY_PASS|REMOTE_BUNDLE_NO_LOCAL_PULL|parity_gigaam_multilingual_real|validation-summary.json|GIGAAM_MULTILINGUAL_APPLE_EVIDENCE_DIR|GIGAAM_MULTILINGUAL_APPROVAL_JSON' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "authenticated Apple contract missing"
+  contract_search 'uname -s.*Darwin|uname -m.*arm64|xcrun -f metal' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "Apple platform/tool gate missing"
+  contract_search '--features metal' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "Metal feature build gate missing"
+  contract_search 'EVIDENCE_REAL=|REMOTE_PACKET_REAL/\*|PENDING_APPLE|fingerprint.txt|input_metal_apple_status' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "evidence/approval contract missing"
+  contract_search 'backend=[$]EXPECTED_BACKEND_SENTINEL|backend=\{backend:\?\}' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" "$ROOT/crates/vokra-models/tests/parity_gigaam_multilingual_real.rs" || die "backend sentinel gate missing"
+  contract_search 'uv run --no-project --python 3.12 python' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "stdlib-only approval parser environment missing"
+  contract_search 'cargo test .*--exact --ignored --nocapture --test-threads=1' "$ROOT/scripts/verify/apple-silicon-gigaam-multilingual.sh" || die "serial exact parity command missing"
   echo "apple-silicon-gigaam-multilingual contract self-test: OK (authenticated CPU/Metal; no upload)"
   exit 0
 fi

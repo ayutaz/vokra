@@ -43,7 +43,7 @@ impl<'ctx> MetalBigVganResidentOps<'ctx> {
                 "BigVGAN Metal conv1d padded input is smaller than effective kernel".to_owned(),
             ));
         }
-        Ok((padded - effective) / 1 + 1)
+        Ok(padded - effective + 1)
     }
 
     fn conv_transpose_len(
