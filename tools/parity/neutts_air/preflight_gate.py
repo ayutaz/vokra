@@ -92,6 +92,36 @@ REFERENCE_ROUTE = {
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "manifest", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+PYTORCH_CPU_REGISTRY = "https://download.pytorch.org/whl/cpu"
+# uv's tracked lock shape omits ``size`` for these exact custom-index wheels.
+# This is an authenticated, finite exception: a filename or package name alone
+# must never make an otherwise incomplete artifact acceptable.
+PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = {
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl",
+        "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-linux_s390x.whl",
+        "sha256:ffadde149901c8afa138daa38d898264003cfcf1a3336ca5cd964b5af227d867",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl",
+        "sha256:6f307c2c32d764ffc6ff6893b801fad6d4752f3e67966cb8abf1843427c02604",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_amd64.whl",
+        "sha256:a8b450c1e58e5800e5b4691dac412f8d2d65a1dc3298166f91596603a3531e6f",
+    ),
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-win_arm64.whl",
+        "sha256:fa0762705b933624d59f6823db9ce7ec2e35b3e1e9c319c9db51fbeecfc3e319",
+    ),
+}
 REGISTRY_PACKAGE_SCHEMAS = {
     frozenset({"name", "version", "source", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
@@ -139,17 +169,24 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
 
 
-def validate_artifact(value: Any, label: str, registry: str) -> None:
-    if not isinstance(value, dict) or set(value) != ARTIFACT_KEYS:
+def validate_artifact(value: Any, label: str, registry: str, *, package_name: str | None = None, artifact_kind: str | None = None) -> None:
+    if not isinstance(value, dict) or set(value) not in (ARTIFACT_KEYS, ARTIFACT_KEYS - {"size"}):
         raise ValueError(f"{label} artifact schema is not exact")
+    if "size" not in value and (
+        registry != PYTORCH_CPU_REGISTRY
+        or package_name != "torch"
+        or artifact_kind != "wheels"
+        or (value.get("url"), value.get("hash")) not in PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE
+    ):
+        raise ValueError(f"{label} artifact size is missing outside the exact PyTorch CPU exception")
     url = value["url"]
-    expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
+    expected_host = "download-r2.pytorch.org" if registry == PYTORCH_CPU_REGISTRY else "files.pythonhosted.org"
     parsed = urlsplit(url) if isinstance(url, str) else None
     if parsed is None or parsed.scheme != "https" or parsed.netloc != expected_host or not parsed.path:
         raise ValueError(f"{label} artifact URL is not the authenticated {expected_host} host")
     if not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]):
         raise ValueError(f"{label} artifact hash is malformed")
-    if isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0:
+    if "size" in value and (isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0):
         raise ValueError(f"{label} artifact size is not positive")
     if not isinstance(value["upload-time"], str) or not value["upload-time"].strip():
         raise ValueError(f"{label} artifact upload-time is missing")
@@ -223,7 +260,13 @@ def canonical_package_rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             if artifact_name == "wheels" and "wheels" in package and not isinstance(artifacts, list):
                 raise ValueError("uv.lock wheels artifact table is malformed")
             for artifact in ([] if artifacts is None else (artifacts if isinstance(artifacts, list) else [artifacts])):
-                validate_artifact(artifact, f"{(name, version)!r} {artifact_name}", source.get("registry", ""))
+                validate_artifact(
+                    artifact,
+                    f"{(name, version)!r} {artifact_name}",
+                    source.get("registry", ""),
+                    package_name=name,
+                    artifact_kind=artifact_name,
+                )
         if virtual and ("sdist" in package or "wheels" in package):
             raise ValueError("uv.lock virtual project must not contain artifacts")
         if not virtual and "sdist" not in package and not package.get("wheels"):
@@ -416,6 +459,55 @@ def validate(project: Path, manifest_path: Path, evidence_path: Path | None = No
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
+    lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
+    rows = canonical_package_rows(lock)
+    torch_rows = [
+        row for row in rows
+        if row["name"] == "torch" and row["source"] == {"registry": PYTORCH_CPU_REGISTRY}
+    ]
+    if len(torch_rows) != 2 or any(
+        not wheels or any(set(wheel) != ARTIFACT_KEYS - {"size"} for wheel in wheels)
+        for wheels in (row["wheels"] for row in torch_rows)
+    ):
+        print("neutts-air custom-index torch wheel schema is not the tracked size-less variant", file=sys.stderr)
+        return 1
+    custom_url, custom_hash = next(iter(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE))
+    custom = {
+        "url": custom_url,
+        "hash": custom_hash,
+        "upload-time": "2026-01-01T00:00:00Z",
+    }
+    try:
+        validate_artifact(custom, "self-test custom-index torch wheel", PYTORCH_CPU_REGISTRY, package_name="torch", artifact_kind="wheels")
+    except ValueError as exc:
+        print(f"neutts-air tracked custom-index wheel was rejected: {exc}", file=sys.stderr)
+        return 1
+    malformed_custom = {
+        "wrong-pair": lambda value: value.update(hash="sha256:" + "0" * 64),
+        "wrong-package": lambda value: None,
+        "wrong-kind": lambda value: None,
+        "wrong-registry": lambda value: None,
+        "extra-key": lambda value: value.update(extra="reject"),
+        "bool-size": lambda value: value.update(size=True),
+        "missing-upload-time": lambda value: value.pop("upload-time"),
+    }
+    for label, mutate in malformed_custom.items():
+        candidate = dict(custom)
+        package_name, artifact_kind, registry = "torch", "wheels", PYTORCH_CPU_REGISTRY
+        if label == "wrong-package":
+            package_name = "not-torch"
+        elif label == "wrong-kind":
+            artifact_kind = "sdist"
+        elif label == "wrong-registry":
+            registry = "https://pypi.org/simple"
+        mutate(candidate)
+        try:
+            validate_artifact(candidate, f"self-test custom-index {label}", registry, package_name=package_name, artifact_kind=artifact_kind)
+        except ValueError:
+            pass
+        else:
+            print(f"neutts-air malformed custom-index wheel was accepted: {label}", file=sys.stderr)
+            return 1
     ok, reason = validate(project, manifest_path)
     if ok or ("unresolved" not in reason and "artifact" not in reason):
         print(f"neutts-air gate: expected pending production gate, got {reason}", file=sys.stderr)

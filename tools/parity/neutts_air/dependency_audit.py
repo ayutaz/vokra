@@ -989,6 +989,54 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
+    lock_rows = preflight_gate.canonical_package_rows(lock)
+    custom_torch_rows = [
+        row for row in lock_rows
+        if row["name"] == "torch" and row["source"] == {"registry": preflight_gate.PYTORCH_CPU_REGISTRY}
+    ]
+    custom_wheels = {
+        (wheel["url"], wheel["hash"])
+        for row in custom_torch_rows
+        for wheel in row["wheels"]
+    }
+    if (
+        len(custom_torch_rows) != 2
+        or custom_wheels != preflight_gate.PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE
+        or any(set(wheel) != preflight_gate.ARTIFACT_KEYS - {"size"} for row in custom_torch_rows for wheel in row["wheels"])
+    ):
+        raise AssertionError("tracked custom-index torch wheel schema drifted")
+    custom_url, custom_hash = next(iter(custom_wheels))
+    custom_artifact = {"url": custom_url, "hash": custom_hash, "upload-time": "2026-01-01T00:00:00Z"}
+    preflight_gate.validate_artifact(
+        custom_artifact,
+        "self-test custom-index torch wheel",
+        preflight_gate.PYTORCH_CPU_REGISTRY,
+        package_name="torch",
+        artifact_kind="wheels",
+    )
+    for label, package_name, artifact_kind, registry, mutate in (
+        ("wrong-package", "not-torch", "wheels", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: None),
+        ("wrong-kind", "torch", "sdist", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: None),
+        ("wrong-registry", "torch", "wheels", "https://pypi.org/simple", lambda value: None),
+        ("wrong-hash", "torch", "wheels", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: value.update(hash="sha256:" + "0" * 64)),
+        ("extra-key", "torch", "wheels", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: value.update(extra="reject")),
+        ("bool-size", "torch", "wheels", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: value.update(size=True)),
+        ("missing-upload-time", "torch", "wheels", preflight_gate.PYTORCH_CPU_REGISTRY, lambda value: value.pop("upload-time")),
+    ):
+        candidate = dict(custom_artifact)
+        mutate(candidate)
+        try:
+            preflight_gate.validate_artifact(
+                candidate,
+                f"self-test custom-index {label}",
+                registry,
+                package_name=package_name,
+                artifact_kind=artifact_kind,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted malformed custom-index wheel: {label}")
     active, inactive = classify_lock_rows(lock)
     assert len(lock["package"]) == len(active) + len(inactive)
     assert len(inactive) == 3
