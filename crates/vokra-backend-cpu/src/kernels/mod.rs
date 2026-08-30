@@ -1749,11 +1749,12 @@ mod tests {
     #[test]
     fn grouped_conv_transpose2d_handles_dilation_output_padding_and_bias() {
         // The second kernel column is skipped by dilation=2 in this fixture;
-        // output_padding_h=1 exposes the extra trailing output row.
+        // output_padding=(1,1) yields the exact [C=2,H=3,W=6] output extent;
+        // the extra row/columns have bias-only positions with no source tap.
         let input = [1.0, 2.0, 10.0, 20.0];
         let weight = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0];
         let bias = [0.5, -1.0];
-        let mut out = [0.0; 16];
+        let mut out = [0.0; 36];
         conv_transpose2d_f32(
             &input,
             2,
@@ -1775,7 +1776,9 @@ mod tests {
         assert_eq!(
             out,
             [
-                1.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 19.0, -1.0, 39.0, -1.0
+                1.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
+                0.5, 0.5, 19.0, -1.0, 39.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
+                -1.0, -1.0, -1.0, -1.0, -1.0, -1.0,
             ]
         );
     }
