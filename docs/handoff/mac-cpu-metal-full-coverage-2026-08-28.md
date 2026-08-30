@@ -1,6 +1,6 @@
 # Mac CPU / Metal full-coverage execution ledger (2026-08-28)
 
-> **Active execution plan (2026-08-30):** the cloud boundary, blocker-class
+> **Active execution plan (2026-08-31):** the cloud boundary, blocker-class
 > ordering and final proof for continuing this ledger are fixed in
 > `docs/handoff/mac-cpu-metal-completion-plan-2026-08-30.md`.  Scaleway is a
 > hardware-verification stage, not a substitute for the remaining CPU/binder,
@@ -17,38 +17,65 @@
   uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
   ```
 
-## Authoritative current snapshot (2026-08-30)
+## Authoritative current snapshot (2026-08-31)
 
-The authoritative pre-documentation implementation/code snapshot observed on
-2026-08-30 is worktree commit
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d` on
-`feat/mac-cpu-metal-full-coverage-2026-08-28`, workspace version `0.2.0`.
-The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
-The live public-artifact audit reports 194 repositories, 193 GGUF-bearing
-repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
-`no-runtime-binder=20`, `not-artifact=1`; Metal `full=129`,
-`blocked-by-cpu=62`, `cpu-only=2`, `not-artifact=1`. The two exact
-CPU-complete/Metal-unsupported repositories are
-`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`; therefore the old
-zero-CPU-only invariant is not currently achieved.
+The authoritative implementation/code snapshot is
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` on
+`feat/mac-cpu-metal-full-coverage-2026-08-28`, workspace version `0.2.0`; the
+pre-refresh evidence/package checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. GitHub `main` remains
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The repeated live public-artifact
+audit reports 194 repositories, 193 GGUF-bearing repositories and 198 GGUF
+files: CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+`not-artifact=1`; Metal `full=129`, `blocked-by-cpu=62`, `cpu-only=2`,
+`not-artifact=1`. The two exact CPU-complete/Metal-unsupported repositories are
+`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`.
 
-GigaAM v3, GigaAM Multilingual and OmniASR CTC 1B have strict native CPU
-routes and independent official real-weight CPU parity on VAST. OmniASR now
-has a complete Metal code route, while both GigaAM variants remain explicitly
-CPU-only. Apple CPU repetition and real Metal execution remain pending for the
-prepared rows; this snapshot makes no real-hardware Metal completion claim.
-The authenticated 4.9 GB / 33-file Apple transfer
-packet remains on VAST at `/root/scratchpad/apple-transfer-568dc192` for
-direct VAST-to-Scaleway transfer. Scaleway has not run, and no Hugging Face
-upload has occurred. After the transfer completes, the manifest/checksum is
-verified on the Apple worker, and all required logs and evidence are saved,
-the VAST instance must be destroyed; it must not be destroyed immediately
-after transfer without those checks and evidence preservation.
+Five models are ready for authenticated Apple execution: GigaAM v3, GigaAM
+Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Their immutable
+VAST-to-Scaleway inputs are:
 
-The 2026-08-28 inventory and later preparation notes below are historical
-records. Where they say that these three routes or the zero-CPU-only invariant
-are pending, the authenticated CPU-lock section dated 2026-08-30 above
-supersedes that wording; Apple/Metal and final exit gates remain open.
+- Wave A at exact code `bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`:
+  `/root/scratchpad/apple-transfer-bc9d1db2`, 4.9 GB, 30 regular files, no
+  symlinks; manifest SHA-256
+  `c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`.
+- ReazonSpeech at exact code
+  `a59c48c8da103ac14fe837cd2e0252b5266ac093`:
+  `/root/scratchpad/apple-transfer-reazon-a59c48c8`, 11 regular files;
+  manifest SHA-256
+  `48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`.
+- BiCodec from evidence checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`:
+  `/root/scratchpad/apple-transfer-bicodec-5cd97d12`, 600 MB, 12 regular
+  files, no symlinks; manifest SHA-256
+  `0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`.
+  Its GGUF SHA-256 is
+  `a77004b9a85aa1619abb9413de2d7158d6603d8097f1eeebb83a4bb8bd26637c`
+  and reference-manifest SHA-256 is
+  `8d159e0e8b19cc7ad88a925f072ae56cf870a180e3e7b2acecb82023b103c696`.
+
+VAST instances `49168183` (500 GB retained storage) and `49261078` (200 GB)
+both report `cur_state=stopped`, `intended_status=stopped` and
+`actual_status=exited`. They consume no compute, but storage billing continues.
+Resume them only for direct transfer of the named packets; after Scaleway
+checks the manifests and the required small evidence is preserved, destroy
+both instances. The older `/root/scratchpad/apple-transfer-568dc192` packet is
+historical and superseded by the exact Wave A packet above.
+
+The Scaleway stage has been reached, but no Scaleway instance, SSH access or
+Apple run exists yet. Use an official Apple Silicon M4-M host with 32 GiB RAM,
+1.02 TB storage and macOS/Scaleway Dev OS with Xcode; M4 Pro XL with 64 GiB is
+an optional higher-memory alternative. The 32 GiB minimum is required by the
+OmniASR packet and also covers the recorded ReazonSpeech/BiCodec needs. Do not
+use Asahi Linux or FileVault. Provisioning references are the official
+[Apple silicon datasheet](https://www.scaleway.com/en/docs/apple-silicon/reference-content/apple-silicon-datasheet/),
+[Scaleway Dev OS guide](https://www.scaleway.com/en/docs/apple-silicon/reference-content/scaleway-dev-os/)
+and [SSH guide](https://www.scaleway.com/en/docs/apple-silicon/how-to/connect-to-mac-mini-ssh/).
+Only the resulting SSH command is needed; no private key or API token should be
+shared. No Hugging Face upload has occurred or is authorized.
+
+The 2026-08-28 through 2026-08-30 inventory and preparation notes below are
+historical evidence. This 2026-08-31 snapshot supersedes their current-state
+wording; Apple/Metal and the remaining 62 CPU-blocked rows remain open.
 
 The 2026-08-28 live audit reports 194 public repositories, 193 GGUF-bearing
 repositories and 198 GGUF files. The live-artifact reachability split is CPU
@@ -420,9 +447,17 @@ repositories blocked by incomplete CPU artifacts or binders. Scaleway can
 close only Apple-ready CPU/Metal packets. Missing native binders, unresolved
 dependency or weight licenses, gated companion access, owner sign-off and
 publication authorization remain separate blockers and are not solved by
-Apple hardware. VAST `49261078` is intentionally retained only until the
-BiCodec Apple packet and final bundle are verified and the required packets
-are transferred; stopped instance `49168183` remains untouched.
+Apple hardware. The BiCodec Apple packet and final branch bundle are verified:
+`/root/scratchpad/apple-transfer-bicodec-5cd97d12` contains 12 regular files
+with no symlinks and manifest SHA-256
+`0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`.
+Its branch bundle was created as
+`/private/tmp/vokra-mac-final-5cd97d12.bundle`, has SHA-256
+`a0b3a892cd29439a65d57e28c8c976d5914e53a0340272d682b7b28606341e71`
+and requires GitHub `main` base
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. VAST `49261078` and `49168183`
+are both stopped/exited and retained only for direct Scaleway transfer; their
+storage billing continues until destruction.
 
 ### Branch preparation status
 

@@ -1,13 +1,14 @@
 # Remaining-work execution plan (2026-08-20)
 
-> **2026-08-30 current-state notice:** this is a dated execution plan, not the
+> **2026-08-31 current-state notice:** this is a dated execution plan, not the
 > current ledger. Its historical counts, branch/HEAD references and completion
 > boundaries are superseded by the authenticated current snapshot in
 > `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` and the live
 > `docs/m5-owner-verification-checklist.md`. The pre-documentation
-> implementation/code baseline observed on 2026-08-30 was branch
+> implementation/code baseline observed on 2026-08-31 was branch
 > `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-> `c64b7b7237b70c5dc70ffd60394af325016d9a8d`, workspace `0.2.0`, with
+> `9f69277d8a0d5df574c1ee95563bd1f005de91d0`, with evidence/package checkpoint
+> `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`, workspace `0.2.0`, with
 > C ABI 57 functions / 15 typedefs and M5 49 checked / 33 unchecked. The
 > GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 

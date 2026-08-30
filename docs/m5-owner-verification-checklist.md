@@ -2,10 +2,12 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**Pre-documentation implementation/code baseline (reconciled 2026-08-30)**:
+**Pre-documentation implementation/code baseline (reconciled 2026-08-31)**:
 the branch observed before the documentation commits was
 `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d`, workspace version `0.2.0`, with
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+evidence/package checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. The workspace is version `0.2.0`, with
 57 C ABI functions / 15 typedefs and 49 checked / 33 unchecked literal boxes.
 The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 This checklist is the remaining action ledger feeding the **v1.0 GA** decision
@@ -23,7 +25,7 @@ branch/operation history remains in
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-30 current-state rule**: the earlier **94 unchecked boxes** and the
+**2026-08-31 current-state rule**: the earlier **94 unchecked boxes** and the
 2026-08-18 **42 checked / 36 unchecked** are historical owner ledgers, not
 current counts of missing implementations. The current literal ledger is
 **49 checked / 33 unchecked**. Those counts are not an exhaustive task count:
@@ -41,7 +43,7 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-08-30)
+## 0. Live remaining-work index (2026-08-31)
 
 This table is the complete M5 routing index. The 33 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
@@ -63,7 +65,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | GigaAM v3, GigaAM Multilingual and OmniASR CTC 1B have strict native CPU routes plus independent official VAST parity; Apple CPU/Metal remains open | Transfer the authenticated 4.9 GB packet from VAST to Scaleway, run Apple CPU/Metal evidence, and retain the final exit gates open until the live audit target is met |
+| Mac CPU/Metal model closure | Five Apple-ready models have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Three authenticated packets are held on stopped/exited VAST instances `49168183` and `49261078`; compute is off and storage billing continues. Live inventory is CPU `full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`; Metal `full=129`, `blocked-by-cpu=62`, `cpu-only=2`, `not-artifact=1`. | Provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify all three packets, run the five Apple CPU/Metal workers, preserve evidence and destroy both VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab

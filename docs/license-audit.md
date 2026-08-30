@@ -9,16 +9,35 @@ CC-BY-NC-SA-4.0 で non-bundled、Apache-2.0 commercial 判定は
 converter/code と user-supplied custom weights に限る。pyannote は MIT
 sign-off 済だが numerical parity 未確定のため default-on ではない。
 
-**2026-08-30 current snapshot**: GigaAM v3、GigaAM Multilingual、OmniASR
-CTC 1B は strict native CPU route と independent official VAST CPU parity
-を完了した。Apple CPU/Metal は未検証であり、Metal completion は主張しない。
-OmniASR と GigaAM v3 は既存署名を維持し、Multilingual は dataset/corpus
-provenance 未認証のため `NO_UPLOAD` を維持する。ハッシュ・誤差・VASTから
-Scalewayへの転送状態は Mac CPU/Metal handoff の authenticated CPU lock 節を
-正とする。`scripts/publish/check-catalog-reality.sh` の現行値は **22 rows /
-0 known gaps** であり、これは194 public repositories / 193 GGUF-bearing
-repositoriesのlive inventoryとは別の、公式zoo掲載行の監査指標である。旧
-review は履歴であり、現行 routing は M5 checklist を参照する。
+**2026-08-31 current snapshot**: GigaAM v3、GigaAM Multilingual、OmniASR
+CTC 1B、ReazonSpeech NeMo v2、BiCodec は strict native CPU route と
+independent official VAST evidence を完了し、3つの認証済み packet として
+Scaleway Apple Silicon 実行待ちである。Apple CPU/Metal は未検証であり、Metal
+completion は主張しない。BiCodec は research-only / native decode-only / PCM
+encode unsupported、Multilingual は dataset/corpus provenance 未認証、Reazon
+は replacement 未認可のため、いずれも該当する `NO_UPLOAD` 境界を維持する。
+VAST `49168183` と `49261078` は停止/exited中で compute は動いておらず、
+storage 課金だけが継続する。ハッシュ・誤差・packet・Scaleway未実行状態は Mac
+CPU/Metal handoff の 2026-08-31 authoritative snapshot を正とする。
+`scripts/publish/check-catalog-reality.sh` の現行値は **22 rows / 0 known
+gaps** であり、これは194 public repositories / 193 GGUF-bearing repositories
+のlive inventoryとは別の、公式zoo掲載行の監査指標である。旧 review は履歴で
+あり、現行 routing は M5 checklist を参照する。
+
+**2026-08-31 dependency/runtime corrections:** XY-Tokenizer は57 active lock
+rowsのうち51件でexact evidenceを収集済みで、SciPy、setuptools、soxr、SymPy、
+tokenizers、tqdmの6件だけをfail-closedで保持する（report SHA-256
+`604e9cc74a5814f97bcd2be106e1f620f5f4d2d45052ce3c78fb485583f17210`、
+partial evidence SHA-256
+`3e2471835be2b5cb767f3181050c98ff82dc12e039c9b4257af684d713306ffc`）。
+model/checkpoint/Torch routeはimportしていない。BiCodecの公式VAST parityは
+semantic latent、d-vector、prenet、waveformでそれぞれmax abs
+`1.907348633e-6`、`1.847743988e-6`、`7.539987564e-6`、
+`6.183981895e-7`としてpassしたが、Apple verdictとupload許可はない。
+HT-Demucs Multiはexact upstream `torchaudio>=0.8,<2.1`にPython 3.12互換releaseが
+存在しないため `BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO` / `NO_UPLOAD` であり、
+VASTやScalewayのRAM追加では解消しない。この段落は下表の2026-08-30時点の
+XY-Tokenizer、BiCodec、HT-Demucs Multi進捗記述をsupersedeする。
 
 **2026-08-30 resource and legal boundary:** サイズ判定はモデル本体と全 shard
 の合計で行う。合計 **2 GB 以上**の artefact は変換・検証を VAST に送る。
@@ -36,7 +55,7 @@ Article 50 の disclosure/marking は provider/deployer の役割・用途・法
 応じた確認事項であり、C2PA は候補となる技術的 provenance control にすぎず、
 それ自体で EU AI Act 適合を保証しない。
 
-**Current source-of-truth mapping (2026-08-30):** Dated rows below may retain
+**Current source-of-truth mapping (2026-08-31):** Dated rows below may retain
 their original `CLAUDE.md` citations as historical evidence, but they are not
 current policy. Voice-cloning/design-judgment-8 scope is governed by
 `docs/legal-compliance.md` §§3–4 and `docs/system-requirements.md` FR-CP-04;

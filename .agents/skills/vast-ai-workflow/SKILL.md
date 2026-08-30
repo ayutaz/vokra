@@ -58,13 +58,16 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 削除して課金を停止します。詳細は [Manage instances](https://docs.vast.ai/guides/instances/manage-instances)
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
-**現在の retained handoff (2026-08-30)**: instance `49168183`
-(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage) は `stopped`
-状態である。Wave A の `apple-transfer-bc9d1db2` と ReazonSpeech の
-`apple-transfer-reazon-a59c48c8` を Scaleway へ直接転送するためにのみ
-ストレージを保持しており、compute を再開しなくても storage 課金は
-継続する。転送と証拠回収後は直ちに destroy する。再開はこの転送か、
-名前を固定した次の VAST ジョブに限る。
+**現在の retained handoff (2026-08-31)**: instance `49168183`
+(`vokra-mac-coverage-771970dc`, 500 GB storage) と `49261078`
+(`vokra-htdemucs-inspection-20260830`, 200 GB storage) はいずれも
+`cur_state=stopped` / `intended_status=stopped` / `actual_status=exited` で、
+compute は動いていない。前者は Wave A の
+`apple-transfer-bc9d1db2` と ReazonSpeech の
+`apple-transfer-reazon-a59c48c8`、後者は BiCodec の
+`apple-transfer-bicodec-5cd97d12` を保持する。Scaleway へ直接転送するため
+だけにストレージを保持しており、storage 課金は継続する。再開はこの転送に
+限り、転送・manifest 検証・証拠回収後は両方を直ちに destroy する。
 
 ## 2. Rent phase（vast.ai 側）
 

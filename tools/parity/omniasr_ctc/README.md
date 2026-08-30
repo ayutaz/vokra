@@ -48,6 +48,10 @@ CPU results, not a self-authored mirror result.
 
 Apple CPU repetition and Metal execution remain pending and must run on the
 authenticated Apple/Scaleway worker. The packet remains remote-only at
-`/root/scratchpad/apple-transfer-568dc192` on VAST (4.9 GB / 33 files), to be
-transferred directly VAST-to-Scaleway and destroyed from VAST after the
-evidence handoff. No Hugging Face upload was performed.
+`/root/scratchpad/apple-transfer-bc9d1db2` on stopped/exited VAST instance
+`49168183` (4.9 GB / 30 regular files, no symlinks). Its manifest SHA-256 is
+`c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`.
+Transfer it directly VAST-to-Scaleway, verify the manifest there, preserve the
+small Apple evidence and then destroy the retained VAST instance. Storage
+billing continues while stopped. No Scaleway run or Hugging Face upload has
+occurred.

@@ -1,9 +1,11 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
-> **2026-08-30 supersession boundary:** This is a dated coverage ledger. Its
+> **2026-08-31 supersession boundary:** This is a dated coverage ledger. Its
 > model counts, size labels, and pending statements are historical campaign
 > evidence. The authoritative current snapshot is
-> `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`; do not infer current
+> `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` at code
+> `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and evidence/package checkpoint
+> `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; do not infer current
 > completion, Apple parity, or publication status from this older ledger.
 
 > **2026-08-27 Qwen3-TTS mapped-generation wave:** all five official Base,

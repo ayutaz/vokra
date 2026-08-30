@@ -1,5 +1,13 @@
 # Runtime gap execution plan (2026-08-21)
 
+> **2026-08-31 supersession notice:** this is a historical execution ledger.
+> Current model counts, remote evidence, packet inventory and remaining route
+> are authoritative in
+> [`mac-cpu-metal-full-coverage-2026-08-28.md`](mac-cpu-metal-full-coverage-2026-08-28.md)
+> and [`mac-cpu-metal-completion-plan-2026-08-30.md`](mac-cpu-metal-completion-plan-2026-08-30.md),
+> reconciled at code `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
+> evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+
 This plan refines Phase C of
 `docs/handoff/remaining-work-plan-2026-08-20.md` from the live source tree. It
 is a task ledger, not a completion claim. The inventory source of truth is

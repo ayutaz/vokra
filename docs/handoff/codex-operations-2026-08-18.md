@@ -16,12 +16,13 @@ This file records the decisions carried from the Claude Code session into
 Codex. Reusable policy belongs in `AGENTS.md`, `.agents/skills/`, and hooks;
 this file keeps the dated evidence and branch history.
 
-## Current-state supersession notice (2026-08-30)
+## Current-state supersession notice (2026-08-31)
 
 This handoff is history-only. The baseline branch name was
-`feat/mac-cpu-metal-full-coverage-2026-08-28`. The 2026-08-30 documentation
+`feat/mac-cpu-metal-full-coverage-2026-08-28`. The 2026-08-31 documentation
 refresh cross-checked the pre-documentation implementation/code baseline at
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d`; workspace `0.2.0`, with C ABI
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` and evidence/package checkpoint
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; workspace `0.2.0`, with C ABI
 57 functions / 15 typedefs and M5 49 checked / 33 unchecked. The GitHub `main`
 reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. Current model,
 VAST and Scaleway status is authoritative only in
@@ -136,9 +137,10 @@ No Hugging Face upload was performed in the session summarized here.
 
 ## M5 remaining-work interpretation
 
-`docs/m5-owner-verification-checklist.md` currently contains 42 checked and 36
-unchecked boxes. The old 94 unchecked count was historical and never meant 94
-missing implementations. The 36-box ledger mixes distinct done-conditions:
+This 2026-08-18 section is historical: it recorded 42 checked and 36 unchecked
+boxes. The current literal ledger contains 49 checked and 33 unchecked boxes.
+The old 94 unchecked count was historical and never meant 94 missing
+implementations. The unchecked-box ledger mixes distinct done-conditions:
 
 - NPU/CoreML/QNN real-hardware capture and C ABI GO/NO-GO inputs;
 - Cortex-M55/FVP, console SDK/NDA, legal/ADR, and GA/branch-protection actions;
@@ -151,7 +153,7 @@ missing implementations. The 36-box ledger mixes distinct done-conditions:
 - optional GitHub Pages deployment.
 
 Read and close each literal box independently. Also follow the prose-only GA
-gates in the checklist's §0 live index; the 36 literal boxes are not an
+gates in the checklist's §0 live index; the literal boxes are not an
 exhaustive count of M5 work. Do not infer implementation status from the total.
 
 ## Credential hygiene

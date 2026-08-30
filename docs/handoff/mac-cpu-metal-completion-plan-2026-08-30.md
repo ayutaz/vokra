@@ -4,8 +4,8 @@
 
 The objective is full Mac CPU and Apple Metal coverage for every public Vokra
 model repository, with real-artifact and independent-reference evidence.  This
-plan does not narrow completion to the currently staged three-model Apple
-packet.  The authoritative implementation ledger remains
+plan does not narrow completion to the currently staged five-model Apple set
+across three packets. The authoritative implementation ledger remains
 `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`; this document fixes
 the execution order and cloud boundary for the remaining work.
 
@@ -21,10 +21,10 @@ worker.  Scaleway Apple Silicon is the macOS arm64 CPU/Metal worker.  Uploading
 or withdrawing a Hugging Face artifact remains a separate irreversible action:
 no `--push`, repo deletion or public replacement is authorized by this plan.
 
-## Audited baseline
+## Audited baseline (reconciled 2026-08-31)
 
 The live read-only Hugging Face audit was repeated at clean branch commit
-`c3a653e4` on 2026-08-30.  It returned 194
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` on 2026-08-31. It returned 194
 public repositories, 193 GGUF-bearing repositories and 198 GGUF files:
 
 | Dimension | Complete | Remaining |
@@ -90,10 +90,12 @@ The instance was returned to the stopped state after packet verification and
 must not be destroyed until the packet and small evidence are copied to and
 verified on Scaleway.
 
-Scaleway can now decide only the three Wave A Apple CPU/Metal rows.  It cannot
-close the 63 CPU-open public rows, publication/replacement gates, RMVPE license
-decision or SeamlessM4T non-artifact decision described below.  Those remain
-separate VAST/source/license/publication waves after Wave A.
+This Wave A packet can decide only its three Apple CPU/Metal rows. The later
+ReazonSpeech and BiCodec packets expand the current Apple-ready set to five
+models, but Scaleway still cannot close the 63 CPU-open public rows,
+publication/replacement gates, RMVPE license decision or SeamlessM4T
+non-artifact decision described below. Those remain separate
+VAST/source/license/publication waves.
 
 The first Wave B source/CPU item has since advanced: ReazonSpeech-NeMo-v2 is
 green at exact code commit `a59c48c8da103ac14fe837cd2e0252b5266ac093` for
@@ -146,19 +148,31 @@ The current verified incremental transfer bundle is
 `d2ef5cfb8373a640f438a199fa779b3daaadc103`, resolves to management HEAD
 `a606b3c2a70a511d15d8bd61ecc5d7d5fbc34a15`, and has SHA-256
 `fbdc286fd0d0f384c28f0ed3a0634fe76b92239a267ce0578569d72eb8ee7b89`.
-Disposable audit instance `49242592` is stopped by owner request; the corrected
-three-family Linux audit has therefore not run yet.
+Historical disposable audit instance `49242592` is no longer an active retained
+instance or restart target. The corrected three-family MOSS/Ultravox/NeuTTS
+Linux rerun is not claimed by this plan and remains a separate evidence task.
 
-A source-only BiCodec review reached the same remote-evidence boundary without
-editing implementation files.  The pinned Spark-TTS source/config proves that
-the complete decoder can reuse existing FSQ, grouped/ordinary Conv1d,
-zero-insertion ConvTranspose1d, LayerNorm, GELU, Snake and tanh paths, so no new
-operator is presently identified.  However, the tracked inspection contract
-does not contain the authenticated checkpoint's complete tensor name/shape/
-dtype inventory.  A strict loader written before that VAST inventory would
-guess the binding and is forbidden.  The BiCodec inspection must therefore run
-on VAST before its native decode implementation begins; the converter remains
-`INSPECTION_ONLY` and no support row is promoted.
+BiCodec subsequently completed its exact remote evidence path. The strict
+binder authenticates all 840 F32 tensors and the native decode-only runtime
+reaches the semantic latent, d-vector, prenet and waveform outputs. Official
+VAST parity passed with maximum absolute errors `1.907348633e-6`,
+`1.847743988e-6`, `7.539987564e-6` and `6.183981895e-7` respectively. PCM
+encode remains explicitly unsupported, the model stays research-only and
+`NO_UPLOAD`, and real Apple CPU/Metal execution remains open. Its verified
+Apple packet is `/root/scratchpad/apple-transfer-bicodec-5cd97d12`, 600 MB
+across 12 regular files with no symlinks; the manifest SHA-256 is
+`0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`.
+
+The model-free XY-Tokenizer audit accounts for all 57 active dependency rows:
+51 have exact bounded evidence, while SciPy, setuptools, soxr, SymPy,
+tokenizers and tqdm remain fail-closed. The report SHA-256 is
+`604e9cc74a5814f97bcd2be106e1f620f5f4d2d45052ce3c78fb485583f17210`
+and the partial evidence SHA-256 is
+`3e2471835be2b5cb767f3181050c98ff82dc12e039c9b4257af684d713306ffc`;
+no model or Torch route was imported. HT-Demucs Multi is separately
+`BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO`: its exact upstream
+`torchaudio>=0.8,<2.1` constraint has no Python 3.12-compatible release, so
+neither VAST nor Scaleway can clear it.
 
 The complete Wave D model-free worker preflight is also green at management
 HEAD `50635dca`. Nineteen fixed-revision VAST workers cover all twenty Wave D
@@ -189,39 +203,51 @@ management HEAD, followed by Bash syntax and ShellCheck for the same files.
 Those are offline launch/evidence-contract tests only: no Apple hardware,
 checkpoint, model execution, Cargo command or numerical verdict was involved.
 
-## Next authorized VAST batch
+## Completed VAST batch and next external stage (2026-08-31)
 
-No VAST restart is presently authorized. Read-only status confirmation after
-the owner stop request showed both retained instance `49168183` and disposable
-audit instance `49242592` with `cur_state=stopped`,
-`intended_status=stopped` and `actual_status=exited`. Their stopped storage
-rates are approximately USD 0.0741/hour and USD 0.0417/hour respectively;
-neither is consuming compute.
+The current unblocked Linux/VAST batch is complete at exact code commit
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`. Workspace tests recorded 310
+passing result groups and zero failures (log SHA-256
+`c6a9c5b1604ed53c02902bd311062f7a4646f7f9a455993489f625c96769b139`);
+strict Clippy, `cargo deny` and `cargo audit` also passed with log SHA-256 values
+`373ce57e806cb33ec0a7b16e49174ffcf0b274b38cfbb8d02bb7813b976aa33c`,
+`43ba882d8949aa5a6145e86a1bdf66d602057591b4d462390aa8c4519c0e9666`
+and `82e60f15564fdf549048e5f14a0d6a8e97a09b05fc875a389efe7da180d60c36`.
+No VAST restart or additional Linux run is required before the prepared Apple
+stage.
 
-When the owner explicitly authorizes a restart, resume only `49242592`, fetch
-the verified bundle above into its existing `d2ef5cfb` checkout and verify a
-clean exact `a606b3c2` checkout before running anything. The bounded first
-batch is:
+Read-only status confirmation shows retained instances `49168183` and
+`49261078` with `cur_state=stopped`, `intended_status=stopped` and
+`actual_status=exited`. They consume no compute; their 500 GB and 200 GB
+retained storage continues to incur charges. Historical instance `49242592` is
+not an active restart target. The two retained instances hold three verified
+packets:
 
-1. Repeat the corrected MOSS Audio Tokenizer v2 dependency audit and require
-   all 52 lock rows to be accounted for as 51 installed package rows plus the
-   virtual project row, including exact-sdist evidence.
-2. Repeat the corrected Ultravox audit and require 40 rows to classify as 37
-   active plus three inactive rows; repeat NeuTTS Air and require 39 rows to
-   classify as 36 active plus three inactive rows.
-3. Run the fixed BiCodec, HTDemucs Multi and XY-Tokenizer inspection workers
-   sequentially, preserving their complete authenticated tensor/tree
-   inventories and fail-closed `NO_UPLOAD` verdicts. Do not begin a native
-   binder from partial output.
-4. Recover only the small manifests/logs, verify their SHA-256 values locally,
-   and destroy `49242592` after the evidence is safe. Do not alter retained
-   Apple-transfer instance `49168183` in this batch.
+1. `/root/scratchpad/apple-transfer-bc9d1db2` for GigaAM v3, GigaAM
+   Multilingual and OmniASR CTC 1B: 4.9 GB, 30 regular files, no symlinks,
+   manifest SHA-256
+   `c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`.
+2. `/root/scratchpad/apple-transfer-reazon-a59c48c8` for ReazonSpeech NeMo v2:
+   11 regular files, manifest SHA-256
+   `48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`.
+3. `/root/scratchpad/apple-transfer-bicodec-5cd97d12` for BiCodec: 600 MB,
+   12 regular files, no symlinks, manifest SHA-256
+   `0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`.
 
-The MOSS-Audio 4B/8B production worker is excluded because it requires a
-separate external approval document. CosyVoice3 is also excluded because its
-dependency-clean official-reference route remains unresolved; more RAM or a
-VAST host does not satisfy that license/reference gate. No conversion,
-publication or Hugging Face upload is part of this first batch.
+The next stage is Scaleway Apple Silicon. No Scaleway instance or SSH access
+has been supplied and no Apple run has started. Provision an official M4-M
+with 32 GiB RAM, 1.02 TB storage, macOS/Scaleway Dev OS and Xcode; an M4 Pro XL
+with 64 GiB is optional. Do not use Asahi Linux or FileVault. Share only the
+resulting SSH command, never a private key or API token. Resume the retained
+VAST instances only for direct packet transfer, verify each manifest on
+Scaleway, execute the five model-specific CPU/Metal workers, recover the small
+signed evidence and then destroy both VAST instances.
+
+This Apple stage can decide only those five prepared rows. It cannot close the
+remaining 62 CPU-blocked repositories, the six XY dependency blockers, the
+HT-Demucs Python 3.12 contradiction, MOSS/Ultravox/NeuTTS remote reruns,
+publication/replacement gates or owner/license decisions. No Hugging Face
+upload is part of the stage.
 
 ## Execution order
 
@@ -312,9 +338,9 @@ minimum evidence attached to a wave is:
    repository was authorized.
 
 VAST instances are destroyed after their evidence and required Apple transfer
-are verified.  The currently stopped retained instance `49168183` may be
-resumed only for the recorded packet transfer or the next named remote job; its
-storage charge continues until final destruction.
+are verified. The currently stopped/exited retained instances `49168183` and
+`49261078` may be resumed only for their recorded packet transfer; their
+storage charges continue until final destruction.
 
 ## Final completion proof
 

@@ -1,9 +1,13 @@
 # Codex operations handoff (2026-08-28)
 
-> **Superseded current-state note (2026-08-30):** This document remains a
+> **Superseded current-state note (2026-08-31):** This document remains a
 > dated 2026-08-28 historical record. For the current Mac CPU/Metal baseline,
 > branch state, VAST evidence, and remaining work, read
 > [`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`](mac-cpu-metal-full-coverage-2026-08-28.md).
+> The ordered current route is the
+> [`Mac CPU/Metal completion plan`](mac-cpu-metal-completion-plan-2026-08-30.md),
+> reconciled at code `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
+> evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
 > The historical baseline and session narrative below are intentionally not
 > rewritten into present tense.
 

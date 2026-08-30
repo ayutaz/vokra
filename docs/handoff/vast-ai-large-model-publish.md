@@ -190,10 +190,18 @@ retained handoff（別環境への転送待ちなど）に限り、外部 backup
 および [Vast Storage types](https://docs.vast.ai/guides/instances/storage/types)
 を参照。
 
-**2026-08-30 の retained handoff**: instance `49168183`
-(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage, `$0.3074/h`) は
-Scaleway 転送 packet 保持のためだけに稼働中である。転送完了後に destroy する。
-今回の更新では stop/destroy 操作は行わない。
+**2026-08-31 の retained handoff**: instance `49168183`（500 GB storage）と
+`49261078`（200 GB storage）はいずれも `cur_state=stopped`、
+`intended_status=stopped`、`actual_status=exited` であり、compute は動いて
+いない。storage 課金は継続する。前者は
+`/root/scratchpad/apple-transfer-bc9d1db2`（manifest SHA-256
+`c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`）と
+`/root/scratchpad/apple-transfer-reazon-a59c48c8`（
+`48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`）、
+後者は `/root/scratchpad/apple-transfer-bicodec-5cd97d12`（
+`0a80edb51e88d17ce8f243ee58523551baf7d9fc5a848a17dc9c3fdecaf8d18f`）を
+Scaleway へ直接転送するためだけに保持する。再開はその転送に限定し、
+Scaleway 上で manifest を検証して証拠を回収した後に両方を destroy する。
 
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
