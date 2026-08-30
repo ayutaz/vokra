@@ -13,8 +13,9 @@ The authenticated model route imports only `numpy`, `torch`, `torchaudio`,
 only in `utils/helpers.py`, which is not imported by `xy_tokenizer/model.py`
 or its frontend/encoder/RVQ/Vocos route; it is excluded from this closure.
 
-`uv.lock` is intentionally absent until VAST resolves the exact CPU-only lock;
-`license_evidence.json` is tracked only as an empty template. VAST must collect
+The exact VAST-generated CPU-only `uv.lock` is tracked at the pinned digest
+`ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049` (57 package
+rows). `license_evidence.json` is tracked only as an empty template. VAST must collect
 publisher or locked-sdist license bytes plus native bundled payload evidence.
 Run `audit.py` only with fake fixtures locally. It emits `BLOCKED`,
 `NO_UPLOAD`, and owner sign-off required; it cannot self-assert

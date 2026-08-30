@@ -5,13 +5,13 @@
   "owner_signoff": "REQUIRED",
   "blockers": [
     "DEPENDENCY_CLOSURE_LICENSE_UNVERIFIED_BLOCKER",
-    "EXACT_UV_LOCK_NOT_GENERATED",
-    "LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED"
+    "LICENSE_BYTES_AND_NATIVE_PAYLOAD_EVIDENCE_REQUIRED",
+    "OWNER_SIGNOFF_REQUIRED"
   ],
   "project": {
-    "pyproject_sha256": null,
-    "uv_lock_sha256": null,
-    "active_package_count": 0
+    "pyproject_sha256": "167c19066e8c9debd08468d2ba556a9a4cf05f5cb1838a2c1f8664a0eb968640",
+    "uv_lock_sha256": "ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049",
+    "active_package_count": 57
   },
   "source": null
 }

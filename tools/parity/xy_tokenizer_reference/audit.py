@@ -55,6 +55,13 @@ DIRECT_DEPENDENCIES = {
 }
 LOCK_TOP_LEVEL_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 VIRTUAL_PROJECT_NAME = "vokra-xy-tokenizer-reference"
+TARGET_MARKER_VALUES = {
+    "implementation_name": "cpython",
+    "platform_machine": "x86_64",
+    "platform_python_implementation": "CPython",
+    "python_version": "3.12",
+    "sys_platform": "linux",
+}
 
 
 def sha256(path: Path) -> str:
@@ -75,6 +82,51 @@ def json_unique(path: Path) -> Any:
         return value
 
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+
+
+def evaluate_marker(marker: str) -> bool:
+    """Evaluate the small PEP 508 marker subset for the target runtime."""
+    if not isinstance(marker, str) or not marker:
+        raise ValueError("dependency marker must be a non-empty string")
+    try:
+        tree = ast.parse(marker, mode="eval")
+    except SyntaxError as error:
+        raise ValueError(f"dependency marker syntax is invalid: {marker}") from error
+
+    def operand(node: ast.AST) -> str | tuple[str, ...]:
+        if isinstance(node, ast.Name) and node.id in TARGET_MARKER_VALUES:
+            return TARGET_MARKER_VALUES[node.id]
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, (ast.Tuple, ast.List)):
+            values = tuple(operand(item) for item in node.elts)
+            if not all(isinstance(item, str) for item in values):
+                raise ValueError("dependency marker collection contains an invalid operand")
+            return values
+        raise ValueError("dependency marker contains an unknown name or operand")
+
+    def evaluate(node: ast.AST) -> bool:
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)) and node.values:
+            values = [evaluate(value) for value in node.values]
+            return all(values) if isinstance(node.op, ast.And) else any(values)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and len(node.comparators) == 1:
+            left = operand(node.left)
+            right = operand(node.comparators[0])
+            operation = node.ops[0]
+            if isinstance(operation, ast.Eq):
+                return left == right
+            if isinstance(operation, ast.NotEq):
+                return left != right
+            if isinstance(operation, ast.In):
+                return isinstance(right, tuple) and left in right
+            if isinstance(operation, ast.NotIn):
+                return isinstance(right, tuple) and left not in right
+            if isinstance(operation, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) and isinstance(left, str) and isinstance(right, str):
+                return {ast.Lt: left < right, ast.LtE: left <= right, ast.Gt: left > right, ast.GtE: left >= right}[type(operation)]
+            raise ValueError("dependency marker uses an unknown operator")
+        raise ValueError("dependency marker expression is unsupported")
+
+    return evaluate(tree.body)
 
 
 def regular(path: Path, label: str) -> None:
@@ -259,15 +311,23 @@ def lock_rows(lock: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if not isinstance(dependencies, list):
             raise ValueError("uv.lock dependency list is invalid")
         for dependency in dependencies:
-            if not isinstance(dependency, dict) or set(dependency) - {"name", "marker"} or not isinstance(dependency.get("name"), str) or not dependency["name"] or ("marker" in dependency and dependency["marker"] not in MARKER_ALIASES):
+            if not isinstance(dependency, dict) or set(dependency) - {"name", "marker"} or not isinstance(dependency.get("name"), str) or not dependency["name"]:
                 raise ValueError("uv.lock dependency row is invalid")
+            if "marker" in dependency:
+                if not isinstance(dependency["marker"], str):
+                    raise ValueError("uv.lock dependency marker is invalid")
+                evaluate_marker(dependency["marker"])
         optional = row.get("optional-dependencies", {})
         if not isinstance(optional, dict) or any(not isinstance(group, str) or not group or not isinstance(group_dependencies, list) for group, group_dependencies in optional.items()):
             raise ValueError("uv.lock optional dependency rows are invalid")
         for group_dependencies in optional.values():
             for dependency in group_dependencies:
-                if not isinstance(dependency, dict) or set(dependency) - {"name", "marker"} or not isinstance(dependency.get("name"), str) or not dependency["name"] or ("marker" in dependency and dependency["marker"] not in MARKER_ALIASES):
+                if not isinstance(dependency, dict) or set(dependency) - {"name", "marker"} or not isinstance(dependency.get("name"), str) or not dependency["name"]:
                     raise ValueError("uv.lock optional dependency row is invalid")
+                if "marker" in dependency:
+                    if not isinstance(dependency["marker"], str):
+                        raise ValueError("uv.lock optional dependency marker is invalid")
+                    evaluate_marker(dependency["marker"])
         for artifact_key in ("sdist", "wheels"):
             artifacts = row.get(artifact_key, []) if artifact_key == "wheels" else ([row[artifact_key]] if artifact_key in row else [])
             if not isinstance(artifacts, list):
@@ -331,8 +391,8 @@ def active_closure(data: dict[str, Any], rows: list[dict[str, Any]]) -> list[dic
             if not isinstance(dependency, dict) or not isinstance(dependency.get("name"), str) or not dependency["name"]:
                 raise ValueError("lock dependency row is invalid")
             marker = dependency.get("marker")
-            if marker is not None and marker not in MARKER_ALIASES:
-                raise ValueError(f"unsupported dependency marker: {marker}")
+            if marker is not None and not evaluate_marker(marker):
+                continue
             pending.append(dependency["name"])
     return [selected[name] for name in sorted(selected)]
 
@@ -429,13 +489,18 @@ def audit(project: Path, source: Path | None, output: Path) -> dict[str, Any]:
         validate_pyproject(pyproject_data)
     except ValueError as error:
         blockers.append(f"REFERENCE_PROJECT_POLICY_MISMATCH:{error}")
+    active: list[dict[str, Any]] = []
+    package_evidence: list[dict[str, Any]] = []
     try:
         lock_data, all_rows = lock_rows(lock)
         active = active_closure(lock_data, all_rows)
-        package_evidence = validate_license_rows(active, json_unique(evidence_path), pyproject)
     except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
         blockers.append(f"{BLOCKER}:{error}")
-        active, package_evidence = [], []
+    else:
+        try:
+            package_evidence = validate_license_rows(active, json_unique(evidence_path), pyproject)
+        except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
+            blockers.append(f"{BLOCKER}:{error}")
     source_packet: dict[str, Any] | None = None
     if source is not None:
         try:
@@ -455,8 +520,22 @@ def audit(project: Path, source: Path | None, output: Path) -> dict[str, Any]:
 
 def self_test() -> None:
     assert MARKER == "sys_platform == 'linux' and platform_machine == 'x86_64'"
+    assert evaluate_marker("implementation_name != 'PyPy'")
+    assert not evaluate_marker("implementation_name == 'PyPy'")
+    for unsupported in ("unknown_marker == 'x'", "sys_platform ~= 'linux'"):
+        try:
+            evaluate_marker(unsupported)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsupported dependency marker accepted")
     project_data = tomllib.loads((Path(__file__).parent / "pyproject.toml").read_text(encoding="utf-8"))
     validate_pyproject(project_data)
+    tracked_lock = Path(__file__).parent / "uv.lock"
+    if tracked_lock.is_file():
+        tracked_data, tracked_rows = lock_rows(tracked_lock)
+        assert len(tracked_rows) == 57
+        assert len(active_closure(tracked_data, tracked_rows)) == 57
     unknown_project_data = {**project_data, "project": {**project_data["project"], "unexpected": True}}
     try:
         validate_pyproject(unknown_project_data)
