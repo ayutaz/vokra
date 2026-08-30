@@ -57,6 +57,8 @@ KNOWN_HEAD_BYTES = {"f7e0c4bc-ba3fe64a.th": 84_141_271, "5c90dfd2-34c22ccb.th": 
 FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER = "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER"
 EVIDENCE_FILENAME = "htdemucs_multi_manifest.json"
 PACKAGE_KEYS = ("klass", "args", "kwargs", "state", "training_args", "metrics")
+LEGACY_MAPPING_PATH = "training_args.dset.test_mapping"
+LEGACY_TEST_MAPPING = {0: 0, 1: 1, 2: 2, 3: 3, 4: 2, 5: 2}
 
 # The checkpoint scanner is run before the safe loader.  These are the exact
 # globals observed in the authenticated Meta archives.  A new global is a
@@ -204,6 +206,14 @@ def _validate_metadata(value: Any, path: str, depth: int = 0, seen: set[int] | N
         return
     seen = set() if seen is None else seen
     if type(value) is dict:
+        if path == LEGACY_MAPPING_PATH:
+            if (
+                list(value) != list(LEGACY_TEST_MAPPING)
+                or any(type(key) is not int or type(item) is not int for key, item in value.items())
+                or value != LEGACY_TEST_MAPPING
+            ):
+                raise ValueError(f"metadata mapping differs from the authenticated 6s mapping at {path}")
+            return
         if id(value) in seen:
             raise ValueError(f"cyclic metadata at {path}")
         seen.add(id(value))
@@ -552,6 +562,20 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("invalid 6s Demucs YAML config was accepted")
+    _validate_metadata(dict(LEGACY_TEST_MAPPING), LEGACY_MAPPING_PATH)
+    for invalid_mapping, invalid_path in (
+        ({0: 0, 1: 1, 2: 2, 3: 3, 4: 2, 5: 1}, LEGACY_MAPPING_PATH),
+        ({0: 0, 1: 1, 2: 2, 3: 3, 4: 2, 5: 2, 6: 0}, LEGACY_MAPPING_PATH),
+        ({0: 0, 1: 1, 2: 2, 3: 3, 4: 2, True: 2}, LEGACY_MAPPING_PATH),
+        ({0: 0, 1: 1, 2: 2, 3: 3, 4: 2, 5: True}, LEGACY_MAPPING_PATH),
+        (dict(LEGACY_TEST_MAPPING), "training_args.dset.other_mapping"),
+    ):
+        try:
+            _validate_metadata(invalid_mapping, invalid_path)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid 6s metadata mapping was accepted")
     cycle: list[Any] = []
     cycle.append(cycle)
     try:
