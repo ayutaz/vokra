@@ -38,8 +38,9 @@ scripts/publish/vast-ai/audit-ultravox-dependencies.sh \
   --output /external/evidence/ultravox-dependency-audit.json
 ```
 
-The audit accounts for every lock row, compares the active Linux x86_64
-installed multiset, records package/native publisher evidence, and inspects
+The audit accounts for every lock row, derives the active Linux x86_64 closure
+by marker-aware traversal from the virtual root (including inactive dependency
+edges such as Windows-only colorama), compares the installed multiset, records package/native publisher evidence, and inspects
 only bounded ELF metadata. Missing installed publisher files may be supported
 only by the exact locked PyPI sdist, inspected in memory without extraction or
 execution. Its dependency sdist requests are reported separately from the

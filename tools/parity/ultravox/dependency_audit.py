@@ -307,19 +307,89 @@ def marker_active(markers: list[str]) -> bool:
         raise AuditError(f"lock marker cannot be evaluated: {exc}") from exc
 
 
+def _normalized_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name.strip()).casefold()
+
+
+def _row_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return _normalized_name(row["name"]), row["version"], canonical_json(row["source"])
+
+
+def _dependency_candidates(dep: dict[str, Any], by_name: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    name = dep.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise AuditError("dependency edge has no package name")
+    candidates = list(by_name.get(_normalized_name(name), []))
+    if isinstance(dep.get("version"), str):
+        candidates = [row for row in candidates if row["version"] == dep["version"]]
+    elif "version" in dep:
+        raise AuditError(f"dependency selector version is malformed: {name}")
+    if "source" in dep:
+        source = dep["source"]
+        if not isinstance(source, dict) or set(source) != {"registry"}:
+            raise AuditError(f"dependency selector source is malformed: {name}")
+        candidates = [row for row in candidates if row["source"] == source]
+    if not candidates:
+        raise AuditError(f"dependency selector does not resolve: {name}")
+    if len(candidates) > 1:
+        raise AuditError(f"dependency selector is ambiguous: {name}")
+    return candidates
+
+
 def classify_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows = list(lock["package"])
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_name.setdefault(_normalized_name(row["name"]), []).append(row)
+    virtual_rows = [row for row in rows if row["source"] == {"virtual": "."}]
+    if len(virtual_rows) != 1:
+        raise AuditError("uv.lock dependency graph requires exactly one virtual root")
+    reachable: set[tuple[str, str, str]] = set()
+    inactive_reasons: dict[tuple[str, str, str], list[str]] = {}
+
+    def walk(row: dict[str, Any], chain: str) -> None:
+        key = _row_key(row)
+        if key in reachable:
+            return
+        if row["source"] != {"virtual": "."} and not marker_active(row.get("resolution-markers", [])):
+            inactive_reasons.setdefault(key, []).append(f"package resolution marker is inactive on Linux x86_64 CPython 3.12: {row.get('resolution-markers', [])}")
+            return
+        reachable.add(key)
+        for dep in row.get("dependencies", []):
+            if not isinstance(dep, dict):
+                raise AuditError(f"dependency edge is malformed from {row['name']}=={row['version']}")
+            marker = dep.get("marker")
+            if marker is not None and not isinstance(marker, str):
+                raise AuditError(f"dependency marker is malformed from {row['name']}=={row['version']}")
+            edge_active = marker_active([marker]) if marker is not None else True
+            candidate = _dependency_candidates(dep, by_name)[0]
+            candidate_key = _row_key(candidate)
+            if not edge_active:
+                inactive_reasons.setdefault(candidate_key, []).append(
+                    f"unreachable from {row['name']}=={row['version']}: dependency marker false on Linux x86_64 CPython 3.12: {marker}"
+                )
+                continue
+            if candidate["source"] != {"virtual": "."} and not marker_active(candidate.get("resolution-markers", [])):
+                raise AuditError(f"active dependency selects an inactive package resolution row: {dep.get('name')}")
+            walk(candidate, f"{chain}->{candidate['name']}")
+
+    walk(virtual_rows[0], virtual_rows[0]["name"])
     active: list[dict[str, Any]] = []
     inactive: list[dict[str, Any]] = []
-    for row in sorted(lock["package"], key=lambda item: (item["name"], item["version"], json.dumps(item["source"], sort_keys=True))):
+    for row in sorted(rows, key=lambda item: (item["name"], item["version"], json.dumps(item["source"], sort_keys=True))):
         item = dict(row)
+        key = _row_key(row)
         if row["source"] == {"virtual": "."}:
             item.update(status="INACTIVE_VIRTUAL_PROJECT", reason="virtual root is not an installed distribution")
             inactive.append(item)
-        elif marker_active(row.get("resolution-markers", [])):
-            item.update(status="ACTIVE_LINUX_INSTALLED", reason="marker matches Linux x86_64 CPython 3.12")
+        elif key in reachable:
+            item.update(status="ACTIVE_LINUX_INSTALLED", reason="reachable from the virtual root through Linux x86_64 CPython 3.12 marker-aware dependency edges")
             active.append(item)
         else:
-            item.update(status="INACTIVE_MARKER_ALTERNATIVE", reason="resolution marker does not match Linux x86_64 CPython 3.12")
+            reason = "; ".join(sorted(set(inactive_reasons.get(key, [])))) or "unreachable from the virtual root on Linux x86_64 CPython 3.12"
+            if marker_active(row.get("resolution-markers", [])) and key not in inactive_reasons:
+                reason = "unreachable from the virtual root on Linux x86_64 CPython 3.12 (no active marker-aware dependency edge)"
+            item.update(status="INACTIVE_MARKER_ALTERNATIVE" if not marker_active(row.get("resolution-markers", [])) else "INACTIVE_UNREACHABLE_DEPENDENCY", reason=reason)
             inactive.append(item)
     return active, inactive
 
@@ -750,6 +820,11 @@ def self_test() -> int:
     manifest = strict_json(Path(__file__).resolve().parent / "license_gate_manifest.json")
     project_root = Path(__file__).resolve().parent
     _, checked_lock, checked_manifest, _, _ = _contract(project_root)
+    active_rows, inactive_rows = classify_rows(checked_lock)
+    assert len(checked_lock["package"]) == 40 and len(active_rows) == 37 and len(inactive_rows) == 3
+    colorama_rows = [row for row in inactive_rows if row["name"] == "colorama"]
+    assert len(colorama_rows) == 1 and colorama_rows[0]["status"] == "INACTIVE_UNREACHABLE_DEPENDENCY" and "win32" in colorama_rows[0]["reason"]
+    assert any(row["name"] == "torch" and row["version"] == "2.13.0" and row["status"] == "INACTIVE_MARKER_ALTERNATIVE" for row in inactive_rows)
     assert len(checked_manifest["package_review_rows"]) == len(checked_lock["package"])
     assert len({(row["name"], row["version"], canonical_json(row["source"])) for row in checked_manifest["package_review_rows"]}) == len(checked_manifest["package_review_rows"])
     assert {row["id"] for row in checked_manifest["license_rows"]} == {"ultravox-audio-weight", "llama-companion-meta-conditional", "python-closure"}
