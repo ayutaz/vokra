@@ -1294,6 +1294,8 @@ mod tests {
             "\"sample_rate\": 16000",
             "\"frame_hop\": 320",
             "\"semantic_vocab\": 8192",
+            "\"semantic_codebook_dim\": 8",
+            "\"semantic_latent_dim\": 1024",
             "\"global_vocab\": 4096",
             "\"global_tokens\": 32",
         ] {
@@ -1350,7 +1352,7 @@ mod tests {
             &manifest,
             &reference_dir,
             "semantic_latent",
-            &[1, SEMANTIC_DIM, semantic_values.len()],
+            &[1, MODEL_DIM, semantic_values.len()],
             &semantic,
         );
         compare_reference_stage(

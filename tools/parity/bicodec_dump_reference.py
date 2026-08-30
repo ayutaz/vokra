@@ -33,6 +33,8 @@ SOURCE_REPOSITORY = "https://github.com/SparkAudio/Spark-TTS"
 SAMPLE_RATE = 16_000
 FRAME_HOP = 320
 SEMANTIC_VOCAB = 8_192
+SEMANTIC_CODEBOOK_DIM = 8
+SEMANTIC_LATENT_DIM = 1_024
 GLOBAL_VOCAB = 4_096
 GLOBAL_TOKENS = 32
 
@@ -140,7 +142,9 @@ def main() -> int:
         waveform = model.decoder(conditioned)
 
     expected_samples = len(semantic_values) * FRAME_HOP
-    if tuple(semantic_latent.shape) != (1, 8, len(semantic_values)):
+    # The codebook emits SEMANTIC_CODEBOOK_DIM channels, then the official
+    # quantizer out_project expands them to the model input width.
+    if tuple(semantic_latent.shape) != (1, SEMANTIC_LATENT_DIM, len(semantic_values)):
         raise RuntimeError(f"unexpected semantic latent shape: {tuple(semantic_latent.shape)}")
     if tuple(d_vector.shape) != (1, 1_024):
         raise RuntimeError(f"unexpected d-vector shape: {tuple(d_vector.shape)}")
@@ -173,6 +177,8 @@ def main() -> int:
             "sample_rate": SAMPLE_RATE,
             "frame_hop": FRAME_HOP,
             "semantic_vocab": SEMANTIC_VOCAB,
+            "semantic_codebook_dim": SEMANTIC_CODEBOOK_DIM,
+            "semantic_latent_dim": SEMANTIC_LATENT_DIM,
             "global_vocab": GLOBAL_VOCAB,
             "global_tokens": GLOBAL_TOKENS,
         },
