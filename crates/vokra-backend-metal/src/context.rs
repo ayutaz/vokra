@@ -6656,23 +6656,8 @@ impl MetalContext {
         // SAFETY: token consumed by the matching pop below.
         let pool = unsafe { sys::objc_autoreleasePoolPush() };
         let result = self.run_conv_transpose2d(
-            input,
-            in_h,
-            in_w,
-            weight,
-            out_ch,
-            out_h,
-            out_w,
-            kernel_h,
-            kernel_w,
-            bias,
-            stride,
-            padding,
-            dilation,
-            output_padding,
-            groups,
-            in_ch,
-            out,
+            input, in_h, in_w, weight, out_ch, out_h, out_w, kernel_h, kernel_w, bias, stride,
+            padding, dilation, groups, in_ch, out,
         );
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
@@ -6964,7 +6949,6 @@ impl MetalContext {
         stride: (usize, usize),
         padding: (usize, usize),
         dilation: (usize, usize),
-        output_padding: (usize, usize),
         groups: usize,
         in_ch: usize,
         out: &mut [f32],
