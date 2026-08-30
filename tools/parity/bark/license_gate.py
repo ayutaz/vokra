@@ -30,6 +30,15 @@ MANIFEST_KEYS = {
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+# PyTorch's registry metadata currently omits ``size`` for this one exact CPU
+# wheel in Bark's checked-in lock contract. This exception is never inferred
+# from a filename or package expectation.
+PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = {
+    (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256:4ca4a9394b0c771238a4f73590fdbbc4debad85ed0fa63d026ae1b085da7d6e2",
+    ),
+}
 REGISTRY_PACKAGE_SCHEMAS = {
     frozenset({"name", "version", "source", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
@@ -65,16 +74,22 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
 
 
-def validate_artifact(value: Any, label: str, registry: str) -> None:
-    if not isinstance(value, dict) or set(value) != ARTIFACT_KEYS:
+def validate_artifact(value: Any, label: str, registry: str, package_name: str | None = None) -> None:
+    if not isinstance(value, dict) or set(value) not in (ARTIFACT_KEYS, ARTIFACT_KEYS - {"size"}):
         block(f"{label} artifact schema is malformed")
+    if "size" not in value and (
+        registry != "https://download.pytorch.org/whl/cpu"
+        or package_name != "torch"
+        or (value.get("url"), value.get("hash")) not in PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE
+    ):
+        block(f"{label} artifact size is missing outside the exact PyTorch CPU exception")
     expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
     parsed = urlsplit(value["url"]) if isinstance(value["url"], str) else None
     if parsed is None or parsed.scheme != "https" or parsed.netloc != expected_host or not parsed.path:
         block(f"{label} artifact URL is not the authenticated {expected_host} host")
     if not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]):
         block(f"{label} artifact hash is not a SHA-256")
-    if isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0:
+    if "size" in value and (isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0):
         block(f"{label} artifact size is not positive")
     if not isinstance(value["upload-time"], str) or not value["upload-time"].strip():
         block(f"{label} artifact upload-time is missing")
@@ -147,12 +162,12 @@ def rows(lock: dict[str, Any]) -> list[dict[str, Any]]:
             if "metadata" in package:
                 validate_metadata(package["metadata"], f"{identity!r}")
             if "sdist" in package:
-                validate_artifact(package["sdist"], f"{identity!r} sdist", registry)
+                validate_artifact(package["sdist"], f"{identity!r} sdist", registry, package["name"])
             if "wheels" in package:
                 if not isinstance(package["wheels"], list) or not package["wheels"]:
                     block(f"{identity!r} wheels table is malformed")
                 for artifact in package["wheels"]:
-                    validate_artifact(artifact, f"{identity!r} wheel", registry)
+                    validate_artifact(artifact, f"{identity!r} wheel", registry, package["name"])
             if "sdist" not in package and not package.get("wheels"):
                 block(f"{identity!r} registry package has no authenticated artifacts")
         canonical_rows.append(package)
@@ -371,6 +386,55 @@ explicit = true
             "full_public_file": "model.gguf", "full_upstream_file": "pytorch_model.bin",
         }
         package_rows = rows(tomllib.loads(lock.read_text(encoding="utf-8")))
+        # The production lock is the source of truth for the narrow exception:
+        # its current Torch CPU wheel is the sole reviewed URL / hash identity,
+        # and the structural parser accepts that one missing size while
+        # retaining strict validation everywhere else.
+        production_lock = Path(__file__).resolve().parent / "uv.lock"
+        production_rows = rows(tomllib.loads(production_lock.read_text(encoding="utf-8")))
+        production_torch = next(
+            row for row in production_rows
+            if row.get("name") == "torch"
+            and row.get("source") == {"registry": "https://download.pytorch.org/whl/cpu"}
+        )
+        production_missing_sizes = [
+            artifact for artifact in production_torch.get("wheels", [])
+            if "size" not in artifact
+        ]
+        if len(production_missing_sizes) != 1:
+            raise SystemExit("bark license gate self-test expected one production Torch missing-size artifact")
+        production_artifact = dict(production_missing_sizes[0])
+        production_identity = (production_artifact["url"], production_artifact["hash"])
+        if {production_identity} != PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE:
+            raise SystemExit("bark license gate self-test production Torch exception identity drifted")
+        validate_artifact(
+            production_artifact,
+            "self-test production torch wheel",
+            "https://download.pytorch.org/whl/cpu",
+            "torch",
+        )
+        for wrong_package, wrong_registry in (("not-torch", "https://download.pytorch.org/whl/cpu"), ("torch", "https://pypi.org/simple")):
+            try:
+                validate_artifact(production_artifact, "self-test wrong exception context", wrong_registry, wrong_package)
+            except SystemExit as exc:
+                if exc.code != 2:
+                    raise
+            else:
+                raise SystemExit("bark license gate self-test accepted missing size outside Torch CPU context")
+        tampered_production_artifact = dict(production_artifact)
+        tampered_production_artifact["url"] += ".tampered"
+        try:
+            validate_artifact(
+                tampered_production_artifact,
+                "self-test tampered torch wheel",
+                "https://download.pytorch.org/whl/cpu",
+                "torch",
+            )
+        except SystemExit as exc:
+            if exc.code != 2:
+                raise
+        else:
+            raise SystemExit("bark license gate self-test accepted a tampered Torch exception identity")
         valid_artifact = {
             "url": "https://files.pythonhosted.org/packages/demo.whl",
             "hash": "sha256:" + "0" * 64,
@@ -439,6 +503,16 @@ source = { registry = 'https://pypi.org/simple' }
         evidence = {"signer": "self-test", "decision": "APPROVED", "scope_schema": APPROVAL_SCOPE_SCHEMA, "scope_sha256": manifest["approval"]["digest"], "approval_digest": manifest["approval"]["digest"], "manifest_sha256": digest(manifest_path.read_bytes()), "lock_sha256": manifest["lock_sha256"], "project_sha256": manifest["project_sha256"]}
         evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
         run(lock, project, manifest_path, evidence_path, expected)
+
+        tampered_lock = root / "tampered-uv.lock"
+        tampered_lock.write_bytes(lock.read_bytes() + b"\n")
+        try:
+            run(tampered_lock, project, manifest_path, evidence_path, expected)
+        except SystemExit as exc:
+            if exc.code != 2:
+                raise
+        else:
+            raise SystemExit("bark license gate self-test accepted lock bytes outside the reviewed digest")
 
         def unreadable(label: str, path: Path, candidate_manifest: Path) -> None:
             try:
