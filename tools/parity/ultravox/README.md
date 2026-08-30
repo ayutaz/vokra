@@ -29,6 +29,24 @@ Run only on a provisioned VAST host:
 scripts/publish/vast-ai/run-ultravox-validation.sh
 ```
 
+After the separately authorized named VAST job has frozen the exact uv
+environment, the model-free dependency/license audit can be run independently:
+
+```sh
+VOKRA_PUBLISH_ON_VAST=1 \
+scripts/publish/vast-ai/audit-ultravox-dependencies.sh \
+  --output /external/evidence/ultravox-dependency-audit.json
+```
+
+The audit accounts for every lock row, compares the active Linux x86_64
+installed multiset, records package/native publisher evidence, and inspects
+only bounded ELF metadata. Missing installed publisher files may be supported
+only by the exact locked PyPI sdist, inspected in memory without extraction or
+execution. Its dependency sdist requests are reported separately from the
+fixed source/model/Meta companion LICENSE-only requests. It never acquires
+weights, imports model code, or invokes Cargo; do not run it before an
+authorized named VAST sync.
+
 The worker has no upload or publish option. It downloads fixed snapshots,
 converts the gated companion locally, runs CPU/reference and repository gates,
 and leaves a small evidence/reference directory to pull. Do not copy model

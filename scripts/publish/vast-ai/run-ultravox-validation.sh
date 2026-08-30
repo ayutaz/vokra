@@ -11,6 +11,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/ultravox"
 REFERENCE_DUMPER="$PARITY_PROJECT/dump_reference.py"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT_WRAPPER="$SCRIPT_DIR/audit-ultravox-dependencies.sh"
 
 PUBLIC_REPO="vokra/ultravox-v0-5-llama-3-2-1b"
 PUBLIC_REVISION="ddbbeec5bfcb09c71a1f88971b794e3e5da811f9"
@@ -353,7 +354,7 @@ download_companion_snapshot() {
 }
 
 run_self_test() {
-  local failed=0 temporary fake_root fakebin trace worker_status
+  local failed=0 temporary fake_root fakebin trace worker_status sync_line audit_line download_line cargo_line
   [[ "$PUBLIC_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$UPSTREAM_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
   [[ "$COMPANION_REVISION" =~ ^[0-9a-f]{40}$ ]] || failed=1
@@ -362,6 +363,12 @@ run_self_test() {
   [[ "$PROCESSOR_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$CONFIG_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
   [[ "$UPSTREAM_MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || failed=1
+  grep -Fq -- 'audit-ultravox-dependencies.sh' "$0" || failed=1
+  sync_line="$(grep -n '^  uv sync --project' "$0" | head -1 | cut -d: -f1)"
+  audit_line="$(grep -n '^[[:space:]]*"[$]DEPENDENCY_AUDIT_WRAPPER" --output' "$0" | head -1 | cut -d: -f1)"
+  download_line="$(grep -n '^  download_hf_file ' "$0" | head -1 | cut -d: -f1)"
+  cargo_line="$(grep -n '^  cargo build ' "$0" | head -1 | cut -d: -f1)"
+  [[ -n "$sync_line" && -n "$audit_line" && -n "$download_line" && -n "$cargo_line" && "$sync_line" -lt "$audit_line" && "$audit_line" -lt "$download_line" && "$audit_line" -lt "$cargo_line" ]] || failed=1
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-ultravox-worker.XXXXXX")"
   trap 'rm -rf "${temporary:-}"' RETURN
   printf 'abc' > "$temporary/value"
@@ -511,10 +518,22 @@ main() {
   local companion_source_dir="$work_dir/upstream-llama"
   local converted_dir="$work_dir/converted"
   local reference_dir="$evidence_dir/reference"
+  local dependency_audit_json="$evidence_dir/dependency-audit.json"
   local gguf="$public_dir/$PUBLIC_FILE"
   local companion_gguf="$converted_dir/ultravox-llama-companion.gguf"
   mkdir -p "$evidence_dir" "$converted_dir"
   record_environment "$evidence_dir/environment.txt"
+
+  step "Install locked official reference environment"
+  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
+    2>&1 | tee "$evidence_dir/uv-sync.log"
+
+  step "Run model-free Ultravox dependency/license factual audit"
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" && ! -L "$DEPENDENCY_AUDIT_WRAPPER" ]] \
+    || die "Ultravox dependency audit wrapper is missing"
+  "$DEPENDENCY_AUDIT_WRAPPER" --output "$dependency_audit_json" \
+    2>&1 | tee "$evidence_dir/dependency-audit.log"
+  [[ -s "$dependency_audit_json" ]] || die "Ultravox dependency audit report is missing"
 
   step "Download and authenticate exact public GGUF"
   download_hf_file "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" "$public_dir"
@@ -535,10 +554,6 @@ main() {
     --output "$companion_gguf" \
     2>&1 | tee "$evidence_dir/convert-companion.log"
   [[ -s "$companion_gguf" ]] || die "companion conversion emitted no GGUF"
-
-  step "Install locked official reference environment"
-  uv sync --project "$PARITY_PROJECT" --frozen --python 3.12 \
-    2>&1 | tee "$evidence_dir/uv-sync.log"
 
   step "Generate independent official FP32 reference"
   VOKRA_REFERENCE_TORCH_THREADS="${VOKRA_REFERENCE_TORCH_THREADS:-8}" \
