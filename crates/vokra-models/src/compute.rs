@@ -129,6 +129,14 @@ pub enum HotOp {
     Silu,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
+    /// Stride/dilation-aware dense 1-D convolution.  This is distinct from
+    /// [`HotOp::Conv1d`] because the backend coverage and shape contract carry
+    /// an explicit effective kernel (`1 + (kernel - 1) * dilation`).
+    Conv1dDilation,
+    /// PyTorch-layout ConvTranspose1d used by waveform vocoders.  The
+    /// `output_padding` and output extent are explicit at every call site;
+    /// unsupported backends reject the complete model before execution.
+    ConvTranspose1d,
     /// Mimi (Kyutai) residual vector quantization codec decode
     /// (`mimi_rvq_decode`) — the M3-06 RVQ codec op family. The heterogeneous
     /// signature (u32 `codes` + `Vec<CodebookTable>` → `Vec<f32>`) drives the
@@ -478,6 +486,8 @@ impl HotOp {
                 | HotOp::Tanh
                 | HotOp::Silu
                 | HotOp::Conv1d
+                | HotOp::Conv1dDilation
+                | HotOp::ConvTranspose1d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
@@ -1564,6 +1574,112 @@ impl Compute {
             Be::WebGpu(ctx) => ctx.conv1d_f32(
                 input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
             ),
+        }
+    }
+
+    /// Dense Conv1d with explicit stride, dilation, and symmetric zero
+    /// padding.  All shape arithmetic is checked before dispatch; GPU arms
+    /// never fall back to the CPU when their backend is unavailable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d_f32_dilated(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => match self.cpu_isa {
+                Some(isa) if dilation == 1 => kernels::conv1d_f32_on(
+                    isa, input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+                ),
+                _ => kernels::conv1d_f32_dilated(
+                    input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding,
+                    out,
+                ),
+            },
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv1d_f32_dilated(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv1d_f32_dilated has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv1d_f32_dilated has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// PyTorch-layout ConvTranspose1d (`weight = [in_ch, out_ch, kernel]`)
+    /// with explicit stride, padding, and output padding.  The CPU and Metal
+    /// arms share the same checked output-length formula and accumulation
+    /// layout; unsupported GPU backends reject explicitly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv_transpose1d_f32(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                stride,
+                padding,
+                output_padding,
+                out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv_transpose1d_f32(
+                input,
+                in_ch,
+                in_len,
+                weight,
+                out_ch,
+                kernel,
+                bias,
+                stride,
+                padding,
+                output_padding,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose1d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose1d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
         }
     }
 
@@ -4131,6 +4247,57 @@ mod tests {
     }
 
     #[test]
+    fn cpu_compute_conv_dilation_and_transpose_validate_explicit_shapes() {
+        let mut dilated = [0.0f32; 5];
+        Compute::cpu()
+            .conv1d_f32_dilated(
+                &[1.0, 2.0, 3.0, 4.0, 5.0],
+                1,
+                5,
+                &[1.0, 10.0, 100.0],
+                1,
+                3,
+                None,
+                1,
+                2,
+                2,
+                &mut dilated,
+            )
+            .unwrap();
+        assert_eq!(dilated, [310.0, 420.0, 531.0, 42.0, 53.0]);
+
+        let mut transposed = [0.0f32; 5];
+        Compute::cpu()
+            .conv_transpose1d_f32(
+                &[1.0, 2.0],
+                1,
+                2,
+                &[1.0, 2.0],
+                1,
+                2,
+                None,
+                2,
+                0,
+                1,
+                &mut transposed,
+            )
+            .unwrap();
+        assert_eq!(transposed, [1.0, 2.0, 2.0, 4.0, 0.0]);
+
+        let mut bad = [0.0f32; 1];
+        assert!(
+            Compute::cpu()
+                .conv1d_f32_dilated(&[1.0], 1, 1, &[1.0], 1, 1, None, 1, 0, 0, &mut bad)
+                .is_err()
+        );
+        assert!(
+            Compute::cpu()
+                .conv_transpose1d_f32(&[1.0], 1, 1, &[1.0], 1, 1, None, 2, 0, 2, &mut bad)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn cpu_mimi_rvq_f32_matches_direct_kernel_bit_for_bit() {
         // The M3-06 seam contract: `Compute::cpu().mimi_rvq_f32(...)` must
         // reproduce `vokra_ops::mimi_rvq_decode(...)` byte-identically, so a
@@ -4893,6 +5060,8 @@ mod tests {
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::Conv1dDilation,
+            HotOp::ConvTranspose1d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,

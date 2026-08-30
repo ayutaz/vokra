@@ -23,6 +23,7 @@
 //! | [`layer_norm_f32`] | yes | Whisper pre-norm blocks |
 //! | [`scale_norm_f32`] | scalar reduction | MossFormer2 FLASH projections |
 //! | [`conv1d_f32`] | via GEMM | Whisper encoder stem; im2col + [`gemm_f32`] |
+//! | [`conv1d_f32_dilated`] / [`conv_transpose1d_f32`] | scalar | vocoder convolution seam |
 //!
 //! **Deliberately not SIMD kernels here** (memory-bound / structural, left to
 //! scalar or the model layer's `vokra-ops` reference — M0-06-T03): embedding
@@ -742,6 +743,205 @@ pub fn conv1d_f32(
     )
 }
 
+/// Stride/dilation-aware 1-D convolution with PyTorch's channel-major layout.
+///
+/// This is the same zero-padded cross-correlation contract as [`conv1d_f32`],
+/// with the effective kernel width `1 + (kernel - 1) * dilation`.  The dense
+/// `dilation == 1` path intentionally delegates to the established im2col +
+/// GEMM implementation; the dilated path keeps the omitted taps out of the
+/// accumulation rather than materialising a sparse expanded weight matrix.
+#[allow(clippy::too_many_arguments)]
+pub fn conv1d_f32_dilated(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    dilation: usize,
+    padding: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    if dilation == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d dilation must be >= 1".into(),
+        ));
+    }
+    if in_ch == 0 || out_ch == 0 || in_len == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d in_ch, out_ch, and in_len must be > 0".into(),
+        ));
+    }
+    if dilation == 1 {
+        return conv1d_f32(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+        );
+    }
+    if stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d stride and kernel must be > 0".into(),
+        ));
+    }
+    let effective = checked_mul(kernel - 1, dilation, "conv1d effective kernel")?
+        .checked_add(1)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d effective kernel overflow".into()))?;
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "conv1d 2*padding")?)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d padded length overflow".into()))?;
+    if padded < effective {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d padded length {padded} is smaller than effective kernel {effective}"
+        )));
+    }
+    let out_len = (padded - effective) / stride + 1;
+    expect_len(
+        "conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(out_ch, in_ch, "conv1d out_ch*in_ch")?,
+            kernel,
+            "conv1d out_ch*in_ch*kernel",
+        )?,
+    )?;
+    expect_len(
+        "conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+    let input_end = padding
+        .checked_add(in_len)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d input extent overflow".into()))?;
+
+    for oc in 0..out_ch {
+        for t in 0..out_len {
+            let mut acc = bias.map_or(0.0, |values| values[oc]);
+            let window_start = t.checked_mul(stride).ok_or_else(|| {
+                VokraError::InvalidArgument("conv1d dispatch index overflow".into())
+            })?;
+            for ic in 0..in_ch {
+                for k in 0..kernel {
+                    let padded_index = window_start
+                        .checked_add(checked_mul(k, dilation, "conv1d tap")?)
+                        .ok_or_else(|| {
+                            VokraError::InvalidArgument("conv1d tap index overflow".into())
+                        })?;
+                    if padded_index < padding || padded_index >= input_end {
+                        continue;
+                    }
+                    let input_index = padded_index - padding;
+                    let weight_index = (oc * in_ch + ic) * kernel + k;
+                    acc += input[ic * in_len + input_index] * weight[weight_index];
+                }
+            }
+            out[oc * out_len + t] = acc;
+        }
+    }
+    Ok(())
+}
+
+/// PyTorch-layout `ConvTranspose1d` (`[in_ch, out_ch, kernel]`).
+///
+/// The output extent is `(in_len - 1) * stride + kernel + output_padding -
+/// 2 * padding`.  Output padding is explicit and must be smaller than stride;
+/// no implicit cropping or shape correction is performed.
+#[allow(clippy::too_many_arguments)]
+pub fn conv_transpose1d_f32(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+    out: &mut [f32],
+) -> Result<()> {
+    if in_ch == 0 || out_ch == 0 || in_len == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose1d in_ch, out_ch, in_len, stride, and kernel must be > 0".into(),
+        ));
+    }
+    if output_padding >= stride {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d output_padding {output_padding} must be < stride {stride}"
+        )));
+    }
+    expect_len(
+        "conv_transpose1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv_transpose1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv_transpose1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(in_ch, out_ch, "conv_transpose1d in_ch*out_ch")?,
+            kernel,
+            "conv_transpose1d weight",
+        )?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv_transpose1d bias", bias.len(), out_ch)?;
+    }
+    let full_out = checked_mul(in_len - 1, stride, "conv_transpose1d output")?
+        .checked_add(kernel)
+        .and_then(|value| value.checked_add(output_padding))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose1d output length overflow".into())
+        })?;
+    let trim = checked_mul(2, padding, "conv_transpose1d padding")?;
+    if trim >= full_out {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d padding {trim} removes the complete output extent {full_out}"
+        )));
+    }
+    let out_len = full_out - trim;
+    expect_len(
+        "conv_transpose1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv_transpose1d out_ch*out_len")?,
+    )?;
+
+    for oc in 0..out_ch {
+        for t in 0..out_len {
+            let mut acc = bias.map_or(0.0, |values| values[oc]);
+            let target = t.checked_add(padding).ok_or_else(|| {
+                VokraError::InvalidArgument("conv_transpose1d index overflow".into())
+            })?;
+            for ic in 0..in_ch {
+                for input_t in 0..in_len {
+                    let Some(tap) =
+                        target.checked_sub(input_t.checked_mul(stride).ok_or_else(|| {
+                            VokraError::InvalidArgument("conv_transpose1d index overflow".into())
+                        })?)
+                    else {
+                        continue;
+                    };
+                    if tap >= kernel {
+                        continue;
+                    }
+                    let weight_index = (ic * out_ch + oc) * kernel + tap;
+                    acc += input[ic * in_len + input_t] * weight[weight_index];
+                }
+            }
+            out[oc * out_len + t] = acc;
+        }
+    }
+    Ok(())
+}
+
 /// [`conv1d_f32`] forced onto a specific `isa` (drives the GEMM path).
 #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
 pub fn conv1d_f32_on(
@@ -1178,6 +1378,52 @@ mod tests {
         // kernel == 0 would mis-size the im2col matrix.
         let err = conv1d_f32(&[1.0, 2.0], 1, 2, &[], 1, 0, None, 1, 0, &mut out).unwrap_err();
         assert!(matches!(err, VokraError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn conv1d_dilated_matches_explicit_sparse_window() {
+        // One channel, kernel 3, dilation 2, symmetric padding 2: logical
+        // input index is `t + k*2 - 2`, so both left and right zero padding
+        // are exercised.
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let weight = [1.0, 10.0, 100.0];
+        let mut out = [0.0; 5];
+        conv1d_f32_dilated(&input, 1, 5, &weight, 1, 3, None, 1, 2, 2, &mut out).unwrap();
+        assert_eq!(out, [310.0, 420.0, 531.0, 42.0, 53.0]);
+    }
+
+    #[test]
+    fn conv1d_dilated_rejects_invalid_extent_and_dilation() {
+        let mut out = [0.0; 1];
+        assert!(conv1d_f32_dilated(&[1.0], 1, 1, &[1.0], 1, 1, None, 1, 0, 0, &mut out).is_err());
+        assert!(
+            conv1d_f32_dilated(&[1.0], 1, 1, &[1.0, 2.0], 1, 2, None, 1, 2, 0, &mut out).is_err()
+        );
+    }
+
+    #[test]
+    fn conv_transpose1d_matches_hand_fixture_and_rejects_output_padding() {
+        // input [1,2], kernel [1,2], stride 2, output_padding 1:
+        // transposed output = [1,2,2,4,0] (the final slot is explicit padding).
+        let mut out = [0.0; 5];
+        conv_transpose1d_f32(
+            &[1.0, 2.0],
+            1,
+            2,
+            &[1.0, 2.0],
+            1,
+            2,
+            None,
+            2,
+            0,
+            1,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out, [1.0, 2.0, 2.0, 4.0, 0.0]);
+
+        let mut one = [0.0; 1];
+        assert!(conv_transpose1d_f32(&[1.0], 1, 1, &[1.0], 1, 1, None, 2, 0, 2, &mut one).is_err());
     }
 
     #[test]

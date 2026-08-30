@@ -6431,6 +6431,126 @@ impl MetalContext {
         r
     }
 
+    /// Host-facing stride/dilation-aware Conv1d.  This is the host wrapper for
+    /// [`Self::conv1d_dev`], so the same Metal kernel and validation contract
+    /// are used by both the resident and imperative Compute seams.  Inputs,
+    /// weights, and the final output cross the host/device boundary once each;
+    /// there is no CPU fallback when `dilation > 1`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv1d_f32_dilated(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        dilation: usize,
+        padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_conv1d_dilated(
+            input, in_ch, in_len, weight, out_ch, kernel, bias, stride, dilation, padding, out,
+        )?;
+        if out_len == 0 {
+            return Ok(());
+        }
+        if dilation == 1 {
+            return self.conv1d_f32(
+                input, in_ch, in_len, weight, out_ch, kernel, bias, stride, padding, out,
+            );
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_dev = self.upload(input)?;
+            let weight_dev = self.upload(weight)?;
+            let bias_dev = bias.map(|values| self.upload(values)).transpose()?;
+            let mut output_dev = self.alloc_dev(out.len())?;
+            self.conv1d_dev(
+                &mut output_dev,
+                &input_dev,
+                &weight_dev,
+                bias_dev.as_ref(),
+                in_ch,
+                in_len,
+                out_ch,
+                kernel,
+                stride,
+                dilation,
+                padding,
+            )?;
+            read_back(&output_dev.buf, out)
+        })();
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Host-facing PyTorch-layout ConvTranspose1d.  The explicit
+    /// `output_padding` participates in the output-length formula and is
+    /// passed unchanged to the device kernel; it is never inferred or
+    /// silently cropped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose1d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_len: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        output_padding: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let out_len = validate_conv_transpose1d(
+            input,
+            in_ch,
+            in_len,
+            weight,
+            out_ch,
+            kernel,
+            bias,
+            stride,
+            padding,
+            output_padding,
+            out,
+        )?;
+        if out_len == 0 {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = (|| {
+            let input_dev = self.upload(input)?;
+            let weight_dev = self.upload(weight)?;
+            let bias_dev = bias.map(|values| self.upload(values)).transpose()?;
+            let mut output_dev = self.alloc_dev(out.len())?;
+            self.conv_transpose1d_dev(
+                &mut output_dev,
+                &input_dev,
+                &weight_dev,
+                bias_dev.as_ref(),
+                in_ch,
+                in_len,
+                out_ch,
+                kernel,
+                stride,
+                padding,
+                output_padding,
+            )?;
+            read_back(&output_dev.buf, out)
+        })();
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
     /// Grouped 1-D convolution with PyTorch-compatible weight layout
     /// `[out_ch, in_ch / groups, kernel]`.
     ///
@@ -11175,6 +11295,153 @@ fn validate_conv1d(
     if let Some(bias) = bias {
         expect_len("conv1d bias", bias.len(), out_ch)?;
     }
+    Ok(out_len)
+}
+
+/// Validates the stride/dilation Conv1d host wrapper and returns its exact
+/// output length.  This mirrors `MetalContext::conv1d_dev` and the CPU
+/// `conv1d_f32_dilated` contract so invalid dimensions fail before any buffer
+/// allocation or dispatch.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv1d_dilated(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    dilation: usize,
+    padding: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if dilation == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d dilation must be >= 1".to_owned(),
+        ));
+    }
+    if in_ch == 0 || out_ch == 0 || in_len == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv1d in_ch, out_ch, in_len, stride, and kernel must be > 0".to_owned(),
+        ));
+    }
+    let effective = checked_mul(kernel - 1, dilation, "conv1d effective kernel")?
+        .checked_add(1)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d effective kernel overflow".into()))?;
+    let padded = in_len
+        .checked_add(checked_mul(2, padding, "conv1d 2*padding")?)
+        .ok_or_else(|| VokraError::InvalidArgument("conv1d padded length overflow".into()))?;
+    if padded < effective {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv1d padded length {padded} is smaller than effective kernel {effective}"
+        )));
+    }
+    let out_len = (padded - effective) / stride + 1;
+    checked_u32(in_ch, "conv1d in_ch")?;
+    checked_u32(in_len, "conv1d in_len")?;
+    checked_u32(out_ch, "conv1d out_ch")?;
+    checked_u32(kernel, "conv1d kernel")?;
+    checked_u32(stride, "conv1d stride")?;
+    checked_u32(dilation, "conv1d dilation")?;
+    checked_u32(padding, "conv1d padding")?;
+    checked_u32(padded, "conv1d padded length")?;
+    checked_u32(out_len, "conv1d out_len")?;
+    expect_len(
+        "conv1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(out_ch, in_ch, "conv1d out_ch*in_ch")?,
+            kernel,
+            "conv1d out_ch*in_ch*kernel",
+        )?,
+    )?;
+    expect_len(
+        "conv1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv1d out_ch*out_len")?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv1d bias", bias.len(), out_ch)?;
+    }
+    Ok(out_len)
+}
+
+/// Validates a host-facing PyTorch-layout ConvTranspose1d and returns its
+/// exact output length.  `output_padding` is explicit and must be smaller than
+/// `stride`, matching the Metal device kernel.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv_transpose1d(
+    input: &[f32],
+    in_ch: usize,
+    in_len: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel: usize,
+    bias: Option<&[f32]>,
+    stride: usize,
+    padding: usize,
+    output_padding: usize,
+    out: &[f32],
+) -> Result<usize> {
+    if in_ch == 0 || out_ch == 0 || in_len == 0 || stride == 0 || kernel == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose1d in_ch, out_ch, in_len, stride, and kernel must be > 0".into(),
+        ));
+    }
+    if output_padding >= stride {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d output_padding {output_padding} must be < stride {stride}"
+        )));
+    }
+    expect_len(
+        "conv_transpose1d input",
+        input.len(),
+        checked_mul(in_ch, in_len, "conv_transpose1d in_ch*in_len")?,
+    )?;
+    expect_len(
+        "conv_transpose1d weight",
+        weight.len(),
+        checked_mul(
+            checked_mul(in_ch, out_ch, "conv_transpose1d in_ch*out_ch")?,
+            kernel,
+            "conv_transpose1d weight",
+        )?,
+    )?;
+    if let Some(bias) = bias {
+        expect_len("conv_transpose1d bias", bias.len(), out_ch)?;
+    }
+    let full_out = checked_mul(in_len - 1, stride, "conv_transpose1d output")?
+        .checked_add(kernel)
+        .and_then(|value| value.checked_add(output_padding))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose1d output length overflow".into())
+        })?;
+    let trim = checked_mul(2, padding, "conv_transpose1d padding")?;
+    if trim >= full_out {
+        return Err(VokraError::InvalidArgument(format!(
+            "conv_transpose1d padding {trim} removes the complete output extent {full_out}"
+        )));
+    }
+    let out_len = full_out - trim;
+    checked_u32(in_ch, "conv_transpose1d in_ch")?;
+    checked_u32(in_len, "conv_transpose1d in_len")?;
+    checked_u32(out_ch, "conv_transpose1d out_ch")?;
+    checked_u32(kernel, "conv_transpose1d kernel")?;
+    checked_u32(stride, "conv_transpose1d stride")?;
+    checked_u32(padding, "conv_transpose1d padding")?;
+    checked_u32(output_padding, "conv_transpose1d output_padding")?;
+    checked_u32(out_len, "conv_transpose1d out_len")?;
+    expect_len(
+        "conv_transpose1d out",
+        out.len(),
+        checked_mul(out_ch, out_len, "conv_transpose1d out_ch*out_len")?,
+    )?;
     Ok(out_len)
 }
 
