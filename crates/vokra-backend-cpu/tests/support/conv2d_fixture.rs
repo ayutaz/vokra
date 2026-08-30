@@ -166,7 +166,7 @@ fn sha256_hex(data: &[u8]) -> String {
         0xbef9_a3f7,
         0xc671_78f2,
     ];
-    let mut h = [
+    let mut h: [u32; 8] = [
         0x6a09_e667,
         0xbb67_ae85,
         0x3c6e_f372,
