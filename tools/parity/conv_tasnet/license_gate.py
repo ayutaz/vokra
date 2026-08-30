@@ -66,6 +66,11 @@ def regular_file(path: Path) -> bool:
     different file after the gate had authenticated it, so reject that
     ambiguity before parsing JSON.
     """
+    # Do not let ``link/../safe/file`` bypass the lexical ancestry check.  The
+    # kernel resolves ``..`` after following a symlink, whereas ``abspath``
+    # normalises it before we get a chance to inspect the path.
+    if any(part == ".." for part in path.parts):
+        return False
     absolute = Path(os.path.abspath(path))
     return path.is_file() and not path.is_symlink() and all(
         not parent.is_symlink() for parent in absolute.parents
@@ -90,6 +95,53 @@ def load_json(path: Path) -> Any:
             result[key] = value
         return result
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=pairs)
+
+
+def validate_approval_evidence(
+    evidence_path: Path,
+    approval: dict[str, Any],
+    manifest_path: Path,
+    lock_sha256: str,
+    project_sha256: str,
+) -> None:
+    """Validate the owner-supplied approval without mutating the filesystem.
+
+    This helper intentionally performs strict duplicate-key decoding and exact
+    schema checking in one place.  Both the production gate and the self-tests
+    use it, so a future caller cannot accidentally accept a JSON document that
+    ``json.loads`` would silently collapse.
+    """
+    if not regular_nonempty_file(evidence_path):
+        raise ValueError("external approval evidence is missing or not regular")
+    try:
+        evidence = load_json(evidence_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"approval evidence is unreadable: {error}") from error
+    expected_keys = {
+        "schema",
+        "decision",
+        "signer",
+        "scope_sha256",
+        "manifest_sha256",
+        "lock_sha256",
+        "project_sha256",
+    }
+    try:
+        manifest_sha256 = sha(manifest_path.read_bytes())
+    except OSError as error:
+        raise ValueError(f"approval manifest is unreadable: {error}") from error
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != expected_keys
+        or evidence.get("schema") != "conv-tasnet-approval-v1"
+        or evidence.get("decision") != "APPROVED"
+        or evidence.get("signer") != approval.get("signer")
+        or evidence.get("scope_sha256") != approval.get("digest")
+        or evidence.get("manifest_sha256") != manifest_sha256
+        or evidence.get("lock_sha256") != lock_sha256
+        or evidence.get("project_sha256") != project_sha256
+    ):
+        raise ValueError("approval evidence is not bound to exact scope")
 
 
 def resolved(value: Any) -> bool:
@@ -266,12 +318,18 @@ def run(lock_path: Path, project_path: Path, manifest_path: Path, evidence_path:
     approval = manifest.get("approval")
     if not isinstance(approval, dict) or set(approval) != {"status", "signer", "digest"} or approval.get("status") != "OWNER_SIGNOFF_APPROVED" or not resolved(approval.get("signer")) or approval.get("digest") != canon({"lock_sha256": LOCK_SHA256, "project_sha256": PROJECT_SHA256, "package_rows": rows, "package_review_rows": reviews, "license_rows": license_rows, "identities": identities, "reference_contract": contracts, "publication": "NO_UPLOAD"}):
         blocked("external owner approval is missing or not bound")
-    if evidence_path is None or not regular_nonempty_file(evidence_path):
+    if evidence_path is None:
         blocked("external approval evidence is missing or not regular")
-    try: evidence = load_json(evidence_path)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error: blocked(f"approval evidence is unreadable: {error}")
-    if not isinstance(evidence, dict) or set(evidence) != {"schema", "decision", "signer", "scope_sha256", "manifest_sha256", "lock_sha256", "project_sha256"} or evidence.get("schema") != "conv-tasnet-approval-v1" or evidence.get("decision") != "APPROVED" or evidence.get("signer") != approval["signer"] or evidence.get("scope_sha256") != approval["digest"] or evidence.get("manifest_sha256") != sha(manifest_path.read_bytes()) or evidence.get("lock_sha256") != LOCK_SHA256 or evidence.get("project_sha256") != PROJECT_SHA256:
-        blocked("approval evidence is not bound to exact scope")
+    try:
+        validate_approval_evidence(
+            evidence_path,
+            approval,
+            manifest_path,
+            LOCK_SHA256,
+            PROJECT_SHA256,
+        )
+    except ValueError as error:
+        blocked(str(error))
     print("conv-tasnet license gate: PASS")
 
 
@@ -287,7 +345,10 @@ def self_test() -> int:
     except SystemExit as error: ok = error.code == 2
     if not ok:
         print("conv-tasnet gate self-test: production closure unexpectedly passed", file=sys.stderr); return 1
-    with __import__("tempfile").TemporaryDirectory(prefix="conv-tasnet-gate-") as raw:
+    # Keep the temporary approval fixtures under the project so the test does
+    # not accidentally exercise the host's conventional ``/tmp`` symlink
+    # (for example macOS ``/var -> /private/var``) instead of the contract.
+    with __import__("tempfile").TemporaryDirectory(prefix="conv-tasnet-gate-", dir=project) as raw:
         root = Path(raw); duplicate = root / "duplicate.json"; duplicate.write_text('{"gate_version":1,"gate_version":1}', encoding="utf-8")
         try: load_json(duplicate)
         except ValueError: pass
@@ -297,6 +358,57 @@ def self_test() -> int:
         parent_link = root / "parent-link"; parent_link.symlink_to(real, target_is_directory=True)
         if regular_file(parent_link / approval.name):
             print("conv-tasnet gate self-test accepted symlinked evidence ancestry", file=sys.stderr)
+            return 1
+
+        # Exercise the authenticated approval contract independently of the
+        # production manifest (which is intentionally still externally
+        # blocked by the unresolved CC-BY-SA/WHAM review).  None of these
+        # cases may create an output/work directory.
+        manifest = root / "manifest.json"
+        manifest.write_bytes(b"fixed manifest\n")
+        approval_scope = "a" * 64
+        approval_record = {"status": "OWNER_SIGNOFF_APPROVED", "signer": "owner", "digest": approval_scope}
+        valid = {
+            "schema": "conv-tasnet-approval-v1",
+            "decision": "APPROVED",
+            "signer": "owner",
+            "scope_sha256": approval_scope,
+            "manifest_sha256": sha(manifest.read_bytes()),
+            "lock_sha256": "b" * 64,
+            "project_sha256": "c" * 64,
+        }
+        evidence = root / "valid-approval.json"
+        evidence.write_text(json.dumps(valid) + "\n", encoding="utf-8")
+        validate_approval_evidence(evidence, approval_record, manifest, "b" * 64, "c" * 64)
+        invalid_cases = {
+            "missing": root / "missing-approval.json",
+            "duplicate": root / "duplicate-approval.json",
+            "tampered-scope": root / "tampered-scope.json",
+            "tampered-manifest": root / "tampered-manifest.json",
+            "tampered-decision": root / "tampered-decision.json",
+        }
+        invalid_cases["duplicate"].write_text(
+            '{"schema":"conv-tasnet-approval-v1","decision":"APPROVED",'
+            '"decision":"REJECTED"}', encoding="utf-8"
+        )
+        for name, value in (
+            ("scope_sha256", "d" * 64),
+            ("manifest_sha256", "e" * 64),
+            ("decision", "REJECTED"),
+        ):
+            record = dict(valid); record[name] = value
+            invalid_cases[f"tampered-{name.split('_')[0]}"].write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
+        for name, path in invalid_cases.items():
+            try:
+                validate_approval_evidence(path, approval_record, manifest, "b" * 64, "c" * 64)
+            except ValueError:
+                continue
+            print(f"conv-tasnet gate self-test accepted {name} approval", file=sys.stderr)
+            return 1
+        if any(path.exists() for path in invalid_cases.values() if path.name == "missing-approval.json"):
+            print("conv-tasnet gate self-test created missing approval", file=sys.stderr)
             return 1
     valid_artifact = {"url": "https://files.pythonhosted.org/pkg.whl", "hash": "sha256:" + "a" * 64, "size": 1, "upload-time": "2026-01-01T00:00:00Z"}
     for tampered in (

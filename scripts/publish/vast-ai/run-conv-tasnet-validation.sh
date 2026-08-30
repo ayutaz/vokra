@@ -106,14 +106,33 @@ self_test() {
   if require_absent_work_dir "$temporary/approval.json/child" "$temporary/approval.json" >/dev/null 2>&1; then
     log 'self-test FAIL: approval overlap accepted'; fail=1
   fi
+  if ! require_validation_paths "$temporary/new-validation" "$temporary/approval.json"; then
+    log 'self-test FAIL: disjoint absent validation paths rejected'; fail=1
+  fi
+  if require_validation_paths "$temporary/empty" "$temporary/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: pre-existing validation root accepted'; fail=1
+  fi
+  if require_validation_paths "$temporary/link/new-validation" "$temporary/approval.json" >/dev/null 2>&1; then
+    log 'self-test FAIL: symlinked validation ancestor accepted'; fail=1
+  fi
   VOKRA_ROOT="$old_root"
   printf '%s\n' invalid > "$temporary/invalid-approval.json"
-  if "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" --approval-evidence "$temporary/invalid-approval.json" --work-dir "$temporary/no-side-effect/nested" >/dev/null 2>&1; then
-    log 'self-test FAIL: invalid approval was accepted'; fail=1
-  fi
-  if [[ -e "$temporary/no-side-effect" || -L "$temporary/no-side-effect" ]]; then
-    log 'self-test FAIL: invalid approval created work'; fail=1
-  fi
+  printf '%s\n' '{"decision":"APPROVED","decision":"REJECTED"}' > "$temporary/duplicate-approval.json"
+  printf '%s\n' '{"schema":"conv-tasnet-approval-v1","decision":"APPROVED"}' > "$temporary/tampered-approval.json"
+  local approval_case approval_rc
+  for approval_case in invalid duplicate tampered; do
+    if "$path" --checkpoint-sha256 "$CHECKPOINT_SHA256" \
+      --approval-evidence "$temporary/${approval_case}-approval.json" \
+      --work-dir "$temporary/no-side-effect/$approval_case" >/dev/null 2>&1; then
+      log "self-test FAIL: $approval_case approval was accepted"; fail=1
+    else
+      approval_rc=$?
+      [[ "$approval_rc" == 2 ]] || { log "self-test FAIL: $approval_case approval returned $approval_rc, expected 2"; fail=1; }
+    fi
+    if [[ -e "$temporary/no-side-effect/$approval_case" || -L "$temporary/no-side-effect/$approval_case" ]]; then
+      log "self-test FAIL: $approval_case approval created work"; fail=1
+    fi
+  done
   log_file="$temporary/parity.log"
   printf '%s\n' \
     'test converted_official_checkpoint_matches_asteroid ... ok' \
@@ -216,6 +235,32 @@ require_absent_work_dir() {
   return 0
 }
 
+require_validation_paths() {
+  local work="$1" approval="$2" work_real input_real evidence_real fixtures_real
+  local root_real approval_real candidate
+  # This path-only validation is called immediately after the license gate and
+  # before any download, cache setup, mkdir, or evidence write.
+  [[ ! -e "$work" && ! -L "$work" ]] || { die 'work-dir must be absent before validation'; return 2; }
+  work_real="$(canonical_absent_path "$work")" || return 2
+  input_real="$(canonical_absent_path "$work/input")" || return 2
+  evidence_real="$(canonical_absent_path "$work/evidence")" || return 2
+  fixtures_real="$(canonical_absent_path "$work/fixtures")" || return 2
+  root_real="$(canonical_existing_path "$VOKRA_ROOT")" || return 2
+  approval_real="$(canonical_existing_path "$approval")" || return 2
+
+  for candidate in "$work_real" "$input_real" "$evidence_real" "$fixtures_real"; do
+    paths_overlap "$candidate" "$root_real" && { die 'validation path overlaps checkout'; return 2; }
+    paths_overlap "$candidate" "$approval_real" && { die 'validation path overlaps approval'; return 2; }
+  done
+  # The work root intentionally contains its three child directories.  The
+  # children themselves must remain pairwise disjoint so evidence can never be
+  # written into an input tree (or vice versa).
+  paths_overlap "$input_real" "$evidence_real" && { die 'input and evidence paths overlap'; return 2; }
+  paths_overlap "$input_real" "$fixtures_real" && { die 'input and fixture paths overlap'; return 2; }
+  paths_overlap "$evidence_real" "$fixtures_real" && { die 'evidence and fixture paths overlap'; return 2; }
+  return 0
+}
+
 work_dir="/workspace/vokra-conv-tasnet-validation"
 checkpoint_sha256=""
 approval_evidence=""
@@ -245,7 +290,9 @@ fi
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
   --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
   --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"
-require_absent_work_dir "$work_dir" "$approval_evidence"
+require_validation_paths "$work_dir" "$approval_evidence"
+command -v sha256sum >/dev/null 2>&1 || die 'missing tool: sha256sum'
+approval_evidence_sha256="$(sha256_file "$approval_evidence")"
 [[ "$(uname -s)" == Linux ]] || die 'Conv-TasNet checkpoint work is VAST/Linux-only'
 [[ "$(uname -m)" == x86_64 ]] || die 'VAST host must be x86_64'
 [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die 'VOKRA_PUBLISH_ON_VAST=1 is absent'
@@ -271,6 +318,7 @@ export UV_CACHE_DIR="$CONVTASNET_UV_CACHE_DIR"
 {
   printf 'upstream_repo=%s\nupstream_revision=%s\ncheckpoint=%s\ncheckpoint_sha256=%s\n' \
     "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$CHECKPOINT_FILE" "${checkpoint_sha256,,}"
+  printf 'approval_evidence_sha256=%s\n' "$approval_evidence_sha256"
   echo 'runtime_status=MEASURED_NOT_GATED'
   echo 'parity_status=MEASURED_NOT_GATED'
   echo 'publication=NO_UPLOAD'
@@ -340,7 +388,9 @@ export VOKRA_CONV_TASNET_GGUF="$work_dir/conv-tasnet.gguf"
 cargo test --locked -p vokra-models --test parity_conv_tasnet_real -- --nocapture \
   >> "$work_dir/evidence/validation.log" 2>&1
 require_test_evidence "$work_dir/evidence/validation.log"
+[[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
 {
+  printf 'approval_evidence_sha256=%s\n' "$approval_evidence_sha256"
   echo 'runtime_status=MEASURED_NOT_GATED'
   echo 'parity_status=MEASURED_NOT_GATED'
   echo 'cpu_official_gate=PASS_WITH_EXISTING_MEASURED_BOUNDS'

@@ -97,7 +97,7 @@ require_disjoint_evidence() {
 
 require_reference_contract() {
   local directory="$1"
-  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$directory" <<'PY'
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - "$directory" <<'PY' || { die 'reference manifest JSON/schema validation failed'; return 2; }
 import hashlib
 import json
 import sys
@@ -117,12 +117,28 @@ def digest(path):
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""): result.update(chunk)
     return result.hexdigest()
+
+def reject_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+try:
+    data = json.loads(
+        (root / "manifest.json").read_text(encoding="utf-8"),
+        object_pairs_hook=reject_duplicates,
+    )
+except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+    print(f"reference manifest JSON is invalid: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 if {entry.name for entry in root.iterdir()} != set(expected): raise SystemExit("reference file set drifted")
 for name, identity in expected.items():
     path = root / name
     if path.is_symlink() or not path.is_file(): raise SystemExit(f"{name}: not regular")
     if identity is not None and (path.stat().st_size != identity[0] or digest(path) != identity[1]): raise SystemExit(f"{name}: artifact identity drifted")
-data = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
 if not isinstance(data, dict): raise SystemExit("reference manifest must be an object")
 if set(data) != {"format", "model_id", "revision", "checkpoint", "sample_rate", "pcm_samples", "shapes", "python", "numpy", "torch", "asteroid", "runtime_status", "parity_status", "tolerance", "artifacts"}: raise SystemExit("reference manifest schema drifted")
 if data["format"] != "vokra-conv-tasnet-reference-v1" or data["model_id"] != "JorisCos/ConvTasNet_Libri1Mix_enhsingle_16k" or data["revision"] != "bb8a876bc157b5cf3c405994accb798c49146016": raise SystemExit("reference source identity drifted")
@@ -208,6 +224,33 @@ self_test() {
   if require_disjoint_evidence "$temporary/new-evidence" "$temporary/gguf-input" "$temporary/reference-input" "$temporary/approval-link" >/dev/null 2>&1; then
     log 'self-test FAIL: symlinked approval accepted'; fail=1
   fi
+  mkdir "$temporary/duplicate-reference"
+  for name in manifest.json pcm.f32.bin encoder.f32.bin bottleneck.f32.bin mask.f32.bin separated.f32.bin; do
+    : > "$temporary/duplicate-reference/$name"
+  done
+  printf '%s\n' '{"format":"vokra-conv-tasnet-reference-v1","format":"vokra-conv-tasnet-reference-v1"}' \
+    > "$temporary/duplicate-reference/manifest.json"
+  if require_reference_contract "$temporary/duplicate-reference" >/dev/null 2>&1; then
+    log 'self-test FAIL: duplicate reference manifest key accepted'; fail=1
+  fi
+  printf '%s\n' '{"decision":"APPROVED","decision":"REJECTED"}' > "$temporary/duplicate-approval"
+  printf '%s\n' '{"schema":"conv-tasnet-approval-v1","decision":"APPROVED"}' > "$temporary/tampered-approval"
+  local approval_case approval_rc
+  for approval_case in missing duplicate tampered; do
+    if VOKRA_REMOTE_APPLE_SILICON=1 "$path" \
+      --gguf "$temporary/gguf" --gguf-sha256 "$(printf '%064d' 0)" \
+      --reference-dir "$temporary/reference-input" --reference-sha256 "$(printf '%064d' 0)" \
+      --approval-evidence "$temporary/${approval_case}-approval" \
+      --evidence-dir "$temporary/no-side-effect/$approval_case" >/dev/null 2>&1; then
+      log "self-test FAIL: $approval_case approval was accepted"; fail=1
+    else
+      approval_rc=$?
+      [[ "$approval_rc" == 2 ]] || { log "self-test FAIL: $approval_case approval returned $approval_rc, expected 2"; fail=1; }
+    fi
+    if [[ -e "$temporary/no-side-effect/$approval_case" || -L "$temporary/no-side-effect/$approval_case" ]]; then
+      log "self-test FAIL: $approval_case approval created evidence"; fail=1
+    fi
+  done
   VOKRA_ROOT="$old_root"
   log_file="$temporary/parity.log"
   printf '%s\n' \
@@ -268,6 +311,8 @@ fi
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 "$PREFLIGHT_GATE" \
   --lock "$PARITY_PROJECT/uv.lock" --project "$PARITY_PROJECT/pyproject.toml" \
   --manifest "$PREFLIGHT_MANIFEST" --evidence "$approval_evidence"
+command -v shasum >/dev/null 2>&1 || die 'shasum is unavailable'
+approval_evidence_sha256="$(sha256_file "$approval_evidence")"
 [[ "${VOKRA_REMOTE_APPLE_SILICON:-0}" == 1 ]] || die 'VOKRA_REMOTE_APPLE_SILICON=1 is absent'
 [[ "$(uname -s)" == Darwin ]] || die 'real Metal verification requires Darwin'
 [[ "$(uname -m)" == arm64 ]] || die 'real Metal verification requires Apple arm64'
@@ -282,6 +327,7 @@ xcrun -f metal >/dev/null 2>&1 || die 'Xcode Metal compiler is unavailable'
 [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
 require_absent_directory "$evidence_dir"
 require_disjoint_evidence "$evidence_dir" "$gguf" "$reference_dir" "$approval_evidence"
+[[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
 
 for name in pcm.f32.bin encoder.f32.bin bottleneck.f32.bin mask.f32.bin separated.f32.bin; do
   [[ -s "$reference_dir/$name" ]] || die "reference fixture missing: $name"
@@ -301,8 +347,10 @@ mkdir -p "$evidence_dir"
 cargo test --locked -p vokra-models --features metal --test parity_conv_tasnet_real -- --nocapture \
   > "$evidence_dir/parity.log" 2>&1
 require_test_evidence "$evidence_dir/parity.log"
+[[ "$(sha256_file "$approval_evidence")" == "$approval_evidence_sha256" ]] || die 'approval evidence changed during validation'
 {
   echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
+  echo "approval_evidence_sha256=$approval_evidence_sha256"
   echo "gguf_sha256=$(sha256_file "$gguf")"
   echo 'runtime_status=MEASURED_NOT_GATED'
   echo 'parity_status=MEASURED_NOT_GATED'
