@@ -55,7 +55,8 @@ Cargo. Missing publisher evidence or unresolved fixed LICENSE facts remains a
 blocker; no license class is inferred from raw bytes.
 
 The VAST worker is fail-closed behind the standard-library-only
-`preflight_gate.py`. Its 39-package lock, public GGUF/companion identities,
+`preflight_gate.py`. Its 39-row lock (36 active Linux x86_64 distributions,
+the inactive Win32-only `colorama`, the Darwin Torch row, and the virtual root), public GGUF/companion identities,
 official source identity and the gated upstream's seven-file contract are all
 bound into the approval scope. The gated upstream license and payload hashes
 remain explicit unresolved review blockers; no identity is guessed and the

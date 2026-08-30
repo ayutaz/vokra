@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 from collections import Counter
 import hashlib
 import importlib.metadata as metadata
@@ -170,26 +171,95 @@ def _marker_matches(marker: Any, environment: dict[str, str]) -> bool:
     return result
 
 
-def _row_key(row: dict[str, Any]) -> tuple[str, str, str]:
+def _row_key(row: dict[str, Any]) -> tuple[str, str]:
     return (identity(row["name"], row["version"]), canonical_json(row["source"]))
 
 
+def _active_lock_graph(lock: dict[str, Any]) -> tuple[set[tuple[str, str]], dict[tuple[str, str], str]]:
+    rows = lock.get("package")
+    if not isinstance(rows, list) or not rows:
+        raise AuditError("lock package rows are malformed")
+    row_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
+    resolved: dict[tuple[str, str], bool] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("version"), str) or not isinstance(row.get("source"), dict):
+            raise AuditError("lock package identity is malformed")
+        key = _row_key(row)
+        if key in row_by_key:
+            raise AuditError(f"duplicate lock package identity: {row['name']}=={row['version']}")
+        row_by_key[key] = row
+        by_name.setdefault(identity(row["name"], "").split("==", 1)[0], []).append(row)
+        markers = row.get("resolution-markers")
+        if markers is None:
+            resolved[key] = True
+        elif isinstance(markers, list) and markers:
+            matches = [_marker_matches(marker, {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"}) for marker in markers]
+            if sum(matches) > 1:
+                raise AuditError(f"ambiguous package resolution-markers: {row['name']}")
+            resolved[key] = any(matches)
+        else:
+            raise AuditError(f"package resolution-markers are malformed: {row['name']}")
+        dependencies = row.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise AuditError(f"lock dependencies are malformed: {row['name']}")
+        for dependency in dependencies:
+            if not isinstance(dependency, dict) or not isinstance(dependency.get("name"), str) or not dependency["name"].strip():
+                raise AuditError(f"lock dependency is malformed: {row['name']}")
+            _marker_matches(dependency.get("marker"), {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"})
+    roots = [row for row in rows if row.get("source") == {"virtual": "."}]
+    if len(roots) != 1:
+        raise AuditError("lock must contain exactly one virtual project row")
+    active: set[tuple[str, str]] = set()
+    visiting: set[tuple[str, str]] = set()
+
+    def visit(row: dict[str, Any]) -> None:
+        key = _row_key(row)
+        if key in visiting:
+            raise AuditError(f"dependency cycle encountered at {row['name']}")
+        if key in active:
+            return
+        visiting.add(key)
+        for dependency in row.get("dependencies", []):
+            if not _marker_matches(dependency.get("marker"), {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"}):
+                continue
+            dependency_name = identity(dependency["name"], "").split("==", 1)[0]
+            candidates = [candidate for candidate in by_name.get(dependency_name, []) if resolved[_row_key(candidate)]]
+            if "version" in dependency:
+                if not isinstance(dependency["version"], str):
+                    raise AuditError(f"dependency version is malformed: {row['name']} -> {dependency_name}")
+                candidates = [candidate for candidate in candidates if candidate["version"] == dependency["version"]]
+            if "source" in dependency:
+                if not isinstance(dependency["source"], dict):
+                    raise AuditError(f"dependency source is malformed: {row['name']} -> {dependency_name}")
+                source = canonical_json(dependency["source"])
+                candidates = [candidate for candidate in candidates if canonical_json(candidate["source"]) == source]
+            if len(candidates) != 1:
+                raise AuditError(f"missing or ambiguous lock dependency: {row['name']} -> {dependency_name}")
+            visit(candidates[0])
+        visiting.remove(key)
+        active.add(key)
+
+    visit(roots[0])
+    inactive_reasons: dict[tuple[str, str], str] = {}
+    for row in rows:
+        key = _row_key(row)
+        if row.get("source") == {"virtual": "."}:
+            inactive_reasons[key] = "virtual project row; no installed distribution is expected"
+        elif key not in active and not resolved[key]:
+            inactive_reasons[key] = "package resolution-marker is false for Linux x86_64"
+        elif key not in active:
+            inactive_reasons[key] = "not reachable from the virtual project dependency graph for Linux x86_64"
+    return active, inactive_reasons
+
+
 def classify_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    environment = {"sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython"}
+    active_keys, inactive_reasons = _active_lock_graph(lock)
     active: list[dict[str, Any]] = []
     inactive: list[dict[str, Any]] = []
     for row in sorted(lock["package"], key=lambda item: (_row_key(item), canonical_json(item))):
-        marker_values = row.get("resolution-markers")
-        if marker_values is not None:
-            if not isinstance(marker_values, list) or not marker_values:
-                raise AuditError(f"resolution markers malformed: {row.get('name')}")
-            matches = [_marker_matches(marker, environment) for marker in marker_values]
-            if sum(matches) > 1:
-                raise AuditError(f"resolution markers ambiguous: {row.get('name')}")
-            resolved = any(matches)
-        else:
-            resolved = True
         item = {"name": row["name"], "version": row["version"], "source": row["source"]}
+        key = _row_key(row)
         if row.get("source") == {"virtual": "."}:
             inactive.append({
                 **item,
@@ -197,12 +267,14 @@ def classify_lock_rows(lock: dict[str, Any]) -> tuple[list[dict[str, Any]], list
                 "status": "INACTIVE_VIRTUAL_PROJECT",
                 "reason": "virtual project row; no installed distribution is expected",
             })
-        elif not resolved:
+        elif key not in active_keys:
+            reason = inactive_reasons[key]
+            status = "INACTIVE_RESOLUTION_MARKER" if "resolution-marker" in reason else "INACTIVE_UNREACHABLE_DEPENDENCY"
             inactive.append({
                 **item,
                 "identity": identity(row["name"], row["version"]),
-                "status": "INACTIVE_RESOLUTION_MARKER",
-                "reason": "package resolution-marker is false for Linux x86_64",
+                "status": status,
+                "reason": reason,
             })
         else:
             active.append({
@@ -919,9 +991,29 @@ def self_test() -> int:
     lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
     active, inactive = classify_lock_rows(lock)
     assert len(lock["package"]) == len(active) + len(inactive)
-    assert len(inactive) == 2
+    assert len(inactive) == 3
     assert any(item["status"] == "INACTIVE_VIRTUAL_PROJECT" for item in inactive)
-    assert len(active) == 37
+    assert len(active) == 36
+    colorama = next(item for item in inactive if item["name"] == "colorama")
+    assert colorama["status"] == "INACTIVE_UNREACHABLE_DEPENDENCY"
+    tampered = copy.deepcopy(lock)
+    root = next(item for item in tampered["package"] if item["source"] == {"virtual": "."})
+    root["dependencies"][0]["marker"] = "sys_platform === 'linux'"
+    try:
+        classify_lock_rows(tampered)
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("unsupported dependency marker grammar was accepted")
+    cycle = copy.deepcopy(lock)
+    numpy_row = next(item for item in cycle["package"] if item["name"] == "numpy")
+    numpy_row["dependencies"] = [{"name": root["name"]}]
+    try:
+        classify_lock_rows(cycle)
+    except AuditError:
+        pass
+    else:
+        raise AssertionError("reachable dependency cycle was accepted")
     assert compare_multiset(["foo-bar==1.0"], ["foo-bar==1.0", "foo-bar==1.0"])["unexpected"] == ["foo-bar==1.0"]
     assert _is_license_path("LICENSE") and _is_license_path("license.txt") and _is_license_path("NOTICE-extra")
     assert not _is_license_path("unlicensed-file") and not _is_license_path("project-license")
