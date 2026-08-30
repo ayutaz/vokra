@@ -182,6 +182,7 @@ pub fn convert_bicodec_file(
 /// claim. Production callers must use [`convert_bicodec_file`], which
 /// authenticates the checkpoint, complete tensor inventory, and its required
 /// sibling `config.yaml` first.
+#[cfg(test)]
 fn convert_bicodec_bytes(
     bytes: &[u8],
     output: &Path,

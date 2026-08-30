@@ -735,7 +735,6 @@ impl VocosBlock {
 
 #[derive(Debug)]
 struct Vocos {
-    input: usize,
     dim: usize,
     embed: RawConv1d,
     norm: Norm,
@@ -767,7 +766,6 @@ impl Vocos {
             )?);
         }
         Ok(Self {
-            input,
             dim,
             embed: RawConv1d::load(file, &format!("{prefix}.embed"), input, dim, 7, 3, 1)?,
             norm,
@@ -1070,7 +1068,7 @@ impl WaveGenerator {
         }
         let mut activated = vec![0.0; x.len()];
         compute.snake_activation_f32(&x, &self.final_alpha, 96, current, &mut activated)?;
-        let mut output = self.final_conv.forward(&activated, current, compute)?;
+        let output = self.final_conv.forward(&activated, current, compute)?;
         let pre_tanh = output;
         let mut output = vec![0.0; pre_tanh.len()];
         compute.tanh_f32(&pre_tanh, &mut output)?;
@@ -1189,7 +1187,7 @@ mod tests {
     #[test]
     fn fsq_basis_and_normalization_are_fixed() {
         let basis = [1usize, 4, 16, 64, 256, 1024];
-        assert_eq!(basis[5] * SPEAKER_LEVELS, GLOBAL_VOCAB);
+        assert_eq!(basis[5] * SPEAKER_LEVELS, GLOBAL_VOCAB as usize);
         assert_eq!(basis[0], 1);
         assert_eq!(basis[1], SPEAKER_LEVELS);
         assert_eq!((4095 / basis[5]) % SPEAKER_LEVELS, 3);
@@ -1396,7 +1394,7 @@ mod tests {
         );
     }
 
-    fn reference_record(manifest: &str, role: &str, shape: &[usize]) -> (&str, &str) {
+    fn reference_record<'a>(manifest: &'a str, role: &str, shape: &[usize]) -> (&'a str, &'a str) {
         let marker = format!("\"{role}\": {{");
         let start = manifest.find(&marker).expect("reference tensor record");
         let record_start = start + marker.len();
