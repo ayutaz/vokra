@@ -35,7 +35,9 @@ SPDX_ALIASES = {
     "apache software license": "Apache-2.0",
     "apache license 2.0": "Apache-2.0",
     "apache 2.0": "Apache-2.0",
+    "apache 2.0 license": "Apache-2.0",
     "apache-2.0": "Apache-2.0",
+    "bsd 3-clause license": "BSD-3-Clause",
     "bsd-3-clause": "BSD-3-Clause",
     "bsd-2-clause": "BSD-2-Clause",
     "mit license": "MIT",
@@ -49,6 +51,7 @@ CLASSIFIER_ALIASES = {
     "License :: OSI Approved :: Apache Software License": "Apache-2.0",
     "License :: OSI Approved :: CNRI Python License": "CNRI-Python",
     "License :: OSI Approved :: ISC License": "ISC",
+    "License :: OSI Approved :: ISC License (ISCL)": "ISC",
     "License :: OSI Approved :: MIT License": "MIT",
     "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)": "MPL-2.0",
     "License :: OSI Approved :: Python Software Foundation License": "PSF-2.0",
@@ -140,6 +143,16 @@ def _metadata_license(metadata: bytes, label: str = "METADATA") -> str:
         if len(set(parsed)) != 1:
             raise ValueError(f"{label} has ambiguous License-Expression declarations ({summary})")
         return parsed[0]
+    if legacy:
+        parsed_legacy = []
+        for value in legacy:
+            lowered = value.lower().strip()
+            if lowered not in SPDX_ALIASES:
+                raise ValueError(f"{label} has an unrecognized legacy license declaration ({summary})")
+            parsed_legacy.append(SPDX_ALIASES[lowered])
+        if len(set(parsed_legacy)) != 1:
+            raise ValueError(f"{label} has ambiguous legacy license declarations ({summary})")
+        return parsed_legacy[0]
     if classifiers:
         mapped = [CLASSIFIER_ALIASES[value] for value in classifiers if value in CLASSIFIER_ALIASES]
         unknown = [value for value in classifiers if value not in CLASSIFIER_ALIASES]
@@ -150,15 +163,6 @@ def _metadata_license(metadata: bytes, label: str = "METADATA") -> str:
         if len(set(mapped)) != 1:
             raise ValueError(f"{label} has ambiguous classifier license declarations ({summary})")
         return mapped[0]
-    parsed_legacy: list[str] = []
-    for value in legacy:
-        lowered = value.lower().strip()
-        if lowered in SPDX_ALIASES:
-            parsed_legacy.append(SPDX_ALIASES[lowered])
-    if parsed_legacy and len(set(parsed_legacy)) == 1:
-        return parsed_legacy[0]
-    if parsed_legacy:
-        raise ValueError(f"{label} has ambiguous legacy license declarations ({summary})")
     raise ValueError(f"{label} has no recognized license declarations ({summary})")
 
 
@@ -411,14 +415,22 @@ def self_test() -> None:
         assert {entry["path"] for entry in bundled} == {"demo-1.0.dist-info/COPYING", "demo/vendor/LICENSE"}
         assert _metadata_license(b"License-Expression: BSD-3-Clause\n") == "BSD-3-Clause"
         assert _metadata_license(b"License-Expression: MIT AND MPL-2.0 OR PSF-2.0\n") == "MIT AND MPL-2.0 OR PSF-2.0"
+        assert _metadata_license(b"License-Expression: Apache-2.0 WITH LLVM-exception\n") == "Apache-2.0 WITH LLVM-exception"
+        assert _metadata_license(b"License-Expression: MIT-0\n") == "MIT-0"
+        assert _metadata_license(b"License-Expression: CC0-1.0 OR BSL-1.0\n") == "CC0-1.0 OR BSL-1.0"
         assert _metadata_license(b"Classifier: License :: OSI Approved :: CNRI Python License\n") == "CNRI-Python"
+        assert _metadata_license(b"Classifier: License :: OSI Approved :: ISC License (ISCL)\n") == "ISC"
         assert _metadata_license(b"License: Python Software Foundation License\n") == "PSF-2.0"
+        assert _metadata_license(b"License: BSD-3-Clause\nClassifier: License :: OSI Approved :: BSD License\n") == "BSD-3-Clause"
         for malformed in (
             b"License: BSD\n",
             b"License: BSD License\n",
             b"Classifier: License :: OSI Approved :: BSD License\n",
             b"License-Expression: GPL-3.0\n",
             b"License-Expression: LGPL-2.1-or-later\n",
+            b"License-Expression: Apache-2.0 WITH MIT-exception\n",
+            b"License-Expression: MIT WITH LLVM-exception\n",
+            b"License-Expression: Apache-2.0 (MIT)\n",
             b"License-Expression: MIT XOR BSD-3-Clause\n",
             b"License-Expression: MIT\nLicense-Expression: BSD-3-Clause\n",
             b"Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)\n",

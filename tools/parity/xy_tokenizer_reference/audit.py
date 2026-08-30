@@ -63,24 +63,38 @@ TARGET_MARKER_VALUES = {
     "sys_platform": "linux",
 }
 ALLOWED_SPDX_IDS = frozenset({
-    "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CNRI-Python",
-    "ISC", "MIT", "MPL-2.0", "PSF-2.0", "Python-2.0", "Zlib",
+    "0BSD", "Apache-2.0", "BSL-1.0", "BSD-2-Clause", "BSD-3-Clause", "CC0-1.0", "CNRI-Python",
+    "ISC", "MIT", "MIT-0", "MPL-2.0", "PSF-2.0", "Python-2.0", "Zlib",
 })
 
 
 def validate_spdx_expression(value: str) -> str:
     tokens = value.strip().split()
-    if not tokens or len(tokens) % 2 == 0:
+    if not tokens:
         raise ValueError("malformed SPDX expression")
-    for index, token in enumerate(tokens):
-        if index % 2 == 0:
+    index = 0
+    expect_term = True
+    while index < len(tokens):
+        token = tokens[index]
+        if expect_term:
             if token not in ALLOWED_SPDX_IDS:
                 upper = token.upper()
                 if any(marker in upper for marker in ("GPL", "LGPL", "AGPL", "UNLICENSED", "UNKNOWN")):
                     raise ValueError(f"forbidden SPDX identifier {token!r}")
                 raise ValueError(f"unrecognized SPDX identifier {token!r}")
-        elif token not in {"AND", "OR"}:
-            raise ValueError(f"unsupported SPDX operator {token!r}")
+            index += 1
+            if index < len(tokens) and tokens[index] == "WITH":
+                if token != "Apache-2.0" or index + 1 >= len(tokens) or tokens[index + 1] != "LLVM-exception":
+                    raise ValueError("only Apache-2.0 WITH LLVM-exception is allowed")
+                index += 2
+            expect_term = False
+        else:
+            if token not in {"AND", "OR"}:
+                raise ValueError(f"unsupported SPDX operator {token!r}")
+            index += 1
+            expect_term = True
+    if expect_term:
+        raise ValueError("malformed SPDX expression")
     return " ".join(tokens)
 
 
@@ -752,6 +766,15 @@ requires-dist = [
         project_file.write_text("[project]\nname='vokra-xy-tokenizer-reference'\n", encoding="utf-8")
         repository_license_file = root / "LICENSE"
         repository_license_file.write_bytes(b"Apache License\n")
+        assert validate_spdx_expression("Apache-2.0 WITH LLVM-exception AND MIT-0") == "Apache-2.0 WITH LLVM-exception AND MIT-0"
+        assert validate_spdx_expression("CC0-1.0 OR BSL-1.0") == "CC0-1.0 OR BSL-1.0"
+        for invalid_spdx in ("Apache-2.0 WITH MIT-exception", "MIT WITH LLVM-exception", "MIT (BSD-3-Clause)"):
+            try:
+                validate_spdx_expression(invalid_spdx)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid SPDX exception expression accepted")
         license_base = {"kind": "publisher", "source": "https://example.invalid/license", "revision": "r1", "sha256": "b" * 64, "bytes": 1, "spdx": "BSD-3-Clause"}
         artifact_base = {"kind": "wheel", "url": "https://example.invalid/numpy-1-py3-none-manylinux_2_17_x86_64.whl", "sha256": "sha256:" + "a" * 64, "bytes": 1}
         rich = {"name": "numpy", "version": "1", "license": license_base, "artifact": artifact_base, "native_payloads": [{"name": "numpy.core", "sha256": "c" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": artifact_base["sha256"]}], "bundled_licenses": [{"path": "vendor/LICENSE", "sha256": "f" * 64, "bytes": 1, "artifact_sha256": artifact_base["sha256"]}]}
