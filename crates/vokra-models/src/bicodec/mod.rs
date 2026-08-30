@@ -17,17 +17,29 @@ use vokra_core::{LicenseClass, Result, VokraError};
 use crate::compute::{Compute, HotOp};
 use crate::strict_checkpoint::{StrictCheckpoint, StrictCheckpointSpec, load_tensor};
 
+/// GGUF architecture tag for the SparkAudio BiCodec.
 pub const ARCH: &str = "bicodec";
+/// GGUF model name for the authenticated Spark-TTS BiCodec release.
 pub const NAME: &str = "spark-tts-bicodec";
+/// PCM sample rate emitted by the wave decoder, in hertz.
 pub const SAMPLE_RATE: u32 = 16_000;
+/// Number of PCM samples emitted per semantic token.
 pub const FRAME_HOP: usize = 320;
+/// Number of semantic codebook entries.
 pub const SEMANTIC_VOCAB: u32 = 8_192;
+/// Number of packed global FSQ token values.
 pub const GLOBAL_VOCAB: u32 = 4_096;
+/// Fixed number of global speaker tokens.
 pub const GLOBAL_TOKENS: usize = 32;
+/// Semantic codebook embedding width.
 pub const SEMANTIC_DIM: usize = 8;
+/// Decoder feature and waveform-generator model width.
 pub const MODEL_DIM: usize = 1_024;
+/// Speaker FSQ latent width before flattening.
 pub const SPEAKER_LATENT_DIM: usize = 128;
+/// Number of scalar FSQ digits in one global token.
 pub const SPEAKER_CODE_DIM: usize = 6;
+/// Number of levels in each scalar FSQ digit.
 pub const SPEAKER_LEVELS: usize = 4;
 
 const LABEL: &str = "bicodec";
@@ -36,6 +48,7 @@ const MANIFEST_SHA256: [u8; 32] = [
     0x12, 0xc3, 0xe9, 0x7a, 0x15, 0x0e, 0x5e, 0xcb, 0x7a, 0x61, 0xc9, 0x5d, 0x76, 0x2e, 0xc8, 0x6c,
 ];
 
+/// Compute operations required by the native BiCodec decode route.
 pub const BICODEC_DECODE_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::LayerNorm,
@@ -73,10 +86,17 @@ pub struct Bicodec {
 }
 
 impl Bicodec {
+    /// Bind an authenticated BiCodec GGUF and use the CPU backend.
     pub fn from_gguf(file: &GgufFile) -> Result<Self> {
         Self::from_gguf_with_backend(file, BackendKind::Cpu)
     }
 
+    /// Bind an authenticated BiCodec GGUF using one preflighted backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when metadata, tensor manifest/dtypes, provenance, or
+    /// backend hot-op coverage does not match the fixed release contract.
     pub fn from_gguf_with_backend(file: &GgufFile, backend: BackendKind) -> Result<Self> {
         let _ = Compute::for_backend(backend, BICODEC_DECODE_HOT_OPS)?;
         let checkpoint = StrictCheckpoint::bind(file, SPEC)?;
@@ -182,26 +202,35 @@ impl Bicodec {
         })
     }
 
+    /// Open and bind an authenticated BiCodec GGUF from disk.
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         Self::from_gguf(&GgufFile::open(path)?)
     }
 
+    /// Return the backend selected when this decoder was bound.
     #[must_use]
     pub const fn backend(&self) -> BackendKind {
         self.backend
     }
 
+    /// Return the authenticated non-commercial/share-alike weight class.
     #[must_use]
     pub const fn weight_license(&self) -> LicenseClass {
         self.weight_license
     }
 
+    /// Return the fixed output sample rate in hertz.
     #[must_use]
     pub const fn sample_rate(&self) -> u32 {
         SAMPLE_RATE
     }
 
     /// Decode semantic `[T]` and global `[32]` tokens to mono 16-kHz PCM.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid token shapes/ranges, unsupported backend
+    /// coverage, malformed intermediate extents, or non-finite output.
     pub fn decode(&self, semantic_tokens: &[u32], global_tokens: &[u32]) -> Result<Vec<f32>> {
         validate_tokens(semantic_tokens, global_tokens)?;
         let compute = Compute::for_backend(self.backend, BICODEC_DECODE_HOT_OPS)?;
@@ -243,10 +272,17 @@ impl Bicodec {
         Ok(waveform)
     }
 
+    /// Decode the two token streams; this is an alias for [`Self::decode`].
     pub fn detokenize(&self, semantic_tokens: &[u32], global_tokens: &[u32]) -> Result<Vec<f32>> {
         self.decode(semantic_tokens, global_tokens)
     }
 
+    /// Reject encoding because the bounded implementation requires external
+    /// Wav2Vec2 feature extraction.
+    ///
+    /// # Errors
+    ///
+    /// Always returns [`VokraError::UnsupportedOp`].
     pub fn encode(&self, _pcm: &[f32], _sample_rate: u32) -> Result<(Vec<u32>, Vec<u32>)> {
         Err(VokraError::UnsupportedOp("bicodec: encode is unavailable in the bounded wave; Wav2Vec2 feature extraction is external".to_owned()))
     }
@@ -1200,7 +1236,12 @@ mod tests {
     fn weight_norm_folds_rows_over_all_non_output_axes() {
         let folded = fold_weight_norm(&[2.0, -1.0], &[3.0, 4.0, 5.0, 12.0], 2, 2, "test")
             .expect("non-zero synthetic rows are valid");
-        assert_eq!(folded, vec![1.2, 1.6, -0.6, -0.8]);
+        // Row 0 is 2·[3,4]/sqrt(3²+4²) = [6/5,8/5]; row 1 is
+        // -1·[5,12]/sqrt(5²+12²) = [-5/13,-12/13].
+        assert_eq!(
+            folded,
+            vec![6.0 / 5.0, 8.0 / 5.0, -5.0 / 13.0, -12.0 / 13.0]
+        );
     }
 
     #[test]
