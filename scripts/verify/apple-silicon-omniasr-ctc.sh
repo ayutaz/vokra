@@ -7,6 +7,15 @@ ROOT="${VOKRA_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 PARITY_TEST="real_omniasr_ctc_encoder_logits_and_tokens_match_official"
 die() { echo "[omniasr-ctc-apple] ERROR: $*" >&2; exit 2; }
 
+validate_expected_commit() {
+  local expected="$1" actual="$2"
+  [[ "$expected" =~ ^[0-9a-f]{40}$ && "$actual" == "$expected" ]]
+}
+
+validate_clean_checkout() {
+  [[ -z "$1" ]]
+}
+
 structured_unsupported_log() {
   local log="$1"
   [[ "$(printf '%s\n' "$log" | grep -Fxc 'OMNIASR_UNSUPPORTED_OP')" == 1 ]] || return 1
@@ -14,9 +23,20 @@ structured_unsupported_log() {
   [[ "$(printf '%s\n' "$log" | grep -Fxc 'OMNIASR_REAL_PARITY_PASS')" == 0 ]] || return 1
 }
 
+backend_sentinel_log() {
+  local log="$1" expected="$2" opposite="Cpu"
+  [[ "$expected" == Cpu ]] && opposite=Metal
+  [[ "$(printf '%s\n' "$log" | grep -Ec "^OmniASR ${expected}: frames=[0-9]+, frontend_max_abs=[^,]+, encoder_max_abs=[^,]+, logits_max_abs=[^,]+, tokens=exact$")" == 1 ]] || return 1
+  [[ "$(printf '%s\n' "$log" | grep -Ec "^OmniASR ${opposite}:")" == 0 ]]
+}
+
 self_test() {
-  local fail=0 required unsupported_log contaminated_log
+  local fail=0 required unsupported_log contaminated_log cpu_log metal_log valid_commit
   for required in Darwin arm64 VOKRA_REMOTE_APPLE_SILICON \
+    VOKRA_EXPECTED_COMMIT environment.txt input-sha256-before.txt \
+    head_commit sysctl_hw.model sysctl_hw.machine sysctl_hw.memsize \
+    rustc cargo xcrun_metal_path xcrun_metal_version \
+    assert_bundle_unchanged bundle_symlink 'type l' BLOCKED_UNSUPPORTED 'exit 3' \
     validation-summary.txt CPU_PARITY_COMPLETE NO_UPLOAD REFERENCE_COMPLETE \
     ctc_logits.f32le encoder.f32le tokens.u32le \
     VOKRA_OMNIASR_BACKEND metal OMNIASR_UNSUPPORTED_OP "$PARITY_TEST" \
@@ -27,6 +47,45 @@ self_test() {
     echo "self-test found download/publication command" >&2
     fail=1
   fi
+  [[ "$(grep -Fc 'assert_bundle_unchanged' "$0")" -ge 3 ]] || {
+    echo "self-test does not check bundle immutability after both cargo invocations" >&2
+    fail=1
+  }
+  valid_commit=0123456789abcdef0123456789abcdef01234567
+  validate_expected_commit "$valid_commit" "$valid_commit" || {
+    echo "self-test rejected valid expected commit" >&2
+    fail=1
+  }
+  validate_expected_commit "0123456789ABCDEF0123456789ABCDEF01234567" "$valid_commit" && {
+    echo "self-test accepted uppercase expected commit" >&2
+    fail=1
+  } || true
+  validate_expected_commit "$valid_commit" "0123456789abcdef0123456789abcdef01234568" && {
+    echo "self-test accepted mismatched HEAD" >&2
+    fail=1
+  } || true
+  validate_clean_checkout "" || {
+    echo "self-test rejected clean checkout" >&2
+    fail=1
+  }
+  validate_clean_checkout " M unrelated-file" && {
+    echo "self-test accepted dirty checkout" >&2
+    fail=1
+  } || true
+  cpu_log='OmniASR Cpu: frames=123, frontend_max_abs=1.0e-3, encoder_max_abs=2.0e-3, logits_max_abs=3.0e-3, tokens=exact'
+  metal_log='OmniASR Metal: frames=123, frontend_max_abs=1.0e-3, encoder_max_abs=2.0e-3, logits_max_abs=3.0e-3, tokens=exact'
+  backend_sentinel_log "$cpu_log" Cpu || {
+    echo "self-test rejected exact CPU backend sentinel" >&2
+    fail=1
+  }
+  backend_sentinel_log "$metal_log" Metal || {
+    echo "self-test rejected exact Metal backend sentinel" >&2
+    fail=1
+  }
+  backend_sentinel_log "$cpu_log" Metal && {
+    echo "self-test accepted CPU log for Metal request" >&2
+    fail=1
+  } || true
   unsupported_log=$'OMNIASR_UNSUPPORTED_OP\ntest real_omniasr_ctc_encoder_logits_and_tokens_match_official ... FAILED'
   contaminated_log=$'OMNIASR_UNSUPPORTED_OP\ntest real_omniasr_ctc_encoder_logits_and_tokens_match_official ... FAILED\nOMNIASR_REAL_PARITY_PASS'
   structured_unsupported_log "$unsupported_log" || { echo "self-test rejected valid structured UnsupportedOp" >&2; fail=1; }
@@ -47,7 +106,12 @@ memory="$(sysctl -n hw.memsize 2>/dev/null || true)"
 command -v cargo >/dev/null 2>&1 || die "cargo is required"
 command -v xcrun >/dev/null 2>&1 || die "xcrun is required"
 xcrun -sdk macosx metal -v >/dev/null 2>&1 || die "Metal compiler unavailable"
-[[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=all)" ]] || die "clean committed checkout required"
+checkout_status="$(git -C "$ROOT" status --porcelain --untracked-files=all)"
+validate_clean_checkout "$checkout_status" || die "clean committed checkout required"
+expected_commit="${VOKRA_EXPECTED_COMMIT:-}"
+actual_commit="$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null)" || die "unable to resolve checkout HEAD"
+validate_expected_commit "$expected_commit" "$actual_commit" || \
+  die "VOKRA_EXPECTED_COMMIT must be lowercase 40-hex and match HEAD"
 
 bundle="$1"
 evidence_dir="$3"
@@ -87,6 +151,8 @@ for file in validation-summary.txt omniasr-ctc-1b.gguf reference/manifest.json \
   [[ -f "$bundle/$file" && ! -L "$bundle/$file" ]] || die "bundle file missing/symlinked: $file"
 done
 [[ -d "$bundle/reference" && ! -L "$bundle/reference" ]] || die "reference directory missing/symlinked"
+bundle_symlink="$(find "$bundle" -type l -print -quit)" || die "unable to inspect bundle symlinks"
+[[ -z "$bundle_symlink" ]] || die "input bundle contains a symlink: $bundle_symlink"
 
 summary="$bundle/validation-summary.txt"
 summary_keys=(
@@ -134,6 +200,51 @@ actual_manifest_sha="$(shasum -a 256 "$bundle/reference/manifest.json" | awk '{p
 # needs no uv environment or upstream source checkout.
 mkdir "$evidence_dir"
 run_dir="$evidence_dir"
+capture_one_line() {
+  local output
+  if output="$("$@" 2>&1)"; then
+    printf '%s' "$output" | tr '\n' ';'
+  else
+    printf 'unavailable'
+  fi
+}
+sysctl_value() {
+  local value
+  if value="$(sysctl -n "$1" 2>/dev/null)"; then
+    printf '%s' "$value"
+  else
+    printf 'unavailable'
+  fi
+}
+{
+  echo 'schema=omniasr-ctc-apple-environment-v1'
+  echo "expected_commit=$expected_commit"
+  echo "head_commit=$actual_commit"
+  echo "uname=$(capture_one_line uname -a)"
+  echo "sw_vers=$(capture_one_line sw_vers)"
+  echo "sysctl_hw.model=$(sysctl_value hw.model)"
+  echo "sysctl_hw.machine=$(sysctl_value hw.machine)"
+  echo "sysctl_hw.memsize=$(sysctl_value hw.memsize)"
+  echo "sysctl_hw.ncpu=$(sysctl_value hw.ncpu)"
+  echo "rustc=$(capture_one_line rustc --version --verbose)"
+  echo "cargo=$(capture_one_line cargo --version --verbose)"
+  echo "xcrun_metal_path=$(capture_one_line xcrun --find metal)"
+  echo "xcrun_metal_version=$(capture_one_line xcrun -sdk macosx metal -v)"
+} > "$run_dir/environment.txt"
+bundle_digest() {
+  local symlink
+  symlink="$(find "$bundle" -type l -print -quit)" || return 1
+  [[ -z "$symlink" ]] || return 1
+  find "$bundle" -type f -exec shasum -a 256 {} + | LC_ALL=C sort
+}
+input_digest_before="$(bundle_digest)" || die "unable to fingerprint immutable input bundle"
+printf '%s\n' "$input_digest_before" > "$run_dir/input-sha256-before.txt"
+assert_bundle_unchanged() {
+  local input_digest_after
+  input_digest_after="$(bundle_digest)" || die "unable to re-fingerprint input bundle"
+  [[ "$input_digest_after" == "$input_digest_before" ]] || \
+    die "authenticated input bundle changed during Apple validation"
+}
 set +e
 VOKRA_OMNIASR_GGUF="$bundle/omniasr-ctc-1b.gguf" \
 VOKRA_OMNIASR_REFERENCE_DIR="$bundle/reference" \
@@ -141,9 +252,12 @@ VOKRA_OMNIASR_BACKEND=cpu cargo test --locked -p vokra-models \
   --test parity_omniasr_ctc_real -- --ignored --exact "$PARITY_TEST" --nocapture >"$run_dir/cpu.log" 2>&1
 cpu_status=$?
 set -e
+assert_bundle_unchanged
 [[ "$cpu_status" == 0 ]] || die "Apple CPU parity failed; see $run_dir/cpu.log"
 grep -Ec "^test ${PARITY_TEST} \.\.\. ok$" "$run_dir/cpu.log" | grep -Fxq 1 || die "CPU named test result is not exactly one PASS"
 grep -Fxc 'OMNIASR_REAL_PARITY_PASS' "$run_dir/cpu.log" | grep -Fxq 1 || die "CPU parity sentinel is not exactly one"
+cpu_log="$(<"$run_dir/cpu.log")"
+backend_sentinel_log "$cpu_log" Cpu || die "CPU log lacks the exact CPU backend sentinel"
 echo 'cpu_status=PASS' > "$run_dir/result.txt"
 
 set +e
@@ -153,9 +267,12 @@ VOKRA_OMNIASR_BACKEND=metal cargo test --locked -p vokra-models --features metal
   --test parity_omniasr_ctc_real -- --ignored --exact "$PARITY_TEST" --nocapture >"$run_dir/metal.log" 2>&1
 metal_status=$?
 set -e
+assert_bundle_unchanged
 if [[ "$metal_status" == 0 ]]; then
   grep -Ec "^test ${PARITY_TEST} \.\.\. ok$" "$run_dir/metal.log" | grep -Fxq 1 || die "Metal named test result is not exactly one PASS"
   grep -Fxc 'OMNIASR_REAL_PARITY_PASS' "$run_dir/metal.log" | grep -Fxq 1 || die "Metal parity sentinel is not exactly one"
+  metal_log="$(<"$run_dir/metal.log")"
+  backend_sentinel_log "$metal_log" Metal || die "Metal log lacks the exact Metal backend sentinel"
   echo 'metal_status=PASS' >> "$run_dir/result.txt"
   echo '[omniasr-ctc-apple] CPU_PASS; METAL_PASS; NO_UPLOAD'
   exit 0
