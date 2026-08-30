@@ -344,6 +344,47 @@ REPO_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     "canary-1b-v2": ["nvidia/canary-1b-v2"],
     "omniasr-ctc-1b": ["facebook/omniASR-CTC-1B"],
     "kimi-audio-7b-instruct": ["kimi_audio (`moonshotai/Kimi-Audio-7B-Instruct`)"],
+    # 2026-08-30 Mac completion ledger aliases.  These are publish slugs,
+    # not new audit decisions: every target below is an exact §3.1 row
+    # identity already present in docs/license-audit.md.  Keep the mapping
+    # explicit so a short slug cannot inherit a nearby family row by prefix.
+    "canary-qwen-2.5b": ["nvidia/canary-qwen-2.5b"],
+    "chatterbox-multilingual-v3": [
+        "ResembleAI/chatterbox (T3 mtl23ls_v3)"
+    ],
+    "chatterbox-nano-v1": ["ResembleAI/chatterbox-nano"],
+    "chatterbox-turbo-v1": ["ResembleAI/chatterbox-turbo"],
+    "clap-htsat-fused": ["CLAP HTSAT-fused (`laion/clap-htsat-fused`)"],
+    "cosyvoice2-0.5b": ["CosyVoice2-0.5B"],
+    "dia-1.6b": ["nari-labs/Dia-1.6B"],
+    "irodori-tts-500m-v3": ["Aratako/Irodori-TTS-500M-v3"],
+    "kimi-audio": ["kimi_audio (`moonshotai/Kimi-Audio-7B-Instruct`)"],
+    "kyutai-tts-1.6b-en-fr": [
+        "Kyutai TTS 1.6B EN/FR (`kyutai/tts-1.6b-en_fr`)"
+    ],
+    "lang-id-voxlingua107": [
+        "Lang-ID VoxLingua107 ECAPA (`speechbrain/lang-id-voxlingua107-ecapa`)"
+    ],
+    "moss-tts-local-transformer-v1.5": [
+        "MOSS-TTS-Local-Transformer-v1.5 (`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`)"
+    ],
+    "qwen3-asr-0.6b": ["Qwen3-ASR-0.6B (`Qwen/Qwen3-ASR-0.6B`)"],
+    "qwen3-asr-1.7b": ["Qwen3-ASR-1.7B (`Qwen/Qwen3-ASR-1.7B`)"],
+    "qwen3-tts-12hz-0.6b-base": [
+        "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    ],
+    # This row is intentionally still blank/UNKNOWN in §3.1.  Mapping the
+    # exact slug changes UNKNOWN_REPO to the more informative PENDING state;
+    # it does not authorize publication or fill the owner decision.
+    "rmvpe": [
+        "rmvpe (`yxlllc/RMVPE`, fixed commit `0aabafba18289ca938a73af0b0297686abf4922d`)"
+    ],
+    "vibevoice-1.5b": ["microsoft/VibeVoice-1.5B"],
+    "vieneu-tts-v3-turbo": [
+        "VieNeu-TTS-v3-Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`)"
+    ],
+    "voxcpm-0.5b": ["openbmb/VoxCPM-0.5B"],
+    "zonos-v0.1-transformer": ["Zyphra/Zonos-v0.1-transformer"],
     "step-audio2-mini": ["step_audio2_mini (`stepfun-ai/Step-Audio-2-mini`)"],
     "baichuan-audio": ["baichuan_audio (`baichuan-inc/Baichuan-Audio-Instruct`)"],
     "speechtokenizer": ["speechtokenizer (`fnlp/SpeechTokenizer`)"],
@@ -1359,8 +1400,8 @@ CONVERTER_TO_SIGNOFF_ROWS: dict[str, list[str]] = {
     ],
     # The row is deliberately blank and records the checkpoint license as
     # UNKNOWN. Keeping converter coverage tied to that exact row catches
-    # audit drift without making `vokra/rmvpe` publishable: no repo-side
-    # mapping exists above, so publication remains fail-closed.
+    # audit drift. The repo-side `rmvpe` alias above intentionally resolves
+    # to this row, but its blank owner decision keeps publication fail-closed.
     "rmvpe": [
         "rmvpe (`yxlllc/RMVPE`, fixed commit `0aabafba18289ca938a73af0b0297686abf4922d`)"
     ],
@@ -2219,6 +2260,64 @@ def _cli_self_test() -> int:
 
         REPO_TO_SIGNOFF_ROWS = real_map
 
+        # Mac completion ledger regression: these aliases must remain pinned
+        # to the exact existing §3.1 row, rather than a family prefix or a
+        # nearby variant. This checks only map identity; owner sign-off state
+        # is intentionally not synthesized here.
+        mac_ledger_rows = {
+            "canary-qwen-2.5b": ["nvidia/canary-qwen-2.5b"],
+            "chatterbox-multilingual-v3": [
+                "ResembleAI/chatterbox (T3 mtl23ls_v3)"
+            ],
+            "chatterbox-nano-v1": ["ResembleAI/chatterbox-nano"],
+            "chatterbox-turbo-v1": ["ResembleAI/chatterbox-turbo"],
+            "clap-htsat-fused": [
+                "CLAP HTSAT-fused (`laion/clap-htsat-fused`)"
+            ],
+            "cosyvoice2-0.5b": ["CosyVoice2-0.5B"],
+            "dia-1.6b": ["nari-labs/Dia-1.6B"],
+            "irodori-tts-500m-v3": ["Aratako/Irodori-TTS-500M-v3"],
+            "kimi-audio": [
+                "kimi_audio (`moonshotai/Kimi-Audio-7B-Instruct`)"
+            ],
+            "kyutai-tts-1.6b-en-fr": [
+                "Kyutai TTS 1.6B EN/FR (`kyutai/tts-1.6b-en_fr`)"
+            ],
+            "lang-id-voxlingua107": [
+                "Lang-ID VoxLingua107 ECAPA (`speechbrain/lang-id-voxlingua107-ecapa`)"
+            ],
+            "moss-tts-local-transformer-v1.5": [
+                "MOSS-TTS-Local-Transformer-v1.5 (`OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5`)"
+            ],
+            "qwen3-asr-0.6b": [
+                "Qwen3-ASR-0.6B (`Qwen/Qwen3-ASR-0.6B`)"
+            ],
+            "qwen3-asr-1.7b": [
+                "Qwen3-ASR-1.7B (`Qwen/Qwen3-ASR-1.7B`)"
+            ],
+            "qwen3-tts-12hz-0.6b-base": [
+                "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+            ],
+            "rmvpe": [
+                "rmvpe (`yxlllc/RMVPE`, fixed commit `0aabafba18289ca938a73af0b0297686abf4922d`)"
+            ],
+            "vibevoice-1.5b": ["microsoft/VibeVoice-1.5B"],
+            "vieneu-tts-v3-turbo": [
+                "VieNeu-TTS-v3-Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`)"
+            ],
+            "voxcpm-0.5b": ["openbmb/VoxCPM-0.5B"],
+            "zonos-v0.1-transformer": [
+                "Zyphra/Zonos-v0.1-transformer"
+            ],
+        }
+        for slug, want_rows in mac_ledger_rows.items():
+            got_rows = real_map.get(slug)
+            if got_rows != want_rows:
+                failures.append(
+                    f"Mac ledger alias '{slug}': want exact rows "
+                    f"{want_rows!r}, got {got_rows!r}"
+                )
+
     # Converter coverage self-test uses a temporary models dir so it does
     # not depend on the tree evolving.
     with tempfile.TemporaryDirectory() as tmp:
@@ -2288,7 +2387,8 @@ def _cli_self_test() -> int:
         return 1
     print(
         f"signoff_match self-test: OK ({len(cases) + 1} approval cases "
-        f"+ 1 converter case + {len(split_cases) + 1} escaped-pipe cases)"
+        f"+ {len(mac_ledger_rows)} Mac ledger alias checks + 1 converter case "
+        f"+ {len(split_cases) + 1} escaped-pipe cases)"
     )
     return 0
 
