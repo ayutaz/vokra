@@ -141,6 +141,8 @@ pub mod chatterbox_turbo;
 // (SoTA plan §1(a) 訂正 2026-07-22). Every hparam transcribed verbatim
 // from `t3_nano_v1.yaml` at `huggingface.co/ResembleAI/chatterbox-nano`
 // (fetched 2026-07-24 — CLAUDE.md「ハルシネーション厳禁」).
+/// Native SparkAudio BiCodec token detokenizer (CPU / Metal; decode only).
+pub mod bicodec;
 pub mod chatterbox_nano;
 pub mod codec;
 pub mod compute;

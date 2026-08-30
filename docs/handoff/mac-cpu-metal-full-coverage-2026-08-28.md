@@ -540,14 +540,16 @@ of these bullets closes a model row until the named real run succeeds:
   `MEASURED_NOT_GATED` CPU-relative metrics. The historical public main GGUF
   and production Japanese G2P boundary remain artifact/runtime blockers and
   are not repaired by this source-route wiring.
-- BiCodec now has a fixed-revision inspection contract for the exact 625 MB
-  Spark-TTS checkpoint and its 1,164-byte config. The converter requires both
-  authenticated files, rejects every permissive license relabel and stamps the
-  CC-BY-NC-SA-4.0 research/share-alike class. Its VAST worker inventories the
-  complete safetensors/config/source contract without pickle and never uploads.
-  Native encode/decode and Apple parity remain blocked until that real manifest
-  and official intermediate values are reviewed; the result is explicitly
-  `INSPECTION_ONLY`.
+- BiCodec pins the exact 625 MB Spark-TTS checkpoint, 1,164-byte config and
+  840-tensor F32 manifest. The authenticated converter rejects permissive
+  license relabels and stamps the CC-BY-NC-SA-4.0 research/share-alike class.
+  A decode-only native candidate strictly binds the complete manifest and
+  loads the 319 semantic/global-token, Vocos prenet and waveform-generator
+  tensors reachable from detokenize; PCM encode is an explicit unsupported
+  operation. Its VAST-only official-source worker compares semantic latent,
+  d-vector, prenet output and waveform and never uploads. That numerical run
+  is still report-only with no selected tolerance or pass claim, and real
+  Apple Metal parity remains pending.
 - HT-Demucs Multi now rejects the historical unauthenticated 2,132-tensor
   ensemble bag instead of flattening it into a runtime-looking GGUF. Its
   VAST-only inspector pins the archived official source revision, the four

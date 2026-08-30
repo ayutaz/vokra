@@ -3,9 +3,9 @@
 #
 # This worker authenticates the Spark-TTS BiCodec safetensors/config and the
 # pinned official source, inventories tensors through the independent
-# safetensors oracle, and performs a conversion dry run.  It deliberately
-# stops at INSPECTION_ONLY: there is no native BiCodec binder or numerical
-# parity claim yet.
+# safetensors oracle, and performs an inventory-only conversion dry run. It
+# deliberately stops at INSPECTION_ONLY; native-reference evidence is produced
+# by the separate run-bicodec-native-parity.sh worker.
 
 set -euo pipefail
 

@@ -30,21 +30,19 @@
 //!
 //! # Real-weight parity
 //!
-//! Deferred to the owner sign-off queue (`docs/license-audit.md` §3.1).
-//! This converter is a native-side skeleton that pins the metadata
-//! contract (arch / name / category / upstream-HF / license) plus the
-//! BF16 pass-through invariant so a future `bicodec::from_gguf` can
-//! bind against the same upstream tensor names once real weights are
-//! audited.
+//! The file entry point is fail-closed against the authenticated 840-tensor
+//! F32 inventory. Runtime decode remains research-only and decode-only;
+//! numerical parity is a separate VAST gate.
 //!
 //! # No ONNX (permanent)
 //!
 //! Spark-TTS is distributed as safetensors + a Python pipeline; this
 //! converter **never** touches ONNX (FR-LD-05); the pipeline is
-//! planned for a future native implementation in `crates/vokra-models/`
-//! (whisper.cpp 型 self re-implementation, CLAUDE.md 設計判断 4); the
-//! current converter intentionally stops at inspection-only GGUF output.
+//! the native implementation in `crates/vokra-models/` follows the
+//! whisper.cpp 型 self-reimplementation decision; the converter emits a
+//! strict native-decode GGUF, without publishing weights.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use vokra_core::LicenseClass;
@@ -61,7 +59,7 @@ pub(crate) const ARCH: &str = "bicodec";
 /// `vokra.model.name` value for the canonical Spark-TTS bicodec release.
 pub(crate) const NAME: &str = "spark-tts-bicodec";
 
-/// Immutable upstream identities used by the inspection-only conversion.
+/// Immutable upstream identities used by the native decode conversion.
 pub const UPSTREAM_HF_REVISION: &str = "642071559bfc6346c2359d19dcb6be3f9dd8a05d";
 pub const CHECKPOINT_BYTES: u64 = 625_518_756;
 pub const CHECKPOINT_SHA256: &str =
@@ -70,6 +68,9 @@ pub const CONFIG_BYTES: u64 = 1_164;
 pub const CONFIG_SHA256: &str = "744f4093ae2381a2eb44ea8c4a5268a8d1e581498e9bf0808c034d1b076429be";
 pub const OFFICIAL_SOURCE_REPOSITORY: &str = "https://github.com/SparkAudio/Spark-TTS";
 pub const OFFICIAL_SOURCE_REVISION: &str = "2f1ea9082400547242641f5271b6f941c9f439d1";
+pub const TENSOR_COUNT: usize = 840;
+pub const TENSOR_MANIFEST_SHA256: &str =
+    "f91ec1995ddcb75115130c614dd797f7d12c3e97a1505ecb7a61c95d762ec86c";
 
 /// `vokra.model.category` key — codec bucket for the artifact.
 ///
@@ -109,6 +110,11 @@ const KEY_SOURCE_REPOSITORY: &str = "vokra.bicodec.source_repository";
 const KEY_SOURCE_REVISION: &str = "vokra.bicodec.source_revision";
 const KEY_INSPECTION_STATUS: &str = "vokra.bicodec.inspection_status";
 const KEY_INPUT_AUTHENTICATED: &str = "vokra.bicodec.input_authenticated";
+const KEY_SAMPLE_RATE: &str = "vokra.bicodec.sample_rate";
+const KEY_FRAME_HOP: &str = "vokra.bicodec.frame_hop";
+const KEY_SEMANTIC_VOCAB: &str = "vokra.bicodec.semantic_vocab";
+const KEY_GLOBAL_VOCAB: &str = "vokra.bicodec.global_vocab";
+const KEY_GLOBAL_TOKENS: &str = "vokra.bicodec.global_tokens";
 
 /// Outcome of a bicodec conversion.
 ///
@@ -160,19 +166,35 @@ pub fn convert_bicodec_file(
     license: Option<&str>,
 ) -> Result<BicodecReport, ConvertError> {
     let license_spdx = require_license(license)?;
+    if input.is_symlink() || !input.is_file() {
+        return Err(ConvertError::Parse(
+            "BiCodec input must be a regular non-symlink file".to_owned(),
+        ));
+    }
     let bytes = std::fs::read(input)?;
     validate_staged_identity(input, &bytes)?;
-    convert_bicodec_bytes(&bytes, output, license_spdx)
+    let st = SafetensorsFile::parse(bytes.clone())?;
+    validate_real_inventory(&st)?;
+    convert_bicodec_bytes_authenticated(&bytes, output, license_spdx, true)
 }
 
-/// Convert a byte buffer after the public entry point has authenticated it.
-/// This private helper keeps format-loop tests small; production callers must use
-/// [`convert_bicodec_file`], which authenticates both the checkpoint and its
-/// required sibling `config.yaml` first.
+/// Convert a byte buffer for format-loop tests without making an authenticity
+/// claim. Production callers must use [`convert_bicodec_file`], which
+/// authenticates the checkpoint, complete tensor inventory, and its required
+/// sibling `config.yaml` first.
 fn convert_bicodec_bytes(
     bytes: &[u8],
     output: &Path,
     license_spdx: &str,
+) -> Result<BicodecReport, ConvertError> {
+    convert_bicodec_bytes_authenticated(bytes, output, license_spdx, false)
+}
+
+fn convert_bicodec_bytes_authenticated(
+    bytes: &[u8],
+    output: &Path,
+    license_spdx: &str,
+    authenticated: bool,
 ) -> Result<BicodecReport, ConvertError> {
     let st = SafetensorsFile::parse(bytes.to_vec())?;
     if st.tensors().is_empty() {
@@ -191,8 +213,20 @@ fn convert_bicodec_bytes(
     b.add_string(KEY_CONFIG_SHA256, CONFIG_SHA256);
     b.add_string(KEY_SOURCE_REPOSITORY, OFFICIAL_SOURCE_REPOSITORY);
     b.add_string(KEY_SOURCE_REVISION, OFFICIAL_SOURCE_REVISION);
-    b.add_string(KEY_INSPECTION_STATUS, "INSPECTION_ONLY");
-    b.add_bool(KEY_INPUT_AUTHENTICATED, true);
+    b.add_string(
+        KEY_INSPECTION_STATUS,
+        if authenticated {
+            "NATIVE_DECODE_ONLY"
+        } else {
+            "UNAUTHENTICATED_TEST_FIXTURE"
+        },
+    );
+    b.add_bool(KEY_INPUT_AUTHENTICATED, authenticated);
+    b.add_u32(KEY_SAMPLE_RATE, 16_000);
+    b.add_u32(KEY_FRAME_HOP, 320);
+    b.add_u32(KEY_SEMANTIC_VOCAB, 8_192);
+    b.add_u32(KEY_GLOBAL_VOCAB, 4_096);
+    b.add_u32(KEY_GLOBAL_TOKENS, 32);
 
     // Self-describing redistribution: the artifact carries its own licence.
     // `require_license` has already restricted this value to the upstream
@@ -261,6 +295,39 @@ fn require_license(license: Option<&str>) -> Result<&'static str, ConvertError> 
     Ok(DEFAULT_LICENSE_SPDX)
 }
 
+fn validate_real_inventory(st: &SafetensorsFile) -> Result<(), ConvertError> {
+    if st.tensors().len() != TENSOR_COUNT {
+        return Err(ConvertError::Parse(format!(
+            "BiCodec tensor count {} != authenticated {TENSOR_COUNT}",
+            st.tensors().len()
+        )));
+    }
+    if let Some(tensor) = st
+        .tensors()
+        .iter()
+        .find(|tensor| tensor.dtype != GgmlType::F32)
+    {
+        return Err(ConvertError::Parse(format!(
+            "BiCodec tensor `{}` has dtype {:?}; authenticated inventory requires F32",
+            tensor.name, tensor.dtype
+        )));
+    }
+    let manifest = st
+        .tensors()
+        .iter()
+        .map(|tensor| (tensor.name.clone(), tensor.shape.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let actual = crate::models::canary_1b_flash::hex(
+        &crate::models::canary_1b_flash::manifest_sha256(&manifest),
+    );
+    if actual != TENSOR_MANIFEST_SHA256 {
+        return Err(ConvertError::Parse(format!(
+            "BiCodec tensor inventory SHA-256 {actual} != authenticated {TENSOR_MANIFEST_SHA256}"
+        )));
+    }
+    Ok(())
+}
+
 /// Validate the fixed HF artifact when the input is staged beside its official
 /// `config.yaml`. Synthetic unit fixtures intentionally omit that sidecar and
 /// therefore exercise only the format loop; the VAST worker always supplies
@@ -270,9 +337,10 @@ fn validate_staged_identity(input: &Path, checkpoint: &[u8]) -> Result<(), Conve
         .parent()
         .map(|parent| parent.join("config.yaml"))
         .unwrap_or_else(|| PathBuf::from("config.yaml"));
-    if !config.exists() {
+    if config.is_symlink() || !config.is_file() {
         return Err(ConvertError::Parse(
-            "BiCodec input must be accompanied by the authenticated config.yaml sidecar".to_owned(),
+            "BiCodec input must be accompanied by an authenticated regular config.yaml sidecar"
+                .to_owned(),
         ));
     }
     let checkpoint_sha =
@@ -457,6 +525,27 @@ mod tests {
             Some(LicenseClass::NonCommercialShareAlike.as_str()),
             "default class must retain both the NC and share-alike obligations"
         );
+        assert_eq!(
+            file.get(KEY_INSPECTION_STATUS).and_then(|v| v.as_str()),
+            Some("UNAUTHENTICATED_TEST_FIXTURE")
+        );
+        assert_eq!(
+            file.get(KEY_SAMPLE_RATE).and_then(|v| v.as_u64()),
+            Some(16_000)
+        );
+        assert_eq!(file.get(KEY_FRAME_HOP).and_then(|v| v.as_u64()), Some(320));
+        assert_eq!(
+            file.get(KEY_SEMANTIC_VOCAB).and_then(|v| v.as_u64()),
+            Some(8_192)
+        );
+        assert_eq!(
+            file.get(KEY_GLOBAL_VOCAB).and_then(|v| v.as_u64()),
+            Some(4_096)
+        );
+        assert_eq!(
+            file.get(KEY_GLOBAL_TOKENS).and_then(|v| v.as_u64()),
+            Some(32)
+        );
 
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
@@ -577,5 +666,16 @@ mod tests {
         assert!(error.to_string().contains("config.yaml sidecar"));
         std::fs::remove_file(&input).ok();
         std::fs::remove_file(&output).ok();
+    }
+
+    #[test]
+    fn real_inventory_rejects_non_release_tensor_count() {
+        let header = b"{}";
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        let st = SafetensorsFile::parse(bytes).expect("empty header is parseable");
+        let error = validate_real_inventory(&st).expect_err("synthetic inventory must not bind");
+        assert!(error.to_string().contains("tensor count"));
     }
 }
