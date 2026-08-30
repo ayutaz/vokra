@@ -1,6 +1,6 @@
 [package]
 name = "vokra-backend-coreml"
-description = "Vokra CoreML delegate backend (macOS/iOS, Apple ANE): raw Objective-C / CoreML FFI — NO binding crate — with an ANE-aware compute-device probe. Scaffold slice of M5-01; the workspace stays dependency-free (NFR-DS-02). The op-execution path lands after the T02 model-supply ADR is ratified."
+description = "Vokra CoreML whole-submodel delegate for macOS/iOS Apple ANE: raw Objective-C and CoreML FFI, hash-bound Whisper encoder sidecars, and ANE-aware probing without a binding crate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

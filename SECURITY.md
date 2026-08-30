@@ -27,9 +27,9 @@ respected when requested.
 
 ## Supported versions
 
-Vokra `0.1.0` is prepared as the first tagged release. Security fixes are made
-on the current development line. Older commits, private builds, and unreleased
-snapshots do not receive backports.
+The workspace is `0.2.0` development; no Git tag or published release exists
+yet. Security fixes are made on the current development line. Older commits,
+private builds, and unreleased snapshots do not receive backports.
 
 ## In scope
 

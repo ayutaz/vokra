@@ -1,16 +1,23 @@
 # Vokra Unity Package (`com.vokra.unity`)
 
-Unity Package Manager (UPM) distribution of the Vokra audio inference runtime.
+Unity Package Manager (UPM) source package for the Vokra audio inference
+runtime.
 
 Vokra is an ONNX Runtime alternative specialized for speech (TTS / ASR /
-Speech-to-Speech / VC / Speaker-ID / VAD). This package ships the Rust
-`vokra-capi` cdylib as a Unity native plugin plus a thin C# binding layer
-around the C ABI declared in `include/vokra.h`.
+Speech-to-Speech / VC / Speaker-ID / VAD). This package contains a thin C#
+binding layer around the C ABI declared in `include/vokra.h`. Native plugin
+binaries are staged separately for local development or assembled by
+authorized CD; they are not present in the tracked UPM tree.
 
 ## Status
 
-`0.1.0` — first tagged release. Native binaries are
-assembled by CD (see `.github/workflows/release.yml` job `unity-package`).
+The workspace is `0.2.0` development; no Git tag or GitHub release exists as
+of 2026-08-30. The Unity package source metadata remains `0.1.0` in
+`package.json`, but that package version is unpublished. Native binaries are
+not bundled in this checkout: the tracked `Plugins/` tree contains only
+`.gitkeep`/`.meta` placeholders. They are assembled by CD when an authorized
+release is created (see
+`.github/workflows/release.yml` job `unity-package-release`).
 
 ## Supported Unity versions
 
@@ -19,7 +26,7 @@ assembled by CD (see `.github/workflows/release.yml` job `unity-package`).
 
 ## Supported platforms
 
-| Platform | Native lib | ABI | Feature set |
+| Platform | Native lib after local staging | ABI | Feature set |
 |---|---|---|---|
 | macOS (Editor + Standalone) | `Plugins/macOS/libvokra.dylib` | universal2 (arm64+x86_64) | CPU (Metal opt-in via feature flag) |
 | Windows (Editor + Standalone) | `Plugins/Windows/x86_64/vokra.dll` | x86_64 | CPU (CUDA opt-in, system-installed) |
@@ -55,13 +62,16 @@ of scope for `0.1.x`.
 
 ## Installation
 
-Via UPM Git URL (once repo is public):
+### UPM Git URL (source inspection only)
 
 ```
 https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 ```
 
-Via local `file:` reference (development):
+This URL can inspect the package source, but a clean Git URL import is not
+runnable because the native libraries are not included yet.
+
+### Local `file:` reference (development)
 
 ```json
 {
@@ -71,9 +81,35 @@ Via local `file:` reference (development):
 }
 ```
 
-Via `.tgz` from GitHub Releases (production): download
-`com.vokra.unity-<version>.tgz` and `npm`-install / drag into Package
-Manager's *Add package from tarball…* dialog.
+Before opening the Unity project, clone the publicly fetchable GitHub `main`
+baseline verified on 2026-08-30 and stage the native library for the target
+platform:
+
+```sh
+git clone https://github.com/ayutaz/vokra.git
+cd vokra
+git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+
+# Host desktop (macOS, Linux, or Windows): stages the current host library.
+scripts/build-unity-plugin.sh
+# Android: requires ANDROID_NDK_HOME; stages arm64-v8a.
+ANDROID_NDK_HOME=/path/to/ndk scripts/build-android.sh
+# iOS: builds the XCFramework, then stages its device slice for Unity.
+scripts/build-ios.sh
+scripts/collect-ios-lib.sh
+# WebGL: builds and stages the CPU-only wasm archive.
+scripts/build-unity-webgl-lib.sh
+```
+
+Run only the helper(s) for the platform(s) you will test; each helper requires
+its corresponding native SDK/toolchain. These local outputs are development
+artifacts, not a release claim.
+
+### Tarball from a future GitHub Release (production)
+
+Once an authorized
+release is published, download `com.vokra.unity-<version>.tgz` and `npm`-
+install / drag into Package Manager's *Add package from tarball…* dialog.
 
 ## Samples
 

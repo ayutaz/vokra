@@ -2,7 +2,8 @@
 
 **English** | [日本語](python.ja.md)
 
-> **Implementation status (reviewed 2026-08-22): source-complete, unpublished.**
+> **Implementation status (reviewed 2026-08-30): workspace `0.2.0` development,
+> source-complete, unpublished.**
 > The package root exports `Session`, `Stream`, `Event`, and typed errors, and
 > its generated table covers the complete current C function set. No PyPI release has
 > been verified or authorized. See the
@@ -14,8 +15,8 @@
 - Runtime dependency list: empty; NumPy is optional interop.
 - Public source API: `Session`, `Stream`, `Event`, and a nine-class error
   hierarchy. Audio-file decoding remains caller-owned.
-- Generated FFI table: every function in the current C header, plus its four
-  enums, two concrete structures, and eight opaque handles.
+- Generated FFI table: all 57 functions in the current C header, plus its 15
+  typedefs, four enums, two concrete structures, and nine opaque handles.
 - CI contract: the required `license` job checks generator drift; each wheel
   smoke asserts the public names, table size, and native symbol load.
 

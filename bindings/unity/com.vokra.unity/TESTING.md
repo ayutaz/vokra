@@ -1,5 +1,10 @@
 # Vokra Unity — Testing procedure
 
+**Current evidence status (2026-08-30):** the CI and nightly procedures below
+remain the authoritative automation paths. No physical iOS/Android device
+results are recorded in this file yet; owner device verification remains an
+open evidence item tracked by the current M5 checklist.
+
 This document records how the `com.vokra.unity` UPM package is smoke-tested
 before merge and how the owner (依頼者) signs off on device-specific paths that
 CI cannot cover. Referenced by M2-11 ticket spec T15 / T16 / T17 / T18.
@@ -167,11 +172,13 @@ Notes:
   `VokraSession.CreateFromBytes` (see README "WebGL specifics").
 - Delivery headers / compression / COOP-COEP guidance: `docs/handoff/m4-02.md`.
 
-## 3. Owner device tests (pre-merge, T16 / T17)
+## 3. Owner device tests (T16 / T17; historical merge-gate wording retained)
 
-The M2-11-T18 merge PR is BLOCKED until both entries below have a
-green-check line signed by the owner. CC cannot cover these — physical iOS /
-Android hardware is required per M2-11 ticket spec.
+The original M2-11-T18 procedure treated the merge PR as **BLOCKED** until both
+entries below had a green-check line signed by the owner. That is historical
+gate wording, retained to explain the evidence requirement; this document
+still records no device pass. CC cannot cover these — physical iOS / Android
+hardware is required per M2-11 ticket spec.
 
 ### T16 · iOS device test
 
@@ -236,4 +243,5 @@ YYYY-MM-DD | T17 Android | <device / Android / NDK> | PASS | notes
 YYYY-MM-DD | Nightly-fallback local IL2CPP | <host OS> | PASS | notes
 ```
 
-_No entries yet — awaiting owner verification prior to M2-11-T18 merge._
+_No current device entries yet — owner verification remains outstanding; no
+device pass is claimed._

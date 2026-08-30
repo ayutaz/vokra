@@ -77,10 +77,10 @@ stream.free()
 trampoline の runtime dispatch は code-complete: `transcribe` / `synthesize` /
 `vad_open_stream` / `push_pcm` / `poll` / `interrupt` が Variant を unpack/pack して runtime を呼ぶ
 （`integrations/vokra-godot/src/trampoline.rs`
-<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->）。Linux CI は
-checksum 固定した公式 Godot 4.7.1 を取得し、asset-free の ClassDB/error harness
-と実 Silero VAD stream smoke の両方を実行する。ASR/TTS demo scene を editor で
-対話的に開く確認は manual release 項目のままであり、自動化済みとは扱わない。
+<!-- anchor: integrations/vokra-godot/src/trampoline.rs -->）。最新の記録済み Linux CI
+evidence は checksum 固定した公式 Godot 4.7.1 を取得し、asset-free の ClassDB/error
+harness と実 Silero VAD stream smoke の両方を実行したものです。ASR/TTS demo scene を
+editor で対話的に開く確認は manual release 項目のままであり、自動化済みとは扱いません。
 
 ## 7. トラブルシューティング
 
@@ -99,8 +99,9 @@ checksum 固定した公式 Godot 4.7.1 を取得し、asset-free の ClassDB/er
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-22 — 公式 Godot 4.7.1 headless、実 Silero VAD GGUF
-+ raw-f32 PCM stream。**
+**文書確認日: 2026-08-30。最新の記録済み runtime evidence は 2026-08-22 —
+公式 Godot 4.7.1 headless、実 Silero VAD GGUF + raw-f32 PCM stream。** この文書確認で
+新たな model 実行を行ったとは主張しない。
 
 - **更新責任**: GDExtension API・ビルド target・compliance scanner を変えた PR
   が、同一 PR で本ページと英語版を更新する。

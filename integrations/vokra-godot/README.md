@@ -1,6 +1,6 @@
 # vokra-godot — Godot 4.x GDExtension binding for Vokra
 
-**State (2026-08-22 audit)**: the original **T01-T18 scope landed**. All
+**State (2026-08-30 audit)**: the original **T01-T18 scope landed**. All
 data-bearing trampolines now use real Variant dispatch, including
 `session_vad_open_stream` returning a live `VokraStream` Object. The official
 Godot 4.7.1 headless gate loads the committed Silero VAD GGUF, pushes real
@@ -85,7 +85,15 @@ iOS and Web (HTML5) are deferred to M4.
 ```
 cd integrations/vokra-godot
 cargo build --release            # host cdylib
-cargo test                       # 46 unit tests as of Wave 11 (T05..T10 + T13)
+cargo test                       # static count: 110 src + 25 integration tests
+```
+
+The figure is a static source count, not an Editor, device, or end-to-end
+verification result. Reproduce it with:
+
+```sh
+rg -n '#\[test\]' integrations/vokra-godot/src --glob '*.rs' | wc -l  # 110
+rg -n '#\[test\]' integrations/vokra-godot/tests --glob '*.rs' | wc -l # 25
 ```
 
 or use the FR-TL-04 helper:

@@ -1,8 +1,11 @@
 # Vokra documentation
 
-**Current-state review:** 2026-08-22
+**Current-state review:** 2026-08-30
 
-**Reviewed baseline:** `main` at `42af7a90`
+**Reviewed implementation baseline:** GitHub `main` at
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
+baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`c64b7b7237b70c5dc70ffd60394af325016d9a8d`.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -54,11 +57,11 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.1.0`. Rust APIs, the C ABI, GGUF metadata, and the
-model roster remain pre-1.0 and may change. The C header and Python
-prototype table are checked for exact function-set equality; documentation
-therefore avoids copying a function count that would drift on the next ABI
-addition.
+The workspace version is `0.2.0` development; no Git tag or published release
+exists yet. Rust APIs, the C ABI, GGUF metadata, and the model roster remain
+pre-1.0 and may change. The C header and Python prototype table are checked for
+exact function-set equality; documentation therefore avoids copying a function
+count that would drift on the next ABI addition.
 
 The default runtime keeps the root `Cargo.lock` first-party-only. GPU and NPU
 features are opt-in, and unsupported operations must fail explicitly instead

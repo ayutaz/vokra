@@ -1,6 +1,6 @@
 [package]
 name = "vokra-backend-cuda"
-description = "Vokra CUDA backend (Windows/Linux, NVIDIA): raw CUDA Driver API + NVRTC FFI loaded at RUNTIME via dlopen/LoadLibrary — NO binding crate (no cudarc/cust/rustacuda) — with an FP32 GEMM kernel (NVRTC-compiled PTX) and a device probe. Foundation slice of M2-03; the runtime bundles no CUDA library (NVIDIA EULA install model, FR-BE-08) and the workspace stays dependency-free (NFR-DS-02)."
+description = "Vokra CUDA backend for Windows/Linux NVIDIA GPUs: runtime-loaded raw CUDA Driver API and NVRTC FFI, device probe, and compute kernels without a binding crate or bundled CUDA library"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

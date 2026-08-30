@@ -25,9 +25,9 @@ credit は advisory 内で調整し、匿名の希望を尊重します。
 
 ## サポート対象
 
-Vokra `0.1.0` を最初のタグ付きリリースとして準備しています。セキュリティ
-修正は現行 development line に適用します。古い commit、private build、
-未公開 snapshot への backport は行いません。
+workspace は `0.2.0` development で、Git tag と公開済み release はまだ
+ありません。セキュリティ修正は現行 development line に適用します。古い commit、
+private build、未公開 snapshot への backport は行いません。
 
 ## 対象範囲
 

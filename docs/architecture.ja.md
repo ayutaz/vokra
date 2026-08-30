@@ -86,7 +86,7 @@ vokra-math            （依存なし = 純粋な `core` 演算、WP-07）
 
 ### 1.3 `integrations/` — 意図的に不変条件の外側
 
-`integrations/` は root workspace から **除外**されています。現在 5 crate:
+`integrations/` は root workspace から **除外**されています。現在 7 crate:
 
 | パス | 用途 |
 |---|---|
@@ -94,7 +94,9 @@ vokra-math            （依存なし = 純粋な `core` 演算、WP-07）
 | `integrations/vokra-piper-g2p` <!-- anchor: integrations/vokra-piper-g2p --> | 実 8 言語 G2P ブリッジ |
 | `integrations/vokra-godot` <!-- anchor: integrations/vokra-godot --> | Godot GDExtension |
 | `integrations/vokra-server-bench` <!-- anchor: integrations/vokra-server-bench --> | サーバレイテンシ計測ハーネス |
-| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | CLI 側ベンチマークサーバ |
+| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | pure-std HTTP 境界 TTS レイテンシ計測クライアント |
+| `integrations/vokra-android` | Vokra C ABI 上の opt-in Android JNI binding |
+| `integrations/vokra-misaki-g2p` | native Kokoro TTS を駆動する opt-in misaki (Python) G2P bridge |
 
 **なぜここでは外部 crate を使ってよいか。** zero-dependency 不変条件は
 *特定の 1 ファイル* についての主張です — root の `Cargo.lock` が `vokra-*`

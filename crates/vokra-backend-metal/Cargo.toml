@@ -1,6 +1,6 @@
 [package]
 name = "vokra-backend-metal"
-description = "Vokra Metal backend (macOS/iOS): raw Objective-C / Metal FFI — NO binding crate — with an FP32 GEMM compute kernel and a device/GPU-family probe. Foundation slice of M2-01; the workspace stays dependency-free (NFR-DS-02)."
+description = "Vokra Metal backend for macOS/iOS: raw Objective-C and Metal FFI, device probe, and compute kernels with no binding crate"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

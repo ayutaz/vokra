@@ -1,5 +1,10 @@
 # C ABI smoke tests (M0-09)
 
+The current Whisper converter embeds `vokra.tokenizer.model` in the GGUF, and
+`WhisperAsr::transcribe` renders UTF-8 text through `render_ids`. The C API
+therefore returns the decoded transcript through `out_text_utf8`; it no longer
+uses the historical bracketed token-id placeholder.
+
 C programs that exercise the Vokra C ABI through **`include/vokra.h` only**
 (no Rust internals) — the WP M0-09 completion condition "call VAD / ASR / TTS
 from C". They double as the single-header check (IF-01).
@@ -52,5 +57,6 @@ cc tests/capi/smoke_vad.c -I include -L target/release -lvokra \
 - Wire a CI `capi` job (Linux/macOS/Windows matrix) that installs cbindgen,
   runs `scripts/gen-c-abi.sh --check`, and builds + runs these tests. The
   Windows leg builds `vokra.dll` and links the import lib with MSVC (`cl.exe`).
-- ASR real detokenization needs the tokenizer embedded in the GGUF (the M0
-  converter does not yet — hence the bracketed token-id transcript here).
+- The C API rejects a sample-rate mismatch with
+  `VOKRA_ERROR_INVALID_ARGUMENT`; callers must resample input to the model's
+  frontend rate before calling ASR. It does not resample implicitly.

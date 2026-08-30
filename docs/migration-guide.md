@@ -13,7 +13,7 @@ performance expectations.
 |---|---|---|---|
 | Loaded file format | ONNX (Protobuf) | GGUF (ggml-audio) | GGUF (`vokra.*` audio chunks) |
 | Speech ops (STFT, iSTFT, mel, VAD state, flow-matching sampler, KV cache) | Ad-hoc host code + graph glue | Whisper-specific inline | **First-class native operators** |
-| Backend seams | Execution Providers (asymmetric op coverage) | CPU + optional CUDA/Metal | CPU + Metal + CUDA (staged Vulkan / WebGPU / CoreML / QNN) |
+| Backend seams | Execution Providers (asymmetric op coverage) | CPU + optional CUDA/Metal | CPU + opt-in Metal/CUDA/Vulkan/WebGPU; experimental CoreML whole-submodel delegate; SDK-gated QNN scaffold |
 | Silent CPU fallback | Sometimes | No | **No — explicit error (FR-EX-08)** |
 | ONNX at runtime | Yes | No | **No** — ONNX is offline conversion only |
 | Weight license enforcement | External | External | Built-in `vokra.provenance.*` gate (CC-BY-NC refused without a research flag) |

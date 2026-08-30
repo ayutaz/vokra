@@ -9,8 +9,8 @@ hand is stated in §4.
 
 ## 1. Rust — docs.rs
 
-The Rust crates are documented with `rustdoc`. Once the crates are published
-(the release train, X-07), each crate auto-links to its own page:
+The Rust crates are documented with `rustdoc`. Once a future release publishes
+the crates, each crate auto-links to its own page:
 
 - `https://docs.rs/vokra-core` — the IR, `Backend` trait, GGUF loader, engine
 - `https://docs.rs/vokra-capi` — the C ABI surface crate (`IF-01`)
@@ -59,15 +59,18 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 - **Deferred (honest)**: HTML rendering of the C header (doxygen) and
   per-language HTML generators (C# / Python / Swift doc tools) are not wired —
   the header comments and the tutorials are the reference for now. The first
-  docs.rs render is verified by the owner after the crates.io publish (X-07).
+  docs.rs render is verified by the owner after a crates.io publish.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-22 — against `main` `42af7a90` and
-`include/vokra.h`.** The pre-alpha Python generator and checked-in `ctypes`
-table cover the generated C function set exactly; the high-level Python
-package remains a smaller idiomatic surface rather than a wrapper class for
-every C handle.
+**Last verified: 2026-08-30 — against GitHub `main`
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`, the pre-documentation code
+baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`c64b7b7237b70c5dc70ffd60394af325016d9a8d`, and `include/vokra.h`.** The
+pre-alpha Python generator and checked-in `ctypes` table cover all 57 generated
+C functions exactly; the header has 15 typedefs, four enums, two concrete
+structures, and nine opaque handles. The high-level Python package remains a
+smaller idiomatic surface rather than a wrapper class for every C handle.
 
 - **Update responsibility**: a PR that adds a published crate, a new binding, or
   changes the C ABI generation updates this index and its Japanese twin in the

@@ -88,7 +88,7 @@ not make the build graph cyclic.
 ### 1.3 `integrations/` — outside the invariant, on purpose
 
 `integrations/` is **excluded** from the root workspace. It currently holds
-five crates:
+seven crates:
 
 | Path | Purpose |
 |---|---|
@@ -96,7 +96,9 @@ five crates:
 | `integrations/vokra-piper-g2p` <!-- anchor: integrations/vokra-piper-g2p --> | The real 8-language G2P bridge |
 | `integrations/vokra-godot` <!-- anchor: integrations/vokra-godot --> | The Godot GDExtension |
 | `integrations/vokra-server-bench` <!-- anchor: integrations/vokra-server-bench --> | Server latency benchmark harness |
-| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | CLI-side benchmark server |
+| `integrations/vokra-cli-bench-server` <!-- anchor: integrations/vokra-cli-bench-server --> | Pure-std HTTP-boundary TTS latency benchmark client |
+| `integrations/vokra-android` | Opt-in Android JNI binding over the Vokra C ABI |
+| `integrations/vokra-misaki-g2p` | Opt-in misaki (Python) G2P bridge driving native Kokoro TTS |
 
 **Why they are allowed to use external crates.** The zero-dependency
 invariant is a statement about *one specific file*: the root `Cargo.lock` must

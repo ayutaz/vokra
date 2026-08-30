@@ -10,10 +10,11 @@ map, the execution model, the six-file pattern), then come here to actually
 build one. To resolve any `FR-*` / `NFR-*` / `IF-*` ID cited below, see
 [requirement-ids.md](requirement-ids.md).
 
-Vokra ships five compute backends today — CPU, Metal, CUDA, Vulkan and WebGPU
-— and two delegate scaffolds (CoreML, QNN). Every one of them is a first-party
-`vokra-*` crate with **no external binding crate**, because that is what keeps
-the zero-dependency invariant (`NFR-DS-02`) intact.
+Vokra currently implements five compute backends — CPU, Metal, CUDA, Vulkan and WebGPU
+— plus an experimental CoreML whole-submodel delegate and an SDK-gated QNN
+delegate scaffold. Every one of them is a first-party `vokra-*` crate with
+**no external binding crate**, because that is what keeps the zero-dependency
+invariant (`NFR-DS-02`) intact.
 
 ## 1. Before you start: the two invariants a backend must not break
 
@@ -90,12 +91,18 @@ execution and prove it numerically.
 
 ## 4. Worked example: the most recent backend
 
-The newest backends added are the **CoreML** (Apple ANE) and **QNN** (Qualcomm
-Hexagon) *delegates* (`FR-BE-06`). They are the freshest example of the
-crate-scaffold steps 1–4 above: `crates/vokra-backend-coreml/`
+The newest additions are the **CoreML** (Apple ANE) and **QNN** (Qualcomm
+Hexagon) *delegates* (`FR-BE-06`). `crates/vokra-backend-coreml/`
 <!-- anchor: crates/vokra-backend-coreml/src/lib.rs --> is a first-party crate
 with `sys.rs` / `probe.rs` / `backend.rs` / `lib.rs`, gated behind a
-default-OFF `coreml` feature and target-gated to macOS / iOS.
+default-OFF `coreml` feature and target-gated to macOS / iOS. CoreML now also
+has a validated, hash-bound `.mlmodelc` sidecar path that executes the complete
+Whisper encoder through `DelegateBackend`; generic per-op `Backend` coverage
+stays empty by design.
+
+`crates/vokra-backend-qnn/` remains an SDK-gated scaffold. Its runtime-loaded
+QNN probe and backend contract are present, but graph construction and
+execution remain zero-op until the official Qualcomm SDK ABI is transcribed.
 
 **A delegate differs from the six-file GPU backends, and the guide says so
 honestly.** A delegate hands a declared submodel to the vendor framework and
@@ -103,13 +110,17 @@ lets *it* place work onto ANE / GPU / CPU internally; that is not a Vokra-side
 op partition (the `Backend` trait's uniform-coverage rule forbids one) and not
 a silent fallback. So:
 
-- The canonical **six-file** template is still the five GPU/FFI backends
-  (Metal / CUDA / Vulkan / WebGPU) — use those when you add another *kernel*
+- The canonical **six-file** template is still the four accelerator GPU/FFI
+  backends (Metal / CUDA / Vulkan / WebGPU) — use those when you add another *kernel*
   backend.
-- CoreML / QNN are the template for a *delegate*; their op-execution path lands
-  only after the model-supply ADR is ratified, so today every hot op is an
-  explicit `UnsupportedOp` and a host with no reachable NPU is an explicit
-  `BackendUnavailable`. That is the honest scaffold state, not a bug.
+- CoreML is the template for a whole-submodel *delegate*: its declared Whisper
+  encoder path executes through the vendor framework, while generic hot ops
+  remain explicit `UnsupportedOp` and a host with no reachable ANE is an
+  explicit `BackendUnavailable`. The 2026-08-24 M1 bakeoff passed 99.63% ANE
+  placement but failed parity and the 2x speed gate, so no C selector is
+  exported. QNN follows the scaffold state above: its hot ops remain explicit
+  `UnsupportedOp` until the SDK-gated graph path lands, and an unavailable
+  runtime is an explicit `BackendUnavailable`.
 
 A C-level selector for the delegates is deliberately **not** exported during
 the v1.0-rc window; the Rust surface (`with_backend`) is the only way to select
@@ -141,8 +152,8 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-07-21 — against the five shipping backends + the CoreML /
-QNN delegate scaffolds.**
+**Last verified: 2026-08-30 — against the five implemented compute backends, the
+CoreML whole-submodel delegate path, and the SDK-gated QNN delegate scaffold.**
 
 - **Update responsibility**: whoever lands a new backend (or changes the
   six-file layout / the `Backend` trait) updates this page and its Japanese

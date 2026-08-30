@@ -2,9 +2,12 @@
 
 [English](unity.md) | **日本語**
 
-Vokra は Unity パッケージ（`com.vokra.unity`）を、対応プラットフォーム
-向けのネイティブライブラリ + IL2CPP AOT と iOS 静的リンク制約を満たす
-C# API 付きで配布しています。
+Vokra は Unity パッケージ（`com.vokra.unity`）のソース/API スケルトンと、
+IL2CPP AOT・iOS 静的リンク制約を満たす C# API を提供します。tracked UPM
+tree にはネイティブ plugin の `.gitkeep`/`.meta` placeholder だけがあり、
+clean Git URL import はソース確認専用で、対象 native library を build・stage
+するまで実行できません。全対応 platform の prebuilt library は、将来の承認済み
+CD release の deliverable です。
 
 ## 1. 前提
 
@@ -19,15 +22,17 @@ C# API 付きで配布しています。
 
 ## 2. パッケージのインストール
 
-3 通り:
+3 通りを示します。承認済み release 前に実行できるのは、以下の local flow だけです:
 
-### UPM Git URL（推奨）
+### UPM Git URL（ソース確認専用）
 
 ```
 Window → Package Manager → + → Add package from git URL…
 
 https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 ```
+
+現行の未公開 tree では、この Git URL から実行可能な native binary は取得できません。
 
 ### ローカル file: 参照（開発用）
 
@@ -39,20 +44,45 @@ https://github.com/ayutaz/vokra.git?path=/bindings/unity/com.vokra.unity
 }
 ```
 
+2026-08-30 に検証した、公開取得可能な GitHub `main` baseline を clone し、
+検証する platform の native library を build・stage してから Unity project を
+開きます:
+
+```sh
+git clone https://github.com/ayutaz/vokra.git
+cd vokra
+git checkout --detach 41ce9ffdd4b0959497f55afa5016822f77a8a7b6
+
+# host desktop（macOS / Linux / Windows）
+scripts/build-unity-plugin.sh
+# Android（ANDROID_NDK_HOME が必要）
+ANDROID_NDK_HOME=/path/to/ndk scripts/build-android.sh
+# iOS（XCFramework を build し、device slice を Unity 用に stage）
+scripts/build-ios.sh
+scripts/collect-ios-lib.sh
+# WebGL（CPU-only wasm archive）
+scripts/build-unity-webgl-lib.sh
+```
+
+各 helper は対応する platform SDK/toolchain を必要とし、local development artifact
+を生成します。local `file:` reference は該当 library を stage した後に実行可能になります。
+
 ### tarball（本番）
 
-GitHub Releases から `com.vokra.unity-<version>.tgz` をダウンロードし、
-Package Manager の **Add package from tarball…** で追加します。
+承認済みの GitHub Release が公開された後に
+`com.vokra.unity-<version>.tgz` をダウンロードし、Package Manager の
+**Add package from tarball…** で追加します。現時点でその release はありません。
 
 ## 3. 対応プラットフォーム
 
-| プラットフォーム | ネイティブライブラリ                           | 機能セット                             |
+| プラットフォーム | local staging 後のネイティブライブラリ         | 機能セット                             |
 | ---------------- | ---------------------------------------------- | -------------------------------------- |
 | macOS            | `Plugins/macOS/libvokra.dylib`                 | CPU（Metal opt-in）                    |
 | Windows          | `Plugins/Windows/x86_64/vokra.dll`             | CPU（CUDA opt-in、system install）     |
 | Linux            | `Plugins/Linux/x86_64/libvokra.so`             | CPU（CUDA opt-in、system install）     |
 | iOS              | `Plugins/iOS/libvokra.a`（`__Internal`）       | CPU                                    |
 | Android          | `Plugins/Android/libs/arm64-v8a/libvokra.so`   | CPU                                    |
+| WebGL            | `Plugins/WebGL/libvokra.a`（`__Internal`）     | CPU-only WASM（WebGPU は未接続）        |
 
 ## 4. 最小 C# サンプル
 
@@ -173,9 +203,9 @@ piper-plus voice MIT）は**同梱していません** — インポート後に
 ## 10. トラブルシューティング
 
 - **`DllNotFoundException: vokra`**: プラットフォーム向けネイティブラ
-  イブラリが Plugins フォルダにありません。パッケージを再インポートす
-  るか、ローカル `file:` インストールの場合は CD スクリプトをローカル
-  実行してください。
+  イブラリが Plugins フォルダにありません。現行の未公開 tree では Git URL
+  import から取得できないため、local `file:` install では section 2 の対応する
+  staging helper を実行してください。
 - **`VokraException: Unsupported backend`**: FR-EX-08 により silent
   fallback は禁止されています。対応する backend feature でビルドする
   か、op が CPU でカバーされる GGUF を使ってください。

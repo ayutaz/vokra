@@ -1,6 +1,6 @@
 [package]
 name = "vokra-core"
-description = "Vokra core: audio graph descriptor IR, execution-engine skeleton, and the public Rust API (Session / AudioPipeline / Stream)"
+description = "Vokra core: audio graph descriptor IR, execution engine, and public Rust API (Session / AudioPipeline / Stream)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
