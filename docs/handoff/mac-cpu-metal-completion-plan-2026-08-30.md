@@ -95,6 +95,18 @@ close the 63 CPU-open public rows, publication/replacement gates, RMVPE license
 decision or SeamlessM4T non-artifact decision described below.  Those remain
 separate VAST/source/license/publication waves after Wave A.
 
+The first Wave B source/CPU item has since advanced: ReazonSpeech-NeMo-v2 is
+green at exact code commit `a59c48c8da103ac14fe837cd2e0252b5266ac093` for
+conversion, independent official-NeMo reference, native CPU encoder/ALSD
+tokens and text, CLI output, workspace tests, Clippy, license checks and
+advisory audit. Its verified Scaleway packet is
+`/root/scratchpad/apple-transfer-reazon-a59c48c8`; the packet-manifest SHA-256
+is `48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`.
+This closes the Reazon source/VAST leg only. Apple CPU/Metal and an explicitly
+authorized public replacement remain open, so the live 63-row CPU-open count
+does not change. The other Wave B-D source/VAST/license tasks are also still
+open; Scaleway alone cannot complete them.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps

@@ -96,7 +96,7 @@ to the maintainer Mac.
 - [ ] Qwen3-ASR 0.6B and 1.7B — `run-qwen3-asr-validation.sh`
 - [ ] Canary-1B-Flash — `run-canary-1b-flash-validation.sh`
 - [ ] Canary-1B-v2 — `run-canary-1b-v2-validation.sh`
-- [ ] ReazonSpeech-NeMo-v2 — `run-reazonspeech-nemo-v2-validation.sh`
+- [x] ReazonSpeech-NeMo-v2 — `run-reazonspeech-nemo-v2-validation.sh`
 - [ ] SpeechT5-TTS — `run-speecht5-tts-validation.sh`
 - [ ] Bark Small and Full — `run-bark-validation.sh`
 - [ ] Parler-TTS Mini English and Multilingual — `run-parler-tts-validation.sh`
@@ -267,6 +267,51 @@ No Hugging Face upload occurred.
   instance is retained intentionally only for direct transfer to the approved
   Scaleway Apple worker and must be destroyed after that transfer/evidence
   handoff.
+
+### 2026-08-30 ReazonSpeech ALSD CPU lock before Scaleway
+
+ReazonSpeech-NeMo-v2 completed its no-upload VAST conversion and independent
+official-NeMo CPU parity at exact code commit
+`a59c48c8da103ac14fe837cd2e0252b5266ac093`. The released checkpoint's
+alignment-length synchronous decoding contract is now bound fail-closed rather
+than approximated by greedy decoding: beam size 4, maximum target length 1.0,
+score normalization enabled, default nested search, temperature 1.0 and
+return-best enabled. Legacy public GGUFs that lack this exact metadata are
+rejected before tensor loading.
+
+- The authenticated NeMo archive SHA-256 is
+  `d196d43ad03466ca88beeda4bf5fafb07bab7202d4b663b8e4f12cb0a4381fae`.
+  The generated 2,477,292,896-byte GGUF SHA-256 is
+  `31b93b620b9fdcaee13cda89f16bc35d4e191f0e161d735bc77f87f8839bd12f`.
+- The official reference manifest SHA-256 is
+  `0263d2ad5e9ff218be8c8ef3560edf22998233ad76d7b7919dc92091410f18d2`;
+  its encoder payload is
+  `e06a1dfa3fee5b9426c5a5e4625ab7ad252f7c3b844afb6e86d9d81c8c945b40`
+  and its token payload is
+  `54cae203650bacae778fe0a9bfab0e014f0d597471c549cf7224a457db0c1be0`.
+  The 138-frame encoder comparison passed with maximum absolute error
+  `7.414817810e-4` and mean absolute error `2.220646638e-5`. Native ALSD emitted
+  exact token IDs `[2, 96, 25, 49, 214, 1]`, exact text `カントリー。`, and the
+  public CLI emitted the same transcription.
+- The focused release parity passed in 63.13 seconds. The same exact checkout
+  then passed `cargo test --locked --workspace`, `cargo clippy --locked
+  --workspace --all-targets -- -D warnings`, `cargo deny check licenses
+  advisories bans` and `cargo audit`. The validation-summary SHA-256 is
+  `fa6ed1ddc940fefd13a8ae86265ad9010f8c64ed421491ed52c3f9e67a85d03b`.
+- The Scaleway input packet is retained only on VAST at
+  `/root/scratchpad/apple-transfer-reazon-a59c48c8`: 11 regular files,
+  including the GGUF, reference, approval evidence and git bundle. Every file
+  verifies against `apple-transfer-reazon-a59c48c8.SHA256SUMS`, whose SHA-256
+  is `48874cf71497e347019c156f49409d74428734e840cc0302d8626ae5780679ed`.
+  The included bundle SHA-256 is
+  `fe881c310c3f1d6970f5cfaf0ae3d9064cb45e25ac4b31b2be9e4ef9a8668261`.
+
+VAST instance `49168183` is stopped after packet verification; retained
+storage continues to incur a charge. ReazonSpeech still needs authenticated
+Apple CPU/Metal execution on Scaleway. Its live public row also remains
+partial until a separately authorized replacement is published through the
+gated workflow. No model artifact was copied to or executed on the maintainer
+Mac, and no Hugging Face upload occurred.
 
 ### Branch preparation status
 

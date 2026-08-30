@@ -59,9 +59,12 @@ storage 課金は継続し、再開時の GPU 確保は保証されません。D
 と [Storage types](https://docs.vast.ai/guides/instances/storage/types) を参照してください。
 
 **現在の retained handoff (2026-08-30)**: instance `49168183`
-(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage, `$0.3074/h`) は
-Scaleway 転送 packet を保持する目的でのみ稼働中である。転送完了後に destroy
-し、今回の文書更新では stop/destroy 操作自体は行わない。
+(`vokra-mac-coverage-771970dc`, RTX 3060, 500 GB storage) は `stopped`
+状態である。Wave A の `apple-transfer-bc9d1db2` と ReazonSpeech の
+`apple-transfer-reazon-a59c48c8` を Scaleway へ直接転送するためにのみ
+ストレージを保持しており、compute を再開しなくても storage 課金は
+継続する。転送と証拠回収後は直ちに destroy する。再開はこの転送か、
+名前を固定した次の VAST ジョブに限る。
 
 ## 2. Rent phase（vast.ai 側）
 
