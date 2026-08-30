@@ -22,8 +22,11 @@ The target environment must already have been synchronized by an authorized,
 named VAST workflow. This command never runs uv sync, never invokes Cargo,
 never imports Bark/Transformers model code, and never downloads model weights.
 The audit fetches only the two exact upstream LICENSE URLs for the pinned
-suno/bark-small and suno/bark revisions. The Bark source-code LICENSE pin is
-reported as a blocker when the existing contract does not contain one.
+suno/bark-small and suno/bark revisions, plus exact locked PyPI sdist archives
+needed when an installed wheel has no publisher LICENSE/NOTICE file. Sdist
+archives are bounded, hash/size checked, and inspected in memory only. The Bark
+source-code LICENSE pin is reported as a blocker when the existing contract
+does not contain one.
 EOF
 }
 
@@ -171,6 +174,7 @@ self_test() {
   grep -Fq -- 'already exists; refusing overwrite' "$0" || failed=1
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'LICENSE URLs' "$0" || failed=1
+  grep -Fq -- 'locked PyPI sdist archives' "$0" || failed=1
   grep -Fq -- 'never downloads model weights' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   # The only Python token is the interpreter argument of the uv run command;
