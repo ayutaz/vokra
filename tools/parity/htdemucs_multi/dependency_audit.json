@@ -1,0 +1,31 @@
+{
+  "schema": "vokra-htdemucs-multi-dependency-audit-v1",
+  "status": "UNREVIEWED",
+  "python": "==3.12.*",
+  "platform": "linux-x86_64",
+  "direct_requirements_source": {
+    "path": "requirements_minimal.txt",
+    "sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29"
+  },
+  "compatibility": {
+    "status": "BLOCKED_UNVERIFIED",
+    "constraint": "torchaudio>=0.8,<2.1",
+    "reason": "The upstream constraint predates Python 3.12; VAST must prove that an exact torch/torchaudio pair has compatible Linux x86_64 wheels before model execution. PyTorch releases before the scanner API (including likely torch<2.1 candidates) cannot perform the required static-global inspection, so the scanner capability must also be proven. Do not loosen this constraint without a source-specific owner decision."
+  },
+  "package_rows": [],
+  "license_rows": [],
+  "inactive_package_rows": [],
+  "inactive_license_rows": [],
+  "package_rows_sha256": null,
+  "license_rows_sha256": null,
+  "forbidden_license_policy": {
+    "status": "FAIL_CLOSED",
+    "reject": ["GPL", "LGPL", "UNKNOWN", "UNREVIEWED"]
+  },
+  "blockers": [
+    "uv.lock has not been generated on VAST",
+    "exact package artifact bytes and primary license rows are not audited",
+    "Python 3.12 torchaudio<2.1 compatibility is unverified",
+    "lameenc is included by the upstream requirements contract and remains unreviewed"
+  ]
+}
