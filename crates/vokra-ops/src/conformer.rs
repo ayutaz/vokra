@@ -82,6 +82,7 @@ use vokra_core::{Result, VokraError};
 /// scalar execution.
 pub trait ConformerCompute {
     /// Row-major linear projection with `weight` laid out `[out_dim, in_dim]`.
+    #[allow(clippy::too_many_arguments)] // explicit linear operand/shape seam
     fn linear_row(
         &self,
         input: &[f32],
@@ -94,6 +95,7 @@ pub trait ConformerCompute {
     ) -> Result<()>;
 
     /// Row-major GEMM (`a[m,k] × b[k,n] = out[m,n]`).
+    #[allow(clippy::too_many_arguments)] // intrinsic GEMM operand/shape seam
     fn gemm(
         &self,
         m: usize,
@@ -106,6 +108,7 @@ pub trait ConformerCompute {
     ) -> Result<()>;
 
     /// Row-wise affine LayerNorm.
+    #[allow(clippy::too_many_arguments)] // intrinsic normalization operand/shape seam
     fn layer_norm(
         &self,
         input: &[f32],
@@ -146,6 +149,7 @@ pub trait ConformerCompute {
 
     /// Time-major Conv1d. Input/output are `[time, channels]`; weight is
     /// `[out_channels, in_channels, kernel]`.
+    #[allow(clippy::too_many_arguments)] // intrinsic convolution operand/shape seam
     fn conv1d_time_major(
         &self,
         input: &[f32],
@@ -162,6 +166,7 @@ pub trait ConformerCompute {
 
     /// Grouped time-major Conv1d.  Depthwise convolution is represented by
     /// `groups == in_channels == out_channels`.
+    #[allow(clippy::too_many_arguments)] // intrinsic grouped-convolution operand/shape seam
     fn grouped_conv1d_time_major(
         &self,
         input: &[f32],
