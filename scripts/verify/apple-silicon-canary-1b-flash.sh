@@ -23,6 +23,9 @@ TARGET_LANGUAGE_ENV="VOKRA_CANARY_TARGET_LANGUAGE"
 PARITY_SOURCE="$VOKRA_ROOT/crates/vokra-models/src/canary_1b_flash/mod.rs"
 TEST_TARGET="canary_1b_flash::tests::released_checkpoint_matches_official_nemo_greedy_tokens"
 TEST_NAME="released_checkpoint_matches_official_nemo_greedy_tokens"
+PREFLIGHT_GATE="$VOKRA_ROOT/tools/parity/canary_1b/preflight_gate.py"
+PREFLIGHT_MANIFEST="$VOKRA_ROOT/tools/parity/canary_1b/license_gate_manifest.json"
+VARIANT="canary-1b-flash"
 
 log() { printf '[canary-1b-flash-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
@@ -31,7 +34,8 @@ usage() {
   cat <<'EOF' >&2
 usage: apple-silicon-canary-1b-flash.sh \
   --gguf <vast-generated-canary-1b-flash.gguf> \
-  --reference <vast-official-reference-dir> --evidence-dir <absent-dir>
+  --reference <vast-official-reference-dir> \
+  --approval-evidence <owner-approval.json> --evidence-dir <absent-dir>
        apple-silicon-canary-1b-flash.sh --self-test
 
 Runs the exact existing Canary-1B-Flash real-weight test for the English ASR
@@ -52,6 +56,17 @@ sha256_file() { shasum -a 256 "$1" | awk '{print $1}'; }
 require_file() {
   local label="$1" path="$2"
   [[ -f "$path" && ! -L "$path" && -s "$path" ]] || die "$label is missing, empty, or symlinked: $path"
+}
+
+license_preflight() {
+  local approval="$1"
+  [[ -f "$PREFLIGHT_GATE" && ! -L "$PREFLIGHT_GATE" && \
+    -f "$PREFLIGHT_MANIFEST" && ! -L "$PREFLIGHT_MANIFEST" ]] \
+    || die "Canary-1B approval gate or manifest is missing or symlinked"
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python \
+    "$PREFLIGHT_GATE" --manifest "$PREFLIGHT_MANIFEST" \
+    --approval "$approval" --variant "$VARIANT" \
+    || die "Canary-1B-Flash approval preflight is unresolved"
 }
 
 require_absent_directory() {
@@ -102,14 +117,32 @@ canonical_absent_path() {
 paths_overlap() { local left="$1" right="$2"; [[ "$left" == "$right" || "$left/" == "$right/"* || "$right/" == "$left/"* ]]; }
 
 require_disjoint_evidence() {
-  local evidence="$1" gguf="$2" reference="$3" root_real evidence_real protected
+  local evidence="$1" gguf="$2" reference="$3" approval="$4" root_real evidence_real protected
   root_real="$(canonical_existing_path "$VOKRA_ROOT")" || return 2
   canonical_existing_path "$gguf" >/dev/null || return 2
   canonical_existing_path "$reference" >/dev/null || return 2
+  canonical_existing_path "$approval" >/dev/null || return 2
   evidence_real="$(canonical_absent_path "$evidence")" || return 2
-  for protected in "$root_real" "$(canonical_existing_path "$gguf")" "$(canonical_existing_path "$reference")"; do
+  for protected in "$root_real" "$(canonical_existing_path "$gguf")" "$(canonical_existing_path "$reference")" "$(canonical_existing_path "$approval")"; do
     paths_overlap "$evidence_real" "$protected" && { die "evidence directory overlaps protected input"; return 2; }
   done
+}
+
+production_order_ok() {
+  local script_path="$1" gate_pattern="$2" host_pattern="$3" resource_pattern="$4"
+  local checkpoint_pattern="$5" scratch_pattern="$6" cargo_pattern="$7"
+  local gate_line host_line resource_line checkpoint_line scratch_line cargo_line
+  gate_line="$(grep -nE "$gate_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  host_line="$(grep -nE "$host_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  resource_line="$(grep -nE "$resource_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  checkpoint_line="$(grep -nE "$checkpoint_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  scratch_line="$(grep -nE "$scratch_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  cargo_line="$(grep -nE "$cargo_pattern" "$script_path" | tail -1 | cut -d: -f1 || true)"
+  [[ -n "$gate_line" && -n "$host_line" && -n "$resource_line" \
+    && -n "$checkpoint_line" && -n "$scratch_line" && -n "$cargo_line" \
+    && "$gate_line" -lt "$host_line" && "$gate_line" -lt "$resource_line" \
+    && "$gate_line" -lt "$checkpoint_line" && "$gate_line" -lt "$scratch_line" \
+    && "$gate_line" -lt "$cargo_line" ]]
 }
 
 require_reference() {
@@ -209,6 +242,7 @@ hash_reference_directory() {
       done > "$output"
 }
 
+# shellcheck disable=SC2016
 run_self_test() (
   local script_path="${BASH_SOURCE[0]}" temporary fail=0 required
   temporary="$(mktemp -d "${TMPDIR:-/tmp}/vokra-canary-flash-apple.XXXXXX")"
@@ -225,6 +259,8 @@ run_self_test() (
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=20000000' \
     'xcrun -f metal' "$GGUF_ENV" "$REFERENCE_PCM_ENV" \
     "$REFERENCE_TOKENS_ENV" "$SOURCE_LANGUAGE_ENV" "$TARGET_LANGUAGE_ENV" \
+    'license_preflight' '--approval-evidence' 'preflight_gate.py' \
+    'license_gate_manifest.json' "--variant \"\$VARIANT\"" \
     "$TEST_TARGET" '--features metal' '-- --exact --ignored --nocapture' \
     'Canary1bFlashAsr::from_gguf_with_backend' 'BackendKind::Metal' \
     'assert_eq!(metal_actual, actual, "Flash Metal IDs equal CPU");' \
@@ -239,8 +275,25 @@ run_self_test() (
     fi
   done
   if grep -En -- '(^|[[:space:]])(curl|wget|python3?|pip|git[[:space:]]+(clone|fetch|pull)|.*(upload|publish))([[:space:]]|$)' \
-    "$script_path" >/dev/null; then
+    "$script_path" | grep -Ev 'UV_NO_CACHE=1 uv run.*python' >/dev/null; then
     log "self-test FAIL: download, direct Python, or publication command found"
+    fail=1
+  fi
+  local gate_pattern='^[[:space:]]*license_preflight "\$approval"[[:space:]]*$'
+  local host_pattern='^[[:space:]]*require_remote_apple_host[[:space:]]*$'
+  local resource_pattern='^[[:space:]]*require_tooling[[:space:]]*$'
+  local checkpoint_pattern='^[[:space:]]*require_file "VAST-generated complete Canary-1B-Flash GGUF" "\$gguf"[[:space:]]*$'
+  local scratch_pattern='^[[:space:]]*mkdir -p "\$evidence_dir"[[:space:]]*$'
+  local cargo_pattern='^[[:space:]]*run_case en-en'
+  if ! production_order_ok "$script_path" "$gate_pattern" "$host_pattern" \
+    "$resource_pattern" "$checkpoint_pattern" "$scratch_pattern" "$cargo_pattern"; then
+    log 'self-test FAIL: preflight is not before production boundaries'
+    fail=1
+  fi
+  if grep -vE "$gate_pattern" "$script_path" > "$temporary/without-preflight.sh" \
+    && production_order_ok "$temporary/without-preflight.sh" "$gate_pattern" "$host_pattern" \
+      "$resource_pattern" "$checkpoint_pattern" "$scratch_pattern" "$cargo_pattern"; then
+    log 'self-test FAIL: deleted production preflight was accepted'
     fail=1
   fi
   if "$script_path" --self-test --gguf "$temporary/model.gguf" >/dev/null 2>&1; then
@@ -253,6 +306,19 @@ run_self_test() (
   fi
   if "$script_path" --unknown-flag >/dev/null 2>&1; then
     log "self-test FAIL: unknown argument accepted"
+    fail=1
+  fi
+  if "$script_path" --self-test --approval-evidence "$temporary/approval.json" >/dev/null 2>&1; then
+    log "self-test FAIL: extra approval argument accepted"
+    fail=1
+  fi
+  if "$script_path" --gguf "$temporary/model.gguf" --reference "$temporary/reference" --approval-evidence >/dev/null 2>&1; then
+    log "self-test FAIL: missing approval value accepted"
+    fail=1
+  fi
+  if "$script_path" --gguf "$temporary/model.gguf" --reference "$temporary/reference" \
+    --approval-evidence "$temporary/a" --approval-evidence "$temporary/b" >/dev/null 2>&1; then
+    log "self-test FAIL: duplicate approval accepted"
     fail=1
   fi
   (( fail == 0 )) || return 1
@@ -284,7 +350,7 @@ run_case() {
 }
 
 main() {
-  local gguf='' reference='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_evidence=0
+  local gguf='' reference='' approval='' evidence_dir='' self_test=0 seen_gguf=0 seen_reference=0 seen_approval=0 seen_evidence=0
   while (( $# > 0 )); do
     case "$1" in
       --gguf)
@@ -295,6 +361,10 @@ main() {
         (( seen_reference == 0 )) && (( $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_reference=1
         reference="$2"; shift 2 ;;
+      --approval-evidence)
+        (( seen_approval == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
+        seen_approval=1
+        approval="$2"; shift 2 ;;
       --evidence-dir)
         (( seen_evidence == 0 && $# >= 2 )) && [[ -n "$2" && "$2" != -* ]] || { usage; return 2; }
         seen_evidence=1
@@ -309,25 +379,28 @@ main() {
   done
 
   if (( self_test == 1 )); then
-    [[ "$seen_gguf$seen_reference$seen_evidence" == 000 ]] \
+    [[ "$seen_gguf$seen_reference$seen_approval$seen_evidence" == 0000 ]] \
       || die "--self-test accepts no other arguments"
     run_self_test
     return
   fi
-  [[ "$seen_gguf$seen_reference$seen_evidence" == 111 ]] \
-    || { usage; die "--gguf, --reference and --evidence-dir are required"; }
+  [[ "$seen_gguf$seen_reference$seen_approval$seen_evidence" == 1111 ]] \
+    || { usage; die "--gguf, --reference, --approval-evidence and --evidence-dir are required"; }
 
+  # Keep approval ahead of every normal-run host/resource or input operation.
+  license_preflight "$approval"
   require_remote_apple_host
   require_tooling
   require_file "VAST-generated complete Canary-1B-Flash GGUF" "$gguf"
   require_reference "$reference"
   require_absent_directory "$evidence_dir"
-  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference"
+  require_disjoint_evidence "$evidence_dir" "$gguf" "$reference" "$approval"
   mkdir -p "$evidence_dir"
   record_environment "$evidence_dir/environment.txt"
   {
     echo "gguf=$gguf"
     echo "gguf_sha256=$(sha256_file "$gguf")"
+    echo "approval_sha256=$(sha256_file "$approval")"
     hash_reference_directory "$reference" "$evidence_dir/reference-hashes.txt"
   } > "$evidence_dir/input-hashes.txt"
 
@@ -354,6 +427,7 @@ main() {
     echo "verdict=PASS"
     echo "git_commit=$(git -C "$VOKRA_ROOT" rev-parse HEAD)"
     echo "gguf_sha256=$(sha256_file "$gguf")"
+    echo "approval_sha256=$(sha256_file "$approval")"
     echo "asr_cpu_vs_official=PASS"
     echo "asr_metal_vs_cpu=PASS"
     echo "ast_cpu_vs_official=PASS"
