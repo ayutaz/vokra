@@ -1297,8 +1297,13 @@ pub fn conv2d_f32(
 
 /// PyTorch-layout dense/grouped ConvTranspose2d on channel-major host buffers.
 /// The weight layout is `[in_ch, out_ch / groups, kernel_h, kernel_w]` and the
-/// output extent is `(in - 1) * stride - 2 * padding + dilation * (kernel - 1)
-/// + output_padding + 1` per spatial axis. As in PyTorch/ATen,
+/// output extent per spatial axis is:
+///
+/// ```text
+/// (in - 1) * stride - 2 * padding + dilation * (kernel - 1) + output_padding + 1
+/// ```
+///
+/// As in PyTorch/ATen,
 /// `output_padding` must be smaller than either the corresponding stride or
 /// dilation.
 #[allow(clippy::too_many_arguments)]
