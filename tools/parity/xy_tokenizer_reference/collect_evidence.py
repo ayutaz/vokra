@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
-from audit import NATIVE_PACKAGES, active_closure, lock_rows, repository_license, sha256, supported_wheel
+from audit import NATIVE_PACKAGES, active_closure, lock_rows, repository_license, sha256, supported_wheel, validate_spdx_expression
 
 CHUNK_SIZE = 1 << 20
 MAX_LICENSE_BYTES = 4 << 20
@@ -34,16 +34,25 @@ NATIVE_SUFFIXES = (".so", ".dylib", ".dll", ".pyd")
 SPDX_ALIASES = {
     "apache software license": "Apache-2.0",
     "apache license 2.0": "Apache-2.0",
+    "apache 2.0": "Apache-2.0",
     "apache-2.0": "Apache-2.0",
-    "bsd license": "BSD-3-Clause",
     "bsd-3-clause": "BSD-3-Clause",
     "bsd-2-clause": "BSD-2-Clause",
     "mit license": "MIT",
     "mit": "MIT",
     "isc license": "ISC",
     "isc": "ISC",
-    "python software foundation license": "Python-2.0",
+    "python software foundation license": "PSF-2.0",
     "python-2.0": "Python-2.0",
+}
+CLASSIFIER_ALIASES = {
+    "License :: OSI Approved :: Apache Software License": "Apache-2.0",
+    "License :: OSI Approved :: CNRI Python License": "CNRI-Python",
+    "License :: OSI Approved :: ISC License": "ISC",
+    "License :: OSI Approved :: MIT License": "MIT",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)": "MPL-2.0",
+    "License :: OSI Approved :: Python Software Foundation License": "PSF-2.0",
+    "License :: OSI Approved :: zlib/libpng License": "Zlib",
 }
 
 
@@ -88,17 +97,69 @@ def _license_rank(name: str, kind: str) -> tuple[int, int, int, str]:
     return (3, len(lowered), basename_rank, name.lower())
 
 
-def _metadata_license(metadata: bytes) -> str | None:
-    fields: list[str] = []
+def _bounded_declaration(value: str) -> str:
+    value = value.replace("\x00", "\\0").strip()
+    return value if len(value) <= 256 else value[:253] + "..."
+
+
+def _spdx_expression(value: str) -> str:
+    try:
+        return validate_spdx_expression(value)
+    except ValueError as error:
+        raise ValueError(f"License-Expression {_bounded_declaration(value)!r}: {error}") from error
+
+
+def _metadata_license(metadata: bytes, label: str = "METADATA") -> str:
+    expressions: list[str] = []
+    legacy: list[str] = []
+    classifiers: list[str] = []
+    declarations: list[str] = []
     for line in metadata.decode("utf-8", errors="replace").splitlines():
-        if line.lower().startswith("license-expression:") or line.lower().startswith("license:"):
-            fields.append(line.split(":", 1)[1].strip())
-    for value in fields:
+        lowered = line.lower()
+        if lowered.startswith("license-expression:"):
+            value = line.split(":", 1)[1].strip()
+            expressions.append(value)
+            declarations.append(f"License-Expression={_bounded_declaration(value)}")
+        elif lowered.startswith("license:"):
+            value = line.split(":", 1)[1].strip()
+            legacy.append(value)
+            declarations.append(f"License={_bounded_declaration(value)}")
+        elif lowered.startswith("classifier:"):
+            value = line.split(":", 1)[1].strip()
+            if value.startswith("License ::"):
+                classifiers.append(value)
+                declarations.append(f"Classifier={_bounded_declaration(value)}")
+    summary = ", ".join(declarations[:8]) or "<none>"
+    if len(declarations) > 8:
+        summary += f", ... ({len(declarations)} declarations)"
+    if expressions:
+        try:
+            parsed = [_spdx_expression(value) for value in expressions]
+        except ValueError as error:
+            raise ValueError(f"{label} License-Expression rejected ({summary}): {error}") from error
+        if len(set(parsed)) != 1:
+            raise ValueError(f"{label} has ambiguous License-Expression declarations ({summary})")
+        return parsed[0]
+    if classifiers:
+        mapped = [CLASSIFIER_ALIASES[value] for value in classifiers if value in CLASSIFIER_ALIASES]
+        unknown = [value for value in classifiers if value not in CLASSIFIER_ALIASES]
+        if unknown and not mapped:
+            raise ValueError(f"{label} has no recognized classifier license ({summary})")
+        if unknown and mapped:
+            raise ValueError(f"{label} has ambiguous classifier license declarations ({summary})")
+        if len(set(mapped)) != 1:
+            raise ValueError(f"{label} has ambiguous classifier license declarations ({summary})")
+        return mapped[0]
+    parsed_legacy: list[str] = []
+    for value in legacy:
         lowered = value.lower().strip()
-        for alias, spdx in SPDX_ALIASES.items():
-            if lowered == alias:
-                return spdx
-    return None
+        if lowered in SPDX_ALIASES:
+            parsed_legacy.append(SPDX_ALIASES[lowered])
+    if parsed_legacy and len(set(parsed_legacy)) == 1:
+        return parsed_legacy[0]
+    if parsed_legacy:
+        raise ValueError(f"{label} has ambiguous legacy license declarations ({summary})")
+    raise ValueError(f"{label} has no recognized license declarations ({summary})")
 
 
 def _publisher_url(metadata: bytes) -> str | None:
@@ -140,7 +201,7 @@ def _stream_digest(stream: BinaryIO, limit: int, label: str) -> tuple[str, int]:
 def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, Any]], list[dict[str, Any]]]:
     """Return primary license, SPDX, native payloads, and bundled licenses."""
     license_entries: list[tuple[str, bytes]] = []
-    metadata_entries: list[bytes] = []
+    metadata_entries: list[tuple[str, bytes]] = []
     native_entries: list[dict[str, Any]] = []
     if kind == "wheel":
         with zipfile.ZipFile(path) as archive:
@@ -155,7 +216,7 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
                         license_entries.append((info.filename, _bounded_read(stream, MAX_LICENSE_BYTES, info.filename)))
                 if lower.endswith(".dist-info/metadata"):
                     with archive.open(info) as stream:
-                        metadata_entries.append(_bounded_read(stream, MAX_METADATA_BYTES, info.filename))
+                        metadata_entries.append((info.filename, _bounded_read(stream, MAX_METADATA_BYTES, info.filename)))
                 if lower.endswith(NATIVE_SUFFIXES):
                     with archive.open(info) as stream:
                         digest, size = _stream_digest(stream, MAX_NATIVE_BYTES, info.filename)
@@ -175,7 +236,7 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
                     license_entries.append((info.name, _bounded_read(stream, MAX_LICENSE_BYTES, info.name)))
                 if lower.endswith((".dist-info/metadata", "/pkg-info", "pkg-info")):
                     stream.seek(0)
-                    metadata_entries.append(_bounded_read(stream, MAX_METADATA_BYTES, info.name))
+                    metadata_entries.append((info.name, _bounded_read(stream, MAX_METADATA_BYTES, info.name)))
                 if lower.endswith(NATIVE_SUFFIXES):
                     stream.seek(0)
                     digest, size = _stream_digest(stream, MAX_NATIVE_BYTES, info.name)
@@ -198,10 +259,25 @@ def inspect_archive(path: Path, kind: str) -> tuple[bytes, str, list[dict[str, A
         for index, (name, data) in enumerate(license_entries)
         if index != primary_index
     ]
-    metadata = metadata_entries[0] if metadata_entries else b""
-    spdx = _metadata_license(metadata)
-    if spdx is None:
-        raise ValueError(f"{path.name} has no recognized SPDX license metadata")
+    if not metadata_entries:
+        raise ValueError(f"{path.name} has no metadata license declarations (metadata=<none>)")
+    metadata_entries.sort(key=lambda item: item[0].lower())
+    parsed_metadata: list[str] = []
+    metadata_errors: list[str] = []
+    for metadata_name, metadata in metadata_entries:
+        try:
+            parsed_metadata.append(_metadata_license(metadata, metadata_name))
+        except ValueError as error:
+            metadata_errors.append(str(error))
+    if metadata_errors:
+        details = "; ".join(metadata_errors[:8])
+        if len(metadata_errors) > 8:
+            details += f"; ... ({len(metadata_errors)} metadata files)"
+        raise ValueError(f"{path.name} metadata license declarations rejected: {_bounded_declaration(details)}")
+    if len(set(parsed_metadata)) != 1:
+        declarations = ", ".join(f"{name}={value}" for (name, _), value in zip(metadata_entries, parsed_metadata))
+        raise ValueError(f"{path.name} has ambiguous metadata license declarations ({_bounded_declaration(declarations)})")
+    spdx = parsed_metadata[0]
     return license_bytes, spdx, native_entries, bundled_licenses
 
 
@@ -333,6 +409,38 @@ def self_test() -> None:
         license_bytes, spdx, native, bundled = inspect_archive(wheel, "wheel")
         assert license_bytes == b"MIT License\n" and spdx == "MIT" and native[0]["name"] == "demo/native.so"
         assert {entry["path"] for entry in bundled} == {"demo-1.0.dist-info/COPYING", "demo/vendor/LICENSE"}
+        assert _metadata_license(b"License-Expression: BSD-3-Clause\n") == "BSD-3-Clause"
+        assert _metadata_license(b"License-Expression: MIT AND MPL-2.0 OR PSF-2.0\n") == "MIT AND MPL-2.0 OR PSF-2.0"
+        assert _metadata_license(b"Classifier: License :: OSI Approved :: CNRI Python License\n") == "CNRI-Python"
+        assert _metadata_license(b"License: Python Software Foundation License\n") == "PSF-2.0"
+        for malformed in (
+            b"License: BSD\n",
+            b"License: BSD License\n",
+            b"Classifier: License :: OSI Approved :: BSD License\n",
+            b"License-Expression: GPL-3.0\n",
+            b"License-Expression: LGPL-2.1-or-later\n",
+            b"License-Expression: MIT XOR BSD-3-Clause\n",
+            b"License-Expression: MIT\nLicense-Expression: BSD-3-Clause\n",
+            b"Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)\n",
+            b"Classifier: License :: OSI Approved :: MIT License\nClassifier: License :: OSI Approved :: BSD License\n",
+        ):
+            try:
+                _metadata_license(malformed)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid or ambiguous metadata license accepted")
+        metadata_conflict = root / "metadata-conflict.whl"
+        with zipfile.ZipFile(metadata_conflict, "w") as archive:
+            archive.writestr("a-1.0.dist-info/METADATA", "License-Expression: MIT\n")
+            archive.writestr("b-1.0.dist-info/METADATA", "License-Expression: BSD-3-Clause\n")
+            archive.writestr("LICENSE", b"MIT License\n")
+        try:
+            inspect_archive(metadata_conflict, "wheel")
+        except ValueError as error:
+            assert "ambiguous metadata" in str(error)
+        else:
+            raise AssertionError("ambiguous metadata declarations accepted")
         ambiguous = root / "ambiguous.whl"
         with zipfile.ZipFile(ambiguous, "w") as archive:
             archive.writestr("demo-1.0.dist-info/METADATA", "License: MIT\n")

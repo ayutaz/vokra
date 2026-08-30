@@ -62,6 +62,26 @@ TARGET_MARKER_VALUES = {
     "python_version": "3.12",
     "sys_platform": "linux",
 }
+ALLOWED_SPDX_IDS = frozenset({
+    "0BSD", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "CNRI-Python",
+    "ISC", "MIT", "MPL-2.0", "PSF-2.0", "Python-2.0", "Zlib",
+})
+
+
+def validate_spdx_expression(value: str) -> str:
+    tokens = value.strip().split()
+    if not tokens or len(tokens) % 2 == 0:
+        raise ValueError("malformed SPDX expression")
+    for index, token in enumerate(tokens):
+        if index % 2 == 0:
+            if token not in ALLOWED_SPDX_IDS:
+                upper = token.upper()
+                if any(marker in upper for marker in ("GPL", "LGPL", "AGPL", "UNLICENSED", "UNKNOWN")):
+                    raise ValueError(f"forbidden SPDX identifier {token!r}")
+                raise ValueError(f"unrecognized SPDX identifier {token!r}")
+        elif token not in {"AND", "OR"}:
+            raise ValueError(f"unsupported SPDX operator {token!r}")
+    return " ".join(tokens)
 
 
 def sha256(path: Path) -> str:
@@ -429,6 +449,10 @@ def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], 
                 raise ValueError("virtual project license is not bound to the repository root LICENSE")
         elif identity == (VIRTUAL_PROJECT_NAME, "0.1.0"):
             raise ValueError("virtual project license must use repository root LICENSE evidence")
+        try:
+            validate_spdx_expression(license_row["spdx"])
+        except ValueError as error:
+            raise ValueError(f"license SPDX declaration rejected: {error}") from error
         if any(token in license_row["spdx"].upper() for token in ("GPL", "LGPL", "UNKNOWN", "UNLICENSED")):
             raise ValueError("GPL/LGPL/unknown license is not allowed")
         artifact = row["artifact"]
@@ -773,6 +797,13 @@ requires-dist = [
             assert "GPL" in str(error)
         else:
             raise AssertionError("GPL license accepted")
+        unknown_spdx = dict(rich, license=dict(license_base, spdx="EPL-2.0"))
+        try:
+            validate_license_rows(artifact_package, {"packages": [unknown_spdx]})
+        except ValueError as error:
+            assert "SPDX" in str(error)
+        else:
+            raise AssertionError("unrecognized SPDX license accepted")
         no_native = dict(rich, native_payloads=[])
         try:
             validate_license_rows(artifact_package, {"packages": [no_native]})
