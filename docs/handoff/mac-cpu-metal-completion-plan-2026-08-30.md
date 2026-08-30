@@ -53,11 +53,13 @@ converter, synthesized forward or device-less build succeeds.
 
 ## Wave A pre-Scaleway checkpoint (2026-08-30)
 
-Wave A source preparation is complete at clean branch HEAD
-`bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`.  No model artifact was copied to
-or executed on the maintainer Mac.  The only attempted local Rust test was
-stopped when its dev-dependency expansion reached `vokra-models`; all broad
-Cargo and real-weight work stayed on VAST after that point.
+Wave A source preparation is complete at clean runtime/Apple target commit
+`bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`.  Later management-documentation
+commits are not part of the authenticated packet identity; Scaleway must check
+out this exact code commit.  No model artifact was copied to or executed on the
+maintainer Mac.  The only attempted local Rust test was stopped when its
+dev-dependency expansion reached `vokra-models`; all broad Cargo and
+real-weight work stayed on VAST after that point.
 
 VAST instance `49168183` produced the following no-upload evidence:
 
@@ -66,12 +68,12 @@ VAST instance `49168183` produced the following no-upload evidence:
   `bc9d1db2` adds only documented Clippy suppressions to the same compute-seam
   signatures.
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D
-  warnings` passed at exact final HEAD `bc9d1db2`.
+  warnings` passed at exact Apple target `bc9d1db2`.
 - `cargo deny check licenses advisories bans` and `cargo audit` passed.  The
   existing unmatched `libfuzzer-sys` license-exception warning remains
   non-fatal and unrelated to Wave A.
 - GigaAM v3, GigaAM Multilingual and OmniASR-CTC-1B real-weight CPU parity all
-  passed at exact final HEAD.  The GigaAM approvals record final-HEAD commit,
+  passed at exact Apple target.  The GigaAM approvals record that code commit,
   GGUF and reference-manifest digests; OmniASR recorded exact tokens and
   `frontend_max_abs=2.918243408e-4`, `encoder_max_abs=1.520276070e-3` and
   `logits_max_abs=1.450002193e-3`.
