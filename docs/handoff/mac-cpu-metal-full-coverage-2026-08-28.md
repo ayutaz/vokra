@@ -595,8 +595,16 @@ of these bullets closes a model row until the named real run succeeds:
   runtime or Apple parity verdict even after the first VAST collection.
 - XY-Tokenizer now pins the canonical OpenMOSS HF revision, exact
   2,137,328,977-byte checkpoint, official config hash and fixed source
-  revision. Because the source tree has no confirmed license file, the Apache
-  weight license is kept distinct and no source implementation is copied.
+  revision. The fixed official source `readme.md` at
+  `5df5609c5883e555bd39a2d0b1005ca8f1a8f12e` is authenticated by Git blob
+  SHA-1 `cfe231b384040a2162a516c400fbd9282b3317b7` and SHA-256
+  `c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7`;
+  its `## License` section explicitly declares `XY-Tokenizer is released under
+  the Apache 2.0 license.` No full `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT`
+  file is tracked, and that absence remains an evidence fact rather than a
+  source-license-absent claim. The separate fixed HF weight README declares
+  `license: apache-2.0`. Native runtime is still unimplemented; any future
+  implementation must follow a clean-room boundary and copy no source code.
   Its 128-GiB VAST inspector uses only `torch.load(..., weights_only=True)`,
   safely handles scalar integer/float/BF16 buffers, records per-tensor raw-byte
   hashes and all tracked source files, and prepares evidence without claiming
@@ -1363,9 +1371,10 @@ The 2026-08-29 Sol review then independently re-ran the focused Python
 compile/self-test, worker self-test, `bash -n`, ShellCheck and whitespace
 checks for the corrected XY-Tokenizer and VibeVoice-ASR inspection routes.
 Both passed those local staging checks. XY-Tokenizer now authenticates nine
-fixed source-role Git objects and carries the absent source license plus the
-unreviewed topology as normal, explicit blockers instead of misreporting an
-inspection error. VibeVoice-ASR now authenticates the fixed Microsoft and
+fixed source-role Git objects plus the fixed source README's explicit
+Apache-2.0 declaration (with the absence of a full license file recorded as
+an evidence fact), while retaining the unreviewed topology as an explicit
+fail-closed blocker. VibeVoice-ASR now authenticates the fixed Microsoft and
 Transformers role objects, materializes the complete eight-shard HF tree into
 an explicit `local_dir`, and records the missing `Qwen/Qwen2.5-7B` revision as
 an unselected, not-downloaded dependency. Neither review executed a model,

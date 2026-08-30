@@ -52,7 +52,9 @@ run_self_test() {
     "$SOURCE_REVISION" "$CONFIG_RELATIVE" "$CONFIG_SHA256" "$INSPECTOR" \
     "weights_only=True" "save_file" "INSPECTION_ONLY" "torch.load" \
     "HfApi" "RepoFile" "RepoFolder" "server-packet" "collection_status" \
-    "AUTHENTICATED_EVIDENCE_COMPLETE" "NO_UPLOAD" "SOURCE_LICENSE_ABSENT_BLOCKER" \
+    "AUTHENTICATED_EVIDENCE_COMPLETE" "NO_UPLOAD" \
+    "SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE" "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE" \
+    "SOURCE_README_BLOB_SHA1" "SOURCE_README_SHA256" "SOURCE_LICENSE_DECLARATION" \
     "SELECTED_MODEL_FILES" "source_config" "prepared_config" "AUTHENTICATED_OFFICIAL_SOURCE" \
     "all_tracked_regular_files" "inference.py" "xy_tokenizer/model.py" \
     "MIN_VAST_MEM_KIB" "MIN_FREE_DISK_KIB" "tmpfs"; do

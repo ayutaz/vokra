@@ -52,7 +52,12 @@ SOURCE_ROLE_BLOBS: dict[str, str] = {
     "xy_tokenizer/nn/quantizer.py": "a7d28b963e98ea4f62f2a6e06b419cf0da0c2cc4",
 }
 SELECTED_MODEL_FILES = {".gitattributes", "README.md", CHECKPOINT_RELATIVE.as_posix()}
-SOURCE_LICENSE_ABSENT_BLOCKER = "SOURCE_LICENSE_ABSENT_BLOCKER"
+SOURCE_README_PATH = "readme.md"
+SOURCE_README_BLOB_SHA1 = "cfe231b384040a2162a516c400fbd9282b3317b7"
+SOURCE_README_SHA256 = "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+SOURCE_LICENSE_DECLARATION = "XY-Tokenizer is released under the Apache 2.0 license."
+SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE = "SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE"
+SOURCE_LICENSE_EVIDENCE_UNAVAILABLE = "SOURCE_LICENSE_EVIDENCE_UNAVAILABLE"
 TOPOLOGY_UNVERIFIED_BLOCKER = "TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER"
 EVIDENCE_FILENAME = "manifest.json"
 
@@ -239,7 +244,31 @@ def parse_weight_license(readme: Path) -> dict[str, str]:
         raise RuntimeError(f"HF README frontmatter invalid: {error}") from error
     if not isinstance(frontmatter, dict) or set(frontmatter) != {"license"} or frontmatter["license"] != "apache-2.0":
         raise RuntimeError("HF weight license declaration is not exact apache-2.0")
-    return {"spdx": "Apache-2.0", "basis": "authenticated HF README top-level frontmatter", "policy": "WEIGHT_ONLY_SOURCE_LICENSE_UNCONFIRMED"}
+    return {
+        "spdx": "Apache-2.0",
+        "basis": "authenticated HF README top-level frontmatter at fixed weight revision",
+        "policy": "WEIGHT_LICENSE_SEPARATE_FROM_SOURCE_README",
+    }
+
+
+def parse_source_license_readme(text: str) -> dict[str, str]:
+    """Authenticate the exact license declaration in the source README.
+
+    This is source-code evidence, not a replacement LICENSE file.  Keep the
+    section intentionally narrow so an unrelated README mention cannot be
+    promoted to a license declaration.
+    """
+    match = re.search(r"(?ms)^## License[ \t]*\r?\n(?P<body>.*?)(?=^##\s|\Z)", text)
+    if match is None:
+        raise RuntimeError("official source README lacks an exact ## License section")
+    lines = [line.strip() for line in match.group("body").splitlines() if line.strip()]
+    if lines != [SOURCE_LICENSE_DECLARATION]:
+        raise RuntimeError("official source README license declaration is not exact Apache-2.0")
+    return {
+        "path": SOURCE_README_PATH,
+        "declaration": SOURCE_LICENSE_DECLARATION,
+        "status": SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE,
+    }
 
 
 def require_file(path: Path, expected_sha256: str, label: str, expected_bytes: int | None = None) -> None:
@@ -292,6 +321,38 @@ def raw_tensor_bytes(tensor: torch.Tensor) -> bytes:
         raise RuntimeError(f"cannot obtain raw bytes for dtype={tensor.dtype} shape={tuple(tensor.shape)}") from error
 
 
+def tracked_full_license_files(entries: Mapping[str, tuple[str, str]]) -> list[str]:
+    full_license_names = {"license", "copying", "notice", "copyright"}
+    return sorted(
+        relative
+        for relative in entries
+        if Path(relative).stem.casefold() in full_license_names
+    )
+
+
+def source_license_evidence(source: Path, entries: Mapping[str, tuple[str, str]]) -> dict[str, Any]:
+    """Bind the official source README and prove that no full license file is tracked."""
+    mode_object = entries.get(SOURCE_README_PATH)
+    if mode_object != ("100644", SOURCE_README_BLOB_SHA1):
+        raise RuntimeError("source README license-evidence object mismatch")
+    readme = source / SOURCE_README_PATH
+    if readme.is_symlink() or not readme.is_file() or stat.S_IMODE(readme.stat().st_mode) != 0o644:
+        raise RuntimeError("source README license-evidence file/mode mismatch")
+    if git_blob_sha1(readme) != SOURCE_README_BLOB_SHA1 or sha256(readme) != SOURCE_README_SHA256:
+        raise RuntimeError("source README license-evidence hash mismatch")
+    declaration = parse_source_license_readme(readme.read_text(encoding="utf-8"))
+    full_license_files = tracked_full_license_files(entries)
+    if full_license_files:
+        raise RuntimeError(f"unexpected full source license files: {full_license_files}")
+    return {
+        **declaration,
+        "git_blob_sha1": SOURCE_README_BLOB_SHA1,
+        "sha256": SOURCE_README_SHA256,
+        "full_license_files": full_license_files,
+        "basis": "authenticated official source README at fixed Git revision",
+    }
+
+
 def source_inventory(source: Path) -> dict[str, Any]:
     if not (source / ".git").exists():
         raise RuntimeError("source checkout lacks .git metadata")
@@ -327,9 +388,16 @@ def source_inventory(source: Path) -> dict[str, Any]:
             if mode_object is None or mode_object[0] != "100644" or mode_object[1] != expected:
                 raise RuntimeError(f"source fixed role mismatch: {relative}")
             roles.append({"path": relative, "mode": mode_object[0], "git_blob_sha1": expected})
-    license_path = next((source / name for name in ("LICENSE", "LICENSE.md", "COPYING") if (source / name).is_file()), None)
-    license_status = SOURCE_LICENSE_ABSENT_BLOCKER if license_path is None else "PRESENT_UNREVIEWED"
-    return {"repository": SOURCE_REPOSITORY, "revision": SOURCE_REVISION, "worktree_status": "CLEAN", "roles": roles, "role_status": role_status, "license_status": license_status}
+    license_evidence = source_license_evidence(source, entries)
+    return {
+        "repository": SOURCE_REPOSITORY,
+        "revision": SOURCE_REVISION,
+        "worktree_status": "CLEAN",
+        "roles": roles,
+        "role_status": role_status,
+        "license_status": license_evidence["status"],
+        "license_evidence": license_evidence,
+    }
 
 
 def inspect(checkpoint: Path, config: Path, source: Path, prepared: Path, output: Path, server_packet: Path) -> None:
@@ -342,8 +410,6 @@ def inspect(checkpoint: Path, config: Path, source: Path, prepared: Path, output
         raise RuntimeError(source_data["role_status"])
     config_data = parse_config(config.read_text(encoding="utf-8"))
     known_blockers: list[str] = []
-    if source_data["license_status"] == SOURCE_LICENSE_ABSENT_BLOCKER:
-        known_blockers.append(SOURCE_LICENSE_ABSENT_BLOCKER)
     if config_data.get("topology_status") == TOPOLOGY_UNVERIFIED_BLOCKER:
         known_blockers.append(TOPOLOGY_UNVERIFIED_BLOCKER)
 
@@ -413,7 +479,7 @@ def write_error_manifest(output: Path, error: Exception) -> None:
         path = output / name
         if path.exists() and path.is_file():
             path.unlink()
-    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_ABSENT_BLOCKER, TOPOLOGY_UNVERIFIED_BLOCKER]}
+    manifest = {"format": FORMAT, "status": "BLOCKED", "evidence_stage": "INSPECTION_ONLY", "inspection_status": "INSPECTION_ERROR", "collection_status": "FAILED", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "error": str(error), "blockers": ["authenticated collection unavailable", SOURCE_LICENSE_EVIDENCE_UNAVAILABLE, TOPOLOGY_UNVERIFIED_BLOCKER]}
     (output / EVIDENCE_FILENAME).write_text(json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
@@ -423,7 +489,40 @@ def self_test() -> None:
     assert FORMAT == "vokra-xy-tokenizer-prepared-v1"
     assert "weights_only=True" in source
     assert "safetensors.torch" in source
-    assert SOURCE_LICENSE_ABSENT_BLOCKER in source and TOPOLOGY_UNVERIFIED_BLOCKER in source
+    assert SOURCE_README_PATH == "readme.md"
+    assert SOURCE_README_BLOB_SHA1 == "cfe231b384040a2162a516c400fbd9282b3317b7"
+    assert SOURCE_README_SHA256 == "c5e9b83f8382a819063e270489a0f85994628360432fae1054fa2e65ec24d8f7"
+    assert SOURCE_LICENSE_DECLARATION == "XY-Tokenizer is released under the Apache 2.0 license."
+    assert SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE in source
+    assert SOURCE_LICENSE_EVIDENCE_UNAVAILABLE in source
+    assert TOPOLOGY_UNVERIFIED_BLOCKER in source
+    assert parse_source_license_readme(
+        "# XY-Tokenizer\n\n## License\n\n"
+        "XY-Tokenizer is released under the Apache 2.0 license.\n\n"
+        "## Usage\n"
+    )["status"] == SOURCE_LICENSE_README_DECLARATION_NO_FULL_FILE
+    for invalid_readme in (
+        "## License\n\nMIT License\n",
+        "## License\n\nXY-Tokenizer is released under the Apache 2.0 license.\nAdditional terms\n",
+        "## License\n",
+        "### License\n\nXY-Tokenizer is released under the Apache 2.0 license.\n",
+    ):
+        try:
+            parse_source_license_readme(invalid_readme)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("malformed source README license evidence was accepted")
+    assert tracked_full_license_files({"readme.md": ("100644", SOURCE_README_BLOB_SHA1)}) == []
+    assert tracked_full_license_files(
+        {
+            "LICENSE": ("100644", "0" * 40),
+            "docs/COPYING.md": ("100644", "1" * 40),
+            "NOTICE.txt": ("100644", "2" * 40),
+            "third_party/COPYRIGHT": ("100644", "3" * 40),
+            "readme.md": ("100644", SOURCE_README_BLOB_SHA1),
+        }
+    ) == ["LICENSE", "NOTICE.txt", "docs/COPYING.md", "third_party/COPYRIGHT"]
     scalar_int64 = torch.tensor(0x0102030405060708, dtype=torch.int64)
     assert raw_tensor_bytes(scalar_int64) == bytes.fromhex("0807060504030201")
     scalar_float = torch.tensor(-2.5, dtype=torch.float32)
