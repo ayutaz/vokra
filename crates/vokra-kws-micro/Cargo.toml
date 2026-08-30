@@ -16,7 +16,7 @@
 # its name implies.
 [package]
 name = "vokra-kws-micro"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 publish = false
@@ -32,7 +32,7 @@ publish = false
 # path dep; the `version` alongside `path` tracks the shared workspace version
 # for future `cargo publish` (a no-op for local path resolution today).
 [dependencies]
-vokra-core = { path = "../vokra-core", version = "0.2.0", default-features = false }
+vokra-core = { path = "../vokra-core", version = "0.3.0", default-features = false }
 
 # Mirror of `vokra-vad-micro`'s feature layout: `std` (default-ON) forwards to
 # `vokra-core/std`. This crate's own `lib.rs` uses

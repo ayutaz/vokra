@@ -99,6 +99,7 @@ CONST vokra-core::rng::philox_round::PHILOX_ROUNDS|pub const PHILOX_ROUNDS: usiz
 CONST vokra-core::rng::philox_round::PHILOX_W0|pub const PHILOX_W0: u32 = 0x9E37_79B9;
 CONST vokra-core::rng::philox_round::PHILOX_W1|pub const PHILOX_W1: u32 = 0xBB67_AE85;
 CONST vokra-core::session::IN_MEMORY_MODEL_PATH|pub const IN_MEMORY_MODEL_PATH: &str = "<in-memory>";
+CONST vokra-ops::conformer::GIGAAM_SOURCE_REVISION|pub const GIGAAM_SOURCE_REVISION: &str = "7447938d791c4f3e643386ee22c33777004293a5";
 CONST vokra-ops::f0::DEFAULT_ABSOLUTE_THRESHOLD|pub const DEFAULT_ABSOLUTE_THRESHOLD: f32 = 0.10;
 CONST vokra-ops::f0::DEFAULT_FRAME_SIZE|pub const DEFAULT_FRAME_SIZE: usize = 2048;
 CONST vokra-ops::f0::DEFAULT_HOP|pub const DEFAULT_HOP: usize = 256;
@@ -460,6 +461,7 @@ FN vokra-core::gguf::frontend_spec::diff|pub fn diff(&self, runtime: &FrontendSp
 FN vokra-core::gguf::frontend_spec::from_gguf|pub fn from_gguf(file: &GgufFile) -> Result<Self, GgufError> {
 FN vokra-core::gguf::frontend_spec::to_gguf_kv|pub fn to_gguf_kv(&self) -> Vec<(String, GgufMetadataValue)> {
 FN vokra-core::gguf::frontend_spec::write_into|pub fn write_into(&self, builder: &mut GgufBuilder) {
+FN vokra-core::gguf::quant::decode_bf16_bits|pub fn decode_bf16_bits(
 FN vokra-core::gguf::quant::dequantize|pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Vec<f32>, GgufError> {
 FN vokra-core::gguf::quant::f16_to_f32|pub fn f16_to_f32(h: u16) -> f32 {
 FN vokra-core::gguf::reader::alignment|pub fn alignment(&self) -> u64 {
@@ -468,6 +470,7 @@ FN vokra-core::gguf::reader::get|pub fn get(&self, key: &str) -> Option<&GgufMet
 FN vokra-core::gguf::reader::metadata|pub fn metadata(&self) -> &[(String, GgufMetadataValue)] {
 FN vokra-core::gguf::reader::open|pub fn open(path: impl AsRef<Path>) -> Result<Self, GgufError> {
 FN vokra-core::gguf::reader::parse|pub fn parse(data: Vec<u8>) -> Result<Self, GgufError> {
+FN vokra-core::gguf::reader::tensor_bf16_bits|pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, GgufError> {
 FN vokra-core::gguf::reader::tensor_bytes|pub fn tensor_bytes(&self, info: &GgufTensorInfo) -> &[u8] {
 FN vokra-core::gguf::reader::tensor_data|pub fn tensor_data(&self, name: &str) -> Option<&[u8]> {
 FN vokra-core::gguf::reader::tensor_f32|pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, GgufError> {
@@ -669,7 +672,9 @@ FN vokra-core::runtime::tensor::zeros_f32|pub fn zeros_f32(shape: Vec<usize>) ->
 FN vokra-core::safetensors::element_count|pub fn element_count(&self) -> u64 {
 FN vokra-core::safetensors::open|pub fn open(path: impl AsRef<Path>) -> Result<Self, SafetensorsError> {
 FN vokra-core::safetensors::parse|pub fn parse(data: Vec<u8>) -> Result<Self, SafetensorsError> {
+FN vokra-core::safetensors::read_tensor_bf16_bits_into|pub fn read_tensor_bf16_bits_into(
 FN vokra-core::safetensors::read_tensor_into|pub fn read_tensor_into(
+FN vokra-core::safetensors::tensor_bf16_bits|pub fn tensor_bf16_bits(&self, name: &str) -> Result<Vec<u16>, SafetensorsError> {
 FN vokra-core::safetensors::tensor_bytes|pub fn tensor_bytes(&self, t: &SafeTensorInfo) -> &[u8] {
 FN vokra-core::safetensors::tensor_data|pub fn tensor_data(&self, name: &str) -> Option<&[u8]> {
 FN vokra-core::safetensors::tensor_f32|pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>, SafetensorsError> {
@@ -781,6 +786,7 @@ FN vokra-ops::bigvgan_generator::effective_parameters|pub fn effective_parameter
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::bigvgan_generator::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
 FN vokra-ops::bigvgan_generator::forward_with_backend_ops|pub fn forward_with_backend_ops<O: BigVganBackendOps>(
+FN vokra-ops::bigvgan_generator::forward_with_resident_ops|pub fn forward_with_resident_ops<O: BigVganResidentOps>(
 FN vokra-ops::bigvgan_generator::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::bigvgan_generator::new|pub fn new(
 FN vokra-ops::bigvgan_generator::new|pub fn new(alpha: Vec<f32>, beta: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
@@ -793,10 +799,14 @@ FN vokra-ops::clustering::cluster_with_min_cluster_size|pub fn cluster_with_min_
 FN vokra-ops::clustering::cluster|pub fn cluster(&self, embeddings: &[Vec<f32>]) -> Vec<usize> {
 FN vokra-ops::conformer::config|pub fn config(&self) -> &ConformerConfig {
 FN vokra-ops::conformer::factor|pub fn factor(&self) -> usize {
+FN vokra-ops::conformer::forward_with_compute|pub fn forward_with_compute<C: ConformerCompute>(
+FN vokra-ops::conformer::forward_with_valid_frames|pub fn forward_with_valid_frames(
 FN vokra-ops::conformer::forward|pub fn forward(&self, mel: &[f32], mel_frames: usize) -> Result<(Vec<f32>, usize)> {
 FN vokra-ops::conformer::has_norm|pub fn has_norm(&self) -> bool {
 FN vokra-ops::conformer::head_dim|pub fn head_dim(&self) -> usize {
+FN vokra-ops::conformer::is_conv1d|pub const fn is_conv1d(self) -> bool {
 FN vokra-ops::conformer::new|pub fn new(cfg: ConformerConfig, weights: ConformerWeights) -> Result<Self> {
+FN vokra-ops::conformer::output_len|pub fn output_len(&self, input_len: usize) -> Result<usize> {
 FN vokra-ops::conformer::projection_in_dim|pub fn projection_in_dim(&self, in_dim: usize) -> usize {
 FN vokra-ops::ctc_decode::ctc_decode_beam|pub fn ctc_decode_beam(logits: &[f32], attrs: &CtcBeamAttrs) -> Result<Vec<CtcHypothesis>> {
 FN vokra-ops::ctc_decode::ctc_decode_greedy|pub fn ctc_decode_greedy(
@@ -926,6 +936,7 @@ FN vokra-ops::hiftnet::effective_alpha|pub fn effective_alpha(&self) -> Vec<f32>
 FN vokra-ops::hiftnet::f0_predictor_forward|pub fn f0_predictor_forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], channels: usize, time: usize) -> Result<()> {
 FN vokra-ops::hiftnet::forward_in_place|pub fn forward_in_place(&self, x: &mut [f32], t: usize) -> Result<()> {
+FN vokra-ops::hiftnet::forward_with_resident_ops|pub fn forward_with_resident_ops<O: HiFTResidentOps>(
 FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::forward|pub fn forward(&self, mel: &[f32], t_mel: usize) -> Result<Vec<f32>> {
 FN vokra-ops::hiftnet::new|pub fn new(alpha: Vec<f32>, alpha_logscale: bool) -> Result<Self> {
@@ -1631,10 +1642,13 @@ TRAIT vokra-core::rng::NormalSource|pub trait NormalSource {
 TRAIT vokra-core::stream::event::EventSink|pub trait EventSink {
 TRAIT vokra-core::stream::step::StreamStep|pub trait StreamStep: Send {
 TRAIT vokra-ops::bigvgan_generator::BigVganBackendOps|pub trait BigVganBackendOps: HifiGanBackendOps {
+TRAIT vokra-ops::bigvgan_generator::BigVganResidentOps|pub trait BigVganResidentOps {
+TRAIT vokra-ops::conformer::ConformerCompute|pub trait ConformerCompute {
 TRAIT vokra-ops::denoise::DenoiseBackendOps|pub trait DenoiseBackendOps {
 TRAIT vokra-ops::firered_vad::FireredVadBackendOps|pub trait FireredVadBackendOps {
 TRAIT vokra-ops::fsmn_vad::FsmnBackendOps|pub trait FsmnBackendOps {
 TRAIT vokra-ops::hifigan::HifiGanBackendOps|pub trait HifiGanBackendOps {
+TRAIT vokra-ops::hiftnet::HiFTResidentOps|pub trait HiFTResidentOps {
 TRAIT vokra-ops::prosody::ApplyProsody|pub trait ApplyProsody {
 TRAIT vokra-ops::ten_vad::TenVadBackendOps|pub trait TenVadBackendOps {
 TRAIT vokra-ops::vit::ViTBackendOps|pub trait ViTBackendOps {

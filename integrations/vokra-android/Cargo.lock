@@ -11,7 +11,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-backend-cpu"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-bert"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-capi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-mmap",
@@ -38,22 +38,22 @@ dependencies = [
 
 [[package]]
 name = "vokra-core"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "vokra-math"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "vokra-mmap"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-models"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-backend-cpu",
  "vokra-bert",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "vokra-ops"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
  "vokra-math",
@@ -75,14 +75,14 @@ dependencies = [
 
 [[package]]
 name = "vokra-piper-plus"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]
 
 [[package]]
 name = "vokra-vad-micro"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "vokra-core",
 ]

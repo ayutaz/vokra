@@ -14,6 +14,17 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- **2026-08-31 pre-1.0 Rust API line: 0.2.0 → 0.3.0**: this feature line
+  intentionally changes the public Rust API while the project remains before
+  v1.0. The changes include new model/converter and backend enum variants,
+  public model/config and convolution-weight fields, and corrections to
+  inspection-only model boundaries. The workspace and path-dependency
+  versions are bumped together so `cargo-semver-checks` evaluates the changes
+  against the next 0.x breaking line rather than silently accepting them under
+  0.2.0. The `docs/abi/vokra-rust-public-api.v1.0-rc.list` snapshot was
+  refreshed with the prescribed script and remains aligned with this release
+  line. The C ABI remains covered by its separate pre-1.0 policy.
+
 - **2026-08-31 authenticated CPU/remote lock**: GigaAM v3, GigaAM Multilingual and
   OmniASR CTC 1B now have strict native CPU routes and independent official
   VAST real-weight parity. Their Apple CPU/Metal execution is still pending;
