@@ -20,8 +20,10 @@ usage: audit-parler-tts-dependencies.sh --output <audit.json>
 The target environment must already have been synchronized by a separately
 authorized, named VAST Parler-TTS job. This wrapper only inspects that frozen
 environment: it never runs uv sync, imports model/Torch code, invokes Cargo, or
-downloads model weights. The audit fetches only the four exact primary-source
-LICENSE files already named by license_gate_manifest.json.
+downloads model weights. For installed distributions without publisher files,
+the audit may fetch only the exact locked PyPI sdist and inspect its in-memory
+LICENSE/COPYING/NOTICE/COPYRIGHT members. It also fetches only the four exact
+primary-source LICENSE paths already named by license_gate_manifest.json.
 EOF
 }
 
@@ -151,6 +153,7 @@ self_test() {
   [[ -d /private/tmp && ! -L /private/tmp ]] && probe_parent=/private/tmp
   grep -Fq -- '--no-sync' "$0" || failed=1
   grep -Fq -- 'four exact primary-source' "$0" || failed=1
+  grep -Fq -- 'exact locked PyPI sdist' "$0" || failed=1
   grep -Fq -- 'never downloads model weights' "$0" || failed=1
   ! grep -Eq '^[[:space:]]*(uv[[:space:]]+sync|snapshot_download|huggingface-cli|cargo[[:space:]]+(build|test|check|clippy))([[:space:]]|$)' "$0" || failed=1
   grep -Fq -- 'uv run --no-cache --no-project --offline --python 3.12' "$0" || failed=1
