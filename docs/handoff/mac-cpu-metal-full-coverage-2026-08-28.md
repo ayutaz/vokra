@@ -610,10 +610,16 @@ of these bullets closes a model row until the named real run succeeds:
   Its 128-GiB VAST inspector uses only `torch.load(..., weights_only=True)`,
   safely handles scalar integer/float/BF16 buffers, records per-tensor raw-byte
   hashes and all tracked source files, and prepares evidence without claiming
-  a runtime. The public converter remains an unconditional
-  `INSPECTION_ONLY` refusal until the VAST-produced prepared SHA and complete
-  manifest are reviewed and pinned; a self-asserted sidecar cannot authorize
-  a GGUF.
+  a runtime. The authenticated run at
+  `/private/tmp/vokra-vast-evidence-509108cb-xy/` pins 1,079 tensors
+  (1,071 F32 / 8 bool), prepared safetensors SHA-256
+  `743f8f105159dcab57c363b330875d371d1618033cfc8caf372de4696370ebdf`,
+  and the fixed source/config/checkpoint identities. The manifest still marks
+  `TOPOLOGY_CONTRACT_UNVERIFIED_BLOCKER`: tensor names and config axes do not
+  authenticate the forward order, frontend/RVQ/Vocos semantics, or an
+  independent parity fixture. The public converter therefore remains an
+  unconditional `INSPECTION_ONLY` refusal; a self-asserted sidecar cannot
+  authorize a GGUF or native binder.
 - ACE-Step 1.5 now rejects its historical pass-through conversion path and
   treats the canonical 10.1-GB composite release as inspection-only. Its
   128-GiB VAST worker fixes the model and source revisions, parses every

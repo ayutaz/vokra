@@ -1,14 +1,17 @@
 //! **XY_Tokenizer**: safetensors checkpoint → GGUF conversion.
 //!
 //! - **HF**: `OpenMOSS-Team/XY_Tokenizer_TTSD_V0`
-//! - **License**: `apache-2.0` for the weights; the official source code has
-//!   no confirmed license and is not copied or derived here.
+//! - **License**: `apache-2.0` for the weights; the official source
+//!   `readme.md` explicitly declares Apache-2.0 at the fixed revision, but no
+//!   full `LICENSE`/`COPYING`/`NOTICE`/`COPYRIGHT` file is tracked. The source
+//!   is not copied or derived here.
 //! - **Category**: `codec`
 //! - **Notes**: 1 kbps RVQ-8 @ 12.5 Hz, MOSS-TTSD backend.
 //!
 //! Input: a VAST-prepared safetensors artifact derived from the upstream
 //! `OpenMOSS-Team/XY_Tokenizer_TTSD_V0` `.ckpt`. Output is deliberately
-//! `INSPECTION_ONLY`; no native XY_Tokenizer binder exists yet.
+//! `INSPECTION_ONLY`; no native XY_Tokenizer binder exists yet because the
+//! authenticated evidence still has an unverified topology contract.
 //!
 //! # BF16 posture
 //!
@@ -33,7 +36,7 @@
 //!
 //! `convert_xy_tokenizer_file` accepts the upstream `apache-2.0` value only;
 //! arbitrary license overrides are rejected so the weight license cannot be
-//! confused with the unconfirmed source-code license.
+//! confused with the separately recorded source README declaration.
 
 use std::path::Path;
 
@@ -140,10 +143,12 @@ pub struct XyTokenizerReport {
 /// Vokra GGUF at `output`.
 ///
 /// The public conversion entry point currently refuses every input with an
-/// explicit `INSPECTION_ONLY` error: no fixed prepared-artifact SHA or
-/// reviewed complete tensor manifest has landed yet. The private synthetic
-/// format helper exists only for converter tests. The only accepted license
-/// for a future conversion is the upstream `apache-2.0` weight license.
+/// explicit `INSPECTION_ONLY` error: although the VAST prepared-artifact SHA
+/// and complete tensor manifest are authenticated, the topology contract,
+/// native runtime path, and independent numerical parity are not. The private
+/// synthetic format helper exists only for converter tests. The only accepted
+/// license for a future conversion is the upstream `apache-2.0` weight
+/// license.
 ///
 /// # Errors
 ///
@@ -157,7 +162,7 @@ pub fn convert_xy_tokenizer_file(
 ) -> Result<XyTokenizerReport, ConvertError> {
     let _ = (input, output, license);
     Err(ConvertError::Usage(
-        "XY-Tokenizer conversion is INSPECTION_ONLY: fixed prepared artifact and complete tensor manifest are not yet reviewed"
+        "XY-Tokenizer conversion is INSPECTION_ONLY: topology contract, native runtime, and independent parity remain unauthenticated"
             .to_owned(),
     ))
 }
@@ -196,7 +201,7 @@ fn convert_xy_tokenizer_bytes(
     // Self-describing redistribution: the artifact carries its own
     // license. Default = `apache-2.0` (the OpenMOSS model-card weight
     // license). `require_license` rejects relabeling this weight as another
-    // license; source-code licensing remains separately unconfirmed. The
+    // license; source README evidence is recorded separately. The
     // `LicenseClass` is derived through the shared classifier.
     let class = LicenseClass::from_license_str(spdx);
     vokra_core::stamp_provenance(&mut b, class, spdx, Some(NAME), Some(UPSTREAM_HF));
