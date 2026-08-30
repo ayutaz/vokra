@@ -453,6 +453,7 @@ struct WnConv1d {
 }
 
 impl WnConv1d {
+    #[allow(clippy::too_many_arguments)] // Convolution geometry is an intrinsic authenticated parameter set.
     fn load(
         file: &GgufFile,
         prefix: &str,
