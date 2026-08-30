@@ -100,7 +100,9 @@ jobs:
           #     blocked upstream inventory with no uv.lock; its dedicated
           #     sync/model-download path is forbidden before license and
           #     soxr review. The exact diffusers advisories below are retained
-          #     only for this fail-closed, non-executable inventory.
+          #     only for this fail-closed, non-executable inventory. The same
+          #     inventory pins modelscope==1.20.0; its crafted-module advisory
+          #     is likewise an exact exception, never permission to execute it.
           # Those trees only dump independent reference tensors on VAST.
           # torch and Transformers appear nowhere else in the repository:
           # the Rust runtime carries no dependencies (check-zero-deps.sh)
@@ -130,7 +132,8 @@ jobs:
             GHSA-vgrw-7cvw-pwgx,
             GHSA-wrfc-pvp9-mr9g,
             GHSA-98h9-4798-4q5v,
-            GHSA-7wx4-6vff-v64p
+            GHSA-7wx4-6vff-v64p,
+            GHSA-fhhq-h4hg-549x
           vulnerability-check: true
           retry-on-snapshot-warnings: true
           show-openssf-scorecard: true
