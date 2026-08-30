@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 from collections import Counter
 import hashlib
 import importlib.metadata as metadata
@@ -195,18 +196,201 @@ def _license_fields(dist: metadata.Distribution) -> dict[str, Any]:
     }
 
 
-def _active_lock_packages(lock: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = [row for row in lock["package"] if row["source"] != {"virtual": "."}]
-    if sys.platform == "darwin":
-        wanted_torch = "2.13.0"
-    else:
-        wanted_torch = "2.13.0+cpu"
-    active: list[dict[str, Any]] = []
+_MARKER_VARIABLES = {"implementation_name", "platform_machine", "sys_platform"}
+_MARKER_TOKEN = re.compile(r"\s*(?:(and|or|==|!=|\(|\))|([A-Za-z_][A-Za-z0-9_]*)|('(?:[^'\\]|\\.)*'))")
+
+
+def _marker_environment() -> dict[str, str]:
+    return {
+        "implementation_name": sys.implementation.name,
+        "platform_machine": platform.machine().casefold(),
+        "sys_platform": sys.platform,
+    }
+
+
+def _marker_matches(marker: Any, environment: dict[str, str]) -> bool:
+    if marker is None:
+        return True
+    if not isinstance(marker, str) or not marker.strip():
+        raise ValueError("lock marker must be a non-empty string")
+    tokens: list[tuple[str, str]] = []
+    position = 0
+    while position < len(marker):
+        match = _MARKER_TOKEN.match(marker, position)
+        if match is None:
+            if marker[position:].strip():
+                raise ValueError(f"unsupported lock marker grammar: {marker}")
+            break
+        if match.group(1) is not None:
+            tokens.append(("operator", match.group(1)))
+        elif match.group(2) is not None:
+            tokens.append(("identifier", match.group(2)))
+        else:
+            tokens.append(("string", match.group(3)[1:-1]))
+        position = match.end()
+    cursor = 0
+
+    def peek(value: str | None = None) -> tuple[str, str] | None:
+        if cursor >= len(tokens):
+            return None
+        token = tokens[cursor]
+        return token if value is None or token[1] == value else None
+
+    def take(value: str | None = None) -> tuple[str, str]:
+        nonlocal cursor
+        token = peek(value)
+        if token is None:
+            raise ValueError(f"unsupported lock marker grammar: {marker}")
+        cursor += 1
+        return token
+
+    def parse_atom() -> bool:
+        if peek("(") is not None:
+            take("(")
+            result = parse_or()
+            take(")")
+            return result
+        variable = take()[1]
+        if variable not in _MARKER_VARIABLES:
+            raise ValueError(f"unsupported lock marker variable: {variable}")
+        operator = take()[1]
+        if operator not in {"==", "!="}:
+            raise ValueError(f"unsupported lock marker operator: {operator}")
+        literal = take()[1]
+        if tokens[cursor - 1][0] != "string" or "\\" in literal:
+            raise ValueError(f"unsupported lock marker literal: {marker}")
+        result = environment[variable] == literal
+        return result if operator == "==" else not result
+
+    def parse_and() -> bool:
+        result = parse_atom()
+        while peek("and") is not None:
+            take("and")
+            result = parse_atom() and result
+        return result
+
+    def parse_or() -> bool:
+        result = parse_and()
+        while peek("or") is not None:
+            take("or")
+            result = parse_and() or result
+        return result
+
+    result = parse_or()
+    if cursor != len(tokens):
+        raise ValueError(f"unsupported lock marker grammar: {marker}")
+    return result
+
+
+def _row_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        row["name"].casefold().replace("-", "_"),
+        row["version"],
+        canonical_json(row["source"]),
+    )
+
+
+def _resolved_for_environment(row: dict[str, Any], environment: dict[str, str]) -> bool:
+    markers = row.get("resolution-markers")
+    if markers is None:
+        return True
+    if not isinstance(markers, list) or not markers:
+        raise ValueError(f"package resolution-markers are malformed: {row.get('name')}")
+    matches = [_marker_matches(marker, environment) for marker in markers]
+    if sum(matches) > 1:
+        raise ValueError(f"ambiguous package resolution-markers: {row.get('name')}")
+    return any(matches)
+
+
+def _active_lock_graph(
+    lock: dict[str, Any],
+    environment: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[tuple[str, str, str], str]]:
+    environment = _marker_environment() if environment is None else environment
+    rows = lock.get("package")
+    if not isinstance(rows, list):
+        raise ValueError("lock package rows are malformed")
+    top_markers = lock.get("resolution-markers")
+    if top_markers is not None:
+        if not isinstance(top_markers, list) or not top_markers:
+            raise ValueError("lock resolution-markers are malformed")
+        if sum(_marker_matches(marker, environment) for marker in top_markers) != 1:
+            raise ValueError("lock resolution-markers are ambiguous for the current environment")
+    row_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row["name"] == "torch" and row["version"] != wanted_torch:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("version"), str):
+            raise ValueError("lock package identity is malformed")
+        if not isinstance(row.get("source"), dict):
+            raise ValueError(f"lock package source is malformed: {row.get('name')}")
+        key = _row_key(row)
+        if key in row_by_key:
+            raise ValueError(f"duplicate lock package identity: {row['name']}=={row['version']}")
+        row_by_key[key] = row
+        _resolved_for_environment(row, environment)
+        for dependency in row.get("dependencies", []):
+            if not isinstance(dependency, dict) or not isinstance(dependency.get("name"), str):
+                raise ValueError(f"lock dependency is malformed: {row['name']}")
+            _marker_matches(dependency.get("marker"), environment)
+        by_name.setdefault(row["name"].casefold().replace("-", "_"), []).append(row)
+    roots = [row for row in rows if row.get("source") == {"virtual": "."}]
+    if len(roots) != 1:
+        raise ValueError("lock must contain exactly one virtual project row")
+    root = roots[0]
+    active: set[tuple[str, str, str]] = set()
+    visiting: set[tuple[str, str, str]] = set()
+
+    def visit(row: dict[str, Any]) -> None:
+        key = _row_key(row)
+        if key in visiting:
+            raise ValueError(f"dependency cycle encountered at {row['name']}")
+        if key in active:
+            return
+        visiting.add(key)
+        for dependency in row.get("dependencies", []):
+            if not _marker_matches(dependency.get("marker"), environment):
+                continue
+            name = dependency["name"].casefold().replace("-", "_")
+            candidates = [candidate for candidate in by_name.get(name, []) if _resolved_for_environment(candidate, environment)]
+            if "version" in dependency:
+                if not isinstance(dependency["version"], str):
+                    raise ValueError(f"lock dependency version is malformed: {row['name']} -> {name}")
+                candidates = [candidate for candidate in candidates if candidate["version"] == dependency["version"]]
+            if "source" in dependency:
+                if not isinstance(dependency["source"], dict):
+                    raise ValueError(f"lock dependency source is malformed: {row['name']} -> {name}")
+                source = canonical_json(dependency["source"])
+                candidates = [candidate for candidate in candidates if canonical_json(candidate["source"]) == source]
+            if len(candidates) != 1:
+                raise ValueError(f"missing or ambiguous lock dependency: {row['name']} -> {name}")
+            visit(candidates[0])
+        visiting.remove(key)
+        active.add(key)
+
+    visit(root)
+    inactive_reasons: dict[tuple[str, str, str], str] = {}
+    for row in rows:
+        key = _row_key(row)
+        if key in active:
             continue
-        active.append(row)
-    return sorted(active, key=lambda row: (row["name"], row["version"]))
+        if row.get("source") == {"virtual": "."}:
+            inactive_reasons[key] = "virtual project row; no installed distribution is expected"
+        elif "resolution-markers" in row and not _resolved_for_environment(row, environment):
+            inactive_reasons[key] = "package resolution-marker is false for the current environment"
+        else:
+            inactive_reasons[key] = "not reachable from the virtual project dependency graph for the current environment"
+    selected = sorted(
+        (row_by_key[key] for key in active if row_by_key[key].get("source") != {"virtual": "."}),
+        key=lambda row: (row["name"], row["version"], canonical_json(row["source"])),
+    )
+    return selected, inactive_reasons
+
+
+def _active_lock_packages(
+    lock: dict[str, Any],
+    environment: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    return _active_lock_graph(lock, environment)[0]
 
 
 def _distribution_map() -> dict[str, list[metadata.Distribution]]:
@@ -261,8 +445,8 @@ def audit_environment(project: Path) -> dict[str, Any]:
         raise ValueError("pyproject.toml bytes do not match the reviewed preflight digest")
 
     all_rows = sorted(lock["package"], key=lambda row: (row["name"], row["version"], canonical_json(row["source"])))
-    expected = _active_lock_packages(lock)
-    active_keys = {(row["name"], row["version"], canonical_json(row["source"])) for row in expected}
+    expected, inactive_reasons = _active_lock_graph(lock)
+    active_keys = {_row_key(row) for row in expected}
     distributions = _distribution_map()
     expected_identities = [
         f"{row['name'].casefold().replace('-', '_')}=={row['version']}" for row in expected
@@ -314,19 +498,15 @@ def audit_environment(project: Path) -> dict[str, Any]:
     active_packages = packages
     packages = []
     active_by_key = {
-        (item["lock"]["name"], item["lock"]["version"], canonical_json(item["lock"]["source"])): item
+        _row_key(item["lock"]): item
         for item in active_packages
     }
     for row in all_rows:
-        key = (row["name"], row["version"], canonical_json(row["source"]))
+        key = _row_key(row)
         if key in active_keys:
             packages.append(active_by_key[key])
             continue
-        reason = (
-            "virtual project row; no installed distribution is expected"
-            if row["source"] == {"virtual": "."}
-            else f"platform-inactive lock alternative on {sys.platform}"
-        )
+        reason = inactive_reasons[key]
         inactive_rows.append({"identity": _lock_identity(row), "reason": reason})
         packages.append(
             {
@@ -532,9 +712,63 @@ def run(project: Path, output: Path, fetch_model_licenses: bool) -> int:
 def self_test() -> int:
     project = Path(__file__).resolve().parent
     lock = tomllib.loads((project / "uv.lock").read_text(encoding="utf-8"))
-    assert len(_active_lock_packages(lock)) == 93
+    assert len(_active_lock_packages(lock)) == 91
     expected_torch = {"2.13.0"} if sys.platform == "darwin" else {"2.13.0+cpu"}
     assert {row["version"] for row in _active_lock_packages(lock) if row["name"] == "torch"} == expected_torch
+    linux_environment = {
+        "implementation_name": "cpython",
+        "platform_machine": "x86_64",
+        "sys_platform": "linux",
+    }
+    linux_active, linux_inactive = _active_lock_graph(lock, linux_environment)
+    assert len(linux_active) == 91
+    assert {row["version"] for row in linux_active if row["name"] == "torch"} == {"2.13.0+cpu"}
+    assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "colorama")] == (
+        "not reachable from the virtual project dependency graph for the current environment"
+    )
+    assert linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "tzdata")] == (
+        "not reachable from the virtual project dependency graph for the current environment"
+    )
+    assert "resolution-marker" in linux_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "torch" and row["version"] == "2.13.0")]
+    darwin_environment = {
+        "implementation_name": "cpython",
+        "platform_machine": "arm64",
+        "sys_platform": "darwin",
+    }
+    darwin_active, darwin_inactive = _active_lock_graph(lock, darwin_environment)
+    assert len(darwin_active) == 91
+    assert {row["version"] for row in darwin_active if row["name"] == "torch"} == {"2.13.0"}
+    assert "resolution-marker" in darwin_inactive[next(_row_key(row) for row in lock["package"] if row["name"] == "torch" and row["version"] == "2.13.0+cpu")]
+    tampered_marker = copy.deepcopy(lock)
+    virtual = next(row for row in tampered_marker["package"] if row["source"] == {"virtual": "."})
+    virtual["dependencies"][0]["marker"] = "sys_platform === 'linux'"
+    try:
+        _active_lock_packages(tampered_marker, linux_environment)
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: unsupported marker grammar accepted", file=sys.stderr)
+        return 1
+    tampered_variable = copy.deepcopy(lock)
+    virtual = next(row for row in tampered_variable["package"] if row["source"] == {"virtual": "."})
+    virtual["dependencies"][0]["marker"] = "python_version == '3.12'"
+    try:
+        _active_lock_packages(tampered_variable, linux_environment)
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: unsupported marker variable accepted", file=sys.stderr)
+        return 1
+    tampered_cycle = copy.deepcopy(lock)
+    numpy_row = next(row for row in tampered_cycle["package"] if row["name"] == "numpy")
+    numpy_row["dependencies"] = [{"name": "qwen-asr"}]
+    try:
+        _active_lock_packages(tampered_cycle, linux_environment)
+    except ValueError:
+        pass
+    else:
+        print("qwen3-asr dependency audit: reachable dependency cycle accepted", file=sys.stderr)
+        return 1
     assert _closure_differences(["torch==2.13.0+cpu"], ["torch==2.13.0"])[0] == ["torch==2.13.0+cpu"]
     assert _closure_differences(["anyio==4.14.2"], ["anyio==4.14.2", "anyio==4.14.2"])[1] == ["anyio==4.14.2"]
     assert canonical_json({"b": 2, "a": 1}) == '{"a":1,"b":2}'
