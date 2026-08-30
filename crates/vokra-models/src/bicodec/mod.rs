@@ -1276,6 +1276,61 @@ mod tests {
         assert_eq!(scaled, vec![3.0, -6.0, 12.0]);
     }
 
+    fn synthetic_reference_manifest(shape: &str) -> String {
+        format!(
+            "{{\"semantic_latent\": {{\"path\": \"semantic_latent.f32\", \"shape\": {shape}, \"dtype\": \"F32\", \"sha256\": \"deadbeef\"}}}}"
+        )
+    }
+
+    fn assert_reference_record_rejected(manifest: &str) {
+        assert!(
+            std::panic::catch_unwind(|| reference_record(
+                manifest,
+                "semantic_latent",
+                &[1, MODEL_DIM, 4]
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reference_record_accepts_pretty_multiline_shape() {
+        let manifest = r#"{
+            "semantic_latent": {
+                "path": "semantic_latent.f32",
+                "shape": [
+                    1,
+                    1024,
+                    4
+                ],
+                "dtype": "F32",
+                "sha256": "deadbeef"
+            }
+        }"#;
+        assert_eq!(
+            reference_record(manifest, "semantic_latent", &[1, MODEL_DIM, 4]),
+            ("semantic_latent.f32", "deadbeef")
+        );
+    }
+
+    #[test]
+    fn reference_record_rejects_malformed_duplicate_and_extra_shapes() {
+        for shape in ["[1, 1024, -4]", "[1, 1024, 1.0]"] {
+            assert_reference_record_rejected(&synthetic_reference_manifest(shape));
+        }
+        let duplicate_shape = r#"{
+            "semantic_latent": {
+                "path": "semantic_latent.f32",
+                "shape": [1, 1024, 4],
+                "shape": [1, 1024, 4],
+                "dtype": "F32",
+                "sha256": "deadbeef"
+            }
+        }"#;
+        assert_reference_record_rejected(duplicate_shape);
+        assert_reference_record_rejected(&synthetic_reference_manifest("[1, 1024, 4, 0]"));
+    }
+
     #[test]
     #[ignore = "VAST-only: requires authenticated GGUF and official reference outputs"]
     fn official_reference_report_only() {
@@ -1447,42 +1502,160 @@ mod tests {
         );
     }
 
-    fn reference_record<'a>(manifest: &'a str, role: &str, shape: &[usize]) -> (&'a str, &'a str) {
-        let marker = format!("\"{role}\": {{");
-        let start = manifest.find(&marker).expect("reference tensor record");
-        let record_start = start + marker.len();
-        let record_end = manifest[record_start..]
-            .find("\n    },\n    \"")
-            .map_or(manifest.len(), |offset| record_start + offset);
-        let record = &manifest[start..record_end];
-        let shape_text = format!(
-            "[{}]",
-            shape
-                .iter()
-                .map(|value| value.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
+    fn reference_record<'a>(
+        manifest: &'a str,
+        role: &str,
+        expected_shape: &[usize],
+    ) -> (&'a str, &'a str) {
+        let role_marker = format!("\"{role}\"");
+        assert_eq!(
+            manifest.matches(&role_marker).count(),
+            1,
+            "reference tensor record must be unique: {role}"
         );
-        assert!(
-            record.contains(&format!("\"shape\": {shape_text}")),
-            "reference {role} shape"
+        let role_start = manifest
+            .find(&role_marker)
+            .expect("reference tensor record");
+        let mut object_start = role_start + role_marker.len();
+        object_start = skip_ascii_whitespace(manifest, object_start);
+        assert_eq!(manifest.as_bytes().get(object_start), Some(&b':'));
+        object_start = skip_ascii_whitespace(manifest, object_start + 1);
+        assert_eq!(manifest.as_bytes().get(object_start), Some(&b'{'));
+        let object_end = matching_object_end(manifest, object_start);
+        let record = &manifest[object_start..=object_end];
+
+        let path = string_field(record, "path");
+        let dtype = string_field(record, "dtype");
+        assert_eq!(dtype, "F32", "reference tensor dtype");
+        let expected_sha = string_field(record, "sha256");
+        shape_field(record, expected_shape);
+        (path, expected_sha)
+    }
+
+    fn skip_ascii_whitespace(text: &str, mut index: usize) -> usize {
+        while text
+            .as_bytes()
+            .get(index)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            index += 1;
+        }
+        index
+    }
+
+    fn matching_object_end(text: &str, start: usize) -> usize {
+        let bytes = text.as_bytes();
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate().skip(start) {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match *byte {
+                b'"' => in_string = true,
+                b'{' => depth = depth.checked_add(1).expect("reference object depth"),
+                b'}' => {
+                    depth = depth.checked_sub(1).expect("reference object close");
+                    if depth == 0 {
+                        return index;
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("reference tensor record has no matching object close")
+    }
+
+    fn field_value_start(record: &str, field: &str) -> usize {
+        let marker = format!("\"{field}\"");
+        assert_eq!(
+            record.matches(&marker).count(),
+            1,
+            "reference field must be unique: {field}"
         );
-        assert!(
-            record.contains("\"dtype\": \"F32\""),
-            "reference {role} dtype"
-        );
-        let path_start = record.find("\"path\": \"").expect("reference tensor path") + 10;
-        let path_end = record[path_start..]
+        let marker_start = record.find(&marker).expect("reference field");
+        let colon_start = skip_ascii_whitespace(record, marker_start + marker.len());
+        assert_eq!(record.as_bytes().get(colon_start), Some(&b':'));
+        skip_ascii_whitespace(record, colon_start + 1)
+    }
+
+    fn string_field<'a>(record: &'a str, field: &str) -> &'a str {
+        let value_start = field_value_start(record, field);
+        assert_eq!(record.as_bytes().get(value_start), Some(&b'"'));
+        let value_end = record[value_start + 1..]
             .find('"')
-            .expect("reference tensor path end")
-            + path_start;
-        let sha_marker = "\"sha256\": \"";
-        let sha_start = record.find(sha_marker).expect("reference tensor SHA") + sha_marker.len();
-        let sha_end = record[sha_start..]
-            .find('"')
-            .expect("reference tensor SHA end")
-            + sha_start;
-        (&record[path_start..path_end], &record[sha_start..sha_end])
+            .map(|offset| value_start + 1 + offset)
+            .expect("reference string field terminator");
+        let terminator = skip_ascii_whitespace(record, value_end + 1);
+        assert!(
+            matches!(record.as_bytes().get(terminator), Some(b',' | b'}')),
+            "reference string field terminator"
+        );
+        &record[value_start + 1..value_end]
+    }
+
+    fn shape_field(record: &str, expected: &[usize]) {
+        let value_start = field_value_start(record, "shape");
+        assert_eq!(record.as_bytes().get(value_start), Some(&b'['));
+        let bytes = record.as_bytes();
+        let mut index = value_start + 1;
+        let mut values = Vec::new();
+        let mut expect_value = true;
+        loop {
+            index = skip_ascii_whitespace(record, index);
+            match bytes.get(index) {
+                Some(b']') => {
+                    assert!(
+                        !expect_value || values.is_empty(),
+                        "reference shape trailing comma"
+                    );
+                    index += 1;
+                    break;
+                }
+                Some(byte) if expect_value && byte.is_ascii_digit() => {
+                    let mut value = 0usize;
+                    while let Some(byte) = bytes.get(index).copied() {
+                        if !byte.is_ascii_digit() {
+                            break;
+                        }
+                        value = value
+                            .checked_mul(10)
+                            .and_then(|current| current.checked_add(usize::from(byte - b'0')))
+                            .expect("reference shape dimension overflow");
+                        index += 1;
+                    }
+                    values.push(value);
+                    expect_value = false;
+                }
+                _ => panic!("reference shape contains a non-ASCII-number value"),
+            }
+            index = skip_ascii_whitespace(record, index);
+            match bytes.get(index) {
+                Some(b',') if !expect_value => {
+                    expect_value = true;
+                    index += 1;
+                }
+                Some(b']') if !expect_value => {
+                    index += 1;
+                    break;
+                }
+                _ => panic!("reference shape requires comma or close"),
+            }
+        }
+        index = skip_ascii_whitespace(record, index);
+        assert!(
+            matches!(bytes.get(index), Some(b',' | b'}')),
+            "reference shape terminator"
+        );
+        assert_eq!(values, expected, "reference tensor shape");
     }
 
     fn hex_digest(bytes: &[u8; 32]) -> String {
