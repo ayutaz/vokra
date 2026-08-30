@@ -10,6 +10,7 @@ safe-load tensor manifest, while keeping the overall result BLOCKED/INSPECTION_O
 from __future__ import annotations
 
 import argparse
+from fractions import Fraction
 import hashlib
 import json
 import math
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import numpy as np
 import torch
 import yaml
 
@@ -54,6 +56,40 @@ MEMBER_ORDER = [MEMBERS[prefix] for prefix in ["f7e0c4bc", "d12395a8", "92cfc3b6
 KNOWN_HEAD_BYTES = {"f7e0c4bc-ba3fe64a.th": 84_141_271, "5c90dfd2-34c22ccb.th": 54_996_327}
 FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER = "FULL_WEIGHT_DIGESTS_UNREVIEWED_BLOCKER"
 EVIDENCE_FILENAME = "htdemucs_multi_manifest.json"
+PACKAGE_KEYS = ("klass", "args", "kwargs", "state", "training_args", "metrics")
+
+# The checkpoint scanner is run before the safe loader.  These are the exact
+# globals observed in the authenticated Meta archives.  A new global is a
+# review boundary, not a reason to broaden the allow-list automatically.
+EXPECTED_UNSAFE_GLOBALS = {
+    filename: frozenset(
+        {
+            "demucs.htdemucs.HTDemucs",
+            "fractions.Fraction",
+            "numpy.core.multiarray.scalar",
+            "numpy.dtype",
+        }
+    )
+    for filename in (MEMBERS[prefix] for prefix in ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"])
+}
+EXPECTED_UNSAFE_GLOBALS[MEMBERS["5c90dfd2"]] = frozenset(
+    {"demucs.htdemucs.HTDemucs", "fractions.Fraction"}
+)
+EXPECTED_STATE_COUNTS = {
+    **{MEMBERS[prefix]: (533, 41_984_456) for prefix in ["f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d"]},
+    MEMBERS["5c90dfd2"]: (525, 27_414_996),
+}
+
+
+class ClassToken:
+    """Inert stand-in for the upstream HTDemucs class reference.
+
+    This class intentionally has no model code, attributes, or callable
+    behavior.  It is used only to let PyTorch's restricted unpickler preserve
+    the class identity in the package header.
+    """
+
+    __slots__ = ()
 
 
 def sha256(path: Path) -> str:
@@ -87,6 +123,129 @@ def json_load_unique(path: Path) -> Any:
         return result
 
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject)
+
+
+def expected_unsafe_globals(filename: str) -> frozenset[str]:
+    try:
+        return EXPECTED_UNSAFE_GLOBALS[filename]
+    except KeyError as error:
+        raise ValueError(f"no authenticated unsafe-global contract for {filename!r}") from error
+
+
+def safe_globals(filename: str) -> list[Any]:
+    """Return the minimal globals needed by the fixed package schemas.
+
+    The explicit legacy name on the NumPy scalar tuple is required because
+    the archive was written with ``numpy.core`` while NumPy 2 exposes the
+    implementation under ``numpy._core``.  No upstream Demucs module is
+    imported: the class global is mapped to the inert token above.
+    """
+
+    values: list[Any] = [
+        (ClassToken, "demucs.htdemucs.HTDemucs"),
+        Fraction,
+    ]
+    if "numpy.core.multiarray.scalar" in expected_unsafe_globals(filename):
+        numpy_core = getattr(np, "_core", None)
+        if numpy_core is None:
+            raise ValueError("NumPy lacks the authenticated _core.multiarray implementation")
+        values.extend(
+            [
+                (numpy_core.multiarray.scalar, "numpy.core.multiarray.scalar"),
+                np.dtype,
+                type(np.dtype(np.float64)),
+            ]
+        )
+    return values
+
+
+def scan_unsafe_globals(path: Path, expected: frozenset[str]) -> list[str]:
+    scanner = getattr(getattr(torch, "serialization", None), "get_unsafe_globals_in_checkpoint", None)
+    if scanner is None:
+        raise ValueError("PyTorch lacks get_unsafe_globals_in_checkpoint")
+    observed = scanner(str(path))
+    if (
+        not isinstance(observed, list)
+        or any(type(item) is not str for item in observed)
+        or len(observed) != len(set(observed))
+        or set(observed) != expected
+    ):
+        raise ValueError(
+            f"unsafe global set mismatch: observed={observed!r}, expected={sorted(expected)!r}"
+        )
+    return sorted(observed)
+
+
+def _validate_metadata(value: Any, path: str, depth: int = 0, seen: set[int] | None = None) -> None:
+    """Accept only inert builtin/observed NumPy metadata values.
+
+    Tensors are intentionally excluded here.  The only tensor-bearing field
+    in the package is ``state`` and it is validated separately, so metadata
+    cannot accidentally contribute to the inventory.
+    """
+
+    if depth > 64:
+        raise ValueError(f"metadata nesting exceeds 64 levels at {path}")
+    if value is None or type(value) in (str, bool, int):
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"metadata contains a non-finite float at {path}")
+        return
+    if type(value) is np.float64:
+        if not math.isfinite(float(value)):
+            raise ValueError(f"metadata contains a non-finite numpy float at {path}")
+        return
+    if type(value) is Fraction:
+        return
+    if type(value) is type(np.dtype(np.float64)):
+        if value != np.dtype(np.float64):
+            raise ValueError(f"metadata contains an unsupported NumPy dtype at {path}")
+        return
+    seen = set() if seen is None else seen
+    if type(value) is dict:
+        if id(value) in seen:
+            raise ValueError(f"cyclic metadata at {path}")
+        seen.add(id(value))
+        for key, child in value.items():
+            if type(key) is not str:
+                raise ValueError(f"metadata key is not a string at {path}: {key!r}")
+            _validate_metadata(child, f"{path}.{key}", depth + 1, seen)
+        seen.remove(id(value))
+        return
+    if type(value) in (list, tuple):
+        if id(value) in seen:
+            raise ValueError(f"cyclic metadata at {path}")
+        seen.add(id(value))
+        for index, child in enumerate(value):
+            _validate_metadata(child, f"{path}[{index}]", depth + 1, seen)
+        seen.remove(id(value))
+        return
+    raise ValueError(f"unsupported metadata object at {path}: {type(value).__name__}")
+
+
+def validate_package(payload: Any) -> dict[str, torch.Tensor]:
+    if type(payload) is not dict or tuple(payload) != PACKAGE_KEYS:
+        observed = list(payload) if type(payload) is dict else type(payload).__name__
+        raise ValueError(f"package schema keys differ: observed={observed!r}, expected={list(PACKAGE_KEYS)!r}")
+    if payload["klass"] is not ClassToken:
+        raise ValueError("package field 'klass' is not the inert ClassToken class")
+    expected_types = {"args": tuple, "kwargs": dict, "state": dict, "training_args": dict, "metrics": tuple}
+    for key, expected_type in expected_types.items():
+        value = payload[key]
+        if type(value) is not expected_type:
+            raise ValueError(f"package field {key!r} has type {type(value).__name__}, expected {expected_type.__name__}")
+    for key in ("args", "kwargs", "metrics", "training_args"):
+        _validate_metadata(payload[key], key)
+    state = payload["state"]
+    if not state:
+        raise ValueError("package state is empty")
+    for key, value in state.items():
+        if type(key) is not str:
+            raise ValueError(f"state key is not a string: {key!r}")
+        if not isinstance(value, torch.Tensor):
+            raise ValueError(f"state value {key!r} is not a Tensor: {type(value).__name__}")
+    return state
 
 
 class StrictYamlLoader(yaml.SafeLoader):
@@ -291,13 +450,36 @@ def inspect_member(path: Path, response: dict[str, Any] | None) -> dict[str, Any
         result["response_blockers"] = blockers
         return result
     try:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
+        result["unsafe_globals"] = scan_unsafe_globals(path, expected_unsafe_globals(path.name))
+    except Exception as error:  # noqa: BLE001 - record the loud static-global blocker
+        result["safe_load_status"] = "BLOCKED_STATIC_GLOBALS"
+        result["safe_load_error"] = f"{type(error).__name__}: {error}"
+        return result
+    try:
+        with torch.serialization.safe_globals(safe_globals(path.name)):
+            payload = torch.load(path, map_location="cpu", weights_only=True)
     except Exception as error:  # noqa: BLE001 - record the loud safe-load blocker
         result["safe_load_status"] = "BLOCKED_WEIGHTS_ONLY"
         result["safe_load_error"] = f"{type(error).__name__}: {error}"
         return result
     try:
-        tensors, unsupported = tensor_manifest(payload)
+        state = validate_package(payload)
+    except (RuntimeError, TypeError, ValueError) as error:
+        result["safe_load_status"] = "BLOCKED_PACKAGE_SCHEMA"
+        result["safe_load_error"] = str(error)
+        return result
+    expected_entries, expected_parameters = EXPECTED_STATE_COUNTS[path.name]
+    observed_entries = len(state)
+    observed_parameters = sum(int(value.numel()) for value in state.values())
+    if (observed_entries, observed_parameters) != (expected_entries, expected_parameters):
+        result["safe_load_status"] = "BLOCKED_PACKAGE_SCHEMA"
+        result["safe_load_error"] = (
+            f"state inventory differs: observed={(observed_entries, observed_parameters)!r}, "
+            f"expected={(expected_entries, expected_parameters)!r}"
+        )
+        return result
+    try:
+        tensors, unsupported = tensor_manifest(state)
     except RuntimeError as error:
         result["safe_load_status"] = "BLOCKED_CONTAINER"
         result["safe_load_error"] = str(error)
@@ -332,6 +514,17 @@ def self_test() -> None:
     assert six_config["models"] == SIX_MODELS
     assert six_config["declared_weights"] is None and six_config["weight_semantics"] == "DERIVED_SINGLE_MEMBER_IDENTITY"
     assert MEMBERS["5c90dfd2"].endswith(".th")
+    assert expected_unsafe_globals(MEMBERS["f7e0c4bc"]) == frozenset(
+        {
+            "demucs.htdemucs.HTDemucs",
+            "fractions.Fraction",
+            "numpy.core.multiarray.scalar",
+            "numpy.dtype",
+        }
+    )
+    assert expected_unsafe_globals(MEMBERS["5c90dfd2"]) == frozenset(
+        {"demucs.htdemucs.HTDemucs", "fractions.Fraction"}
+    )
     assert UPSTREAM_URL == "https://github.com/facebookresearch/demucs"
     assert UPSTREAM_REVISION.isascii() and len(UPSTREAM_REVISION) == 40
     for invalid in (
@@ -367,6 +560,29 @@ def self_test() -> None:
         assert "cyclic" in str(error)
     else:
         raise AssertionError("cyclic safe-load object was accepted")
+    valid_state = {"layer.weight": torch.ones((2, 2), dtype=torch.float16)}
+    valid_package = {
+        "klass": ClassToken,
+        "args": (),
+        "kwargs": {},
+        "state": valid_state,
+        "training_args": {},
+        "metrics": (),
+    }
+    assert validate_package(valid_package) is valid_state
+    for invalid_package in (
+        {**valid_package, "klass": ClassToken()},
+        {**valid_package, "klass": object},
+        {**valid_package, "state": {"layer.weight": "not a tensor"}},
+        {**valid_package, "metrics": (object(),)},
+        {**valid_package, "extra": True},
+    ):
+        try:
+            validate_package(invalid_package)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid HT-Demucs package was accepted")
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-inspect-") as directory:
         path = Path(directory) / MEMBERS["f7e0c4bc"]
         torch.save({"tensor": torch.ones((2, 2))}, path)
@@ -391,7 +607,7 @@ def self_test() -> None:
         sha256 = lambda _path: "ba3fe64a" + "0" * 56
         valid_response["sha256"] = "ba3fe64a" + "0" * 56
         result = inspect_member(path, valid_response)
-        assert result["safe_load_status"] == "SAFE_LOADED"
+        assert result["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
         spoof = dict(valid_response)
         spoof["sha256"] = "0" * 64
         assert inspect_member(path, spoof)["safe_load_status"] == "BLOCKED_RESPONSE_IDENTITY"
@@ -413,7 +629,7 @@ def self_test() -> None:
         unsupported_response = dict(valid_response)
         unsupported_response.update({"filename": unsupported.name, "requested_url": expected_member_url(unsupported.name), "effective_url": expected_member_url(unsupported.name), "content_length": unsupported.stat().st_size, "bytes": unsupported.stat().st_size, "sha256": "e57c48e6" + "0" * 56})
         sha256 = lambda _path: "e57c48e6" + "0" * 56
-        assert inspect_member(unsupported, unsupported_response)["safe_load_status"] in {"BLOCKED_WEIGHTS_ONLY", "BLOCKED_UNSUPPORTED_OBJECT"}
+        assert inspect_member(unsupported, unsupported_response)["safe_load_status"] == "BLOCKED_STATIC_GLOBALS"
         sha256 = real_sha256
     with tempfile.TemporaryDirectory(prefix="vokra-htdemucs-error-") as directory:
         error_evidence = Path(directory)
