@@ -40,6 +40,22 @@ MANIFEST_KEYS = {
 LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
+PYTORCH_CPU_REGISTRY = "https://download.pytorch.org/whl/cpu"
+# The checked-in Parler lock has no size only for these two exact PyTorch CPU
+# wheel identities.  This is an allowlist of lock facts, never a filename or
+# package-name heuristic; the self-test re-derives the production set from the
+# lock bytes and requires exact set equality.
+PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE = {
+    "torch": (
+        "https://download-r2.pytorch.org/whl/cpu/torch-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256:f82e2ae20c1545bb03997d1cc3143d94e14b800038669ee1aca45808a9acc338",
+    ),
+    "torchaudio": (
+        "https://download-r2.pytorch.org/whl/cpu/torchaudio-2.11.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+        "sha256:2354248848d06a9ae1e7a12165f800f0dda7df60ecac9fca892322b722b922c0",
+    ),
+}
+PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE = set(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE.values())
 REGISTRY_PACKAGE_SCHEMAS = {
     frozenset({"name", "version", "source", "sdist", "wheels"}),
     frozenset({"name", "version", "source", "dependencies", "sdist", "wheels"}),
@@ -147,16 +163,36 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates)
 
 
-def validate_artifact(value: Any, label: str, registry: str) -> None:
-    if not isinstance(value, dict) or set(value) != ARTIFACT_KEYS:
+def validate_artifact(
+    value: Any,
+    label: str,
+    registry: str,
+    package_name: str | None = None,
+    artifact_kind: str = "artifact",
+) -> None:
+    if not isinstance(value, dict) or set(value) not in (ARTIFACT_KEYS, ARTIFACT_KEYS - {"size"}):
         raise ValueError(f"{label} artifact schema is malformed")
+    if artifact_kind not in {"sdist", "wheel"}:
+        raise ValueError(f"{label} artifact kind is not explicit")
+    if package_name is not None:
+        if registry == PYTORCH_CPU_REGISTRY and package_name not in {"torch", "torchaudio"}:
+            raise ValueError(f"{label} PyTorch CPU registry is bound to an unexpected package")
+        if registry == "https://pypi.org/simple" and package_name in {"torch", "torchaudio"}:
+            raise ValueError(f"{label} Torch package is not bound to the PyTorch CPU registry")
     expected_host = "download-r2.pytorch.org" if registry == "https://download.pytorch.org/whl/cpu" else "files.pythonhosted.org"
     parsed = urlsplit(value["url"]) if isinstance(value["url"], str) else None
     if parsed is None or parsed.scheme != "https" or parsed.netloc != expected_host or not parsed.path:
         raise ValueError(f"{label} artifact URL is not the authenticated {expected_host} host")
     if not isinstance(value["hash"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["hash"]):
         raise ValueError(f"{label} artifact hash is not a SHA-256")
-    if isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0:
+    if "size" not in value and (
+        registry != PYTORCH_CPU_REGISTRY
+        or artifact_kind != "wheel"
+        or package_name not in {"torch", "torchaudio"}
+        or PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE.get(package_name) != (value.get("url"), value.get("hash"))
+    ):
+        raise ValueError(f"{label} artifact size is missing outside the exact PyTorch CPU exception")
+    if "size" in value and (isinstance(value["size"], bool) or not isinstance(value["size"], int) or value["size"] <= 0):
         raise ValueError(f"{label} artifact size is not positive")
     if not isinstance(value["upload-time"], str) or not value["upload-time"].strip():
         raise ValueError(f"{label} artifact upload-time is missing")
@@ -205,6 +241,10 @@ def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> lis
                 raise ValueError("uv.lock virtual source is not '.'")
         elif frozenset(package) not in REGISTRY_PACKAGE_SCHEMAS:
             raise ValueError(f"uv.lock registry package schema is not an exact committed variant: {identity!r}")
+        elif registry == PYTORCH_CPU_REGISTRY and package["name"] not in {"torch", "torchaudio"}:
+            raise ValueError(f"PyTorch CPU registry is bound to an unexpected package: {identity!r}")
+        elif registry == "https://pypi.org/simple" and package["name"] in {"torch", "torchaudio"}:
+            raise ValueError(f"Torch package is not bound to the PyTorch CPU registry: {identity!r}")
         markers = package.get("resolution-markers", [])
         if not isinstance(markers, list) or any(not isinstance(item, str) for item in markers):
             raise ValueError(f"uv.lock markers are malformed: {identity!r}")
@@ -234,12 +274,16 @@ def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> lis
             if "metadata" in package:
                 validate_metadata(package["metadata"], f"{identity!r}")
             if "sdist" in package:
-                validate_artifact(package["sdist"], f"{identity!r} sdist", registry)
+                validate_artifact(
+                    package["sdist"], f"{identity!r} sdist", registry, package["name"], "sdist"
+                )
             if "wheels" in package:
                 if not isinstance(package["wheels"], list) or not package["wheels"]:
                     raise ValueError(f"{identity!r} wheels table is malformed")
                 for artifact in package["wheels"]:
-                    validate_artifact(artifact, f"{identity!r} wheel", registry)
+                    validate_artifact(
+                        artifact, f"{identity!r} wheel", registry, package["name"], "wheel"
+                    )
             if "sdist" not in package and not package.get("wheels"):
                 raise ValueError(f"{identity!r} registry package has no authenticated artifacts")
         rows.append(package)
@@ -381,22 +425,103 @@ def self_test() -> int:
     project = Path(__file__).resolve().parent
     manifest_path = project / "license_gate_manifest.json"
     ok, reason = validate(project, manifest_path)
-    if ok or ("unresolved" not in reason and "artifact" not in reason):
+    if ok or "unresolved" not in reason:
         print(f"parler gate: expected pending production gate, got {reason}", file=sys.stderr)
         return 1
-    if "artifact" in reason:
-        valid = {"url": "https://files.pythonhosted.org/packages/demo.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "2024-01-01T00:00:00Z"}
-        cases = {"missing-size": lambda value: value.pop("size"), "missing-upload-time": lambda value: value.pop("upload-time"), "extra-key": lambda value: value.update(extra="x"), "bool-size": lambda value: value.update(size=True), "wrong-host": lambda value: value.update(url="https://example.invalid/demo.whl")}
-        for label, mutate in cases.items():
-            candidate = dict(valid); mutate(candidate)
-            try:
-                validate_artifact(candidate, f"self-test {label}", "https://pypi.org/simple")
-            except ValueError:
-                pass
-            else:
-                print(f"parler artifact tamper accepted: {label}", file=sys.stderr); return 1
-        print("parler gate: self-test PASS (production artifact schema blocker)")
-        return 0
+    production_lock_path = project / "uv.lock"
+    try:
+        production_lock_bytes = production_lock_path.read_bytes()
+        production_lock = tomllib.loads(production_lock_bytes.decode("utf-8"))
+        production_project = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+        production_rows = canonical_package_rows(production_lock, production_project["project"])
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as exc:
+        print(f"parler gate: production lock structural self-test failed: {exc}", file=sys.stderr)
+        return 1
+    if digest_bytes(production_lock_bytes) != LOCK_SHA256:
+        print("parler gate: production lock byte identity drifted", file=sys.stderr)
+        return 1
+    production_missing: list[tuple[str, str, str, str, tuple[str, str]]] = []
+    for row in production_rows:
+        artifacts = ([
+            ("sdist", row["sdist"])
+        ] if "sdist" in row else []) + [
+            ("wheel", artifact) for artifact in row.get("wheels", [])
+        ]
+        for artifact_kind, artifact in artifacts:
+            if "size" not in artifact:
+                production_missing.append((row["name"], row["version"], row["source"]["registry"], artifact_kind, (artifact["url"], artifact["hash"])))
+    production_identities = {entry[4] for entry in production_missing}
+    production_by_package = {entry[0]: (entry[3], entry[4]) for entry in production_missing}
+    expected_by_package = {package: ("wheel", identity) for package, identity in PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE.items()}
+    if len(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE) != 2 or production_identities != PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE or production_by_package != expected_by_package or len(production_missing) != len(PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE):
+        print("parler gate: production missing-size identity set drifted", file=sys.stderr)
+        return 1
+    for package_name, _, registry, artifact_kind, identity in production_missing:
+        artifact = {"url": identity[0], "hash": identity[1], "upload-time": "self-test"}
+        try:
+            validate_artifact(artifact, f"self-test production {package_name}", registry, package_name, artifact_kind)
+        except ValueError as exc:
+            print(f"parler gate: exact production missing-size exception rejected: {exc}", file=sys.stderr)
+            return 1
+    valid = {"url": "https://files.pythonhosted.org/packages/demo.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "2024-01-01T00:00:00Z"}
+    cases = {"missing-size": lambda value: value.pop("size"), "missing-upload-time": lambda value: value.pop("upload-time"), "extra-key": lambda value: value.update(extra="x"), "bool-size": lambda value: value.update(size=True), "wrong-host": lambda value: value.update(url="https://example.invalid/demo.whl")}
+    for label, mutate in cases.items():
+        candidate = dict(valid); mutate(candidate)
+        try:
+            validate_artifact(candidate, f"self-test {label}", "https://pypi.org/simple", "numpy", "wheel")
+        except ValueError:
+            pass
+        else:
+            print(f"parler artifact tamper accepted: {label}", file=sys.stderr); return 1
+    for package_name, identity in PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE.items():
+        try:
+            validate_artifact({"url": identity[0], "hash": identity[1], "upload-time": "self-test"}, f"self-test exact {package_name}", PYTORCH_CPU_REGISTRY, package_name, "wheel")
+        except ValueError as exc:
+            print(f"parler gate: package-bound exception rejected: {exc}", file=sys.stderr)
+            return 1
+        try:
+            validate_artifact({"url": identity[0], "hash": identity[1], "upload-time": "self-test"}, f"self-test sdist {package_name}", PYTORCH_CPU_REGISTRY, package_name, "sdist")
+        except ValueError:
+            pass
+        else:
+            print("parler gate: wheel-only missing-size exception escaped into sdist", file=sys.stderr)
+            return 1
+    production_artifact = {"url": next(iter(production_identities))[0], "hash": next(iter(production_identities))[1], "upload-time": "self-test"}
+    for label, mutate in (
+        ("tampered-url", lambda value: value.update(url=value["url"] + ".tampered")),
+        ("tampered-hash", lambda value: value.update(hash="sha256:" + "0" * 64)),
+    ):
+        candidate = dict(production_artifact); mutate(candidate)
+        try:
+            validate_artifact(candidate, f"self-test {label}", PYTORCH_CPU_REGISTRY, "torch", "wheel")
+        except ValueError:
+            pass
+        else:
+            print(f"parler artifact tamper accepted: {label}", file=sys.stderr); return 1
+    try:
+        validate_artifact({"url": "https://download-r2.pytorch.org/whl/cpu/demo.whl", "hash": "sha256:" + "0" * 64, "size": 1, "upload-time": "self-test"}, "self-test CPU package binding", PYTORCH_CPU_REGISTRY, "numpy", "wheel")
+    except ValueError:
+        pass
+    else:
+        print("parler gate: PyTorch CPU registry accepted a non-Torch package", file=sys.stderr)
+        return 1
+    for package_name, registry in (("numpy", PYTORCH_CPU_REGISTRY), ("torch", "https://pypi.org/simple"), ("torchaudio", "https://pypi.org/simple")):
+        try:
+            validate_artifact(production_artifact, "self-test wrong exception context", registry, package_name, "wheel")
+        except ValueError:
+            pass
+        else:
+            print("parler artifact missing-size exception escaped its exact package/registry context", file=sys.stderr)
+            return 1
+    for package_name, other_package in (("torch", "torchaudio"), ("torchaudio", "torch")):
+        other_identity = PYTORCH_CPU_ARTIFACTS_WITHOUT_SIZE_BY_PACKAGE[other_package]
+        try:
+            validate_artifact({"url": other_identity[0], "hash": other_identity[1], "upload-time": "self-test"}, "self-test wrong package identity", PYTORCH_CPU_REGISTRY, package_name, "wheel")
+        except ValueError:
+            pass
+        else:
+            print("parler artifact accepted under the wrong package identity", file=sys.stderr)
+            return 1
     with tempfile.TemporaryDirectory(prefix="parler-gate-") as directory:
         root = Path(directory)
         test_project = root / "project"
