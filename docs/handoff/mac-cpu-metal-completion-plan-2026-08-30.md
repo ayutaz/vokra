@@ -51,6 +51,45 @@ The detailed repository names and per-model blockers remain in Waves 1-4 of
 the authoritative ledger.  No row is promoted merely because an inspection,
 converter, synthesized forward or device-less build succeeds.
 
+## Wave A pre-Scaleway checkpoint (2026-08-30)
+
+Wave A source preparation is complete at clean branch HEAD
+`bc9d1db2bbf230f09ce4f3f68003a1c11f80e0e1`.  No model artifact was copied to
+or executed on the maintainer Mac.  The only attempted local Rust test was
+stopped when its dev-dependency expansion reached `vokra-models`; all broad
+Cargo and real-weight work stayed on VAST after that point.
+
+VAST instance `49168183` produced the following no-upload evidence:
+
+- `cargo test --locked --workspace` passed at behavior commit `bc8a8e36` after
+  its only discovered fixture-extent defect was corrected.  Final HEAD
+  `bc9d1db2` adds only documented Clippy suppressions to the same compute-seam
+  signatures.
+- `cargo clippy --locked --workspace --all-targets --all-features -- -D
+  warnings` passed at exact final HEAD `bc9d1db2`.
+- `cargo deny check licenses advisories bans` and `cargo audit` passed.  The
+  existing unmatched `libfuzzer-sys` license-exception warning remains
+  non-fatal and unrelated to Wave A.
+- GigaAM v3, GigaAM Multilingual and OmniASR-CTC-1B real-weight CPU parity all
+  passed at exact final HEAD.  The GigaAM approvals record final-HEAD commit,
+  GGUF and reference-manifest digests; OmniASR recorded exact tokens and
+  `frontend_max_abs=2.918243408e-4`, `encoder_max_abs=1.520276070e-3` and
+  `logits_max_abs=1.450002193e-3`.
+
+The immutable Scaleway input packet is
+`/root/scratchpad/apple-transfer-bc9d1db2` on retained VAST storage: 4.9 GB,
+30 regular files, no symlinks.  Every file passes
+`apple-transfer-bc9d1db2.SHA256SUMS`; the manifest digest is
+`c96eee3c61ec85b589a488deff21668097ed4e94f96b4654b990706098f6f606`.
+The instance was returned to the stopped state after packet verification and
+must not be destroyed until the packet and small evidence are copied to and
+verified on Scaleway.
+
+Scaleway can now decide only the three Wave A Apple CPU/Metal rows.  It cannot
+close the 63 CPU-open public rows, publication/replacement gates, RMVPE license
+decision or SeamlessM4T non-artifact decision described below.  Those remain
+separate VAST/source/license/publication waves after Wave A.
+
 ## Execution order
 
 ### Wave A: remove the three CPU-only Metal gaps
