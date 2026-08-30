@@ -167,3 +167,107 @@ fn gemm_rejects_bad_shapes_explicitly() {
             .is_err()
     );
 }
+
+/// HTDemucs' spatial convolutions use grouped, dilated, and transposed
+/// channel-major kernels. This is a real device-vs-CPU check; a Metal-less
+/// runner skips it rather than claiming parity without a GPU.
+#[test]
+fn conv2d_and_transpose2d_metal_match_cpu() {
+    let Ok(ctx) = MetalContext::new() else {
+        eprintln!("no Metal device; skipping Conv2d parity");
+        return;
+    };
+    let input = [
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+    ];
+    let weight = [1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, -1.0];
+    let bias = [0.5, -1.0];
+    let mut cpu_conv = [0.0f32; 6];
+    let mut gpu_conv = [0.0f32; 6];
+    cpu::conv2d_f32(
+        &input,
+        2,
+        2,
+        3,
+        &weight,
+        2,
+        2,
+        2,
+        Some(&bias),
+        (1, 1),
+        (0, 1),
+        (1, 2),
+        2,
+        &mut cpu_conv,
+    )
+    .expect("CPU Conv2d reference");
+    ctx.conv2d_f32(
+        &input,
+        2,
+        2,
+        3,
+        &weight,
+        2,
+        2,
+        2,
+        Some(&bias),
+        (1, 1),
+        (0, 1),
+        (1, 2),
+        2,
+        &mut gpu_conv,
+    )
+    .expect("Metal Conv2d");
+    let conv_diff = max_abs_diff(&cpu_conv, &gpu_conv);
+    assert!(
+        conv_diff <= ATOL,
+        "Conv2d max|Δ| {conv_diff:.3e} exceeds {ATOL}"
+    );
+
+    let trans_input = [1.0, 2.0, 10.0, 20.0];
+    let trans_weight = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0];
+    let trans_bias = [0.5, -1.0];
+    let mut cpu_trans = [0.0f32; 16];
+    let mut gpu_trans = [0.0f32; 16];
+    cpu::conv_transpose2d_f32(
+        &trans_input,
+        2,
+        1,
+        2,
+        &trans_weight,
+        2,
+        2,
+        2,
+        Some(&trans_bias),
+        (2, 2),
+        (0, 0),
+        (1, 2),
+        (1, 1),
+        2,
+        &mut cpu_trans,
+    )
+    .expect("CPU ConvTranspose2d reference");
+    ctx.conv_transpose2d_f32(
+        &trans_input,
+        2,
+        1,
+        2,
+        &trans_weight,
+        2,
+        2,
+        2,
+        Some(&trans_bias),
+        (2, 2),
+        (0, 0),
+        (1, 2),
+        (1, 1),
+        2,
+        &mut gpu_trans,
+    )
+    .expect("Metal ConvTranspose2d");
+    let trans_diff = max_abs_diff(&cpu_trans, &gpu_trans);
+    assert!(
+        trans_diff <= ATOL,
+        "ConvTranspose2d max|Δ| {trans_diff:.3e} exceeds {ATOL}"
+    );
+}

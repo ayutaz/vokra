@@ -137,6 +137,14 @@ pub enum HotOp {
     /// `output_padding` and output extent are explicit at every call site;
     /// unsupported backends reject the complete model before execution.
     ConvTranspose1d,
+    /// Dense/grouped PyTorch-layout Conv2d over channel-major `[C,H,W]`
+    /// buffers. CPU and Metal provide real FP32 kernels; other backends reject
+    /// this hot op explicitly until they gain matching seams.
+    Conv2d,
+    /// PyTorch-layout ConvTranspose2d with explicit stride, padding, dilation,
+    /// output-padding, and groups. CPU and Metal provide real FP32 kernels;
+    /// other backends remain explicitly unsupported.
+    ConvTranspose2d,
     /// Mimi (Kyutai) residual vector quantization codec decode
     /// (`mimi_rvq_decode`) — the M3-06 RVQ codec op family. The heterogeneous
     /// signature (u32 `codes` + `Vec<CodebookTable>` → `Vec<f32>`) drives the
@@ -488,6 +496,8 @@ impl HotOp {
                 | HotOp::Conv1d
                 | HotOp::Conv1dDilation
                 | HotOp::ConvTranspose1d
+                | HotOp::Conv2d
+                | HotOp::ConvTranspose2d
                 | HotOp::GroupedConv1d
                 | HotOp::MimiRvq
                 | HotOp::DacRvq
@@ -1717,6 +1727,121 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "grouped_conv1d has no WebGPU Compute-seam kernel; no CPU fallback is performed"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Dense/grouped PyTorch-layout Conv2d over channel-major `[C,H,W]`
+    /// buffers. The CPU and Metal arms execute the matching scalar/reference
+    /// kernels; CUDA and WebGPU reject explicitly rather than falling back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv2d_f32(
+                input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride,
+                padding, dilation, groups, out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv2d_f32(
+                input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride,
+                padding, dilation, groups, out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Dense/grouped PyTorch-layout ConvTranspose2d over channel-major
+    /// `[C,H,W]` buffers. Weight layout is `[in_ch, out_ch/groups, kh, kw]`.
+    /// Unsupported backends return an explicit error with no CPU fallback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        output_padding: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => kernels::conv_transpose2d_f32(
+                input,
+                in_ch,
+                in_h,
+                in_w,
+                weight,
+                out_ch,
+                kernel_h,
+                kernel_w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                output_padding,
+                groups,
+                out,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.conv_transpose2d_f32(
+                input,
+                in_ch,
+                in_h,
+                in_w,
+                weight,
+                out_ch,
+                kernel_h,
+                kernel_w,
+                bias,
+                stride,
+                padding,
+                dilation,
+                output_padding,
+                groups,
+                out,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose2d_f32 has no wired CUDA Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "conv_transpose2d_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
                     .to_owned(),
             )),
         }
@@ -4284,6 +4409,56 @@ mod tests {
             .unwrap();
         assert_eq!(transposed, [1.0, 2.0, 2.0, 4.0, 0.0]);
 
+        let mut conv2d = [0.0f32; 6];
+        Compute::cpu()
+            .conv2d_f32(
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+                ],
+                2,
+                2,
+                3,
+                &[1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, -1.0],
+                2,
+                2,
+                2,
+                Some(&[0.5, -1.0]),
+                (1, 1),
+                (0, 1),
+                (1, 2),
+                2,
+                &mut conv2d,
+            )
+            .unwrap();
+        assert_eq!(conv2d, [5.5, 7.5, 2.5, -51.0, -41.0, 39.0]);
+
+        let mut transposed2d = [0.0f32; 16];
+        Compute::cpu()
+            .conv_transpose2d_f32(
+                &[1.0, 2.0, 10.0, 20.0],
+                2,
+                1,
+                2,
+                &[1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0],
+                2,
+                2,
+                2,
+                Some(&[0.5, -1.0]),
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (1, 1),
+                2,
+                &mut transposed2d,
+            )
+            .unwrap();
+        assert_eq!(
+            transposed2d,
+            [
+                1.5, 0.5, 2.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 19.0, -1.0, 39.0, -1.0
+            ]
+        );
+
         let mut bad = [0.0f32; 1];
         assert!(
             Compute::cpu()
@@ -5062,6 +5237,8 @@ mod tests {
             HotOp::Conv1d,
             HotOp::Conv1dDilation,
             HotOp::ConvTranspose1d,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
@@ -5142,6 +5319,10 @@ mod tests {
             HotOp::Tanh,
             HotOp::Silu,
             HotOp::Conv1d,
+            HotOp::Conv1dDilation,
+            HotOp::ConvTranspose1d,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::MimiRvq,
             HotOp::DacRvq,
@@ -5355,6 +5536,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,
@@ -5821,6 +6004,8 @@ mod tests {
             HotOp::SnakeBeta,
             HotOp::SinegenDeterministic,
             HotOp::AntiAliasedUpsample,
+            HotOp::Conv2d,
+            HotOp::ConvTranspose2d,
             HotOp::GroupedConv1d,
             HotOp::GroupFsq,
             HotOp::CausalHifiGan,

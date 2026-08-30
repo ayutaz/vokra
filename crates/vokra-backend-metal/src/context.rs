@@ -752,6 +752,130 @@ kernel void vokra_conv_transpose1d_f32(
     out[oc * d.t_out + t] = acc;
 }
 
+// Direct dense/grouped PyTorch-layout Conv2d. The host flattens the output
+// channel and height axes into gid.y; one thread computes one output element.
+struct Conv2dDims {
+    uint in_ch;
+    uint in_h;
+    uint in_w;
+    uint out_ch;
+    uint out_h;
+    uint out_w;
+    uint kernel_h;
+    uint kernel_w;
+    uint stride_h;
+    uint stride_w;
+    uint padding_h;
+    uint padding_w;
+    uint dilation_h;
+    uint dilation_w;
+    uint in_per_group;
+    uint out_per_group;
+    uint has_bias;
+};
+
+kernel void vokra_conv2d_f32(
+    device const float* inp    [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant Conv2dDims& d     [[buffer(4)]],
+    uint2 gid                  [[thread_position_in_grid]])
+{
+    const uint ow = gid.x;
+    const uint row = gid.y;
+    if (ow >= d.out_w || row >= d.out_ch * d.out_h) return;
+    const uint oc = row / d.out_h;
+    const uint oh = row % d.out_h;
+    const uint group = oc / d.out_per_group;
+    const uint kernel_plane = d.kernel_h * d.kernel_w;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    const uint wbase = oc * d.in_per_group * kernel_plane;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
+    for (uint ic_local = 0u; ic_local < d.in_per_group; ++ic_local) {
+        const uint ic = group * d.in_per_group + ic_local;
+        for (uint kh = 0u; kh < d.kernel_h; ++kh) {
+            const uint input_h = oh * d.stride_h + kh * d.dilation_h;
+            if (input_h < d.padding_h || input_h >= d.padding_h + d.in_h) continue;
+            for (uint kw = 0u; kw < d.kernel_w; ++kw) {
+                const uint input_w = ow * d.stride_w + kw * d.dilation_w;
+                if (input_w < d.padding_w || input_w >= d.padding_w + d.in_w) continue;
+                const uint input_index = ic * input_plane + (input_h - d.padding_h) * d.in_w + (input_w - d.padding_w);
+                const uint weight_index = wbase + ic_local * kernel_plane + kh * d.kernel_w + kw;
+                acc += inp[input_index] * weight[weight_index];
+            }
+        }
+    }
+    out[oc * output_plane + oh * d.out_w + ow] = acc;
+}
+
+// Direct dense/grouped PyTorch-layout ConvTranspose2d. The weight layout is
+// [in_ch, out_ch/groups, kernel_h, kernel_w]. Output padding is represented in
+// the host-derived output dimensions; positions without a source contribution
+// retain only the optional bias.
+struct ConvTranspose2dDims {
+    uint in_ch;
+    uint in_h;
+    uint in_w;
+    uint out_ch;
+    uint out_h;
+    uint out_w;
+    uint kernel_h;
+    uint kernel_w;
+    uint stride_h;
+    uint stride_w;
+    uint padding_h;
+    uint padding_w;
+    uint dilation_h;
+    uint dilation_w;
+    uint in_per_group;
+    uint out_per_group;
+    uint has_bias;
+};
+
+kernel void vokra_conv_transpose2d_f32(
+    device const float* inp    [[buffer(0)]],
+    device const float* weight [[buffer(1)]],
+    device const float* bias   [[buffer(2)]],
+    device float*       out    [[buffer(3)]],
+    constant ConvTranspose2dDims& d [[buffer(4)]],
+    uint2 gid                  [[thread_position_in_grid]])
+{
+    const uint ow = gid.x;
+    const uint row = gid.y;
+    if (ow >= d.out_w || row >= d.out_ch * d.out_h) return;
+    const uint oc = row / d.out_h;
+    const uint oh = row % d.out_h;
+    const uint group = oc / d.out_per_group;
+    const uint oc_local = oc % d.out_per_group;
+    const uint kernel_plane = d.kernel_h * d.kernel_w;
+    const uint input_plane = d.in_h * d.in_w;
+    const uint output_plane = d.out_h * d.out_w;
+    float acc = d.has_bias != 0u ? bias[oc] : 0.0f;
+    for (uint ic_local = 0u; ic_local < d.in_per_group; ++ic_local) {
+        const uint ic = group * d.in_per_group + ic_local;
+        for (uint kh = 0u; kh < d.kernel_h; ++kh) {
+            const uint numerator_h = oh + d.padding_h;
+            const uint tap_h = kh * d.dilation_h;
+            if (numerator_h < tap_h) continue;
+            const uint source_h = numerator_h - tap_h;
+            if (source_h % d.stride_h != 0u || source_h / d.stride_h >= d.in_h) continue;
+            for (uint kw = 0u; kw < d.kernel_w; ++kw) {
+                const uint numerator_w = ow + d.padding_w;
+                const uint tap_w = kw * d.dilation_w;
+                if (numerator_w < tap_w) continue;
+                const uint source_w = numerator_w - tap_w;
+                if (source_w % d.stride_w != 0u || source_w / d.stride_w >= d.in_w) continue;
+                const uint input_index = ic * input_plane + (source_h / d.stride_h) * d.in_w + source_w / d.stride_w;
+                const uint weight_index = (ic * d.out_per_group + oc_local) * kernel_plane + kh * d.kernel_w + kw;
+                acc += inp[input_index] * weight[weight_index];
+            }
+        }
+    }
+    out[oc * output_plane + oh * d.out_w + ow] = acc;
+}
+
 struct Pad1dDims {
     uint channels;
     uint time_in;
@@ -2170,6 +2294,54 @@ struct GemmDims {
     has_bias: u32,
 }
 
+/// Dense/grouped Conv2d dimensions (`setBytes:` index 4). Mirrors the MSL
+/// `Conv2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Conv2dDims {
+    in_ch: u32,
+    in_h: u32,
+    in_w: u32,
+    out_ch: u32,
+    out_h: u32,
+    out_w: u32,
+    kernel_h: u32,
+    kernel_w: u32,
+    stride_h: u32,
+    stride_w: u32,
+    padding_h: u32,
+    padding_w: u32,
+    dilation_h: u32,
+    dilation_w: u32,
+    in_per_group: u32,
+    out_per_group: u32,
+    has_bias: u32,
+}
+
+/// PyTorch-layout ConvTranspose2d dimensions (`setBytes:` index 4). Mirrors
+/// the MSL `ConvTranspose2dDims` field order exactly.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ConvTranspose2dDims {
+    in_ch: u32,
+    in_h: u32,
+    in_w: u32,
+    out_ch: u32,
+    out_h: u32,
+    out_w: u32,
+    kernel_h: u32,
+    kernel_w: u32,
+    stride_h: u32,
+    stride_w: u32,
+    padding_h: u32,
+    padding_w: u32,
+    dilation_h: u32,
+    dilation_w: u32,
+    in_per_group: u32,
+    out_per_group: u32,
+    has_bias: u32,
+}
+
 /// Mixed FP32-activation/raw-BF16-weight GEMM dimensions. Mirrors
 /// `GemmF32Bf16BitsDims` in `KERNELS_MSL`.
 #[repr(C)]
@@ -2990,6 +3162,8 @@ pub struct MetalContext {
     linear_tanh_pipeline: Id,
     tanh_pipeline: Id,
     conv1d_pipeline: Id,
+    conv2d_pipeline: Id,
+    conv_transpose2d_pipeline: Id,
     col_gather_pipeline: Id,
     col_gather_t_pipeline: Id,
     col_scatter_pipeline: Id,
@@ -3268,6 +3442,12 @@ impl MetalContext {
             unsafe { make_pipeline(device, klib.0, c"vokra_leaky_relu_f32") }?;
         // SAFETY: as above.
         let conv1d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv1d_f32") }?;
+        // Dense/grouped 2-D convolution seams for HTDemucs.
+        // SAFETY: as above.
+        let conv2d_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_conv2d_f32") }?;
+        // SAFETY: as above.
+        let conv_transpose2d_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_conv_transpose2d_f32") }?;
         // The three Phase-5 attention column-mover kernels share the same library.
         // SAFETY: as above.
         let col_gather_pipeline =
@@ -3429,6 +3609,8 @@ impl MetalContext {
             tanh_pipeline: tanh_pipeline.into_raw(),
             leaky_relu_pipeline: leaky_relu_pipeline.into_raw(),
             conv1d_pipeline: conv1d_pipeline.into_raw(),
+            conv2d_pipeline: conv2d_pipeline.into_raw(),
+            conv_transpose2d_pipeline: conv_transpose2d_pipeline.into_raw(),
             col_gather_pipeline: col_gather_pipeline.into_raw(),
             col_gather_t_pipeline: col_gather_t_pipeline.into_raw(),
             col_scatter_pipeline: col_scatter_pipeline.into_raw(),
@@ -6389,6 +6571,114 @@ impl MetalContext {
         Ok(out)
     }
 
+    /// Dense/grouped PyTorch-layout Conv2d on channel-major host buffers.
+    /// Inputs and weights are uploaded once, one Metal dispatch computes the
+    /// caller-sized output, and only that output is read back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) = validate_conv2d(
+            input, in_ch, in_h, in_w, weight, out_ch, kernel_h, kernel_w, bias, stride, padding,
+            dilation, groups, out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_conv2d(
+            input, in_h, in_w, weight, out_ch, out_h, out_w, kernel_h, kernel_w, bias, stride,
+            padding, dilation, groups, in_ch, out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
+    /// Dense/grouped PyTorch-layout ConvTranspose2d on channel-major host
+    /// buffers. Weight layout is `[in_ch, out_ch / groups, kernel_h, kernel_w]`.
+    /// The host validates the exact output formula before one GPU submission;
+    /// there is no CPU fallback or hidden host convolution.
+    #[allow(clippy::too_many_arguments)]
+    pub fn conv_transpose2d_f32(
+        &self,
+        input: &[f32],
+        in_ch: usize,
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        output_padding: (usize, usize),
+        groups: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let (out_h, out_w) = validate_conv_transpose2d(
+            input,
+            in_ch,
+            in_h,
+            in_w,
+            weight,
+            out_ch,
+            kernel_h,
+            kernel_w,
+            bias,
+            stride,
+            padding,
+            dilation,
+            output_padding,
+            groups,
+            out,
+        )?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result = self.run_conv_transpose2d(
+            input,
+            in_h,
+            in_w,
+            weight,
+            out_ch,
+            out_h,
+            out_w,
+            kernel_h,
+            kernel_w,
+            bias,
+            stride,
+            padding,
+            dilation,
+            output_padding,
+            groups,
+            in_ch,
+            out,
+        );
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result
+    }
+
     /// 1-D convolution (`input` is `in_ch × in_len`, `weight` is
     /// `out_ch × in_ch × kernel`, `out` is `out_ch × out_len`) — the exact
     /// contract of `vokra_backend_cpu::kernels::conv1d_f32`. The direct GPU
@@ -6598,6 +6888,123 @@ impl MetalContext {
         // SAFETY: `pool` is the token from the push above.
         unsafe { sys::objc_autoreleasePoolPop(pool) };
         r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_conv2d(
+        &self,
+        input: &[f32],
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        out_h: usize,
+        out_w: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        groups: usize,
+        in_ch: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let w_buf = self.new_buffer_from_slice(weight)?;
+        let dummy = [0.0f32];
+        let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = Conv2dDims {
+            in_ch: checked_u32(in_ch, "conv2d in_ch")?,
+            in_h: checked_u32(in_h, "conv2d in_h")?,
+            in_w: checked_u32(in_w, "conv2d in_w")?,
+            out_ch: checked_u32(out_ch, "conv2d out_ch")?,
+            out_h: checked_u32(out_h, "conv2d out_h")?,
+            out_w: checked_u32(out_w, "conv2d out_w")?,
+            kernel_h: checked_u32(kernel_h, "conv2d kernel_h")?,
+            kernel_w: checked_u32(kernel_w, "conv2d kernel_w")?,
+            stride_h: checked_u32(stride.0, "conv2d stride_h")?,
+            stride_w: checked_u32(stride.1, "conv2d stride_w")?,
+            padding_h: checked_u32(padding.0, "conv2d padding_h")?,
+            padding_w: checked_u32(padding.1, "conv2d padding_w")?,
+            dilation_h: checked_u32(dilation.0, "conv2d dilation_h")?,
+            dilation_w: checked_u32(dilation.1, "conv2d dilation_w")?,
+            in_per_group: checked_u32(in_ch / groups, "conv2d in_per_group")?,
+            out_per_group: checked_u32(out_ch / groups, "conv2d out_per_group")?,
+            has_bias: u32::from(bias.is_some()),
+        };
+        let out_rows = checked_mul(out_ch, out_h, "conv2d dispatch rows")?;
+        let (grid, tg) = grid_2d(out_w, out_rows);
+        self.dispatch_compute(
+            self.conv2d_pipeline,
+            &[&in_buf, &w_buf, &bias_buf, &out_buf],
+            (&dims as *const Conv2dDims).cast::<c_void>(),
+            size_of::<Conv2dDims>(),
+            grid,
+            tg,
+            "conv2d",
+        )?;
+        read_back(&out_buf, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_conv_transpose2d(
+        &self,
+        input: &[f32],
+        in_h: usize,
+        in_w: usize,
+        weight: &[f32],
+        out_ch: usize,
+        out_h: usize,
+        out_w: usize,
+        kernel_h: usize,
+        kernel_w: usize,
+        bias: Option<&[f32]>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        dilation: (usize, usize),
+        output_padding: (usize, usize),
+        groups: usize,
+        in_ch: usize,
+        out: &mut [f32],
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let w_buf = self.new_buffer_from_slice(weight)?;
+        let dummy = [0.0f32];
+        let bias_buf = self.new_buffer_from_slice(bias.unwrap_or(&dummy))?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = ConvTranspose2dDims {
+            in_ch: checked_u32(in_ch, "conv_transpose2d in_ch")?,
+            in_h: checked_u32(in_h, "conv_transpose2d in_h")?,
+            in_w: checked_u32(in_w, "conv_transpose2d in_w")?,
+            out_ch: checked_u32(out_ch, "conv_transpose2d out_ch")?,
+            out_h: checked_u32(out_h, "conv_transpose2d out_h")?,
+            out_w: checked_u32(out_w, "conv_transpose2d out_w")?,
+            kernel_h: checked_u32(kernel_h, "conv_transpose2d kernel_h")?,
+            kernel_w: checked_u32(kernel_w, "conv_transpose2d kernel_w")?,
+            stride_h: checked_u32(stride.0, "conv_transpose2d stride_h")?,
+            stride_w: checked_u32(stride.1, "conv_transpose2d stride_w")?,
+            padding_h: checked_u32(padding.0, "conv_transpose2d padding_h")?,
+            padding_w: checked_u32(padding.1, "conv_transpose2d padding_w")?,
+            dilation_h: checked_u32(dilation.0, "conv_transpose2d dilation_h")?,
+            dilation_w: checked_u32(dilation.1, "conv_transpose2d dilation_w")?,
+            in_per_group: checked_u32(in_ch / groups, "conv_transpose2d in_per_group")?,
+            out_per_group: checked_u32(out_ch / groups, "conv_transpose2d out_per_group")?,
+            has_bias: u32::from(bias.is_some()),
+        };
+        let out_rows = checked_mul(out_ch, out_h, "conv_transpose2d dispatch rows")?;
+        let (grid, tg) = grid_2d(out_w, out_rows);
+        self.dispatch_compute(
+            self.conv_transpose2d_pipeline,
+            &[&in_buf, &w_buf, &bias_buf, &out_buf],
+            (&dims as *const ConvTranspose2dDims).cast::<c_void>(),
+            size_of::<ConvTranspose2dDims>(),
+            grid,
+            tg,
+            "conv_transpose2d",
+        )?;
+        read_back(&out_buf, out)
     }
 
     #[allow(clippy::too_many_arguments)] // convolution's intrinsic parameter set
@@ -10056,6 +10463,8 @@ impl Drop for MetalContext {
             release(self.col_scatter_pipeline);
             release(self.col_gather_t_pipeline);
             release(self.col_gather_pipeline);
+            release(self.conv_transpose2d_pipeline);
+            release(self.conv2d_pipeline);
             release(self.conv1d_pipeline);
             release(self.leaky_relu_pipeline);
             release(self.tanh_pipeline);
@@ -11047,7 +11456,10 @@ fn validate_mixed_bf16_dims(
 
 #[cfg(test)]
 mod tests {
-    use super::{checked_i32, checked_u32, validate_mixed_bf16_dims};
+    use super::{
+        checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
+        validate_mixed_bf16_dims,
+    };
 
     #[test]
     fn device_dimension_conversions_fail_closed() {
@@ -11072,6 +11484,144 @@ mod tests {
             (0, 0, 6)
         );
         assert!(validate_mixed_bf16_dims(u32::MAX as usize, 2, 0, "test").is_err());
+    }
+
+    #[test]
+    fn conv2d_validates_grouped_dilated_asymmetric_shape() {
+        let input = [0.0; 12];
+        let weight = [0.0; 8];
+        let out = [0.0; 6];
+        assert_eq!(
+            validate_conv2d(
+                &input,
+                2,
+                2,
+                3,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (1, 1),
+                (0, 1),
+                (1, 2),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn conv_transpose2d_validates_output_padding_and_rejects_bad_shapes() {
+        let input = [0.0; 4];
+        let weight = [0.0; 8];
+        let out = [0.0; 16];
+        assert_eq!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                Some(&[0.0; 2]),
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (1, 1),
+                2,
+                &out,
+            )
+            .unwrap(),
+            (3, 4)
+        );
+        // ATen permits output_padding == stride when it remains smaller than
+        // dilation on that axis.
+        assert_eq!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (1, 0),
+                1,
+                &[0.0; 2],
+            )
+            .unwrap(),
+            (2, 1)
+        );
+        assert!(
+            validate_conv_transpose2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (2, 2),
+                (0, 0),
+                (1, 2),
+                (2, 0),
+                2,
+                &out,
+            )
+            .is_err()
+        );
+        // Once output_padding reaches both bounds on an axis, reject it.
+        assert!(
+            validate_conv_transpose2d(
+                &[0.0],
+                1,
+                1,
+                1,
+                &[0.0],
+                1,
+                1,
+                1,
+                None,
+                (1, 1),
+                (0, 0),
+                (2, 1),
+                (2, 0),
+                1,
+                &[0.0; 3],
+            )
+            .is_err()
+        );
+        assert!(
+            validate_conv2d(
+                &input,
+                2,
+                1,
+                2,
+                &weight,
+                2,
+                2,
+                2,
+                None,
+                (1, 1),
+                (0, 0),
+                (1, 1),
+                3,
+                &out,
+            )
+            .is_err()
+        );
     }
 }
 
@@ -11296,6 +11846,253 @@ fn validate_conv1d(
         expect_len("conv1d bias", bias.len(), out_ch)?;
     }
     Ok(out_len)
+}
+
+/// Validates the dense/grouped Conv2d host contract and returns `(out_h, out_w)`.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv2d(
+    input: &[f32],
+    in_ch: usize,
+    in_h: usize,
+    in_w: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    bias: Option<&[f32]>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    dilation: (usize, usize),
+    groups: usize,
+    out: &[f32],
+) -> Result<(usize, usize)> {
+    let (stride_h, stride_w) = stride;
+    let (padding_h, padding_w) = padding;
+    let (dilation_h, dilation_w) = dilation;
+    if in_ch == 0 || in_h == 0 || in_w == 0 || out_ch == 0 || kernel_h == 0 || kernel_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d channels, spatial dimensions, and kernel dimensions must be > 0".into(),
+        ));
+    }
+    if groups == 0 || in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d groups must be > 0 and divide both channel counts".into(),
+        ));
+    }
+    if stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv2d stride and dilation dimensions must be > 0".into(),
+        ));
+    }
+    let effective_h = checked_mul(kernel_h - 1, dilation_h, "conv2d effective kernel height")?
+        .checked_add(1)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv2d effective kernel height overflow".into())
+        })?;
+    let effective_w = checked_mul(kernel_w - 1, dilation_w, "conv2d effective kernel width")?
+        .checked_add(1)
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv2d effective kernel width overflow".into())
+        })?;
+    let padded_h = checked_mul(2, padding_h, "conv2d 2*padding_h")?
+        .checked_add(in_h)
+        .ok_or_else(|| VokraError::InvalidArgument("conv2d padded height overflow".into()))?;
+    let padded_w = checked_mul(2, padding_w, "conv2d 2*padding_w")?
+        .checked_add(in_w)
+        .ok_or_else(|| VokraError::InvalidArgument("conv2d padded width overflow".into()))?;
+    if padded_h < effective_h || padded_w < effective_w {
+        return Err(VokraError::InvalidArgument(
+            "conv2d padded input is smaller than the effective kernel".into(),
+        ));
+    }
+    // The MSL shader performs the padded extent and effective-kernel
+    // additions/multiplications in `uint`; reject any valid-`usize` shape
+    // whose intermediate arithmetic would wrap on the device.
+    checked_u32(effective_h, "conv2d effective kernel height")?;
+    checked_u32(effective_w, "conv2d effective kernel width")?;
+    checked_u32(padded_h, "conv2d padded height")?;
+    checked_u32(padded_w, "conv2d padded width")?;
+    let out_h = (padded_h - effective_h) / stride_h + 1;
+    let out_w = (padded_w - effective_w) / stride_w + 1;
+    checked_u32(in_ch, "conv2d in_ch")?;
+    checked_u32(in_h, "conv2d in_h")?;
+    checked_u32(in_w, "conv2d in_w")?;
+    checked_u32(out_ch, "conv2d out_ch")?;
+    checked_u32(out_h, "conv2d out_h")?;
+    checked_u32(out_w, "conv2d out_w")?;
+    checked_u32(kernel_h, "conv2d kernel_h")?;
+    checked_u32(kernel_w, "conv2d kernel_w")?;
+    checked_u32(stride_h, "conv2d stride_h")?;
+    checked_u32(stride_w, "conv2d stride_w")?;
+    checked_u32(padding_h, "conv2d padding_h")?;
+    checked_u32(padding_w, "conv2d padding_w")?;
+    checked_u32(dilation_h, "conv2d dilation_h")?;
+    checked_u32(dilation_w, "conv2d dilation_w")?;
+    let input_plane = checked_mul(in_h, in_w, "conv2d input plane")?;
+    let output_plane = checked_mul(out_h, out_w, "conv2d output plane")?;
+    let kernel_plane = checked_mul(kernel_h, kernel_w, "conv2d kernel plane")?;
+    checked_u32(input_plane, "conv2d input plane")?;
+    checked_u32(output_plane, "conv2d output plane")?;
+    checked_u32(kernel_plane, "conv2d kernel plane")?;
+    let input_len = checked_mul(in_ch, input_plane, "conv2d input")?;
+    let weight_per_output = checked_mul(in_ch / groups, kernel_plane, "conv2d weight per output")?;
+    let weight_len = checked_mul(out_ch, weight_per_output, "conv2d weight")?;
+    let output_len = checked_mul(out_ch, output_plane, "conv2d output")?;
+    checked_u32(input_len, "conv2d input")?;
+    checked_u32(weight_len, "conv2d weight")?;
+    checked_u32(output_len, "conv2d output")?;
+    checked_u32(
+        checked_mul(out_ch, out_h, "conv2d dispatch rows")?,
+        "conv2d dispatch rows",
+    )?;
+    expect_len("conv2d input", input.len(), input_len)?;
+    expect_len("conv2d weight", weight.len(), weight_len)?;
+    expect_len("conv2d out", out.len(), output_len)?;
+    if let Some(bias) = bias {
+        expect_len("conv2d bias", bias.len(), out_ch)?;
+    }
+    Ok((out_h, out_w))
+}
+
+/// Validates PyTorch-layout dense/grouped ConvTranspose2d and returns output
+/// spatial dimensions. Following PyTorch/ATen, output padding must be less
+/// than either stride or dilation on each axis before any device work is
+/// allocated.
+#[allow(clippy::too_many_arguments)]
+fn validate_conv_transpose2d(
+    input: &[f32],
+    in_ch: usize,
+    in_h: usize,
+    in_w: usize,
+    weight: &[f32],
+    out_ch: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    bias: Option<&[f32]>,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    dilation: (usize, usize),
+    output_padding: (usize, usize),
+    groups: usize,
+    out: &[f32],
+) -> Result<(usize, usize)> {
+    let (stride_h, stride_w) = stride;
+    let (padding_h, padding_w) = padding;
+    let (dilation_h, dilation_w) = dilation;
+    let (output_padding_h, output_padding_w) = output_padding;
+    if in_ch == 0 || in_h == 0 || in_w == 0 || out_ch == 0 || kernel_h == 0 || kernel_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d channels, spatial dimensions, and kernel dimensions must be > 0"
+                .into(),
+        ));
+    }
+    if groups == 0 || in_ch % groups != 0 || out_ch % groups != 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d groups must be > 0 and divide both channel counts".into(),
+        ));
+    }
+    if stride_h == 0 || stride_w == 0 || dilation_h == 0 || dilation_w == 0 {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d stride and dilation dimensions must be > 0".into(),
+        ));
+    }
+    if (output_padding_h >= stride_h && output_padding_h >= dilation_h)
+        || (output_padding_w >= stride_w && output_padding_w >= dilation_w)
+    {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d output_padding must be smaller than either stride or dilation on each axis".into(),
+        ));
+    }
+    let effective_h = checked_mul(
+        kernel_h - 1,
+        dilation_h,
+        "conv_transpose2d effective kernel height",
+    )?
+    .checked_add(1)
+    .ok_or_else(|| {
+        VokraError::InvalidArgument("conv_transpose2d effective kernel height overflow".into())
+    })?;
+    let effective_w = checked_mul(
+        kernel_w - 1,
+        dilation_w,
+        "conv_transpose2d effective kernel width",
+    )?
+    .checked_add(1)
+    .ok_or_else(|| {
+        VokraError::InvalidArgument("conv_transpose2d effective kernel width overflow".into())
+    })?;
+    let base_h = checked_mul(in_h - 1, stride_h, "conv_transpose2d base height")?
+        .checked_add(effective_h)
+        .and_then(|value| value.checked_add(output_padding_h))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose2d base height overflow".into())
+        })?;
+    let base_w = checked_mul(in_w - 1, stride_w, "conv_transpose2d base width")?
+        .checked_add(effective_w)
+        .and_then(|value| value.checked_add(output_padding_w))
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("conv_transpose2d base width overflow".into())
+        })?;
+    let trim_h = checked_mul(2, padding_h, "conv_transpose2d 2*padding_h")?;
+    let trim_w = checked_mul(2, padding_w, "conv_transpose2d 2*padding_w")?;
+    if trim_h >= base_h || trim_w >= base_w {
+        return Err(VokraError::InvalidArgument(
+            "conv_transpose2d padding removes the complete output extent".into(),
+        ));
+    }
+    // The MSL inverse-index calculation forms `output + padding` and
+    // `kernel_tap * dilation` in `uint`; keep the complete pre-trim extent
+    // representable so those intermediate expressions cannot wrap.
+    checked_u32(effective_h, "conv_transpose2d effective kernel height")?;
+    checked_u32(effective_w, "conv_transpose2d effective kernel width")?;
+    checked_u32(base_h, "conv_transpose2d base height")?;
+    checked_u32(base_w, "conv_transpose2d base width")?;
+    let out_h = base_h - trim_h;
+    let out_w = base_w - trim_w;
+    checked_u32(in_ch, "conv_transpose2d in_ch")?;
+    checked_u32(in_h, "conv_transpose2d in_h")?;
+    checked_u32(in_w, "conv_transpose2d in_w")?;
+    checked_u32(out_ch, "conv_transpose2d out_ch")?;
+    checked_u32(out_h, "conv_transpose2d out_h")?;
+    checked_u32(out_w, "conv_transpose2d out_w")?;
+    checked_u32(kernel_h, "conv_transpose2d kernel_h")?;
+    checked_u32(kernel_w, "conv_transpose2d kernel_w")?;
+    checked_u32(stride_h, "conv_transpose2d stride_h")?;
+    checked_u32(stride_w, "conv_transpose2d stride_w")?;
+    checked_u32(padding_h, "conv_transpose2d padding_h")?;
+    checked_u32(padding_w, "conv_transpose2d padding_w")?;
+    checked_u32(dilation_h, "conv_transpose2d dilation_h")?;
+    checked_u32(dilation_w, "conv_transpose2d dilation_w")?;
+    checked_u32(output_padding_h, "conv_transpose2d output_padding_h")?;
+    checked_u32(output_padding_w, "conv_transpose2d output_padding_w")?;
+    let input_plane = checked_mul(in_h, in_w, "conv_transpose2d input plane")?;
+    let output_plane = checked_mul(out_h, out_w, "conv_transpose2d output plane")?;
+    let kernel_plane = checked_mul(kernel_h, kernel_w, "conv_transpose2d kernel plane")?;
+    checked_u32(input_plane, "conv_transpose2d input plane")?;
+    checked_u32(output_plane, "conv_transpose2d output plane")?;
+    checked_u32(kernel_plane, "conv_transpose2d kernel plane")?;
+    let input_len = checked_mul(in_ch, input_plane, "conv_transpose2d input")?;
+    let weight_per_input = checked_mul(
+        out_ch / groups,
+        kernel_plane,
+        "conv_transpose2d weight per input",
+    )?;
+    let weight_len = checked_mul(in_ch, weight_per_input, "conv_transpose2d weight")?;
+    let output_len = checked_mul(out_ch, output_plane, "conv_transpose2d output")?;
+    checked_u32(input_len, "conv_transpose2d input")?;
+    checked_u32(weight_len, "conv_transpose2d weight")?;
+    checked_u32(output_len, "conv_transpose2d output")?;
+    checked_u32(
+        checked_mul(out_ch, out_h, "conv_transpose2d dispatch rows")?,
+        "conv_transpose2d dispatch rows",
+    )?;
+    expect_len("conv_transpose2d input", input.len(), input_len)?;
+    expect_len("conv_transpose2d weight", weight.len(), weight_len)?;
+    expect_len("conv_transpose2d out", out.len(), output_len)?;
+    if let Some(bias) = bias {
+        expect_len("conv_transpose2d bias", bias.len(), out_ch)?;
+    }
+    Ok((out_h, out_w))
 }
 
 /// Validates the stride/dilation Conv1d host wrapper and returns its exact
