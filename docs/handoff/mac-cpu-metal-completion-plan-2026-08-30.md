@@ -141,10 +141,11 @@ installed closures by marker-aware traversal from the virtual project root.
 All six model-free audit/wrapper/worker self-tests, shell syntax, ShellCheck,
 zero-dependency, forbidden-symbol, fixture-EOL and pipefail gates passed.  No
 model, Torch import, conversion or Cargo model build ran on the maintainer Mac.
-The verified incremental transfer bundle is
-`/private/tmp/vokra-dependency-audit-corrections-f22bfdfd.bundle`, requires
-`d2ef5cfb8373a640f438a199fa779b3daaadc103`, and has SHA-256
-`a56d9632319a4a4c2ece3b1813e77b8048750a5efd842b39ffa84000a9d5beb8`.
+The current verified incremental transfer bundle is
+`/private/tmp/vokra-dependency-audit-corrections-a606b3c2.bundle`, requires
+`d2ef5cfb8373a640f438a199fa779b3daaadc103`, resolves to management HEAD
+`a606b3c2a70a511d15d8bd61ecc5d7d5fbc34a15`, and has SHA-256
+`fbdc286fd0d0f384c28f0ed3a0634fe76b92239a267ce0578569d72eb8ee7b89`.
 Disposable audit instance `49242592` is stopped by owner request; the corrected
 three-family Linux audit has therefore not run yet.
 
@@ -187,6 +188,40 @@ All forty-three staged Apple worker `--self-test` paths also passed at the same
 management HEAD, followed by Bash syntax and ShellCheck for the same files.
 Those are offline launch/evidence-contract tests only: no Apple hardware,
 checkpoint, model execution, Cargo command or numerical verdict was involved.
+
+## Next authorized VAST batch
+
+No VAST restart is presently authorized. Read-only status confirmation after
+the owner stop request showed both retained instance `49168183` and disposable
+audit instance `49242592` with `cur_state=stopped`,
+`intended_status=stopped` and `actual_status=exited`. Their stopped storage
+rates are approximately USD 0.0741/hour and USD 0.0417/hour respectively;
+neither is consuming compute.
+
+When the owner explicitly authorizes a restart, resume only `49242592`, fetch
+the verified bundle above into its existing `d2ef5cfb` checkout and verify a
+clean exact `a606b3c2` checkout before running anything. The bounded first
+batch is:
+
+1. Repeat the corrected MOSS Audio Tokenizer v2 dependency audit and require
+   all 52 lock rows to be accounted for as 51 installed package rows plus the
+   virtual project row, including exact-sdist evidence.
+2. Repeat the corrected Ultravox audit and require 40 rows to classify as 37
+   active plus three inactive rows; repeat NeuTTS Air and require 39 rows to
+   classify as 36 active plus three inactive rows.
+3. Run the fixed BiCodec, HTDemucs Multi and XY-Tokenizer inspection workers
+   sequentially, preserving their complete authenticated tensor/tree
+   inventories and fail-closed `NO_UPLOAD` verdicts. Do not begin a native
+   binder from partial output.
+4. Recover only the small manifests/logs, verify their SHA-256 values locally,
+   and destroy `49242592` after the evidence is safe. Do not alter retained
+   Apple-transfer instance `49168183` in this batch.
+
+The MOSS-Audio 4B/8B production worker is excluded because it requires a
+separate external approval document. CosyVoice3 is also excluded because its
+dependency-clean official-reference route remains unresolved; more RAM or a
+VAST host does not satisfy that license/reference gate. No conversion,
+publication or Hugging Face upload is part of this first batch.
 
 ## Execution order
 
