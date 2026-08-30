@@ -19,3 +19,12 @@ Run only the dependency-free self-test locally:
 ```text
 UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python license_gate.py --self-test
 ```
+
+After an owner-authorized frozen sync on a clean Linux/x86_64 VAST checkout,
+run `scripts/publish/vast-ai/audit-moss-audio-tokenizer-v2-dependencies.sh`.
+The audit uses `--no-sync`, records the exact installed closure and native ELF
+facts, fetches only the pinned upstream `LICENSE` and exact locked PyPI sdist
+license candidates when publisher files are absent, and never downloads model
+weights, imports Torch/model code, or invokes Cargo. It must complete before
+the validation worker acquires the model or starts Cargo; unresolved factual
+license evidence remains a blocker.

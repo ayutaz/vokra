@@ -12,6 +12,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 V2_PROJECT="$PARITY_PROJECT/moss_audio_tokenizer_v2"
 LICENSE_GATE="$V2_PROJECT/license_gate.py"
 LICENSE_MANIFEST="$V2_PROJECT/license_gate_manifest.json"
+DEPENDENCY_AUDIT_WRAPPER="$VOKRA_ROOT/scripts/publish/vast-ai/audit-moss-audio-tokenizer-v2-dependencies.sh"
 AUDITOR="$VOKRA_ROOT/tools/audit/moss_audio_tokenizer_v2_manifest.py"
 PREPARER="$PARITY_PROJECT/moss_audio_tokenizer_prepare_checkpoint.py"
 REFERENCE_DUMPER="$PARITY_PROJECT/moss_audio_tokenizer_dump_reference.py"
@@ -47,6 +48,8 @@ the authenticated manifest and independent CUDA reference it runs the mapped
 native CPU decoder as a measurement-only comparison. Metal execution is an
 Apple-only concern handled by the separate verifier. It contains no publish,
 upload, or Hugging Face push operation.
+After owner preflight and a separately authorized frozen sync, the
+model-free dependency audit runs before model acquisition or Cargo.
 Pull only logs/reference evidence, then destroy the instance.
 
 Actual runs require Linux, VOKRA_PUBLISH_ON_VAST=1 from provision.sh, at least
@@ -120,12 +123,13 @@ require_vast_host() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc rustup git awk grep find tee wc tr nvidia-smi; do
+  for tool in uv cargo rustc rustup git awk grep find tee wc tr readelf nvidia-smi; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die "$VOKRA_ROOT is not a git checkout"
   [[ -f "$V2_PROJECT/uv.lock" && -f "$V2_PROJECT/pyproject.toml" ]] || die "dedicated v2 uv project is missing"
   [[ -f "$AUDITOR" ]] || die "v2 manifest auditor is missing"
+  [[ -f "$DEPENDENCY_AUDIT_WRAPPER" ]] || die "v2 dependency audit wrapper is missing"
   [[ -f "$PREPARER" ]] || die "v2 checkpoint preparer is missing"
   [[ -f "$REFERENCE_DUMPER" ]] || die "official reference dumper is missing"
   if [[ -n "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]]; then
@@ -303,7 +307,7 @@ run_self_test_work_paths() {
 }
 
 run_self_test() {
-  local tmp payload actual cases=0 fail=0 script_path fake_root fake_home fake_log rc
+  local tmp payload actual cases=0 fail=0 script_path fake_root fake_home fake_log rc audit_marker
   run_self_test_work_paths
   tmp="$(mktemp -d)"
   # shellcheck disable=SC2064
@@ -358,6 +362,7 @@ run_self_test() {
     "--shard-dir" "--gguf" "--model moss-audio-tokenizer-v2" \
     "--variant v2" "--num-quantizers 12" "--frozen --python 3.12" \
     "license_preflight" "--no-project --offline" "license_gate.py" \
+    "audit-moss-audio-tokenizer-v2-dependencies.sh" "--no-sync" "dependency_audit.py" "readelf" \
     "object_pairs_hook=reject" \
     "measure_v2_real_cpu_and_optional_metal_against_official" \
     "numeric_bounds=UNSET"; do
@@ -378,6 +383,29 @@ run_self_test() {
   cases=$((cases + 1))
   if grep -En '(publish-one\.sh|upload\.sh|--push([[:space:]]|$))' "$script_path" >/dev/null; then
     log "self-test FAIL: external publication operation found"
+    fail=1
+  fi
+  cases=$((cases + 1))
+  audit_marker="  VOKRA_PUBLISH_ON_VAST=1 \"\$DEPENDENCY_AUDIT_WRAPPER\" --output \"\$dependency_audit_json\""
+  check_dependency_audit_order() {
+    local candidate="$1" sync_line audit_line snapshot_line sync_marker snapshot_marker
+    sync_marker="  uv sync --project \"\$V2_PROJECT\" --frozen --python 3.12"
+    snapshot_marker='  step "Download immutable official three-shard snapshot"'
+    sync_line="$(grep -nF "$sync_marker" "$candidate" | tail -n 1 | cut -d: -f1)"
+    audit_line="$(grep -nF "$audit_marker" "$candidate" | tail -n 1 | cut -d: -f1)"
+    snapshot_line="$(grep -nF "$snapshot_marker" "$candidate" | tail -n 1 | cut -d: -f1)"
+    [[ "$sync_line" =~ ^[0-9]+$ && "$audit_line" =~ ^[0-9]+$ && "$snapshot_line" =~ ^[0-9]+$ ]] || return 1
+    (( sync_line < audit_line && audit_line < snapshot_line ))
+  }
+  if ! check_dependency_audit_order "$script_path"; then
+    log 'self-test FAIL: dependency audit is not after sync and before model acquisition'
+    fail=1
+  fi
+  cases=$((cases + 1))
+  local without_audit="$tmp/worker-without-dependency-audit.sh"
+  grep -vF "$audit_marker" "$script_path" > "$without_audit"
+  if check_dependency_audit_order "$without_audit"; then
+    log 'self-test FAIL: production audit-call deletion was accepted'
     fail=1
   fi
   printf approval > "$tmp/approval-target"
@@ -509,7 +537,7 @@ write_failure_summary_on_exit() {
 main() {
   local self_test=0 requested_work_dir="" approval_evidence="" run_stamp work_dir snapshot stage logs reference
   local seen_work_dir=0 seen_self_test=0 seen_approval=0
-  local merged gguf audit_before audit_after reference_csv reference_sha256 gguf_sha256 run_log env_log summary_file
+  local merged gguf audit_before audit_after dependency_audit_json dependency_audit_log reference_csv reference_sha256 gguf_sha256 run_log env_log summary_file
   local compile_log cpu_log
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -554,6 +582,8 @@ main() {
   gguf="$stage/moss-audio-tokenizer-v2.gguf"
   audit_before="$logs/safetensors-audit.json"
   audit_after="$logs/gguf-audit.json"
+  dependency_audit_json="$logs/dependency-audit.json"
+  dependency_audit_log="$logs/dependency-audit.log"
   reference_csv="$reference/moss-audio-tokenizer-v2-reference.csv"
   mkdir -p "$snapshot" "$stage" "$logs" "$reference"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-moss-tokenizer-v2"
@@ -568,6 +598,9 @@ main() {
 
   step "Sync locked Python 3.12 parity environment"
   uv sync --project "$V2_PROJECT" --frozen --python 3.12
+
+  step "Audit synchronized dependency closure before model acquisition"
+  VOKRA_PUBLISH_ON_VAST=1 "$DEPENDENCY_AUDIT_WRAPPER" --output "$dependency_audit_json" 2>&1 | tee "$dependency_audit_log"
 
   step "Download immutable official three-shard snapshot"
   download_snapshot "$snapshot"
