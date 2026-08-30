@@ -51,7 +51,7 @@ run_self_test() (
   if (require_cpu_parity_pass "$temporary/missing-sentinel.log") >/dev/null 2>&1; then die 'missing backend sentinel accepted'; fi
   grep -Fq -- 'VOKRA_BICODEC_PARITY_BACKEND=cpu' "$0" || die 'CPU selector missing from production command'
   grep -Fq -- 'cargo test --locked --lib -p vokra-models' "$0" || die 'production command lacks --lib'
-  grep -Fq -- '-- --ignored --exact --nocapture' "$0" || die 'production command lacks harness --exact'
+  grep -Fq -- '-- --ignored --exact --show-output' "$0" || die 'production command lacks harness --exact/show-output'
   echo 'run-bicodec-native-parity.sh self-test: OK'
 )
 
@@ -119,6 +119,6 @@ VOKRA_BICODEC_PARITY_GGUF="$gguf_path" \
 VOKRA_BICODEC_PARITY_REFERENCE="$output" \
 VOKRA_BICODEC_PARITY_BACKEND=cpu \
   cargo test --locked --lib -p vokra-models \
-    bicodec::tests::official_reference_measured_parity -- --ignored --exact --nocapture 2>&1 | tee "$output/parity-cpu.log"
+    bicodec::tests::official_reference_measured_parity -- --ignored --exact --show-output 2>&1 | tee "$output/parity-cpu.log"
 require_cpu_parity_pass "$output/parity-cpu.log"
 echo "BiCodec official reference evidence: $output"

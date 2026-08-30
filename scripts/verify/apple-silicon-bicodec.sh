@@ -275,7 +275,7 @@ require_test_pass() {
 run_parity() {
   local backend="$1" gguf="$2" reference="$3" log_path="$4"
   env VOKRA_BICODEC_PARITY_GGUF="$gguf" VOKRA_BICODEC_PARITY_REFERENCE="$reference" VOKRA_BICODEC_PARITY_BACKEND="$backend" CARGO_BUILD_JOBS=1 RUST_TEST_THREADS=1 \
-    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release --lib -p vokra-models --features metal "$TEST_SELECTOR" -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$log_path"
+    cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release --lib -p vokra-models --features metal "$TEST_SELECTOR" -- --ignored --exact --show-output --test-threads=1 2>&1 | tee "$log_path"
 }
 
 run_self_test() (
