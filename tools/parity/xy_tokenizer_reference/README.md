@@ -17,7 +17,11 @@ The exact VAST-generated CPU-only `uv.lock` is tracked at the pinned digest
 `ba26854d2cd1d695195fc906dde3d02f1fbf7ccc1d154e6015aaaa0aec44c049` (57 package
 rows). `license_evidence.json` is tracked only as an empty template. VAST must collect
 publisher or locked-sdist license bytes plus native bundled payload evidence.
-Run `audit.py` only with fake fixtures locally. It emits `BLOCKED`,
+Run `scripts/publish/vast-ai/run-xy-tokenizer-dependency-audit.sh` on a clean
+Linux/x86_64 VAST checkout to collect exact lock artifact bytes into a separate
+evidence directory; the tracked template remains untouched and the final audit
+uses an explicit evidence override. It emits a report-only result. Run
+`audit.py` and `collect_evidence.py` only with fake fixtures locally. The audit emits `BLOCKED`,
 `NO_UPLOAD`, and owner sign-off required; it cannot self-assert
 `AUDITED_ALLOW`.
 

@@ -161,6 +161,16 @@ def disjoint(*paths: Path) -> None:
                 raise ValueError("project/source/output paths must be canonical and disjoint")
 
 
+def repository_license(project: Path) -> Path:
+    """Find the canonical repository-root LICENSE without following symlinks."""
+    for candidate in (project, *project.parents):
+        git_dir = candidate / ".git"
+        license_path = candidate / "LICENSE"
+        if git_dir.exists() and not git_dir.is_symlink() and license_path.exists():
+            return canonical_existing(license_path, "repository root LICENSE", directory=False)
+    raise ValueError("repository root with a regular LICENSE could not be derived")
+
+
 def validate_pyproject(data: dict[str, Any]) -> None:
     if set(data) != {"project", "tool"}:
         raise ValueError("pyproject top-level schema is not exact")
@@ -397,7 +407,7 @@ def active_closure(data: dict[str, Any], rows: list[dict[str, Any]]) -> list[dic
     return [selected[name] for name in sorted(selected)]
 
 
-def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], project_pyproject: Path | None = None) -> list[dict[str, Any]]:
+def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], project_pyproject: Path | None = None, repository_license_path: Path | None = None) -> list[dict[str, Any]]:
     if not isinstance(evidence, dict) or set(evidence) != {"packages"} or not isinstance(evidence["packages"], list):
         raise ValueError("license evidence must contain exactly structured package rows")
     seen: set[tuple[str, str]] = set()
@@ -412,8 +422,13 @@ def validate_license_rows(rows: list[dict[str, Any]], evidence: dict[str, Any], 
         license_row = row["license"]
         if not isinstance(license_row, dict) or set(license_row) != {"kind", "source", "revision", "sha256", "bytes", "spdx"}:
             raise ValueError("license evidence must be publisher or locked-sdist byte evidence")
-        if license_row["kind"] not in {"publisher", "locked-sdist"} or not isinstance(license_row["source"], str) or not license_row["source"].startswith("https://") or not isinstance(license_row["revision"], str) or not license_row["revision"] or not isinstance(license_row["sha256"], str) or len(license_row["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in license_row["sha256"]) or isinstance(license_row["bytes"], bool) or not isinstance(license_row["bytes"], int) or license_row["bytes"] <= 0 or not isinstance(license_row["spdx"], str) or not license_row["spdx"]:
+        if license_row["kind"] not in {"publisher", "locked-sdist", "local-file"} or not isinstance(license_row["source"], str) or (license_row["kind"] != "local-file" and not license_row["source"].startswith("https://")) or not isinstance(license_row["revision"], str) or not license_row["revision"] or not isinstance(license_row["sha256"], str) or len(license_row["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in license_row["sha256"]) or isinstance(license_row["bytes"], bool) or not isinstance(license_row["bytes"], int) or license_row["bytes"] <= 0 or not isinstance(license_row["spdx"], str) or not license_row["spdx"]:
             raise ValueError("license byte evidence is incomplete")
+        if license_row["kind"] == "local-file":
+            if identity != (VIRTUAL_PROJECT_NAME, "0.1.0") or repository_license_path is None or license_row["source"] != "LICENSE" or license_row["revision"] != sha256(repository_license_path) or license_row["sha256"] != sha256(repository_license_path) or license_row["bytes"] != repository_license_path.stat().st_size or license_row["spdx"] != "Apache-2.0":
+                raise ValueError("virtual project license is not bound to the repository root LICENSE")
+        elif identity == (VIRTUAL_PROJECT_NAME, "0.1.0"):
+            raise ValueError("virtual project license must use repository root LICENSE evidence")
         if any(token in license_row["spdx"].upper() for token in ("GPL", "LGPL", "UNKNOWN", "UNLICENSED")):
             raise ValueError("GPL/LGPL/unknown license is not allowed")
         artifact = row["artifact"]
@@ -471,16 +486,22 @@ def compatible_projection(package_evidence: list[dict[str, Any]]) -> list[dict[s
     ]
 
 
-def audit(project: Path, source: Path | None, output: Path) -> dict[str, Any]:
+def audit(project: Path, source: Path | None, output: Path, license_evidence: Path | None = None) -> dict[str, Any]:
     project = canonical_existing(project, "project", directory=True)
     if source is not None:
         source = canonical_existing(source, "source", directory=True)
     output = canonical_absent_output(output)
-    if source is not None:
+    pyproject, lock = project / "pyproject.toml", project / "uv.lock"
+    evidence_path = canonical_existing(license_evidence, "license evidence override", directory=False) if license_evidence is not None else project / "license_evidence.json"
+    if license_evidence is not None:
+        paths = [project, output, evidence_path]
+        if source is not None:
+            paths.append(source)
+        disjoint(*paths)
+    elif source is not None:
         disjoint(project, source, output)
     else:
         disjoint(project, output)
-    pyproject, lock, evidence_path = (project / name for name in ("pyproject.toml", "uv.lock", "license_evidence.json"))
     for path in (pyproject, lock, evidence_path):
         regular(path, path.name)
     blockers: list[str] = []
@@ -489,6 +510,11 @@ def audit(project: Path, source: Path | None, output: Path) -> dict[str, Any]:
         validate_pyproject(pyproject_data)
     except ValueError as error:
         blockers.append(f"REFERENCE_PROJECT_POLICY_MISMATCH:{error}")
+    repository_license_path: Path | None = None
+    try:
+        repository_license_path = repository_license(project)
+    except (OSError, ValueError) as error:
+        blockers.append(f"REPOSITORY_LICENSE_BLOCKER:{error}")
     active: list[dict[str, Any]] = []
     package_evidence: list[dict[str, Any]] = []
     try:
@@ -498,7 +524,7 @@ def audit(project: Path, source: Path | None, output: Path) -> dict[str, Any]:
         blockers.append(f"{BLOCKER}:{error}")
     else:
         try:
-            package_evidence = validate_license_rows(active, json_unique(evidence_path), pyproject)
+            package_evidence = validate_license_rows(active, json_unique(evidence_path), pyproject, repository_license_path)
         except (OSError, ValueError, tomllib.TOMLDecodeError) as error:
             blockers.append(f"{BLOCKER}:{error}")
     source_packet: dict[str, Any] | None = None
@@ -694,17 +720,19 @@ requires-dist = [
             raise AssertionError("non-PyTorch size-less CPU artifact accepted")
         project_file = root / "pyproject.toml"
         project_file.write_text("[project]\nname='vokra-xy-tokenizer-reference'\n", encoding="utf-8")
+        repository_license_file = root / "LICENSE"
+        repository_license_file.write_bytes(b"Apache License\n")
         license_base = {"kind": "publisher", "source": "https://example.invalid/license", "revision": "r1", "sha256": "b" * 64, "bytes": 1, "spdx": "BSD-3-Clause"}
         artifact_base = {"kind": "wheel", "url": "https://example.invalid/numpy-1-py3-none-manylinux_2_17_x86_64.whl", "sha256": "sha256:" + "a" * 64, "bytes": 1}
         rich = {"name": "numpy", "version": "1", "license": license_base, "artifact": artifact_base, "native_payloads": [{"name": "numpy.core", "sha256": "c" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": artifact_base["sha256"]}]}
-        virtual_rich = {"name": "vokra-xy-tokenizer-reference", "version": "0.1.0", "license": license_base, "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": sha256(project_file), "bytes": project_file.stat().st_size}, "native_payloads": []}
-        assert len(validate_license_rows(artifact_active, {"packages": [virtual_rich, rich]}, project_file)) == 2
+        virtual_rich = {"name": "vokra-xy-tokenizer-reference", "version": "0.1.0", "license": {"kind": "local-file", "source": "LICENSE", "revision": sha256(repository_license_file), "sha256": sha256(repository_license_file), "bytes": repository_license_file.stat().st_size, "spdx": "Apache-2.0"}, "artifact": {"kind": "virtual-local", "url": "pyproject.toml", "sha256": sha256(project_file), "bytes": project_file.stat().st_size}, "native_payloads": []}
+        assert len(validate_license_rows(artifact_active, {"packages": [virtual_rich, rich]}, project_file, repository_license_file)) == 2
         cpu_artifact = {"kind": "wheel", "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.0-cp312-cp312-manylinux_2_17_x86_64.whl", "sha256": "sha256:" + "d" * 64, "bytes": 1}
         cpu_rich = {"name": "torch", "version": "2.0", "license": license_base, "artifact": cpu_artifact, "native_payloads": [{"name": "torch._C", "sha256": "e" * 64, "bytes": 1, "license_source": "https://example.invalid/native", "license_revision": "r1", "artifact_sha256": cpu_artifact["sha256"]}]}
-        assert len(validate_license_rows(r2_active, {"packages": [virtual_rich, cpu_rich]}, project_file)) == 2
+        assert len(validate_license_rows(r2_active, {"packages": [virtual_rich, cpu_rich]}, project_file, repository_license_file)) == 2
         registry_virtual_bypass = dict(rich, name="numpy", artifact=virtual_rich["artifact"])
         try:
-            validate_license_rows(artifact_package, {"packages": [registry_virtual_bypass]}, project_file)
+            validate_license_rows(artifact_package, {"packages": [registry_virtual_bypass]}, project_file, repository_license_file)
         except ValueError as error:
             assert "virtual project row" in str(error)
         else:
@@ -779,15 +807,16 @@ def main() -> int:
     parser.add_argument("--project", type=Path)
     parser.add_argument("--source", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--license-evidence", type=Path)
     args = parser.parse_args()
     if args.self_test:
-        if any(value is not None for value in (args.project, args.source, args.output)):
+        if any(value is not None for value in (args.project, args.source, args.output, args.license_evidence)):
             parser.error("--self-test accepts no paths")
         self_test()
         return 0
     if args.project is None or args.output is None:
         parser.error("--project and --output are required")
-    audit(args.project, args.source, args.output)
+    audit(args.project, args.source, args.output, args.license_evidence)
     print(args.output / "dependency_audit.json")
     return 0
 
