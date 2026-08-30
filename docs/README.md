@@ -1,11 +1,13 @@
 # Vokra documentation
 
-**Current-state review:** 2026-08-30
+**Current-state review:** 2026-08-31
 
 **Reviewed implementation baseline:** GitHub `main` at
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`; the pre-documentation code
 baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d`.
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
+documentation/evidence checkpoint was
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
 
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
@@ -30,6 +32,7 @@ environment they name.
 | Deployment policy and legal notes | [Legal compliance](legal-compliance.md) |
 | C ABI changes | [ABI changelog](abi-changelog.md) |
 | Release history | [`CHANGELOG.md`](../CHANGELOG.md) |
+| Current Mac CPU/Metal campaign | [Completion plan](handoff/mac-cpu-metal-completion-plan-2026-08-30.md) |
 
 Platform tutorials are available for Android, iOS, Unity, Godot, Python, web,
 and the server in English and Japanese under [`tutorials/`](tutorials/).

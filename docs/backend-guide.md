@@ -144,6 +144,13 @@ the meta block below).
 
 ## 6. Owner / contributor boundary
 
+The current CPU and Metal compute seams also expose generic dilated Conv1d,
+ConvTranspose1d, Conv2d and ConvTranspose2d kernels. Model routes must preflight
+their complete learned-op inventory before selecting Metal; these seams do not
+authorize a silent CPU fallback. Their source-level contracts were verified at
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`; real Apple CPU/Metal evidence for
+the staged GigaAM, OmniASR, ReazonSpeech and BiCodec packets remains pending.
+
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon
 device, an Android phone) are owner tasks. A contributor lands the crate, the
@@ -152,8 +159,9 @@ metal and signs off.
 
 ## Keeping this page current
 
-**Last verified: 2026-08-30 — against the five implemented compute backends, the
-CoreML whole-submodel delegate path, and the SDK-gated QNN delegate scaffold.**
+**Last verified: 2026-08-31 — against the five implemented compute backends,
+the generic convolution seams above, the CoreML whole-submodel delegate path,
+and the SDK-gated QNN delegate scaffold.**
 
 - **Update responsibility**: whoever lands a new backend (or changes the
   six-file layout / the `Backend` trait) updates this page and its Japanese

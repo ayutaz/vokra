@@ -63,10 +63,10 @@ Each binding documents its own idiomatic surface on top of the C ABI:
 
 ## Keeping this page current
 
-**Last verified: 2026-08-30 — against GitHub `main`
+**Last verified: 2026-08-31 — against GitHub `main`
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`, the pre-documentation code
 baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d`, and `include/vokra.h`.** The
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`, and `include/vokra.h`.** The
 pre-alpha Python generator and checked-in `ctypes` table cover all 57 generated
 C functions exactly; the header has 15 typedefs, four enums, two concrete
 structures, and nine opaque handles. The high-level Python package remains a

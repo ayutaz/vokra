@@ -60,10 +60,10 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-30 — GitHub `main`
+**最終確認日: 2026-08-31 — GitHub `main`
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`、文書更新前に照合したコード
 baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` の
-`c64b7b7237b70c5dc70ffd60394af325016d9a8d`、および `include/vokra.h` に対して
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0`、および `include/vokra.h` に対して
 確認。** pre-alpha の Python generator と checked-in `ctypes` table は、生成 C
 の全 57 function と完全に一致する。header は 15 typedef、4 enum、2 concrete
 struct、9 opaque handle を持つ。高水準 Python package は、全 C handle に wrapper

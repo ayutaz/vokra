@@ -14,14 +14,33 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
-- **2026-08-30 authenticated CPU lock**: GigaAM v3, GigaAM Multilingual and
+- **2026-08-31 authenticated CPU/remote lock**: GigaAM v3, GigaAM Multilingual and
   OmniASR CTC 1B now have strict native CPU routes and independent official
   VAST real-weight parity. Their Apple CPU/Metal execution is still pending;
   no Metal completion is claimed and no Hugging Face upload was performed.
   Exact hashes and unchanged numerical bounds are recorded in the Mac
-  CPU/Metal handoff. The live audit is now CPU `full=131`, `partial=42`,
-  `no-runtime-binder=20`, `not-artifact=1`; Metal `full=128`,
-  `blocked-by-cpu=62`, `cpu-only=3`, `not-artifact=1`.
+  CPU/Metal handoff. OmniASR now has a complete source-level Metal route. The
+  live audit is CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+  `not-artifact=1`; Metal `full=129`, `blocked-by-cpu=62`, `cpu-only=2`,
+  `not-artifact=1`.
+- ReazonSpeech NeMo v2 now locks the exact native ALSD CPU decoder, tokens and
+  text against the official NeMo reference. Its authenticated Apple packet is
+  staged, while Apple CPU/Metal and any public replacement remain pending and
+  `NO_UPLOAD`.
+- BiCodec now has a strict 840-F32-tensor binder and native decode-only route.
+  Official VAST parity passed semantic latent, d-vector, prenet and waveform
+  with maximum absolute errors `1.907348633e-6`, `1.847743988e-6`,
+  `7.539987564e-6` and `6.183981895e-7`; PCM encode is explicitly unsupported,
+  Apple CPU/Metal is pending, and the research-only artifact remains
+  `NO_UPLOAD`.
+- CPU and Metal backends now expose generic dilated Conv1d, ConvTranspose1d,
+  Conv2d and ConvTranspose2d seams. Unsupported complete model graphs fail
+  explicitly rather than silently falling back to CPU.
+- The model-free XY-Tokenizer dependency audit collected exact evidence for 51
+  of 57 active rows. SciPy, setuptools, soxr, SymPy, tokenizers and tqdm remain
+  fail-closed; no model or Torch route was imported. HT-Demucs Multi remains
+  `BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO` because its exact
+  `torchaudio>=0.8,<2.1` constraint has no Python 3.12-compatible release.
 - The public Bark and Bark Small GGUFs now have a strict mapping-owned native
   runtime for the semantic, coarse and fine token hierarchy and their embedded
   causal 24 kHz EnCodec decoder. Exact 758/518-tensor all-F32 manifests select

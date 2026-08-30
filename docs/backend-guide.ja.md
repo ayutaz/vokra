@@ -137,6 +137,14 @@ post-bakeoff の `IF-01` 決定までは Rust surface（`with_backend`）が唯�
 
 ## 6. owner / contributor 境界
 
+現行の CPU / Metal compute seam は、汎用の dilated Conv1d、
+ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経路は Metal
+選択前に learned-op inventory 全体を preflight しなければならず、これらの seam
+は silent CPU fallback を許可しない。source-level contract は
+`9f69277d8a0d5df574c1ee95563bd1f005de91d0` で確認済みだが、準備済みの
+GigaAM、OmniASR、ReazonSpeech、BiCodec packet に対する実 Apple CPU/Metal
+evidence は引き続き pending である。
+
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner
 タスクである。contributor は crate・coverage 契約・CPU-oracle parity harness
@@ -144,8 +152,9 @@ Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak �
 
 ## Keeping this page current
 
-**最終確認日: 2026-08-30 — 実装済みの 5 計算バックエンド、CoreML
-whole-submodel delegate 経路、SDK gate 下の QNN delegate scaffold に対して確認。**
+**最終確認日: 2026-08-31 — 実装済みの 5 計算バックエンド、上記の汎用
+convolution seam、CoreML whole-submodel delegate 経路、SDK gate 下の QNN
+delegate scaffold に対して確認。**
 
 - **更新責任**: 新バックエンドを land した者（または 6-file 構成・`Backend`
   trait を変えた者）が、同一 PR で本ページと英語版を更新し、上の「確認対象」
