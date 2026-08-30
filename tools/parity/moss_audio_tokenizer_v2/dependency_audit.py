@@ -148,6 +148,26 @@ def compare_multiset(expected: list[str], actual: list[str]) -> dict[str, Any]:
             "exact": not (e-a or a-e)}
 
 
+def artifact_rows(lock: dict[str, Any], canonical_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return exact lock rows while binding them to gate canonical identities."""
+    raw = lock.get("package")
+    if not isinstance(raw, list):
+        raise AuditError("lock package table is not a list")
+    canonical_by_id = {(row["name"], row["version"]): row for row in canonical_rows}
+    seen: set[tuple[str, str]] = set()
+    for row in raw:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str) or not isinstance(row.get("version"), str):
+            raise AuditError("lock artifact row is malformed")
+        key = (row["name"], row["version"])
+        canonical = canonical_by_id.get(key)
+        if canonical is None or row.get("source") != canonical.get("source") or key in seen:
+            raise AuditError("artifact-bearing rows are not one-to-one with canonical lock rows")
+        seen.add(key)
+    if seen != set(canonical_by_id):
+        raise AuditError("artifact-bearing rows omit a canonical lock row")
+    return sorted(raw, key=lambda row: (norm_name(row["name"]), norm_version(row["version"])))
+
+
 LINUX_X86_64_MARKER = "platform_machine == 'x86_64' and sys_platform == 'linux'"
 
 
@@ -536,7 +556,8 @@ def git_identity(project: Path) -> dict[str, str]:
 def audit_environment(project: Path, fetch_model_license: bool = True,
                       sdist_fetcher: Callable[[str], tuple[str, bytes]] | None = None,
                       license_fetcher: Callable[[str], tuple[str, bytes]] | None = None) -> dict[str, Any]:
-    pd, lock, manifest, rows, pb, lb = contract(project)
+    pd, lock, manifest, canonical_rows, pb, lb = contract(project)
+    rows = artifact_rows(lock, canonical_rows)
     virtual = [r for r in lock["package"] if r.get("source") == {"virtual": "."}]
     real = [r for r in rows if r.get("source") != {"virtual": "."}]
     active_real = [r for r in real if row_active(r)]
@@ -604,8 +625,11 @@ def run(project: Path, output: Path, fetch_model_license: bool) -> int:
 
 def self_test() -> int:
     project = Path(__file__).resolve().parent
-    _, _, manifest, rows, _, _ = contract(project)
+    _, lock, manifest, canonical_rows, _, _ = contract(project)
+    rows = artifact_rows(lock, canonical_rows)
     assert len(rows) == 52 and len(manifest["package_review_rows"]) == 52
+    tokenizers = next(row for row in rows if row["name"] == "tokenizers")
+    assert isinstance(tokenizers.get("sdist"), dict) and tokenizers["sdist"].get("url", "").startswith("https://files.pythonhosted.org/")
     state = approval_state(manifest)
     assert len(state["license_rows"]) == 3 and state["approval"]["status"] == "OWNER_SIGNOFF_REQUIRED"
     assert state["publication_decision"] == "NO_UPLOAD" and state["publication_permitted"] is False
