@@ -15,8 +15,14 @@ use vokra_backend_cpu::kernels as cpu;
 use vokra_backend_metal::MetalContext;
 use vokra_core::{KvCache, PrenormLayer};
 
+#[path = "../../vokra-backend-cpu/tests/support/vocoder_conv_fixture.rs"]
+mod vocoder_conv_fixture;
+
 /// NFR-QL-01 FP32 parity ceiling.
 const ATOL: f32 = 0.01;
+// The vocoder fixture uses signed powers of two whose products and sums stay
+// in the exact f32 integer range, so its independent oracle check is exact.
+const VOCODER_CONV_ATOL: f32 = 0.0;
 
 /// Deterministic pseudo-random f32 in roughly [-1, 1) (xorshift64*), matching the
 /// GEMM parity suite's generator so inputs are reproducible.
@@ -395,6 +401,89 @@ fn conv1d_metal_matches_cpu() {
         worst = worst.max(d);
     }
     eprintln!("conv1d Metal vs CPU: global max|Δ| = {worst:.3e} (atol {ATOL})");
+}
+
+#[test]
+#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
+fn dilated_conv1d_metal_host_wrapper_matches_pytorch_reference() {
+    let ctx = ctx_or_skip!("dilated conv1d PyTorch fixture");
+    let fixture = vocoder_conv_fixture::load("conv1d_d2_s2_p2");
+    assert_eq!(fixture.kind, vocoder_conv_fixture::Kind::Conv1d);
+    assert_eq!(fixture.input_shape, [1, 2, 5]);
+    assert_eq!(fixture.weight_shape, [3, 2, 3]);
+    assert_eq!(fixture.output_shape, [1, 3, 3]);
+    assert_eq!(fixture.stride, 2);
+    assert_eq!(fixture.dilation, 2);
+    assert_eq!(fixture.padding, 2);
+
+    let submissions_before = ctx.submission_count();
+    let mut actual = vec![f32::NAN; fixture.output.len()];
+    ctx.conv1d_f32_dilated(
+        &fixture.input,
+        fixture.in_channels,
+        fixture.input_shape[2],
+        &fixture.weight,
+        fixture.out_channels,
+        fixture.kernel,
+        Some(&fixture.bias),
+        fixture.stride,
+        fixture.dilation,
+        fixture.padding,
+        &mut actual,
+    )
+    .expect("Metal dilated Conv1d host wrapper");
+    assert_eq!(
+        ctx.submission_count() - submissions_before,
+        1,
+        "dilated Conv1d must dispatch Metal work (no CPU fallback)"
+    );
+    let delta = max_abs_diff(&actual, &fixture.output);
+    assert!(
+        delta <= VOCODER_CONV_ATOL,
+        "Metal Conv1d vs PyTorch: {delta} > {VOCODER_CONV_ATOL}"
+    );
+}
+
+#[test]
+#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
+fn conv_transpose1d_metal_host_wrapper_matches_pytorch_reference() {
+    let ctx = ctx_or_skip!("conv transpose1d PyTorch fixture");
+    let fixture = vocoder_conv_fixture::load("conv_transpose1d_s3_p1_op2");
+    assert_eq!(fixture.kind, vocoder_conv_fixture::Kind::ConvTranspose1d);
+    assert_eq!(fixture.input_shape, [1, 2, 4]);
+    assert_eq!(fixture.weight_shape, [2, 3, 4]);
+    assert_eq!(fixture.output_shape, [1, 3, 13]);
+    assert_eq!(fixture.stride, 3);
+    assert_eq!(fixture.dilation, 1);
+    assert_eq!(fixture.padding, 1);
+    assert_eq!(fixture.output_padding, 2);
+
+    let submissions_before = ctx.submission_count();
+    let mut actual = vec![f32::NAN; fixture.output.len()];
+    ctx.conv_transpose1d_f32(
+        &fixture.input,
+        fixture.in_channels,
+        fixture.input_shape[2],
+        &fixture.weight,
+        fixture.out_channels,
+        fixture.kernel,
+        Some(&fixture.bias),
+        fixture.stride,
+        fixture.padding,
+        fixture.output_padding,
+        &mut actual,
+    )
+    .expect("Metal ConvTranspose1d host wrapper");
+    assert_eq!(
+        ctx.submission_count() - submissions_before,
+        1,
+        "ConvTranspose1d must dispatch Metal work (no CPU fallback)"
+    );
+    let delta = max_abs_diff(&actual, &fixture.output);
+    assert!(
+        delta <= VOCODER_CONV_ATOL,
+        "Metal ConvTranspose1d vs PyTorch: {delta} > {VOCODER_CONV_ATOL}"
+    );
 }
 
 #[test]
