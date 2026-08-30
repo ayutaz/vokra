@@ -647,6 +647,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+      - name: Verify uv runtime for Apple worker self-tests
+        run: uv run --no-project --python 3.12 python -c 'print("uv runtime ready")'
       - name: Check every Apple worker syntax and --self-test contract
         run: bash scripts/check-apple-silicon-contracts.sh
 

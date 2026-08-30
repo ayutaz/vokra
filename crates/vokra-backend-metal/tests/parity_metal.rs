@@ -227,8 +227,11 @@ fn conv2d_and_transpose2d_metal_match_cpu() {
     let trans_input = [1.0, 2.0, 10.0, 20.0];
     let trans_weight = [1.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0];
     let trans_bias = [0.5, -1.0];
-    let mut cpu_trans = [0.0f32; 16];
-    let mut gpu_trans = [0.0f32; 16];
+    // Formula: output channels × height × width = 2 × 3 × 6 = 36.  The
+    // spatial extents are (1 - 1) × 2 + 1 × (2 - 1) + 1 + 1 = 3 and
+    // (2 - 1) × 2 + 2 × (2 - 1) + 1 + 1 = 6, with zero padding.
+    let mut cpu_trans = [0.0f32; 36];
+    let mut gpu_trans = [0.0f32; 36];
     cpu::conv_transpose2d_f32(
         &trans_input,
         2,

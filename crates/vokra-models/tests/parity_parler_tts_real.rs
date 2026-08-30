@@ -115,22 +115,47 @@ fn error_metrics(actual: &[f32], expected: &[f32], label: &str) -> (f32, f64) {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn compare_metal_with_cpu(
-    prefix: &str,
-    gguf_path: &Path,
+struct ParlerCpuParityInputs<'a> {
+    prefix: &'a str,
+    gguf_path: &'a Path,
     expected_variant: ParlerVariant,
-    description: &[u32],
-    prompt: &[u32],
-    expected_hidden: &[f32],
-    expected_codes: &[u32],
-    expected_pcm: &[f32],
+    description: &'a [u32],
+    prompt: &'a [u32],
+    expected_hidden: &'a [f32],
+    expected_codes: &'a [u32],
+    expected_pcm: &'a [f32],
     frames: usize,
-    official_packet: &ParlerGeneratedCodes,
-    metal_hidden: &[f32],
-    metal_generated: &ParlerGeneratedCodes,
-    metal_official_pcm: &[f32],
-    metal_end_to_end_pcm: &[f32],
-) {
+    official_packet: &'a ParlerGeneratedCodes,
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+struct ParlerMetalParityOutputs<'a> {
+    hidden: &'a [f32],
+    generated: &'a ParlerGeneratedCodes,
+    official_pcm: &'a [f32],
+    end_to_end_pcm: &'a [f32],
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn compare_metal_with_cpu(inputs: ParlerCpuParityInputs<'_>, metal: ParlerMetalParityOutputs<'_>) {
+    let ParlerCpuParityInputs {
+        prefix,
+        gguf_path,
+        expected_variant,
+        description,
+        prompt,
+        expected_hidden,
+        expected_codes,
+        expected_pcm,
+        frames,
+        official_packet,
+    } = inputs;
+    let ParlerMetalParityOutputs {
+        hidden: metal_hidden,
+        generated: metal_generated,
+        official_pcm: metal_official_pcm,
+        end_to_end_pcm: metal_end_to_end_pcm,
+    } = metal;
     let cpu_model = ParlerModel::open_mapped_with_backend(gguf_path, BackendKind::Cpu)
         .expect("strict CPU mapping for direct Parler Metal-vs-CPU comparison");
     assert_eq!(cpu_model.variant(), expected_variant);
@@ -298,20 +323,24 @@ fn run_variant(prefix: &str, expected_variant: ParlerVariant) {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     if backend == BackendKind::Metal {
         compare_metal_with_cpu(
-            prefix,
-            &gguf_path,
-            expected_variant,
-            &description,
-            &prompt,
-            &expected_hidden,
-            &expected_codes,
-            &expected_pcm,
-            frames,
-            &official_packet,
-            &hidden,
-            &generated,
-            &decoded.samples,
-            &end_to_end.samples,
+            ParlerCpuParityInputs {
+                prefix,
+                gguf_path: &gguf_path,
+                expected_variant,
+                description: &description,
+                prompt: &prompt,
+                expected_hidden: &expected_hidden,
+                expected_codes: &expected_codes,
+                expected_pcm: &expected_pcm,
+                frames,
+                official_packet: &official_packet,
+            },
+            ParlerMetalParityOutputs {
+                hidden: &hidden,
+                generated: &generated,
+                official_pcm: &decoded.samples,
+                end_to_end_pcm: &end_to_end.samples,
+            },
         );
     }
 }

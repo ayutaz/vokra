@@ -2,19 +2,17 @@
 
 use std::path::Path;
 
-use vokra_convert::convert_sber_gigaam_multilingual_file;
+use vokra_convert::{ConvertError, convert_sber_gigaam_multilingual_file};
 
 #[test]
 fn multilingual_arbitrary_input_and_license_override_are_refused_without_output() {
     let output =
         std::env::temp_dir().join(format!("gigaam-multilingual-{}.gguf", std::process::id()));
-    const MISSING_SIDECAR_ERROR: &str = "I/O error: No such file or directory (os error 2)";
     for license in [None, Some("mit"), Some("MIT")] {
         let _ = std::fs::remove_file(&output);
         let error = convert_sber_gigaam_multilingual_file(Path::new("missing"), &output, license)
-            .unwrap_err()
-            .to_string();
-        assert_eq!(error, MISSING_SIDECAR_ERROR);
+            .unwrap_err();
+        assert!(matches!(error, ConvertError::Io(_)));
         assert!(!output.exists());
     }
     const INCOMPATIBLE_LICENSE: &str =

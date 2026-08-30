@@ -15,7 +15,7 @@ self_test(){
   grep -Fq 'validate_evidence.py' "$0" || die 'Apple path must invoke the independent validator'
   local uv_cmd='uv'
   if grep -Fq "$uv_cmd sync" "$0" || grep -Fq "$uv_cmd lock" "$0"; then die 'Apple self-test must not sync or lock dependencies'; fi
-  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$file" --self-test
+  UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-${TMPDIR:-/private/tmp}/vokra-dia-uv-cache}" uv run --no-project --python 3.12 python "$file" --self-test
   echo 'apple-silicon-dia-1-6b.sh self-test: OK'
 }
 if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts no arguments'; self_test; exit 0; fi
@@ -24,5 +24,5 @@ if [[ "${1:-}" == --self-test ]]; then [[ $# == 1 ]] || die '--self-test accepts
 [[ "$(uname -m)" == arm64 ]] || die 'Apple Silicon verification requires arm64'
 evidence="$1"
 [[ -s "$evidence/manifest.json" ]] || die 'same-execution evidence manifest is missing'
-UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-/private/tmp/vokra-dia-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" || die 'same-execution evidence schema/hash validation failed'
+UV_CACHE_DIR="${DIA_UV_CACHE_DIR:-${TMPDIR:-/private/tmp}/vokra-dia-uv-cache}" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$ROOT/tools/parity/dia_1_6b_validate_evidence.py" "$evidence" || die 'same-execution evidence schema/hash validation failed'
 die 'Dia CPU/Metal route remains closed until independent VAST parity and this Apple worker evidence are reviewed'
