@@ -40,6 +40,23 @@ fn object<'a>(value: &'a JsonValue, context: &str) -> &'a JsonValue {
     value
 }
 
+fn exact_keys(value: &JsonValue, expected: &[&str], context: &str) {
+    let entries = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{context} must be an object"));
+    assert_eq!(
+        entries.len(),
+        expected.len(),
+        "{context} has unexpected key count"
+    );
+    for key in expected {
+        assert!(
+            entries.iter().any(|(actual, _)| actual == key),
+            "{context} is missing or has no exact key {key:?}"
+        );
+    }
+}
+
 fn string(value: &JsonValue, key: &str) -> String {
     value
         .get(key)
@@ -205,6 +222,7 @@ fn sha256_hex(data: &[u8]) -> String {
 
 fn read_tensor(root: &Path, record: &JsonValue, role: &str) -> (Vec<f32>, Vec<usize>) {
     object(record, role);
+    exact_keys(record, &["bytes", "dtype", "path", "sha256", "shape"], role);
     let relative = string(record, "path");
     let relative_path = Path::new(&relative);
     let mut components = relative_path.components();
@@ -240,14 +258,65 @@ fn read_tensor(root: &Path, record: &JsonValue, role: &str) -> (Vec<f32>, Vec<us
 
 pub fn load(name: &str) -> Fixture {
     let root = fixture_root();
+    let expected_files = [
+        "README.md",
+        "manifest.json",
+        "conv1d_d2_s2_p2_bias.f32",
+        "conv1d_d2_s2_p2_input.f32",
+        "conv1d_d2_s2_p2_output.f32",
+        "conv1d_d2_s2_p2_weight.f32",
+        "conv_transpose1d_s3_p1_op2_bias.f32",
+        "conv_transpose1d_s3_p1_op2_input.f32",
+        "conv_transpose1d_s3_p1_op2_output.f32",
+        "conv_transpose1d_s3_p1_op2_weight.f32",
+    ];
+    let mut actual_files = Vec::new();
+    for entry in std::fs::read_dir(&root).expect("read vocoder Conv fixture directory") {
+        let entry = entry.expect("read vocoder Conv fixture directory entry");
+        let metadata =
+            std::fs::symlink_metadata(entry.path()).expect("stat fixture directory entry");
+        assert!(
+            metadata.file_type().is_file(),
+            "fixture directory entry {:?} must be a regular non-symlink file",
+            entry.file_name()
+        );
+        actual_files.push(entry.file_name().to_string_lossy().into_owned());
+    }
+    actual_files.sort_unstable();
+    let mut expected_files = expected_files
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    expected_files.sort_unstable();
+    assert_eq!(actual_files, expected_files, "fixture directory file set");
+
     let manifest_path = root.join("manifest.json");
     let manifest_bytes = std::fs::read(&manifest_path).unwrap_or_else(|error| {
         panic!("read vocoder Conv fixture manifest {manifest_path:?}: {error}")
     });
+    assert_eq!(
+        sha256_hex(&manifest_bytes),
+        "b438a28b6bc64754dc119d186080749775a78ad2b9345a5f20f480cdbcaa0c07",
+        "outer manifest SHA-256"
+    );
     let manifest = json::parse(&manifest_bytes).expect("vocoder Conv manifest must be JSON");
+    exact_keys(&manifest, &["cases", "provenance", "schema"], "manifest");
     assert_eq!(string(&manifest, "schema"), "vokra-vocoder-conv-parity-v1");
     let provenance = object(
         manifest.get("provenance").expect("manifest provenance"),
+        "provenance",
+    );
+    exact_keys(
+        provenance,
+        &[
+            "byte_order",
+            "dtype",
+            "generator",
+            "oracle",
+            "randomness",
+            "torch_version",
+            "value_policy",
+        ],
         "provenance",
     );
     assert_eq!(string(provenance, "oracle"), "PyTorch torch.nn.functional");
@@ -259,21 +328,42 @@ pub fn load(name: &str) -> Fixture {
     assert_eq!(string(provenance, "value_policy"), "signed powers of two");
     assert_eq!(string(provenance, "dtype"), "float32");
     assert_eq!(string(provenance, "byte_order"), "little-endian");
+    assert_eq!(string(provenance, "torch_version"), "2.13.0+cu130");
 
     let cases = object(manifest.get("cases").expect("manifest cases"), "cases");
+    exact_keys(
+        cases,
+        &["conv1d_d2_s2_p2", "conv_transpose1d_s3_p1_op2"],
+        "cases",
+    );
     let case = object(
         cases
             .get(name)
             .unwrap_or_else(|| panic!("missing fixture case {name}")),
         name,
     );
+    exact_keys(case, &["attrs", "oracle", "tensors"], name);
     let kind = match string(case, "oracle").as_str() {
         "torch.nn.functional.conv1d" => Kind::Conv1d,
         "torch.nn.functional.conv_transpose1d" => Kind::ConvTranspose1d,
         other => panic!("unsupported fixture oracle {other:?}"),
     };
     let attrs = object(case.get("attrs").expect("case attrs"), "attrs");
+    exact_keys(
+        attrs,
+        &[
+            "dilation",
+            "in_channels",
+            "kernel",
+            "out_channels",
+            "output_padding",
+            "padding",
+            "stride",
+        ],
+        "attrs",
+    );
     let tensors = object(case.get("tensors").expect("case tensors"), "tensors");
+    exact_keys(tensors, &["bias", "input", "output", "weight"], "tensors");
     let (input, input_shape) =
         read_tensor(&root, tensors.get("input").expect("input tensor"), "input");
     let (weight, weight_shape) = read_tensor(

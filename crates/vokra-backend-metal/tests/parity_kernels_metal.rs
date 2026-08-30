@@ -24,6 +24,21 @@ const ATOL: f32 = 0.01;
 // in the exact f32 integer range, so its independent oracle check is exact.
 const VOCODER_CONV_ATOL: f32 = 0.0;
 
+fn assert_vocoder_exact(got: &[f32], expected: &[f32], context: &str) {
+    assert_eq!(got.len(), expected.len(), "{context}: output length");
+    for (index, (&actual, &reference)) in got.iter().zip(expected).enumerate() {
+        let delta = (actual - reference).abs();
+        assert!(
+            actual.is_finite() && reference.is_finite(),
+            "{context}: index {index}: non-finite value: got {actual}, PyTorch {reference}, delta {delta}"
+        );
+        assert!(
+            actual == reference && delta <= VOCODER_CONV_ATOL,
+            "{context}: index {index}: got {actual}, PyTorch {reference}, delta {delta} > {VOCODER_CONV_ATOL}"
+        );
+    }
+}
+
 /// Deterministic pseudo-random f32 in roughly [-1, 1) (xorshift64*), matching the
 /// GEMM parity suite's generator so inputs are reproducible.
 fn rand_vec(seed: u64, n: usize) -> Vec<f32> {
@@ -404,7 +419,6 @@ fn conv1d_metal_matches_cpu() {
 }
 
 #[test]
-#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
 fn dilated_conv1d_metal_host_wrapper_matches_pytorch_reference() {
     let ctx = ctx_or_skip!("dilated conv1d PyTorch fixture");
     let fixture = vocoder_conv_fixture::load("conv1d_d2_s2_p2");
@@ -437,15 +451,10 @@ fn dilated_conv1d_metal_host_wrapper_matches_pytorch_reference() {
         1,
         "dilated Conv1d must dispatch Metal work (no CPU fallback)"
     );
-    let delta = max_abs_diff(&actual, &fixture.output);
-    assert!(
-        delta <= VOCODER_CONV_ATOL,
-        "Metal Conv1d vs PyTorch: {delta} > {VOCODER_CONV_ATOL}"
-    );
+    assert_vocoder_exact(&actual, &fixture.output, "Metal Conv1d vs PyTorch");
 }
 
 #[test]
-#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
 fn conv_transpose1d_metal_host_wrapper_matches_pytorch_reference() {
     let ctx = ctx_or_skip!("conv transpose1d PyTorch fixture");
     let fixture = vocoder_conv_fixture::load("conv_transpose1d_s3_p1_op2");
@@ -479,11 +488,7 @@ fn conv_transpose1d_metal_host_wrapper_matches_pytorch_reference() {
         1,
         "ConvTranspose1d must dispatch Metal work (no CPU fallback)"
     );
-    let delta = max_abs_diff(&actual, &fixture.output);
-    assert!(
-        delta <= VOCODER_CONV_ATOL,
-        "Metal ConvTranspose1d vs PyTorch: {delta} > {VOCODER_CONV_ATOL}"
-    );
+    assert_vocoder_exact(&actual, &fixture.output, "Metal ConvTranspose1d vs PyTorch");
 }
 
 #[test]

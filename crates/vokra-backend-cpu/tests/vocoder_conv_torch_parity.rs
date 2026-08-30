@@ -2,8 +2,8 @@
 //!
 //! The binary fixtures are generated on VAST by
 //! `tools/parity/vocoder_conv_dump_reference.py`; they are intentionally not
-//! synthesized or generated on the maintainer machine.  Keep these tests
-//! ignored until the owner recovers and commits that manifest and its bytes.
+//! synthesized or generated on the maintainer machine.  The manifest and bytes
+//! are now pinned and authenticated before either parity comparison runs.
 
 #[path = "support/vocoder_conv_fixture.rs"]
 mod fixture;
@@ -56,7 +56,6 @@ fn assert_common(fixture: &Fixture, kind: Kind) {
 }
 
 #[test]
-#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
 fn conv1d_dilated_matches_pytorch_functional_reference() {
     let fixture = fixture::load("conv1d_d2_s2_p2");
     assert_common(&fixture, Kind::Conv1d);
@@ -87,7 +86,6 @@ fn conv1d_dilated_matches_pytorch_functional_reference() {
 }
 
 #[test]
-#[ignore = "requires VAST-generated PyTorch fixture bytes under tests/parity/vocoder_conv"]
 fn conv_transpose1d_matches_pytorch_functional_reference() {
     let fixture = fixture::load("conv_transpose1d_s3_p1_op2");
     assert_common(&fixture, Kind::ConvTranspose1d);
