@@ -1,5 +1,11 @@
 # vokra-kws-micro
 
+> **2026-08-30 current-state boundary:** The phase/status and synthetic-chain
+> results below describe the current scaffold contract, not a claim that a
+> real `hey_jarvis.tflite` checkpoint has been acquired, converted, or accepted
+> through host parity. The Rust source and focused gates are authoritative for
+> behavior; current project completion and owner gates live in the M5 ledger.
+
 microWakeWord-style keyword-spotting (KWS) forward as a `#![no_std]`
 (+ `alloc`) subset. Sister crate to
 [`vokra-vad-micro`](../vokra-vad-micro), following the same M5-03 IoT

@@ -30,6 +30,12 @@ subject to precompiled-wheel notice review. No source archive was fetched; a
 resolved lock is not license approval, and policy-sensitive rows remain
 blocked.
 
+> **2026-08-30 current-state boundary:** The blocked status above is the
+> 2026-08-29 audit snapshot. It does not authorize local acquisition,
+> conversion, model execution, or an implied parity result. Apply the current
+> repository AGENTS/skill gates and consult the M5 ledger before changing this
+> status.
+
 For auditability, every non-first-party lock row has its exact package/version
 and primary PyPI JSON URL in `LICENSE_ROWS`: `license_expression` supplies
 idna, NumPy, typing-extensions, and urllib3; `license` supplies ai-edge-litert,

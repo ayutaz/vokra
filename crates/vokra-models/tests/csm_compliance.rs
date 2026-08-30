@@ -7,9 +7,12 @@
 //! 復活 = v1.0.x patch or M5-06, owner judgement — 2026-07-14 見送り確定).
 //! The config is default **ON** (opt-out surface preserved) and
 //! `backend_status()` says `Deferred` honestly — no fake marker is ever
-//! attached. **Deployer-side visible disclosure stays a MUST**
-//! (docs/legal-compliance.md §1.4) for EU AI Act Article 50
-//! detectability during the deferral.
+//! attached. Project policy keeps **deployer-side visible disclosure as a
+//! required technical control** (docs/legal-compliance.md §1.4) for
+//! detectability during the deferral. This test does not determine whether
+//! Article 50 applies or whether disclosure or watermarking is legally
+//! sufficient; deployers must perform a deployment-specific review, using
+//! `docs/legal-compliance.md` as the project's guidance.
 //!
 //! # Compliance gate (M2-13)
 //!

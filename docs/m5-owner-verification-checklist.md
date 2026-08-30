@@ -2,12 +2,16 @@
 
 **Owner**: 依頼者 (`ayutaz`) — real-hardware verification, real-weight sourcing, legal sign-off, external contracts / infra provisioning, ADR ratification, and the v1.0 GA tag decision.
 
-**Implementation baseline (reconciled 2026-08-22)**: the M5 implementation
-waves, release-surface work, and runtime-gap closure are on `main` through
-`42af7a90` (PR #44). This checklist is the remaining action ledger feeding the
-**v1.0 GA** decision (commercial GA + C ABI freeze). It is NOT a GA declaration
-and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The
-2026-08-18 branch/operation history remains in
+**Pre-documentation implementation/code baseline (reconciled 2026-08-30)**:
+the branch observed before the documentation commits was
+`feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`c64b7b7237b70c5dc70ffd60394af325016d9a8d`, workspace version `0.2.0`, with
+57 C ABI functions / 15 typedefs and 49 checked / 33 unchecked literal boxes.
+The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+This checklist is the remaining action ledger feeding the **v1.0 GA** decision
+(commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze —
+the freeze FIRES at the owner's v1.0 GA tag (M5-13). The 2026-08-18
+branch/operation history remains in
 `docs/handoff/codex-operations-2026-08-18.md`; the later runtime evidence is in
 `docs/handoff/runtime-gap-execution-plan-2026-08-21.md`.
 
@@ -19,7 +23,17 @@ and NOT a freeze — the freeze FIRES at the owner's v1.0 GA tag (M5-13). The
 
 **Verify snapshot at pre-merge branch tip `8d469eb`**: `cargo test --workspace` = 5447 passed / 0 failed / 22 ignored / 199 suites (baseline 5446/21, +1 test +1 scaffold). All gates green: `cargo fmt` / `cargo clippy -D warnings` / `scripts/check-zero-deps.sh` (root Cargo.lock = `vokra-*` only, NFR-DS-02 preserved) / `scripts/check-abi-changelog.sh` / `scripts/gen-c-abi.sh --check` (no drift, v1.0-rc baseline 33 fn + 11 typedef unchanged, no new C ABI). This is historical evidence; PR #27 is merged.
 
-**2026-08-20 current-state rule**: the earlier **94 unchecked boxes** were a historical owner ledger, **not** a count of 94 missing implementations. The 2026-08-17 reconciliation found 41 literal unchecked boxes; the repeatable SBV2 SDP VAST gate, both misaki environment rows, the first corrected SBV2 GitHub Actions JA verdict, and the four-file ZH numerical leg closed on 2026-08-18, leaving **36 literal unchecked boxes**. Those 36 are not an exhaustive task count: the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose rather than Markdown boxes. The live index below includes both sets. A box can mean an external legal/infra decision, real-weight access, a deliberately fail-closed policy, a future backend, or a partially landed implementation that still lacks its real-checkpoint proof. Only mark a condition complete when its literal done-condition is evidenced; do not infer implementation status from the unchecked total.
+**2026-08-30 current-state rule**: the earlier **94 unchecked boxes** and the
+2026-08-18 **42 checked / 36 unchecked** are historical owner ledgers, not
+current counts of missing implementations. The current literal ledger is
+**49 checked / 33 unchecked**. Those counts are not an exhaustive task count:
+the M5-03/M5-04/M5-05/M5-06 and M5-10…M5-15 GA gates were written as prose
+rather than Markdown boxes. The live index below includes both sets. A box can
+mean an external legal/infra decision, real-weight access, a deliberately
+fail-closed policy, a future backend, or a partially landed implementation that
+still lacks its real-checkpoint proof. Only mark a condition complete when its
+literal done-condition is evidenced; do not infer implementation status from
+the unchecked total.
 
 **Tracking**: this file (`docs/m5-owner-verification-checklist.md`) is **tracked (public)**, same convention as `docs/m3-` / `docs/m4-owner-verification-checklist.md`. Referenced handoffs `docs/handoff/m5-*.md` are tracked/public; specs `docs/tickets/m5/*.md` and ADRs `docs/adr/M5-*.md` are gitignore-local internal docs (referenced by ID).
 
@@ -27,9 +41,9 @@ Each task: **(a)** what / **(b)** why owner-only / **(c)** reference / **(d)** d
 
 ---
 
-## 0. Live remaining-work index (2026-08-20)
+## 0. Live remaining-work index (2026-08-30)
 
-This table is the complete M5 routing index. The 36 unchecked Markdown boxes
+This table is the complete M5 routing index. The 33 unchecked Markdown boxes
 live mainly in §1.5 and §6; the prose-only rows below are equally real and must
 not disappear from planning merely because `rg '\[ \]'` cannot count them.
 
@@ -49,7 +63,8 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| SoTA / parity / publish | Converters and many structural proofs landed | The 36 literal boxes cover NPU capture, nine parity families, five implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
+| Mac CPU/Metal model closure | GigaAM v3, GigaAM Multilingual and OmniASR CTC 1B have strict native CPU routes plus independent official VAST parity; Apple CPU/Metal remains open | Transfer the authenticated 4.9 GB packet from VAST to Scaleway, run Apple CPU/Metal evidence, and retain the final exit gates open until the live audit target is met |
+| SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab
 gaps are tracked outside this file in

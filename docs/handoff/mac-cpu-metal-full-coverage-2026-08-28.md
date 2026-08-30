@@ -11,6 +11,37 @@
   uv run --no-project --python 3.12 python tools/audit/hf_mac_coverage.py
   ```
 
+## Authoritative current snapshot (2026-08-30)
+
+The authoritative pre-documentation implementation/code snapshot observed on
+2026-08-30 is worktree commit
+`c64b7b7237b70c5dc70ffd60394af325016d9a8d` on
+`feat/mac-cpu-metal-full-coverage-2026-08-28`, workspace version `0.2.0`.
+The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+The live public-artifact audit reports 194 repositories, 193 GGUF-bearing
+repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
+`no-runtime-binder=20`, `not-artifact=1`; Metal `full=128`,
+`blocked-by-cpu=62`, `cpu-only=3`, `not-artifact=1`. The three exact
+CPU-complete/Metal-unsupported repositories are `vokra/omniasr-ctc-1b`,
+`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`; therefore the old
+zero-CPU-only invariant is not currently achieved.
+
+GigaAM v3, GigaAM Multilingual and OmniASR CTC 1B have strict native CPU
+routes and independent official real-weight CPU parity on VAST. Their Apple
+CPU repetition and Metal execution remain pending; this snapshot makes no
+Metal completion claim. The authenticated 4.9 GB / 33-file Apple transfer
+packet remains on VAST at `/root/scratchpad/apple-transfer-568dc192` for
+direct VAST-to-Scaleway transfer. Scaleway has not run, and no Hugging Face
+upload has occurred. After the transfer completes, the manifest/checksum is
+verified on the Apple worker, and all required logs and evidence are saved,
+the VAST instance must be destroyed; it must not be destroyed immediately
+after transfer without those checks and evidence preservation.
+
+The 2026-08-28 inventory and later preparation notes below are historical
+records. Where they say that these three routes or the zero-CPU-only invariant
+are pending, the authenticated CPU-lock section dated 2026-08-30 above
+supersedes that wording; Apple/Metal and final exit gates remain open.
+
 The 2026-08-28 live audit reports 194 public repositories, 193 GGUF-bearing
 repositories and 198 GGUF files. The live-artifact reachability split is CPU
 `full=128`, `partial=45`, `no-runtime-binder=20`, `not-artifact=1`; Metal is
@@ -1633,7 +1664,7 @@ runtime boundary or claim model parity.
 SBV2 likewise has prior real CPU evidence rather than an unproven forward.
 The 2026-08-18 VAST records cover the JP-Extra main model with JA/EN BERT and
 the optional ZH BERT leg through the final waveform without widening bounds.
-The current branch now stages one explicit backend selector and preflights the
+The pre-documentation implementation baseline stages one explicit backend selector and preflights the
 complete learned-op set across the text encoder, JA/EN/ZH BERT sidecars,
 bridge, speaker/style projections, duration predictor, flow inverse and
 conditioned HiFi-GAN decoder. This closes the former source-level Mac GPU

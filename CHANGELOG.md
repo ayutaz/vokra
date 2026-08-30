@@ -14,6 +14,14 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
 
 ### Changed
 
+- **2026-08-30 authenticated CPU lock**: GigaAM v3, GigaAM Multilingual and
+  OmniASR CTC 1B now have strict native CPU routes and independent official
+  VAST real-weight parity. Their Apple CPU/Metal execution is still pending;
+  no Metal completion is claimed and no Hugging Face upload was performed.
+  Exact hashes and unchanged numerical bounds are recorded in the Mac
+  CPU/Metal handoff. The live audit is now CPU `full=131`, `partial=42`,
+  `no-runtime-binder=20`, `not-artifact=1`; Metal `full=128`,
+  `blocked-by-cpu=62`, `cpu-only=3`, `not-artifact=1`.
 - The public Bark and Bark Small GGUFs now have a strict mapping-owned native
   runtime for the semantic, coarse and fine token hierarchy and their embedded
   causal 24 kHz EnCodec decoder. Exact 758/518-tensor all-F32 manifests select
@@ -366,9 +374,9 @@ therefore not frozen — see the planned v1.0.0-rc.1 ABI-policy notes below.
   an incompatible convolution-bias contract; both remain fail-closed pending
   separately authorized gated replacement.
 
-## [0.1.0] — 2026-08-23
+## 0.1.0 prepared baseline — 2026-08-23 (not tagged; no GitHub Release)
 
-This first tagged release includes the source-publication baseline plus the
+This prepared 0.1.0 history records the source-publication baseline plus the
 subsequently implemented v0.5 (M2), v0.9 (M3), v1.0-rc (M4), and real-weight
 verification / HF publication work. Owner-side verification
 (real-device RTF / GPU / NPU measurement, real-weight parity
@@ -377,8 +385,9 @@ tracked in the per-milestone owner checklists
 (`docs/m2-owner-verification-checklist.md`,
 `docs/m3-owner-verification-checklist.md`,
 `docs/m4-owner-verification-checklist.md`,
-`docs/m5-owner-verification-checklist.md`). Added entries are grouped by
-milestone below.
+`docs/m5-owner-verification-checklist.md`). No Git tag or GitHub Release
+exists for this prepared baseline as of 2026-08-30; added entries are grouped
+by milestone below.
 
 ### Fixed
 
@@ -1216,7 +1225,8 @@ milestone decision.
 The repository became public on 2026-07-04 with the **v0.1 spike + v0.1 MVP**
 implementation baseline and CI quality gates enforced
 (`.github/workflows/ci.yml`). No Git tag or GitHub Release was created then;
-this baseline is therefore included in the first tagged release.
+this baseline remains recorded as the prepared 0.1.0 history, not a published
+release.
 
 #### Added
 
@@ -1251,6 +1261,3 @@ this baseline is therefore included in the first tagged release.
 - **CI quality gates**: build, test, `rustfmt`, `clippy`, numerical
   parity, license (`cargo deny`), zero-dependency invariant, hot-path
   audit, iOS build, Python wheel build, license audit, GPU backends.
-
-[Unreleased]: https://github.com/ayutaz/vokra/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ayutaz/vokra/releases/tag/v0.1.0

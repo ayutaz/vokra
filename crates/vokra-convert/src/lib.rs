@@ -1369,8 +1369,8 @@ pub enum ModelKind {
     /// **AudioSeal real weight** (`facebook/audioseal`, MIT,
     /// coverage-audit-2026-08-03 Wave A permissive continuation) —
     /// Meta paired Generator + Detector 16-bit-message audio
-    /// watermark for EU AI Act Article 50 compliance
-    /// (2026-08-02 applies, San Roman et al. arXiv:2401.17264).
+    /// watermark for marking / technical-control candidate use only; this is
+    /// not a legal compliance claim (San Roman et al. arXiv:2401.17264).
     /// Replaces the M5-05 config-only scaffold with a real weight-
     /// loading path; runtime binder remains gated on M5-05 T04 ADR
     /// ratification. Category = `watermark`. Convert with

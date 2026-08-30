@@ -17,9 +17,10 @@
 //! # Judgement (ADR M4-05 §D7 / tools/parity/README-csm.md)
 //!
 //! Frame codes: bit-exact. Float stages: FP32 `atol = 0.01` (NFR-QL-01)
-//! starting point; per-tensor relaxation only with an architectural-bound
-//! rationale recorded in rustdoc + ADR + CI (Kokoro PROSODY_F0_ATOL
-//! precedent). No relaxation exists today (no real comparison has run).
+//! default. No per-tensor relaxation exists today (no real comparison has
+//! run); changing the default requires a theoretical-bound rationale and
+//! diagnosis across more than one environment, recorded in rustdoc + ADR +
+//! CI. The former Kokoro PROSODY_F0_ATOL precedent is not sufficient.
 
 use std::path::{Path, PathBuf};
 

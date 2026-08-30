@@ -4,14 +4,24 @@
 後続の対応判断を可能にする。依頼者指示 (2026-07-28)「未対応のものは未対応リストに入れて
 後から対応するように」に基づく。
 
+> **2026-08-30 supersession boundary:** This is a dated 2026-07-28/30
+> backlog snapshot, not the current publication inventory. Reconcile live rows
+> with `docs/license-audit.md` and `scripts/publish/check-catalog-reality.sh`.
+> For resource handling, the current rule is VAST when the model-plus-shard
+> total is >=2 GB; exact-size-unknown artefacts are not `local-safe`. The old
+> “local M1” or “8 GB cutoff” wording below is historical and does not authorize
+> local model processing or an upload.
+
 **現在の公開状況**: **51 モデル live** (2026-07-28 時点)。詳細一覧は `docs/license-audit.md`
 §3.1 sign-off 表を参照。
 
 **Residual wave 3 (2026-07-30) 更新**: F0 pitch extractor 3 種 (RMVPE / FCPE / CREPE) +
 FSMN-VAD + TitaNet-L + VoxCPM2-2B + StyleTTS 2 scaffold + Canary-Qwen-2.5B + omniASR variants +
 Qwen3-TTS 1.7B + Charsiu 実 wav2vec2 CTC forward + JA-ASR エンコーダ / デコーダ op 3 種を
-CC-side で land。converter は揃ったが publish 自体は owner の vast.ai 起動 (大モデル) or
-local run (小モデル) 待ちの新 tier F を追加した。詳細な wave 3 の commit table は
+CC-side で land。converter は揃ったが publish 自体は owner の VAST 起動
+(モデル本体と全 shard の合計が 2 GB 以上、またはサイズ未確認の artefact) 待ちである。
+既知の 2 GB 未満はサイズ分類上 `size-safe` とできるが、現行 maintainer policy では
+ローカル model processing を行わない。詳細な wave 3 の commit table は
 `docs/handoff/residual-wave3-2026-07-30.md`。
 
 **未対応 = 6 tier に分類** (blocker と復活条件を明記して future action を判断可能に):
@@ -69,7 +79,8 @@ Workflow は X-Codec-2 (2026-07-28、初 T4 precedent、`--allow-noncommercial` 
 
 ## E. 契約禁止で配布不可 (`vokra-voiceclone-experimental` 分離扱い)
 
-公式 `vokra` org には出さない。ELVIS Act 対応 (`CLAUDE.md` 設計判断 8) の分離設計。
+公式 `vokra` org には出さない。分離設計の現行境界は `docs/legal-compliance.md`
+§§3–4 と `docs/system-requirements.md` FR-CP-04 に従う。
 
 - **VOICEVOX 系** — 商用契約禁止
 - **CSJ / JSUT・JVS 学習物** — corpus 規約が weight 再配布を明示禁止
@@ -111,8 +122,9 @@ context は `docs/handoff/residual-wave3-2026-07-30.md` per-wave table。
 
 ### Voice-clone 4 model (openvoice_v2 / knn_vc / freevc / meanvc)
 
-上記 F tier に**入れない** — `docs/m5-owner-verification-checklist.md` §6.9 と `CLAUDE.md`
-設計判断 8 に従い `vokra-voiceclone-experimental` 別リポ (未作成) 送り。ここに公式配布行は
+上記 F tier に**入れない** — `docs/m5-owner-verification-checklist.md` §6.9、
+`docs/legal-compliance.md` §§3–4、`docs/system-requirements.md` FR-CP-04 に従い
+`vokra-voiceclone-experimental` 別リポ (未作成) 送り。ここに公式配布行は
 永続的に載せない。converter wire は wave 3 (`5f7cb15`) で landed だが、これは main repo 上
 での codegen 完全化のためで、`ayutaz/vokra` publish 対象ではない。
 

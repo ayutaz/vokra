@@ -1,6 +1,6 @@
 # M4 (v1.0-rc) Owner Verification Checklist
 
-**Current-state reconciliation (2026-08-18):** this remains an M4-era owner
+**Historical current-state reconciliation (2026-08-18; superseded):** this remains an M4-era owner
 ledger and evidence index. M4 merged in PR #8; the project baseline is now
 `main` `6d64fdf`. The 33-function ABI and test counts below are explicitly
 historical snapshots. PR #30 later expanded the generated C header to 41
@@ -8,6 +8,16 @@ functions without firing the v1.0 freeze. Use the M5 owner checklist for live
 remaining actions.
 Any fresh workspace-wide or `-p vokra-models` verification referenced below
 runs on VAST, not on the development Mac.
+
+**2026-08-30 supersession note:** the pre-documentation implementation/code
+baseline observed was `feat/mac-cpu-metal-full-coverage-2026-08-28` at
+`c64b7b72`, workspace `0.2.0`; current C ABI is 57 functions / 15 typedefs.
+The current M5 ledger is
+49 checked / 33 unchecked. For current model and platform status, use
+`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`,
+`docs/m5-owner-verification-checklist.md`, and
+`docs/platform-support/v1.0-rc-support-matrix.md`; all 2026-08-18 values in
+this M4-era checklist remain history-only.
 
 **Owner**: 依頼者 (`ayutaz`) — 実機テスト・実 weight sourcing・法務 sign-off・外部契約 / インフラ provisioning・ADR 判断を担当。
 **CC-side status**: **M4 CC 実装 terminal 到達（2026-07-15、全 20 WP = M4-01〜M4-20）**。investigation 3 round のうち round 2 / round 3 = **2 連続 0 CC ticket** で terminal 判定（M3 と同じ規律）。terminal 時 verify = default 2340 / all-features 2364 passed。**その後 2026-07-16 に依頼者指示で post-terminal CC-gap 追加実装 campaign を実施**（terminal 後の追加洗い出し = ultracode 32 候補中 17 land、既存 WP 内の完成度向上 = P0 wasm ビルド破損修正・converter alignment_heads/word-timestamp・vokra-server 本番 startup 配線・CSM/Mimi from_gguf・実 M1 Metal parity + Llama MSL kernel 4種・RingKVCache・agc/hpf streaming 等）。**merge 状況（2026-07-19 更新）**: **M4 は PR #8 として main に merge 済**（merge commit `ff12104`、2026-07-19、branch `feat/m4-plan-and-wave1` → main）。本チェックリスト起草時点の「PR 未作成」前提は失効しており、**「default branch に workflow ファイルが無いので workflow_dispatch できない」というブロッカーも解消済**（§4.5）。以降 main は `13a2a6e` まで進んでいる。

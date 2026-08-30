@@ -1,5 +1,14 @@
 # NanoCodec conversion contract
 
+> **2026-08-30 current-state boundary:** The conversion contract and the
+> checkpoint inventory below are dated audit records (the inventory is
+> explicitly 2026-08-22). They preserve the source revisions, validation
+> rules, and license posture established at that audit; they do not by
+> themselves claim a newly run conversion, parity result, or publication. For
+> current implementation and remaining-gate status, consult the converter
+> source and the current license/handoff records. Any future checkpoint still
+> needs its own immutable revision, provenance, license, and parity evidence.
+
 NanoCodec conversion is intentionally split at the `.nemo` pickle boundary:
 
 1. `tools/parity/nanocodec/prepare_checkpoint.py` runs in the pinned Python

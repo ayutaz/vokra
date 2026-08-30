@@ -1,5 +1,11 @@
 # Mac CPU / Metal coverage ledger (2026-08-24)
 
+> **2026-08-30 supersession boundary:** This is a dated coverage ledger. Its
+> model counts, size labels, and pending statements are historical campaign
+> evidence. The authoritative current snapshot is
+> `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`; do not infer current
+> completion, Apple parity, or publication status from this older ledger.
+
 > **2026-08-27 Qwen3-TTS mapped-generation wave:** all five official Base,
 > CustomVoice and VoiceDesign main checkpoints now have strict fixed-revision
 > conversion contracts with authenticated Qwen2 BPE/prompt assets and exact

@@ -74,6 +74,7 @@ the native CSM+Mimi composite binder and CPU parity are accepted.
 - `generated_frame_codes.u32le` — discrete: **bit-exact** primary judgement.
 - `backbone_hidden_last` / `backbone_logits` / `depth_decoder_logits` /
   `official_pcm_pre_watermark` — FP32
-  `atol = 0.01` (NFR-QL-01) starting point; any per-tensor relaxation must
-  be architectural-bound-derived and recorded in rustdoc + ADR + CI
-  (Kokoro `PROSODY_F0_ATOL` precedent).
+  `atol = 0.01` (NFR-QL-01) default. No per-tensor relaxation is in force;
+  changing that default requires a theoretical bound, diagnosis across more
+  than one environment, and a record in rustdoc + ADR + CI. The former
+  Kokoro `PROSODY_F0_ATOL` precedent is not a valid basis for loosening it.

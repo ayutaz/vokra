@@ -31,3 +31,23 @@ The authenticated GGUF/reference bundle is a remote artifact.  Keep it on
 VAST and transfer it directly to an authenticated Apple/Scaleway worker (or
 another explicitly authorized remote path); never pull the bundle to the
 maintainer Mac.  Only small logs and JSON manifests may be returned locally.
+
+## 2026-08-30 authenticated CPU lock
+
+The pinned official implementation completed the real-weight CPU parity gate
+on VAST. The prepared checkpoint SHA-256 is
+`cda8d7dd7cad2a0361b6946c42342b85ef7b0a8d672b99631dc75b4c3123dbc5`, the
+GGUF SHA-256 is
+`abf6f0ee8c028e7c79955f68d841d4445fa9664a2e87ff26c80a37a3b4a3561e`, and
+the reference-manifest SHA-256 is
+`7a37e36e56c90370390c741bac421e211834116f14c4d0305a84f8b87552dd1b`.
+The 49-frame gate recorded maximum absolute errors of `2.918243408e-4`
+(frontend), `1.520276070e-3` (encoder), and `1.450002193e-3` (logits); all
+five emitted token IDs matched exactly. These are independent official VAST
+CPU results, not a self-authored mirror result.
+
+Apple CPU repetition and Metal execution remain pending and must run on the
+authenticated Apple/Scaleway worker. The packet remains remote-only at
+`/root/scratchpad/apple-transfer-568dc192` on VAST (4.9 GB / 33 files), to be
+transferred directly VAST-to-Scaleway and destroyed from VAST after the
+evidence handoff. No Hugging Face upload was performed.
