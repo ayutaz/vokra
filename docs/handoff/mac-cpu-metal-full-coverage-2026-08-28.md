@@ -1,5 +1,11 @@
 # Mac CPU / Metal full-coverage execution ledger (2026-08-28)
 
+> **Active execution plan (2026-08-30):** the cloud boundary, blocker-class
+> ordering and final proof for continuing this ledger are fixed in
+> `docs/handoff/mac-cpu-metal-completion-plan-2026-08-30.md`.  Scaleway is a
+> hardware-verification stage, not a substitute for the remaining CPU/binder,
+> artifact, license or Metal source work.
+
 ## Scope and branch
 
 - Working branch: `feat/mac-cpu-metal-full-coverage-2026-08-28`
