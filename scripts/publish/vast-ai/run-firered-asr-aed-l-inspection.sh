@@ -3,6 +3,8 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+# The source contract is authenticated, while exact checkpoint geometry and
+# token dictionary binding remain blocked until the VAST checkpoint review.
 INSPECTOR="$ROOT/tools/parity/firered_asr_aed_l_inspect.py"
 PREPARER="$ROOT/tools/parity/firered_asr_aed_l_prepare_checkpoint.py"
 REPOSITORY="FireRedTeam/FireRedASR-AED-L"
@@ -27,7 +29,9 @@ self_test() {
     'train_bpe1000.model' '473bbc157cb4eade2059b30a3c877a1c29bd50cadbfbed869ae36eeade7fee07' \
     'model_info' 'list_repo_tree' 'path_in_repo' 'git_blob_sha1' 'lfs_sha256' 'weights_only=True' \
     '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' \
-    'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status'; do
+    'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
+    'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' \
+    'checkpoint geometry' 'token dictionary binding'; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
   done
   if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
@@ -185,13 +189,29 @@ grep -Fq '"evidence_stage": "INSPECTION_ONLY"' "$work_dir/evidence/manifest.json
 grep -Fq '"publication": "NO_UPLOAD"' "$work_dir/evidence/manifest.json" || die 'publication status missing'
 grep -Fq '"inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE"' "$work_dir/evidence/manifest.json" || die 'inspection did not complete authenticated evidence'
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" <<'PY'
-import json, sys
+import json, re, sys
 manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
 assert manifest["status"] == "BLOCKED"
 assert manifest["evidence_stage"] == "INSPECTION_ONLY"
 assert manifest["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
 assert manifest["publication"] == "NO_UPLOAD"
 assert manifest["inspection_status"] == "AUTHENTICATED_EVIDENCE_COMPLETE"
+contract = manifest.get("source_contract")
+assert isinstance(contract, dict)
+assert contract.get("status") == "AUTHENTICATED_SOURCE_CONTRACT"
+expected_paths = [
+    "fireredasr/models/fireredasr_aed.py",
+    "fireredasr/data/asr_feat.py",
+    "fireredasr/tokenizer/aed_tokenizer.py",
+]
+records = contract.get("records")
+assert isinstance(records, list) and len(records) == len(expected_paths)
+assert [record.get("path") for record in records] == expected_paths
+for record in records:
+    assert set(record) == {"path", "sha256", "markers", "status"}
+    assert record["status"] == "SOURCE_FACTS_AUTHENTICATED"
+    assert isinstance(record["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", record["sha256"])
+    assert isinstance(record["markers"], list) and record["markers"]
 assert "INSPECTION_ERROR" not in json.dumps(manifest)
 PY
 die 'FireRedASR inspection evidence preserved; conversion/runtime/parity remain blocked'

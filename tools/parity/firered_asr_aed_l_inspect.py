@@ -42,6 +42,35 @@ README_MARKERS = (
 )
 EXPECTED_UNSAFE_GLOBALS = ["argparse.Namespace"]
 
+# These are source-level facts, not guessed checkpoint dimensions.  Keeping
+# them here makes the VAST packet useful even when the release's config.yaml is
+# empty: a later converter wave can compare the checkpoint's args/state_dict
+# against this authenticated upstream topology before touching tensor data.
+SOURCE_CONTRACT_MARKERS = {
+    "fireredasr/models/fireredasr_aed.py": (
+        "from fireredasr.models.module.conformer_encoder import ConformerEncoder",
+        "from fireredasr.models.module.transformer_decoder import TransformerDecoder",
+        "self.encoder = ConformerEncoder(",
+        "self.decoder = TransformerDecoder(",
+        "self.encoder(padded_input, input_lengths)",
+        "self.decoder.batch_beam_search(",
+        "softmax_smoothing=1.0",
+        "length_penalty=0.0",
+        "eos_penalty=1.0",
+    ),
+    "fireredasr/data/asr_feat.py": (
+        "kaldi_native_fbank",
+        "cmvn",
+        "16000",
+    ),
+    "fireredasr/tokenizer/aed_tokenizer.py": (
+        "SentencePieceProcessor",
+        "TokenDict",
+        "<sos>",
+        "<eos>",
+    ),
+}
+
 
 class UnsafeFixture:
     pass
@@ -271,6 +300,36 @@ def source_identity(root: Path) -> dict[str, Any]:
     return {"origin": origin, "revision": head, "roles": roles, "license_records": licenses, "code_license": "Apache-2.0 requires review", "dependencies": "separate license review required"}
 
 
+def inspect_source_contract(root: Path) -> dict[str, Any]:
+    """Authenticate topology facts from the pinned upstream source.
+
+    This intentionally extracts only source statements that are stable at the
+    pinned revision.  It does not infer model dimensions from tensor names and
+    does not instantiate the upstream model.  Missing markers are an error so
+    a moved/rewritten upstream file cannot silently become a reference.
+    """
+    records: list[dict[str, Any]] = []
+    for relative, markers in SOURCE_CONTRACT_MARKERS.items():
+        path = root / relative
+        text = path.read_text(encoding="utf-8")
+        missing = [marker for marker in markers if marker not in text]
+        if missing:
+            raise ValueError(f"pinned source contract markers missing in {relative}: {missing}")
+        records.append({
+            "path": relative,
+            "sha256": digest(path),
+            "markers": list(markers),
+            "status": "SOURCE_FACTS_AUTHENTICATED",
+        })
+    return {
+        "status": "AUTHENTICATED_SOURCE_CONTRACT",
+        "architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
+        "frontend": "kaldi_native_fbank path with 16 kHz source marker; exact feature geometry remains checkpoint/config evidence",
+        "tokenizer": "SentencePieceProcessor plus TokenDict with <sos>/<eos> source markers",
+        "records": records,
+    }
+
+
 def inspect_sentencepiece(path: Path) -> dict[str, Any]:
     import sentencepiece as spm
 
@@ -329,7 +388,7 @@ def require_readme_markers(card: str) -> tuple[str, ...]:
     return README_MARKERS
 
 def base_manifest() -> dict[str, Any]:
-    return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint container/config/tensor manifest requires authenticated review", "frontend/CMVN and Conformer/AED decoder contract requires review", "official beam search/tokenizer rendering requires review", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
+    return {"format": "vokra-firered-asr-aed-l-inspection-v1", "status": "BLOCKED", "inspection_status": "PENDING", "evidence_stage": "INSPECTION_ONLY", "runtime_status": "NOT_IMPLEMENTED_FAIL_CLOSED", "cpu_status": "UNSUPPORTED", "metal_status": "BLOCKED_BY_CPU", "parity_status": "NOT_RUN", "publication": "NO_UPLOAD", "environment": {"python": sys.version, "platform": platform.platform()}, "model": {"repository": REPOSITORY, "revision": REVISION, "license": MODEL_LICENSE, "files": ARTIFACTS, "total_bytes": TOTAL_BYTES}, "source": {"origin": SOURCE_URL, "revision": SOURCE_REVISION}, "blockers": ["checkpoint container/tensor manifest and exact geometry require authenticated VAST review", "source-level Conformer/AED topology is authenticated; exact checkpoint geometry and frontend/CMVN values remain unresolved", "official beam-search settings are source-authenticated; token dictionary binding/tokenizer contract remains unresolved", "independent CPU numerical parity is not run", "complete Metal graph is not implemented", "training data and dependency provenance require review"]}
 
 def inspect(args: argparse.Namespace) -> int:
     manifest = base_manifest()
@@ -360,7 +419,9 @@ def inspect(args: argparse.Namespace) -> int:
             raise ValueError("checkpoint contains non-finite floating tensor")
         if not args.source:
             raise ValueError("fixed source checkout is required")
-        manifest["official_source"] = source_identity(Path(args.source))
+        source_root = Path(args.source)
+        manifest["official_source"] = source_identity(source_root)
+        manifest["source_contract"] = inspect_source_contract(source_root)
         manifest["inspection_status"] = "AUTHENTICATED_EVIDENCE_COMPLETE"
     except Exception as error:
         manifest["inspection_status"] = "INSPECTION_ERROR"
@@ -377,6 +438,19 @@ def self_test() -> None:
         else: raise AssertionError(f"unsafe path accepted: {bad!r}")
     with tempfile.TemporaryDirectory(prefix="firered-inspect-") as directory:
         root = Path(directory) / "snapshot"; root.mkdir()
+        source_fixture = Path(directory) / "source"
+        for relative, markers in SOURCE_CONTRACT_MARKERS.items():
+            path = source_fixture / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("\n".join(markers) + "\n", encoding="utf-8")
+        source_contract = inspect_source_contract(source_fixture)
+        assert source_contract["status"] == "AUTHENTICATED_SOURCE_CONTRACT"
+        assert source_contract["architecture"] == "ConformerEncoder + TransformerDecoder + batch_beam_search"
+        broken_source = source_fixture / "fireredasr/models/fireredasr_aed.py"
+        broken_source.write_text("\n".join(SOURCE_CONTRACT_MARKERS["fireredasr/models/fireredasr_aed.py"][:-1]), encoding="utf-8")
+        try: inspect_source_contract(source_fixture)
+        except ValueError as error: assert "source contract markers missing" in str(error)
+        else: raise AssertionError("incomplete source contract accepted")
         readme_fixture = Path(directory) / "README.md"
         readme_fixture.write_text(positive_card, encoding="utf-8")
         assert require_readme_markers(readme_fixture.read_text(encoding="utf-8")) == README_MARKERS
