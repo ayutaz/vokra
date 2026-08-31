@@ -17,11 +17,12 @@ bit-identically between the std and no_std builds.
 
 ## Status
 
-**Phase 3+ REAL detect() with Phase 4 host-parity harness.** Not
-graduated to crates.io yet (`publish = false`). The sidecar emits Q8_0
-source-byte carriers and exact dense I32 bias carriers with affine metadata;
-authenticated TFLite topology and the Model → `ChainConfig` binder are still
-required before a real `hey_jarvis.tflite` checkpoint can be claimed.
+**Phase 3+ REAL detect() with typed topology binder and Phase 4 host-parity
+harness.** Not graduated to crates.io yet (`publish = false`). The sidecar
+emits Q8_0 source-byte carriers, exact dense I32 bias carriers, and a
+fail-closed supported topology manifest. `Model::bind_untrusted_topology` consumes that
+manifest, but a real `hey_jarvis.tflite` bind still requires VAST evidence and
+independent parity.
 
 - **Feature extractor (`src/features.rs`)** — 40-band log-mel front-end
     (Phase 1, WF1). Real; parity harness covers it.
@@ -150,15 +151,15 @@ CARGO_BUILD_JOBS=1 cargo test -p vokra-kws-micro \
 Path breakdown:
 
 - **Path A** (`VOKRA_KWS_REAL_GGUF`) — real GGUF load smoke: bind, walk
-    `vokra.kws.*` metadata, assert tensor manifest lower bound. Real
-    hey_jarvis passes.
+    `vokra.kws.*` metadata, assert tensor manifest lower bound. A real
+    hey_jarvis result still requires the owner-reviewed VAST artifact.
 - **Path B** (`VOKRA_KWS_REAL_FIXTURES`) — log-mel feature extractor
     parity at `atol = 1e-3` against the numpy reference. Real; validates
     transcription faithfulness of the standard log-mel algorithm.
 - **Path C** (both) — end-to-end INT8 chain parity. **UNMET as of
     Phase 4**; Q8_0 carriers and per-tensor `(scale, zero_point)` metadata
-    exist, but authenticated topology and the Model → `ChainConfig` binder
-    remain pending. See `src/model.rs`'s
+    exist, but production topology authority and the Model → `ChainConfig`
+    binding remain pending. See `src/model.rs`'s
     module doc for the boundary.
 
 ## See also

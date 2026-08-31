@@ -13,11 +13,13 @@
 //! [`crate::KwsMicro::detect`] all execute for real on an attached
 //! [`crate::interpreter::ChainConfig`].
 //!
-//! What is missing is the join between the two: **no code path converts a
-//! [`Model`] into a [`crate::interpreter::ChainConfig`]**. The loader now
-//! preserves Q8_0 source bytes, I32 bias values, and affine parameters, but the MC-MobileNet
-//! operator topology and activation metadata are still required before a
-//! real chain can be assembled safely.
+//! The generic join is [`Model::bind_untrusted_topology`]: it consumes an
+//! explicitly untrusted/synthetic [`TopologyManifest`] and checks every graph
+//! edge, shape, dtype, quantization vector, and GGUF constant before
+//! constructing a [`crate::interpreter::ChainConfig`]. Production authority
+//! is closed behind [`Model::bind_authenticated_chain`], which remains
+//! blocked until the reviewed VAST topology and parity evidence are compiled
+//! into this crate.
 //!
 //! # Design rationale (why a two-layer parser, not a monolithic one)
 //!
@@ -62,10 +64,11 @@
 //! F32, I32, or Q8_0 payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
 //! blocks, mirroring the `Conv1dW` pattern in
 //! `crates/vokra-vad-micro/src/weights.rs` — that module is private and
-//! `Conv1dW` is `pub(crate)`, so neither has a docs.rs page to link) are not
-//! written yet. The affine quantisation vectors are authenticated and carried
-//! by the sidecar; graduation remains blocked on typed topology/binder
-//! mapping and real end-to-end parity evidence.
+//! `Conv1dW` is `pub(crate)`, so neither has a docs.rs page to link) are
+//! assembled by [`Model::bind_untrusted_topology`] only from an explicitly
+//! supplied typed topology. Graduation remains blocked on a real manifest and
+//! end-to-end parity evidence; the production authenticated entry point cannot
+//! be unlocked by caller data.
 //!
 //! Q8_0 and I32 tensors carry the source TFLite quantization vector in indexed metadata
 //! keys `vokra.kws.tensor.<ordinal>.name` (string), `.quant.scales` (float
@@ -78,15 +81,13 @@
 //! scale. The eventual chain binder must still reject per-axis vectors until
 //! the checkpoint's operator axis contract is independently inspected.
 //!
-//! # Ops are NOT represented
+//! # Ops are represented out-of-band
 //!
-//! The sidecar emits weights only — the microWakeWord architecture is a
-//! fixed MC-MobileNet whose op chain is hard-coded on the consumer side.
-//! Adding a `Op { kind, inputs, outputs, attributes }` struct here would be
-//! fake-complete (it would carry no data). [`crate::KwsMicro::detect`]
-//! instead drives scalar INT8 kernels through a hand-written topology (see
-//! [`crate::interpreter`]), matching the sister [`vokra_vad_micro`] and
-//! whisper.cpp `whisper_encoder` patterns.
+//! The sidecar emits weights and a separate authenticated topology manifest.
+//! [`TopologyManifest`] is deliberately not inferred from GGUF names: the
+//! binder rejects branches, custom operators, unsupported fusions, and any
+//! edge/shape/quantization mismatch before [`crate::KwsMicro::detect`] can be
+//! attached to the scalar INT8 kernels.
 //!
 //! [`vokra_vad_micro`]: https://docs.rs/vokra-vad-micro
 //! [`vokra_vad_micro::SileroWeights::from_gguf`]: https://docs.rs/vokra-vad-micro/latest/vokra_vad_micro/struct.SileroWeights.html#method.from_gguf
@@ -99,11 +100,15 @@
 use alloc::{
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
 use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufTensorInfo, GgufValueType};
 use vokra_core::{Result, VokraError};
+
+use crate::interpreter::{ChainConfig, LayerSpec};
+use crate::kernels::ConvDims;
 
 /// The `vokra.kws.arch` discriminator the sidecar emits for microWakeWord
 /// artifacts. A GGUF whose `arch` string differs is rejected outright:
@@ -111,6 +116,11 @@ use vokra_core::{Result, VokraError};
 /// on RPi/Linux) are separate ecosystems and their weight layouts do not
 /// interchange. Downstream binders switch on this key.
 pub const EXPECTED_ARCH: &str = "microwakeword";
+
+/// Compiled review authority for the canonical TFLite topology. This remains
+/// unset until the official VAST artifact, GGUF bind, and independent parity
+/// evidence are reviewed together; a caller cannot supply or override it.
+pub const REVIEWED_TOPOLOGY_SHA256: Option<&str> = None;
 
 // --- Metadata key names (mirror the Python sidecar's `KEY_*` constants
 // byte-for-byte). Deliberately duplicated instead of imported from
@@ -170,6 +180,149 @@ pub struct TensorQuantization {
     pub zero_points: Vec<i64>,
     /// TFLite `quantized_dimension` (`-1` is the scalar/per-tensor sentinel).
     pub quantized_dimension: i32,
+}
+
+/// TFLite tensor type carried by an untrusted or owner-reviewed topology manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyDtype {
+    /// Signed 8-bit activation or weight.
+    Int8,
+    /// Signed 32-bit pre-scaled bias.
+    Int32,
+    /// Dense float tensor (not accepted by the INT8 ChainConfig binder).
+    Float32,
+}
+
+/// A tensor reference from the TFLite subgraph.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopologyTensor {
+    /// TFLite tensor ordinal.
+    pub index: u32,
+    /// Exact TFLite tensor name.
+    pub name: String,
+    /// Source (framework-order) dimensions, not GGUF wire-order dimensions.
+    pub shape: Vec<u64>,
+    /// Source tensor dtype.
+    pub dtype: TopologyDtype,
+    /// Whether the tensor owns persistent FlatBuffer bytes.
+    pub constant: bool,
+    /// TFLite affine parameters; production use requires the closed review
+    /// authority in [`REVIEWED_TOPOLOGY_SHA256`].
+    pub quantization: Option<TensorQuantization>,
+}
+
+/// TFLite padding mode admitted by the typed binder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyPadding {
+    /// TFLite SAME padding; only symmetric derived padding is representable.
+    Same,
+    /// TFLite VALID padding.
+    Valid,
+}
+
+/// One operator in a validated, linear TFLite chain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TopologyOperator {
+    /// TFLite CONV_2D with activation, filter, and bias inputs.
+    Conv2d {
+        /// Operator ordinal in execution order.
+        index: usize,
+        /// Activation tensor index.
+        input: u32,
+        /// Filter tensor index.
+        weight: u32,
+        /// Bias tensor index.
+        bias: u32,
+        /// Output tensor index.
+        output: u32,
+        /// TFLite padding mode.
+        padding: TopologyPadding,
+        /// Horizontal stride.
+        stride_w: usize,
+        /// Vertical stride.
+        stride_h: usize,
+        /// Horizontal dilation.
+        dilation_w: usize,
+        /// Vertical dilation.
+        dilation_h: usize,
+    },
+    /// TFLite DEPTHWISE_CONV_2D with depth multiplier one.
+    DepthwiseConv2d {
+        /// Operator ordinal in execution order.
+        index: usize,
+        /// Activation tensor index.
+        input: u32,
+        /// Filter tensor index.
+        weight: u32,
+        /// Bias tensor index.
+        bias: u32,
+        /// Output tensor index.
+        output: u32,
+        /// TFLite padding mode.
+        padding: TopologyPadding,
+        /// Horizontal stride.
+        stride_w: usize,
+        /// Vertical stride.
+        stride_h: usize,
+        /// Horizontal dilation.
+        dilation_w: usize,
+        /// Vertical dilation.
+        dilation_h: usize,
+        /// TFLite depth multiplier (must be one).
+        depth_multiplier: usize,
+    },
+    /// TFLite FULLY_CONNECTED.
+    FullyConnected {
+        /// Operator ordinal in execution order.
+        index: usize,
+        /// Activation tensor index.
+        input: u32,
+        /// Matrix tensor index.
+        weight: u32,
+        /// Bias tensor index.
+        bias: u32,
+        /// Output tensor index.
+        output: u32,
+    },
+    /// TFLite LOGISTIC.
+    Logistic {
+        /// Operator ordinal in execution order.
+        index: usize,
+        /// Input tensor index.
+        input: u32,
+        /// Output tensor index.
+        output: u32,
+    },
+    /// TFLite SOFTMAX with beta one.
+    Softmax {
+        /// Operator ordinal in execution order.
+        index: usize,
+        /// Input tensor index.
+        input: u32,
+        /// Output tensor index.
+        output: u32,
+        /// TFLite beta option.
+        beta: f32,
+    },
+}
+
+/// Typed topology handoff from the VAST FlatBuffer producer to native Rust.
+///
+/// This is deliberately not populated by guessing from GGUF tensor names. A
+/// caller may provide records for synthetic/untrusted validation;
+/// [`Model::bind_untrusted_topology`] checks them against GGUF constants before
+/// constructing a [`ChainConfig`]. This type cannot confer production
+/// authentication authority.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopologyManifest {
+    /// All source tensors, including activation tensors with no GGUF payload.
+    pub tensors: Vec<TopologyTensor>,
+    /// Single graph input boundary.
+    pub inputs: Vec<u32>,
+    /// Single graph output boundary.
+    pub outputs: Vec<u32>,
+    /// Operators in exact execution order.
+    pub operators: Vec<TopologyOperator>,
 }
 
 /// Exact storage state for one GGUF tensor.
@@ -396,6 +549,710 @@ impl Model {
     pub fn tensor_count(&self) -> usize {
         self.tensors.len()
     }
+
+    /// Validates an untrusted/synthetic topology handoff and builds a typed
+    /// INT8 [`ChainConfig`] for tests and integration development. This method
+    /// does not confer production or authenticated authority.
+    pub fn bind_untrusted_topology(&self, topology: &TopologyManifest) -> Result<ChainConfig> {
+        validate_topology(topology)?;
+        let mut layers = Vec::with_capacity(topology.operators.len());
+        for operator in &topology.operators {
+            let layer = match operator {
+                TopologyOperator::Conv2d {
+                    input,
+                    weight,
+                    bias,
+                    output,
+                    padding,
+                    stride_w,
+                    stride_h,
+                    dilation_w,
+                    dilation_h,
+                    ..
+                } => {
+                    let input_ref = topology_tensor(topology, *input)?;
+                    let weight_ref = topology_tensor(topology, *weight)?;
+                    let bias_ref = topology_tensor(topology, *bias)?;
+                    let output_ref = topology_tensor(topology, *output)?;
+                    require_conv_types(input_ref, weight_ref, bias_ref, output_ref, "Conv2d")?;
+                    let (input_scale, input_zero_point) = scalar_quant(input_ref, "Conv2d input")?;
+                    let (weight_scale, _) = scalar_quant(weight_ref, "Conv2d weight")?;
+                    let (bias_scale, _) = scalar_quant(bias_ref, "Conv2d bias")?;
+                    let (output_scale, output_zero_point) =
+                        scalar_quant(output_ref, "Conv2d output")?;
+                    require_bias_scale(bias_scale, input_scale, weight_scale, "Conv2d")?;
+                    let (in_h, in_w, in_c, out_c, kh, kw, out_h, out_w) = conv_shape(
+                        input_ref,
+                        weight_ref,
+                        output_ref,
+                        *stride_h,
+                        *stride_w,
+                        *dilation_h,
+                        *dilation_w,
+                        *padding,
+                        false,
+                        "Conv2d",
+                    )?;
+                    let dims = ConvDims {
+                        in_h,
+                        in_w,
+                        in_c,
+                        out_c,
+                        kh,
+                        kw,
+                        stride_h: *stride_h,
+                        stride_w: *stride_w,
+                        pad_h: derived_padding(
+                            input_ref.shape[1],
+                            kh,
+                            *stride_h,
+                            *dilation_h,
+                            output_ref.shape[1],
+                            *padding,
+                            "Conv2d height",
+                        )?,
+                        pad_w: derived_padding(
+                            input_ref.shape[2],
+                            kw,
+                            *stride_w,
+                            *dilation_w,
+                            output_ref.shape[2],
+                            *padding,
+                            "Conv2d width",
+                        )?,
+                    };
+                    let _ = (out_h, out_w);
+                    LayerSpec::Conv2d {
+                        weight_i8: bound_weight(self, weight_ref)?,
+                        bias_i32: bound_bias(self, bias_ref)?,
+                        dims,
+                        input_zero_point,
+                        output_zero_point,
+                        output_scale: requant_scale(
+                            input_scale,
+                            weight_scale,
+                            output_scale,
+                            "Conv2d",
+                        )?,
+                    }
+                }
+                TopologyOperator::DepthwiseConv2d {
+                    input,
+                    weight,
+                    bias,
+                    output,
+                    padding,
+                    stride_w,
+                    stride_h,
+                    dilation_w,
+                    dilation_h,
+                    depth_multiplier,
+                    ..
+                } => {
+                    if *depth_multiplier != 1 {
+                        return Err(model_error(
+                            "DepthwiseConv2d depth_multiplier other than one is unsupported",
+                        ));
+                    }
+                    let input_ref = topology_tensor(topology, *input)?;
+                    let weight_ref = topology_tensor(topology, *weight)?;
+                    let bias_ref = topology_tensor(topology, *bias)?;
+                    let output_ref = topology_tensor(topology, *output)?;
+                    require_conv_types(
+                        input_ref,
+                        weight_ref,
+                        bias_ref,
+                        output_ref,
+                        "DepthwiseConv2d",
+                    )?;
+                    let (input_scale, input_zero_point) =
+                        scalar_quant(input_ref, "DepthwiseConv2d input")?;
+                    let (weight_scale, _) = scalar_quant(weight_ref, "DepthwiseConv2d weight")?;
+                    let (bias_scale, _) = scalar_quant(bias_ref, "DepthwiseConv2d bias")?;
+                    let (output_scale, output_zero_point) =
+                        scalar_quant(output_ref, "DepthwiseConv2d output")?;
+                    require_bias_scale(bias_scale, input_scale, weight_scale, "DepthwiseConv2d")?;
+                    let (in_h, in_w, in_c, _, kh, kw, out_h, out_w) = conv_shape(
+                        input_ref,
+                        weight_ref,
+                        output_ref,
+                        *stride_h,
+                        *stride_w,
+                        *dilation_h,
+                        *dilation_w,
+                        *padding,
+                        true,
+                        "DepthwiseConv2d",
+                    )?;
+                    let dims = ConvDims {
+                        in_h,
+                        in_w,
+                        in_c,
+                        out_c: in_c,
+                        kh,
+                        kw,
+                        stride_h: *stride_h,
+                        stride_w: *stride_w,
+                        pad_h: derived_padding(
+                            input_ref.shape[1],
+                            kh,
+                            *stride_h,
+                            *dilation_h,
+                            output_ref.shape[1],
+                            *padding,
+                            "DepthwiseConv2d height",
+                        )?,
+                        pad_w: derived_padding(
+                            input_ref.shape[2],
+                            kw,
+                            *stride_w,
+                            *dilation_w,
+                            output_ref.shape[2],
+                            *padding,
+                            "DepthwiseConv2d width",
+                        )?,
+                    };
+                    let _ = (out_h, out_w);
+                    LayerSpec::DepthwiseConv2d {
+                        weight_i8: bound_weight(self, weight_ref)?,
+                        bias_i32: bound_bias(self, bias_ref)?,
+                        dims,
+                        input_zero_point,
+                        output_zero_point,
+                        output_scale: requant_scale(
+                            input_scale,
+                            weight_scale,
+                            output_scale,
+                            "DepthwiseConv2d",
+                        )?,
+                    }
+                }
+                TopologyOperator::FullyConnected {
+                    input,
+                    weight,
+                    bias,
+                    output,
+                    ..
+                } => {
+                    let input_ref = topology_tensor(topology, *input)?;
+                    let weight_ref = topology_tensor(topology, *weight)?;
+                    let bias_ref = topology_tensor(topology, *bias)?;
+                    let output_ref = topology_tensor(topology, *output)?;
+                    require_conv_types(
+                        input_ref,
+                        weight_ref,
+                        bias_ref,
+                        output_ref,
+                        "FullyConnected",
+                    )?;
+                    if weight_ref.shape.len() != 2 || bias_ref.shape.len() != 1 {
+                        return Err(model_error(
+                            "FullyConnected requires rank-2 weight and rank-1 bias",
+                        ));
+                    }
+                    let in_dim = shape_size(&input_ref.shape, "FullyConnected input")?;
+                    let out_dim = shape_size(&output_ref.shape, "FullyConnected output")?;
+                    if weight_ref.shape != [out_dim as u64, in_dim as u64]
+                        || bias_ref.shape != [out_dim as u64]
+                    {
+                        return Err(model_error("FullyConnected tensor shapes do not agree"));
+                    }
+                    let (input_scale, input_zero_point) =
+                        scalar_quant(input_ref, "FullyConnected input")?;
+                    let (weight_scale, _) = scalar_quant(weight_ref, "FullyConnected weight")?;
+                    let (bias_scale, _) = scalar_quant(bias_ref, "FullyConnected bias")?;
+                    let (output_scale, output_zero_point) =
+                        scalar_quant(output_ref, "FullyConnected output")?;
+                    require_bias_scale(bias_scale, input_scale, weight_scale, "FullyConnected")?;
+                    LayerSpec::FullyConnected {
+                        weight_i8: bound_weight(self, weight_ref)?,
+                        bias_i32: bound_bias(self, bias_ref)?,
+                        in_dim,
+                        out_dim,
+                        input_zero_point,
+                        output_zero_point,
+                        output_scale: requant_scale(
+                            input_scale,
+                            weight_scale,
+                            output_scale,
+                            "FullyConnected",
+                        )?,
+                    }
+                }
+                TopologyOperator::Logistic { input, output, .. } => {
+                    let input_ref = topology_tensor(topology, *input)?;
+                    let output_ref = topology_tensor(topology, *output)?;
+                    require_activation_types(input_ref, output_ref, "LOGISTIC")?;
+                    if input_ref.shape != output_ref.shape {
+                        return Err(model_error("LOGISTIC input/output shapes do not agree"));
+                    }
+                    let (input_scale, input_zero_point) =
+                        scalar_quant(input_ref, "LOGISTIC input")?;
+                    let (output_scale, output_zero_point) =
+                        scalar_quant(output_ref, "LOGISTIC output")?;
+                    LayerSpec::Sigmoid {
+                        size: shape_size(&input_ref.shape, "LOGISTIC")?,
+                        input_scale,
+                        input_zero_point,
+                        output_scale,
+                        output_zero_point,
+                    }
+                }
+                TopologyOperator::Softmax {
+                    input,
+                    output,
+                    beta,
+                    ..
+                } => {
+                    if *beta != 1.0 {
+                        return Err(model_error("SOFTMAX beta other than one is unsupported"));
+                    }
+                    let input_ref = topology_tensor(topology, *input)?;
+                    let output_ref = topology_tensor(topology, *output)?;
+                    require_activation_types(input_ref, output_ref, "SOFTMAX")?;
+                    if input_ref.shape != output_ref.shape {
+                        return Err(model_error("SOFTMAX input/output shapes do not agree"));
+                    }
+                    let (input_scale, input_zero_point) = scalar_quant(input_ref, "SOFTMAX input")?;
+                    let (output_scale, output_zero_point) =
+                        scalar_quant(output_ref, "SOFTMAX output")?;
+                    if output_scale != 1.0 / 256.0 || output_zero_point != -128 {
+                        return Err(model_error(
+                            "SOFTMAX output quantization is not TFLite's 1/256,-128 contract",
+                        ));
+                    }
+                    LayerSpec::Softmax {
+                        size: shape_size(&input_ref.shape, "SOFTMAX")?,
+                        input_scale,
+                        input_zero_point,
+                        output_scale,
+                        output_zero_point,
+                    }
+                }
+            };
+            layers.push(layer);
+        }
+        ChainConfig::new(layers)
+    }
+
+    /// Production entry point for the reviewed canonical topology.
+    ///
+    /// No caller-supplied digest or topology can unlock this path. It remains
+    /// fail-closed until the repository compiles the reviewed topology digest
+    /// after VAST artifact binding and independent parity sign-off.
+    pub fn bind_authenticated_chain(&self) -> Result<ChainConfig> {
+        let _ = self;
+        if REVIEWED_TOPOLOGY_SHA256.is_none() {
+            return Err(model_error("AUTHENTICATED_TOPOLOGY_REQUIRED"));
+        }
+        Err(model_error("AUTHENTICATED_TOPOLOGY_REQUIRED"))
+    }
+}
+
+fn model_error(message: &str) -> VokraError {
+    VokraError::ModelLoad(message.into())
+}
+
+fn topology_tensor<'a>(topology: &'a TopologyManifest, index: u32) -> Result<&'a TopologyTensor> {
+    topology
+        .tensors
+        .iter()
+        .find(|tensor| tensor.index == index)
+        .ok_or_else(|| model_error("topology references an unknown tensor"))
+}
+
+fn op_edges(operator: &TopologyOperator) -> (Vec<u32>, u32, usize) {
+    match operator {
+        TopologyOperator::Conv2d {
+            input,
+            weight,
+            bias,
+            output,
+            index,
+            ..
+        }
+        | TopologyOperator::DepthwiseConv2d {
+            input,
+            weight,
+            bias,
+            output,
+            index,
+            ..
+        }
+        | TopologyOperator::FullyConnected {
+            input,
+            weight,
+            bias,
+            output,
+            index,
+            ..
+        } => (vec![*input, *weight, *bias], *output, *index),
+        TopologyOperator::Logistic {
+            input,
+            output,
+            index,
+        }
+        | TopologyOperator::Softmax {
+            input,
+            output,
+            index,
+            ..
+        } => (vec![*input], *output, *index),
+    }
+}
+
+fn validate_topology(topology: &TopologyManifest) -> Result<()> {
+    if topology.inputs.len() != 1 || topology.outputs.len() != 1 || topology.operators.is_empty() {
+        return Err(model_error(
+            "topology must have one input, one output, and at least one operator",
+        ));
+    }
+    if topology.tensors.is_empty() {
+        return Err(model_error("topology has no tensor records"));
+    }
+    let mut tensor_indices = Vec::with_capacity(topology.tensors.len());
+    for tensor in &topology.tensors {
+        if tensor_indices.contains(&tensor.index) {
+            return Err(model_error("topology contains duplicate tensor indices"));
+        }
+        tensor_indices.push(tensor.index);
+    }
+    for (position, operator) in topology.operators.iter().enumerate() {
+        let (inputs, output, index) = op_edges(operator);
+        if index != position
+            || inputs.is_empty()
+            || inputs
+                .iter()
+                .any(|tensor| topology_tensor(topology, *tensor).is_err())
+            || topology_tensor(topology, output).is_err()
+        {
+            return Err(model_error(
+                "topology operator order or tensor references are invalid",
+            ));
+        }
+        if position == 0 && inputs[0] != topology.inputs[0] {
+            return Err(model_error(
+                "first operator does not consume the graph input",
+            ));
+        }
+        if position > 0 {
+            let (_, previous_output, _) = op_edges(&topology.operators[position - 1]);
+            if inputs[0] != previous_output {
+                return Err(model_error(
+                    "topology contains a branch, skip, or reordered activation",
+                ));
+            }
+        }
+        if output == topology.inputs[0]
+            || inputs.iter().any(|tensor| *tensor == topology.outputs[0])
+        {
+            return Err(model_error(
+                "topology graph boundary is used in the wrong direction",
+            ));
+        }
+    }
+    if op_edges(topology.operators.last().unwrap()).1 != topology.outputs[0] {
+        return Err(model_error(
+            "last operator does not produce the graph output",
+        ));
+    }
+    let mut produced: Vec<(u32, usize)> = Vec::new();
+    let mut consumed: Vec<(u32, usize)> = Vec::new();
+    for operator in &topology.operators {
+        let (inputs, output, _) = op_edges(operator);
+        for input in inputs {
+            if let Some(item) = consumed.iter_mut().find(|item| item.0 == input) {
+                item.1 += 1;
+            } else {
+                consumed.push((input, 1));
+            }
+        }
+        if let Some(item) = produced.iter_mut().find(|item| item.0 == output) {
+            item.1 += 1;
+        } else {
+            produced.push((output, 1));
+        }
+    }
+    for tensor in &topology.tensors {
+        let producer_count = produced
+            .iter()
+            .find(|item| item.0 == tensor.index)
+            .map_or(0, |item| item.1);
+        let consumer_count = consumed
+            .iter()
+            .find(|item| item.0 == tensor.index)
+            .map_or(0, |item| item.1);
+        if tensor.constant {
+            if producer_count != 0 || consumer_count != 1 {
+                return Err(model_error(
+                    "constant tensor must have exactly one consumer and no producer",
+                ));
+            }
+        } else if tensor.index == topology.inputs[0] {
+            if producer_count != 0 || consumer_count != 1 {
+                return Err(model_error(
+                    "graph input tensor has an invalid producer/consumer boundary",
+                ));
+            }
+        } else if tensor.index == topology.outputs[0] {
+            if producer_count != 1 || consumer_count != 0 {
+                return Err(model_error(
+                    "graph output tensor has an invalid producer/consumer boundary",
+                ));
+            }
+        } else if producer_count != 1 || consumer_count != 1 {
+            return Err(model_error(
+                "activation tensor must have one producer and one consumer",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn require_activation_types(
+    input: &TopologyTensor,
+    output: &TopologyTensor,
+    label: &str,
+) -> Result<()> {
+    if input.constant
+        || output.constant
+        || input.dtype != TopologyDtype::Int8
+        || output.dtype != TopologyDtype::Int8
+    {
+        return Err(model_error(label));
+    }
+    Ok(())
+}
+
+fn require_conv_types(
+    input: &TopologyTensor,
+    weight: &TopologyTensor,
+    bias: &TopologyTensor,
+    output: &TopologyTensor,
+    label: &str,
+) -> Result<()> {
+    if input.constant
+        || !weight.constant
+        || !bias.constant
+        || output.constant
+        || input.dtype != TopologyDtype::Int8
+        || weight.dtype != TopologyDtype::Int8
+        || bias.dtype != TopologyDtype::Int32
+        || output.dtype != TopologyDtype::Int8
+    {
+        return Err(model_error(label));
+    }
+    Ok(())
+}
+
+fn shape_size(shape: &[u64], label: &str) -> Result<usize> {
+    shape.iter().try_fold(1usize, |size, dimension| {
+        let dimension = usize::try_from(*dimension).map_err(|_| model_error(label))?;
+        if dimension == 0 {
+            return Err(model_error(label));
+        }
+        size.checked_mul(dimension)
+            .ok_or_else(|| model_error(label))
+    })
+}
+
+fn scalar_quant(tensor: &TopologyTensor, label: &str) -> Result<(f32, i8)> {
+    let quantization = tensor
+        .quantization
+        .as_ref()
+        .ok_or_else(|| model_error(label))?;
+    let axis = usize::try_from(quantization.quantized_dimension).ok();
+    let scalar_sentinel = quantization.quantized_dimension == -1;
+    if quantization.scales.len() != 1
+        || quantization.zero_points.len() != 1
+        || !quantization.scales[0].is_finite()
+        || quantization.scales[0] <= 0.0
+        || (!scalar_sentinel && axis.is_none())
+        || axis.is_some_and(|value| value >= tensor.shape.len())
+    {
+        return Err(model_error(label));
+    }
+    let zero_point = i8::try_from(quantization.zero_points[0]).map_err(|_| model_error(label))?;
+    Ok((quantization.scales[0], zero_point))
+}
+
+fn require_bias_scale(
+    bias_scale: f32,
+    input_scale: f32,
+    weight_scale: f32,
+    label: &str,
+) -> Result<()> {
+    if bias_scale != input_scale * weight_scale {
+        return Err(model_error(label));
+    }
+    Ok(())
+}
+
+fn requant_scale(
+    input_scale: f32,
+    weight_scale: f32,
+    output_scale: f32,
+    label: &str,
+) -> Result<f32> {
+    let value = input_scale * weight_scale / output_scale;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(model_error(label));
+    }
+    Ok(value)
+}
+
+fn bound_weight(model: &Model, tensor: &TopologyTensor) -> Result<Vec<i8>> {
+    if !tensor.constant || tensor.dtype != TopologyDtype::Int8 {
+        return Err(model_error("topology weight is not an INT8 constant"));
+    }
+    let stored = model
+        .tensor(&tensor.name)
+        .ok_or_else(|| model_error("topology weight is absent from GGUF"))?;
+    if stored.name != tensor.name
+        || stored.shape != tensor.shape.iter().rev().copied().collect::<Vec<_>>()
+        || stored.quantization.as_ref() != tensor.quantization.as_ref()
+    {
+        return Err(model_error(
+            "topology weight identity or quantization does not match GGUF",
+        ));
+    }
+    match &stored.data {
+        TensorData::Q8 { raw, .. } if raw.len() == shape_size(&tensor.shape, "weight")? => {
+            Ok(raw.clone())
+        }
+        _ => Err(model_error("topology weight must be a Q8_0 tensor")),
+    }
+}
+
+fn bound_bias(model: &Model, tensor: &TopologyTensor) -> Result<Vec<i32>> {
+    if !tensor.constant || tensor.dtype != TopologyDtype::Int32 {
+        return Err(model_error("topology bias is not an INT32 constant"));
+    }
+    let stored = model
+        .tensor(&tensor.name)
+        .ok_or_else(|| model_error("topology bias is absent from GGUF"))?;
+    if stored.name != tensor.name
+        || stored.shape != tensor.shape.iter().rev().copied().collect::<Vec<_>>()
+        || stored.quantization.as_ref() != tensor.quantization.as_ref()
+    {
+        return Err(model_error(
+            "topology bias identity or quantization does not match GGUF",
+        ));
+    }
+    match &stored.data {
+        TensorData::I32(values) if values.len() == shape_size(&tensor.shape, "bias")? => {
+            Ok(values.clone())
+        }
+        _ => Err(model_error("topology bias must be an I32 tensor")),
+    }
+}
+
+fn conv_shape(
+    input: &TopologyTensor,
+    weight: &TopologyTensor,
+    output: &TopologyTensor,
+    stride_h: usize,
+    stride_w: usize,
+    dilation_h: usize,
+    dilation_w: usize,
+    padding: TopologyPadding,
+    depthwise: bool,
+    label: &str,
+) -> Result<(usize, usize, usize, usize, usize, usize, usize, usize)> {
+    if input.shape.len() != 4
+        || weight.shape.len() != 4
+        || output.shape.len() != 4
+        || input.shape[0] != 1
+        || output.shape[0] != 1
+        || stride_h == 0
+        || stride_w == 0
+        || dilation_h == 0
+        || dilation_w == 0
+    {
+        return Err(model_error(label));
+    }
+    let in_h = usize::try_from(input.shape[1]).map_err(|_| model_error(label))?;
+    let in_w = usize::try_from(input.shape[2]).map_err(|_| model_error(label))?;
+    let in_c = usize::try_from(input.shape[3]).map_err(|_| model_error(label))?;
+    let out_c = if depthwise {
+        in_c
+    } else {
+        usize::try_from(weight.shape[0]).map_err(|_| model_error(label))?
+    };
+    let kh = usize::try_from(weight.shape[1]).map_err(|_| model_error(label))?;
+    let kw = usize::try_from(weight.shape[2]).map_err(|_| model_error(label))?;
+    let output_c = usize::try_from(output.shape[3]).map_err(|_| model_error(label))?;
+    if (depthwise && weight.shape[0] != 1)
+        || weight.shape[3] != input.shape[3]
+        || output_c != out_c
+        || kh == 0
+        || kw == 0
+    {
+        return Err(model_error(label));
+    }
+    let effective_h = kh
+        .checked_sub(1)
+        .and_then(|value| value.checked_mul(dilation_h))
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| model_error(label))?;
+    let effective_w = kw
+        .checked_sub(1)
+        .and_then(|value| value.checked_mul(dilation_w))
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| model_error(label))?;
+    let (out_h, out_w) = match padding {
+        TopologyPadding::Valid => (
+            (in_h
+                .checked_sub(effective_h)
+                .ok_or_else(|| model_error(label))?
+                / stride_h)
+                + 1,
+            (in_w
+                .checked_sub(effective_w)
+                .ok_or_else(|| model_error(label))?
+                / stride_w)
+                + 1,
+        ),
+        TopologyPadding::Same => (
+            (in_h + stride_h - 1) / stride_h,
+            (in_w + stride_w - 1) / stride_w,
+        ),
+    };
+    if output.shape[1] != out_h as u64 || output.shape[2] != out_w as u64 {
+        return Err(model_error(label));
+    }
+    Ok((in_h, in_w, in_c, out_c, kh, kw, out_h, out_w))
+}
+
+fn derived_padding(
+    input: u64,
+    kernel: usize,
+    stride: usize,
+    dilation: usize,
+    output: u64,
+    padding: TopologyPadding,
+    label: &str,
+) -> Result<usize> {
+    if padding == TopologyPadding::Valid {
+        return Ok(0);
+    }
+    let input = usize::try_from(input).map_err(|_| model_error(label))?;
+    let output = usize::try_from(output).map_err(|_| model_error(label))?;
+    let effective = kernel
+        .checked_sub(1)
+        .and_then(|value| value.checked_mul(dilation))
+        .and_then(|value| value.checked_add(1))
+        .ok_or_else(|| model_error(label))?;
+    let total = output
+        .checked_sub(1)
+        .and_then(|value| value.checked_mul(stride))
+        .and_then(|value| value.checked_add(effective))
+        .and_then(|value| value.checked_sub(input))
+        .unwrap_or(0);
+    if total % 2 != 0 {
+        return Err(model_error(label));
+    }
+    Ok(total / 2)
 }
 
 impl ModelHeader {
@@ -751,6 +1608,267 @@ mod tests {
             Err(VokraError::ModelLoad(m)) => m,
             other => panic!("expected VokraError::ModelLoad for {context}, got {other:?}"),
         }
+    }
+
+    fn topology_quant(scale: f32, zero_point: i64) -> TensorQuantization {
+        TensorQuantization {
+            scales: vec![scale],
+            zero_points: vec![zero_point],
+            quantized_dimension: -1,
+        }
+    }
+
+    #[test]
+    fn binds_untrusted_synthetic_linear_fully_connected_topology() {
+        let model = Model {
+            header: ModelHeader {
+                model: "synthetic".into(),
+                threshold: 0.5,
+                sample_rate: 16_000,
+                hop_ms: 10,
+                window_ms: 32,
+                n_mels: 1,
+                feature_dim: 1,
+                tflite_sha256: "0".repeat(64),
+                upstream: "synthetic".into(),
+            },
+            tensors: vec![
+                Tensor {
+                    name: "input".into(),
+                    shape: vec![1],
+                    data: TensorData::Q8 {
+                        values: vec![0.0],
+                        raw: vec![0],
+                    },
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                Tensor {
+                    name: "weight".into(),
+                    shape: vec![1, 1],
+                    data: TensorData::Q8 {
+                        values: vec![1.0],
+                        raw: vec![1],
+                    },
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                Tensor {
+                    name: "bias".into(),
+                    shape: vec![1],
+                    data: TensorData::I32(vec![0]),
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+            ],
+        };
+        let topology = TopologyManifest {
+            tensors: vec![
+                TopologyTensor {
+                    index: 0,
+                    name: "input".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int8,
+                    constant: false,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 1,
+                    name: "weight".into(),
+                    shape: vec![1, 1],
+                    dtype: TopologyDtype::Int8,
+                    constant: true,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 2,
+                    name: "bias".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int32,
+                    constant: true,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 3,
+                    name: "output".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int8,
+                    constant: false,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+            ],
+            inputs: vec![0],
+            outputs: vec![3],
+            operators: vec![TopologyOperator::FullyConnected {
+                index: 0,
+                input: 0,
+                weight: 1,
+                bias: 2,
+                output: 3,
+            }],
+        };
+        let chain = model
+            .bind_untrusted_topology(&topology)
+            .expect("synthetic topology binds");
+        assert_eq!(chain.input_size(), 1);
+        assert_eq!(chain.output_size(), 1);
+        assert_eq!(chain.layer_count(), 1);
+    }
+
+    #[test]
+    fn rejects_topology_quantization_tampering_against_gguf_identity() {
+        let model = Model {
+            header: ModelHeader {
+                model: "synthetic".into(),
+                threshold: 0.5,
+                sample_rate: 16_000,
+                hop_ms: 10,
+                window_ms: 32,
+                n_mels: 1,
+                feature_dim: 1,
+                tflite_sha256: "0".repeat(64),
+                upstream: "synthetic".into(),
+            },
+            tensors: vec![
+                Tensor {
+                    name: "input".into(),
+                    shape: vec![1],
+                    data: TensorData::Q8 {
+                        values: vec![0.0],
+                        raw: vec![0],
+                    },
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                Tensor {
+                    name: "weight".into(),
+                    shape: vec![1, 1],
+                    data: TensorData::Q8 {
+                        values: vec![1.0],
+                        raw: vec![1],
+                    },
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                Tensor {
+                    name: "bias".into(),
+                    shape: vec![1],
+                    data: TensorData::I32(vec![0]),
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+            ],
+        };
+        let topology = TopologyManifest {
+            tensors: vec![
+                TopologyTensor {
+                    index: 0,
+                    name: "input".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int8,
+                    constant: false,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 1,
+                    name: "weight".into(),
+                    shape: vec![1, 1],
+                    dtype: TopologyDtype::Int8,
+                    constant: true,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 2,
+                    name: "bias".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int32,
+                    constant: true,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+                TopologyTensor {
+                    index: 3,
+                    name: "output".into(),
+                    shape: vec![1],
+                    dtype: TopologyDtype::Int8,
+                    constant: false,
+                    quantization: Some(topology_quant(1.0, 0)),
+                },
+            ],
+            inputs: vec![0],
+            outputs: vec![3],
+            operators: vec![TopologyOperator::FullyConnected {
+                index: 0,
+                input: 0,
+                weight: 1,
+                bias: 2,
+                output: 3,
+            }],
+        };
+        for quantization in [
+            TensorQuantization {
+                scales: vec![2.0],
+                zero_points: vec![0],
+                quantized_dimension: -1,
+            },
+            TensorQuantization {
+                scales: vec![1.0],
+                zero_points: vec![1],
+                quantized_dimension: -1,
+            },
+            TensorQuantization {
+                scales: vec![1.0],
+                zero_points: vec![0],
+                quantized_dimension: 0,
+            },
+        ] {
+            let mut tampered = topology.clone();
+            tampered.tensors[1].quantization = Some(quantization);
+            let error = model
+                .bind_untrusted_topology(&tampered)
+                .expect_err("caller quantization cannot override GGUF identity");
+            assert!(matches!(error, VokraError::ModelLoad(_)));
+        }
+    }
+
+    #[test]
+    fn rejects_topology_with_invalid_graph_boundary() {
+        let topology = TopologyManifest {
+            tensors: vec![TopologyTensor {
+                index: 0,
+                name: "input".into(),
+                shape: vec![1],
+                dtype: TopologyDtype::Int8,
+                constant: false,
+                quantization: Some(topology_quant(1.0, 0)),
+            }],
+            inputs: vec![0],
+            outputs: vec![0],
+            operators: vec![TopologyOperator::Logistic {
+                index: 0,
+                input: 0,
+                output: 0,
+            }],
+        };
+        let error = validate_topology(&topology).expect_err("graph boundary cycle rejected");
+        assert!(matches!(error, VokraError::ModelLoad(_)));
+    }
+
+    #[test]
+    fn authenticated_binding_is_closed_until_reviewed_topology_exists() {
+        let model = Model {
+            header: ModelHeader {
+                model: "synthetic".into(),
+                threshold: 0.5,
+                sample_rate: 16_000,
+                hop_ms: 10,
+                window_ms: 32,
+                n_mels: 1,
+                feature_dim: 1,
+                tflite_sha256: "0".repeat(64),
+                upstream: "synthetic".into(),
+            },
+            tensors: Vec::new(),
+        };
+        let error = model
+            .bind_authenticated_chain()
+            .expect_err("caller data cannot unlock production binding");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message == "AUTHENTICATED_TOPOLOGY_REQUIRED")
+        );
     }
 
     /// Queues an F32 tensor whose element values are the arithmetic

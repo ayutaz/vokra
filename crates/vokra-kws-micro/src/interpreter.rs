@@ -52,9 +52,9 @@
 //! 1. **A committed hey_jarvis chain** — the sidecar
 //!    (`tools/parity/microwakeword/prepare_checkpoint.py`) now emits Q8_0
 //!    source-byte carriers plus `(scale, zero_point)` metadata. A real
-//!    MC-MobileNet chain still needs authenticated TFLite topology binding
-//!    and the typed ChainConfig binder. Until that lands, real
-//!    hey_jarvis inference stays owner-triggered.
+//!    MC-MobileNet chain now has a typed binder, but the authenticated VAST
+//!    manifest and parity evidence are still required before real
+//!    hey_jarvis inference is claimed.
 //! 2. **Accuracy on a real `.tflite`** — needs a canned "hey jarvis" audio
 //!    fixture from the owner (see the crate's honest-boundary contract in
 //!    [`crate::KwsMicro::detect`]).

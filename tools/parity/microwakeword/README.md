@@ -48,8 +48,10 @@ from a lock or from an unversioned project page.
 Offline sidecar for **kahrendt/microWakeWord** (Apache-2.0) → Vokra GGUF
 conversion. Bridges the upstream TFLite artefacts (INT8-quantized
 MC-MobileNet designed for Cortex-M55 / RP2040 / ESP32-S3 microcontrollers)
-to the Vokra GGUF shape the `vokra-kws-micro` forward scaffold will bind once
-the authenticated topology contract is complete (M5-03 IoT Tier-3 / NFR-PT-03).
+to the Vokra GGUF shape the `vokra-kws-micro` forward scaffold can validate
+through its explicitly untrusted typed-topology seam (M5-03 IoT Tier-3 /
+NFR-PT-03). Production binding remains closed until an owner-reviewed VAST
+artifact and parity evidence set the compiled topology authority.
 
 Companion to the sister crate [`vokra-vad-micro`](../../crates/vokra-vad-micro),
 which does the same job for Silero VAD (M5-03 案 1). The two produce
@@ -63,7 +65,9 @@ reader parses on both host and thumbv8m targets.
   tensors with `ai-edge-litert.Interpreter.get_tensor_details()` and emits
   direct GGUF Q8_0 source-byte carriers plus exact dense GGUF I32 carriers for
   affine bias tensors. Production conversion additionally
-  requires an independently hashed VAST tensor manifest proving which
+  refuses a topology whose `canonical_identity` is unset; the raw producer
+  emits only a canonical evidence digest until VAST review closes that gate.
+  It requires an independently hashed VAST tensor manifest proving which
   FlatBuffer buffers are persistent constants (`complete: true`, exact tensor
   index/name, buffer index/size, and source dtype); it is not a local
   acquisition or execution procedure while this gate is blocked.
@@ -140,9 +144,9 @@ VAST acquisition records it.
 | ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | **1**   | `prepare_checkpoint.py` (direct Q8_0 GGUF); 40-band log-mel features  | `vokra-kws-micro::features` real                                                                                                    |
 | **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
-| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Forward scaffold; canonical topology binding remains pending                                                                        |
+| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Untrusted/synthetic `Model::bind_untrusted_topology` path; production authenticated artifact binding remains pending                  |
 | **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C (INT8-chain end-to-end) remains unmet                                        |
-| **3.5** | Sidecar Q8_0 carrier + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Typed loader metadata is ready; TFLite topology → `ChainConfig` binding and real parity remain pending |
+| **3.5** | Sidecar Q8_0 carrier + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Raw TFLite topology producer and typed binder are synthetic-tested; real artifact bind and parity remain pending |
 
 The sidecar's source-byte carrier preserves exact INT8 values; its F32 view is
 **lossless** for a fixed

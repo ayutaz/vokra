@@ -13,7 +13,8 @@ open it on both host and thumbv8m Cortex-M55 (M5-03 IoT Tier-3).
 This script bridges the upstream TFLite artifact to the Vokra GGUF shape
 the ``vokra-kws-micro`` runtime reads. That crate's forward scaffold runs
 log-mel -> INT8 quantise -> INT8 chain -> threshold when a validated chain is
-attached via ``set_chain``; canonical TFLite topology binding remains an
+attached via ``set_chain``; its typed topology is an explicitly untrusted
+validation seam, while canonical TFLite topology binding remains an
 owner-approved VAST task.
 
 The GGUF preserves source INT8 bytes in Q8_0 identity blocks, source INT32
@@ -138,6 +139,11 @@ from typing import Any, Callable
 # ecosystems target different tiers — MC-MobileNet on M55 vs speech-embed
 # MLP on RPi/Linux). Downstream binders switch on this key.
 ARCH: str = "microwakeword"
+
+# Closed production review authority. The caller-supplied manifest digest and
+# CLI SHA authenticate transport bytes only; neither can set this value.
+# It remains unset until the owner reviews a real VAST artifact and parity.
+REVIEWED_TOPOLOGY_SHA256: str | None = None
 
 # Standard microWakeWord front-end defaults (upstream v2 release,
 # owner-verifiable via ``strings <model>.tflite | grep -i mel``). Emitted
@@ -345,14 +351,21 @@ def quantization_parameters(
 
 
 def load_tensor_manifest(
-    path: Path, expected_sha256: str, source_sha256: str, source_size: int | None = None
+    path: Path,
+    expected_sha256: str,
+    source_sha256: str,
+    source_size: int | None = None,
+    *,
+    allow_untrusted: bool = False,
 ) -> dict[int, dict[str, Any]]:
     """Load an independently authenticated constant-tensor manifest.
 
     ``Interpreter.get_tensor`` alone cannot distinguish persistent FlatBuffer
     buffers from allocated activations. The manifest must therefore be
     produced by the owner-approved VAST FlatBuffer inspection and authenticated
-    independently before any tensor is emitted.
+    independently before any tensor is emitted. Production acceptance also
+    requires the closed ``REVIEWED_TOPOLOGY_SHA256`` authority; a caller's
+    manifest identity or file SHA cannot unlock it.
     """
     if path.is_symlink() or not path.is_file():
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
@@ -394,6 +407,144 @@ def load_tensor_manifest(
         or isinstance(document.get("referenced_nonempty_buffer_count"), bool)
         or document.get("referenced_nonempty_buffer_count") <= 0
         or not isinstance(document.get("unreferenced_nonempty_buffer_indices"), list)
+    ):
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    tensor_contract = document.get("tensor_contract")
+    if not isinstance(tensor_contract, list) or len(tensor_contract) != document["tensor_count"]:
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    contract_by_index: dict[int, dict[str, Any]] = {}
+    for record in tensor_contract:
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("index"), int)
+            or isinstance(record.get("index"), bool)
+            or record["index"] < 0
+            or record["index"] >= document["tensor_count"]
+            or record["index"] in contract_by_index
+            or not isinstance(record.get("name"), str)
+            or not record["name"]
+            or record.get("kind") not in {"constant", "activation"}
+            or record.get("dtype") not in {"int8", "int32", "float32"}
+            or not isinstance(record.get("type"), int)
+            or isinstance(record.get("type"), bool)
+            or record["type"] != {"int8": 9, "int32": 2, "float32": 0}[record["dtype"]]
+            or not isinstance(record.get("shape"), list)
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in record["shape"])
+            or not isinstance(record.get("buffer_index"), int)
+            or isinstance(record.get("buffer_index"), bool)
+            or record["buffer_index"] < 0
+            or record["buffer_index"] >= document["buffer_count"]
+            or not isinstance(record.get("buffer_size"), int)
+            or isinstance(record.get("buffer_size"), bool)
+            or record["buffer_size"] < 0
+            or not isinstance(record.get("buffer_sha256"), str)
+            or len(record["buffer_sha256"]) != 64
+            or any(character not in "0123456789abcdefABCDEF" for character in record["buffer_sha256"])
+        ):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        contract_by_index[record["index"]] = record
+    if set(contract_by_index) != set(range(document["tensor_count"])):
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    topology = document.get("topology")
+    if (
+        not isinstance(topology, dict)
+        or topology.get("format") != "vokra-microwakeword-tflite-topology-v1"
+        or topology.get("complete") is not True
+        or not isinstance(topology.get("operator_code_count"), int)
+        or isinstance(topology.get("operator_code_count"), bool)
+        or topology.get("operator_code_count", 0) <= 0
+        or not isinstance(topology.get("operator_count"), int)
+        or isinstance(topology.get("operator_count"), bool)
+        or not isinstance(topology.get("operators"), list)
+        or not topology.get("operators")
+        or not isinstance(topology.get("subgraph_inputs"), list)
+        or len(topology["subgraph_inputs"]) != 1
+        or not isinstance(topology["subgraph_inputs"][0], int)
+        or isinstance(topology["subgraph_inputs"][0], bool)
+        or topology["subgraph_inputs"][0] < 0
+        or not isinstance(topology.get("subgraph_outputs"), list)
+        or len(topology["subgraph_outputs"]) != 1
+        or not isinstance(topology["subgraph_outputs"][0], int)
+        or isinstance(topology["subgraph_outputs"][0], bool)
+        or topology["subgraph_outputs"][0] < 0
+    ):
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    canonical_digest = topology.get("canonical_digest")
+    if (
+        not isinstance(canonical_digest, str)
+        or len(canonical_digest) != 64
+        or any(character not in "0123456789abcdef" for character in canonical_digest)
+    ):
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    canonical_payload = {
+        "schema": "vokra-microwakeword-canonical-topology-v1",
+        "tensor_contract": tensor_contract,
+        "graph_inputs": topology["subgraph_inputs"],
+        "graph_outputs": topology["subgraph_outputs"],
+        "operators": topology["operators"],
+    }
+    expected_canonical_digest = hashlib.sha256(
+        json.dumps(canonical_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if canonical_digest != expected_canonical_digest:
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    canonical_identity = topology.get("canonical_identity")
+    if not allow_untrusted:
+        if REVIEWED_TOPOLOGY_SHA256 is None:
+            raise SystemExit("AUTHENTICATED_TOPOLOGY_REQUIRED")
+        if (
+            canonical_digest != REVIEWED_TOPOLOGY_SHA256
+            or canonical_identity != REVIEWED_TOPOLOGY_SHA256
+        ):
+            raise SystemExit("AUTHENTICATED_TOPOLOGY_REQUIRED")
+    if canonical_identity is not None and canonical_identity != canonical_digest:
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    if topology["operator_count"] != len(topology["operators"]):
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    previous_output: int | None = None
+    for operator_index, operator in enumerate(topology["operators"]):
+        if (
+            not isinstance(operator, dict)
+            or not isinstance(operator.get("index"), int)
+            or isinstance(operator.get("index"), bool)
+            or operator["index"] != operator_index
+            or not isinstance(operator.get("opcode_index"), int)
+            or isinstance(operator.get("opcode_index"), bool)
+            or operator["opcode_index"] < 0
+            or operator.get("builtin_name") not in {"CONV_2D", "DEPTHWISE_CONV_2D", "FULLY_CONNECTED", "LOGISTIC", "SOFTMAX"}
+            or operator.get("version") != 1
+            or operator.get("builtin_code") != {"CONV_2D": 3, "DEPTHWISE_CONV_2D": 4, "FULLY_CONNECTED": 9, "LOGISTIC": 14, "SOFTMAX": 25}[operator.get("builtin_name", "")]
+            or not isinstance(operator.get("inputs"), list)
+            or not isinstance(operator.get("outputs"), list)
+            or not operator["outputs"]
+            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 or value >= document["tensor_count"] for value in operator["inputs"] + operator["outputs"])
+            or (previous_output is not None and (not operator["inputs"] or operator["inputs"][0] != previous_output))
+        ):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        previous_output = operator["outputs"][0]
+        options = operator.get("options")
+        if not isinstance(options, dict):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        name = operator["builtin_name"]
+        expected_inputs = 3 if name in {"CONV_2D", "DEPTHWISE_CONV_2D", "FULLY_CONNECTED"} else 1
+        expected_type = {"CONV_2D": 1, "DEPTHWISE_CONV_2D": 2, "FULLY_CONNECTED": 8, "LOGISTIC": 0, "SOFTMAX": 9}[name]
+        if len(operator["inputs"]) != expected_inputs or len(operator["outputs"]) != 1 or options.get("type") != expected_type:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if name in {"CONV_2D", "DEPTHWISE_CONV_2D"} and (options.get("padding") not in {"SAME", "VALID"} or not isinstance(options.get("stride_h"), int) or not isinstance(options.get("stride_w"), int) or options["stride_h"] <= 0 or options["stride_w"] <= 0 or not isinstance(options.get("dilation_h"), int) or not isinstance(options.get("dilation_w"), int) or options["dilation_h"] <= 0 or options["dilation_w"] <= 0 or options.get("fused_activation") != "NONE"):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if name == "CONV_2D" and options.get("quantized_bias_type") != 2:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if name == "DEPTHWISE_CONV_2D" and options.get("depth_multiplier") != 1:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if name == "FULLY_CONNECTED" and (options.get("fused_activation") != "NONE" or options.get("weights_format") != 0 or options.get("keep_num_dims") or options.get("asymmetric_quantize_inputs") or options.get("quantized_bias_type") != 2):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if name == "SOFTMAX" and options.get("beta") != 1.0:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    if previous_output != topology["subgraph_outputs"][0]:
+        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    if (
+        topology["operators"][0]["inputs"][0] != topology["subgraph_inputs"][0]
+        or topology["operators"][-1]["outputs"][0] != topology["subgraph_outputs"][0]
     ):
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
     entries = document.get("tensors")
@@ -444,6 +595,18 @@ def load_tensor_manifest(
             elements *= dimension
         item_size = {"int8": 1, "float32": 4, "int32": 4}[dtype]
         if elements * item_size != buffer_size:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        contract = contract_by_index.get(index)
+        if (
+            contract is None
+            or contract["name"] != name
+            or contract["kind"] != "constant"
+            or contract["dtype"] != dtype
+            or contract["shape"] != shape
+            or contract["buffer_index"] != buffer_index
+            or contract["buffer_size"] != buffer_size
+            or contract["buffer_sha256"].lower() != buffer_sha256.lower()
+        ):
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
         result[index] = entry
     if len(result) != document["constant_count"] or document["tensor_count"] < len(result):
@@ -949,6 +1112,7 @@ def _self_test_parse_gguf(blob: bytes) -> tuple[dict[str, Any], list[dict[str, A
 
 
 def self_test() -> None:
+    global REVIEWED_TOPOLOGY_SHA256
     """Exercise the direct writer and parse its wire output without model I/O."""
     class FakeDtype:
         byteorder = "="
@@ -1071,16 +1235,14 @@ def self_test() -> None:
             raise AssertionError("missing output parent was accepted")
 
         manifest_path = directory_path / "tensor-manifest.json"
-        manifest_path.write_text(
-            json.dumps(
-                {
+        manifest_document = {
                     "format": "vokra-microwakeword-tflite-tensor-manifest-v1",
                     "producer": {"method": "raw_flatbuffer", "name": "microwakeword_tensor_manifest.py", "version": "1.0"},
                     "source_sha256": "0" * 64,
                     "source_size": 4,
                     "complete": True,
                     "subgraph_count": 1,
-                    "tensor_count": 1,
+                    "tensor_count": 2,
                     "buffer_count": 4,
                     "constant_count": 1,
                     "nonempty_buffer_count": 1,
@@ -1100,15 +1262,110 @@ def self_test() -> None:
                             "buffer_sha256": hashlib.sha256(b"\x00" * 32).hexdigest(),
                         }
                     ],
+                    "tensor_contract": [
+                        {
+                            "index": 0,
+                            "name": "constant",
+                            "kind": "constant",
+                            "dtype": "int8",
+                            "type": 9,
+                            "shape": [32],
+                            "buffer_index": 3,
+                            "buffer_size": 32,
+                            "buffer_sha256": hashlib.sha256(b"\x00" * 32).hexdigest(),
+                            "quantization": None,
+                        },
+                        {
+                            "index": 1,
+                            "name": "activation",
+                            "kind": "activation",
+                            "dtype": "int8",
+                            "type": 9,
+                            "shape": [1],
+                            "buffer_index": 0,
+                            "buffer_size": 0,
+                            "buffer_sha256": hashlib.sha256(b"").hexdigest(),
+                            "quantization": None,
+                        },
+                    ],
+                    "topology": {
+                        "format": "vokra-microwakeword-tflite-topology-v1",
+                        "complete": True,
+                        "canonical_identity": None,
+                        "operator_code_count": 1,
+                        "operator_count": 1,
+                        "subgraph_inputs": [0],
+                        "subgraph_outputs": [1],
+                        "operators": [{"index": 0, "opcode_index": 0, "builtin_code": 14, "builtin_name": "LOGISTIC", "version": 1, "inputs": [0], "outputs": [1], "options": {"type": 0}}],
+                    },
                 }
-            ),
-            encoding="utf-8",
-        )
+        manifest_document["topology"]["canonical_digest"] = hashlib.sha256(
+            json.dumps(
+                {
+                    "schema": "vokra-microwakeword-canonical-topology-v1",
+                    "tensor_contract": manifest_document["tensor_contract"],
+                    "graph_inputs": manifest_document["topology"]["subgraph_inputs"],
+                    "graph_outputs": manifest_document["topology"]["subgraph_outputs"],
+                    "operators": manifest_document["topology"]["operators"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        manifest_path.write_text(json.dumps(manifest_document), encoding="utf-8")
         manifest = load_tensor_manifest(
-            manifest_path, sha256_of_file(manifest_path), "0" * 64
+            manifest_path,
+            sha256_of_file(manifest_path),
+            "0" * 64,
+            allow_untrusted=True,
         )
         if manifest[0]["name"] != "constant":
             raise AssertionError("authenticated tensor manifest was not loaded")
+        try:
+            load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
+        except SystemExit as error:
+            if str(error) != "AUTHENTICATED_TOPOLOGY_REQUIRED":
+                raise AssertionError(f"wrong production topology error: {error}")
+        else:
+            raise AssertionError("unreviewed topology entered production preparation")
+        reviewed_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        reviewed_digest = reviewed_document["topology"]["canonical_digest"]
+        reviewed_document["topology"]["canonical_identity"] = reviewed_digest
+        manifest_path.write_text(json.dumps(reviewed_document), encoding="utf-8")
+        # A matching caller self-stamp remains insufficient while the closed
+        # authority is unset.
+        try:
+            load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
+        except SystemExit as error:
+            if str(error) != "AUTHENTICATED_TOPOLOGY_REQUIRED":
+                raise AssertionError(f"caller self-stamped topology was accepted: {error}")
+        else:
+            raise AssertionError("caller self-stamped topology unlocked production preparation")
+        REVIEWED_TOPOLOGY_SHA256 = reviewed_digest
+        assert load_tensor_manifest(
+            manifest_path, sha256_of_file(manifest_path), "0" * 64
+        )
+        reviewed_document["topology"]["canonical_identity"] = None
+        manifest_path.write_text(json.dumps(reviewed_document), encoding="utf-8")
+        try:
+            load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
+        except SystemExit as error:
+            if str(error) != "AUTHENTICATED_TOPOLOGY_REQUIRED":
+                raise AssertionError(f"missing canonical identity had wrong error: {error}")
+        else:
+            raise AssertionError("compiled authority accepted a missing identity")
+        reviewed_document["topology"]["canonical_identity"] = reviewed_digest
+        manifest_path.write_text(json.dumps(reviewed_document), encoding="utf-8")
+        REVIEWED_TOPOLOGY_SHA256 = "f" * 64
+        try:
+            load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
+        except SystemExit as error:
+            if str(error) != "AUTHENTICATED_TOPOLOGY_REQUIRED":
+                raise AssertionError(f"compiled authority mismatch had wrong error: {error}")
+        else:
+            raise AssertionError("compiled authority mismatch was accepted")
+        REVIEWED_TOPOLOGY_SHA256 = None
 
         class FakeInterpreter:
             def __init__(self, details: list[dict[str, Any]], value: Any):

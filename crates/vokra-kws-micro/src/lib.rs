@@ -9,7 +9,7 @@
 //! its public surface, keeping one forward shared bit-identically between the
 //! std and no_std builds.
 //!
-//! ## Status: the forward is real; binding a checkpoint to it is not
+//! ## Status: the forward and typed binder are real; real artifact binding is pending
 //!
 //! [`KwsMicro::detect`] runs a real inference pass — 40-band log-mel feature
 //! extraction ([`features`]) → INT8 quantisation → an INT8 forward chain
@@ -27,14 +27,11 @@
 //!
 //! ### The remaining gap
 //!
-//! **No code path builds an [`interpreter::ChainConfig`] from a
-//! [`model::Model`].** The offline sidecar
-//! (`tools/parity/microwakeword/prepare_checkpoint.py`) now preserves source
-//! INT8 bytes in Q8_0 identity carriers and stamps the complete per-tensor
-//! `(scale, zero_point)` metadata. The remaining work is to authenticate the
-//! TFLite operator topology and bind it to typed
-//! [`interpreter::LayerSpec`] values, including INT32 bias tensors, before a
-//! real hey_jarvis run can be claimed (see [`model`]'s module docs).
+//! [`model::Model::bind_untrusted_topology`] validates a synthetic/untrusted
+//! [`model::TopologyManifest`] against GGUF constants. Production binding is
+//! closed behind [`model::Model::bind_authenticated_chain`], which remains
+//! blocked until the VAST manifest is reviewed and independent parity evidence
+//! is recorded; GGUF names alone cannot bind a graph safely.
 //!
 //! Upstream model: microWakeWord (Apache 2.0,
 //! <https://github.com/kahrendt/microWakeWord>).
@@ -354,12 +351,13 @@ impl KwsMicro {
     /// # Honest boundary
     ///
     /// The pipeline above is real for whatever chain the caller attached.
-    /// What is not yet reachable is a chain built from an upstream
-    /// checkpoint: nothing converts a [`model::Model`] into an
-    /// [`interpreter::ChainConfig`]. The sidecar now preserves Q8_0 source
-    /// bytes, exact I32 bias values, and affine metadata, but authenticated
-    /// operator topology and typed ChainConfig binding are still required for
-    /// safe binding. Real
+    /// What is not yet production-reachable is a chain built from a real
+    /// upstream checkpoint: [`model::Model::bind_authenticated_chain`] requires
+    /// the closed compiled review authority, while
+    /// [`model::Model::bind_untrusted_topology`] is synthetic/untrusted only.
+    /// The sidecar now preserves Q8_0 source
+    /// bytes, exact I32 bias values, affine metadata, and supported operator
+    /// topology. Real
     /// hey_jarvis accuracy verification additionally needs the owner-approved
     /// VAST artifact and fixtures. See the crate-level docs for the full
     /// contract.

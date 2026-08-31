@@ -91,14 +91,14 @@
 //!
 //! 1. [`crate::model::Model`] gains typed accessors for per-layer
 //!    conv / dense weights + quant params;
-//! 2. Authenticated topology and INT32 bias tensors are available, then
+//! 2. Owner-reviewed topology and INT32 bias tensors are available, then
 //!    this test constructs a real [`crate::interpreter::ChainConfig`]
 //!    from those and runs it against the dumped input features,
 //!    comparing to `output_ref.bin` at `atol = 1e-2` (INT8 dequant
 //!    tolerance).
 //!
 //! Until then this path skips with a clear "end-to-end parity requires
-//! authenticated topology/bias manifest" message — the scaffold is here so
+//! reviewed topology/bias manifest" message — the scaffold is here so
 //! the flip is a one-file diff when those artifacts land.
 
 use std::env;
@@ -381,8 +381,8 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
 /// The Rust INT8 [`crate::interpreter::ChainConfig`] needs per-tensor
 /// `(scale, zero_point)` quantisation params to bind against a real
 /// MC-MobileNet checkpoint. The sidecar now emits Q8_0 source-byte carriers
-/// and those params, but authenticated topology and typed ChainConfig binding
-/// are still required. Until the source manifest and binder land, this path
+/// and those params, but a real owner-reviewed topology/binder handoff still
+/// needs a VAST source manifest. Until that evidence lands, this path
 /// always skips with a clear defer message — even when both env vars are set.
 /// This is honest UNMET (never a fabricated pass).
 ///
@@ -397,13 +397,14 @@ fn parity_microwakeword_end_to_end_output() {
         eprintln!("Path-C: {GGUF_ENV} and/or {FIXTURES_ENV} unset — skipping cleanly.");
         return;
     }
-    // Both env vars set, but the authenticated topology/bias manifest and
-    // Model → ChainConfig binder are not yet available. Honest UNMET rather
+    // Both env vars set, but the owner-reviewed topology/bias manifest and
+    // production Model → ChainConfig authority are not yet available. Honest UNMET rather
     // than a fabricated pass.
     eprintln!(
         "Path-C: end-to-end INT8 chain parity is UNMET — Q8_0 source-byte \
          carriers, exact I32 bias values, and affine metadata exist, but \
-         authenticated topology and the Model → ChainConfig binder remain. \
+         owner-reviewed topology authority and production Model → ChainConfig \
+         binding remain. \
          Wiring parity requires those contracts plus this test running against \
          `output_ref.bin` at atol=1e-2. Until then, this is a clean skip \
          (never a fabricated pass)."
