@@ -88,13 +88,15 @@ reader parses on both host and thumbv8m targets.
 The VAST worker's `VOKRA_INSPECT_ONLY=1 --inspect-only` mode is the only
 acquisition path. It uses the fixed repository revision/path, verifies the
 recorded model and license Git blobs plus sizes, hashes the downloaded model,
-and emits raw-manifest/canonical-topology evidence into the existing
-`MICROWAKEWORD_INSPECTION_DIR`. The directory receives the complete tensor
-manifest, fixed companion JSON, LICENSE, and a summary containing their
-SHA-256 values; the model `.tflite` remains temporary and is cleaned up. It
-performs no GGUF conversion, inference, Cargo build, or upload. Production
-remains closed until that evidence is reviewed and the compiled
-topology/artifact authorities are set.
+and emits an evidence-only raw FlatBuffer inventory into the existing
+`MICROWAKEWORD_INSPECTION_DIR`. The directory receives
+`hey_jarvis.raw-inventory.json`, the fixed companion JSON, LICENSE, and a
+summary containing their SHA-256 values; the model `.tflite` remains temporary
+and is cleaned up. The inventory records unsupported operators and multiple
+subgraphs for later review, but carries no canonical-topology or
+production-review authority. It performs no GGUF conversion, inference, Cargo
+build, or upload. Production remains closed until that evidence is reviewed
+and the compiled topology/artifact authorities are set.
 
 The production preparer intentionally has no interpreter or numerical Python
 dependency. Reference generation in `dump_reference.py` remains a separate

@@ -41,11 +41,26 @@ BUILTIN_OPERATORS = {
     14: "LOGISTIC",
     25: "SOFTMAX",
 }
+INVENTORY_OPERATOR_NAMES = {
+    **BUILTIN_OPERATORS,
+    32: "CUSTOM",
+    127: None,
+    129: "CALL_ONCE",
+    142: "VAR_HANDLE",
+    143: "READ_VARIABLE",
+    144: "ASSIGN_VARIABLE",
+}
 BUILTIN_OPTIONS = {
     "CONV_2D": 1,
     "DEPTHWISE_CONV_2D": 2,
     "FULLY_CONNECTED": 8,
     "SOFTMAX": 9,
+}
+STATEFUL_BUILTIN_OPTIONS = {
+    "CALL_ONCE": 103,
+    "VAR_HANDLE": 111,
+    "READ_VARIABLE": 112,
+    "ASSIGN_VARIABLE": 113,
 }
 ACTIVATIONS = {0: "NONE", 1: "RELU", 2: "RELU_N1_TO_1", 3: "RELU6", 4: "TANH", 5: "SIGN_BIT"}
 PADDINGS = {0: "SAME", 1: "VALID"}
@@ -192,6 +207,12 @@ class Reader:
         start, length = self.vector(address, 1)
         return list(self.data[start:start + length])
 
+    def bool_vector(self, address: int) -> list[bool]:
+        values = self.u8_vector(address)
+        if any(value not in (0, 1) for value in values):
+            raise ValueError("FlatBuffer bool vector contains a non-boolean value")
+        return [bool(value) for value in values]
+
 
 def _optional_vector(reader: Reader, table: int, field: int, element_size: int, kind: str) -> list[Any]:
     address = reader.table_field(table, field, 4)
@@ -209,7 +230,7 @@ def _optional_vector(reader: Reader, table: int, field: int, element_size: int, 
 
 
 def _tensor_quantization(reader: Reader, tensor: int) -> dict[str, Any] | None:
-    address = reader.table_field(tensor, 4, 4)
+    address = _present_uoffset(reader, reader.table_field(tensor, 4, 4))
     if address is None:
         return None
     quant = reader.indirect(address)
@@ -219,7 +240,7 @@ def _tensor_quantization(reader: Reader, tensor: int) -> dict[str, Any] | None:
     # field 5; quantized_dimension is field 6.  It is not field 4.
     details_type_field = reader.table_field(quant, 4, 1)
     details_type = reader.u8(details_type_field) if details_type_field is not None else 0
-    details_value_field = reader.table_field(quant, 5, 4)
+    details_value_field = _present_uoffset(reader, reader.table_field(quant, 5, 4))
     if details_type != 0 or details_value_field is not None:
         raise ValueError("TFLite quantization details union is unsupported")
     qdim_field = reader.table_field(quant, 6, 4)
@@ -261,7 +282,7 @@ def _operator_code(reader: Reader, table: int) -> dict[str, Any]:
     deprecated = reader.u8(deprecated_field) if deprecated_field is not None else None
     builtin = reader.i32(builtin_field) if builtin_field is not None else None
     code = _select_builtin_code(builtin, deprecated)
-    custom_field = reader.table_field(table, 1, 4)
+    custom_field = _present_uoffset(reader, reader.table_field(table, 1, 4))
     custom = reader.string(custom_field) if custom_field is not None else None
     if custom:
         raise ValueError("custom TFLite operators are unsupported")
@@ -273,6 +294,32 @@ def _operator_code(reader: Reader, table: int) -> dict[str, Any]:
     if name is None:
         raise ValueError(f"unsupported TFLite builtin operator code: {code}")
     return {"builtin_code": code, "builtin_name": name, "version": version}
+
+
+def _inventory_operator_code(reader: Reader, table: int, table_index: int) -> dict[str, Any]:
+    deprecated_field = reader.table_field(table, 0, 1)
+    builtin_field = reader.table_field(table, 3, 4)
+    deprecated = reader.u8(deprecated_field) if deprecated_field is not None else None
+    builtin = reader.i32(builtin_field) if builtin_field is not None else None
+    custom_field = _present_uoffset(reader, reader.table_field(table, 1, 4))
+    custom = reader.string(custom_field) if custom_field is not None else None
+    selected = _select_builtin_code(builtin, deprecated)
+    if selected == 32:
+        if not custom:
+            raise ValueError("CUSTOM operator code requires a nonempty custom code")
+    elif custom is not None:
+        raise ValueError("non-CUSTOM operator code carries custom code")
+    version_field = reader.table_field(table, 2, 4)
+    version = reader.i32(version_field) if version_field is not None else 1
+    if version <= 0:
+        raise ValueError(f"operator code {table_index} has invalid version")
+    return {
+        "table_index": table_index,
+        "selected_code": selected,
+        "official_name": INVENTORY_OPERATOR_NAMES.get(selected),
+        "version": version,
+        "custom_code": custom,
+    }
 
 
 def _option_scalar(reader: Reader, table: int, field: int, width: int, default: Any) -> Any:
@@ -288,13 +335,38 @@ def _option_scalar(reader: Reader, table: int, field: int, width: int, default: 
     raise ValueError("unsupported option scalar width")
 
 
+def _present_uoffset(reader: Reader, address: int | None) -> int | None:
+    """Treat an optional zero uoffset as the schema's null value."""
+    if address is None or reader.u32(address) == 0:
+        return None
+    return address
+
+
+def _optional_string(reader: Reader, address: int | None) -> str | None:
+    pointer = _present_uoffset(reader, address)
+    return reader.string(pointer) if pointer is not None else None
+
+
+def _require_empty_table(reader: Reader, table: int, label: str) -> None:
+    vtable_distance = reader.i32(table)
+    if vtable_distance <= 0 or vtable_distance > table:
+        raise ValueError(f"{label} option table vtable is invalid")
+    vtable = table - vtable_distance
+    vtable_size = reader.u16(vtable)
+    if vtable_size < 4 or vtable_size % 2:
+        raise ValueError(f"{label} option table vtable is invalid")
+    reader._check(vtable, vtable_size)
+    if any(reader.u16(vtable + offset) != 0 for offset in range(4, vtable_size, 2)):
+        raise ValueError(f"{label} option table carries unexpected fields")
+
+
 def _builtin_options(reader: Reader, operator: int, name: str) -> dict[str, Any]:
     type_field = reader.table_field(operator, 3, 1)
     options_type = reader.u8(type_field) if type_field is not None else 0
     expected_type = BUILTIN_OPTIONS.get(name, 0)
     if options_type != expected_type:
         raise ValueError(f"{name} has builtin option type {options_type}, expected {expected_type}")
-    options_field = reader.table_field(operator, 4, 4)
+    options_field = _present_uoffset(reader, reader.table_field(operator, 4, 4))
     if expected_type == 0:
         if options_field is not None:
             raise ValueError(f"{name} must not carry builtin options")
@@ -491,7 +563,7 @@ def _validate_topology(
             raise ValueError(f"operator {index} opcode index is out of bounds")
         code = operator_codes[opcode_index]
         name = code["builtin_name"]
-        custom_options_field = reader.table_field(operator, 5, 4)
+        custom_options_field = _present_uoffset(reader, reader.table_field(operator, 5, 4))
         if custom_options_field is not None and reader.u8_vector(custom_options_field):
             raise ValueError(f"operator {index} carries unsupported custom options")
         # Operator schema fields 6..13 are custom-options format, mutable
@@ -512,7 +584,7 @@ def _validate_topology(
             raise ValueError(f"operator {index} carries external custom options")
         secondary_type_field = reader.table_field(operator, 11, 1)
         secondary_type = reader.u8(secondary_type_field) if secondary_type_field is not None else 0
-        secondary_value_field = reader.table_field(operator, 12, 4)
+        secondary_value_field = _present_uoffset(reader, reader.table_field(operator, 12, 4))
         if secondary_type != 0 or secondary_value_field is not None:
             raise ValueError(f"operator {index} carries secondary builtin options")
         debug_metadata_index = _option_scalar(reader, operator, 13, 4, -1)
@@ -756,6 +828,165 @@ def parse(data: bytes) -> dict[str, Any]:
     return {"format": FORMAT, "producer": PRODUCER, "complete": True, "source_sha256": hashlib.sha256(data).hexdigest(), "source_size": len(data), "subgraph_count": 1, "tensor_count": len(tensor_tables), "buffer_count": len(buffers), "constant_count": len(tensors), "nonempty_buffer_count": len(nonempty), "referenced_nonempty_buffer_count": len(buffer_ownership), "unreferenced_nonempty_buffer_indices": [index for index in nonempty if index not in ownership], "buffer_ownership": buffer_ownership, "tensors": tensors, "tensor_contract": all_tensors, "topology": topology}
 
 
+def _inventory_builtin_options(reader: Reader, operator: int, name: str | None, subgraph_count: int) -> dict[str, Any]:
+    type_field = reader.table_field(operator, 3, 1)
+    options_type = reader.u8(type_field) if type_field is not None else 0
+    options_field = _present_uoffset(reader, reader.table_field(operator, 4, 4))
+    record: dict[str, Any] = {"type": options_type, "table_present": options_field is not None}
+    expected_type = BUILTIN_OPTIONS.get(name, STATEFUL_BUILTIN_OPTIONS.get(name))
+    if expected_type is not None and options_type != expected_type:
+        raise ValueError(f"{name} has builtin option type {options_type}, expected {expected_type}")
+    if name in BUILTIN_OPERATORS.values():
+        record["decoded"] = _builtin_options(reader, operator, name)
+    elif name == "CALL_ONCE":
+        if options_field is None:
+            raise ValueError("CALL_ONCE lacks builtin options")
+        options = reader.indirect(options_field)
+        index_field = reader.table_field(options, 0, 4)
+        init_subgraph_index = reader.i32(index_field) if index_field is not None else 0
+        if init_subgraph_index < 0 or init_subgraph_index >= subgraph_count:
+            raise ValueError("CALL_ONCE init_subgraph_index is out of bounds")
+        record["decoded"] = {"init_subgraph_index": init_subgraph_index}
+    elif name == "VAR_HANDLE":
+        if options_field is None:
+            raise ValueError("VAR_HANDLE lacks builtin options")
+        options = reader.indirect(options_field)
+        record["decoded"] = {
+            "container": _optional_string(reader, reader.table_field(options, 0, 4)),
+            "shared_name": _optional_string(reader, reader.table_field(options, 1, 4)),
+        }
+    elif name in {"READ_VARIABLE", "ASSIGN_VARIABLE"}:
+        if options_field is None:
+            raise ValueError(f"{name} lacks builtin options")
+        options = reader.indirect(options_field)
+        _require_empty_table(reader, options, name)
+        record["decoded"] = {}
+    return record
+
+
+def inventory(data: bytes) -> dict[str, Any]:
+    """Produce evidence-only inventory without claiming a canonical topology."""
+    reader = Reader(data)
+    model = reader.root
+    version_field = reader.table_field(model, 0, 4)
+    version = reader.u32(version_field) if version_field is not None else 0
+    subgraphs_field = reader.table_field(model, 2, 4)
+    buffers_field = reader.table_field(model, 4, 4)
+    operator_codes_field = reader.table_field(model, 1, 4)
+    if subgraphs_field is None or buffers_field is None or operator_codes_field is None:
+        raise ValueError("TFLite Model lacks inventory-required vectors")
+    buffers = reader.vector_uoffsets(buffers_field)
+    buffer_records = []
+    buffer_data = []
+    for index, buffer in enumerate(buffers):
+        data_field = _present_uoffset(reader, reader.table_field(buffer, 0, 4))
+        payload = reader.bytes_vector(data_field) if data_field is not None else b""
+        if len(payload) > 256 * 1024 * 1024:
+            raise ValueError("inventory buffer exceeds bounded evidence size")
+        external_offset = _option_scalar(reader, buffer, 1, 8, 0)
+        external_size = _option_scalar(reader, buffer, 2, 8, 0)
+        buffer_data.append(payload)
+        buffer_records.append({"index": index, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(), "external_offset": external_offset, "external_size": external_size, "data_hex": payload.hex() if payload else None})
+    if not buffers or buffer_data[0]:
+        raise ValueError("inventory requires an empty buffer-0 sentinel")
+    operator_codes = [_inventory_operator_code(reader, table, index) for index, table in enumerate(reader.vector_uoffsets(operator_codes_field))]
+    subgraphs = []
+    ownership: dict[int, list[dict[str, int]]] = {}
+    tensor_count = 0
+    subgraph_tables = reader.vector_uoffsets(subgraphs_field)
+    for subgraph_index, subgraph in enumerate(subgraph_tables):
+        tensors_field = reader.table_field(subgraph, 0, 4)
+        subgraph_inputs_field = _present_uoffset(reader, reader.table_field(subgraph, 1, 4))
+        subgraph_outputs_field = _present_uoffset(reader, reader.table_field(subgraph, 2, 4))
+        operators_field = reader.table_field(subgraph, 3, 4)
+        if tensors_field is None or operators_field is None:
+            raise ValueError("subgraph lacks inventory-required vectors")
+        name_field = reader.table_field(subgraph, 4, 4)
+        # SubGraph.name is optional.  A zero uoffset is the schema's null
+        # default even when a hand-built fixture leaves the vtable slot
+        # present; nonzero pointers still pass through the checked reader.
+        name = None if name_field is None or reader.u32(name_field) == 0 else reader.string(name_field)
+        tensor_tables = reader.vector_uoffsets(tensors_field)
+        tensors = []
+        for tensor_index, tensor in enumerate(tensor_tables):
+            shape_field = reader.table_field(tensor, 0, 4)
+            type_field = reader.table_field(tensor, 1, 1)
+            buffer_field = reader.table_field(tensor, 2, 4)
+            tensor_name_field = _present_uoffset(reader, reader.table_field(tensor, 3, 4))
+            if shape_field is None:
+                raise ValueError("tensor lacks inventory-required shape")
+            tensor_name = reader.string(tensor_name_field) if tensor_name_field is not None else None
+            shape = reader.i32_vector(shape_field)
+            dtype_code = reader.u8(type_field) if type_field is not None else 0
+            dtype = DTYPES.get(dtype_code, (None, None))[0]
+            buffer_index = reader.u32(buffer_field) if buffer_field is not None else 0
+            if buffer_index >= len(buffer_data):
+                raise ValueError("tensor buffer index is out of bounds")
+            variable_field = reader.table_field(tensor, 5, 1)
+            is_variable = False if variable_field is None else reader.u8(variable_field)
+            if is_variable not in (0, 1):
+                raise ValueError("tensor is_variable is not boolean")
+            shape_signature_field = _present_uoffset(reader, reader.table_field(tensor, 7, 4))
+            shape_signature = reader.i32_vector(shape_signature_field) if shape_signature_field is not None else None
+            has_rank_field = reader.table_field(tensor, 8, 1)
+            has_rank = False if has_rank_field is None else reader.u8(has_rank_field)
+            if has_rank not in (0, 1):
+                raise ValueError("tensor has_rank is not boolean")
+            payload = buffer_data[buffer_index]
+            tensor_record = {"index": tensor_index, "name": tensor_name, "type": dtype_code, "dtype": dtype, "shape": shape, "is_variable": bool(is_variable), "shape_signature": shape_signature, "has_rank": bool(has_rank), "buffer_index": buffer_index, "buffer_size": len(payload), "buffer_sha256": hashlib.sha256(payload).hexdigest(), "kind": "constant" if payload else "activation", "quantization": _tensor_quantization(reader, tensor)}
+            if payload:
+                tensor_record["data_hex"] = payload.hex()
+                ownership.setdefault(buffer_index, []).append({"subgraph_index": subgraph_index, "tensor_index": tensor_index})
+            tensors.append(tensor_record)
+        operators = []
+        for operator_index, operator in enumerate(reader.vector_uoffsets(operators_field)):
+            opcode_field = reader.table_field(operator, 0, 4)
+            if opcode_field is None:
+                raise ValueError("operator lacks opcode index")
+            opcode_index = reader.u32(opcode_field)
+            if opcode_index >= len(operator_codes):
+                raise ValueError("operator opcode index is out of bounds")
+            code = operator_codes[opcode_index]
+            operator_inputs_field = _present_uoffset(reader, reader.table_field(operator, 1, 4))
+            operator_outputs_field = _present_uoffset(reader, reader.table_field(operator, 2, 4))
+            custom_options_field = _present_uoffset(reader, reader.table_field(operator, 5, 4))
+            custom_options = reader.bytes_vector(custom_options_field) if custom_options_field is not None else b""
+            mutating_field = _present_uoffset(reader, reader.table_field(operator, 7, 4))
+            intermediates_field = _present_uoffset(reader, reader.table_field(operator, 8, 4))
+            secondary_value_field = _present_uoffset(reader, reader.table_field(operator, 12, 4))
+            operator_inputs = reader.i32_vector(operator_inputs_field) if operator_inputs_field is not None else []
+            operator_outputs = reader.i32_vector(operator_outputs_field) if operator_outputs_field is not None else []
+            if any(value < -1 or value >= len(tensors) for value in operator_inputs):
+                raise ValueError("operator input tensor index is out of bounds")
+            if any(value < 0 or value >= len(tensors) for value in operator_outputs):
+                raise ValueError("operator output tensor index is out of bounds")
+            mutating = reader.bool_vector(mutating_field) if mutating_field is not None else []
+            if mutating and len(mutating) != len(operator_inputs):
+                raise ValueError("mutating_variable_inputs length differs from operator inputs")
+            intermediates = reader.i32_vector(intermediates_field) if intermediates_field is not None else []
+            if any(value < 0 or value >= len(tensors) for value in intermediates):
+                raise ValueError("operator intermediate tensor index is out of bounds")
+            builtin_options = _inventory_builtin_options(reader, operator, code["official_name"], len(subgraph_tables))
+            operators.append({
+                "index": operator_index, "opcode_index": opcode_index, "selected_code": code["selected_code"], "official_name": code["official_name"], "version": code["version"],
+                "inputs": operator_inputs, "outputs": operator_outputs,
+                "builtin_options_type": builtin_options["type"], "builtin_options_table_present": builtin_options["table_present"], "builtin_options": builtin_options,
+                "custom_options_size": len(custom_options), "custom_options_sha256": hashlib.sha256(custom_options).hexdigest(), "custom_options_format": _option_scalar(reader, operator, 6, 1, 0),
+                "mutating_variable_inputs": mutating, "intermediates": intermediates,
+                "large_custom_options_offset": _option_scalar(reader, operator, 9, 8, 0), "large_custom_options_size": _option_scalar(reader, operator, 10, 8, 0),
+                "secondary_builtin_options_type": _option_scalar(reader, operator, 11, 1, 0), "secondary_builtin_options_table_present": secondary_value_field is not None, "debug_metadata_index": _option_scalar(reader, operator, 13, 4, -1),
+            })
+        subgraph_inputs = reader.i32_vector(subgraph_inputs_field) if subgraph_inputs_field is not None else []
+        subgraph_outputs = reader.i32_vector(subgraph_outputs_field) if subgraph_outputs_field is not None else []
+        if any(value < 0 or value >= len(tensors) for value in subgraph_inputs + subgraph_outputs):
+            raise ValueError("subgraph boundary tensor index is out of bounds")
+        subgraphs.append({"index": subgraph_index, "name": name, "inputs": subgraph_inputs, "outputs": subgraph_outputs, "tensor_count": len(tensors), "operator_count": len(operators), "tensors": tensors, "operators": operators})
+        tensor_count += len(tensors)
+    nonempty = [item["index"] for item in buffer_records if item["size"] > 0]
+    referenced = sorted(ownership)
+    return {"format": "vokra-microwakeword-tflite-raw-inventory-v1", "authority": "EVIDENCE_ONLY_UNREVIEWED", "model_version": version, "source_sha256": hashlib.sha256(data).hexdigest(), "source_size": len(data), "buffer_count": len(buffer_records), "buffers": buffer_records, "operator_codes": operator_codes, "subgraph_count": len(subgraphs), "tensor_count": tensor_count, "subgraphs": subgraphs, "buffer_ownership": [{"buffer_index": index, "tensor_refs": ownership[index], "shared": len(ownership[index]) > 1} for index in referenced], "unreferenced_nonempty_buffer_indices": [index for index in nonempty if index not in ownership]}
+
+
 def publish(path: Path, value: dict[str, Any]) -> None:
     if path.parent.is_symlink():
         raise ValueError(f"manifest output exists or is unsafe: {path}")
@@ -815,7 +1046,15 @@ def self_test() -> None:
     # Independently assembled FlatBuffer fixture with a complete one-op
     # FullyConnected chain; the parser does not depend on a TFLite/runtime
     # package.
-    def fixture(*, external_buffer: bool = False, external_operator: bool = False) -> bytes:
+    def fixture(*, external_buffer: bool = False, external_operator: bool = False,
+                multiple_subgraphs: bool = False, opcode_builtin: int = 0,
+                opcode_deprecated: int = 9, missing_tensor_name: bool = False,
+                empty_tensor_name: bool = False, duplicate_tensor_name: bool = False,
+                custom_code: str | None = None, mutating_values: list[int] | None = None,
+                intermediate_values: list[int] | None = None,
+                variable_input: bool = False, stateful_option: str | None = None,
+                no_builtin_options: bool = False, builtin_options_type: int | None = None,
+                init_subgraph_index: int = 0) -> bytes:
         out = bytearray(b"\x00\x00\x00\x00TFL3")
         def table(fields: int, size: int) -> int:
             vt = len(out); out.extend(struct.pack("<HH", 4 + fields * 2, size)); out.extend(b"\x00" * (fields * 2))
@@ -828,6 +1067,8 @@ def self_test() -> None:
             for i, target in enumerate(targets): struct.pack_into("<I", out, start + 4 + i * 4, target - (start + 4 + i * 4))
         def vector_i32(values: list[int]) -> int:
             start = len(out); out.extend(struct.pack("<I", len(values))); out.extend(struct.pack("<" + "i" * len(values), *values)); return start
+        def vector_u8(values: list[int]) -> int:
+            start = len(out); out.extend(struct.pack("<I", len(values))); out.extend(bytes(values)); return start
         def vector_i32_data(values: list[int]) -> int:
             return vector_i32(values)
         def vector_f32(values: list[float]) -> int:
@@ -842,20 +1083,49 @@ def self_test() -> None:
             struct.pack_into("<H", out, vtable + 4 + field * 2, 0)
         mtab = table(8, 36); struct.pack_into("<I", out, mtab + 4, TFLITE_MODEL_VERSION)
         operator_code_vector = vector_slots(1)
-        sv = vector_slots(1); bv = vector_slots(4 if external_buffer else 3)
+        sv = vector_slots(2 if multiple_subgraphs else 1); bv = vector_slots(4 if external_buffer else 3)
         field_ptr(mtab, 1, operator_code_vector); field_ptr(mtab, 2, sv); field_ptr(mtab, 4, bv)
-        opcode = table(4, 20); struct.pack_into("<B", out, opcode + 4, 9); omit_field(opcode, 1); struct.pack_into("<i", out, opcode + 12, 1); struct.pack_into("<i", out, opcode + 16, 0)
+        opcode = table(4, 20); struct.pack_into("<B", out, opcode + 4, opcode_deprecated); struct.pack_into("<i", out, opcode + 12, 1); struct.pack_into("<i", out, opcode + 16, opcode_builtin)
+        if custom_code is None:
+            omit_field(opcode, 1)
+        else:
+            field_ptr(opcode, 1, string(custom_code))
         patch_vector(operator_code_vector, [opcode])
         stab = table(5, 24); tv = vector_slots(4); inputs = vector_i32([0]); outputs = vector_i32([3]); field_ptr(stab, 0, tv); field_ptr(stab, 1, inputs); field_ptr(stab, 2, outputs)
         op_vector = vector_slots(1)
-        operator = table(14 if external_operator else 8, 60 if external_operator else 36); struct.pack_into("<I", out, operator + 4, 0); op_inputs = vector_i32([0, 1, 2]); op_outputs = vector_i32([3]); field_ptr(operator, 1, op_inputs); field_ptr(operator, 2, op_outputs); struct.pack_into("<B", out, operator + 16, 8); omit_field(operator, 5); omit_field(operator, 6); omit_field(operator, 7)
+        extended_operator = external_operator or intermediate_values is not None
+        option_type = STATEFUL_BUILTIN_OPTIONS.get(stateful_option, 8) if builtin_options_type is None else builtin_options_type
+        operator = table(14 if extended_operator else 8, 60 if extended_operator else 36); struct.pack_into("<I", out, operator + 4, 0); op_inputs = vector_i32([0, 1, 2]); op_outputs = vector_i32([3]); field_ptr(operator, 1, op_inputs); field_ptr(operator, 2, op_outputs); struct.pack_into("<B", out, operator + 16, option_type); omit_field(operator, 5); omit_field(operator, 6)
+        if mutating_values is None:
+            omit_field(operator, 7)
         if external_operator:
             for field in (8, 10, 11, 12, 13):
                 omit_field(operator, field)
             struct.pack_into("<Q", out, operator + 4 + 9 * 4, 1 << 32)
-        option = table(4, 20); struct.pack_into("<B", out, option + 4, 0); struct.pack_into("<B", out, option + 8, 0); struct.pack_into("<B", out, option + 12, 0); struct.pack_into("<B", out, option + 16, 0); field_ptr(operator, 4, option)
+        if stateful_option == "CALL_ONCE":
+            option = table(1, 8); struct.pack_into("<i", out, option + 4, init_subgraph_index)
+        elif stateful_option == "VAR_HANDLE":
+            option = table(2, 12); field_ptr(option, 0, string("container")); field_ptr(option, 1, string("shared"))
+        elif stateful_option in {"READ_VARIABLE", "ASSIGN_VARIABLE"}:
+            option = table(0, 4)
+        else:
+            option = table(4, 20); struct.pack_into("<B", out, option + 4, 0); struct.pack_into("<B", out, option + 8, 0); struct.pack_into("<B", out, option + 12, 0); struct.pack_into("<B", out, option + 16, 0)
+        if no_builtin_options:
+            omit_field(operator, 4)
+        else:
+            field_ptr(operator, 4, option)
+        if mutating_values is not None:
+            field_ptr(operator, 7, vector_u8(mutating_values))
+        if intermediate_values is not None:
+            field_ptr(operator, 8, vector_i32(intermediate_values))
         patch_vector(op_vector, [operator]); field_ptr(stab, 3, op_vector)
-        patch_vector(sv, [stab])
+        if multiple_subgraphs:
+            second_stab = table(5, 24)
+            second_tv = vector_slots(0); second_inputs = vector_i32([]); second_outputs = vector_i32([]); second_op_vector = vector_slots(0)
+            field_ptr(second_stab, 0, second_tv); field_ptr(second_stab, 1, second_inputs); field_ptr(second_stab, 2, second_outputs); field_ptr(second_stab, 3, second_op_vector)
+            patch_vector(sv, [stab, second_stab])
+        else:
+            patch_vector(sv, [stab])
         empty_btab = table(1, 8); omit_field(empty_btab, 0)
         weight_btab = table(1, 8); weight_data = len(out); out.extend(struct.pack("<I", 1) + b"\x01"); field_ptr(weight_btab, 0, weight_data)
         bias_btab = table(1, 8); bias_data = len(out); out.extend(struct.pack("<I", 4) + struct.pack("<i", 0)); field_ptr(bias_btab, 0, bias_data)
@@ -866,7 +1136,12 @@ def self_test() -> None:
         else:
             patch_vector(bv, [empty_btab, weight_btab, bias_btab])
         def tensor(name: str, shape_values: list[int], dtype: int, buffer_index: int | None) -> int:
-            tab = table(8, 36); shape = vector_i32(shape_values); name_offset = string(name); field_ptr(tab, 0, shape); struct.pack_into("<B", out, tab + 8, dtype); field_ptr(tab, 3, name_offset)
+            tab = table(8, 36); shape = vector_i32(shape_values); field_ptr(tab, 0, shape); struct.pack_into("<B", out, tab + 8, dtype)
+            tensor_name = None if missing_tensor_name and name == "input" else "" if empty_tensor_name and name == "output" else "weight" if duplicate_tensor_name and name == "output" else name
+            if tensor_name is not None:
+                field_ptr(tab, 3, string(tensor_name))
+            if variable_input and name == "input":
+                struct.pack_into("<B", out, tab + 4 + 5 * 4, 1)
             if buffer_index is None: omit_field(tab, 2)
             else: struct.pack_into("<I", out, tab + 12, buffer_index)
             quant = table(7, 32); scales = vector_f32([1.0]); zero_points = vector_i64([0]); field_ptr(quant, 2, scales); field_ptr(quant, 3, zero_points); omit_field(quant, 4); omit_field(quant, 5); struct.pack_into("<i", out, quant + 28, -1); field_ptr(tab, 4, quant); omit_field(tab, 6); omit_field(tab, 7)
@@ -876,6 +1151,101 @@ def self_test() -> None:
         struct.pack_into("<I", out, 0, mtab)
         return bytes(out)
     result = parse(fixture())
+    evidence = inventory(fixture())
+    assert evidence["format"] == "vokra-microwakeword-tflite-raw-inventory-v1"
+    assert evidence["authority"] == "EVIDENCE_ONLY_UNREVIEWED"
+    assert "canonical_identity" not in evidence and "canonical_topology_sha256" not in evidence
+    assert evidence["operator_codes"][0]["selected_code"] == 9
+    assert evidence["subgraphs"][0]["operators"][0]["official_name"] == "FULLY_CONNECTED"
+    assert evidence["subgraphs"][0]["inputs"] == [0]
+    assert evidence["subgraphs"][0]["outputs"] == [3]
+    assert evidence["subgraphs"][0]["operators"][0]["inputs"] == [0, 1, 2]
+    assert evidence["subgraphs"][0]["operators"][0]["outputs"] == [3]
+    assert evidence["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"]["fused_activation"] == "NONE"
+    logistic = inventory(fixture(opcode_builtin=14, opcode_deprecated=14, no_builtin_options=True, builtin_options_type=0))
+    assert not logistic["subgraphs"][0]["operators"][0]["builtin_options"]["table_present"]
+    assert logistic["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"type": 0}
+    absent_name = inventory(fixture(missing_tensor_name=True))
+    assert absent_name["subgraphs"][0]["tensors"][0]["name"] is None
+    empty_name = inventory(fixture(empty_tensor_name=True))
+    assert empty_name["subgraphs"][0]["tensors"][3]["name"] == ""
+    duplicate_name = inventory(fixture(duplicate_tensor_name=True))
+    assert duplicate_name["subgraphs"][0]["tensors"][1]["name"] == duplicate_name["subgraphs"][0]["tensors"][3]["name"]
+    variable = inventory(fixture(variable_input=True))
+    assert variable["subgraphs"][0]["tensors"][0]["is_variable"] is True
+    custom = inventory(fixture(opcode_builtin=32, opcode_deprecated=32, custom_code="vendor.op"))
+    assert custom["operator_codes"][0]["selected_code"] == 32
+    assert custom["operator_codes"][0]["official_name"] == "CUSTOM"
+    assert custom["operator_codes"][0]["custom_code"] == "vendor.op"
+    try: inventory(fixture(custom_code="malformed.custom"))
+    except ValueError: pass
+    else: raise AssertionError("non-CUSTOM operator custom code was accepted")
+    zero_options = bytearray(fixture())
+    reader = Reader(bytes(zero_options))
+    subgraph = reader.vector_uoffsets(reader.table_field(reader.root, 2, 4))[0]
+    operator = reader.vector_uoffsets(reader.table_field(subgraph, 3, 4))[0]
+    builtin_options = reader.table_field(operator, 4, 4)
+    struct.pack_into("<I", zero_options, builtin_options, 0)
+    try: inventory(bytes(zero_options))
+    except ValueError: pass
+    else: raise AssertionError("required FullyConnected options accepted a null uoffset")
+    try: inventory(fixture(mutating_values=[True]))
+    except ValueError: pass
+    else: raise AssertionError("mutating variable input length mismatch was accepted")
+    valid_mutating = inventory(fixture(mutating_values=[0, 1, 0]))
+    assert valid_mutating["subgraphs"][0]["operators"][0]["mutating_variable_inputs"] == [False, True, False]
+    try: inventory(fixture(intermediate_values=[4]))
+    except ValueError: pass
+    else: raise AssertionError("out-of-range intermediate tensor was accepted")
+    multi_evidence = inventory(fixture(multiple_subgraphs=True))
+    assert multi_evidence["subgraph_count"] == 2
+    assert multi_evidence["subgraphs"][1]["tensor_count"] == 0
+    try: parse(fixture(multiple_subgraphs=True))
+    except ValueError: pass
+    else: raise AssertionError("strict parser accepted multiple subgraphs")
+    call_once = inventory(fixture(opcode_builtin=129, opcode_deprecated=127, stateful_option="CALL_ONCE"))
+    assert call_once["operator_codes"][0]["selected_code"] == 129
+    assert call_once["operator_codes"][0]["official_name"] == "CALL_ONCE"
+    try: parse(fixture(opcode_builtin=129, opcode_deprecated=127))
+    except ValueError: pass
+    else: raise AssertionError("strict parser accepted unsupported CALL_ONCE")
+    assert call_once["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"init_subgraph_index": 0}
+    call_once_secondary = inventory(fixture(multiple_subgraphs=True, opcode_builtin=129, opcode_deprecated=127, stateful_option="CALL_ONCE", init_subgraph_index=1))
+    assert call_once_secondary["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"init_subgraph_index": 1}
+    try: inventory(fixture(multiple_subgraphs=True, opcode_builtin=129, opcode_deprecated=127, stateful_option="CALL_ONCE", init_subgraph_index=2))
+    except ValueError: pass
+    else: raise AssertionError("CALL_ONCE out-of-range init subgraph was accepted")
+    var_handle = inventory(fixture(opcode_builtin=142, opcode_deprecated=127, stateful_option="VAR_HANDLE"))
+    assert var_handle["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"container": "container", "shared_name": "shared"}
+    read_variable = inventory(fixture(opcode_builtin=143, opcode_deprecated=127, stateful_option="READ_VARIABLE"))
+    assert read_variable["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
+    assign_variable = inventory(fixture(opcode_builtin=144, opcode_deprecated=127, stateful_option="ASSIGN_VARIABLE"))
+    assert assign_variable["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
+    try: inventory(fixture(opcode_builtin=143, opcode_deprecated=127, no_builtin_options=True, builtin_options_type=112))
+    except ValueError: pass
+    else: raise AssertionError("READ_VARIABLE without options was accepted")
+    unknown = inventory(fixture(opcode_builtin=250, opcode_deprecated=127))
+    assert unknown["operator_codes"][0]["selected_code"] == 250
+    assert unknown["operator_codes"][0]["official_name"] is None
+    bad_boundary = bytearray(fixture())
+    reader = Reader(bytes(bad_boundary))
+    subgraph = reader.vector_uoffsets(reader.table_field(reader.root, 2, 4))[0]
+    subgraph_inputs = reader.table_field(subgraph, 1, 4)
+    subgraph_inputs_start, _ = reader.vector(subgraph_inputs, 4)
+    struct.pack_into("<i", bad_boundary, subgraph_inputs_start, 4)
+    try: inventory(bytes(bad_boundary))
+    except ValueError: pass
+    else: raise AssertionError("inventory accepted an out-of-range subgraph boundary")
+    bad_output = bytearray(fixture())
+    reader = Reader(bytes(bad_output))
+    subgraph = reader.vector_uoffsets(reader.table_field(reader.root, 2, 4))[0]
+    operator = reader.vector_uoffsets(reader.table_field(subgraph, 3, 4))[0]
+    operator_outputs = reader.table_field(operator, 2, 4)
+    operator_outputs_start, _ = reader.vector(operator_outputs, 4)
+    struct.pack_into("<i", bad_output, operator_outputs_start, -1)
+    try: inventory(bytes(bad_output))
+    except ValueError: pass
+    else: raise AssertionError("inventory accepted a negative operator output")
     assert result["complete"] and result["tensor_count"] == 4 and result["constant_count"] == 2
     assert result["topology"]["canonical_identity"] is None
     assert result["topology"]["canonical_digest"] == _canonical_topology_digest(result["tensor_contract"], result["topology"])
@@ -1021,6 +1391,9 @@ def self_test() -> None:
         try: parse(bytes(bad_uoffset))
         except ValueError: pass
         else: raise AssertionError("invalid FlatBuffer uoffset was accepted")
+        try: inventory(bytes(bad_uoffset))
+        except ValueError: pass
+        else: raise AssertionError("inventory accepted invalid FlatBuffer uoffset")
     with tempfile.TemporaryDirectory(prefix="mww-manifest-link-") as directory:
         root = Path(directory); source = root / "model.tflite"; source.write_bytes(fixture())
         target = root / "manifest.json"; publish(target, parse(source.read_bytes()))
@@ -1034,12 +1407,13 @@ def self_test() -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("--input", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--input", type=Path); parser.add_argument("--output", type=Path); parser.add_argument("--inventory-only", action="store_true"); parser.add_argument("--self-test", action="store_true"); args = parser.parse_args()
     if args.self_test: self_test(); print("microwakeword tensor manifest self-test: PASS"); return 0
     if not args.input or not args.output: parser.error("--input and --output are required")
     if args.input.is_symlink() or not args.input.is_file(): raise SystemExit("authenticated TFLite input must be a regular file")
     if args.output.resolve(strict=False) == args.input.resolve(strict=False): raise SystemExit("manifest output aliases TFLite input")
-    publish(args.output, parse(args.input.read_bytes())); return 0
+    value = inventory(args.input.read_bytes()) if args.inventory_only else parse(args.input.read_bytes())
+    publish(args.output, value); return 0
 
 
 if __name__ == "__main__":

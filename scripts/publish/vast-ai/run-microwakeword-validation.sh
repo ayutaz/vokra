@@ -82,7 +82,7 @@ inspect_only() {
   [[ "$(sha256sum "$PROJECT/uv.lock" | awk '{print $1}')" == "$LOCK_SHA256" ]] || die "uv.lock identity mismatch"
   command -v curl >/dev/null 2>&1 || die "missing tool: curl"
   command -v realpath >/dev/null 2>&1 || die "missing tool: realpath"
-  local work_dir manifest_path evidence_path archive_dir actual_sha manifest_sha canonical_digest companion_sha license_sha archive_manifest archive_companion archive_license
+  local work_dir manifest_path evidence_path archive_dir actual_sha manifest_sha inventory_source_sha companion_sha license_sha archive_manifest archive_companion archive_license
   archive_dir="${MICROWAKEWORD_INSPECTION_DIR:-}"
   [[ "$archive_dir" == /* && -d "$archive_dir" && ! -L "$archive_dir" ]] || die "MICROWAKEWORD_INSPECTION_DIR must be absolute existing directory"
   archive_dir="$(realpath -e -- "$archive_dir")" || die "MICROWAKEWORD_INSPECTION_DIR cannot be canonicalized"
@@ -92,7 +92,7 @@ inspect_only() {
   INSPECTION_WORK_DIR="$(mktemp -d "/tmp/vokra-mww-inspect.XXXXXX")"
   work_dir="$INSPECTION_WORK_DIR"
   trap cleanup_inspection_workdir EXIT
-  manifest_path="$work_dir/tensor-manifest.json"
+  manifest_path="$work_dir/raw-inventory.json"
   UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$INSPECTOR" --self-test
   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
     --output "$work_dir/hey_jarvis.tflite" "$DEFAULT_UPSTREAM_URL"
@@ -130,11 +130,11 @@ PY
   actual_sha="$(sha256sum "$work_dir/hey_jarvis.tflite" | awk '{print $1}')"
   [[ "$actual_sha" =~ ^[0-9a-f]{64}$ ]] || die "artifact SHA-256 calculation failed"
   UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python "$TENSOR_MANIFEST_PRODUCER" \
-    --input "$work_dir/hey_jarvis.tflite" --output "$manifest_path"
+    --inventory-only --input "$work_dir/hey_jarvis.tflite" --output "$manifest_path"
   manifest_sha="$(sha256sum "$manifest_path" | awk '{print $1}')"
   companion_sha="$(sha256sum "$work_dir/hey_jarvis.json" | awk '{print $1}')"
   license_sha="$(sha256sum "$work_dir/LICENSE" | awk '{print $1}')"
-canonical_digest="$(UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python - "$manifest_path" <<'PY'
+  inventory_source_sha="$(UV_CACHE_DIR="$UV_CACHE_DIR_VALUE" uv run --no-project --offline --python 3.12 python - "$manifest_path" <<'PY'
 import json, sys
 from pathlib import Path
 def strict_object(pairs):
@@ -145,14 +145,18 @@ def strict_object(pairs):
         result[key] = item
     return result
 value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"), object_pairs_hook=strict_object)
-digest = value.get("topology", {}).get("canonical_digest")
-if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
-    raise SystemExit("canonical topology digest is absent")
-print(digest)
+if value.get("format") != "vokra-microwakeword-tflite-raw-inventory-v1":
+    raise SystemExit("raw inventory format is absent")
+if value.get("authority") != "EVIDENCE_ONLY_UNREVIEWED":
+    raise SystemExit("raw inventory authority is not evidence-only")
+source_sha = value.get("source_sha256")
+if not isinstance(source_sha, str) or len(source_sha) != 64 or any(c not in "0123456789abcdef" for c in source_sha):
+    raise SystemExit("raw inventory source SHA-256 is invalid")
+print(source_sha)
 PY
   )"
-  [[ "$canonical_digest" =~ ^[0-9a-f]{64}$ ]] || die "canonical topology digest is invalid"
-  archive_manifest="$archive_dir/hey_jarvis.tensor-manifest.json"
+  [[ "$inventory_source_sha" == "$actual_sha" ]] || die "raw inventory source SHA-256 does not match model bytes"
+  archive_manifest="$archive_dir/hey_jarvis.raw-inventory.json"
   archive_companion="$archive_dir/hey_jarvis.json"
   archive_license="$archive_dir/LICENSE"
   [[ ! -e "$archive_manifest" && ! -L "$archive_manifest" && ! -e "$archive_companion" && ! -L "$archive_companion" && ! -e "$archive_license" && ! -L "$archive_license" ]] || die "inspection evidence destination exists"
@@ -192,15 +196,15 @@ PY
     "$evidence_path" "$MODEL_REPOSITORY" "$MODEL_REVISION" "$MODEL_TARGET_PATH" \
     "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" \
     "$actual_sha" "$archive_manifest" "$manifest_sha" "$archive_companion" \
-    "$companion_sha" "$archive_license" "$license_sha" "$canonical_digest" <<'PY'
+    "$companion_sha" "$archive_license" "$license_sha" "$inventory_source_sha" <<'PY'
 import json, sys
 from pathlib import Path
 (_, output, repository, revision, model_path, model_blob, model_size,
  license_blob, license_size, model_sha, manifest_path, manifest_sha,
- companion_path, companion_sha, license_path, license_sha, topology_sha) = sys.argv
+ companion_path, companion_sha, license_path, license_sha, inventory_source_sha) = sys.argv
 with Path(output).open("x", encoding="utf-8") as stream:
     json.dump({
-        "status": "INSPECTION_ONLY_NO_CONVERSION",
+        "status": "RAW_INVENTORY_ONLY_NO_CONVERSION",
         "publication": "NO_UPLOAD",
         "repository": repository,
         "revision": revision,
@@ -210,13 +214,13 @@ with Path(output).open("x", encoding="utf-8") as stream:
         "license_blob": license_blob,
         "license_size": int(license_size),
         "bytes_sha256": model_sha,
-        "manifest_path": manifest_path,
-        "manifest_sha256": manifest_sha,
         "companion_path": companion_path,
         "companion_sha256": companion_sha,
         "license_path": license_path,
         "license_sha256": license_sha,
-        "canonical_topology_sha256": topology_sha,
+        "raw_inventory_path": manifest_path,
+        "raw_inventory_sha256": manifest_sha,
+        "raw_inventory_source_sha256": inventory_source_sha,
     }, stream, sort_keys=True, indent=2)
     stream.write("\n")
 PY
@@ -227,7 +231,7 @@ self_test() {
   local self="${BASH_SOURCE[0]}" root fail=0 gate_line
   root="$(cd "$(dirname "$self")/../../.." && pwd)"
   [[ -f "$root/tools/parity/microwakeword_inspect.py" ]] || { echo "self-test FAIL: inspector missing" >&2; fail=1; }
-  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "inspect_only" "--inspect-only" "INSPECTION_ONLY_NO_CONVERSION" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256=""' 'REVIEWED_TOPOLOGY_SHA256=""'; do
+  for needle in "microwakeword_inspect.py" "microwakeword_tensor_manifest.py" "run_authenticated_tensor_pipeline" "inspect_only" "--inspect-only" "--inventory-only" "RAW_INVENTORY_ONLY_NO_CONVERSION" "raw-inventory" "EVIDENCE_ONLY_UNREVIEWED" "object_pairs_hook" "duplicate manifest JSON key" "realpath -e" "outside checkout root" "prepare_checkpoint.py" "--self-test" "$LOCK_SHA256" "$PACKAGE_COUNT" "$PACKAGE_ROWS_SHA256" "$LICENSE_ROWS_SHA256" "ZERO_EXTERNAL_DEPENDENCIES" "--dependency-gate" "BLOCKED_UNREVIEWED_ARTIFACT" "AUTHENTICATED_PAYLOAD_SHA_REQUIRED" "AUTHENTICATED_TOPOLOGY_REQUIRED" "SOURCE_TENSOR_MANIFEST_REQUIRED" "--tensor-manifest" "tensor-manifest-sha256" "NO_UPLOAD" "VAST" "$MODEL_REPOSITORY" "$SOURCE_REPOSITORY" "SOURCE_REVISION" "MODEL_REVISION" "$DEFAULT_UPSTREAM_URL" "$LICENSE_URL" "$COMPANION_URL" "4665173cd35f1cff9a61e06fc427f124766c488e" "05b65922cc433c9df13e98e32a7fe520758c837e" "$MODEL_TARGET_PATH" "$MODEL_TARGET_GIT_BLOB" "$MODEL_TARGET_SIZE" "$MODEL_COMPANION_GIT_BLOB" "$MODEL_COMPANION_SIZE" "$LICENSE_GIT_BLOB" "$LICENSE_SIZE" 'MODEL_ARTIFACT_BYTES_SHA256=""' 'REVIEWED_TOPOLOGY_SHA256=""'; do
     grep -Fq -- "$needle" "$self" || { echo "self-test FAIL: missing $needle" >&2; fail=1; }
   done
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload|vokra-cli[[:space:]]+convert)([[:space:]]|$)' "$self" >/dev/null; then
@@ -246,6 +250,10 @@ self_test() {
   fi
   if grep -Fq -- 'prepare_checkpoint.py' <<<"$inspection_body" || grep -E 'vokra-cli|cargo|git push|--upload|--push' <<<"$inspection_body" >/dev/null; then
     echo 'self-test FAIL: inspection mode contains conversion/upload/Cargo' >&2
+    fail=1
+  fi
+  if grep -E 'canonical_digest|canonical_topology_sha256|canonical_identity' <<<"$inspection_body" >/dev/null; then
+    echo 'self-test FAIL: inventory inspection mode claims canonical authority' >&2
     fail=1
   fi
   local arbitrary_arg_pattern="--url|--name"
