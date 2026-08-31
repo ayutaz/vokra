@@ -2495,7 +2495,14 @@ mod tests {
                 .iter()
                 .filter(|stage| stage.kind == NcsnppStageKind::Residual)
                 .count(),
-            7 * 2 + 7 * 3 + 2
+            7 * 2 + 7 * 3
+        );
+        assert_eq!(
+            plan.stages
+                .iter()
+                .filter(|stage| stage.kind == NcsnppStageKind::Middle)
+                .count(),
+            2
         );
         let mut bad = NcsnppV2Config::source_default();
         bad.fourier_embedding = false;
@@ -2606,12 +2613,15 @@ mod tests {
             (2.0 - 2.5) * inv_std * 2.0 + 0.3,
             (4.0 - 2.5) * inv_std * 0.5 - 0.7,
         ];
-        let q = [normalized[0] + 0.1, normalized[1] - 0.2];
-        let q_next = [normalized[2] + 0.1, normalized[3] - 0.2];
-        let k = [normalized[0] + 0.3, normalized[1] - 0.4];
-        let k_next = [normalized[2] + 0.3, normalized[3] - 0.4];
-        let v = [normalized[0] + 0.5, normalized[1] - 0.6];
-        let v_next = [normalized[2] + 0.5, normalized[3] - 0.6];
+        // GroupNorm emits channel-major [C,P].  The source NIN projections
+        // operate at each spatial position, so each position must gather one
+        // value from each channel before applying its projection bias.
+        let q = [normalized[0] + 0.1, normalized[2] - 0.2];
+        let q_next = [normalized[1] + 0.1, normalized[3] - 0.2];
+        let k = [normalized[0] + 0.3, normalized[2] - 0.4];
+        let k_next = [normalized[1] + 0.3, normalized[3] - 0.4];
+        let v = [normalized[0] + 0.5, normalized[2] - 0.6];
+        let v_next = [normalized[1] + 0.5, normalized[3] - 0.6];
         let scale = 2.0f32.sqrt().recip();
         let score =
             |left: [f32; 2], right: [f32; 2]| (left[0] * right[0] + left[1] * right[1]) * scale;

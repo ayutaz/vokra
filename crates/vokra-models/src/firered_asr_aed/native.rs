@@ -2866,7 +2866,7 @@ mod tests {
             n_head: 1,
         };
         let common = (
-            &[0.0; 6][..],
+            &[0.0; 10][..],
             3usize,
             &[1.0, 0.0, 0.0, 1.0][..],
             &[1.0, 0.0, 0.0, 1.0][..],
@@ -3178,10 +3178,10 @@ mod tests {
         let attn_beta = [0.0, 0.0];
         let attn_bias = [0.01, -0.01];
         let conv_in = vec![0.03; 16];
-        let depthwise = vec![0.02; 6];
-        let conv_gamma = [1.0, 0.9];
-        let conv_beta = [0.0, 0.1];
-        let conv_out = vec![0.04; 4];
+        let depthwise = vec![0.02; 12];
+        let conv_gamma = [1.0, 0.9, 1.0, 0.9];
+        let conv_beta = [0.0, 0.1, 0.0, 0.1];
+        let conv_out = vec![0.04; 8];
         let final_beta = [0.0, 0.0];
         let weights = FireRedConformerBlockWeights {
             ffn1_ln_gamma: &ln2,
