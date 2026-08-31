@@ -33,7 +33,9 @@ self_test() {
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' \
     'checkpoint geometry' 'token dictionary binding' 'PREPARED' 'archive_members' \
-    'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status'; do
+    'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status' \
+    "cargo fmt --manifest-path \"\$ROOT/Cargo.toml\" --all -- --check" \
+    "cargo metadata --manifest-path \"\$ROOT/Cargo.toml\" --locked --no-deps --format-version 1"; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
   done
   if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
@@ -133,8 +135,8 @@ export UV_CACHE_DIR
   echo 'metal_status=BLOCKED_BY_CPU'
   echo 'parity_status=NOT_RUN'
   echo 'publication=NO_UPLOAD'
-  cargo fmt --all -- --check
-  cargo metadata --locked --no-deps --format-version 1 >/dev/null
+  cargo fmt --manifest-path "$ROOT/Cargo.toml" --all -- --check
+  cargo metadata --manifest-path "$ROOT/Cargo.toml" --locked --no-deps --format-version 1 >/dev/null
 } > "$work_dir/evidence/validation.log" 2>&1
 
 # shellcheck disable=SC2129
