@@ -28,7 +28,7 @@ UPSTREAM_URL = "https://github.com/facebookresearch/demucs"
 UPSTREAM_REVISION = "e976d93ecc3865e5757426930257e200846a520a"
 WEIGHT_IDS = ("f7e0c4bc", "d12395a8", "92cfc3b6", "04573f0d", "5c90dfd2")
 WEIGHT_ROOT = "https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/"
-SOURCE_ROLES = {"LICENSE", "demucs/apply.py", "demucs/hdemucs.py", "demucs/htdemucs.py", "demucs/pretrained.py", "demucs/repo.py", "demucs/states.py", "demucs/remote/htdemucs_ft.yaml", "demucs/remote/htdemucs_6s.yaml"}
+SOURCE_ROLES = {"LICENSE", "demucs/apply.py", "demucs/audio.py", "demucs/hdemucs.py", "demucs/htdemucs.py", "demucs/pretrained.py", "demucs/repo.py", "demucs/states.py", "demucs/remote/htdemucs_ft.yaml", "demucs/remote/htdemucs_6s.yaml"}
 TARGET_ENV = {
     "python_full_version": "3.12.0", "python_version": "3.12", "sys_platform": "linux",
     "platform_machine": "x86_64", "platform_system": "Linux", "implementation_name": "cpython",
@@ -37,6 +37,12 @@ TARGET_RESOLUTION_MARKERS = {
     "platform_machine == 'x86_64' and sys_platform == 'linux'",
     "python_full_version >= '3.12' and python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'",
 }
+UPSTREAM_REQUIREMENTS_FILE = "upstream_requirements_minimal.snapshot"
+ACTIVE_IMPORT_PACKAGES = {
+    "dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml",
+    "torch", "torchaudio", "tqdm",
+}
+UPSTREAM_REQUIREMENTS_PACKAGES = ACTIVE_IMPORT_PACKAGES - {"numpy"} | {"lameenc"}
 
 
 def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -234,12 +240,23 @@ def verify_gate_contract(gate: dict[str, Any]) -> None:
     if not isinstance(gate["blockers"], list) or not gate["blockers"] or not all(isinstance(item, str) and item for item in gate["blockers"]):
         raise ValueError("license gate blockers must be explicit strings")
     dependency = gate.get("dependency_audit")
-    if not isinstance(dependency, dict) or dependency.get("source_file") != "requirements_minimal.txt" or dependency.get("rows_file") != "dependency_audit.json":
+    if (not isinstance(dependency, dict)
+            or dependency.get("source_file") != UPSTREAM_REQUIREMENTS_FILE
+            or dependency.get("rows_file") != "dependency_audit.json"):
         raise ValueError("dependency audit contract drifted")
     for key in ("source_file_sha256", "pyproject_sha256", "rows_file_sha256"):
         value = dependency.get(key)
         if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
             raise ValueError(f"dependency {key} is not a fixed lowercase 64-hex digest")
+    active = dependency.get("active_import_closure")
+    if (not isinstance(active, dict)
+            or active.get("path") != "pyproject.toml"
+            or active.get("packages") != sorted(ACTIVE_IMPORT_PACKAGES)
+            or active.get("excluded_upstream_packages") != ["lameenc"]):
+        raise ValueError("active import closure contract drifted")
+    if (not isinstance(active.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", active["sha256"])):
+        raise ValueError("active import closure digest is not fixed")
 
 
 def audit_source(source: Path, gate: dict[str, Any]) -> dict[str, Any]:
@@ -279,31 +296,36 @@ def audit_dependency_rows(gate: dict[str, Any]) -> dict[str, Any]:
     dependency = gate["dependency_audit"]
     requirements = PROJECT / dependency["source_file"]
     if not requirements.is_file() or requirements.is_symlink() or sha256(requirements) != dependency["source_file_sha256"]:
-        raise ValueError("upstream requirements_minimal.txt identity drifted")
+        raise ValueError("upstream requirements_minimal snapshot identity drifted")
     direct_lines = [line.strip() for line in requirements.read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")]
     direct_names = {re.split(r"[<>=!~;\s]", line, maxsplit=1)[0].lower() for line in direct_lines}
-    expected_direct = {"dora-search", "einops", "julius", "lameenc", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"}
-    if direct_names != expected_direct or len(direct_names) != len(direct_lines):
+    if direct_names != UPSTREAM_REQUIREMENTS_PACKAGES or len(direct_names) != len(direct_lines):
         raise ValueError("upstream direct requirement set drifted")
     pyproject = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject.get("project", {}).get("dependencies")
     if not isinstance(dependencies, list):
         raise ValueError("dedicated pyproject dependency schema drifted")
     pyproject_names = {re.split(r"[<>=!~;\s]", item.strip(), maxsplit=1)[0].lower() for item in dependencies if isinstance(item, str)}
-    if pyproject_names != expected_direct | {"numpy"} or len(pyproject_names) != len(dependencies):
+    if pyproject_names != ACTIVE_IMPORT_PACKAGES or len(pyproject_names) != len(dependencies):
         raise ValueError("pyproject direct/import requirement distinction drifted")
-    if sha256(PROJECT / "pyproject.toml") != dependency["pyproject_sha256"]:
+    active = dependency["active_import_closure"]
+    if active["packages"] != sorted(pyproject_names) or active["excluded_upstream_packages"] != ["lameenc"]:
+        raise ValueError("active import closure package set drifted")
+    if sha256(PROJECT / "pyproject.toml") != dependency["pyproject_sha256"] or sha256(PROJECT / "pyproject.toml") != active["sha256"]:
         raise ValueError("dedicated pyproject.toml identity drifted")
     rows_path = PROJECT / dependency["rows_file"]
     if not rows_path.is_file() or rows_path.is_symlink() or sha256(rows_path) != dependency["rows_file_sha256"]:
         raise ValueError("dependency audit row file identity drifted")
     rows = json.loads(rows_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_keys)
-    expected_keys = {"schema", "status", "python", "platform", "direct_requirements_source", "compatibility", "package_rows", "license_rows", "inactive_package_rows", "inactive_license_rows", "package_rows_sha256", "license_rows_sha256", "forbidden_license_policy", "blockers"}
+    expected_keys = {"schema", "status", "python", "platform", "direct_requirements_source", "active_import_closure", "compatibility", "package_rows", "license_rows", "inactive_package_rows", "inactive_license_rows", "package_rows_sha256", "license_rows_sha256", "forbidden_license_policy", "blockers"}
     if set(rows) != expected_keys or rows["schema"] != "vokra-htdemucs-multi-dependency-audit-v1":
         raise ValueError("dependency audit row schema drifted")
     direct = rows["direct_requirements_source"]
     if direct != {"path": dependency["source_file"], "sha256": dependency["source_file_sha256"]}:
         raise ValueError("dependency direct-requirements identity drifted")
+    active_row = rows["active_import_closure"]
+    if active_row != {"path": "pyproject.toml", "sha256": dependency["active_import_closure"]["sha256"], "packages": sorted(ACTIVE_IMPORT_PACKAGES), "excluded_upstream_packages": ["lameenc"]}:
+        raise ValueError("dependency active-import identity drifted")
     if not isinstance(rows["package_rows"], list) or not isinstance(rows["license_rows"], list):
         raise ValueError("dependency audit rows must be arrays")
     validate_inactive_rows(rows["inactive_package_rows"])
@@ -575,6 +597,38 @@ def self_test() -> None:
         else:
             raise AssertionError("malformed fake lock was accepted")
     source = Path(__file__).read_text(encoding="utf-8")
+    snapshot = (PROJECT / UPSTREAM_REQUIREMENTS_FILE).read_text(encoding="utf-8")
+    project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+    project_names = {re.split(r"[<>=!~;\s]", item.strip(), maxsplit=1)[0].lower() for item in project["project"]["dependencies"]}
+    assert "lameenc" in snapshot
+    assert "lameenc" not in project_names and "numpy" in project_names
+    dumper_source = (PROJECT / "dump_reference.py").read_text(encoding="utf-8")
+    dumper_tree = ast.parse(dumper_source)
+    dumper_imports = {
+        alias.name
+        for node in ast.walk(dumper_tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert "demucs.audio" not in dumper_imports and "lameenc" not in dumper_imports
+    assert sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "import_module"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "demucs.audio"
+        for node in ast.walk(dumper_tree)
+    ) == 1
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "import_module"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "lameenc"
+        for node in ast.walk(dumper_tree)
+    )
     for token in ("tomllib", "duplicate (name, version)", "CUDA/NVIDIA/Triton", "artifact_sha256", "locked_sdist"):
         assert token in source, f"lock contract missing: {token}"
     try:

@@ -11,12 +11,14 @@ fallback and no import before all identities have passed.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib
 import json
 import os
 import re
 import sys
+from types import ModuleType
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,24 @@ CONFIGS = {
     "htdemucs_ft": {"ids": FT_IDS, "sources": 4, "config": "htdemucs_ft.yaml"},
     "htdemucs_6s": {"ids": SIX_IDS, "sources": 6, "config": "htdemucs_6s.yaml"},
 }
+
+
+def install_lameenc_stub() -> ModuleType:
+    """Install a fail-closed codec stub for the official audio helper.
+
+    ``demucs.audio`` imports ``lameenc`` even though this report path only
+    calls its conversion helper.  The stub permits that import while making
+    every MP3 encoder attribute unavailable; it is installed immediately
+    before importing the authenticated upstream module.
+    """
+    stub = ModuleType("lameenc")
+
+    def blocked_attribute(name: str) -> Any:
+        raise RuntimeError(f"lameenc codec functionality is forbidden: {name}")
+
+    stub.__getattr__ = blocked_attribute  # type: ignore[attr-defined]
+    sys.modules["lameenc"] = stub
+    return stub
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -250,11 +270,14 @@ def run(source: Path, weights: Path, fixture: Path, fixture_sha: str, variant: s
     sys.path.insert(0, str(source))
     htdemucs = importlib.import_module("demucs.htdemucs")
     apply = importlib.import_module("demucs.apply")
-    audio = importlib.import_module("demucs.audio")
     import torch
     import torchaudio
 
     waveform, sample_rate = torchaudio.load(str(fixture))
+    lameenc_stub = install_lameenc_stub()
+    audio = importlib.import_module("demucs.audio")
+    if sys.modules.get("lameenc") is not lameenc_stub:
+        raise RuntimeError("official audio helper did not retain the fail-closed lameenc stub")
     waveform = audio.convert_audio(waveform, sample_rate, 44100, 2)
     waveform = waveform.unsqueeze(0)
     config_path = source / "demucs" / "remote" / CONFIGS[variant]["config"]
@@ -397,10 +420,47 @@ def main() -> int:
         assert CONFIGS["htdemucs_ft"]["sources"] == 4 and CONFIGS["htdemucs_6s"]["sources"] == 6
         assert MAX_INTERMEDIATE_TAP_ELEMENTS == 1 << 20
         assert "truncated" in f32_tap.__code__.co_varnames
+        stub = install_lameenc_stub()
+        assert sys.modules["lameenc"] is stub
+        try:
+            stub.Encoder
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("lameenc encoder attribute was exposed")
         source = Path(__file__).read_text(encoding="utf-8")
         assert source.index("dependency_path =") < source.index("sys.path.insert")
+        assert source.index("lameenc_stub = install_lameenc_stub()") < source.index('audio = importlib.import_module("demucs.audio")') < source.index("audio.convert_audio")
         assert "effective_bag_weights" in source
         assert '"gate_sha256"' in source
+        tree = ast.parse(source)
+        forbidden_imports = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+        assert "demucs.audio" not in forbidden_imports
+        assert "lameenc" not in forbidden_imports
+        assert sum(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "demucs.audio"
+            for node in ast.walk(tree)
+        ) == 1
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "import_module"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "lameenc"
+            for node in ast.walk(tree)
+        )
+        assert "install_lameenc_stub" in source
         print("htdemucs multi reference dumper self-test: PASS")
         return 0
     required = {

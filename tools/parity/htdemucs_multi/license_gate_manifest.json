@@ -15,6 +15,7 @@
     "roles": {
       "LICENSE": "a45a376fb0fcd4a3de06b6c096e62028929a2dcb",
       "demucs/apply.py": "1540f3d44fc8bbca1ce377cc80af3cd9212278be",
+      "demucs/audio.py": "31b29b3c348b29cfa7120c31542bc9a16ac24405",
       "demucs/hdemucs.py": "711d47157a975e04a0ffb044991d2dc3cfd54b66",
       "demucs/htdemucs.py": "5d2eaaa1eb2620a5d2147eb86361e9964fb94528",
       "demucs/pretrained.py": "80ae49cb1d3e1894f07eafbb49f95559a9f3de33",
@@ -42,16 +43,22 @@
     "source": "https://sigsep.github.io/datasets/musdb.html"
   },
   "dependency_audit": {
-    "source_file": "requirements_minimal.txt",
+    "source_file": "upstream_requirements_minimal.snapshot",
     "source_file_sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29",
-    "pyproject_sha256": "ef9e25565571c294530350623d051c9d8168dc095c93dbcc5c6156ba086f3fc7",
+    "pyproject_sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
     "rows_file": "dependency_audit.json",
-    "rows_file_sha256": "55cfbfaf511ca3b27b82b8a89ff4338889115f8336ccc3b7116f4eeb7c891f3c",
+    "rows_file_sha256": "54898661d18452beb1860a747d3508ea5bf8ed1f4faab99517066623c26795b1",
     "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
     "lock_sha256": null,
     "package_rows_sha256": null,
     "license_rows_sha256": null,
-    "forbidden_or_unreviewed_packages": ["dora-search", "einops", "julius", "lameenc", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"]
+    "active_import_closure": {
+      "path": "pyproject.toml",
+      "sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
+      "packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"],
+      "excluded_upstream_packages": ["lameenc"]
+    },
+    "forbidden_or_unreviewed_packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"]
   },
   "blockers": [
     "dependency lock and primary package license rows are not reviewed",

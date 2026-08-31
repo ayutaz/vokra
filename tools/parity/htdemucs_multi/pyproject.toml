@@ -7,7 +7,6 @@ dependencies = [
     "dora-search",
     "einops",
     "julius>=0.2.3",
-    "lameenc>=1.2",
     "numpy",
     "openunmix",
     "pyyaml",

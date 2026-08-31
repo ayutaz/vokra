@@ -4,8 +4,14 @@
   "python": "==3.12.*",
   "platform": "linux-x86_64",
   "direct_requirements_source": {
-    "path": "requirements_minimal.txt",
+    "path": "upstream_requirements_minimal.snapshot",
     "sha256": "397981fba141898fe727a6a7a3bd44b49265be37cf0e984bd4936eb7a46ffc29"
+  },
+  "active_import_closure": {
+    "path": "pyproject.toml",
+    "sha256": "040355f4b56d004f1b364135708fd6f2b909e9abddf928a30297e34c742976e0",
+    "packages": ["dora-search", "einops", "julius", "numpy", "openunmix", "pyyaml", "torch", "torchaudio", "tqdm"],
+    "excluded_upstream_packages": ["lameenc"]
   },
   "compatibility": {
     "status": "BLOCKED_UNSATISFIABLE_PY312_TORCHAUDIO",
@@ -27,6 +33,7 @@
     "exact package artifact bytes and primary license rows are not audited",
     "Python 3.12.14 torchaudio>=0.8,<2.1 is unsatisfiable: no cp312 wheel exists",
     "compatibility evidence log ed594c9014232b79e8bed1eceae767f0b339157b93c114aa8d9b3d418c6abeba was recorded at run commit 73307e99c83fdd59ca9693abdc343b929fb518de",
-    "lameenc is included by the upstream requirements contract and remains unreviewed"
+    "the authenticated upstream requirements snapshot includes GPL lameenc, but the curated active import closure excludes it",
+    "the active closure remains blocked until a compatible Python-3.12 lock and primary package/license audit are completed"
   ]
 }

@@ -16,10 +16,14 @@ members and their complete SHA-256 values are copied from the authenticated
 inspection manifest. The manifest remains `INSPECTION_ONLY` and
 `NO_UPLOAD`; a digest match does not grant weight redistribution rights.
 
-The upstream `requirements_minimal.txt` is the dependency contract. The lock
-must be generated and audited on VAST, then the exact lock and primary package
-license/artifact records may be committed. This checkout intentionally does
-not claim any dependency or bundled-native notice approval.
+The exact upstream `requirements_minimal.txt` bytes are retained as
+`upstream_requirements_minimal.snapshot` for authenticated provenance only;
+it is not an active Python manifest. The curated active `pyproject.toml`
+import closure excludes the known GPL `lameenc` codec; other dependency
+licenses remain unreviewed. The lock must be generated and audited on VAST,
+then the exact lock and primary package license/artifact records may be
+committed. This checkout intentionally does not claim any dependency or
+bundled-native notice approval.
 
 The future worker uses the official `demucs.htdemucs.HTDemucs` class and the
 official `BagOfModels`/`apply_model` aggregation from the pinned checkout. It
@@ -55,8 +59,16 @@ Python-3.12 `torchaudio<2.1` wheel fail closed. The upstream pin may be
 unsatisfiable on Python 3.12, and older Torch candidates may lack
 `get_unsafe_globals_in_checkpoint`; both wheel compatibility and scanner
 availability must be proven on VAST without changing the pin here. `numpy` is
-an additional source-import requirement in the sidecar (not an upstream
-direct requirement), while `lameenc` remains part of the upstream direct set.
+included in the curated active source-import closure. The upstream snapshot
+still contains `lameenc`, because it is part of the authenticated upstream
+contract. The official `demucs.audio` module imports the GPL encoder even
+though this route only needs its conversion helper, so the dumper installs a
+temporary fail-closed `lameenc` module stub immediately before that official
+import. The process-local stub makes any encoder attribute access raise; no
+MP3 functionality is exposed.
+The dumper then calls the pinned upstream `convert_audio` for the fixed
+operator fixture, preserving its 16 kHz mono to 44.1 kHz stereo numerics
+without a local resampler mirror.
 
 Until the lock and license audit are complete, every normal worker path exits
 2 before network, dependency resolution, checkpoint acquisition, or model
