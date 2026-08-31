@@ -14,6 +14,7 @@ PARITY_PROJECT="$VOKRA_ROOT/tools/parity/bigvgan"
 PREPARER="$VOKRA_ROOT/tools/parity/bigvgan_prepare_checkpoint.py"
 DUMPER="$VOKRA_ROOT/tools/parity/bigvgan_dump_reference.py"
 LICENSE_GATE="$PARITY_PROJECT/license_gate.py"
+LINUX_CLOSURE_AUDITOR="$PARITY_PROJECT/audit_linux_closure.py"
 LICENSE_MANIFEST="$PARITY_PROJECT/license_gate_manifest.json"
 SOURCE_REPOSITORY="https://github.com/NVIDIA/BigVGAN"
 MODEL_REPOSITORY="nvidia/bigvgan_base_24khz_100band"
@@ -44,7 +45,9 @@ manifest; the matching values remain mandatory environment inputs:
   BIGVGAN_CONFIG_SHA256=<64 lowercase hex>
   BIGVGAN_SOURCE_REVISION=<40 lowercase hex>
 The worker creates a GGUF and reference only on VAST, then runs the focused
-vokra-models parity test. It never uploads, publishes, or pushes anything.
+vokra-models parity test. Before owner approval, stage exact lock artifacts and
+run audit_linux_closure.py to produce a closure candidate; it never creates a
+signature. The worker never uploads, publishes, or pushes anything.
 EOF
 }
 
@@ -85,12 +88,12 @@ require_identity_inputs() {
 
 require_tooling() {
   local tool
-  for tool in uv cargo rustc git curl awk find tee wc tr grep; do
+  for tool in uv cargo rustc git curl awk find tee wc tr grep tar; do
     command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"
   done
   [[ -d "$VOKRA_ROOT/.git" ]] || die 'not a Vokra checkout'
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die 'BigVGAN lock is missing'
-  [[ -f "$PREPARER" && -f "$DUMPER" && -f "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" ]] || die 'BigVGAN parity tools or license gate are missing'
+  [[ -f "$PREPARER" && -f "$DUMPER" && -f "$LICENSE_GATE" && -f "$LICENSE_MANIFEST" && -f "$LINUX_CLOSURE_AUDITOR" ]] || die 'BigVGAN parity tools or license gate are missing'
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'VAST checkout must be clean'
 }
 
@@ -193,15 +196,17 @@ run_self_test() {
     'https://github.com/NVIDIA/BigVGAN' 'bigvgan_prepare_checkpoint.py' \
     'bigvgan_dump_reference.py' 'weights_only=True' 'cargo test --locked --release' \
     'parity_bigvgan_real' 'NO_UPLOAD' 'uv sync --project' '--frozen --python 3.12' 'license_gate.py' \
+    'audit_linux_closure.py' 'OWNER_REVIEW_REQUIRED' 'bigvgan-evidence.tar.gz' 'archive_sha256=' \
     'license_gate_manifest.json' '--no-project --offline --python 3.12' '--approval-evidence' \
     '<APPLE_APPROVAL_EVIDENCE>' '<APPLE_EVIDENCE_DIR>'; do
     grep -Fq -- "$token" "$path" || { log "self-test FAIL: missing token: $token"; fail=1; }
   done
   worker_block="$(awk '/^  VOKRA_BIGVGAN_BASE_GGUF=.*VOKRA_BIGVGAN_REFERENCE=/{seen=1} seen {print} seen && /grep -Fq .BIGVGAN_CPU_PARITY_SENTINEL/ {exit}' "$path")"
   for token in 'VOKRA_BIGVGAN_REFERENCE="$reference"' 'cargo test --locked --release' '"$TEST_NAME" --exact --nocapture' \
-    'tee -a "$log_file"' 'test result: ok. 1 passed' 'BIGVGAN_CPU_PARITY_SENTINEL'; do
+    'tee -a "$log_file"' 'require_vast_test_pass "$log_file"'; do
     grep -Fq -- "$token" <<<"$worker_block" || { log "self-test FAIL: real test command contract: $token"; fail=1; }
   done
+  grep -Fq 'BIGVGAN_CPU_PARITY_METRICS' "$path" || { log 'self-test FAIL: CPU metrics contract missing'; fail=1; }
   if grep -En '(^|[[:space:]])(git[[:space:]]+push|.*upload\.sh|.*publish-one\.sh|--push|--upload)([[:space:]]|$)' "$path" >/dev/null; then
     log 'self-test FAIL: publication command found'; fail=1
   fi
@@ -300,23 +305,48 @@ run_self_test() {
   UV_CACHE_DIR="${BIGVGAN_UV_CACHE_DIR:-/tmp/vokra-bigvgan-uv-cache}" \
     uv run --project "$self_project" --frozen --python 3.12 python "$DUMPER" --self-test \
     >/dev/null || { log 'self-test FAIL: safe dumper self-test'; fail=1; }
+  UV_CACHE_DIR="${BIGVGAN_UV_CACHE_DIR:-/tmp/vokra-bigvgan-uv-cache}" \
+    uv run --project "$self_project" --frozen --python 3.12 python "$LINUX_CLOSURE_AUDITOR" --self-test \
+    >/dev/null || { log 'self-test FAIL: Linux closure auditor self-test'; fail=1; }
+  local parity_log
+  parity_log="$(mktemp "${TMPDIR:-/tmp}/bigvgan-parity-selftest.XXXXXX")"
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    > "$parity_log"
+  require_vast_test_pass "$parity_log" || { log 'self-test FAIL: valid CPU parity evidence rejected'; fail=1; }
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000020001 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000020001 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    > "$parity_log"
+  if require_vast_test_pass "$parity_log" >/dev/null 2>&1; then
+    log 'self-test FAIL: over-bound CPU parity evidence accepted'; fail=1
+  fi
+  rm -f -- "$parity_log"
   (( fail == 0 )) || return 1
   echo 'run-bigvgan-validation.sh self-test: OK'
 }
 
 require_vast_test_pass() {
-  local output="$1" test_count named_count result_count result_lines sentinel_count
+  local output="$1" test_count named_count result_count result_lines metric_count sentinel_count
   test_count="$(grep -Ev '^test result:' "$output" | grep -Ec '^test ' || true)"
   named_count="$(grep -Ec "^test ${TEST_NAME//./\\.} \.\.\. ok$" "$output" || true)"
   result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$output" || true)"
   result_lines="$(grep -Ec '^test result:' "$output" || true)"
-  sentinel_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_SENTINEL max_abs=[0-9.eE+-]+$' "$output" || true)"
-  [[ "$test_count" == 1 && "$named_count" == 1 && "$result_count" == 1 && "$result_lines" == 1 && "$sentinel_count" == 1 ]] \
+  metric_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.000020000 reference=NVIDIA\.BigVGAN fixture=vast_generated_official$' "$output" || true)"
+  sentinel_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.000020000 reference=NVIDIA\.BigVGAN fixture=vast_generated_official$' "$output" || true)"
+  [[ "$test_count" == 1 && "$named_count" == 1 && "$result_count" == 1 && "$result_lines" == 1 && "$metric_count" == 1 && "$sentinel_count" == 1 ]] \
     || die 'focused CPU evidence must contain one exact test/result/sentinel'
+  awk '/^BIGVGAN_CPU_PARITY_METRICS / { for (i = 1; i <= NF; i++) { split($i, pair, "="); if (pair[1] == "max_abs" && (pair[2] + 0) > 0.00002) exit 1 } }' "$output" \
+    || die 'focused CPU metric exceeds registered 0.000020000 bound'
 }
 
 main() {
-  local work_dir='' approval_evidence='' self_test=0 stamp inputs source checkpoint config prepared reference gguf log_file
+  local work_dir='' approval_evidence='' self_test=0 stamp inputs source checkpoint config prepared reference gguf log_file archive archive_sha
   local seen_work_dir=0 seen_approval=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
@@ -342,6 +372,9 @@ main() {
   # shellcheck disable=SC2154
   # rc is assigned by the EXIT trap itself.
   trap 'rc=$?; echo "execution_status=${rc}" > "$work_dir/logs/summary.txt"; exit "$rc"' EXIT
+  printf '%s\n' \
+    "uv run --no-project --offline --python 3.12 python $LINUX_CLOSURE_AUDITOR --lock $PARITY_PROJECT/uv.lock --artifacts-dir <STAGED_LOCK_ARTIFACTS> --output $work_dir/logs/linux-closure-candidate.json" \
+    > "$work_dir/logs/linux-closure-candidate-command.txt"
   uv sync --project "$PARITY_PROJECT" --frozen --python 3.12
   download_file "$BIGVGAN_MODEL_REVISION" bigvgan_generator.pt "$checkpoint"
   download_file "$BIGVGAN_MODEL_REVISION" config.json "$config"
@@ -372,11 +405,14 @@ main() {
   VOKRA_BIGVGAN_BASE_GGUF="$gguf" VOKRA_BIGVGAN_REFERENCE="$reference" CARGO_BUILD_JOBS=1 \
     cargo test --locked --release -p vokra-models --test parity_bigvgan_real -- \
     "$TEST_NAME" --exact --nocapture 2>&1 | tee -a "$log_file"
-  grep -Fq 'test result: ok. 1 passed' "$log_file" || die 'focused CPU test did not report exactly one passing test'
-  grep -Fq 'BIGVGAN_CPU_PARITY_SENTINEL' "$log_file" || die 'CPU parity sentinel missing'
-  printf 'execution_status=PASS\nmodel_repository=%s\nmodel_revision=%s\ncheckpoint_sha256=%s\nconfig_sha256=%s\nsource_repository=%s\nsource_revision=%s\ngguf_sha256=%s\nreference_sha256=%s\n' \
+  require_vast_test_pass "$log_file"
+  printf 'execution_status=PASS\nmodel_repository=%s\nmodel_revision=%s\ncheckpoint_sha256=%s\nconfig_sha256=%s\nsource_repository=%s\nsource_revision=%s\ngguf_sha256=%s\nreference_sha256=%s\nregistered_cpu_atol=0.000020000\npublication=NO_UPLOAD\n' \
     "$MODEL_REPOSITORY" "$BIGVGAN_MODEL_REVISION" "$BIGVGAN_CHECKPOINT_SHA256" "$BIGVGAN_CONFIG_SHA256" \
     "$SOURCE_REPOSITORY" "$BIGVGAN_SOURCE_REVISION" "$(sha256_file "$gguf")" "$(sha256_file "$reference")" > "$work_dir/logs/summary.txt"
+  archive="$work_dir/bigvgan-evidence.tar.gz"
+  tar -czf "$archive" -C "$work_dir" logs reference
+  archive_sha="$(sha256_file "$archive")"
+  printf 'archive=%s\narchive_sha256=%s\npublication=NO_UPLOAD\n' "$archive" "$archive_sha" >> "$work_dir/logs/summary.txt"
   trap - EXIT
   log "PASS: pull $work_dir/logs and $reference, then destroy the VAST instance"
 }

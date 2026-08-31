@@ -11,6 +11,8 @@ use vokra_models::bigvgan::{BigVGan, BigVGanVariant};
 
 const GGUF_ENV: &str = "VOKRA_BIGVGAN_BASE_GGUF";
 const REFERENCE_ENV: &str = "VOKRA_BIGVGAN_REFERENCE";
+const CPU_ATOL: f32 = 2.0e-5;
+const METAL_ATOL: f32 = 0.01;
 
 #[test]
 fn parity_bigvgan_base_real_weight_mel_to_waveform() {
@@ -61,12 +63,18 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
         .zip(expected.iter())
         .map(|(value, reference)| (value - reference).abs())
         .fold(0.0f32, f32::max);
-    eprintln!("BigVGAN base real-weight parity: samples=256, max_abs={max_abs:e}");
-    assert!(
-        max_abs <= 2e-5,
-        "BigVGAN base max |Δ| {max_abs:e} exceeds the 2e-5 FP32 bound"
+    eprintln!(
+        "BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs={max_abs:.9} atol={CPU_ATOL:.9} \
+         reference=NVIDIA.BigVGAN fixture=vast_generated_official"
     );
-    eprintln!("BIGVGAN_CPU_PARITY_SENTINEL max_abs={max_abs:e}");
+    assert!(
+        max_abs <= CPU_ATOL,
+        "BigVGAN base max |Δ| {max_abs:e} exceeds the registered {CPU_ATOL:e} FP32 bound"
+    );
+    eprintln!(
+        "BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs={max_abs:.9} atol={CPU_ATOL:.9} \
+         reference=NVIDIA.BigVGAN fixture=vast_generated_official"
+    );
 
     #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
     {
@@ -83,11 +91,16 @@ fn parity_bigvgan_base_real_weight_mel_to_waveform() {
             .map(|(cpu, gpu)| (cpu - gpu).abs())
             .fold(0.0f32, f32::max);
         assert!(
-            gpu_max_abs <= 0.01,
+            gpu_max_abs <= METAL_ATOL,
             "BigVGAN CPU/Metal max |Δ| {gpu_max_abs:e} exceeds the established FP32 GPU gate"
         );
         eprintln!(
-            "BIGVGAN_METAL_PARITY_SENTINEL max_abs={gpu_max_abs:e} route=resident_one_final_readback"
+            "BIGVGAN_METAL_PARITY_METRICS samples=256 max_abs={gpu_max_abs:.9} atol={METAL_ATOL:.9} \
+             route=resident_one_final_readback reference=CPU"
+        );
+        eprintln!(
+            "BIGVGAN_METAL_PARITY_SENTINEL samples=256 max_abs={gpu_max_abs:.9} atol={METAL_ATOL:.9} \
+             route=resident_one_final_readback reference=CPU"
         );
     }
 }

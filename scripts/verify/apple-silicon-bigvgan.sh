@@ -18,6 +18,8 @@ EXPECTED_MODEL_REVISION="0f6305d0e010eaafdbf649978f46c3b5af099343"
 EXPECTED_CHECKPOINT_SHA256="ca8bced4d3ef588e654742f732455c16abb004e49d7d3bf03edade84d3e982f2"
 EXPECTED_CONFIG_SHA256="885553969751bfd87f1980017364e968917cd34347376ed08238db673ea5b46b"
 EXPECTED_SOURCE_REVISION="7d2b454564a6c7d014227f635b7423881f14bdac"
+CPU_ATOL="0.000020000"
+METAL_ATOL="0.010000000"
 MIN_MEMORY_BYTES=16000000000
 MIN_FREE_DISK_KIB=12000000
 
@@ -104,7 +106,7 @@ require_host() {
 
 require_tooling() {
   local tool
-  for tool in cargo rustc git shasum awk find tee sysctl xcrun sw_vers wc; do command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"; done
+  for tool in cargo rustc git shasum awk find tee sysctl xcrun sw_vers wc tar; do command -v "$tool" >/dev/null 2>&1 || die "required tool missing: $tool"; done
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || die 'not a Vokra checkout'
   [[ -f "$TEST_SOURCE" ]] || die 'BigVGAN real parity source is missing'
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die 'Apple checkout must be clean'
@@ -116,7 +118,7 @@ run_self_test() {
   local path="${BASH_SOURCE[0]}" fail=0 token cpu_block metal_block
   for token in 'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' 'xcrun -f metal' \
     'parity_bigvgan_real.rs' 'real-weight BigVGAN base parity' 'BigVGAN Metal' \
-    'one final readback' 'NO_UPLOAD' '--gguf-sha256' '--reference-sha256' \
+    'one final readback' 'NO_UPLOAD' 'CPU_ATOL' 'METAL_ATOL' 'archive_sha256=' 'tar -czf' '--gguf-sha256' '--reference-sha256' \
     '--model-revision' '--checkpoint-sha256' '--config-sha256' '--source-revision' \
     '--approval-evidence' 'license_preflight' 'require_disjoint_evidence' '! -L' \
     'evidence directory must be absent before validation'; do
@@ -166,44 +168,71 @@ run_self_test() {
   printf '%s\n' \
     "test $TEST_NAME ... ok" \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
-    'BIGVGAN_CPU_PARITY_SENTINEL max_abs=1.0e-5' > "$temporary/valid.log"
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' > "$temporary/valid.log"
   require_test_pass "$temporary/valid.log" 'BIGVGAN_CPU_PARITY_SENTINEL' || { log 'self-test FAIL: valid test evidence rejected'; fail=1; }
   printf '%s\n' \
     "test $TEST_NAME ... ok" \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
-    'BIGVGAN_CPU_PARITY_SENTINEL max_abs=1.0e-5' \
-    'BIGVGAN_CPU_PARITY_SENTINEL max_abs=1.0e-5' > "$temporary/duplicate.log"
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' > "$temporary/duplicate.log"
   if require_test_pass "$temporary/duplicate.log" 'BIGVGAN_CPU_PARITY_SENTINEL' >/dev/null 2>&1; then
     log 'self-test FAIL: duplicate sentinel accepted'; fail=1
   fi
   printf '%s\n' \
     "test $TEST_NAME ... ok" \
     'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; unexpected' \
-    'BIGVGAN_CPU_PARITY_SENTINEL max_abs=1.0e-5' > "$temporary/suffix.log"
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000010000 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' > "$temporary/suffix.log"
   if require_test_pass "$temporary/suffix.log" 'BIGVGAN_CPU_PARITY_SENTINEL' >/dev/null 2>&1; then
     log 'self-test FAIL: malformed result accepted'; fail=1
+  fi
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=0.000020001 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' \
+    'BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=0.000020001 atol=0.000020000 reference=NVIDIA.BigVGAN fixture=vast_generated_official' > "$temporary/cpu-over-bound.log"
+  if require_test_pass "$temporary/cpu-over-bound.log" BIGVGAN_CPU_PARITY_SENTINEL >/dev/null 2>&1; then
+    log 'self-test FAIL: CPU over-bound metric accepted'; fail=1
+  fi
+  printf '%s\n' \
+    "test $TEST_NAME ... ok" \
+    'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' \
+    'BIGVGAN_METAL_PARITY_METRICS samples=256 max_abs=0.010000001 atol=0.010000000 route=resident_one_final_readback reference=CPU' \
+    'BIGVGAN_METAL_PARITY_SENTINEL samples=256 max_abs=0.010000001 atol=0.010000000 route=resident_one_final_readback reference=CPU' > "$temporary/metal-over-bound.log"
+  if require_test_pass "$temporary/metal-over-bound.log" BIGVGAN_METAL_PARITY_SENTINEL >/dev/null 2>&1; then
+    log 'self-test FAIL: Metal over-bound metric accepted'; fail=1
   fi
   (( fail == 0 )) || return 1
   echo 'apple-silicon-bigvgan.sh self-test: OK'
 }
 
 require_test_pass() {
-  local output="$1" sentinel="$2" test_count named_count result_count result_lines sentinel_count
+  local output="$1" sentinel="$2" test_count named_count result_count result_lines metric_count sentinel_count bound
   test_count="$(grep -Ev '^test result:' "$output" | grep -Ec '^test ' || true)"
   named_count="$(grep -Ec "^test ${TEST_NAME//./\\.} \.\.\. ok$" "$output" || true)"
   result_count="$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out(; finished in [0-9]+\.[0-9]+s)?$' "$output" || true)"
   result_lines="$(grep -Ec '^test result:' "$output" || true)"
   case "$sentinel" in
-    BIGVGAN_CPU_PARITY_SENTINEL) sentinel_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_SENTINEL max_abs=[0-9.eE+-]+$' "$output" || true)" ;;
-    BIGVGAN_METAL_PARITY_SENTINEL) sentinel_count="$(grep -Ec '^BIGVGAN_METAL_PARITY_SENTINEL max_abs=[0-9.eE+-]+ route=resident_one_final_readback$' "$output" || true)" ;;
+    BIGVGAN_CPU_PARITY_SENTINEL)
+      metric_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_METRICS samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.000020000 reference=NVIDIA\.BigVGAN fixture=vast_generated_official$' "$output" || true)"
+      sentinel_count="$(grep -Ec '^BIGVGAN_CPU_PARITY_SENTINEL samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.000020000 reference=NVIDIA\.BigVGAN fixture=vast_generated_official$' "$output" || true)"
+      bound=0.00002 ;;
+    BIGVGAN_METAL_PARITY_SENTINEL)
+      metric_count="$(grep -Ec '^BIGVGAN_METAL_PARITY_METRICS samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.010000000 route=resident_one_final_readback reference=CPU$' "$output" || true)"
+      sentinel_count="$(grep -Ec '^BIGVGAN_METAL_PARITY_SENTINEL samples=256 max_abs=[0-9]+\.[0-9]{9} atol=0\.010000000 route=resident_one_final_readback reference=CPU$' "$output" || true)"
+      bound=0.01 ;;
     *) die "unknown BigVGAN sentinel: $sentinel"; return 2 ;;
   esac
-  [[ "$test_count" == 1 && "$named_count" == 1 && "$result_count" == 1 && "$result_lines" == 1 && "$sentinel_count" == 1 ]] \
-    || { die "BigVGAN evidence must contain one exact test/result/sentinel"; return 2; }
+  [[ "$test_count" == 1 && "$named_count" == 1 && "$result_count" == 1 && "$result_lines" == 1 && "$metric_count" == 1 && "$sentinel_count" == 1 ]] \
+    || { die "BigVGAN evidence must contain one exact test/result/metric/sentinel"; return 2; }
+  awk -v bound="$bound" '/_METRICS / { for (i = 1; i <= NF; i++) { split($i, pair, "="); if (pair[1] == "max_abs" && (pair[2] + 0) > bound) exit 1 } }' "$output" \
+    || { die "BigVGAN metric exceeds registered bound"; return 2; }
 }
 
 main() {
-  local self_test=0 gguf='' digest='' reference='' reference_digest='' approval='' evidence='' model_revision='' checkpoint_digest='' config_digest='' source_revision='' cpu_log metal_log
+  local self_test=0 gguf='' digest='' reference='' reference_digest='' approval='' evidence='' model_revision='' checkpoint_digest='' config_digest='' source_revision='' cpu_log metal_log archive archive_sha
   local seen_gguf=0 seen_digest=0 seen_reference=0 seen_reference_digest=0 seen_approval=0 seen_model=0 seen_checkpoint=0 seen_config=0 seen_source=0 seen_evidence=0 seen_self_test=0
   while (( $# > 0 )); do
     case "$1" in
@@ -244,6 +273,8 @@ main() {
   require_regular_file 'reference' "$reference"
   [[ "$(sha256_file "$reference")" == "$reference_digest" ]] || die 'reference digest mismatch'
   require_disjoint_evidence "$evidence" "$VOKRA_ROOT" "$gguf" "$reference" "$approval"
+  archive="$evidence.tar.gz"
+  [[ ! -e "$archive" && ! -L "$archive" ]] || die 'evidence archive must be absent before validation'
   log_file="$evidence/validation.log"
   {
     echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -270,8 +301,11 @@ main() {
     cargo test --locked --release -p vokra-models --features metal --test parity_bigvgan_real -- \
     "$TEST_NAME" --exact --nocapture 2>&1 | tee "$metal_log" | tee -a "$log_file"
   require_test_pass "$metal_log" BIGVGAN_METAL_PARITY_SENTINEL
-  printf 'execution_status=PASS\nmodel_repository=%s\nmodel_revision=%s\ncheckpoint_sha256=%s\nconfig_sha256=%s\nsource_repository=https://github.com/NVIDIA/BigVGAN\nsource_revision=%s\ngguf_sha256=%s\nreference_sha256=%s\nmetal_route=RESIDENT_ONE_FINAL_READBACK\npublication=NO_UPLOAD\n' \
-    "$MODEL_REPOSITORY" "$model_revision" "$checkpoint_digest" "$config_digest" "$source_revision" "$digest" "$reference_digest" > "$evidence/summary.txt"
+  printf 'execution_status=PASS\nmodel_repository=%s\nmodel_revision=%s\ncheckpoint_sha256=%s\nconfig_sha256=%s\nsource_repository=https://github.com/NVIDIA/BigVGAN\nsource_revision=%s\ngguf_sha256=%s\nreference_sha256=%s\nregistered_cpu_atol=%s\nregistered_metal_atol=%s\nmetal_route=RESIDENT_ONE_FINAL_READBACK\npublication=NO_UPLOAD\n' \
+    "$MODEL_REPOSITORY" "$model_revision" "$checkpoint_digest" "$config_digest" "$source_revision" "$digest" "$reference_digest" "$CPU_ATOL" "$METAL_ATOL" > "$evidence/summary.txt"
+  tar -czf "$archive" -C "$(dirname "$evidence")" "$(basename "$evidence")"
+  archive_sha="$(sha256_file "$archive")"
+  printf 'archive=%s\narchive_sha256=%s\n' "$archive" "$archive_sha" >> "$evidence/summary.txt"
   log "PASS: evidence written to $evidence"
 }
 
