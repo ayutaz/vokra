@@ -762,6 +762,33 @@ mod tests {
     }
 
     #[test]
+    fn q8_row_shape_is_validated_by_reader() {
+        // Total elements alone would accept [16, 2] (32 values), but ggml
+        // blocks cannot cross the innermost row boundary.
+        let mut v = Vec::new();
+        v.extend_from_slice(b"GGUF");
+        v.extend_from_slice(&3u32.to_le_bytes());
+        v.extend_from_slice(&1u64.to_le_bytes());
+        v.extend_from_slice(&0u64.to_le_bytes());
+        v.extend_from_slice(&1u64.to_le_bytes());
+        v.extend_from_slice(b"q");
+        v.extend_from_slice(&2u32.to_le_bytes());
+        v.extend_from_slice(&16u64.to_le_bytes());
+        v.extend_from_slice(&2u64.to_le_bytes());
+        v.extend_from_slice(&8u32.to_le_bytes()); // Q8_0
+        v.extend_from_slice(&0u64.to_le_bytes());
+        v.resize(v.len().next_multiple_of(32) + 68, 0);
+        assert!(matches!(
+            GgufFile::parse(v),
+            Err(GgufError::BlockSizeMisaligned {
+                dtype: 8,
+                elements: 16,
+                block_size: 32,
+            })
+        ));
+    }
+
+    #[test]
     fn tensor_info_and_offsets_resolve() {
         let file = GgufFile::parse(demo_builder().to_bytes().unwrap()).unwrap();
         let f32 = file.tensor_info("t.f32").expect("present");

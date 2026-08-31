@@ -1,8 +1,8 @@
 //! Scalar, `unsafe`-free dequantization of GGUF tensor payloads to `f32`.
 //!
 //! This is the single canonical decode path (FR-LD-07 / FR-QT-01): dense
-//! `F32` / `F16` and the K-quant super-block types `Q4_K` / `Q5_K` / `Q6_K`
-//! all resolve through [`dequantize`], so native models decode weights once
+//! `F32` / `F16`, `Q8_0`, and the K-quant super-block types `Q4_K` / `Q5_K` /
+//! `Q6_K` all resolve through [`dequantize`], so native models decode weights once
 //! through one place instead of open-coding per-dtype byte loops.
 //!
 //! # Placement (deliberate)
@@ -15,6 +15,9 @@
 //!
 //! # On-disk layout provenance
 //!
+//! The Q8_0 `block_q8_0` declaration is pinned to official ggml commit
+//! `d4716378882593333721eb33f153144b6885caf2`, path `src/ggml-common.h`:
+//! <https://github.com/ggml-org/ggml/blob/d4716378882593333721eb33f153144b6885caf2/src/ggml-common.h>.
 //! The K-quant `block_q*_K` super-block layouts are transcribed from ggml
 //! `k_quants.h` / `dequantize_row_q*_K` (ggml / llama.cpp are MIT). This is a
 //! data-format specification, not a code copy — the exact byte layout is what
@@ -32,6 +35,7 @@ use alloc::{borrow::ToOwned, format, vec::Vec};
 mod q4_k;
 mod q5_k;
 mod q6_k;
+mod q8_0;
 
 /// Decodes a tensor payload of the given dtype into owned `f32` values.
 ///
@@ -52,6 +56,7 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
         GgmlType::F32 => decode_f32(bytes),
         GgmlType::F16 => decode_f16(bytes),
         GgmlType::BF16 => decode_bf16(bytes),
+        GgmlType::Q8_0 => q8_0::dequantize(bytes, n_elements),
         GgmlType::Q4K => q4_k::dequantize(bytes, n_elements),
         GgmlType::Q5K => q5_k::dequantize(bytes, n_elements),
         GgmlType::Q6K => q6_k::dequantize(bytes, n_elements),

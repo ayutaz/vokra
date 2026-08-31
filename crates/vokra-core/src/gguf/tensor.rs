@@ -1,11 +1,16 @@
 //! GGUF tensor dtype and tensor-info descriptors.
 //!
-//! The dense float types `F32` and `F16` (M0) plus the K-quant super-block
-//! types `Q4_K`, `Q5_K`, `Q6_K` (M1-02, FR-LD-07 / FR-QT-01) are accepted.
+//! The dense float types `F32` and `F16` (M0), `Q8_0`, plus the K-quant
+//! super-block types `Q4_K`, `Q5_K`, `Q6_K` (M1-02, FR-LD-07 / FR-QT-01) are
+//! accepted.
 //! The GGUF / ggml type tags are part of the on-disk format: `GGML_TYPE_F32 =
-//! 0`, `GGML_TYPE_F16 = 1`, `GGML_TYPE_Q4_K = 12`, `GGML_TYPE_Q5_K = 13`,
-//! `GGML_TYPE_Q6_K = 14` (source: ggml-org/ggml `ggml.h` `enum ggml_type` and
-//! <https://github.com/ggml-org/ggml/blob/master/docs/gguf.md>).
+//! 0`, `GGML_TYPE_F16 = 1`, `GGML_TYPE_Q8_0 = 8`, `GGML_TYPE_Q4_K = 12`,
+//! `GGML_TYPE_Q5_K = 13`, `GGML_TYPE_Q6_K = 14`. The Q8_0 tag and block
+//! declaration are pinned to the official ggml source at commit
+//! `d4716378882593333721eb33f153144b6885caf2`, path `src/ggml-common.h`
+//! (`block_q8_0`):
+//! <https://github.com/ggml-org/ggml/blob/d4716378882593333721eb33f153144b6885caf2/src/ggml-common.h>.
+//! Container rules are pinned to that commit's `docs/gguf.md`.
 //!
 //! The K-quant *on-disk block layout* is transcribed from ggml `k_quants`
 //! (ggml / llama.cpp are MIT); this is a data-format spec, not a code copy —
@@ -14,9 +19,9 @@
 //! acceleration is a documented follow-up in `vokra-backend-cpu`.
 //!
 //! IQ2 / other i-quant families remain out of scope (FR-QT-01 marks them
-//! 極小デバイス用). A tensor declaring any tag other than `0`, `1`, `12`,
-//! `13`, `14` is rejected with [`GgufError::UnsupportedDtype`] rather than
-//! silently mishandled.
+//! 極小デバイス用). A tensor declaring any tag other than `0`, `1`, `8`, `12`,
+//! `13`, `14`, or `30` is rejected with [`GgufError::UnsupportedDtype`] rather
+//! than silently mishandled.
 
 use super::GgufError;
 // M5-03-T05: `String` / `Vec` are `alloc` types (core-clean, no `std::`); the
@@ -49,8 +54,8 @@ pub const MAX_TENSOR_DIMS: usize = 8;
 /// `QK_K`.
 pub const QK_K: usize = 256;
 
-/// Tensor element type: the dense float types plus the K-quant super-block
-/// types (`Q4_K` / `Q5_K` / `Q6_K`).
+/// Tensor element type: the dense float types plus the quantized block types
+/// (`Q8_0` and `Q4_K` / `Q5_K` / `Q6_K`).
 ///
 /// Discriminants are the on-disk ggml type tags and are load-bearing (written
 /// to and read from the file verbatim); they must never be reordered.
@@ -61,6 +66,9 @@ pub enum GgmlType {
     F32 = 0,
     /// IEEE-754 16-bit float, ggml type tag `1`. 2 bytes per element.
     F16 = 1,
+    /// Symmetric 8-bit quantization, ggml type tag `8`. Each 32-element block
+    /// is an FP16 scale followed by 32 signed bytes (34 bytes total).
+    Q8_0 = 8,
     /// 4-bit K-quant, ggml type tag `12`. 256-element super-block, 144 bytes.
     Q4K = 12,
     /// 5-bit K-quant, ggml type tag `13`. 256-element super-block, 176 bytes.
@@ -80,12 +88,14 @@ impl GgmlType {
     /// Converts an on-disk ggml type tag to a [`GgmlType`].
     ///
     /// Returns [`GgufError::UnsupportedDtype`] for any tag other than the dense
-    /// float types (`0`, `1`, `30`) and the K-quant types (`12`, `13`, `14`). Other
-    /// quantized families (IQ2, Q2_K, Q8_0, …) are intentionally unsupported.
+    /// float types (`0`, `1`, `30`) and the supported quantized types (`8`,
+    /// `12`, `13`, `14`). Other quantized families (IQ2, Q2_K, …) remain
+    /// intentionally unsupported.
     pub fn from_tag(tag: u32) -> Result<Self, GgufError> {
         match tag {
             0 => Ok(Self::F32),
             1 => Ok(Self::F16),
+            8 => Ok(Self::Q8_0),
             12 => Ok(Self::Q4K),
             13 => Ok(Self::Q5K),
             14 => Ok(Self::Q6K),
@@ -102,11 +112,12 @@ impl GgmlType {
     /// Number of elements in one storage block.
     ///
     /// `1` for the dense float types (each element is independently sized);
-    /// [`QK_K`] (256) for every K-quant, which stores quants in fixed
-    /// super-blocks.
+    /// 32 for `Q8_0`; [`QK_K`] (256) for every K-quant, which stores quants in
+    /// fixed super-blocks.
     pub fn block_size(self) -> usize {
         match self {
             Self::F32 | Self::F16 | Self::BF16 => 1,
+            Self::Q8_0 => 32,
             Self::Q4K | Self::Q5K | Self::Q6K => QK_K,
         }
     }
@@ -115,12 +126,14 @@ impl GgmlType {
     ///
     /// For the dense types this is the element size (4 / 2 bytes). For the
     /// K-quants it is the exact `block_q*_K` struct size from ggml
-    /// `k_quants.h`: Q4_K = 144, Q5_K = 176, Q6_K = 210 bytes per 256-element
-    /// super-block. These are pinned by the dequant round-trip tests.
+    /// `k_quants.h`: Q8_0 = 34 bytes per 32-element block, Q4_K = 144,
+    /// Q5_K = 176, Q6_K = 210 bytes per 256-element super-block. These are
+    /// pinned by the dequant round-trip tests.
     pub fn type_size(self) -> usize {
         match self {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
+            Self::Q8_0 => 34,
             Self::Q4K => 144,
             Self::Q5K => 176,
             Self::Q6K => 210,
@@ -146,6 +159,46 @@ impl GgmlType {
         (n_elements / block)
             .checked_mul(self.type_size() as u64)
             .ok_or(GgufError::Overflow)
+    }
+
+    /// Byte length for a tensor with the supplied GGUF dimensions.
+    ///
+    /// Q8_0 blocks cannot cross a row boundary: the innermost wire dimension
+    /// (`ne[0]`) must itself be a whole number of blocks. Checking only the
+    /// total element count would incorrectly accept e.g. Q8_0 dimensions
+    /// `[16, 2]`, even though each row contains only half a block. Rank-0
+    /// Q8_0 tensors are rejected for the same reason. Existing K-quant
+    /// converters historically store source-order dimensions (for example
+    /// `[2, 256]`) and retain their total-only contract for compatibility with
+    /// published artifacts; changing that convention requires an artifact
+    /// migration outside this core slice. Dense types retain their ordinary
+    /// scalar/rank-0 behavior.
+    pub fn payload_size_for_dimensions(self, dimensions: &[u64]) -> Result<u64, GgufError> {
+        let mut n_elements = 1u64;
+        for &dimension in dimensions {
+            n_elements = n_elements
+                .checked_mul(dimension)
+                .ok_or(GgufError::Overflow)?;
+        }
+        let block_size = self.block_size() as u64;
+        if self == Self::Q8_0 && block_size > 1 {
+            let innermost = dimensions
+                .first()
+                .copied()
+                .ok_or(GgufError::BlockSizeMisaligned {
+                    dtype: self.tag(),
+                    elements: n_elements,
+                    block_size: self.block_size(),
+                })?;
+            if innermost % block_size != 0 {
+                return Err(GgufError::BlockSizeMisaligned {
+                    dtype: self.tag(),
+                    elements: innermost,
+                    block_size: self.block_size(),
+                });
+            }
+        }
+        self.payload_size(n_elements)
     }
 }
 
@@ -187,7 +240,7 @@ impl GgufTensorInfo {
     /// element count is not a whole number of super-blocks, or
     /// [`GgufError::Overflow`] on `u64` overflow.
     pub fn byte_len(&self) -> Result<u64, GgufError> {
-        self.dtype.payload_size(self.element_count()?)
+        self.dtype.payload_size_for_dimensions(&self.dimensions)
     }
 }
 
@@ -272,6 +325,7 @@ mod tests {
         for ty in [
             GgmlType::F32,
             GgmlType::F16,
+            GgmlType::Q8_0,
             GgmlType::BF16,
             GgmlType::Q4K,
             GgmlType::Q5K,
@@ -283,6 +337,97 @@ mod tests {
         assert!(matches!(
             GgmlType::from_tag(11),
             Err(GgufError::UnsupportedDtype(11))
+        ));
+    }
+
+    #[test]
+    fn q8_0_tag_and_block_layout_match_checked_in_precedent() {
+        assert_eq!(GgmlType::Q8_0.tag(), 8);
+        assert_eq!(GgmlType::from_tag(8).unwrap(), GgmlType::Q8_0);
+        assert_eq!(GgmlType::Q8_0.block_size(), 32);
+        assert_eq!(GgmlType::Q8_0.type_size(), 34);
+        assert_eq!(GgmlType::Q8_0.payload_size(32).unwrap(), 34);
+        assert_eq!(GgmlType::Q8_0.payload_size(64).unwrap(), 68);
+    }
+
+    #[test]
+    fn q8_0_rejects_partial_block() {
+        assert!(matches!(
+            GgmlType::Q8_0.payload_size(31),
+            Err(GgufError::BlockSizeMisaligned {
+                dtype: 8,
+                elements: 31,
+                block_size: 32,
+            })
+        ));
+    }
+
+    #[test]
+    fn q8_0_checks_innermost_wire_dimension_not_only_total() {
+        assert!(matches!(
+            GgufTensorInfo {
+                name: "q".to_owned(),
+                dimensions: vec![16, 2],
+                dtype: GgmlType::Q8_0,
+                offset: 0,
+            }
+            .byte_len(),
+            Err(GgufError::BlockSizeMisaligned {
+                dtype: 8,
+                elements: 16,
+                block_size: 32,
+            })
+        ));
+        assert_eq!(
+            GgufTensorInfo {
+                name: "q".to_owned(),
+                dimensions: vec![32, 1],
+                dtype: GgmlType::Q8_0,
+                offset: 0,
+            }
+            .byte_len()
+            .unwrap(),
+            34
+        );
+    }
+
+    #[test]
+    fn rank0_quantized_tensor_is_rejected() {
+        assert!(matches!(
+            GgufTensorInfo {
+                name: "q".to_owned(),
+                dimensions: vec![],
+                dtype: GgmlType::Q8_0,
+                offset: 0,
+            }
+            .byte_len(),
+            Err(GgufError::BlockSizeMisaligned {
+                dtype: 8,
+                elements: 1,
+                block_size: 32,
+            })
+        ));
+    }
+
+    #[test]
+    fn legacy_kquant_source_order_dimensions_remain_accepted() {
+        // Existing converters write source-order K-quant dimensions such as
+        // [2, 256]. Preserve that published-artifact contract while Q8_0
+        // adopts the row-aware GGUF wire check above.
+        assert_eq!(
+            GgmlType::Q4K
+                .payload_size_for_dimensions(&[2, 256])
+                .unwrap(),
+            288
+        );
+    }
+
+    #[test]
+    fn q8_0_payload_size_rejects_byte_length_overflow() {
+        let whole_blocks = u64::MAX - (u64::MAX % 32);
+        assert!(matches!(
+            GgmlType::Q8_0.payload_size(whole_blocks),
+            Err(GgufError::Overflow)
         ));
     }
 
