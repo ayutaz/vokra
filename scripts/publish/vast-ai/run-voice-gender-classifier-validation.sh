@@ -216,6 +216,9 @@ run_self_test() {
     'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=150000000' \
     '"$VOKRA_ROOT/target/release/vokra-cli" convert' \
     'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models' \
+    'cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"' \
+    '(cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"' \
+    '(cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"' \
     'parity_voice_gender_classifier' 'VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED' \
     'VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED' 'verify_corrected_provenance'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing: $required"; fail=1; }
@@ -225,6 +228,17 @@ run_self_test() {
   fi
   if grep -En -- '(^|[[:space:]])(git[[:space:]]+push|.*upload|.*publish|--push|--upload|--publish)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test found publication operation"; fail=1
+  fi
+  # shellcheck disable=SC2016 # literal log-write contracts intentionally keep quoting
+  if grep -En 'cargo (clippy|deny|audit).*gates\.log' "$script_path" | grep -vFq 'tee -a "$evidence_dir/gates.log"'; then
+    log "self-test found a non-append Cargo repository gate log write"; fail=1
+  fi
+  # shellcheck disable=SC2016 # literal log-write contracts intentionally keep quoting
+  if ! grep -Fq 'bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" | tee "$evidence_dir/gates.log"' "$script_path" \
+    || ! grep -Fq 'bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" | tee -a "$evidence_dir/gates.log"' "$script_path" \
+    || ! grep -Fq 'cargo fmt --manifest-path "$VOKRA_ROOT/Cargo.toml" --all -- --check | tee -a "$evidence_dir/gates.log"' "$script_path" \
+    || ! grep -Fq 'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace | tee -a "$evidence_dir/gates.log"' "$script_path"; then
+    log "self-test found a repository gate log write contract gap"; fail=1
   fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PARITY_DUMPER" --self-test >/dev/null || fail=1
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
@@ -356,7 +370,7 @@ main() {
   bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" | tee -a "$evidence_dir/gates.log"
   cargo fmt --manifest-path "$VOKRA_ROOT/Cargo.toml" --all -- --check | tee -a "$evidence_dir/gates.log"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace | tee -a "$evidence_dir/gates.log"
-  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee "$evidence_dir/gates.log"
+  cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"
   { echo 'execution_status=MEASURED_NOT_GATED'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo 'cpu_parity=MEASURED_NOT_GATED'; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
