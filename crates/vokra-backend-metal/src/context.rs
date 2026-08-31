@@ -342,6 +342,61 @@ kernel void vokra_group_norm_f32(
     }
 }
 
+// ---- multi-group GroupNorm: channel-major [channels, positions] -----------
+// NCSN++ uses GroupNorm with an explicit group count. One thread owns one
+// complete group: it reduces that group once, then writes every channel and
+// position in it. This preserves the CPU sibling's channel-major membership
+// and left-fold order without repeating the reduction for every output.
+struct GroupNormGroupsDims {
+    uint channels;
+    uint positions;
+    uint groups;
+    float eps;
+};
+
+kernel void vokra_group_norm_groups_f32(
+    device const float* inp   [[buffer(0)]],
+    device const float* gamma [[buffer(1)]],
+    device const float* beta  [[buffer(2)]],
+    device float*       out   [[buffer(3)]],
+    constant GroupNormGroupsDims& d [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= d.groups) {
+        return;
+    }
+    const uint channels_per_group = d.channels / d.groups;
+    const uint first_channel = gid * channels_per_group;
+    const uint count = channels_per_group * d.positions;
+    float sum = 0.0f;
+    for (uint c = first_channel; c < first_channel + channels_per_group; ++c) {
+        const uint base = c * d.positions;
+        for (uint p = 0u; p < d.positions; ++p) {
+            sum += inp[base + p];
+        }
+    }
+    const float mean = sum / (float)count;
+    float variance_sum = 0.0f;
+    for (uint c = first_channel; c < first_channel + channels_per_group; ++c) {
+        const uint base = c * d.positions;
+        for (uint p = 0u; p < d.positions; ++p) {
+            const float delta = inp[base + p] - mean;
+            variance_sum += delta * delta;
+        }
+    }
+    const float inv_std = 1.0f / sqrt(variance_sum / (float)count + d.eps);
+    for (uint channel = first_channel;
+         channel < first_channel + channels_per_group;
+         ++channel) {
+        const uint base = channel * d.positions;
+        for (uint position = 0u; position < d.positions; ++position) {
+            const uint index = base + position;
+            const float normalized = (inp[index] - mean) * inv_std;
+            out[index] = normalized * gamma[channel] + beta[channel];
+        }
+    }
+}
+
 // ---- gelu: exact (erf) form, out = 0.5·x·(1 + erf(x/√2)) ---------------------
 // MSL has no builtin `erf`, so we inline the *identical* Abramowitz & Stegun
 // 7.1.26 approximation (and constants, and Horner order) that
@@ -1345,6 +1400,72 @@ kernel void vokra_silu_f32(
     const float v = x[i];
     const float sig = 1.0f / (1.0f + exp(-v));
     out[i] = v * sig;
+}
+
+// ---- OUVE-SDE score-model sampler primitives -------------------------------
+// These element-wise kernels mirror `vokra_ops::ouve_sde` and the pinned
+// `sp-uhh/sgmse` source.  The state, conditioning signal, score, noise, and
+// both outputs stay in device-resident buffers; callers can chain predictor
+// and corrector steps without a host readback between iterations.
+struct OuvEReverseDims {
+    uint n;
+    float theta;
+    float sigma_min;
+    float sigma_max;
+    float t;
+    float step;
+    uint probability_flow;
+};
+
+kernel void vokra_ouve_reverse_diffusion_f32(
+    device const float* x        [[buffer(0)]],
+    device const float* y        [[buffer(1)]],
+    device const float* score    [[buffer(2)]],
+    device const float* noise    [[buffer(3)]],
+    device float*       out      [[buffer(4)]],
+    device float*       out_mean [[buffer(5)]],
+    constant OuvEReverseDims& d  [[buffer(6)]],
+    uint gid                     [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float log_ratio = log(d.sigma_max / d.sigma_min);
+    const float diffusion = d.sigma_min * exp(log_ratio * d.t) * sqrt(2.0f * log_ratio);
+    const float score_scale = diffusion * diffusion * (d.probability_flow != 0u ? 0.5f : 1.0f);
+    const float forward_drift = d.theta * (y[gid] - x[gid]);
+    const float reverse_increment = (forward_drift - score_scale * score[gid]) * d.step;
+    const float mean = x[gid] - reverse_increment;
+    const float noise_scale = d.probability_flow != 0u ? 0.0f : diffusion * sqrt(d.step);
+    out_mean[gid] = mean;
+    out[gid] = mean + noise_scale * noise[gid];
+}
+
+struct OuvEAnnealedDims {
+    uint n;
+    float theta;
+    float sigma_min;
+    float sigma_max;
+    float t;
+    float snr;
+};
+
+kernel void vokra_ouve_annealed_langevin_f32(
+    device const float* x        [[buffer(0)]],
+    device const float* score    [[buffer(1)]],
+    device const float* noise    [[buffer(2)]],
+    device float*       out      [[buffer(3)]],
+    device float*       out_mean [[buffer(4)]],
+    constant OuvEAnnealedDims& d [[buffer(5)]],
+    uint gid                     [[thread_position_in_grid]])
+{
+    if (gid >= d.n) return;
+    const float log_ratio = log(d.sigma_max / d.sigma_min);
+    const float numerator = d.sigma_min * d.sigma_min * exp(-2.0f * d.theta * d.t)
+        * (exp(2.0f * (d.theta + log_ratio) * d.t) - 1.0f) * log_ratio;
+    const float variance = numerator / (d.theta + log_ratio);
+    const float step_size = 2.0f * (d.snr * sqrt(variance)) * (d.snr * sqrt(variance));
+    const float mean = x[gid] + step_size * score[gid];
+    out_mean[gid] = mean;
+    out[gid] = mean + sqrt(2.0f * step_size) * noise[gid];
 }
 
 // ---- swiglu: fused SiLU(gate) * up (the SwiGLU FFN activation) ---------------
@@ -2418,6 +2539,17 @@ struct GroupNormDims {
     eps: f32,
 }
 
+/// Multi-group GroupNorm dims (`setBytes:` index 4). Mirrors the MSL
+/// `struct GroupNormGroupsDims`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GroupNormGroupsDims {
+    channels: u32,
+    positions: u32,
+    groups: u32,
+    eps: f32,
+}
+
 /// GELU dims (`setBytes:` index 2). Mirrors the MSL `struct GeluDims`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -2615,6 +2747,33 @@ struct RopeDims {
 #[derive(Clone, Copy)]
 struct SiluDims {
     n: u32,
+}
+
+/// OUVE predictor dims (`setBytes:` index 6). Field order mirrors the MSL
+/// `OuvEReverseDims` and is intentionally scalar: model-specific layout stays
+/// in the caller while every element uses the same source equation.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OuvEReverseDims {
+    n: u32,
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    step: f32,
+    probability_flow: u32,
+}
+
+/// OUVE annealed-Langevin corrector dims (`setBytes:` index 5).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct OuvEAnnealedDims {
+    n: u32,
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    snr: f32,
 }
 
 /// SwiGLU dims (`setBytes:` index 3). Mirrors the MSL `struct SwigluDims`.
@@ -3152,6 +3311,7 @@ pub struct MetalContext {
     softmax_causal_pipeline: Id,
     layer_norm_pipeline: Id,
     group_norm_pipeline: Id,
+    group_norm_groups_pipeline: Id,
     gelu_pipeline: Id,
     gelu_new_pipeline: Id,
     relu_pipeline: Id,
@@ -3189,6 +3349,9 @@ pub struct MetalContext {
     rope_adjacent_pipeline: Id,
     silu_pipeline: Id,
     swiglu_pipeline: Id,
+    /// Device-resident OUVE-SDE predictor and annealed-Langevin sampler steps.
+    ouve_reverse_diffusion_pipeline: Id,
+    ouve_annealed_langevin_pipeline: Id,
     /// M3-06 T14 mimi_rvq gather + FP32 fold (`vokra_mimi_rvq_gather_fold_f32`),
     /// the GPU implementation of `vokra_ops::mimi_rvq::rvq_fold_core`. Also the
     /// current M4-04 GPU seam target for DAC / EnCodec siblings after their
@@ -3420,6 +3583,10 @@ impl MetalContext {
         // SAFETY: as above.
         let group_norm_pipeline =
             unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_f32") }?;
+        // Multi-group NCSN++ normalization; explicit rather than reusing the
+        // one-group SepFormer reduction.
+        let group_norm_groups_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_group_norm_groups_f32") }?;
         // SAFETY: as above.
         let gelu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_gelu_f32") }?;
         // SAFETY: as above.
@@ -3491,6 +3658,14 @@ impl MetalContext {
             unsafe { make_pipeline(device, klib.0, c"vokra_rope_adjacent_f32") }?;
         // SAFETY: as above.
         let silu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_silu_f32") }?;
+        // OUVE-SDE predictor / corrector.  Both are device-resident
+        // element-wise kernels; no host fallback is permitted.
+        // SAFETY: as above.
+        let ouve_reverse_diffusion_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_ouve_reverse_diffusion_f32") }?;
+        // SAFETY: as above.
+        let ouve_annealed_langevin_pipeline =
+            unsafe { make_pipeline(device, klib.0, c"vokra_ouve_annealed_langevin_f32") }?;
         // SAFETY: as above.
         let swiglu_pipeline = unsafe { make_pipeline(device, klib.0, c"vokra_swiglu_f32") }?;
         // M3-06 T14 mimi_rvq gather + FP32 fold; shares the same library.
@@ -3601,6 +3776,7 @@ impl MetalContext {
             softmax_causal_pipeline: softmax_causal_pipeline.into_raw(),
             layer_norm_pipeline: layer_norm_pipeline.into_raw(),
             group_norm_pipeline: group_norm_pipeline.into_raw(),
+            group_norm_groups_pipeline: group_norm_groups_pipeline.into_raw(),
             gelu_pipeline: gelu_pipeline.into_raw(),
             gelu_new_pipeline: gelu_new_pipeline.into_raw(),
             relu_pipeline: relu_pipeline.into_raw(),
@@ -3625,6 +3801,8 @@ impl MetalContext {
             scale_norm_pipeline: scale_norm_pipeline.into_raw(),
             rope_adjacent_pipeline: rope_adjacent_pipeline.into_raw(),
             silu_pipeline: silu_pipeline.into_raw(),
+            ouve_reverse_diffusion_pipeline: ouve_reverse_diffusion_pipeline.into_raw(),
+            ouve_annealed_langevin_pipeline: ouve_annealed_langevin_pipeline.into_raw(),
             swiglu_pipeline: swiglu_pipeline.into_raw(),
             mimi_rvq_gather_fold_pipeline: mimi_rvq_gather_fold_pipeline.into_raw(),
             dac_rvq_gather_project_fold_pipeline: dac_rvq_gather_project_fold_pipeline.into_raw(),
@@ -4329,6 +4507,76 @@ impl MetalContext {
         read_back(&out_buf, out)
     }
 
+    /// Affine multi-group GroupNorm over channel-major `[channels, positions]`.
+    /// Each group reduces `channels / groups × positions`; gamma and beta are
+    /// per-channel. This is the source NCSN++ path and never falls back to CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_groups_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        validate_group_norm_groups(input, out, channels, positions, groups, gamma, beta, eps)?;
+        if out.is_empty() {
+            return Ok(());
+        }
+        // SAFETY: token consumed by the matching pop below.
+        let pool = unsafe { sys::objc_autoreleasePoolPush() };
+        let result =
+            self.run_group_norm_groups(input, out, channels, positions, groups, gamma, beta, eps);
+        // SAFETY: `pool` is the token from the push above.
+        unsafe { sys::objc_autoreleasePoolPop(pool) };
+        result?;
+        if out.iter().any(|value| !value.is_finite()) {
+            return Err(VokraError::InvalidArgument(
+                "group_norm_groups output overflowed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_group_norm_groups(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        let in_buf = self.new_buffer_from_slice(input)?;
+        let gamma_buf = self.new_buffer_from_slice(gamma)?;
+        let beta_buf = self.new_buffer_from_slice(beta)?;
+        let out_buf = self.new_buffer_output(out.len())?;
+        let dims = GroupNormGroupsDims {
+            channels: checked_u32(channels, "group_norm_groups channels")?,
+            positions: checked_u32(positions, "group_norm_groups positions")?,
+            groups: checked_u32(groups, "group_norm_groups groups")?,
+            eps,
+        };
+        // The kernel owns one complete reduction/output loop per group.
+        let (grid, tg) = grid_1d(groups);
+        self.dispatch_compute(
+            self.group_norm_groups_pipeline,
+            &[&in_buf, &gamma_buf, &beta_buf, &out_buf],
+            (&dims as *const GroupNormGroupsDims).cast::<c_void>(),
+            size_of::<GroupNormGroupsDims>(),
+            grid,
+            tg,
+            "group_norm_groups",
+        )?;
+        read_back(&out_buf, out)
+    }
+
     /// Element-wise exact (erf) GELU (`x` and `out` equal length) — the contract
     /// of `vokra_backend_cpu::kernels::gelu_f32`. Uses MSL's precise `erf`; the
     /// CPU uses the A&S 7.1.26 approximation, so the two agree far inside the FP32
@@ -4748,6 +4996,94 @@ impl MetalContext {
             "silu",
         )?;
         read_back(&out_buf, out)
+    }
+
+    /// Host-facing OUVE predictor wrapper backed by the resident Metal kernel.
+    /// This convenience API uploads its host slices and downloads the two
+    /// requested outputs. Cross-step state residency is provided only by
+    /// [`Self::ouve_reverse_diffusion_dev`], whose caller-owned device tensors
+    /// remain on Metal until an explicit [`Self::download`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_f32(
+        &self,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        x: &[f32],
+        y: &[f32],
+        score: &[f32],
+        t: f32,
+        step: f32,
+        noise: &[f32],
+        probability_flow: bool,
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        validate_ouve_host_buffers(x, y, score, noise, out, out_mean)?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, step, None)?;
+        let x_dev = self.upload(x)?;
+        let y_dev = self.upload(y)?;
+        let score_dev = self.upload(score)?;
+        let noise_dev = self.upload(noise)?;
+        let mut out_dev = self.alloc_dev(out.len())?;
+        let mut mean_dev = self.alloc_dev(out_mean.len())?;
+        self.ouve_reverse_diffusion_dev(
+            &mut out_dev,
+            &mut mean_dev,
+            &x_dev,
+            &y_dev,
+            &score_dev,
+            &noise_dev,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            step,
+            probability_flow,
+        )?;
+        self.download(&out_dev, out)?;
+        self.download(&mean_dev, out_mean)
+    }
+
+    /// Host-facing OUVE annealed-Langevin wrapper backed by the resident Metal
+    /// kernel. It uploads host slices and downloads the requested outputs; no
+    /// CPU fallback or per-element host computation is performed. Use
+    /// [`Self::ouve_annealed_langevin_dev`] to keep cross-step state resident.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_f32(
+        &self,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        x: &[f32],
+        score: &[f32],
+        t: f32,
+        snr: f32,
+        noise: &[f32],
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        validate_ouve_host_buffers_unary(x, score, noise, out, out_mean)?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, 1.0, Some(snr))?;
+        let x_dev = self.upload(x)?;
+        let score_dev = self.upload(score)?;
+        let noise_dev = self.upload(noise)?;
+        let mut out_dev = self.alloc_dev(out.len())?;
+        let mut mean_dev = self.alloc_dev(out_mean.len())?;
+        self.ouve_annealed_langevin_dev(
+            &mut out_dev,
+            &mut mean_dev,
+            &x_dev,
+            &score_dev,
+            &noise_dev,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            snr,
+        )?;
+        self.download(&out_dev, out)?;
+        self.download(&mean_dev, out_mean)
     }
 
     /// Fused SwiGLU FFN activation: `out[i] = (gate[i] · sigmoid(gate[i])) ·
@@ -8275,6 +8611,146 @@ impl MetalContext {
         })
     }
 
+    /// Device-resident OUVE reverse-diffusion predictor. All state and noise
+    /// buffers remain on Metal; the caller can chain this with the corrector
+    /// without an intermediate readback. The scalar coefficients mirror the
+    /// pinned `sp-uhh/sgmse` OUVE implementation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        out_mean: &mut MetalDeviceTensor<'_>,
+        x: &MetalDeviceTensor<'_>,
+        y: &MetalDeviceTensor<'_>,
+        score: &MetalDeviceTensor<'_>,
+        noise: &MetalDeviceTensor<'_>,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        t: f32,
+        step: f32,
+        probability_flow: bool,
+    ) -> Result<()> {
+        self.expect_owner(out, "ouve_reverse_diffusion_dev output")?;
+        self.expect_owner(out_mean, "ouve_reverse_diffusion_dev mean")?;
+        self.expect_owner(x, "ouve_reverse_diffusion_dev x")?;
+        self.expect_owner(y, "ouve_reverse_diffusion_dev y")?;
+        self.expect_owner(score, "ouve_reverse_diffusion_dev score")?;
+        self.expect_owner(noise, "ouve_reverse_diffusion_dev noise")?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, step, None)?;
+        let n = x.len();
+        for (name, len) in [
+            ("y", y.len()),
+            ("score", score.len()),
+            ("noise", noise.len()),
+            ("out", out.len()),
+            ("out_mean", out_mean.len()),
+        ] {
+            expect_len("ouve_reverse_diffusion_dev buffer", len, n).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "ouve_reverse_diffusion_dev {name} length {len} != x length {n}"
+                ))
+            })?;
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = OuvEReverseDims {
+            n: checked_u32(n, "ouve_reverse_diffusion_dev length")?,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            step,
+            probability_flow: u32::from(probability_flow),
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("ouve_reverse_diffusion_dev")?;
+            let (grid, tg) = grid_1d(n);
+            self.encode_pass(
+                cmd,
+                self.ouve_reverse_diffusion_pipeline,
+                &[
+                    &x.buf,
+                    &y.buf,
+                    &score.buf,
+                    &noise.buf,
+                    &out.buf,
+                    &out_mean.buf,
+                ],
+                (&dims as *const OuvEReverseDims).cast::<c_void>(),
+                size_of::<OuvEReverseDims>(),
+                grid,
+                tg,
+                "ouve_reverse_diffusion_dev",
+            )?;
+            self.commit_and_wait(cmd, "ouve_reverse_diffusion_dev")
+        })
+    }
+
+    /// Device-resident OUVE annealed-Langevin corrector. This is the exact
+    /// source `2 * (snr * std(t))²` update and never falls back to the CPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_dev(
+        &self,
+        out: &mut MetalDeviceTensor<'_>,
+        out_mean: &mut MetalDeviceTensor<'_>,
+        x: &MetalDeviceTensor<'_>,
+        score: &MetalDeviceTensor<'_>,
+        noise: &MetalDeviceTensor<'_>,
+        theta: f32,
+        sigma_min: f32,
+        sigma_max: f32,
+        t: f32,
+        snr: f32,
+    ) -> Result<()> {
+        self.expect_owner(out, "ouve_annealed_langevin_dev output")?;
+        self.expect_owner(out_mean, "ouve_annealed_langevin_dev mean")?;
+        self.expect_owner(x, "ouve_annealed_langevin_dev x")?;
+        self.expect_owner(score, "ouve_annealed_langevin_dev score")?;
+        self.expect_owner(noise, "ouve_annealed_langevin_dev noise")?;
+        validate_ouve_params(theta, sigma_min, sigma_max, t, 1.0, Some(snr))?;
+        let n = x.len();
+        for (name, len) in [
+            ("score", score.len()),
+            ("noise", noise.len()),
+            ("out", out.len()),
+            ("out_mean", out_mean.len()),
+        ] {
+            expect_len("ouve_annealed_langevin_dev buffer", len, n).map_err(|_| {
+                VokraError::InvalidArgument(format!(
+                    "ouve_annealed_langevin_dev {name} length {len} != x length {n}"
+                ))
+            })?;
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let dims = OuvEAnnealedDims {
+            n: checked_u32(n, "ouve_annealed_langevin_dev length")?,
+            theta,
+            sigma_min,
+            sigma_max,
+            t,
+            snr,
+        };
+        self.pooled(|| {
+            let cmd = self.new_command_buffer("ouve_annealed_langevin_dev")?;
+            let (grid, tg) = grid_1d(n);
+            self.encode_pass(
+                cmd,
+                self.ouve_annealed_langevin_pipeline,
+                &[&x.buf, &score.buf, &noise.buf, &out.buf, &out_mean.buf],
+                (&dims as *const OuvEAnnealedDims).cast::<c_void>(),
+                size_of::<OuvEAnnealedDims>(),
+                grid,
+                tg,
+                "ouve_annealed_langevin_dev",
+            )?;
+            self.commit_and_wait(cmd, "ouve_annealed_langevin_dev")
+        })
+    }
+
     /// Device-resident Snake activation. Parameters are effective FP32 alpha
     /// values; exponentiation for log-scale checkpoints belongs at load time.
     pub fn snake_activation_dev(
@@ -10438,6 +10914,8 @@ impl Drop for MetalContext {
             release(self.dac_rvq_gather_project_fold_pipeline);
             release(self.mimi_rvq_gather_fold_pipeline);
             release(self.swiglu_pipeline);
+            release(self.ouve_annealed_langevin_pipeline);
+            release(self.ouve_reverse_diffusion_pipeline);
             release(self.silu_pipeline);
             release(self.rope_adjacent_pipeline);
             release(self.scale_norm_pipeline);
@@ -10462,6 +10940,7 @@ impl Drop for MetalContext {
             release(self.relu_pipeline);
             release(self.gelu_new_pipeline);
             release(self.gelu_pipeline);
+            release(self.group_norm_groups_pipeline);
             release(self.group_norm_pipeline);
             release(self.layer_norm_pipeline);
             release(self.softmax_causal_pipeline);
@@ -11446,13 +11925,34 @@ fn validate_mixed_bf16_dims(
 mod tests {
     use super::{
         checked_i32, checked_u32, validate_conv_transpose2d, validate_conv2d,
-        validate_mixed_bf16_dims,
+        validate_group_norm_groups, validate_mixed_bf16_dims, validate_ouve_host_buffers,
+        validate_ouve_params,
     };
 
     #[test]
     fn device_dimension_conversions_fail_closed() {
         assert!(checked_u32(usize::MAX, "test").is_err());
         assert!(checked_i32(usize::MAX, "test").is_err());
+    }
+
+    #[test]
+    fn ouve_bounds_reject_invalid_parameters_and_shapes() {
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.01, None).is_ok());
+        assert!(validate_ouve_params(1.0, 0.5, 0.05, 0.5, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 1.1, 0.01, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 0.0, None).is_err());
+        assert!(validate_ouve_params(1.0, 0.05, 0.5, 0.5, 1.0, Some(-1.0)).is_err());
+        assert!(
+            validate_ouve_host_buffers(
+                &[0.0, 1.0],
+                &[0.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+                &[0.0, 1.0],
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -11472,6 +11972,18 @@ mod tests {
             (0, 0, 6)
         );
         assert!(validate_mixed_bf16_dims(u32::MAX as usize, 2, 0, "test").is_err());
+    }
+
+    #[test]
+    fn group_norm_groups_rejects_msl_u32_index_product_overflow() {
+        let max = u32::MAX as usize;
+        // Every individual dimension fits uint, but channels*positions does
+        // not. Empty buffers are intentional: product validation must happen
+        // before host slice-length checks and reject the launch fail-closed.
+        assert!(validate_group_norm_groups(&[], &[], 2, max, 2, &[], &[], 1e-6).is_err());
+        // The group product is checked independently as well; this case keeps
+        // the same boundary visible for the per-group MSL loop.
+        assert!(validate_group_norm_groups(&[], &[], 4, max, 2, &[], &[], 1e-6).is_err());
     }
 
     #[test]
@@ -11617,6 +12129,148 @@ mod tests {
     }
 }
 
+fn validate_ouve_params(
+    theta: f32,
+    sigma_min: f32,
+    sigma_max: f32,
+    t: f32,
+    step: f32,
+    snr: Option<f32>,
+) -> Result<()> {
+    if !theta.is_finite()
+        || !sigma_min.is_finite()
+        || !sigma_max.is_finite()
+        || theta < 0.0
+        || sigma_min <= 0.0
+        || sigma_max <= sigma_min
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE config requires finite theta >= 0 and 0 < sigma_min < sigma_max".to_owned(),
+        ));
+    }
+    if !t.is_finite() || !(0.0..=1.0).contains(&t) {
+        return Err(VokraError::InvalidArgument(
+            "OUVE time must be finite and in [0, 1]".to_owned(),
+        ));
+    }
+    if !step.is_finite() || step <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "OUVE reverse step must be finite and positive".to_owned(),
+        ));
+    }
+    if let Some(snr) = snr {
+        if !snr.is_finite() || snr < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "OUVE annealed Langevin SNR must be finite and non-negative".to_owned(),
+            ));
+        }
+    }
+    let ratio = sigma_max / sigma_min;
+    let log_ratio = ratio.ln();
+    let diffusion_exponent = log_ratio * t;
+    let diffusion = sigma_min * diffusion_exponent.exp() * (2.0 * log_ratio).sqrt();
+    let score_scale = diffusion * diffusion;
+    let noise_variance = score_scale * step;
+    if !ratio.is_finite()
+        || ratio <= 1.0
+        || !log_ratio.is_finite()
+        || log_ratio <= 0.0
+        || !diffusion_exponent.is_finite()
+        || !diffusion.is_finite()
+        || !score_scale.is_finite()
+        || !noise_variance.is_finite()
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE ratio/diffusion/score/noise coefficient is not finite".to_owned(),
+        ));
+    }
+    if let Some(snr) = snr {
+        let denominator = theta + log_ratio;
+        let decay = -2.0 * theta * t;
+        let growth = 2.0 * denominator * t;
+        let variance =
+            sigma_min * sigma_min * decay.exp() * (growth.exp() - 1.0) * log_ratio / denominator;
+        let std = variance.sqrt();
+        let scaled_std = snr * std;
+        let step_size = 2.0 * scaled_std.powi(2);
+        let langevin_noise_variance = 2.0 * step_size;
+        if !denominator.is_finite()
+            || denominator <= 0.0
+            || !decay.is_finite()
+            || !growth.is_finite()
+            || !variance.is_finite()
+            || variance < 0.0
+            || !std.is_finite()
+            || !scaled_std.is_finite()
+            || !step_size.is_finite()
+            || !langevin_noise_variance.is_finite()
+        {
+            return Err(VokraError::InvalidArgument(
+                "OUVE variance/score/noise coefficient is not finite".to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_ouve_host_buffers(
+    x: &[f32],
+    y: &[f32],
+    score: &[f32],
+    noise: &[f32],
+    out: &[f32],
+    out_mean: &[f32],
+) -> Result<()> {
+    let n = x.len();
+    if [y.len(), score.len(), noise.len(), out.len(), out_mean.len()]
+        .into_iter()
+        .any(|len| len != n)
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE predictor buffers must have equal lengths".to_owned(),
+        ));
+    }
+    if x.iter()
+        .chain(y)
+        .chain(score)
+        .chain(noise)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE predictor buffers must contain finite values".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ouve_host_buffers_unary(
+    x: &[f32],
+    score: &[f32],
+    noise: &[f32],
+    out: &[f32],
+    out_mean: &[f32],
+) -> Result<()> {
+    let n = x.len();
+    if [score.len(), noise.len(), out.len(), out_mean.len()]
+        .into_iter()
+        .any(|len| len != n)
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE corrector buffers must have equal lengths".to_owned(),
+        ));
+    }
+    if x.iter()
+        .chain(score)
+        .chain(noise)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "OUVE corrector buffers must contain finite values".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn expect_len(name: &str, got: usize, want: usize) -> Result<()> {
     if got == want {
         Ok(())
@@ -11718,6 +12372,61 @@ fn validate_group_norm(
     expect_len("group_norm out", out.len(), total)?;
     expect_len("group_norm gamma", gamma.len(), channels)?;
     expect_len("group_norm beta", beta.len(), channels)
+}
+
+fn validate_group_norm_groups(
+    input: &[f32],
+    out: &[f32],
+    channels: usize,
+    positions: usize,
+    groups: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    if channels == 0 || positions == 0 || groups == 0 || channels % groups != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm_groups requires non-zero channels/positions, positive groups dividing channels; got {channels}x{positions}, groups={groups}"
+        )));
+    }
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups eps must be finite and positive".to_owned(),
+        ));
+    }
+    checked_u32(channels, "group_norm_groups channels")?;
+    checked_u32(positions, "group_norm_groups positions")?;
+    checked_u32(groups, "group_norm_groups groups")?;
+    let total = checked_mul(channels, positions, "group_norm_groups channels*positions")?;
+    // MSL computes both products with uint indexing. Checking dimensions
+    // independently is insufficient: a pair of valid u32 dimensions can
+    // still overflow the product used by the kernel.
+    let channels_per_group = channels / groups;
+    let group_total = checked_mul(
+        channels_per_group,
+        positions,
+        "group_norm_groups channels_per_group*positions",
+    )?;
+    checked_u32(
+        group_total,
+        "group_norm_groups channels_per_group*positions indexing",
+    )?;
+    checked_u32(total, "group_norm_groups channels*positions indexing")?;
+    expect_len("group_norm_groups input", input.len(), total)?;
+    expect_len("group_norm_groups out", out.len(), total)?;
+    expect_len("group_norm_groups gamma", gamma.len(), channels)?;
+    expect_len("group_norm_groups beta", beta.len(), channels)?;
+    if input
+        .iter()
+        .chain(gamma)
+        .chain(beta)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups input and affine parameters must be finite".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unary(x: &[f32], out: &[f32]) -> Result<()> {

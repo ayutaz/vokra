@@ -62,6 +62,7 @@ use vokra_ops::{
     Xcodec2FsqAttrs, dac_rvq_decode, encodec_rvq_decode, mimi_rvq_decode, qwen3_tts_codec_decode,
     wavtokenizer_vq_decode, xcodec2_fsq_decode,
 };
+use vokra_ops::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step};
 
 /// A backend-dispatched hot op — the operators the imperative models route
 /// through a backend (as opposed to the model-internal scalar glue like
@@ -127,6 +128,11 @@ pub enum HotOp {
     /// the scalar mathematical reference; Metal dispatches the existing
     /// `vokra_silu_f32` kernel. Other backends remain explicitly uncovered.
     Silu,
+    /// OUVE-SDE predictor/corrector sampler steps used by SGMSE-VoiceBank.
+    /// Metal dispatches both updates through device-resident buffers; CUDA,
+    /// Vulkan, and WebGPU stay explicitly uncovered until matching kernels
+    /// land, so a model listing this op cannot silently run its sampler on CPU.
+    OuveSde,
     /// 1-D convolution (`conv1d_f32`) — Whisper encoder stem.
     Conv1d,
     /// Stride/dilation-aware dense 1-D convolution.  This is distinct from
@@ -493,6 +499,7 @@ impl HotOp {
                 | HotOp::Elu
                 | HotOp::Tanh
                 | HotOp::Silu
+                | HotOp::OuveSde
                 | HotOp::Conv1d
                 | HotOp::Conv1dDilation
                 | HotOp::ConvTranspose1d
@@ -1411,6 +1418,43 @@ impl Compute {
         }
     }
 
+    /// Affine multi-group GroupNorm over channel-major `[channels, positions]`.
+    /// The reduction is over `channels / groups × positions`, with per-channel
+    /// gamma/beta. CPU and Metal provide matching kernels; unsupported
+    /// backends reject explicitly rather than falling back to the host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_norm_groups_f32(
+        &self,
+        input: &[f32],
+        out: &mut [f32],
+        channels: usize,
+        positions: usize,
+        groups: usize,
+        gamma: &[f32],
+        beta: &[f32],
+        eps: f32,
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => vokra_backend_cpu::kernels::group_norm_groups_f32(
+                input, out, channels, positions, groups, gamma, beta, eps,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.group_norm_groups_f32(
+                input, out, channels, positions, groups, gamma, beta, eps,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_groups_f32 has no wired CUDA kernel; Vokra does not silently run the op on the CPU"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "group_norm_groups_f32 has no wired WebGPU kernel; Vokra does not silently run the op on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
     /// Element-wise exact (erf) GELU (`x` and `out` equal length).
     pub fn gelu_f32(&self, x: &[f32], out: &mut [f32]) -> Result<()> {
         match &self.be {
@@ -1542,6 +1586,107 @@ impl Compute {
             #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
             Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
                 "silu_f32 has no wired WebGPU Compute-seam kernel; Vokra does not silently run it on the CPU"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Executes one OUVE-SDE predictor update through the selected backend.
+    /// Metal dispatches the device-resident predictor kernel and never falls
+    /// back to the CPU; CUDA/WebGPU remain explicit unsupported arms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_reverse_diffusion_step(
+        &self,
+        config: OuvEConfig,
+        x: &[f32],
+        y: &[f32],
+        score: &[f32],
+        t: f32,
+        step: f32,
+        noise: &[f32],
+        probability_flow: bool,
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => reverse_diffusion_step(
+                config,
+                x,
+                y,
+                score,
+                t,
+                step,
+                noise,
+                probability_flow,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.ouve_reverse_diffusion_f32(
+                config.theta,
+                config.sigma_min,
+                config.sigma_max,
+                x,
+                y,
+                score,
+                t,
+                step,
+                noise,
+                probability_flow,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "OUVE reverse diffusion has no CUDA kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "OUVE reverse diffusion has no WebGPU kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+        }
+    }
+
+    /// Executes one OUVE annealed-Langevin corrector update through the
+    /// selected backend. Metal dispatches the device-resident corrector;
+    /// CUDA/WebGPU remain explicit unsupported arms.
+    #[allow(clippy::too_many_arguments)]
+    pub fn ouve_annealed_langevin_step(
+        &self,
+        config: OuvEConfig,
+        x: &[f32],
+        score: &[f32],
+        t: f32,
+        snr: f32,
+        noise: &[f32],
+        out: &mut [f32],
+        out_mean: &mut [f32],
+    ) -> Result<()> {
+        match &self.be {
+            Be::Cpu => annealed_langevin_step(config, x, score, t, snr, noise, out, out_mean),
+            #[cfg(all(feature = "metal", any(target_os = "macos", target_os = "ios")))]
+            Be::Metal(ctx) => ctx.ouve_annealed_langevin_f32(
+                config.theta,
+                config.sigma_min,
+                config.sigma_max,
+                x,
+                score,
+                t,
+                snr,
+                noise,
+                out,
+                out_mean,
+            ),
+            #[cfg(all(feature = "cuda", any(unix, windows)))]
+            Be::Cuda(_) => Err(VokraError::UnsupportedOp(
+                "OUVE annealed Langevin has no CUDA kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
+                    .to_owned(),
+            )),
+            #[cfg(all(feature = "webgpu", target_arch = "wasm32"))]
+            Be::WebGpu(_) => Err(VokraError::UnsupportedOp(
+                "OUVE annealed Langevin has no WebGPU kernel; Vokra does not silently run it on the CPU (FR-EX-08)"
                     .to_owned(),
             )),
         }
@@ -5236,6 +5381,7 @@ mod tests {
             HotOp::Elu,
             HotOp::Tanh,
             HotOp::Silu,
+            HotOp::OuveSde,
             HotOp::Conv1d,
             HotOp::Conv1dDilation,
             HotOp::ConvTranspose1d,
@@ -5436,6 +5582,15 @@ mod tests {
                 eprintln!("no Metal device; Qwen3TtsCodec covered path is device-gated");
             }
             Err(e) => panic!("unexpected error for a Metal-covered Qwen3TtsCodec request: {e}"),
+        }
+        // OUVE-SDE predictor/corrector uses two resident Metal kernels and is
+        // covered by the same device-gated contract.
+        match Compute::for_backend(BackendKind::Metal, &[HotOp::OuveSde]) {
+            Ok(c) => assert_eq!(c.backend_name(), "metal"),
+            Err(VokraError::BackendUnavailable(_)) => {
+                eprintln!("no Metal device; OuveSde covered path is device-gated");
+            }
+            Err(e) => panic!("unexpected error for a Metal-covered OuveSde request: {e}"),
         }
         // Vocoder Metal wave common vocoder primitives (2026-08-14): each
         // is a covered request with the same device-gated posture as the

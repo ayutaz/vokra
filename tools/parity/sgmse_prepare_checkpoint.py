@@ -107,6 +107,21 @@ def config_facts(text: str) -> tuple[dict[str, bool], list[str]]:
     return facts, [name for name, present in facts.items() if not present]
 
 
+def tensor_contract_status(loaded: dict[str, Any]) -> str:
+    """Return the only safe status a checkpoint tensor contract may claim.
+
+    A successful ``weights_only`` load is not, by itself, native-model
+    authentication.  The native binder remains closed until this inspector's
+    concrete tensor manifest has been reviewed and bound to the model schema.
+    """
+    if loaded.get("safe_load_status") != "SAFE_LOADED":
+        return "AUTHENTICATED_MANIFEST_REQUIRED"
+    manifest = loaded.get("tensor_manifest")
+    if not isinstance(manifest, dict) or not manifest:
+        return "AUTHENTICATED_MANIFEST_REQUIRED"
+    return "SAFE_LOADED_MANIFEST"
+
+
 def tensor_manifest(value: Any, path: str = "") -> tuple[dict[str, dict[str, Any]], list[str], bool]:
     import torch
 
@@ -456,6 +471,16 @@ def inspect(
 
     manifest = {
         "format": "vokra-sgmse-voicebank-inspection-v1",
+        "tensor_contract": {
+            "format": "vokra-sgmse-tensor-contract-v1",
+            # The inspector is the only producer of the checkpoint-specific
+            # contract.  Keep this explicit until a real safe-loaded manifest
+            # exists; a hand-written or historical 647-tensor list must never
+            # close the converter gate.
+            "status": tensor_contract_status(loaded),
+            "source": "safe_load.tensor_manifest",
+            "tensor_count": loaded.get("tensor_count"),
+        },
         "model_repository": MODEL_REPOSITORY,
         "model_revision": MODEL_REVISION,
         "weight_license_spdx": "apache-2.0",
@@ -523,6 +548,9 @@ def self_test() -> None:
     facts, missing = config_facts("sample_rate: 16000\nn_fft: 510\nhop_length: 128\nwindow_type: hann\n")
     assert facts["sample_rate"] and facts["n_fft"] and facts["hop_length"] and facts["window_type"]
     assert "sampler_type" in missing
+    assert tensor_contract_status({"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert tensor_contract_status({"safe_load_status": "SAFE_LOADED"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
+    assert tensor_contract_status({"safe_load_status": "SAFE_LOADED", "tensor_manifest": {"x": {}}}) == "SAFE_LOADED_MANIFEST"
 
 
 def main() -> int:

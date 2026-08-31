@@ -671,6 +671,101 @@ pub fn group_norm_f32(
     Ok(())
 }
 
+/// Affine multi-group GroupNorm over channel-major `[channels, positions]`.
+/// Each group reduces `channels / groups × positions` values, while gamma and
+/// beta remain per-channel. This is the source NCSN++ normalization contract;
+/// [`group_norm_f32`] remains the one-group SepFormer API.
+#[allow(clippy::too_many_arguments)]
+pub fn group_norm_groups_f32(
+    input: &[f32],
+    out: &mut [f32],
+    channels: usize,
+    positions: usize,
+    groups: usize,
+    gamma: &[f32],
+    beta: &[f32],
+    eps: f32,
+) -> Result<()> {
+    if channels == 0 || positions == 0 || groups == 0 || channels % groups != 0 {
+        return Err(VokraError::InvalidArgument(format!(
+            "group_norm_groups requires non-zero channels/positions, positive groups dividing channels; got {channels}x{positions}, groups={groups}"
+        )));
+    }
+    if !eps.is_finite() || eps <= 0.0 {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups eps must be finite and positive".to_owned(),
+        ));
+    }
+    let total = checked_mul(channels, positions, "group_norm_groups channels*positions")?;
+    expect_len("group_norm_groups input", input.len(), total)?;
+    expect_len("group_norm_groups out", out.len(), total)?;
+    expect_len("group_norm_groups gamma", gamma.len(), channels)?;
+    expect_len("group_norm_groups beta", beta.len(), channels)?;
+    if input
+        .iter()
+        .chain(gamma)
+        .chain(beta)
+        .any(|value| !value.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "group_norm_groups input and affine parameters must be finite".to_owned(),
+        ));
+    }
+
+    let channels_per_group = channels / groups;
+    let group_values = checked_mul(
+        channels_per_group,
+        positions,
+        "group_norm_groups group size",
+    )?;
+    let group_count = group_values as f32;
+    for group in 0..groups {
+        let first_channel = group * channels_per_group;
+        let mut sum = 0.0f32;
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for &value in &input[base..base + positions] {
+                sum += value;
+            }
+        }
+        let mean = sum / group_count;
+        if !mean.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "group_norm_groups mean overflowed".to_owned(),
+            ));
+        }
+        let mut variance_sum = 0.0f32;
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for &value in &input[base..base + positions] {
+                let delta = value - mean;
+                variance_sum += delta * delta;
+            }
+        }
+        let variance = variance_sum / group_count;
+        let inv_std = (variance + eps).sqrt().recip();
+        if !variance.is_finite() || !inv_std.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "group_norm_groups variance overflowed".to_owned(),
+            ));
+        }
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for position in 0..positions {
+                let index = base + position;
+                let value = (input[index] - mean) * inv_std * gamma[channel] + beta[channel];
+                if !value.is_finite() {
+                    return Err(VokraError::InvalidArgument(
+                        "group_norm_groups output overflowed".to_owned(),
+                    ));
+                }
+                out[index] = value;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---- ScaleNorm (MossFormer2 FLASH projections) -----------------------------
 
 /// Row-wise ScaleNorm:
@@ -2026,6 +2121,80 @@ mod tests {
     fn group_norm_rejects_invalid_shapes() {
         assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 0, 2, &[], &[], 1e-8).is_err());
         assert!(group_norm_f32(&[0.0; 4], &mut [0.0; 4], 2, 2, &[1.0], &[0.0; 2], 1e-8,).is_err());
+    }
+
+    #[test]
+    fn group_norm_groups_matches_independent_group_oracle() {
+        let input = [1.0, 2.0, 3.0, 4.0, 10.0, 14.0, 20.0, 24.0];
+        let gamma = [1.0, 2.0, 3.0, 4.0];
+        let beta = [0.5, -0.5, 1.0, -1.0];
+        let mut out = [f32::NAN; 8];
+        group_norm_groups_f32(&input, &mut out, 4, 2, 2, &gamma, &beta, 1.0e-6).unwrap();
+        for (group_index, (group, expected_values)) in [
+            ([1.0, 2.0, 3.0, 4.0], [0.5, -0.5]),
+            ([10.0, 14.0, 20.0, 24.0], [1.0, -1.0]),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mean = group.iter().sum::<f32>() / 4.0;
+            let variance = group
+                .iter()
+                .map(|value| (value - mean) * (value - mean))
+                .sum::<f32>()
+                / 4.0;
+            let inv_std = (variance + 1.0e-6).sqrt().recip();
+            let first_channel = group_index * 2;
+            for channel in 0..2 {
+                for position in 0..2 {
+                    let index = (first_channel + channel) * 2 + position;
+                    let expected = (group[channel * 2 + position] - mean)
+                        * inv_std
+                        * gamma[first_channel + channel]
+                        + expected_values[channel];
+                    assert!((out[index] - expected).abs() <= 1.0e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_norm_groups_rejects_shape_nonfinite_and_overflow_inputs() {
+        let mut out = [0.0; 4];
+        assert!(
+            group_norm_groups_f32(&[0.0; 4], &mut out, 2, 2, 0, &[1.0; 2], &[0.0; 2], 1e-6)
+                .is_err()
+        );
+        assert!(
+            group_norm_groups_f32(&[0.0; 4], &mut out, 2, 2, 3, &[1.0; 2], &[0.0; 2], 1e-6)
+                .is_err()
+        );
+        assert!(
+            group_norm_groups_f32(
+                &[f32::NAN; 4],
+                &mut out,
+                2,
+                2,
+                1,
+                &[1.0; 2],
+                &[0.0; 2],
+                1e-6
+            )
+            .is_err()
+        );
+        assert!(
+            group_norm_groups_f32(
+                &[f32::MAX; 4],
+                &mut out,
+                2,
+                2,
+                1,
+                &[1.0; 2],
+                &[0.0; 2],
+                1e-6
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -274,3 +274,209 @@ fn conv2d_and_transpose2d_metal_match_cpu() {
         "ConvTranspose2d max|Δ| {trans_diff:.3e} exceeds {ATOL}"
     );
 }
+
+/// OUVE predictor and annealed-Langevin corrector are checked against a small
+/// independent scalar oracle and the resident API. The resident assertions
+/// make a device-to-host round-trip between sampler steps observable.
+#[test]
+fn ouve_sampler_metal_matches_independent_oracle_and_stays_resident() {
+    let Ok(ctx) = MetalContext::new() else {
+        eprintln!("no Metal device; skipping OUVE parity");
+        return;
+    };
+    let theta = 1.5f32;
+    let sigma_min = 0.05f32;
+    let sigma_max = 0.5f32;
+    let t = 0.7f32;
+    let step = 0.01f32;
+    let snr = 0.2f32;
+    let x = [0.2f32, -0.4, 0.8, -1.1];
+    let y = [0.1f32, 0.3, -0.2, 0.7];
+    let score = [0.4f32, -0.2, 0.1, 0.6];
+    let noise = [0.5f32, -0.25, 0.75, -0.125];
+    let log_ratio = (sigma_max / sigma_min).ln();
+    let diffusion = sigma_min * (log_ratio * t).exp() * (2.0 * log_ratio).sqrt();
+    let score_scale = diffusion * diffusion;
+    let mut expected_mean = [0.0f32; 4];
+    let mut expected = [0.0f32; 4];
+    for i in 0..x.len() {
+        let drift = theta * (y[i] - x[i]);
+        expected_mean[i] = x[i] - (drift - score_scale * score[i]) * step;
+        expected[i] = expected_mean[i] + diffusion * step.sqrt() * noise[i];
+    }
+    let mut actual = [f32::NAN; 4];
+    let mut actual_mean = [f32::NAN; 4];
+    ctx.ouve_reverse_diffusion_f32(
+        theta,
+        sigma_min,
+        sigma_max,
+        &x,
+        &y,
+        &score,
+        t,
+        step,
+        &noise,
+        false,
+        &mut actual,
+        &mut actual_mean,
+    )
+    .expect("Metal OUVE predictor");
+    assert!(max_abs_diff(&actual, &expected) <= ATOL);
+    assert!(max_abs_diff(&actual_mean, &expected_mean) <= ATOL);
+
+    let x_dev = ctx.upload(&x).expect("upload x");
+    let y_dev = ctx.upload(&y).expect("upload y");
+    let score_dev = ctx.upload(&score).expect("upload score");
+    let noise_dev = ctx.upload(&noise).expect("upload noise");
+    let mut out_dev = ctx.alloc_dev(x.len()).expect("alloc out");
+    let mut mean_dev = ctx.alloc_dev(x.len()).expect("alloc mean");
+    let before = ctx.readback_count();
+    ctx.ouve_reverse_diffusion_dev(
+        &mut out_dev,
+        &mut mean_dev,
+        &x_dev,
+        &y_dev,
+        &score_dev,
+        &noise_dev,
+        theta,
+        sigma_min,
+        sigma_max,
+        t,
+        step,
+        false,
+    )
+    .expect("resident Metal OUVE predictor");
+    assert_eq!(ctx.readback_count(), before);
+
+    let variance = sigma_min
+        * sigma_min
+        * (-2.0 * theta * t).exp()
+        * ((2.0 * (theta + log_ratio) * t).exp() - 1.0)
+        * log_ratio
+        / (theta + log_ratio);
+    let corrector_step = 2.0 * (snr * variance.sqrt()) * (snr * variance.sqrt());
+    let corrector_noise_scale = (2.0 * corrector_step).sqrt();
+    let mut expected_corrector = [0.0f32; 4];
+    let mut expected_corrector_mean = [0.0f32; 4];
+    for i in 0..x.len() {
+        expected_corrector_mean[i] = expected[i] + corrector_step * score[i];
+        expected_corrector[i] = expected_corrector_mean[i] + corrector_noise_scale * noise[i];
+    }
+    let mut corrected_dev = ctx.alloc_dev(x.len()).expect("alloc corrected");
+    let mut corrected_mean_dev = ctx.alloc_dev(x.len()).expect("alloc corrected mean");
+    ctx.ouve_annealed_langevin_dev(
+        &mut corrected_dev,
+        &mut corrected_mean_dev,
+        &out_dev,
+        &score_dev,
+        &noise_dev,
+        theta,
+        sigma_min,
+        sigma_max,
+        t,
+        snr,
+    )
+    .expect("resident Metal OUVE corrector");
+    assert_eq!(
+        ctx.readback_count(),
+        before,
+        "sampler steps must not read back device state"
+    );
+    let mut resident_corrected = [f32::NAN; 4];
+    let mut resident_corrected_mean = [f32::NAN; 4];
+    ctx.download(&corrected_dev, &mut resident_corrected)
+        .expect("download corrected result");
+    ctx.download(&corrected_mean_dev, &mut resident_corrected_mean)
+        .expect("download corrected mean");
+    assert_eq!(ctx.readback_count(), before + 2);
+    assert!(max_abs_diff(&resident_corrected, &expected_corrector) <= ATOL);
+    assert!(max_abs_diff(&resident_corrected_mean, &expected_corrector_mean) <= ATOL);
+
+    let mut actual_corrector = [f32::NAN; 4];
+    let mut actual_corrector_mean = [f32::NAN; 4];
+    ctx.ouve_annealed_langevin_f32(
+        theta,
+        sigma_min,
+        sigma_max,
+        &expected,
+        &score,
+        t,
+        snr,
+        &noise,
+        &mut actual_corrector,
+        &mut actual_corrector_mean,
+    )
+    .expect("Metal OUVE corrector");
+    assert!(max_abs_diff(&actual_corrector, &expected_corrector) <= ATOL);
+    assert!(max_abs_diff(&actual_corrector_mean, &expected_corrector_mean) <= ATOL);
+}
+
+#[test]
+fn ncsnpp_group_norm_groups_matches_independent_oracle() {
+    let Ok(ctx) = MetalContext::new() else {
+        eprintln!("no Metal device; skipping multi-group GroupNorm parity");
+        return;
+    };
+    // NCSN++ source-shaped width: 128 channels split into 32 groups. This
+    // exercises a group reduction over multiple channels, not merely the
+    // degenerate one-channel case, and the Rust launcher dispatches exactly
+    // one Metal thread per group.
+    let channels = 128;
+    let positions = 3;
+    let groups = 32;
+    let input: Vec<f32> = (0..channels * positions)
+        .map(|index| index as f32 * 0.25 - 3.0)
+        .collect();
+    let gamma: Vec<f32> = (0..channels)
+        .map(|channel| 0.5 + channel as f32 * 0.03125)
+        .collect();
+    let beta: Vec<f32> = (0..channels)
+        .map(|channel| -0.25 + channel as f32 * 0.015625)
+        .collect();
+    let mut actual = vec![f32::NAN; input.len()];
+    ctx.group_norm_groups_f32(
+        &input,
+        &mut actual,
+        channels,
+        positions,
+        groups,
+        &gamma,
+        &beta,
+        1.0e-6,
+    )
+    .expect("Metal multi-group GroupNorm");
+
+    // Independent scalar oracle, deliberately separate from either backend.
+    let mut expected = vec![0.0; input.len()];
+    let channels_per_group = channels / groups;
+    for group in 0..groups {
+        let first_channel = group * channels_per_group;
+        let count = channels_per_group * positions;
+        let mut sum = 0.0f32;
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for position in 0..positions {
+                sum += input[base + position];
+            }
+        }
+        let mean = sum / count as f32;
+        let mut variance_sum = 0.0f32;
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for position in 0..positions {
+                let delta = input[base + position] - mean;
+                variance_sum += delta * delta;
+            }
+        }
+        let variance = variance_sum / count as f32;
+        let inv_std = (variance + 1.0e-6).sqrt().recip();
+        for channel in first_channel..first_channel + channels_per_group {
+            let base = channel * positions;
+            for position in 0..positions {
+                expected[base + position] =
+                    (input[base + position] - mean) * inv_std * gamma[channel] + beta[channel];
+            }
+        }
+    }
+    assert!(max_abs_diff(&actual, &expected) <= ATOL);
+}

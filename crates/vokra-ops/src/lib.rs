@@ -232,6 +232,8 @@ pub mod vocos;
 // dispatch surface. Localised re-export block for clean parallel-wave
 // rebases.
 pub mod openwakeword;
+/// OUVE-SDE predictor/corrector primitives for score-based enhancement.
+pub mod ouve_sde;
 // -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq codec decode (RVQ family, FR-OP-30) -----------------
 // New module + re-export block. Wave 3 (M3-07) will touch the same file, so
@@ -552,6 +554,8 @@ pub use openwakeword::{
     openwakeword_classifier_forward, openwakeword_dnn_classifier_forward,
     openwakeword_embedding_forward, openwakeword_melspectrogram,
 };
+// ---- SGMSE OUVE-SDE re-exports ------------------------------------------
+pub use ouve_sde::{OuvEConfig, annealed_langevin_step, reverse_diffusion_step};
 // -------------------------------------------------------------------------
 // ---- M3-06 mimi_rvq re-exports ------------------------------------------
 pub use mimi_rvq::{

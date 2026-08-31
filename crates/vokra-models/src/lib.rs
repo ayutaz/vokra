@@ -386,6 +386,8 @@ pub mod qwen3_tts;
 // — see `sbv2::mod` doc comment for the full reference list and the explicit
 // NOT REFERENCED (AGPL-3.0) sources.
 pub mod sbv2;
+/// Native SGMSE-VoiceBank score-model orchestration (CPU / Metal).
+pub mod sgmse;
 pub mod silero_vad;
 // KWS (keyword-spotting / wake-word) family (SoTA plan KWS binder, 2026-08-05).
 // First member: openWakeWord (dscripka/openWakeWord, Apache-2.0 code).

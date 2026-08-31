@@ -33,7 +33,7 @@ pub fn convert_sgmse_file(
     _license: Option<&str>,
 ) -> Result<SgmseReport, ConvertError> {
     Err(ConvertError::Usage(
-        "SGMSE-VoiceBank conversion is INSPECTION_ONLY until VAST authenticates the fixed checkpoint, safe-load container, EMA extraction, and complete tensor manifest".to_owned(),
+        "SGMSE-VoiceBank conversion is AUTHENTICATED_MANIFEST_REQUIRED: VAST must authenticate the fixed checkpoint, safe-load container, EMA extraction, and complete tensor manifest before conversion".to_owned(),
     ))
 }
 
@@ -42,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arbitrary_checkpoint_conversion_is_inspection_only() {
+    fn arbitrary_checkpoint_requires_authenticated_manifest() {
         let error = convert_sgmse_file(
             Path::new("/does/not/exist.safetensors"),
             Path::new("/tmp/sgmse-voicebank.gguf"),
@@ -50,7 +50,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("INSPECTION_ONLY"), "{error}");
+        assert!(error.contains("AUTHENTICATED_MANIFEST_REQUIRED"), "{error}");
         assert!(error.contains("complete tensor manifest"), "{error}");
     }
 
@@ -63,6 +63,6 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("INSPECTION_ONLY"), "{error}");
+        assert!(error.contains("AUTHENTICATED_MANIFEST_REQUIRED"), "{error}");
     }
 }

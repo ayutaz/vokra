@@ -61,6 +61,10 @@ self_test() {
       fail=1
     fi
   done
+  if ! grep -Fq 'AUTHENTICATED_MANIFEST_REQUIRED' "$path"; then
+    log 'self-test FAIL: checkpoint-specific native manifest gate is missing'
+    fail=1
+  fi
   if ! grep -Fq 'COMPANIONS=(README.md .gitattributes)' "$path"; then
     log 'self-test FAIL: companion declaration is not the fixed two-file contract'
     fail=1
@@ -94,7 +98,7 @@ self_test() {
     log 'self-test FAIL: unknown argument accepted'
     fail=1
   fi
-  if ! UV_CACHE_DIR="$SGMSE_UV_CACHE_DIR" uv run --frozen --project "$PARITY_PROJECT" \
+  if ! UV_CACHE_DIR="$SGMSE_UV_CACHE_DIR" uv run --frozen --no-sync --project "$PARITY_PROJECT" \
     --python 3.12 python "$PREPARER" --self-test >/dev/null; then
     log 'self-test FAIL: preparer self-test failed'
     fail=1
@@ -197,6 +201,8 @@ if ! grep -Fq '"blockers": []' "$work_dir/evidence/sgmse_voicebank_manifest.json
     echo 'parity_status=INSPECTION_ONLY'
     echo 'verdict=BLOCKED'
     echo 'blocker_exit=2'
+    echo 'native_manifest_gate=AUTHENTICATED_MANIFEST_REQUIRED'
+    echo 'native_manifest_source=safe_load.tensor_manifest'
     echo 'native_blocker=see sgmse_voicebank_manifest.json blockers and safe-load evidence'
   } | tee -a "$work_dir/evidence/validation.log"
   die 'inspection blockers remain; evidence was preserved and worker exits 2'
