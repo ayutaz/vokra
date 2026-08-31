@@ -1,9 +1,9 @@
 {
   "gate_version": 1,
-  "lock_sha256": "8d9946116a096f66daef0a1323a0d915045c812ae7d49b120e5c98b4bdb13df9",
-  "pyproject_sha256": "6514e3b3ed6e1878ce19bf5ffb1f45f19d096604d78ba2728a3094e935f569b3",
-  "package_rows_sha256": "b78ea8cab349e006036edf1afbeda874c05594846c789bcdc527c3fcd4c765a8",
-  "review_rows_sha256": "a80b9ef1ec8474dd983f7bc3593345b67748c52e2c1a034e494cc2b1616492bd",
+  "lock_sha256": "1c87ba66b887b2230090981fc249bb70bfa13f7a300f7f4c72c7ef5ffdbc8727",
+  "pyproject_sha256": "d2c4bdbacbf28b40e4c6baec2e626a636ae565276ecc0fe30171f3d5d2a01203",
+  "package_rows_sha256": "160dd1565cf7603ba5cf3f2872e9a120ec3aadd3365e16c6c2c89eee6922347e",
+  "review_rows_sha256": "0d5d8c64f16a90d0b96cc1fecfd9596d365ac6d6abc64824c8d1972bf9795741",
   "source_identity": {"repo": "https://github.com/huggingface/parler-tts.git", "revision": "d108732cd57788ec86bc857d99a6cabd66663d68", "license": "Apache-2.0"},
   "variants": [
     {"slug":"english","upstream_repo":"parler-tts/parler-tts-mini-v1","upstream_revision":"0392b9451a601e528fd863bbb0598431fee810d9","upstream_license":"Apache-2.0","checkpoint_bytes":3511490560,"checkpoint_sha256":"bc430eb6752b96ffb3f67036d1a6e207fbd031575a775716ffa64ef1eeb03692","config_bytes":6930,"config_sha256":"d8d2afa72bf3b098263a073c4d4df18627b76e1eb454c48f60bc5f787b2433b1","generation_bytes":265,"generation_sha256":"77831b39a5e0c4dba09b4dcbe37ce082e10f94c646920b20678c9c5289e52440","public_repo":"vokra/parler-tts-mini-v1","public_license":"Apache-2.0","public_revision":"cb02a124c8d125231b396a293608f2488ae2e4d2","public_file":"parler-tts-mini-v1.gguf","public_bytes":3511459168,"public_sha256":"7f69b811edae6cbe82fdfa8e72e6181945d4466748349aa74d994fb566785ddc"},
@@ -35,7 +35,7 @@
     {"id":"regex@2026.7.19","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"requests@2.34.2","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"safetensors@0.8.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
-    {"id":"setuptools@81.0.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
+    {"id":"setuptools@83.0.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"sympy@1.14.0","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"tokenizers@0.20.3","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},
     {"id":"torch@2.11.0+cpu","status":"PENDING_REVIEW","license":null,"native_review":null,"bundled_review":null,"evidence":null},

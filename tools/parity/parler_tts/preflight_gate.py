@@ -23,8 +23,8 @@ from typing import Any
 import tomllib
 
 GATE_VERSION = 1
-LOCK_SHA256 = "8d9946116a096f66daef0a1323a0d915045c812ae7d49b120e5c98b4bdb13df9"
-PYPROJECT_SHA256 = "6514e3b3ed6e1878ce19bf5ffb1f45f19d096604d78ba2728a3094e935f569b3"
+LOCK_SHA256 = "1c87ba66b887b2230090981fc249bb70bfa13f7a300f7f4c72c7ef5ffdbc8727"
+PYPROJECT_SHA256 = "d2c4bdbacbf28b40e4c6baec2e626a636ae565276ecc0fe30171f3d5d2a01203"
 SOURCE_REPO = "https://github.com/huggingface/parler-tts.git"
 SOURCE_REVISION = "d108732cd57788ec86bc857d99a6cabd66663d68"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -37,7 +37,7 @@ MANIFEST_KEYS = {
     "review_rows_sha256", "source_identity", "variants", "dac_identity", "reference_route",
     "model_reviews", "approval_scope_sha256", "operator_approval",
 }
-LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "package"}
+LOCK_KEYS = {"version", "revision", "requires-python", "resolution-markers", "supported-markers", "manifest", "package"}
 PACKAGE_KEYS = {"name", "version", "source", "resolution-markers", "dependencies", "sdist", "wheels", "metadata"}
 ARTIFACT_KEYS = {"url", "hash", "size", "upload-time"}
 PYTORCH_CPU_REGISTRY = "https://download.pytorch.org/whl/cpu"
@@ -147,7 +147,7 @@ def validate_project_schema(project: dict[str, Any]) -> None:
     if p["requires-python"] != "==3.12.*" or not isinstance(p["dependencies"], list) or any(not isinstance(x, str) or not x.strip() for x in p["dependencies"]):
         raise ValueError("pyproject.toml project contract drifted")
     uv = project["tool"].get("uv") if isinstance(project["tool"], dict) else None
-    if set(project["tool"]) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "sources", "index"} or uv["package"] is not False or uv["environments"] != ["sys_platform == 'linux' and platform_machine == 'x86_64'"] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}} or uv["index"] != [{"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu", "explicit": True}]:
+    if set(project["tool"]) != {"uv"} or not isinstance(uv, dict) or set(uv) != {"package", "environments", "override-dependencies", "sources", "index"} or uv["package"] is not False or uv["environments"] != ["sys_platform == 'linux' and platform_machine == 'x86_64'"] or uv["override-dependencies"] != ["setuptools==83.0.0"] or uv["sources"] != {"torch": {"index": "pytorch-cpu"}, "torchaudio": {"index": "pytorch-cpu"}} or uv["index"] != [{"name": "pytorch-cpu", "url": "https://download.pytorch.org/whl/cpu", "explicit": True}]:
         raise ValueError("pyproject.toml uv contract drifted")
 
 
@@ -210,7 +210,7 @@ def validate_metadata(value: Any, label: str) -> None:
 
 def canonical_package_rows(lock: dict[str, Any], project: dict[str, Any]) -> list[dict[str, Any]]:
     packages = lock.get("package")
-    if not isinstance(packages, list) or not packages or set(lock) != LOCK_KEYS or lock.get("version") != 1 or lock.get("revision") != 3 or lock.get("requires-python") != "==3.12.*" or not isinstance(lock.get("resolution-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["resolution-markers"]) or not isinstance(lock.get("supported-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["supported-markers"]):
+    if not isinstance(packages, list) or not packages or set(lock) != LOCK_KEYS or lock.get("version") != 1 or lock.get("revision") != 3 or lock.get("requires-python") != "==3.12.*" or lock.get("manifest") != {"overrides": [{"name": "setuptools", "specifier": "==83.0.0"}]} or not isinstance(lock.get("resolution-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["resolution-markers"]) or not isinstance(lock.get("supported-markers"), list) or any(not isinstance(item, str) or not item.strip() for item in lock["supported-markers"]):
         raise ValueError("uv.lock package table is missing")
     rows = []
     identities: set[tuple[str, str]] = set()
