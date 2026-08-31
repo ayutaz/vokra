@@ -9,13 +9,14 @@
 use crate::compute::{Compute, HotOp};
 use vokra_core::{Result, VokraError};
 
-/// Hot operations required by the FireRed AED encoder stem and relative
-/// attention.  The list is consumed by a model entry point before any work;
+/// Hot operations required by the FireRed AED encoder and decoder paths.
+/// The list is consumed by a model entry point before any work;
 /// it intentionally contains no fallback-only operation.
 pub const FIRERED_ASR_AED_HOT_OPS: &[HotOp] = &[
     HotOp::Conv2d,
     HotOp::Conv1d,
     HotOp::Gemm,
+    HotOp::Gelu,
     HotOp::LayerNorm,
     HotOp::Relu,
     HotOp::Silu,
@@ -1561,6 +1562,1061 @@ impl FireRedConformerEncoder {
     }
 }
 
+/// Borrowed projections for the source FireRed decoder self-attention. Matrix
+/// weights use the Compute layout `[input, output]` (the source PyTorch
+/// `Linear` tensors are `[output, input]`); the two absent source biases are
+/// represented by the lack of a field, not by fabricated zeros.
+#[derive(Clone, Copy)]
+pub struct FireRedDecoderSelfAttentionWeights<'a> {
+    pub q_w_t: &'a [f32],
+    pub q_b: &'a [f32],
+    pub k_w_t: &'a [f32],
+    pub v_w_t: &'a [f32],
+    pub v_b: &'a [f32],
+    pub output_w_t: &'a [f32],
+    pub output_b: &'a [f32],
+}
+
+/// Borrowed projections for decoder cross-attention. The source
+/// `DecoderMultiHeadAttention` uses the decoder width for K/V input too;
+/// unequal encoder/decoder widths are rejected by the native seam.
+#[derive(Clone, Copy)]
+pub struct FireRedDecoderCrossAttentionWeights<'a> {
+    pub q_w_t: &'a [f32],
+    pub q_b: &'a [f32],
+    pub k_w_t: &'a [f32],
+    pub v_w_t: &'a [f32],
+    pub v_b: &'a [f32],
+    pub output_w_t: &'a [f32],
+    pub output_b: &'a [f32],
+}
+
+/// Source `DecoderLayer` operands. All normalisation uses PyTorch
+/// `LayerNorm(..., eps=1e-5)` and all dropout is identity in this inference
+/// only path.
+#[derive(Clone, Copy)]
+pub struct FireRedDecoderLayerWeights<'a> {
+    pub self_norm_gamma: &'a [f32],
+    pub self_norm_beta: &'a [f32],
+    pub self_attention: FireRedDecoderSelfAttentionWeights<'a>,
+    pub cross_norm_gamma: &'a [f32],
+    pub cross_norm_beta: &'a [f32],
+    pub cross_attention: FireRedDecoderCrossAttentionWeights<'a>,
+    pub mlp_norm_gamma: &'a [f32],
+    pub mlp_norm_beta: &'a [f32],
+    pub mlp_expand_w_t: &'a [f32],
+    pub mlp_expand_b: &'a [f32],
+    pub mlp_project_w_t: &'a [f32],
+    pub mlp_project_b: &'a [f32],
+}
+
+/// Result of one self-attention invocation, including projected K/V cache
+/// rows. Cache rows are frame-major `[cached_frames, d_model]`, so a caller
+/// can pass them to the next step without re-projecting old tokens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedDecoderAttentionOutput {
+    pub output: Vec<f32>,
+    pub key_cache: Vec<f32>,
+    pub value_cache: Vec<f32>,
+}
+
+/// Source self-attention with causal and padding-key masks. With a non-empty
+/// cache, only the supplied current query rows are projected and the causal
+/// boundary is `past_len + query_index`; this is the upstream last-query cache
+/// path when `query_frames == 1`.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedDecoderSelfAttention {
+    pub d_model: usize,
+    pub n_head: usize,
+}
+
+impl FireRedDecoderSelfAttention {
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        query: &[f32],
+        query_frames: usize,
+        past_k: &[f32],
+        past_v: &[f32],
+        key_mask: &[bool],
+        weights: FireRedDecoderSelfAttentionWeights<'_>,
+    ) -> Result<FireRedDecoderAttentionOutput> {
+        let d = self.d_model;
+        let query_len = query_frames.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder self-attention query overflow".to_owned())
+        })?;
+        if query_frames == 0 || d == 0 || query.len() != query_len || past_k.len() != past_v.len() {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder self-attention query/cache shape is invalid".to_owned(),
+            ));
+        }
+        let past_frames = past_k.len().checked_div(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder self-attention cache overflow".to_owned())
+        })?;
+        if past_frames.checked_mul(d) != Some(past_k.len()) {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder self-attention cache is not frame-major".to_owned(),
+            ));
+        }
+        let total_frames = past_frames.checked_add(query_frames).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder self-attention frame overflow".to_owned())
+        })?;
+        if key_mask.len() != total_frames || !key_mask.iter().any(|&valid| valid) {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder self-attention key mask is invalid or all-masked".to_owned(),
+            ));
+        }
+        validate_attention_geometry(d, self.n_head)?;
+        let matrix = d.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder self-attention matrix overflow".to_owned())
+        })?;
+        validate_linear_operands(query, query_frames, d, d, weights.q_w_t, Some(weights.q_b))?;
+        validate_linear_operands(query, query_frames, d, d, weights.k_w_t, None)?;
+        validate_linear_operands(query, query_frames, d, d, weights.v_w_t, Some(weights.v_b))?;
+        if weights.output_w_t.len() != matrix
+            || weights.output_b.len() != d
+            || !all_finite(&[past_k, past_v, weights.output_w_t, weights.output_b])
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder self-attention output/cache operands are invalid".to_owned(),
+            ));
+        }
+        let q = linear(
+            compute,
+            query,
+            query_frames,
+            d,
+            d,
+            weights.q_w_t,
+            Some(weights.q_b),
+        )?;
+        let current_k = linear(compute, query, query_frames, d, d, weights.k_w_t, None)?;
+        let current_v = linear(
+            compute,
+            query,
+            query_frames,
+            d,
+            d,
+            weights.v_w_t,
+            Some(weights.v_b),
+        )?;
+        let cache_len = total_frames.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder self-attention cache overflow".to_owned())
+        })?;
+        let mut keys = Vec::with_capacity(cache_len);
+        keys.extend_from_slice(past_k);
+        keys.extend_from_slice(&current_k);
+        let mut values = Vec::with_capacity(cache_len);
+        values.extend_from_slice(past_v);
+        values.extend_from_slice(&current_v);
+        let attended = scaled_dot_product_attention(
+            compute,
+            &q,
+            query_frames,
+            &keys,
+            total_frames,
+            &values,
+            d,
+            self.n_head,
+            key_mask,
+            Some(past_frames),
+        )?;
+        let mut output = linear(
+            compute,
+            &attended,
+            query_frames,
+            d,
+            d,
+            weights.output_w_t,
+            Some(weights.output_b),
+        )?;
+        ensure_finite(&output, "FireRed decoder self-attention output")?;
+        Ok(FireRedDecoderAttentionOutput {
+            output,
+            key_cache: keys,
+            value_cache: values,
+        })
+    }
+}
+
+/// Source cross-attention: no causal mask, but every encoder key must pass
+/// the supplied source/padding mask. Query rows are frame-major and K/V rows
+/// are encoder-frame-major.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedDecoderCrossAttention {
+    pub d_model: usize,
+    pub source_dim: usize,
+    pub n_head: usize,
+}
+
+impl FireRedDecoderCrossAttention {
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        query: &[f32],
+        query_frames: usize,
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        query_mask: Option<&[bool]>,
+        weights: FireRedDecoderCrossAttentionWeights<'_>,
+    ) -> Result<Vec<f32>> {
+        let d = self.d_model;
+        let source_dim = self.source_dim;
+        let query_len = query_frames.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder cross-attention query overflow".to_owned())
+        })?;
+        let memory_len = source_frames.checked_mul(source_dim).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "FireRed decoder cross-attention memory overflow".to_owned(),
+            )
+        })?;
+        if query_frames == 0
+            || source_frames == 0
+            || query.len() != query_len
+            || memory.len() != memory_len
+            || source_mask.len() != source_frames
+            || !source_mask.iter().any(|&valid| valid)
+            || source_dim != d
+            || query_mask
+                .is_some_and(|mask| mask.len() != query_frames || !mask.iter().all(|&valid| valid))
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder cross-attention shape or mask is invalid".to_owned(),
+            ));
+        }
+        validate_attention_geometry(d, self.n_head)?;
+        validate_linear_operands(query, query_frames, d, d, weights.q_w_t, Some(weights.q_b))?;
+        validate_linear_operands(memory, source_frames, source_dim, d, weights.k_w_t, None)?;
+        validate_linear_operands(
+            memory,
+            source_frames,
+            source_dim,
+            d,
+            weights.v_w_t,
+            Some(weights.v_b),
+        )?;
+        let matrix = d.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument(
+                "FireRed decoder cross-attention matrix overflow".to_owned(),
+            )
+        })?;
+        if weights.output_w_t.len() != matrix
+            || weights.output_b.len() != d
+            || !all_finite(&[query, memory, weights.output_w_t, weights.output_b])
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder cross-attention output operands are invalid".to_owned(),
+            ));
+        }
+        let q = linear(
+            compute,
+            query,
+            query_frames,
+            d,
+            d,
+            weights.q_w_t,
+            Some(weights.q_b),
+        )?;
+        let k = linear(
+            compute,
+            memory,
+            source_frames,
+            source_dim,
+            d,
+            weights.k_w_t,
+            None,
+        )?;
+        let v = linear(
+            compute,
+            memory,
+            source_frames,
+            source_dim,
+            d,
+            weights.v_w_t,
+            Some(weights.v_b),
+        )?;
+        let attended = scaled_dot_product_attention(
+            compute,
+            &q,
+            query_frames,
+            &k,
+            source_frames,
+            &v,
+            d,
+            self.n_head,
+            source_mask,
+            None,
+        )?;
+        let mut output = linear(
+            compute,
+            &attended,
+            query_frames,
+            d,
+            d,
+            weights.output_w_t,
+            Some(weights.output_b),
+        )?;
+        ensure_finite(&output, "FireRed decoder cross-attention output")?;
+        Ok(output)
+    }
+}
+
+/// Complete inference-only pre-norm decoder layer. The caller supplies the
+/// projected self-attention cache; passing one current row exercises the
+/// upstream incremental last-query path. The method deliberately returns the
+/// cache separately and does not mutate hidden state behind the caller's back.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedDecoderLayer {
+    pub d_model: usize,
+    pub inner_dim: usize,
+    pub n_head: usize,
+    pub source_dim: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedDecoderLayerOutput {
+    pub output: Vec<f32>,
+    pub key_cache: Vec<f32>,
+    pub value_cache: Vec<f32>,
+}
+
+impl FireRedDecoderLayer {
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        query_frames: usize,
+        query_mask: &[bool],
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        past_k: &[f32],
+        past_v: &[f32],
+        past_mask: &[bool],
+        weights: FireRedDecoderLayerWeights<'_>,
+    ) -> Result<FireRedDecoderLayerOutput> {
+        self.validate(
+            input,
+            query_frames,
+            query_mask,
+            memory,
+            source_frames,
+            source_mask,
+            past_k,
+            past_v,
+            past_mask,
+            weights,
+        )?;
+        let d = self.d_model;
+        let mut normalized = vec![0.0; input.len()];
+        compute.layer_norm_f32(
+            input,
+            &mut normalized,
+            query_frames,
+            d,
+            weights.self_norm_gamma,
+            weights.self_norm_beta,
+            1e-5,
+        )?;
+        let self_output = FireRedDecoderSelfAttention {
+            d_model: d,
+            n_head: self.n_head,
+        }
+        .forward(
+            compute,
+            &normalized,
+            query_frames,
+            past_k,
+            past_v,
+            &combined_cache_mask(past_mask, query_mask)?,
+            weights.self_attention,
+        )?;
+        let mut residual = add_masked_residual(input, &self_output.output, query_mask, d)?;
+        let mut cross_norm = vec![0.0; residual.len()];
+        compute.layer_norm_f32(
+            &residual,
+            &mut cross_norm,
+            query_frames,
+            d,
+            weights.cross_norm_gamma,
+            weights.cross_norm_beta,
+            1e-5,
+        )?;
+        let cross_output = FireRedDecoderCrossAttention {
+            d_model: d,
+            source_dim: self.source_dim,
+            n_head: self.n_head,
+        }
+        .forward(
+            compute,
+            &cross_norm,
+            query_frames,
+            memory,
+            source_frames,
+            source_mask,
+            Some(query_mask),
+            weights.cross_attention,
+        )?;
+        residual = add_masked_residual(&residual, &cross_output, query_mask, d)?;
+        let mut mlp_norm = vec![0.0; residual.len()];
+        compute.layer_norm_f32(
+            &residual,
+            &mut mlp_norm,
+            query_frames,
+            d,
+            weights.mlp_norm_gamma,
+            weights.mlp_norm_beta,
+            1e-5,
+        )?;
+        let expanded = linear(
+            compute,
+            &mlp_norm,
+            query_frames,
+            d,
+            self.inner_dim,
+            weights.mlp_expand_w_t,
+            Some(weights.mlp_expand_b),
+        )?;
+        let mut activated = vec![0.0; expanded.len()];
+        compute.gelu_f32(&expanded, &mut activated)?;
+        let projected = linear(
+            compute,
+            &activated,
+            query_frames,
+            self.inner_dim,
+            d,
+            weights.mlp_project_w_t,
+            Some(weights.mlp_project_b),
+        )?;
+        let output = add_masked_residual(&residual, &projected, query_mask, d)?;
+        Ok(FireRedDecoderLayerOutput {
+            output,
+            key_cache: self_output.key_cache,
+            value_cache: self_output.value_cache,
+        })
+    }
+
+    fn validate(
+        &self,
+        input: &[f32],
+        query_frames: usize,
+        query_mask: &[bool],
+        memory: &[f32],
+        source_frames: usize,
+        source_mask: &[bool],
+        past_k: &[f32],
+        past_v: &[f32],
+        past_mask: &[bool],
+        weights: FireRedDecoderLayerWeights<'_>,
+    ) -> Result<()> {
+        if self.d_model == 0
+            || self.inner_dim == 0
+            || self.source_dim == 0
+            || query_frames == 0
+            || query_mask.len() != query_frames
+            || !query_mask.iter().all(|&valid| valid)
+            || source_frames == 0
+            || source_mask.len() != source_frames
+            || !source_mask.iter().any(|&valid| valid)
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder layer shape or mask is invalid".to_owned(),
+            ));
+        }
+        validate_attention_geometry(self.d_model, self.n_head)?;
+        let input_len = query_frames.checked_mul(self.d_model).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder layer input overflow".to_owned())
+        })?;
+        let memory_len = source_frames.checked_mul(self.source_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder layer memory overflow".to_owned())
+        })?;
+        if input.len() != input_len
+            || memory.len() != memory_len
+            || past_k.len() != past_v.len()
+            || past_k.len() % self.d_model != 0
+            || past_mask.len() != past_k.len() / self.d_model
+            || (past_mask.is_empty() && !past_k.is_empty())
+            || self.source_dim != self.d_model
+            || !all_finite(&[input, memory, past_k, past_v])
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder layer input/cache shape or values are invalid".to_owned(),
+            ));
+        }
+        let d = self.d_model;
+        let inner = self.inner_dim;
+        let matrix = d.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder layer matrix overflow".to_owned())
+        })?;
+        let qk = self.source_dim.checked_mul(d).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder cross matrix overflow".to_owned())
+        })?;
+        let mlp = d.checked_mul(inner).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder MLP matrix overflow".to_owned())
+        })?;
+        let vectors = [
+            weights.self_norm_gamma,
+            weights.self_norm_beta,
+            weights.self_attention.q_b,
+            weights.self_attention.v_b,
+            weights.self_attention.output_b,
+            weights.cross_norm_gamma,
+            weights.cross_norm_beta,
+            weights.cross_attention.q_b,
+            weights.cross_attention.v_b,
+            weights.cross_attention.output_b,
+            weights.mlp_norm_gamma,
+            weights.mlp_norm_beta,
+            weights.mlp_expand_b,
+            weights.mlp_project_b,
+        ];
+        if vectors
+            .iter()
+            .any(|values| values.iter().any(|value| !value.is_finite()))
+            || vectors[0].len() != d
+            || vectors[1].len() != d
+            || vectors[2].len() != d
+            || vectors[3].len() != d
+            || vectors[4].len() != d
+            || vectors[5].len() != d
+            || vectors[6].len() != d
+            || vectors[7].len() != d
+            || vectors[8].len() != d
+            || vectors[9].len() != d
+            || vectors[10].len() != d
+            || vectors[11].len() != d
+            || vectors[12].len() != inner
+            || vectors[13].len() != d
+            || weights.self_attention.q_w_t.len() != matrix
+            || weights.self_attention.k_w_t.len() != matrix
+            || weights.self_attention.v_w_t.len() != matrix
+            || weights.self_attention.output_w_t.len() != matrix
+            || weights.cross_attention.q_w_t.len() != matrix
+            || weights.cross_attention.k_w_t.len() != qk
+            || weights.cross_attention.v_w_t.len() != qk
+            || weights.cross_attention.output_w_t.len() != matrix
+            || weights.mlp_expand_w_t.len() != mlp
+            || weights.mlp_project_w_t.len() != mlp
+            || !all_finite(&[
+                weights.self_attention.q_w_t,
+                weights.self_attention.k_w_t,
+                weights.self_attention.v_w_t,
+                weights.self_attention.output_w_t,
+                weights.cross_attention.q_w_t,
+                weights.cross_attention.k_w_t,
+                weights.cross_attention.v_w_t,
+                weights.cross_attention.output_w_t,
+                weights.mlp_expand_w_t,
+                weights.mlp_project_w_t,
+            ])
+        {
+            return Err(VokraError::ModelLoad(
+                "FireRed decoder layer learned operand preflight failed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Embedding and fixed positional table path. `embedding` is source
+/// `[vocab,d_model]`; `positional` is the flattened source
+/// `[1,max_positions,d_model]` table. The source's embedding scale is always
+/// `sqrt(d_model)` and is derived internally; callers cannot provide an
+/// arbitrary scale.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedDecoderEmbedding {
+    pub vocab_size: usize,
+    pub d_model: usize,
+    pub max_positions: usize,
+}
+
+impl FireRedDecoderEmbedding {
+    pub fn forward(
+        &self,
+        token_ids: &[usize],
+        positions: &[usize],
+        embedding: &[f32],
+        positional: &[f32],
+    ) -> Result<Vec<f32>> {
+        if token_ids.is_empty()
+            || token_ids.len() != positions.len()
+            || self.vocab_size == 0
+            || self.d_model == 0
+            || self.max_positions == 0
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder embedding shape/scale is invalid".to_owned(),
+            ));
+        }
+        let embedding_len = self.vocab_size.checked_mul(self.d_model).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder embedding table overflow".to_owned())
+        })?;
+        let positional_len = self
+            .max_positions
+            .checked_mul(self.d_model)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("FireRed decoder positional table overflow".to_owned())
+            })?;
+        if embedding.len() != embedding_len
+            || positional.len() != positional_len
+            || !all_finite(&[embedding, positional])
+            || token_ids.iter().any(|&id| id >= self.vocab_size)
+            || positions
+                .iter()
+                .any(|&position| position >= self.max_positions)
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder embedding ids/table are invalid".to_owned(),
+            ));
+        }
+        let output_len = token_ids.len().checked_mul(self.d_model).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder embedding output overflow".to_owned())
+        })?;
+        let scale = (self.d_model as f32).sqrt();
+        if !scale.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder embedding scale is non-finite".to_owned(),
+            ));
+        }
+        let mut output = vec![0.0; output_len];
+        for (row, (&token, &position)) in token_ids.iter().zip(positions).enumerate() {
+            let token_start = token * self.d_model;
+            let position_start = position * self.d_model;
+            for channel in 0..self.d_model {
+                output[row * self.d_model + channel] =
+                    embedding[token_start + channel] * scale + positional[position_start + channel];
+            }
+        }
+        ensure_finite(&output, "FireRed decoder embedding output")?;
+        Ok(output)
+    }
+}
+
+/// Final decoder LayerNorm and bias-free vocabulary projection. The source
+/// projection rows are `[vocab,d_model]`; callers provide its transposed
+/// Compute view `[d_model,vocab]`.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedDecoderOutputHead {
+    pub d_model: usize,
+    pub vocab_size: usize,
+}
+
+impl FireRedDecoderOutputHead {
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        hidden: &[f32],
+        frames: usize,
+        norm_gamma: &[f32],
+        norm_beta: &[f32],
+        projection_w_t: &[f32],
+    ) -> Result<Vec<f32>> {
+        let hidden_len = frames.checked_mul(self.d_model).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder output hidden overflow".to_owned())
+        })?;
+        let matrix = self.d_model.checked_mul(self.vocab_size).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder output projection overflow".to_owned())
+        })?;
+        if frames == 0
+            || self.d_model == 0
+            || self.vocab_size == 0
+            || hidden.len() != hidden_len
+            || norm_gamma.len() != self.d_model
+            || norm_beta.len() != self.d_model
+            || projection_w_t.len() != matrix
+            || !all_finite(&[hidden, norm_gamma, norm_beta, projection_w_t])
+        {
+            return Err(VokraError::InvalidArgument(
+                "FireRed decoder output-head operands are invalid".to_owned(),
+            ));
+        }
+        let mut normalized = vec![0.0; hidden_len];
+        compute.layer_norm_f32(
+            hidden,
+            &mut normalized,
+            frames,
+            self.d_model,
+            norm_gamma,
+            norm_beta,
+            1e-5,
+        )?;
+        linear(
+            compute,
+            &normalized,
+            frames,
+            self.d_model,
+            self.vocab_size,
+            projection_w_t,
+            None,
+        )
+    }
+}
+
+/// Pure beam state transition helper. EOS or `max_len` marks a beam finished;
+/// finished beams are immutable. Length normalisation is explicit and
+/// caller-controlled so this helper does not silently invent a search policy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FireRedBeamState {
+    pub tokens: Vec<usize>,
+    pub score: f32,
+    pub finished: bool,
+}
+
+impl FireRedBeamState {
+    pub fn new() -> Self {
+        Self {
+            tokens: Vec::new(),
+            score: 0.0,
+            finished: false,
+        }
+    }
+
+    pub fn advance(
+        &self,
+        token: usize,
+        log_probability: f32,
+        eos_id: usize,
+        max_len: usize,
+    ) -> Result<Self> {
+        if max_len == 0 || !log_probability.is_finite() || log_probability > 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "FireRed beam transition has invalid score or max_len".to_owned(),
+            ));
+        }
+        if self.finished || self.tokens.len() >= max_len {
+            return Ok(self.clone());
+        }
+        let mut next = self.clone();
+        next.tokens.push(token);
+        next.score += log_probability;
+        next.finished = token == eos_id || next.tokens.len() == max_len;
+        if !next.score.is_finite() {
+            return Err(VokraError::InvalidArgument(
+                "FireRed beam score became non-finite".to_owned(),
+            ));
+        }
+        Ok(next)
+    }
+
+    /// Returns the source GNMT-normalized score. `tokens` stores generated
+    /// tokens only; its effective length is one SOS plus non-EOS tokens.
+    pub fn ranked_score(&self, eos_id: usize, length_penalty: f32) -> Result<f32> {
+        if !length_penalty.is_finite() || length_penalty < 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "FireRed beam length penalty is invalid".to_owned(),
+            ));
+        }
+        let non_eos = self.tokens.iter().filter(|&&token| token != eos_id).count();
+        let length = (1usize.checked_add(non_eos).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed beam length overflow".to_owned())
+        })?) as f32;
+        let denominator = ((5.0 + length) / 6.0).powf(length_penalty);
+        if !denominator.is_finite() || denominator <= 0.0 {
+            return Err(VokraError::InvalidArgument(
+                "FireRed beam length normalization is non-finite".to_owned(),
+            ));
+        }
+        Ok(self.score / denominator)
+    }
+}
+
+/// Applies the source EOS score penalty before beam selection. The source
+/// default is `1.0`; values outside `(0, 1]` are rejected instead of silently
+/// changing search behavior.
+pub fn apply_fire_red_eos_penalty(
+    token_scores: &mut [f32],
+    eos_id: usize,
+    eos_penalty: f32,
+) -> Result<()> {
+    if eos_id >= token_scores.len()
+        || !eos_penalty.is_finite()
+        || eos_penalty <= 0.0
+        || eos_penalty > 1.0
+        || token_scores.iter().any(|score| !score.is_finite())
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed EOS penalty or token scores are invalid".to_owned(),
+        ));
+    }
+    token_scores[eos_id] *= eos_penalty;
+    ensure_finite(token_scores, "FireRed EOS-penalized token scores")
+}
+
+fn validate_attention_geometry(d_model: usize, n_head: usize) -> Result<()> {
+    if d_model == 0 || n_head == 0 || d_model % n_head != 0 {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder attention geometry is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_linear_operands(
+    input: &[f32],
+    rows: usize,
+    input_dim: usize,
+    output_dim: usize,
+    weight: &[f32],
+    bias: Option<&[f32]>,
+) -> Result<()> {
+    let input_len = rows.checked_mul(input_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder linear input overflow".to_owned())
+    })?;
+    let weight_len = input_dim.checked_mul(output_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder linear weight overflow".to_owned())
+    })?;
+    if rows == 0
+        || input.len() != input_len
+        || weight.len() != weight_len
+        || bias.is_some_and(|values| values.len() != output_dim)
+        || !all_finite(&[input, weight])
+        || bias.is_some_and(|values| values.iter().any(|value| !value.is_finite()))
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder linear operands are invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn linear(
+    compute: &Compute,
+    input: &[f32],
+    rows: usize,
+    input_dim: usize,
+    output_dim: usize,
+    weight: &[f32],
+    bias: Option<&[f32]>,
+) -> Result<Vec<f32>> {
+    validate_linear_operands(input, rows, input_dim, output_dim, weight, bias)?;
+    let output_len = rows.checked_mul(output_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder linear output overflow".to_owned())
+    })?;
+    let mut output = vec![0.0; output_len];
+    compute.gemm_f32(
+        rows,
+        output_dim,
+        input_dim,
+        input,
+        weight,
+        bias,
+        &mut output,
+    )?;
+    ensure_finite(&output, "FireRed decoder linear output")?;
+    Ok(output)
+}
+
+fn scaled_dot_product_attention(
+    compute: &Compute,
+    q: &[f32],
+    query_frames: usize,
+    k: &[f32],
+    key_frames: usize,
+    v: &[f32],
+    d_model: usize,
+    n_head: usize,
+    key_mask: &[bool],
+    causal_past: Option<usize>,
+) -> Result<Vec<f32>> {
+    validate_attention_geometry(d_model, n_head)?;
+    let q_len = query_frames.checked_mul(d_model).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder attention query overflow".to_owned())
+    })?;
+    let kv_len = key_frames.checked_mul(d_model).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder attention key overflow".to_owned())
+    })?;
+    if query_frames == 0
+        || key_frames == 0
+        || q.len() != q_len
+        || k.len() != kv_len
+        || v.len() != kv_len
+        || key_mask.len() != key_frames
+        || !key_mask.iter().any(|&valid| valid)
+        || causal_past.is_some_and(|past| past > key_frames)
+        || !all_finite(&[q, k, v])
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder attention shape/mask is invalid".to_owned(),
+        ));
+    }
+    let head_dim = d_model / n_head;
+    let score_len = n_head
+        .checked_mul(query_frames)
+        .and_then(|value| value.checked_mul(key_frames))
+        .ok_or_else(|| VokraError::InvalidArgument("FireRed decoder score overflow".to_owned()))?;
+    let mut scores = vec![0.0; score_len];
+    let scale = (head_dim as f32).sqrt().recip();
+    if !scale.is_finite() {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder attention scale is non-finite".to_owned(),
+        ));
+    }
+    for head in 0..n_head {
+        let offset = head * head_dim;
+        let q_head_len = query_frames.checked_mul(head_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder query-head overflow".to_owned())
+        })?;
+        let k_head_len = head_dim.checked_mul(key_frames).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder key-head overflow".to_owned())
+        })?;
+        let mut q_head = vec![0.0; q_head_len];
+        let mut k_head = vec![0.0; k_head_len];
+        for row in 0..query_frames {
+            q_head[row * head_dim..(row + 1) * head_dim]
+                .copy_from_slice(&q[row * d_model + offset..row * d_model + offset + head_dim]);
+        }
+        for row in 0..key_frames {
+            for dim in 0..head_dim {
+                k_head[dim * key_frames + row] = k[row * d_model + offset + dim];
+            }
+        }
+        let score_start = head
+            .checked_mul(query_frames)
+            .and_then(|value| value.checked_mul(key_frames))
+            .ok_or_else(|| {
+                VokraError::InvalidArgument("FireRed decoder score overflow".to_owned())
+            })?;
+        compute.gemm_f32(
+            query_frames,
+            key_frames,
+            head_dim,
+            &q_head,
+            &k_head,
+            None,
+            &mut scores[score_start
+                ..score_start
+                    + query_frames.checked_mul(key_frames).ok_or_else(|| {
+                        VokraError::InvalidArgument("FireRed decoder score overflow".to_owned())
+                    })?],
+        )?;
+        for query in 0..query_frames {
+            for key in 0..key_frames {
+                let causal_ok = causal_past.map_or(true, |past| key <= past + query);
+                if !key_mask[key] || !causal_ok {
+                    scores[score_start + query * key_frames + key] = -f32::MAX;
+                } else {
+                    scores[score_start + query * key_frames + key] *= scale;
+                }
+            }
+        }
+    }
+    let rows = n_head.checked_mul(query_frames).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder softmax rows overflow".to_owned())
+    })?;
+    let mut probabilities = vec![0.0; score_len];
+    compute.softmax_f32(&scores, &mut probabilities, rows, key_frames)?;
+    for head in 0..n_head {
+        for query in 0..query_frames {
+            let start = (head * query_frames + query) * key_frames;
+            let mut sum = 0.0f32;
+            for key in 0..key_frames {
+                let causal_ok = causal_past.map_or(true, |past| key <= past + query);
+                if !key_mask[key] || !causal_ok {
+                    probabilities[start + key] = 0.0;
+                }
+                sum += probabilities[start + key];
+            }
+            if !sum.is_finite() || sum <= 0.0 {
+                return Err(VokraError::InvalidArgument(
+                    "FireRed decoder attention row is all-masked".to_owned(),
+                ));
+            }
+            for key in 0..key_frames {
+                probabilities[start + key] /= sum;
+            }
+        }
+    }
+    let output_len = query_frames.checked_mul(d_model).ok_or_else(|| {
+        VokraError::InvalidArgument("FireRed decoder attention output overflow".to_owned())
+    })?;
+    let mut output = vec![0.0; output_len];
+    for head in 0..n_head {
+        let v_head_len = key_frames.checked_mul(head_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder value-head overflow".to_owned())
+        })?;
+        let mut v_head = vec![0.0; v_head_len];
+        for key in 0..key_frames {
+            v_head[key * head_dim..(key + 1) * head_dim].copy_from_slice(
+                &v[key * d_model + head * head_dim..key * d_model + (head + 1) * head_dim],
+            );
+        }
+        let context_len = query_frames.checked_mul(head_dim).ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder context overflow".to_owned())
+        })?;
+        let mut context = vec![0.0; context_len];
+        compute.gemm_f32(
+            query_frames,
+            head_dim,
+            key_frames,
+            &probabilities
+                [head * query_frames * key_frames..(head + 1) * query_frames * key_frames],
+            &v_head,
+            None,
+            &mut context,
+        )?;
+        for query in 0..query_frames {
+            output[query * d_model + head * head_dim..query * d_model + (head + 1) * head_dim]
+                .copy_from_slice(&context[query * head_dim..(query + 1) * head_dim]);
+        }
+    }
+    ensure_finite(&output, "FireRed decoder attention output")?;
+    Ok(output)
+}
+
+fn combined_cache_mask(past_mask: &[bool], query_mask: &[bool]) -> Result<Vec<bool>> {
+    if query_mask.is_empty() {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder query mask is empty".to_owned(),
+        ));
+    }
+    let total = past_mask
+        .len()
+        .checked_add(query_mask.len())
+        .ok_or_else(|| {
+            VokraError::InvalidArgument("FireRed decoder cache mask overflow".to_owned())
+        })?;
+    let mut mask = Vec::with_capacity(total);
+    mask.extend_from_slice(past_mask);
+    mask.extend_from_slice(query_mask);
+    Ok(mask)
+}
+
+fn add_masked_residual(
+    left: &[f32],
+    right: &[f32],
+    mask: &[bool],
+    d_model: usize,
+) -> Result<Vec<f32>> {
+    if left.len() != right.len()
+        || mask.len().checked_mul(d_model) != Some(left.len())
+        || !mask.iter().all(|&valid| valid)
+        || !all_finite(&[left, right])
+    {
+        return Err(VokraError::InvalidArgument(
+            "FireRed decoder residual shape or values are invalid".to_owned(),
+        ));
+    }
+    let mut output = vec![0.0; left.len()];
+    for frame in 0..mask.len() {
+        for channel in 0..d_model {
+            let index = frame * d_model + channel;
+            output[index] = left[index] + right[index];
+        }
+    }
+    ensure_finite(&output, "FireRed decoder residual")?;
+    Ok(output)
+}
+
+fn ensure_finite(values: &[f32], label: &str) -> Result<()> {
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(VokraError::InvalidArgument(format!(
+            "{label} is non-finite"
+        )));
+    }
+    Ok(())
+}
+
 fn all_finite(slices: &[&[f32]]) -> bool {
     slices
         .iter()
@@ -2341,5 +3397,313 @@ mod tests {
             }
         }
         assert_eq!(rel_shift(&input, frames, positions).unwrap(), oracle);
+    }
+
+    #[test]
+    fn decoder_self_attention_causal_and_incremental_cache_match() {
+        let compute = Compute::cpu();
+        let attention = FireRedDecoderSelfAttention {
+            d_model: 2,
+            n_head: 1,
+        };
+        let identity = [1.0, 0.0, 0.0, 1.0];
+        let zero = [0.0, 0.0];
+        let weights = FireRedDecoderSelfAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let input = [1.0, 0.0, 0.0, 2.0];
+        let full = attention
+            .forward(&compute, &input, 2, &[], &[], &[true, true], weights)
+            .unwrap();
+        // Query zero cannot see query one under the causal boundary.
+        assert!((full.output[0] - 1.0).abs() < 1e-6);
+        assert!(full.output[3] > 1.0 && full.output[3] < 2.0);
+        let first = attention
+            .forward(&compute, &input[..2], 1, &[], &[], &[true], weights)
+            .unwrap();
+        let second = attention
+            .forward(
+                &compute,
+                &input[2..],
+                1,
+                &first.key_cache,
+                &first.value_cache,
+                &[true, true],
+                weights,
+            )
+            .unwrap();
+        assert_eq!(second.output.as_slice(), &full.output[2..]);
+        assert_eq!(second.key_cache.len(), 4);
+        assert!(
+            attention
+                .forward(&compute, &input[..2], 1, &[], &[], &[false], weights)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn decoder_cross_attention_source_mask_and_embedding_are_fail_closed() {
+        let compute = Compute::cpu();
+        let attention = FireRedDecoderCrossAttention {
+            d_model: 2,
+            source_dim: 2,
+            n_head: 1,
+        };
+        let identity = [1.0, 0.0, 0.0, 1.0];
+        let zero = [0.0, 0.0];
+        let weights = FireRedDecoderCrossAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let query = [1.0, 0.0];
+        let memory = [1.0, 0.0, 1000.0, -1000.0];
+        let baseline = attention
+            .forward(
+                &compute,
+                &query,
+                1,
+                &memory,
+                2,
+                &[true, false],
+                None,
+                weights,
+            )
+            .unwrap();
+        let altered = attention
+            .forward(
+                &compute,
+                &query,
+                1,
+                &[1.0, 0.0, -1000.0, 1000.0],
+                2,
+                &[true, false],
+                None,
+                weights,
+            )
+            .unwrap();
+        assert_eq!(baseline, altered);
+        assert!(
+            attention
+                .forward(
+                    &compute,
+                    &query,
+                    1,
+                    &memory,
+                    2,
+                    &[false, false],
+                    None,
+                    weights,
+                )
+                .is_err()
+        );
+
+        let mismatched = FireRedDecoderCrossAttention {
+            d_model: 2,
+            source_dim: 1,
+            n_head: 1,
+        };
+        let narrow_k = [1.0, 0.0];
+        let narrow_v = [0.0, 1.0];
+        let narrow = FireRedDecoderCrossAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &narrow_k,
+            v_w_t: &narrow_v,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        assert!(
+            mismatched
+                .forward(&compute, &query, 1, &[1.0], 1, &[true], None, narrow,)
+                .is_err()
+        );
+
+        let embedding = FireRedDecoderEmbedding {
+            vocab_size: 2,
+            d_model: 2,
+            max_positions: 2,
+        };
+        let values = embedding
+            .forward(&[1], &[0], &[1.0, 2.0, 3.0, 4.0], &[0.1, 0.2, 0.3, 0.4])
+            .unwrap();
+        assert!((values[0] - (3.0 * 2.0_f32.sqrt() + 0.1)).abs() < 1e-6);
+        assert!((values[1] - (4.0 * 2.0_f32.sqrt() + 0.2)).abs() < 1e-6);
+        assert!(
+            embedding
+                .forward(&[2], &[0], &[1.0, 2.0, 3.0, 4.0], &[0.1, 0.2, 0.3, 0.4],)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn decoder_layer_uses_prenorm_gelu_and_requires_valid_queries() {
+        let compute = Compute::cpu();
+        let layer = FireRedDecoderLayer {
+            d_model: 2,
+            inner_dim: 4,
+            n_head: 1,
+            source_dim: 2,
+        };
+        let identity = [1.0, 0.0, 0.0, 1.0];
+        let zero = [0.0, 0.0];
+        let ones = [1.0, 1.0];
+        let expand = [0.2, 0.1, 0.3, -0.2, 0.4, 0.2, -0.1, 0.5];
+        let expand_b = [0.1, 0.0, -0.1, 0.2];
+        let project = [0.1, 0.2, -0.3, 0.4, 0.2, -0.1, 0.3, 0.1];
+        let self_attention = FireRedDecoderSelfAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let cross_attention = FireRedDecoderCrossAttentionWeights {
+            q_w_t: &identity,
+            q_b: &zero,
+            k_w_t: &identity,
+            v_w_t: &identity,
+            v_b: &zero,
+            output_w_t: &identity,
+            output_b: &zero,
+        };
+        let weights = FireRedDecoderLayerWeights {
+            self_norm_gamma: &ones,
+            self_norm_beta: &zero,
+            self_attention,
+            cross_norm_gamma: &ones,
+            cross_norm_beta: &zero,
+            cross_attention,
+            mlp_norm_gamma: &ones,
+            mlp_norm_beta: &zero,
+            mlp_expand_w_t: &expand,
+            mlp_expand_b: &expand_b,
+            mlp_project_w_t: &project,
+            mlp_project_b: &zero,
+        };
+        let output = layer
+            .forward(
+                &compute,
+                &[1.0, 2.0, 3.0, 4.0],
+                2,
+                &[true, true],
+                &[0.5, -0.5, 2.0, 1.0],
+                2,
+                &[true, true],
+                &[],
+                &[],
+                &[],
+                weights,
+            )
+            .unwrap();
+        assert!(output.output.iter().all(|value| value.is_finite()));
+        // Upstream target masks are key/padding masks; they do not zero query
+        // rows. This native layer therefore rejects padded query rows rather
+        // than adding a non-source query-zeroing convention.
+        assert!(
+            layer
+                .forward(
+                    &compute,
+                    &[1.0, 2.0, 3.0, 4.0],
+                    2,
+                    &[true, false],
+                    &[0.5, -0.5, 2.0, 1.0],
+                    2,
+                    &[true, true],
+                    &[],
+                    &[],
+                    &[],
+                    weights,
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn decoder_output_head_and_beam_rules_are_explicit() {
+        let head = FireRedDecoderOutputHead {
+            d_model: 2,
+            vocab_size: 3,
+        };
+        let logits = head
+            .forward(
+                &Compute::cpu(),
+                &[1.0, 3.0],
+                1,
+                &[1.0, 1.0],
+                &[0.0, 0.0],
+                &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            )
+            .unwrap();
+        assert_eq!(logits.len(), 3);
+        assert!(logits.iter().all(|value| value.is_finite()));
+
+        let beam = FireRedBeamState::new();
+        let eos = beam.advance(7, -0.5, 7, 4).unwrap();
+        assert!(eos.finished);
+        assert_eq!(eos.tokens, vec![7]);
+        assert_eq!(eos.advance(8, -0.5, 7, 4).unwrap(), eos);
+        let maxed = beam
+            .advance(1, -0.1, 7, 1)
+            .unwrap()
+            .advance(2, -0.1, 7, 1)
+            .unwrap();
+        assert_eq!(maxed.tokens, vec![1]);
+        assert!(maxed.finished);
+        assert!(beam.advance(1, 0.1, 7, 4).is_err());
+        assert!(eos.ranked_score(7, 0.5).unwrap().is_finite());
+        let mut scores = [-2.0, -1.0, -3.0];
+        apply_fire_red_eos_penalty(&mut scores, 1, 1.0).unwrap();
+        assert_eq!(scores, [-2.0, -1.0, -3.0]);
+        apply_fire_red_eos_penalty(&mut scores, 1, 0.5).unwrap();
+        assert_eq!(scores[1], -0.5);
+        assert!(apply_fire_red_eos_penalty(&mut scores, 1, 0.0).is_err());
+        assert!(apply_fire_red_eos_penalty(&mut scores, 1, 1.1).is_err());
+        let ranked = FireRedBeamState {
+            tokens: vec![3, 7],
+            score: -6.0,
+            finished: true,
+        }
+        .ranked_score(7, 1.0)
+        .unwrap();
+        assert!((ranked - (-6.0 / (7.0 / 6.0))).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decoder_hot_ops_are_preflighted_without_cpu_fallback() {
+        for required in [HotOp::Gemm, HotOp::LayerNorm, HotOp::Softmax, HotOp::Gelu] {
+            assert!(
+                FIRERED_ASR_AED_HOT_OPS.contains(&required),
+                "decoder op {required:?} must be in whole-model preflight inventory"
+            );
+        }
+        // Vulkan is intentionally not a covered Compute seam for this set in
+        // the current repository. Either an unavailable build/device or an
+        // explicit coverage error is acceptable; Ok would mean an accidental
+        // backend path, while CPU fallback would violate FR-EX-08.
+        let result = Compute::for_backend(
+            vokra_core::BackendKind::Vulkan,
+            &[HotOp::Gemm, HotOp::LayerNorm, HotOp::Softmax, HotOp::Gelu],
+        );
+        assert!(
+            matches!(
+                result,
+                Err(VokraError::UnsupportedOp(_)) | Err(VokraError::BackendUnavailable(_))
+            ),
+            "unsupported/unavailable backend must refuse rather than fall back"
+        );
     }
 }
