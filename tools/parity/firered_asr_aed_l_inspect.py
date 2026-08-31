@@ -54,6 +54,9 @@ SOURCE_CONTRACT_MARKERS = {
         "self.decoder = TransformerDecoder(",
         "self.encoder(padded_input, input_lengths)",
         "self.decoder.batch_beam_search(",
+        "self.sos_id = args.sos_id",
+        "self.eos_id = args.eos_id",
+        "args.sos_id, args.eos_id, args.pad_id, args.odim",
         "softmax_smoothing=1.0",
         "length_penalty=0.0",
         "eos_penalty=1.0",
@@ -66,10 +69,12 @@ SOURCE_CONTRACT_MARKERS = {
         "fbank.accept_waveform(sample_rate, wav_np.tolist())",
     ),
     "fireredasr/tokenizer/aed_tokenizer.py": (
-        "SentencePieceProcessor",
+        "spm.SentencePieceProcessor()",
         "TokenDict",
-        "<sos>",
-        "<eos>",
+        "self.sp.EncodeAsPieces(part.strip())",
+        "self.dict.get(token, self.dict.unk)",
+        "tokens = [self.dict[id] for id in inputs]",
+        "s.replace(self.SPM_SPACE, ' ').strip()",
     ),
     "README.md": (
         "ffmpeg -i input_audio -ar 16000 -ac 1 -acodec pcm_s16le -f wav output.wav",
@@ -330,7 +335,7 @@ def inspect_source_contract(root: Path) -> dict[str, Any]:
         "status": "AUTHENTICATED_SOURCE_CONTRACT",
         "architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
         "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is source-authenticated, while the official README normalizes release input to 16 kHz mono",
-        "tokenizer": "SentencePieceProcessor plus TokenDict with <sos>/<eos> source markers",
+        "tokenizer": "SentencePiece/TokenDict piece-to-id and detokenization mapping is source-authenticated; exact special ids and dictionary binding require checkpoint args plus authenticated dict",
         "records": records,
     }
 
