@@ -127,21 +127,11 @@ class Reader:
         trailing fields to be omitted; a missing vtable slot therefore means
         the schema default, while a present slot must stay within the object.
         """
+        if field < 0:
+            raise ValueError("FlatBuffer field index must be non-negative")
         if width <= 0:
             raise ValueError("FlatBuffer field width must be positive")
-        vtable_distance = self.i32(table)
-        if vtable_distance <= 0 or vtable_distance > table:
-            raise ValueError("FlatBuffer vtable offset is invalid")
-        vtable = table - vtable_distance
-        self._check(vtable, 4)
-        vsize = self.u16(vtable)
-        osize = self.u16(vtable + 2)
-        if vsize < 4 or osize < 4:
-            raise ValueError("FlatBuffer table sizes are invalid")
-        self._check(vtable, vsize)
-        self._check(table, osize)
-        if vtable + vsize > table:
-            raise ValueError("FlatBuffer vtable overlaps table object")
+        vtable, vsize, osize = self._table_layout(table)
         slot = vtable + 4 + field * 2
         if slot + 2 > vtable + vsize:
             return None
@@ -153,6 +143,31 @@ class Reader:
         address = table + relative
         self._check(address, width)
         return address
+
+    def _table_layout(self, table: int) -> tuple[int, int, int]:
+        """Validate a table and return ``(vtable, vtable_size, object_size)``.
+
+        FlatBuffers stores a signed soffset at the table start.  Vtable
+        deduplication may place the vtable before or after the object, so only
+        a zero soffset, out-of-bounds layout, or actual interval overlap is
+        malformed.
+        """
+        vtable_distance = self.i32(table)
+        if vtable_distance == 0:
+            raise ValueError("FlatBuffer vtable offset is zero")
+        vtable = table - vtable_distance
+        self._check(vtable, 4)
+        vsize = self.u16(vtable)
+        osize = self.u16(vtable + 2)
+        if vsize < 4 or vsize % 2 or osize < 4:
+            raise ValueError("FlatBuffer table sizes are invalid")
+        self._check(vtable, vsize)
+        self._check(table, osize)
+        vtable_end = vtable + vsize
+        object_end = table + osize
+        if max(vtable, table) < min(vtable_end, object_end):
+            raise ValueError("FlatBuffer vtable overlaps table object")
+        return vtable, vsize, osize
 
     def indirect(self, address: int) -> int:
         offset = self.u32(address)
@@ -348,14 +363,7 @@ def _optional_string(reader: Reader, address: int | None) -> str | None:
 
 
 def _require_empty_table(reader: Reader, table: int, label: str) -> None:
-    vtable_distance = reader.i32(table)
-    if vtable_distance <= 0 or vtable_distance > table:
-        raise ValueError(f"{label} option table vtable is invalid")
-    vtable = table - vtable_distance
-    vtable_size = reader.u16(vtable)
-    if vtable_size < 4 or vtable_size % 2:
-        raise ValueError(f"{label} option table vtable is invalid")
-    reader._check(vtable, vtable_size)
+    vtable, vtable_size, _ = reader._table_layout(table)
     if any(reader.u16(vtable + offset) != 0 for offset in range(4, vtable_size, 2)):
         raise ValueError(f"{label} option table carries unexpected fields")
 
@@ -1151,6 +1159,20 @@ def self_test() -> None:
         struct.pack_into("<I", out, 0, mtab)
         return bytes(out)
     result = parse(fixture())
+    deduped = bytearray(fixture())
+    dedup_reader = Reader(bytes(deduped))
+    dedup_subgraph = dedup_reader.vector_uoffsets(dedup_reader.table_field(dedup_reader.root, 2, 4))[0]
+    dedup_tensors = dedup_reader.vector_uoffsets(dedup_reader.table_field(dedup_subgraph, 0, 4))
+    # Tensor 0 and Tensor 3 share the same activation/buffer-omitted layout;
+    # reuse Tensor 3's vtable to model legitimate FlatBuffers deduplication.
+    first_tensor, later_tensor = dedup_tensors[0], dedup_tensors[3]
+    later_vtable = later_tensor - dedup_reader.i32(later_tensor)
+    negative_soffset = first_tensor - later_vtable
+    assert negative_soffset < 0
+    struct.pack_into("<i", deduped, first_tensor, negative_soffset)
+    dedup_result = parse(bytes(deduped))
+    dedup_inventory = inventory(bytes(deduped))
+    assert dedup_result["complete"] and dedup_inventory["subgraph_count"] == 1
     evidence = inventory(fixture())
     assert evidence["format"] == "vokra-microwakeword-tflite-raw-inventory-v1"
     assert evidence["authority"] == "EVIDENCE_ONLY_UNREVIEWED"
