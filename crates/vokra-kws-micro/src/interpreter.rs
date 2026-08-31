@@ -569,6 +569,14 @@ impl ChainConfig {
 
 /// Fixed authenticated hey_jarvis streaming input shape (`rows × channels`).
 pub const HEY_JARVIS_INPUT_SIZE: usize = 3 * 40;
+/// Number of 40-feature rows in one authenticated hey_jarvis invocation.
+///
+/// This is the model's `input.shape[1]`, not a generic scheduler setting.
+pub const HEY_JARVIS_INPUT_FEATURE_SLICES: usize = 3;
+/// Number of log-mel features in one streaming row.
+pub const HEY_JARVIS_FEATURE_SIZE: usize = 40;
+/// Fixed non-overlapping row stride for the hey_jarvis streaming contract.
+pub const HEY_JARVIS_STREAMING_STRIDE: usize = HEY_JARVIS_INPUT_FEATURE_SLICES;
 /// Number of persistent rolling activation states in the hey_jarvis graph.
 pub const HEY_JARVIS_STATE_COUNT: usize = 6;
 /// Quantised real zero used to initialise the authenticated rolling states.
@@ -977,6 +985,10 @@ fn validate_quant_values(scales: &[f32], channels: usize) -> Result<()> {
 }
 
 /// A preallocated executor for the fixed hey_jarvis streaming graph.
+///
+/// [`Self::run`] intentionally consumes one complete `3 × 40` invocation. A
+/// [`HeyJarvisStreamingScheduler`] below is the lower-level row feeder for
+/// callers that receive one `1 × 40` feature row at a time.
 #[derive(Debug)]
 pub struct HeyJarvisStreamingExecutor {
     plan: HeyJarvisStreamingPlan,
@@ -1126,6 +1138,94 @@ impl HeyJarvisStreamingExecutor {
                 "HeyJarvisStreamingExecutor: state index {index} out of range"
             ))
         })
+    }
+}
+
+/// Non-overlapping `1 × 40` row scheduler for authenticated hey_jarvis.
+///
+/// The fixed Apache-2.0 microWakeWord reference uses the model input's second
+/// dimension (`input.shape[1]`) as the number of feature slices and defaults
+/// the stride to that same value. The authenticated hey_jarvis input shape is
+/// `[1, 3, 40]`, so this scheduler copies three successive 40-feature rows
+/// into slots 0, 1, and 2, invokes the stateful executor exactly once, then
+/// starts the next cycle again at slot 0. Cycles therefore do not overlap.
+///
+/// This is deliberately model-specific; it is not a general TFLite or graph
+/// scheduler. The source contract is pinned to the Apache-2.0 upstream
+/// revision [`4665173cd35f1cff9a61e06fc427f124766c488e`],
+/// `microwakeword/inference.py`:
+/// <https://github.com/kahrendt/microWakeWord/blob/4665173cd35f1cff9a61e06fc427f124766c488e/microwakeword/inference.py>.
+#[derive(Debug)]
+pub struct HeyJarvisStreamingScheduler {
+    executor: HeyJarvisStreamingExecutor,
+    input_buffer: Vec<i8>,
+    position: usize,
+}
+
+impl HeyJarvisStreamingScheduler {
+    /// Creates a row scheduler around a fresh or restored stateful executor.
+    pub fn new(executor: HeyJarvisStreamingExecutor) -> Self {
+        Self {
+            executor,
+            input_buffer: vec![0i8; HEY_JARVIS_INPUT_SIZE],
+            position: 0,
+        }
+    }
+
+    /// Copies one 40-feature row into the next input slot.
+    ///
+    /// The first two rows return `Ok(None)`. The third row invokes the
+    /// stateful executor and returns `Ok(Some(&[probability]))`; the next row
+    /// starts a fresh non-overlapping three-row cycle. A wrong-sized row is
+    /// rejected before any buffer, position, or executor state is changed.
+    pub fn push_feature(&mut self, feature: &[i8]) -> Result<Option<&[i8]>> {
+        if feature.len() != HEY_JARVIS_FEATURE_SIZE {
+            return Err(VokraError::InvalidArgument(format!(
+                "HeyJarvisStreamingScheduler::push_feature: input len {} != expected {}",
+                feature.len(),
+                HEY_JARVIS_FEATURE_SIZE,
+            )));
+        }
+
+        let offset = self
+            .position
+            .checked_mul(HEY_JARVIS_FEATURE_SIZE)
+            .ok_or_else(|| {
+                VokraError::InvalidArgument(
+                    "HeyJarvisStreamingScheduler: feature position overflow".into(),
+                )
+            })?;
+        self.input_buffer[offset..offset + HEY_JARVIS_FEATURE_SIZE].copy_from_slice(feature);
+        self.position += 1;
+
+        if self.position != HEY_JARVIS_INPUT_FEATURE_SLICES {
+            return Ok(None);
+        }
+
+        // Reset the row cursor before invoking so a successful call and a
+        // subsequent push both observe the start of the next non-overlapping
+        // cycle. The executor itself remains stateful across cycles.
+        self.position = 0;
+        self.executor.run(&self.input_buffer).map(Some)
+    }
+
+    /// Restores the executor's six rolling states and clears the pending row
+    /// buffer and slot position.
+    pub fn reset(&mut self) {
+        self.executor.reset();
+        self.input_buffer.fill(0);
+        self.position = 0;
+    }
+
+    /// Number of rows currently buffered in the active three-row cycle.
+    pub fn pending_feature_count(&self) -> usize {
+        self.position
+    }
+
+    /// Read-only access to a rolling executor state for checkpointing and
+    /// diagnostics.
+    pub fn state(&self, index: usize) -> Result<&[i8]> {
+        self.executor.state(index)
     }
 }
 
@@ -1540,6 +1640,135 @@ mod tests {
         assert!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE - 1]).is_err());
         assert_eq!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE]).unwrap(), &[0]);
         assert_eq!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE]).unwrap(), &[0]);
+    }
+
+    #[test]
+    fn hey_jarvis_scheduler_three_rows_matches_direct_window_and_states() {
+        let rows: Vec<Vec<i8>> = (0..HEY_JARVIS_INPUT_FEATURE_SLICES)
+            .map(|row| {
+                (0..HEY_JARVIS_FEATURE_SIZE)
+                    .map(|feature| (row * HEY_JARVIS_FEATURE_SIZE + feature) as i8)
+                    .collect()
+            })
+            .collect();
+        let window: Vec<i8> = rows.iter().flatten().copied().collect();
+
+        let mut scheduler = HeyJarvisStreamingScheduler::new(
+            HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap(),
+        );
+        let mut direct = HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap();
+
+        assert_eq!(scheduler.pending_feature_count(), 0);
+        assert!(scheduler.push_feature(&rows[0]).unwrap().is_none());
+        assert_eq!(scheduler.pending_feature_count(), 1);
+        assert!(scheduler.push_feature(&rows[1]).unwrap().is_none());
+        assert_eq!(scheduler.pending_feature_count(), 2);
+        let scheduled = scheduler.push_feature(&rows[2]).unwrap().unwrap().to_vec();
+        assert_eq!(scheduler.pending_feature_count(), 0);
+
+        let expected = direct.run(&window).unwrap().to_vec();
+        assert_eq!(scheduled, expected);
+        for state_idx in 0..HEY_JARVIS_STATE_COUNT {
+            assert_eq!(
+                scheduler.state(state_idx).unwrap(),
+                direct.state(state_idx).unwrap(),
+                "state {state_idx} drifted between scheduled and direct execution"
+            );
+        }
+    }
+
+    #[test]
+    fn hey_jarvis_scheduler_six_rows_matches_two_direct_windows() {
+        let rows: Vec<Vec<i8>> = (0..HEY_JARVIS_INPUT_FEATURE_SLICES * 2)
+            .map(|row| {
+                (0..HEY_JARVIS_FEATURE_SIZE)
+                    .map(|feature| (row as i16 * 3 + feature as i16 - 50) as i8)
+                    .collect()
+            })
+            .collect();
+        let mut scheduler = HeyJarvisStreamingScheduler::new(
+            HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap(),
+        );
+        let mut direct = HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap();
+
+        for cycle in 0..2 {
+            let first = cycle * HEY_JARVIS_INPUT_FEATURE_SLICES;
+            let window: Vec<i8> = rows[first..first + HEY_JARVIS_INPUT_FEATURE_SLICES]
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            let expected = direct.run(&window).unwrap().to_vec();
+            let mut scheduled = None;
+            for row in &rows[first..first + HEY_JARVIS_INPUT_FEATURE_SLICES] {
+                scheduled = scheduler.push_feature(row).unwrap();
+            }
+            assert_eq!(scheduled.unwrap().to_vec(), expected, "cycle {cycle}");
+            assert_eq!(scheduler.pending_feature_count(), 0);
+            for state_idx in 0..HEY_JARVIS_STATE_COUNT {
+                assert_eq!(
+                    scheduler.state(state_idx).unwrap(),
+                    direct.state(state_idx).unwrap(),
+                    "cycle {cycle}, state {state_idx} drifted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hey_jarvis_scheduler_wrong_length_is_atomic_and_periodic() {
+        let mut scheduler = HeyJarvisStreamingScheduler::new(
+            HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap(),
+        );
+        let first = vec![7i8; HEY_JARVIS_FEATURE_SIZE];
+        assert!(scheduler.push_feature(&first).unwrap().is_none());
+        let states_before: Vec<Vec<i8>> = (0..HEY_JARVIS_STATE_COUNT)
+            .map(|state_idx| scheduler.state(state_idx).unwrap().to_vec())
+            .collect();
+        assert!(scheduler
+            .push_feature(&first[..HEY_JARVIS_FEATURE_SIZE - 1])
+            .is_err());
+        assert_eq!(scheduler.pending_feature_count(), 1);
+        for (state_idx, before) in states_before.iter().enumerate() {
+            assert_eq!(scheduler.state(state_idx).unwrap(), before);
+        }
+
+        assert!(scheduler
+            .push_feature(&vec![8i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_none());
+        assert!(scheduler
+            .push_feature(&vec![9i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_some());
+        assert_eq!(scheduler.pending_feature_count(), 0);
+        assert!(scheduler
+            .push_feature(&vec![10i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_none());
+        assert!(scheduler
+            .push_feature(&vec![11i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_none());
+        assert_eq!(scheduler.pending_feature_count(), 2);
+
+        scheduler.reset();
+        assert_eq!(scheduler.pending_feature_count(), 0);
+        for state_idx in 0..HEY_JARVIS_STATE_COUNT {
+            assert!(scheduler
+                .state(state_idx)
+                .unwrap()
+                .iter()
+                .all(|&value| value == HEY_JARVIS_STATE_QUANTIZED_ZERO));
+        }
+        assert!(scheduler
+            .push_feature(&vec![12i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_none());
+        assert!(scheduler
+            .push_feature(&vec![13i8; HEY_JARVIS_FEATURE_SIZE])
+            .unwrap()
+            .is_none());
     }
 
     #[test]
