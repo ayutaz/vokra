@@ -18,11 +18,10 @@ bit-identically between the std and no_std builds.
 ## Status
 
 **Phase 3+ REAL detect() with Phase 4 host-parity harness.** Not
-graduated to crates.io yet (`publish = false`) — sidecar Q8_0 emit
-(Phase 3.5 follow-up per `src/model.rs` module doc) is needed before a
-real `hey_jarvis.tflite`-derived checkpoint can be bound as a fully-
-quantised `ChainConfig`. The scaffold is here; the flip is a one-file
-diff when the sidecar lands.
+graduated to crates.io yet (`publish = false`). The sidecar emits Q8_0
+source-byte carriers and exact dense I32 bias carriers with affine metadata;
+authenticated TFLite topology and the Model → `ChainConfig` binder are still
+required before a real `hey_jarvis.tflite` checkpoint can be claimed.
 
 - **Feature extractor (`src/features.rs`)** — 40-band log-mel front-end
     (Phase 1, WF1). Real; parity harness covers it.
@@ -31,7 +30,8 @@ diff when the sidecar lands.
     tests.
 - **Model loader (`src/model.rs`)** — reads Vokra `vokra.kws.*` GGUF
     emitted by `tools/parity/microwakeword/prepare_checkpoint.py`
-    (Phase 2, WF1 Resume). Real; shape-generic F32 tensor view.
+    (Phase 2, WF1 Resume). Real; shape-generic F32/Q8_0/I32 tensor view with
+    source affine metadata and exact I32 bias preservation.
 - **Interpreter (`src/interpreter.rs`)** — `LayerSpec` + `ChainConfig`
     ping-pong chain executor (Phase 3, WF2). Real; unit-tested end-to-
     end with a synthetic 2-layer chain.
@@ -156,10 +156,10 @@ Path breakdown:
     parity at `atol = 1e-3` against the numpy reference. Real; validates
     transcription faithfulness of the standard log-mel algorithm.
 - **Path C** (both) — end-to-end INT8 chain parity. **UNMET as of
-    Phase 4**; the Phase 1 sidecar dequantises INT8 → F32 losslessly at
-    export, so the current GGUF does not carry per-tensor `(scale,
-    zero_point)`. Phase 3.5 sidecar extension will unblock this — see
-    `src/model.rs`'s module doc for the follow-up scope.
+    Phase 4**; Q8_0 carriers and per-tensor `(scale, zero_point)` metadata
+    exist, but authenticated topology and the Model → `ChainConfig` binder
+    remain pending. See `src/model.rs`'s
+    module doc for the boundary.
 
 ## See also
 

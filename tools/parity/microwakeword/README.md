@@ -1,29 +1,29 @@
 # tools/parity/microwakeword
 
 > **Current status (2026-08-29): BLOCKED.** The dedicated Python 3.12 lock
-> is present and records the complete 17-package closure. Exact source/model
+> is present and records the complete 10-package closure. Exact source/model
 > Git identities are recorded below, but license policy review remains open:
-> ai-edge-litert's precompiled-wheel notices, certifi/MPL, NumPy's composite
-> bundled notices, protobuf precompiled-wheel metadata, PyYAML
-> native-extension notices, tqdm/MPL, typing-extensions/PSF, and the
+> ai-edge-litert's precompiled-wheel notices, NumPy's composite bundled
+> notices, protobuf precompiled-wheel metadata, tqdm/MPL,
+> typing-extensions/PSF, and the
 > ml-dtypes wheel's Eigen/MPL notice. The VAST worker therefore exits before environment sync
 > or acquisition; the target's byte SHA-256 is also pending that acquisition:
 > `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
 >
 > The dedicated lock SHA-256 is
-> `43e17e20616bc06072424abadaaed520244673db2f964a29ea2472e22e72afbe`;
-> its 17-row package/dependency digest is
-> `3250cac13ab9f8cf0a67ffc1f590988afa8cac3b346edf52d0e03924ec08ef06`,
+> `05e8317758e7c884e8e86e110af5b39cdd23eff63b6a66705225e6baa3ab5e13`;
+> its 10-row package/dependency digest is
+> `d5c8aaca80e340be13e719de14d1486df193977f31ea80dea3bf954030057343`,
 > and its version-keyed license digest is
-> `2bcae92a909b92617e1ddc96a7cf4704a6c9305dcd94651584da4b68c49a7906`.
+> `eae9f062f7ceb787fe36e09290fbc04b8f2f842df9de612b79f95f7fd615c58f`.
 
 License evidence is version-keyed in `microwakeword_inspect.py`. Each row was
 checked against the exact PyPI JSON record, preferring `license_expression`,
 then `license`, then the exact wheel METADATA/classifiers when needed. Thus
 ai-edge-litert is Apache-2.0 but its precompiled TFLite runtime wheel still
-requires bundled-notice review; charset-normalizer is MIT, idna is BSD-3-Clause, NumPy records its exact
+requires bundled-notice review; NumPy records its exact
 `BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` expression,
-typing-extensions is PSF-2.0, and urllib3 is MIT. The ml-dtypes description /
+typing-extensions is PSF-2.0. The ml-dtypes description /
 license section says Apache-2.0 but also requires review of the Eigen/MPL-2.0
 notice shipped by precompiled wheels. Protobuf's exact metadata also remains
 subject to precompiled-wheel notice review. No source archive was fetched; a
@@ -38,18 +38,18 @@ blocked.
 
 For auditability, every non-first-party lock row has its exact package/version
 and primary PyPI JSON URL in `LICENSE_ROWS`: `license_expression` supplies
-idna, NumPy, typing-extensions, and urllib3; `license` supplies ai-edge-litert,
-backports-strenum, certifi, charset-normalizer, flatbuffers, protobuf, PyYAML,
-requests, and tqdm; and exact wheel METADATA/classifiers supply colorama and
-gguf. The ml-dtypes row uses the exact PyPI description/license section and
+NumPy and typing-extensions; `license` supplies ai-edge-litert,
+backports-strenum, flatbuffers, protobuf, and tqdm; and exact wheel
+METADATA/classifiers supply colorama. The ml-dtypes row uses the exact PyPI
+description/license section and
 records its precompiled-wheel Eigen/MPL-2.0 notice. No license is inferred
 from a lock or from an unversioned project page.
 
 Offline sidecar for **kahrendt/microWakeWord** (Apache-2.0) → Vokra GGUF
 conversion. Bridges the upstream TFLite artefacts (INT8-quantized
 MC-MobileNet designed for Cortex-M55 / RP2040 / ESP32-S3 microcontrollers)
-to the Vokra GGUF shape the future `vokra-kws-micro` runtime forward will
-bind (M5-03 IoT Tier-3 / NFR-PT-03).
+to the Vokra GGUF shape the `vokra-kws-micro` forward scaffold will bind once
+the authenticated topology contract is complete (M5-03 IoT Tier-3 / NFR-PT-03).
 
 Companion to the sister crate [`vokra-vad-micro`](../../crates/vokra-vad-micro),
 which does the same job for Silero VAD (M5-03 案 1). The two produce
@@ -59,10 +59,19 @@ reader parses on both host and thumbv8m targets.
 
 ## What this directory contains
 
-- `prepare_checkpoint.py` — a future converter design. It would extract
-  tensors with `ai-edge-litert.Interpreter.get_tensor_details()`, dequantize
-  INT8 → F32, and emit a GGUF via `gguf.GGUFWriter`; it is not a local
+- `prepare_checkpoint.py` — the authenticated conversion design. It extracts
+  tensors with `ai-edge-litert.Interpreter.get_tensor_details()` and emits
+  direct GGUF Q8_0 source-byte carriers plus exact dense GGUF I32 carriers for
+  affine bias tensors. Production conversion additionally
+  requires an independently hashed VAST tensor manifest proving which
+  FlatBuffer buffers are persistent constants (`complete: true`, exact tensor
+  index/name, buffer index/size, and source dtype); it is not a local
   acquisition or execution procedure while this gate is blocked.
+- `../microwakeword_tensor_manifest.py` — dependency-free raw TFLite
+  FlatBuffer producer. On VAST it authenticates `TFL3`, the single subgraph,
+  tensor/buffer ownership, exact shapes and byte hashes, then publishes a
+  complete no-clobber manifest. It never uses interpreter tensor success to
+  classify constants.
 - `dump_reference.py` — Phase 4 host-parity reference dumper. Given a
   `.tflite` and a fixed-seed synthesised PCM window, emits
   `input_pcm.bin` + `features_ref.bin` + `output_ref.bin` +
@@ -72,8 +81,7 @@ reader parses on both host and thumbv8m targets.
   docstring for the honest boundary (numpy log-mel = transcription
   reference; TFLite output = real upstream forward).
 - `pyproject.toml` — uv project spec (Python 3.12 pinned per
-  `[[feedback-python-3-12]]`, deps = `gguf` + `numpy` +
-  `ai-edge-litert`).
+  `[[feedback-python-3-12]]`, deps = `numpy` + `ai-edge-litert`).
 - `.python-version` — `3.12` (auto-created by `uv python pin`).
 
 ## Prerequisites
@@ -130,19 +138,19 @@ VAST acquisition records it.
 
 | Phase   | Script / crate work                                                   | Runtime consumes                                                                                                                    |
 | ------- | --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **1**   | `prepare_checkpoint.py` (F32-dequant GGUF); 40-band log-mel features  | `vokra-kws-micro::features` real                                                                                                    |
+| **1**   | `prepare_checkpoint.py` (direct Q8_0 GGUF); 40-band log-mel features  | `vokra-kws-micro::features` real                                                                                                    |
 | **2**   | INT8 kernels + model loader                                           | `KwsMicro` scaffold surface                                                                                                         |
-| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | `KwsMicro::detect()` REAL mode                                                                                                      |
-| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A (GGUF smoke) + Path B (log-mel parity vs numpy transcription). Path C (INT8-chain end-to-end) is UNMET — needs Phase 3.5.    |
-| **3.5** | Sidecar Q8_0 emit + per-tensor `(scale, zero_point)` metadata         | `Model` per-layer typed accessors → real `ChainConfig` binding for hey_jarvis. Unlocks Path C.                                      |
+| **3**   | INT8 forward-chain interpreter (`interpreter.rs`)                     | Forward scaffold; canonical topology binding remains pending                                                                        |
+| **4**   | `dump_reference.py` (host parity fixtures); Rust `tests/` harness     | Path A/B require authenticated VAST artefacts; Path C (INT8-chain end-to-end) remains unmet                                        |
+| **3.5** | Sidecar Q8_0 carrier + per-tensor `(scale, zero_point)` metadata (implemented); dense I32 bias preservation (implemented) | Typed loader metadata is ready; TFLite topology → `ChainConfig` binding and real parity remain pending |
 
-Phase 1's F32 dequantization is **lossless** for a fixed
+The sidecar's source-byte carrier preserves exact INT8 values; its F32 view is
+**lossless** for a fixed
 `(scale, zero_point)` pair — the TFLite affine formula
-`f32 = scale * (int8 - zero_point)` recovers exact values. Phase 3.5
-will add Q8_0 for a ~4× smaller on-device footprint, matching the
-microcontroller SRAM budget the M5-03 opt-in Tier-3 target requires,
-AND unblock end-to-end INT8 chain parity in the Rust host harness
-(Path C).
+`f32 = scale * (int8 - zero_point)` recovers exact values. Phase 3.5 now
+provides the ~4× smaller Q8_0 carrier, matching the microcontroller SRAM
+budget the M5-03 opt-in Tier-3 target requires. It does not by itself
+establish topology binding or end-to-end parity.
 
 ## What Phase 4 does — and its honest boundary
 
@@ -153,8 +161,8 @@ directory) plus `tests/parity_microwakeword.rs` on the Rust side. See
 **Honest boundary** (see `dump_reference.py`'s module docstring for
 the full write-up):
 
-- **Path A** (`VOKRA_KWS_REAL_GGUF`) — real GGUF load smoke. Real
-    hey_jarvis passes.
+- **Path A** (`VOKRA_KWS_REAL_GGUF`) — real GGUF load smoke once the
+    authenticated hey_jarvis GGUF is produced by the approved VAST workflow.
 - **Path B** (`VOKRA_KWS_REAL_FIXTURES`) — log-mel feature extractor
     parity at `atol = 1e-3` against a **numpy transcription** of the
     standard log-mel algorithm. This validates transcription
@@ -163,11 +171,10 @@ the full write-up):
     a `tensorflow` dep). Empirically the standard algorithm matches
     `tf.signal` at `1e-3` for the same parameters.
 - **Path C** (both env vars) — end-to-end INT8 chain parity. **UNMET**:
-    the current sidecar dequantises INT8 → F32 losslessly at emit, so
-    the GGUF does not carry per-tensor `(scale, zero_point)`. Wiring
-    Path C requires the Phase 3.5 sidecar extension. Until then the
-    Rust test skips with a clear defer message — the scaffold is here
-    so the flip is a one-file diff.
+  the Q8_0/I32 carriers and affine metadata are implemented, but authenticated
+    model topology and independent reference fixtures remain pending the
+    VAST-only acquisition/license gate. The Rust test therefore still skips
+    with a clear defer message.
 
 ## What this directory still does NOT do
 
@@ -177,8 +184,8 @@ the full write-up):
   the produced artefact is loadable by the `vokra-vad-micro`-shape
   reader without extra Rust code.
 - **No bit-parity against `tf.signal`**: the training-time TF mel
-  front-end is a `tensorflow` dep away; the sidecar stays at 3 deps
-  (`gguf` + `numpy` + `ai-edge-litert`) and Path B's transcription
+  front-end is a `tensorflow` dep away; the sidecar stays at 2 deps
+  (`numpy` + `ai-edge-litert`) and Path B's transcription
   parity is empirically within `1e-3` of `tf.signal` for the same
   parameters.
 - **No Cortex-M55 hardware verify**: per M5-03 ADR, hardware / FVP

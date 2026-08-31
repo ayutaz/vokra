@@ -46,8 +46,8 @@ What this does **not** validate: bit-parity against the specific
 training-time ``tf.signal`` mel front-end used to train the
 microWakeWord checkpoints. Bit-parity against ``tf.signal`` would
 require pulling ``tensorflow`` (~500 MB) into the sidecar's dep
-footprint (currently 3 deps: ``gguf`` + ``numpy`` +
-``ai-edge-litert``). Empirically the standard log-mel algorithm
+footprint (currently 2 deps: ``numpy`` + ``ai-edge-litert``). Empirically
+the standard log-mel algorithm
 matches ``tf.signal.stft`` + ``tf.signal.linear_to_mel_weight_matrix``
 within ``1e-3`` for the same parameters (Whisper front-end sibling
 takes the same posture — see ``vokra_backend_cpu::fused_log_mel_dispatch``'s
@@ -590,10 +590,10 @@ def main() -> int:
                         "probability vector (end-to-end forward)",
                 "rust_side_atol": 1e-2,
                 "note_end_to_end_status": (
-                    "UNMET as of Phase 4 — the Rust INT8 ChainConfig needs "
-                    "per-tensor quantisation params the current Phase 1 "
-                    "sidecar does not emit. This artefact is scaffold for "
-                    "the Phase 3.5 Q8_0 sidecar extension."
+                    "UNMET — the sidecar now emits authenticated Q8_0 source-byte "
+                    "carriers and per-tensor quantisation metadata, but the Rust "
+                    "ChainConfig topology binding and independent VAST fixture "
+                    "remain pending."
                 ),
             },
         ],

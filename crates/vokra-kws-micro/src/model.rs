@@ -3,7 +3,7 @@
 //! Reads a Vokra microWakeWord GGUF (emitted by the offline sidecar
 //! [`tools/parity/microwakeword/prepare_checkpoint.py`]) and yields a typed
 //! [`Model`] carrying the audio-frontend contract (from `vokra.kws.*`
-//! metadata) plus every dense F32 weight tensor.
+//! metadata) plus every dense F32, I32, or Q8_0 weight tensor.
 //!
 //! # What a `Model` can and cannot reach today
 //!
@@ -14,20 +14,16 @@
 //! [`crate::interpreter::ChainConfig`].
 //!
 //! What is missing is the join between the two: **no code path converts a
-//! [`Model`] into a [`crate::interpreter::ChainConfig`]**, and it cannot be
-//! written from what a [`Model`] currently holds. The sidecar dequantises the
-//! upstream INT8 weights to F32 at export time (see the note under *Tensors*
-//! below), so the per-tensor `(scale, zero_point)` pairs that every
-//! [`crate::interpreter::LayerSpec`] needs are simply not in the file. A
-//! [`Model`] is therefore usable for shape audits and metadata inspection,
-//! but a chain built from an upstream checkpoint waits on the sidecar
-//! re-emitting those params.
+//! [`Model`] into a [`crate::interpreter::ChainConfig`]**. The loader now
+//! preserves Q8_0 source bytes, I32 bias values, and affine parameters, but the MC-MobileNet
+//! operator topology and activation metadata are still required before a
+//! real chain can be assembled safely.
 //!
 //! # Design rationale (why a two-layer parser, not a monolithic one)
 //!
-//! The wire format is a stock **GGUF v3** file: the Python sidecar uses
-//! `gguf.GGUFWriter` (Apache-2.0) so the metadata + tensor layout matches
-//! every other GGUF the Vokra ecosystem emits. This crate therefore reuses
+//! The wire format is a stock **GGUF v3** file: the Python sidecar writes the
+//! format directly so the runtime has no dependency on a Python writer. This
+//! crate therefore reuses
 //! [`vokra_core::gguf::GgufFile`] (which is `no_std`-clean under
 //! `default-features = false`) for the outer layer — magic / version / OOB
 //! bounds / UTF-8 metadata strings / tensor payload alignment are all
@@ -62,22 +58,25 @@
 //!
 //! # Tensors (shape-generic)
 //!
-//! Every tensor is bound generically as a [`Tensor`] (name + shape + F32
-//! payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
+//! Every tensor is bound generically as a [`Tensor`] (name + shape + typed
+//! F32, I32, or Q8_0 payload). Per-layer typed bindings (Conv2d / DwConv2d / Dense weight
 //! blocks, mirroring the `Conv1dW` pattern in
 //! `crates/vokra-vad-micro/src/weights.rs` — that module is private and
 //! `Conv1dW` is `pub(crate)`, so neither has a docs.rs page to link) are not
-//! written yet, and are blocked on the same missing quantisation params as
-//! the chain builder.
+//! written yet. The affine quantisation vectors are authenticated and carried
+//! by the sidecar; graduation remains blocked on typed topology/binder
+//! mapping and real end-to-end parity evidence.
 //!
-//! Quantization params are absent from the file: the sidecar
-//! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantizes
-//! INT8 → F32 before emit (the arithmetic is
-//! `f32 = scale · (int8 - zero_point)` for a fixed per-tensor
-//! `(scale, zero_point)` pair, so the values round-trip losslessly — but the
-//! pair itself is discarded). Re-emitting them alongside Q8_0 storage, once
-//! [`vokra_core::gguf::GgmlType`] gains that variant, is the follow-up that
-//! unblocks binding an upstream checkpoint to a chain.
+//! Q8_0 and I32 tensors carry the source TFLite quantization vector in indexed metadata
+//! keys `vokra.kws.tensor.<ordinal>.name` (string), `.quant.scales` (float
+//! array), `.quant.zero_points` (signed-integer array), and
+//! `.quant.quantized_dimension` (I32). The indexed form avoids inventing a
+//! metadata-key escaping scheme for arbitrary source tensor names; the stamped
+//! name prevents declaration reordering from binding the wrong parameters.
+//! A missing, wrongly typed, or shape-inconsistent vector is rejected rather
+//! than silently treating the GGUF block scale as the source model's affine
+//! scale. The eventual chain binder must still reject per-axis vectors until
+//! the checkpoint's operator axis contract is independently inspected.
 //!
 //! # Ops are NOT represented
 //!
@@ -103,7 +102,7 @@ use alloc::{
     vec::Vec,
 };
 
-use vokra_core::gguf::{GgmlType, GgufFile};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufTensorInfo, GgufValueType};
 use vokra_core::{Result, VokraError};
 
 /// The `vokra.kws.arch` discriminator the sidecar emits for microWakeWord
@@ -162,7 +161,38 @@ pub struct ModelHeader {
     pub upstream: String,
 }
 
-/// One dense F32 weight tensor decoded from the GGUF.
+/// Quantization parameters carried by a source TFLite tensor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorQuantization {
+    /// One or more affine dequantization scales from the source tensor.
+    pub scales: Vec<f32>,
+    /// One zero point for each source scale.
+    pub zero_points: Vec<i64>,
+    /// TFLite `quantized_dimension` (`-1` is the scalar/per-tensor sentinel).
+    pub quantized_dimension: i32,
+}
+
+/// Exact storage state for one GGUF tensor.
+///
+/// I32 is intentionally a separate variant: it cannot be accidentally
+/// consumed through the F32/Q8 dequantization view, and values above `2^24`
+/// remain exact for bias binding.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TensorData {
+    /// Native dense F32 values.
+    F32(Vec<f32>),
+    /// Q8_0 source-byte carrier and its decoded carrier view.
+    Q8 {
+        /// GGUF identity-carrier values (the exact source bytes widened to F32).
+        values: Vec<f32>,
+        /// Exact signed source bytes carried after each Q8 block scale.
+        raw: Vec<i8>,
+    },
+    /// Native dense signed I32 values, decoded without an F32 round-trip.
+    I32(Vec<i32>),
+}
+
+/// One weight tensor decoded from the GGUF.
 ///
 /// The `data` field owns a decoded copy of the payload — GGUF stores F32
 /// as little-endian 4-byte quads on disk; this struct converts them to
@@ -178,17 +208,18 @@ pub struct Tensor {
     /// axis first, which is the GGUF wire order every Vokra binder sees.
     ///
     /// This is the **reverse** of numpy `.shape` on the source tensor.
-    /// `gguf.GGUFWriter`, which the sidecar uses, packs dims back-to-front
-    /// at write time (the `ti.shape[n_dims - 1 - j]` index in
-    /// `gguf/gguf_writer.py`), so a numpy `(out, in)` weight arrives here
-    /// as `[in, out]`. Read this field as wire order and reverse it if you
-    /// need the upstream framework's convention.
+    /// The sidecar writes the source NumPy shape back-to-front, as required
+    /// by GGUF's innermost-first wire convention, so a NumPy `(out, in)`
+    /// weight arrives here as `[in, out]`. Read this field as wire order and
+    /// reverse it if you need the upstream framework's convention.
     pub shape: Vec<u64>,
-    /// Decoded F32 payload (little-endian off-disk → host `f32`).
-    pub data: Vec<f32>,
+    /// Decoded storage, with I32 kept exact and separate from float values.
+    pub data: TensorData,
+    /// Source TFLite affine quantization vector. `None` for F32 tensors.
+    pub quantization: Option<TensorQuantization>,
 }
 
-/// A parsed microWakeWord GGUF: audio-frontend contract + every dense F32
+/// A parsed microWakeWord GGUF: audio-frontend contract + every dense F32, I32, or Q8_0
 /// weight tensor. Constructed via [`Model::from_bytes`] (owns a `Vec<u8>`
 /// copy of the input) or [`Model::from_gguf`] (borrows a prebuilt
 /// [`GgufFile`]).
@@ -196,7 +227,7 @@ pub struct Tensor {
 pub struct Model {
     /// Typed view of the `vokra.kws.*` metadata group.
     pub header: ModelHeader,
-    /// Every dense F32 tensor in the file, in GGUF declaration order.
+    /// Every dense F32, I32, or Q8_0 tensor in the file, in GGUF declaration order.
     /// Per-layer typed bindings on top of this are not written yet (see the
     /// module docs); the shape-generic list is what shape audits (via
     /// `tests`) and any future binder walk.
@@ -223,8 +254,9 @@ impl Model {
     /// - `vokra.kws.threshold` outside `[0.0, 1.0]` or non-finite;
     /// - any zero-valued dimensioning key (`sample_rate` / `hop_ms` /
     ///   `window_ms` / `n_mels` / `feature_dim`);
-    /// - any tensor with a dtype other than
-    ///   [`GgmlType::F32`] (Phase 2 = F32 only; Q8_0 lands in Phase 3).
+    /// - any tensor with a dtype other than [`GgmlType::F32`] or
+    ///   [`GgmlType::Q8_0`]; quantized tensors additionally require their
+    ///   indexed source-TFLite scale and zero-point metadata.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let gguf = GgufFile::parse(bytes.to_vec()).map_err(VokraError::from)?;
         Self::from_gguf(&gguf)
@@ -245,15 +277,84 @@ impl Model {
     pub fn from_gguf(gguf: &GgufFile) -> Result<Self> {
         let header = ModelHeader::from_gguf(gguf)?;
         let mut tensors = Vec::with_capacity(gguf.tensors().len());
-        for info in gguf.tensors() {
-            if info.dtype != GgmlType::F32 {
+        for (tensor_index, info) in gguf.tensors().iter().enumerate() {
+            if !matches!(info.dtype, GgmlType::F32 | GgmlType::I32 | GgmlType::Q8_0) {
                 return Err(VokraError::ModelLoad(format!(
-                    "tensor `{}` has dtype {:?}, expected F32 \
-                     (Phase 2 = F32 only; Q8_0 lands in Phase 3)",
+                    "tensor `{}` has dtype {:?}, expected F32, I32, or Q8_0",
                     info.name, info.dtype
                 )));
             }
             let bytes = gguf.tensor_bytes(info);
+            if info.dtype == GgmlType::I32 {
+                let source_name = get_tensor_string(gguf, tensor_index, "name")?;
+                if source_name != info.name {
+                    return Err(VokraError::ModelLoad(format!(
+                        "tensor ordinal {tensor_index} is named `{}` but source name metadata is `{source_name}`",
+                        info.name
+                    )));
+                }
+                let quantization = get_tensor_quantization(gguf, tensor_index, info)?;
+                if quantization.zero_points.iter().any(|&value| value != 0) {
+                    return Err(VokraError::ModelLoad(format!(
+                        "tensor `{}` I32 bias requires zero point 0",
+                        info.name
+                    )));
+                }
+                tensors.push(Tensor {
+                    name: info.name.clone(),
+                    shape: info.dimensions.clone(),
+                    data: TensorData::I32(gguf.tensor_i32(&info.name).map_err(VokraError::from)?),
+                    quantization: Some(quantization),
+                });
+                continue;
+            }
+            if info.dtype == GgmlType::Q8_0 {
+                if bytes
+                    .chunks_exact(34)
+                    .any(|block| block[..2] != [0x00, 0x3c])
+                {
+                    return Err(VokraError::ModelLoad(format!(
+                        "tensor `{}` Q8_0 source-byte carrier requires every block scale to be exact FP16 1.0",
+                        info.name
+                    )));
+                }
+                let source_name = get_tensor_string(gguf, tensor_index, "name")?;
+                if source_name != info.name {
+                    return Err(VokraError::ModelLoad(format!(
+                        "tensor ordinal {tensor_index} is named `{}` but source name metadata is `{source_name}`",
+                        info.name
+                    )));
+                }
+                let quantization = get_tensor_quantization(gguf, tensor_index, info)?;
+                let data = gguf.tensor_f32(&info.name).map_err(VokraError::from)?;
+                let data_i8 = bytes
+                    .chunks_exact(34)
+                    .flat_map(|block| block[2..].iter().copied().map(|value| value as i8))
+                    .collect();
+                tensors.push(Tensor {
+                    name: info.name.clone(),
+                    shape: info.dimensions.clone(),
+                    data: TensorData::Q8 {
+                        values: data,
+                        raw: data_i8,
+                    },
+                    quantization: Some(quantization),
+                });
+                continue;
+            }
+            for field in [
+                "name",
+                "quant.scales",
+                "quant.zero_points",
+                "quant.quantized_dimension",
+            ] {
+                let key = tensor_metadata_key(tensor_index, field);
+                if gguf.get(&key).is_some() {
+                    return Err(VokraError::ModelLoad(format!(
+                        "F32 tensor ordinal {tensor_index} carries Q8_0 metadata `{key}`"
+                    )));
+                }
+            }
             // Every F32 tensor payload is a whole number of 4-byte quads;
             // the GGUF layer already validated the byte length against the
             // shape, so this is a defensive belt-and-braces check that also
@@ -276,7 +377,8 @@ impl Model {
             tensors.push(Tensor {
                 name: info.name.clone(),
                 shape: info.dimensions.clone(),
-                data,
+                data: TensorData::F32(data),
+                quantization: None,
             });
         }
         Ok(Self { header, tensors })
@@ -401,6 +503,146 @@ fn get_f32(gguf: &GgufFile, key: &str) -> Result<f32> {
         )));
     }
     Ok(n)
+}
+
+/// Returns the indexed source-TFLite metadata key used for quantized tensors.
+fn tensor_metadata_key(index: usize, field: &str) -> String {
+    format!("vokra.kws.tensor.{index}.{field}")
+}
+
+fn get_tensor_string<'a>(gguf: &'a GgufFile, index: usize, field: &str) -> Result<&'a str> {
+    let key = tensor_metadata_key(index, field);
+    get_str(gguf, &key)
+}
+
+fn get_tensor_array<'a>(
+    gguf: &'a GgufFile,
+    index: usize,
+    field: &str,
+) -> Result<&'a vokra_core::gguf::GgufArray> {
+    let key = tensor_metadata_key(index, field);
+    let value = gguf
+        .get(&key)
+        .ok_or_else(|| VokraError::ModelLoad(format!("missing required metadata key `{key}`")))?;
+    value
+        .as_array()
+        .ok_or_else(|| VokraError::ModelLoad(format!("metadata key `{key}` is not an array")))
+}
+
+fn get_tensor_quantization(
+    gguf: &GgufFile,
+    index: usize,
+    info: &GgufTensorInfo,
+) -> Result<TensorQuantization> {
+    let scales_key = tensor_metadata_key(index, "quant.scales");
+    let zero_points_key = tensor_metadata_key(index, "quant.zero_points");
+    let dimension_key = tensor_metadata_key(index, "quant.quantized_dimension");
+    let scales_array = get_tensor_array(gguf, index, "quant.scales")?;
+    if scales_array.element_type != GgufValueType::F32 {
+        return Err(VokraError::ModelLoad(format!(
+            "metadata key `{scales_key}` must be an F32 array"
+        )));
+    }
+    let scales = scales_array
+        .values
+        .iter()
+        .map(|value| {
+            let scale = match value {
+                GgufMetadataValue::F32(value) => *value,
+                _ => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "metadata key `{scales_key}` contains a non-F32 element"
+                    )));
+                }
+            };
+            if !(scale > 0.0 && scale.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "metadata key `{scales_key}` contains invalid scale {scale}"
+                )));
+            }
+            Ok(scale)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let zero_points_array = get_tensor_array(gguf, index, "quant.zero_points")?;
+    if zero_points_array.element_type != GgufValueType::I64 {
+        return Err(VokraError::ModelLoad(format!(
+            "metadata key `{zero_points_key}` must be an I64 array"
+        )));
+    }
+    let zero_points = zero_points_array
+        .values
+        .iter()
+        .map(|value| match value {
+            GgufMetadataValue::I64(value) => Ok(*value),
+            _ => Err(VokraError::ModelLoad(format!(
+                "metadata key `{zero_points_key}` contains a non-I64 element"
+            ))),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let dimension = gguf
+        .get(&dimension_key)
+        .and_then(|value| match value {
+            GgufMetadataValue::I32(value) => Some(*value),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            VokraError::ModelLoad(format!("metadata key `{dimension_key}` is not an I32"))
+        })?;
+    if scales.is_empty() || scales.len() != zero_points.len() {
+        return Err(VokraError::ModelLoad(format!(
+            "tensor ordinal {index} has {} scales but {} zero points",
+            scales.len(),
+            zero_points.len()
+        )));
+    }
+    if zero_points
+        .iter()
+        .any(|&value| !(-128..=127).contains(&value))
+    {
+        return Err(VokraError::ModelLoad(format!(
+            "metadata key `{zero_points_key}` contains a value outside signed INT8 range [-128, 127]"
+        )));
+    }
+    let rank = info.dimensions.len();
+    if scales.len() == 1 {
+        // TFLite reports quantized_dimension=0 for some per-tensor tensors,
+        // while other APIs use -1 as the scalar sentinel. Both are legal for
+        // a non-scalar source tensor; any non-negative value must still name
+        // an existing source axis. The core GGUF contract already rejects
+        // rank-0 quantized tensors.
+        let invalid_scalar_dimension = if dimension == -1 {
+            false
+        } else {
+            match usize::try_from(dimension) {
+                Ok(axis) => axis >= rank,
+                Err(_) => true,
+            }
+        };
+        if invalid_scalar_dimension {
+            return Err(VokraError::ModelLoad(format!(
+                "metadata key `{dimension_key}` scalar quantization dimension {dimension} is invalid for source rank {rank}"
+            )));
+        }
+    } else {
+        let Some(source_axis) = usize::try_from(dimension).ok().filter(|&axis| axis < rank) else {
+            return Err(VokraError::ModelLoad(format!(
+                "metadata key `{dimension_key}` per-axis dimension {dimension} is invalid for source rank {rank}"
+            )));
+        };
+        let wire_axis = rank - 1 - source_axis;
+        let axis_len = info.dimensions[wire_axis];
+        if axis_len != scales.len() as u64 {
+            return Err(VokraError::ModelLoad(format!(
+                "tensor ordinal {index} per-axis metadata has {} scales for source axis {source_axis}, but wire axis {wire_axis} has length {axis_len}",
+                scales.len()
+            )));
+        }
+    }
+    Ok(TensorQuantization {
+        scales,
+        zero_points,
+        quantized_dimension: dimension,
+    })
 }
 
 // The tests below use the std-only `GgufBuilder` writer (feature-gated in
@@ -564,21 +806,21 @@ mod tests {
         assert_eq!(m.tensors[0].shape, vec![2, 3]);
         assert_eq!(
             m.tensors[0].data,
-            (0..6).map(|i| i as f32).collect::<Vec<_>>()
+            TensorData::F32((0..6).map(|i| i as f32).collect::<Vec<_>>())
         );
 
         assert_eq!(m.tensors[1].name, "second");
         assert_eq!(m.tensors[1].shape, vec![5]);
         assert_eq!(
             m.tensors[1].data,
-            (0..5).map(|i| i as f32).collect::<Vec<_>>()
+            TensorData::F32((0..5).map(|i| i as f32).collect::<Vec<_>>())
         );
 
         assert_eq!(m.tensors[2].name, "third");
         assert_eq!(m.tensors[2].shape, vec![1, 4, 2]);
         assert_eq!(
             m.tensors[2].data,
-            (0..8).map(|i| i as f32).collect::<Vec<_>>()
+            TensorData::F32((0..8).map(|i| i as f32).collect::<Vec<_>>())
         );
     }
 
@@ -688,7 +930,7 @@ mod tests {
     fn rejects_non_f32_tensor_dtype() {
         let mut b = GgufBuilder::new();
         add_valid_header(&mut b);
-        // Add an F16 tensor (dtype tag 1) — Phase 2 loader rejects any
+        // Add an F16 tensor (dtype tag 1) — the loader rejects any
         // non-F32 dtype. The GGUF outer layer happily accepts F16 (it is
         // in the `UnsupportedDtype`-not-listed set), so the rejection
         // happens in `Model::from_gguf`.
@@ -702,6 +944,346 @@ mod tests {
             }
             other => panic!("expected ModelLoad for F16 dtype, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn loads_q8_0_tensor_with_source_tflite_quantization() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; GgmlType::Q8_0.type_size()];
+        payload[..2].copy_from_slice(&0x3C00u16.to_le_bytes());
+        payload[2] = 7;
+        payload[3] = 0x80;
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32], payload)
+            .expect("queue q8 tensor");
+        let bytes = b.to_bytes().expect("serialize q8 gguf");
+        let model = Model::from_bytes(&bytes).expect("q8 gguf loads");
+        let tensor = model.tensor("q8_weight").expect("q8 tensor present");
+        assert_eq!(
+            tensor.data,
+            TensorData::Q8 {
+                values: vec![7.0, -128.0]
+                    .into_iter()
+                    .chain(std::iter::repeat(0.0).take(30))
+                    .collect(),
+                raw: vec![7, -128]
+                    .into_iter()
+                    .chain(std::iter::repeat(0).take(30))
+                    .collect(),
+            }
+        );
+        assert_eq!(
+            tensor.quantization,
+            Some(TensorQuantization {
+                scales: vec![0.125],
+                zero_points: vec![-3],
+                quantized_dimension: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn loads_i32_bias_exactly_without_an_f32_mirror() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "bias");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(0)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(-1),
+        );
+        let values = [i32::MIN, (1 << 24) + 1, i32::MAX];
+        let payload = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        b.add_tensor("bias", GgmlType::I32, vec![values.len() as u64], payload)
+            .unwrap();
+        let model = Model::from_bytes(&b.to_bytes().unwrap()).expect("I32 bias loads");
+        assert!(matches!(
+            model.tensor("bias").unwrap().data,
+            TensorData::I32(ref actual) if actual == &values
+        ));
+    }
+
+    fn build_q8_metadata_type_case(
+        scales: vokra_core::gguf::GgufArray,
+        zero_points: vokra_core::gguf::GgufArray,
+    ) -> Vec<u8> {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(scales),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(zero_points),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; GgmlType::Q8_0.type_size()];
+        payload[..2].copy_from_slice(&0x3C00u16.to_le_bytes());
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32], payload)
+            .expect("queue q8 tensor");
+        b.to_bytes().expect("serialize q8 metadata type case")
+    }
+
+    #[test]
+    fn rejects_q8_metadata_arrays_with_nonproducer_element_types() {
+        let valid_zero_points = vokra_core::gguf::GgufArray {
+            element_type: vokra_core::gguf::GgufValueType::I64,
+            values: vec![GgufMetadataValue::I64(0)],
+        };
+        let scales_wrong_type = build_q8_metadata_type_case(
+            vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F64,
+                values: vec![GgufMetadataValue::F64(0.125)],
+            },
+            valid_zero_points.clone(),
+        );
+        let message = expect_model_load(&scales_wrong_type, "F64 scales array");
+        assert!(message.contains("scales") && message.contains("F32 array"));
+
+        let zero_points_wrong_type = build_q8_metadata_type_case(
+            vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            },
+            vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I32,
+                values: vec![GgufMetadataValue::I32(0)],
+            },
+        );
+        let message = expect_model_load(&zero_points_wrong_type, "I32 zero_points array");
+        assert!(message.contains("zero_points") && message.contains("I64 array"));
+    }
+
+    #[test]
+    fn loads_q8_0_per_axis_quantization_using_source_to_wire_axis_mapping() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125), GgufMetadataValue::F32(0.25)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3), GgufMetadataValue::I64(7)],
+            }),
+        );
+        // Source shape [2, 32] is written in GGUF wire order as [32, 2].
+        // quantized_dimension=0 therefore maps to wire axis 1.
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; 2 * GgmlType::Q8_0.type_size()];
+        for block in payload.chunks_exact_mut(GgmlType::Q8_0.type_size()) {
+            block[..2].copy_from_slice(&0x3C00u16.to_le_bytes());
+        }
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32, 2], payload)
+            .expect("queue per-axis q8 tensor");
+        let model = Model::from_bytes(&b.to_bytes().unwrap()).expect("per-axis q8 loads");
+        assert_eq!(
+            model.tensor("q8_weight").unwrap().quantization,
+            Some(TensorQuantization {
+                scales: vec![0.125, 0.25],
+                zero_points: vec![-3, 7],
+                quantized_dimension: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_q8_0_per_axis_metadata_when_wire_axis_length_differs() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125), GgufMetadataValue::F32(0.25)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3), GgufMetadataValue::I64(7)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; 3 * GgmlType::Q8_0.type_size()];
+        for block in payload.chunks_exact_mut(GgmlType::Q8_0.type_size()) {
+            block[0] = 0x00;
+            block[1] = 0x3c;
+        }
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32, 3], payload)
+            .expect("queue malformed-axis q8 tensor");
+        let error = Model::from_bytes(&b.to_bytes().unwrap())
+            .expect_err("per-axis shape mismatch must fail");
+        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("wire axis")));
+    }
+
+    #[test]
+    fn rejects_q8_0_zero_point_outside_int8_range() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(128)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; GgmlType::Q8_0.type_size()];
+        payload[..2].copy_from_slice(&0x3C00u16.to_le_bytes());
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32], payload)
+            .expect("queue overflow-zero-point q8 tensor");
+        let error =
+            Model::from_bytes(&b.to_bytes().unwrap()).expect_err("zero point overflow must fail");
+        assert!(matches!(error, VokraError::ModelLoad(message) if message.contains("INT8 range")));
+    }
+
+    #[test]
+    fn rejects_q8_metadata_attached_to_f32_ordinal() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "f32_weight");
+        b.add_tensor("f32_weight", GgmlType::F32, vec![1], vec![0u8; 4])
+            .expect("queue f32 tensor");
+        let error = Model::from_bytes(&b.to_bytes().unwrap())
+            .expect_err("Q8 metadata on F32 must fail closed");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("carries Q8_0 metadata"))
+        );
+    }
+
+    #[test]
+    fn rejects_q8_0_block_scale_that_is_not_exactly_one() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "q8_weight");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; GgmlType::Q8_0.type_size()];
+        payload[..2].copy_from_slice(&0x4000u16.to_le_bytes()); // 2.0, not 1.0
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32], payload)
+            .expect("queue q8 tensor");
+        let bytes = b.to_bytes().expect("serialize q8 gguf");
+        let error = Model::from_bytes(&bytes).expect_err("non-unit carrier scale must fail");
+        assert!(
+            matches!(error, VokraError::ModelLoad(message) if message.contains("exact FP16 1.0"))
+        );
+    }
+
+    #[test]
+    fn rejects_q8_0_source_name_mismatch() {
+        let mut b = GgufBuilder::new();
+        add_valid_header(&mut b);
+        b.add_string("vokra.kws.tensor.0.name", "different_name");
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.scales",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::F32,
+                values: vec![GgufMetadataValue::F32(0.125)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.zero_points",
+            GgufMetadataValue::Array(vokra_core::gguf::GgufArray {
+                element_type: vokra_core::gguf::GgufValueType::I64,
+                values: vec![GgufMetadataValue::I64(-3)],
+            }),
+        );
+        b.add_metadata(
+            "vokra.kws.tensor.0.quant.quantized_dimension",
+            GgufMetadataValue::I32(0),
+        );
+        let mut payload = vec![0u8; GgmlType::Q8_0.type_size()];
+        payload[..2].copy_from_slice(&0x3C00u16.to_le_bytes());
+        b.add_tensor("q8_weight", GgmlType::Q8_0, vec![32], payload)
+            .expect("queue q8 tensor");
+        let bytes = b.to_bytes().expect("serialize q8 gguf");
+        let error = Model::from_bytes(&bytes).expect_err("source name mismatch must fail");
+        assert!(
+            matches!(error, VokraError::ModelLoad(ref message) if message.contains("source name metadata")),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
@@ -1002,9 +1584,9 @@ mod tests {
 
     #[test]
     fn rejects_every_non_f32_tensor_dtype() {
-        // Phase 2 is F32-only. F16 has its own focused test above; this
-        // sweep adds the other dtypes `GgmlType` can carry so "F32 only"
-        // cannot decay into "anything but F16".
+        // The loader accepts F32 and the source-byte-carrier Q8_0 only. F16
+        // has its own focused test above; this sweep adds the other dtypes
+        // `GgmlType` can carry so the accepted set cannot silently widen.
         let cases: [(&str, GgmlType, Vec<u64>, usize); 3] = [
             ("bf16_weight", GgmlType::BF16, vec![4], 4 * 2),
             ("f16_weight", GgmlType::F16, vec![4], 4 * 2),
@@ -1049,14 +1631,12 @@ mod tests {
     #[test]
     fn tensor_shape_is_preserved_in_on_disk_order() {
         // `Tensor::shape` is GGUF wire order (innermost axis first), copied
-        // verbatim from the tensor info: the Rust writer and reader both
-        // round-trip dims without reordering. This is the REVERSE of numpy
-        // `.shape` on a sidecar-produced file, because `gguf.GGUFWriter`
-        // packs dims back-to-front at write time — a Rust round-trip
-        // cannot exhibit that, so the field doc carries the citation.
+        // verbatim from the tensor info. A sidecar-produced file has the
+        // reverse of NumPy `.shape`, while a Rust builder fixture already
+        // supplies wire-order dimensions directly.
         let bytes = build_valid_bytes(&[("w", &[2, 3, 4])]);
         let m = Model::from_bytes(&bytes).expect("valid gguf loads");
         assert_eq!(m.tensor("w").expect("tensor present").shape, vec![2, 3, 4]);
-        assert_eq!(m.tensors[0].data.len(), 24);
+        assert!(matches!(m.tensors[0].data, TensorData::F32(ref values) if values.len() == 24));
     }
 }

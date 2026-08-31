@@ -112,9 +112,8 @@ impl GgufBuilder {
     /// `data` must be the little-endian payload whose length equals
     /// [`dtype.payload_size_for_dimensions`](GgmlType::payload_size_for_dimensions)
     /// — `elements * type_size` for dense dtypes, or `(elements / block_size) *
-    /// type_size` for quantized dtypes. Q8_0 innermost rows must also be
-    /// block-aligned; legacy K-quant source-order dimensions retain their
-    /// established total-only contract. Otherwise [`GgufError::TensorSizeMismatch`] or
+    /// type_size` for quantized dtypes. Quantized tensors must have a total
+    /// element count aligned to their block size. Otherwise [`GgufError::TensorSizeMismatch`] or
     /// [`GgufError::BlockSizeMisaligned`] is returned, and a duplicate tensor
     /// name yields [`GgufError::DuplicateTensor`].
     pub fn add_tensor(
@@ -312,9 +311,8 @@ pub struct GgufTensorDecl {
 ///   queued tensors is rejected ([`GgufError::InvalidStreamUse`]) rather
 ///   than silently merged.
 /// - Payloads must arrive exactly once each, in declaration order, sized
-///   exactly `dtype.payload_size_for_dimensions(dimensions)`; Q8_0 innermost
-///   rows are block-aligned (legacy K-quant source-order dimensions retain
-///   their established total-only contract).
+///   exactly `dtype.payload_size_for_dimensions(dimensions)`; quantized
+///   tensors are block-aligned by total element count.
 /// - [`Self::finish`] fails unless every declared payload was written (a
 ///   truncated tensor-data region must never look like success).
 pub struct GgufStreamWriter<W: std::io::Write> {
@@ -705,19 +703,10 @@ mod tests {
     }
 
     #[test]
-    fn q8_row_shape_contract_rejects_total_only_alignment() {
+    fn q8_total_alignment_accepts_split_inner_dimension() {
         let mut b = GgufBuilder::new();
-        let err = b
-            .add_tensor("bad", GgmlType::Q8_0, vec![16, 2], vec![0u8; 34])
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            GgufError::BlockSizeMisaligned {
-                dtype: 8,
-                elements: 16,
-                block_size: 32,
-            }
-        ));
+        b.add_tensor("split", GgmlType::Q8_0, vec![16, 2], vec![0u8; 34])
+            .unwrap();
 
         b.add_tensor("q", GgmlType::Q8_0, vec![32, 1], vec![0u8; 34])
             .unwrap();
@@ -726,11 +715,15 @@ mod tests {
         let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
         let q = file.tensor_info("q").unwrap();
         let next = file.tensor_info("next").unwrap();
+        let split = file.tensor_info("split").unwrap();
+        assert_eq!(split.dimensions, vec![16, 2]);
+        assert_eq!(split.byte_len().unwrap(), 34);
         assert_eq!(q.dimensions, vec![32, 1]);
         assert_eq!(q.dtype, GgmlType::Q8_0);
         assert_eq!(q.byte_len().unwrap(), 34);
-        assert_eq!(q.offset, 0);
-        assert_eq!(next.offset, 64);
+        assert_eq!(split.offset, 0);
+        assert_eq!(q.offset, 64);
+        assert_eq!(next.offset, 128);
     }
 
     #[test]

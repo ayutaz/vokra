@@ -85,24 +85,21 @@
 //!
 //! **Honest UNMET**: the Rust INT8 [`crate::interpreter::ChainConfig`]
 //! needs per-tensor `(scale, zero_point)` quantisation params to bind
-//! against a real MC-MobileNet checkpoint. The Phase 1 sidecar
-//! dequantises INT8 → F32 losslessly before emit, so the current
-//! `vokra.kws.*` GGUF does NOT carry those params. Wiring end-to-end
-//! parity requires:
+//! against a real MC-MobileNet checkpoint. The sidecar now emits Q8_0
+//! source-byte carriers and those params. Wiring end-to-end parity still
+//! requires:
 //!
-//! 1. Sidecar emits Q8_0 tensors + per-tensor `(scale, zero_point)`
-//!    metadata (Phase 3.5 follow-up per
-//!    [`crate::model`]'s module doc);
-//! 2. [`crate::model::Model`] gains typed accessors for per-layer
+//! 1. [`crate::model::Model`] gains typed accessors for per-layer
 //!    conv / dense weights + quant params;
-//! 3. This test constructs a real [`crate::interpreter::ChainConfig`]
+//! 2. Authenticated topology and INT32 bias tensors are available, then
+//!    this test constructs a real [`crate::interpreter::ChainConfig`]
 //!    from those and runs it against the dumped input features,
 //!    comparing to `output_ref.bin` at `atol = 1e-2` (INT8 dequant
 //!    tolerance).
 //!
 //! Until then this path skips with a clear "end-to-end parity requires
-//! Q8_0 sidecar extension" message — the scaffold is here so the flip
-//! is a one-file diff when the sidecar lands.
+//! authenticated topology/bias manifest" message — the scaffold is here so
+//! the flip is a one-file diff when those artifacts land.
 
 use std::env;
 use std::fs;
@@ -383,12 +380,11 @@ fn parity_microwakeword_feature_extractor_matches_reference() {
 ///
 /// The Rust INT8 [`crate::interpreter::ChainConfig`] needs per-tensor
 /// `(scale, zero_point)` quantisation params to bind against a real
-/// MC-MobileNet checkpoint. The current Phase 1 sidecar dequantises
-/// INT8 → F32 losslessly at export time, so the emitted `vokra.kws.*`
-/// GGUF does NOT carry those params. Until the Q8_0 sidecar extension
-/// lands (Phase 3.5 follow-up per `crate::model`'s module doc), this
-/// path always skips with a clear defer message — even when both env
-/// vars are set. This is honest UNMET (never a fabricated pass).
+/// MC-MobileNet checkpoint. The sidecar now emits Q8_0 source-byte carriers
+/// and those params, but authenticated topology and typed ChainConfig binding
+/// are still required. Until the source manifest and binder land, this path
+/// always skips with a clear defer message — even when both env vars are set.
+/// This is honest UNMET (never a fabricated pass).
 ///
 /// The scaffold is here so that when the sidecar lands, wiring the
 /// real end-to-end parity is a one-file diff (load `output_ref.bin`,
@@ -401,17 +397,15 @@ fn parity_microwakeword_end_to_end_output() {
         eprintln!("Path-C: {GGUF_ENV} and/or {FIXTURES_ENV} unset — skipping cleanly.");
         return;
     }
-    // Both env vars set, but the sidecar has not yet been extended to emit
-    // Q8_0 + per-tensor quant params. Honest UNMET rather than a
-    // fabricated pass.
+    // Both env vars set, but the authenticated topology/bias manifest and
+    // Model → ChainConfig binder are not yet available. Honest UNMET rather
+    // than a fabricated pass.
     eprintln!(
-        "Path-C: end-to-end INT8 chain parity is UNMET — the Phase 1 sidecar \
-         dequantises INT8 → F32 losslessly at export, so the current GGUF \
-         does not carry per-tensor (scale, zero_point). Wiring parity \
-         requires: (1) sidecar emits Q8_0 + quant params (Phase 3.5 \
-         follow-up, see `crate::model` module doc); (2) `Model` gains \
-         per-layer typed accessors; (3) this test constructs a real \
-         `ChainConfig` and runs it against `output_ref.bin` at atol=1e-2. \
-         Until then, this is a clean skip (never a fabricated pass)."
+        "Path-C: end-to-end INT8 chain parity is UNMET — Q8_0 source-byte \
+         carriers, exact I32 bias values, and affine metadata exist, but \
+         authenticated topology and the Model → ChainConfig binder remain. \
+         Wiring parity requires those contracts plus this test running against \
+         `output_ref.bin` at atol=1e-2. Until then, this is a clean skip \
+         (never a fabricated pass)."
     );
 }

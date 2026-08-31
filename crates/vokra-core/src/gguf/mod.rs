@@ -125,12 +125,12 @@ pub enum GgufError {
     /// A metadata value type tag was outside the range `0..=12`.
     UnsupportedValueType(u32),
     /// A tensor declared a ggml type tag Vokra does not load: the accepted set
-    /// is `F32` (0), `F16` (1), `Q8_0` (8), `BF16` (30) and the K-quants
+    /// is `F32` (0), `F16` (1), `I32` (26), `Q8_0` (8), `BF16` (30) and the K-quants
     /// `Q4_K` (12) / `Q5_K` (13) / `Q6_K` (14). Other quantized families
     /// (IQ2, Q2_K, …) are intentionally unsupported.
     UnsupportedDtype(u32),
-    /// A quantized tensor's element count or Q8_0 innermost row was not a
-    /// whole multiple of its block size (K-quants use
+    /// A quantized tensor's total element count was not a whole multiple of
+    /// its block size (Q8_0 uses 32; K-quants use
     /// [`tensor::QK_K`] = 256).
     /// K-quants are stored as fixed-size super-blocks, so a partial block is
     /// malformed.

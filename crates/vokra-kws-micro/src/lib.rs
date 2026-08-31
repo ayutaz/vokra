@@ -29,15 +29,12 @@
 //!
 //! **No code path builds an [`interpreter::ChainConfig`] from a
 //! [`model::Model`].** The offline sidecar
-//! (`tools/parity/microwakeword/prepare_checkpoint.py`) dequantises the
-//! upstream `.tflite`'s INT8 weights to F32 at export time and writes only
-//! those F32 tensors, so a loaded [`model::Model`] carries no per-tensor
-//! `(scale, zero_point)` — precisely the params every
-//! [`interpreter::LayerSpec`] needs to be constructed. Re-emitting them,
-//! alongside the `Q8_0` storage type [`vokra_core::gguf::GgmlType`] does not
-//! yet carry, is the follow-up that closes the loop (see [`model`]'s module
-//! docs). Until then a real hey_jarvis run stays owner-triggered — it also
-//! wants a canned "hey jarvis" audio fixture for accuracy verification.
+//! (`tools/parity/microwakeword/prepare_checkpoint.py`) now preserves source
+//! INT8 bytes in Q8_0 identity carriers and stamps the complete per-tensor
+//! `(scale, zero_point)` metadata. The remaining work is to authenticate the
+//! TFLite operator topology and bind it to typed
+//! [`interpreter::LayerSpec`] values, including INT32 bias tensors, before a
+//! real hey_jarvis run can be claimed (see [`model`]'s module docs).
 //!
 //! Upstream model: microWakeWord (Apache 2.0,
 //! <https://github.com/kahrendt/microWakeWord>).
@@ -96,7 +93,7 @@ pub mod interpreter;
 pub mod kernels;
 // M5-03b Phase 2: the runtime *loader* for microWakeWord GGUFs produced by
 // `tools/parity/microwakeword/prepare_checkpoint.py`. Reads the
-// `vokra.kws.*` metadata contract + every dense F32 tensor via
+// `vokra.kws.*` metadata contract + every dense F32 or Q8_0 tensor via
 // `vokra_core::gguf::GgufFile` (no_std-clean under `default-features =
 // false`). Callers construct an [`interpreter::ChainConfig`] from a
 // [`model::Model`] (per-layer weight binding is model-specific; see the
@@ -359,11 +356,13 @@ impl KwsMicro {
     /// The pipeline above is real for whatever chain the caller attached.
     /// What is not yet reachable is a chain built from an upstream
     /// checkpoint: nothing converts a [`model::Model`] into an
-    /// [`interpreter::ChainConfig`], because the offline sidecar emits
-    /// dequantised F32 tensors carrying no per-tensor `(scale,
-    /// zero_point)`. Real hey_jarvis accuracy verification additionally
-    /// needs a canned "hey jarvis" audio fixture (owner-triggered). See
-    /// the crate-level docs for the full contract.
+    /// [`interpreter::ChainConfig`]. The sidecar now preserves Q8_0 source
+    /// bytes, exact I32 bias values, and affine metadata, but authenticated
+    /// operator topology and typed ChainConfig binding are still required for
+    /// safe binding. Real
+    /// hey_jarvis accuracy verification additionally needs the owner-approved
+    /// VAST artifact and fixtures. See the crate-level docs for the full
+    /// contract.
     pub fn detect(&mut self, frame: &[i16]) -> Result<KwsEvent> {
         // Unconfigured: `set_chain` was never called, so there is no chain
         // to run. Refuse loudly instead of returning `KwsEvent::Idle` — the

@@ -24,11 +24,11 @@ MODEL_REVISION = "05b65922cc433c9df13e98e32a7fe520758c837e"
 SOURCE_REPOSITORY = "https://github.com/kahrendt/microWakeWord"
 SOURCE_REVISION = "4665173cd35f1cff9a61e06fc427f124766c488e"
 MODEL_ARTIFACT_BYTES_SHA256: str | None = None
-LOCK_SHA256 = "43e17e20616bc06072424abadaaed520244673db2f964a29ea2472e22e72afbe"
-PACKAGE_ROWS_SHA256 = "3250cac13ab9f8cf0a67ffc1f590988afa8cac3b346edf52d0e03924ec08ef06"
+LOCK_SHA256 = "05e8317758e7c884e8e86e110af5b39cdd23eff63b6a66705225e6baa3ab5e13"
+PACKAGE_ROWS_SHA256 = "d5c8aaca80e340be13e719de14d1486df193977f31ea80dea3bf954030057343"
 RESOLUTION_MARKERS_SHA256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-LICENSE_ROWS_SHA256 = "2bcae92a909b92617e1ddc96a7cf4704a6c9305dcd94651584da4b68c49a7906"
-PACKAGE_COUNT = 17
+LICENSE_ROWS_SHA256 = "eae9f062f7ceb787fe36e09290fbc04b8f2f842df9de612b79f95f7fd615c58f"
+PACKAGE_COUNT = 10
 
 # These are Git object IDs (not file SHA-256 values).  The model bytes digest
 # remains intentionally unset until the VAST-only acquisition records it.
@@ -68,32 +68,24 @@ MODEL_MANIFEST = {
 LICENSE_ROWS = [
     {"name": "ai-edge-litert", "version": "2.2.0", "license": "Apache-2.0_PRECOMPILED_WHEEL_NOTICES_REVIEW_REQUIRED", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/ai-edge-litert/2.2.0/json"},
     {"name": "backports-strenum", "version": "1.3.1", "license": "MIT", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/backports-strenum/1.3.1/json"},
-    {"name": "certifi", "version": "2026.7.22", "license": "MPL-2.0_BLOCKED_BY_POLICY", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/certifi/2026.7.22/json"},
-    {"name": "charset-normalizer", "version": "3.5.1", "license": "MIT", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/charset-normalizer/3.5.1/json"},
     {"name": "colorama", "version": "0.4.6", "license": "BSD-3-Clause", "evidence_field": "classifiers", "primary_source": "https://pypi.org/pypi/colorama/0.4.6/json"},
     {"name": "flatbuffers", "version": "25.12.19", "license": "Apache-2.0", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/flatbuffers/25.12.19/json"},
-    {"name": "gguf", "version": "0.19.0", "license": "MIT", "evidence_field": "classifiers", "primary_source": "https://pypi.org/pypi/gguf/0.19.0/json"},
-    {"name": "idna", "version": "3.19", "license": "BSD-3-Clause", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/idna/3.19/json"},
     {"name": "microwakeword-prep", "version": "0.1.0", "license": "FIRST_PARTY", "evidence_field": "repository", "primary_source": "repository"},
     {"name": "ml-dtypes", "version": "0.6.0", "license": "Apache-2.0_EIGEN_MPL-2.0_WHEEL_NOTICE_REVIEW_REQUIRED", "evidence_field": "description/license section", "primary_source": "https://pypi.org/pypi/ml-dtypes/0.6.0/json"},
     {"name": "numpy", "version": "2.5.2", "license": "BSD-3-Clause_AND_0BSD_AND_MIT_AND_Zlib_AND_CC0-1.0_BUNDLED_NOTICES_REVIEW_REQUIRED", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/numpy/2.5.2/json"},
     {"name": "protobuf", "version": "7.36.0", "license": "BSD-3-Clause_METADATA_REVIEW_REQUIRED", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/protobuf/7.36.0/json"},
-    {"name": "pyyaml", "version": "6.0.3", "license": "MIT_NATIVE_EXTENSION_REVIEW_REQUIRED", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/PyYAML/6.0.3/json"},
-    {"name": "requests", "version": "2.34.2", "license": "Apache-2.0", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/requests/2.34.2/json"},
     {"name": "tqdm", "version": "4.70.0", "license": "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/tqdm/4.70.0/json"},
     {"name": "typing-extensions", "version": "4.16.0", "license": "PSF-2.0_BLOCKED_BY_POLICY", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/typing-extensions/4.16.0/json"},
-    {"name": "urllib3", "version": "2.7.0", "license": "MIT", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/urllib3/2.7.0/json"},
 ]
 BLOCKERS = [
-    "certifi==2026.7.22: MPL-2.0 requires owner policy clearance",
     "ai-edge-litert==2.2.0: precompiled TFLite runtime wheel notices require review",
-    "PyYAML==6.0.3: native extension notice review is required",
     "tqdm==4.70.0: MPL-2.0/MIT requires owner policy clearance",
     "typing-extensions==4.16.0: PSF-2.0 requires owner policy clearance",
     "numpy==2.5.2: PyPI license_expression includes bundled BSD/0BSD/MIT/Zlib/CC0 notices requiring review",
     "ml-dtypes==0.6.0: exact PyPI description/license section declares an Eigen/MPL-2.0 notice for precompiled wheels",
     "protobuf==7.36.0: metadata/precompiled-wheel notice review is required",
     "models/v2/hey_jarvis.tflite: artifact byte SHA-256 is pending VAST-only acquisition",
+    "hey_jarvis tensor manifest: authenticated VAST constant-buffer inspection is required",
 ]
 
 
@@ -147,7 +139,7 @@ def audit_lock() -> dict[str, Any]:
         raise RuntimeError("dedicated microWakeWord uv.lock is absent or identity drifted")
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
     if project.get("project", {}).get("dependencies") != [
-        "gguf==0.19.0", "numpy==2.5.2", "ai-edge-litert==2.2.0"
+        "numpy==2.5.2", "ai-edge-litert==2.2.0"
     ]:
         raise RuntimeError("direct dependency pins drifted from the reviewed lock")
     document = tomllib.loads(LOCK.read_text(encoding="utf-8"))

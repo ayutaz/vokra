@@ -8,9 +8,10 @@
 # `KwsMicro::detect()` runs a real forward (log-mel -> INT8 quantise -> INT8
 # chain -> threshold) for any chain attached via `set_chain`, and refuses
 # loudly when none is. What is still missing is the join to an upstream
-# checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because the
-# offline sidecar emits dequantised F32 tensors with no per-tensor
-# (scale, zero_point). See `src/lib.rs`'s crate docs.
+# checkpoint: nothing builds a `ChainConfig` from a loaded `Model`, because
+# authenticated TFLite topology → typed ChainConfig binding and real parity remain pending
+# even though the sidecar now emits Q8_0 carriers and affine metadata. See
+# `src/lib.rs`'s crate docs.
 # `publish = false` until that lands — the crate cannot yet load the
 # microWakeWord models (Apache 2.0, https://github.com/kahrendt/microWakeWord)
 # its name implies.

@@ -50,12 +50,11 @@
 //! runs end-to-end in [`crate::KwsMicro::detect`]. What is NOT yet real:
 //!
 //! 1. **A committed hey_jarvis chain** — the sidecar
-//!    (`tools/parity/microwakeword/prepare_checkpoint.py`) emits F32 tensors
-//!    (dequantised at export time), so a real MC-MobileNet chain would need
-//!    per-tensor quantisation params re-emitted alongside them (`Q8_0` +
-//!    `(scale, zero_point)` metadata — [`crate::model`]'s module docs flag
-//!    this as a follow-up). Until that lands, real hey_jarvis inference
-//!    stays owner-triggered.
+//!    (`tools/parity/microwakeword/prepare_checkpoint.py`) now emits Q8_0
+//!    source-byte carriers plus `(scale, zero_point)` metadata. A real
+//!    MC-MobileNet chain still needs authenticated TFLite topology binding
+//!    and the typed ChainConfig binder. Until that lands, real
+//!    hey_jarvis inference stays owner-triggered.
 //! 2. **Accuracy on a real `.tflite`** — needs a canned "hey jarvis" audio
 //!    fixture from the owner (see the crate's honest-boundary contract in
 //!    [`crate::KwsMicro::detect`]).

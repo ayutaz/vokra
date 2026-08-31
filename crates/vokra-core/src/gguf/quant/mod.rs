@@ -42,7 +42,9 @@ mod q8_0;
 /// `bytes` must be exactly [`GgmlType::payload_size`] for `n_elements` of
 /// `dtype` (the GGUF reader guarantees this for parsed tensors); a mismatch is
 /// rejected with [`GgufError::TensorSizeMismatch`] rather than panicking. The
-/// returned vector has exactly `n_elements` entries.
+/// returned vector has exactly `n_elements` entries. Dense I32 is deliberately
+/// rejected: callers must use the exact integer accessor instead of a lossy
+/// float conversion.
 pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Vec<f32>, GgufError> {
     let expected = dtype.payload_size(n_elements as u64)?;
     if bytes.len() as u64 != expected {
@@ -52,9 +54,17 @@ pub fn dequantize(dtype: GgmlType, bytes: &[u8], n_elements: usize) -> Result<Ve
             actual: bytes.len() as u64,
         });
     }
+    if dtype == GgmlType::I32 {
+        return Err(GgufError::DtypeMismatch {
+            name: "<dequant i32>".to_owned(),
+            expected: GgmlType::F32.tag(),
+            actual: dtype.tag(),
+        });
+    }
     Ok(match dtype {
         GgmlType::F32 => decode_f32(bytes),
         GgmlType::F16 => decode_f16(bytes),
+        GgmlType::I32 => unreachable!("I32 rejected above"),
         GgmlType::BF16 => decode_bf16(bytes),
         GgmlType::Q8_0 => q8_0::dequantize(bytes, n_elements),
         GgmlType::Q4K => q4_k::dequantize(bytes, n_elements),
@@ -256,6 +266,22 @@ mod tests {
     fn partial_block_element_count_is_rejected() {
         let err = dequantize(GgmlType::Q6K, &[0u8; 210], 200).unwrap_err();
         assert!(matches!(err, GgufError::BlockSizeMisaligned { .. }));
+    }
+
+    #[test]
+    fn i32_is_rejected_by_float_dequantizer() {
+        assert!(matches!(
+            dequantize(GgmlType::I32, &[0; 4], 1),
+            Err(GgufError::DtypeMismatch {
+                expected: 0,
+                actual: 26,
+                ..
+            })
+        ));
+        assert!(matches!(
+            dequantize(GgmlType::I32, &[0; 3], 1),
+            Err(GgufError::TensorSizeMismatch { .. })
+        ));
     }
 
     #[test]

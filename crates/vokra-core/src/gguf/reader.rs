@@ -261,6 +261,36 @@ impl GgufFile {
         quant::dequantize(info.dtype, self.tensor_bytes(info), n)
     }
 
+    /// Returns a dense I32 tensor as exact signed values decoded from the
+    /// little-endian GGUF payload. This intentionally does not pass through
+    /// `f32`, preserving values such as `2^24 + 1` exactly.
+    pub fn tensor_i32(&self, name: &str) -> Result<Vec<i32>, GgufError> {
+        let info = self
+            .tensor_info(name)
+            .ok_or_else(|| GgufError::MissingTensor(name.to_owned()))?;
+        if info.dtype != GgmlType::I32 {
+            return Err(GgufError::DtypeMismatch {
+                name: name.to_owned(),
+                expected: GgmlType::I32.tag(),
+                actual: info.dtype.tag(),
+            });
+        }
+        let n = usize::try_from(info.element_count()?).map_err(|_| GgufError::Overflow)?;
+        let bytes = self.tensor_bytes(info);
+        let expected = n.checked_mul(4).ok_or(GgufError::Overflow)?;
+        if bytes.len() != expected {
+            return Err(GgufError::TensorSizeMismatch {
+                name: name.to_owned(),
+                expected: expected as u64,
+                actual: bytes.len() as u64,
+            });
+        }
+        Ok(bytes
+            .chunks_exact(4)
+            .map(|chunk| i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect())
+    }
+
     /// Returns a dense BF16 tensor as raw little-endian `u16` bit patterns.
     ///
     /// Unlike [`GgufFile::tensor_f32`], this preserves BF16 storage and does
@@ -734,6 +764,28 @@ mod tests {
     }
 
     #[test]
+    fn tensor_i32_roundtrips_little_endian_extremes_without_float_loss() {
+        let values = [i32::MIN, -1, (1 << 24) + 1, i32::MAX];
+        let payload = values
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut b = GgufBuilder::new();
+        b.add_tensor("bias", GgmlType::I32, vec![values.len() as u64], payload)
+            .unwrap();
+        let file = GgufFile::parse(b.to_bytes().unwrap()).unwrap();
+        assert_eq!(file.tensor_i32("bias").unwrap(), values);
+        assert!(matches!(
+            file.tensor_f32("bias"),
+            Err(GgufError::DtypeMismatch {
+                expected: 0,
+                actual: 26,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn kquant_partial_block_tensor_is_rejected_by_reader() {
         // A Q4_K (tag 12) tensor of 100 elements is not a whole super-block; the
         // reader must reject it at parse via the block-aware byte_len check.
@@ -762,9 +814,9 @@ mod tests {
     }
 
     #[test]
-    fn q8_row_shape_is_validated_by_reader() {
-        // Total elements alone would accept [16, 2] (32 values), but ggml
-        // blocks cannot cross the innermost row boundary.
+    fn q8_total_alignment_is_accepted_by_reader() {
+        // GGUF quantized payloads are aligned by total element count, so a
+        // 32-element tensor with split dimensions [16, 2] is valid.
         let mut v = Vec::new();
         v.extend_from_slice(b"GGUF");
         v.extend_from_slice(&3u32.to_le_bytes());
@@ -778,14 +830,9 @@ mod tests {
         v.extend_from_slice(&8u32.to_le_bytes()); // Q8_0
         v.extend_from_slice(&0u64.to_le_bytes());
         v.resize(v.len().next_multiple_of(32) + 68, 0);
-        assert!(matches!(
-            GgufFile::parse(v),
-            Err(GgufError::BlockSizeMisaligned {
-                dtype: 8,
-                elements: 16,
-                block_size: 32,
-            })
-        ));
+        let file = GgufFile::parse(v).unwrap();
+        assert_eq!(file.tensor_info("q").unwrap().dimensions, vec![16, 2]);
+        assert_eq!(file.tensor_info("q").unwrap().byte_len().unwrap(), 34);
     }
 
     #[test]
