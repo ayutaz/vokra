@@ -2606,12 +2606,12 @@ mod tests {
         weights
             .forward(&Compute::cpu(), &input, &mut output)
             .unwrap();
-        let inv_std = 1.25f32.sqrt().recip();
+        let inv_std = (1.25f32 + 1.0e-6).sqrt().recip();
         let normalized = [
-            (1.0 - 2.5) * inv_std * 2.0 + 0.3,
-            (3.0 - 2.5) * inv_std * 0.5 - 0.7,
-            (2.0 - 2.5) * inv_std * 2.0 + 0.3,
-            (4.0 - 2.5) * inv_std * 0.5 - 0.7,
+            (1.0 - 2.5) * inv_std,
+            (3.0 - 2.5) * inv_std,
+            (2.0 - 2.5) * inv_std,
+            (4.0 - 2.5) * inv_std,
         ];
         // GroupNorm emits channel-major [C,P].  The source NIN projections
         // operate at each spatial position, so each position must gather one
