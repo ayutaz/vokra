@@ -178,22 +178,29 @@ jobs:
             https://huggingface.co/vokra/campplus-speaker-encoder/resolve/main/campplus.gguf
           curl -fsSL --retry 3 -o "${DEST}/whisper-base.gguf" \
             https://huggingface.co/vokra/whisper-base/resolve/main/whisper-base.gguf
-          cat > "${DEST}/SHA256SUMS" <<'EOF'
-          c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea  campplus.gguf
-          7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27  whisper-base.gguf
-          EOF
-          cd "${DEST}"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum -c SHA256SUMS
-          else
-            shasum -a 256 -c SHA256SUMS
-          fi
+      - name: Verify real GGUFs (pinned SHA-256)
+        if: matrix.feature == 'metal' || matrix.feature == 'cuda'
+        env:
+          GGUF_DIR: ${{ runner.temp }}/vokra-ci-gguf
+        run: |
+          set -euo pipefail
+          [[ -f "${GGUF_DIR}/campplus.gguf" && ! -L "${GGUF_DIR}/campplus.gguf" ]]
+          [[ -f "${GGUF_DIR}/whisper-base.gguf" && ! -L "${GGUF_DIR}/whisper-base.gguf" ]]
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+          [[ "$(sha256_of "${GGUF_DIR}/campplus.gguf")" == "c760971dc698fe7bfc5b9af9a4ba3b1ed1668b6c7a4e19086836b41e14285bea" ]]
+          [[ "$(sha256_of "${GGUF_DIR}/whisper-base.gguf")" == "7e774425585d6e9ba58ac5337b406522b1408ab6ff6765d2938b092aef4c8e27" ]]
       - name: C ABI backend selector (--features ${{ matrix.feature }})
         if: matrix.feature == 'metal' || matrix.feature == 'cuda'
         env:
-          # Absent on a runner where the download step was skipped for any
-          # reason: the test then takes its documented skip path rather than
-          # failing, which keeps this leg honest instead of red-for-infra.
+          # The preceding verification is unconditional for this required
+          # wiring leg; missing or corrupt real GGUFs must fail the job before
+          # the selector can take a runtime skip path.
           VOKRA_CAMPLUS_GGUF: ${{ runner.temp }}/vokra-ci-gguf/campplus.gguf
           VOKRA_WHISPER_GGUF: ${{ runner.temp }}/vokra-ci-gguf/whisper-base.gguf
         run: |
@@ -635,7 +642,7 @@ jobs:
         run: git diff --exit-code Cargo.lock
 
   # Apple worker contract coverage is deliberately separate from the CPU ISA
-  # job above: it checks all 44 (and any future) worker scripts without
+  # job above: it checks all 45 (and any future) worker scripts without
   # compiling the model crate or running a model. The real CPU/Metal execution
   # remains owned by the authenticated worker and gpu-backends Metal arm.
   apple-silicon-worker-contracts:

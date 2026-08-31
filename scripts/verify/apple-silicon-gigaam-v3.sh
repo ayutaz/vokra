@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Apple/Scaleway consumes the VAST packet through a remote mount.  It never
 # pulls a large GGUF locally; only this small JSON summary may be returned.
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { echo "gigaam-v3-apple: BLOCKED: $*" >&2; exit 2; }
 reject_symlink_ancestry() {
   local candidate="$1"
@@ -33,15 +33,16 @@ hash_file() {
 }
 if [[ "${1:-}" == --self-test ]]; then
   [[ $# == 1 ]] || die "--self-test accepts no arguments"
-  rg -n -- 'VOKRA_REMOTE_APPLE_SILICON=1|VOKRA_EXPECTED_COMMIT|git rev-parse HEAD|status --porcelain|REMOTE_BUNDLE_NO_LOCAL_PULL|parity_gigaam_v3_real|validation-summary.json|GIGAAM_V3_APPLE_EVIDENCE_DIR' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "Apple contract missing"
-  rg -n -- 'uname -s.*Darwin|uname -m.*arm64|xcrun -f metal|shasum -a 256' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "Apple platform/tool gate missing"
-  rg -n -- '--features metal' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "Metal feature build gate missing"
-  rg -n -- 'grep -Ec.*real_gigaam_v3_trace_matches_official|test result: ok.*1 passed' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "Apple parity log gate missing"
-  rg -n -- '== 1 \]\]|test result: ok\\\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "Apple exact parity result gate missing"
-  rg -n -- 'REMOTE_PACKET_REAL=|TARGET_REAL=|EVIDENCE_REAL=|REMOTE_PACKET_REAL/\*|validation-summary.json' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "remote packet/evidence containment gate missing"
-  rg -n -- 'git_commit|metal_apple_status.*PENDING_APPLE|input_metal_apple_status|fingerprint.txt' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "commit/PENDING_APPLE/fingerprint gate missing"
-  rg -n -- 'tools/parity/gigaam_v3/uv.lock|V3_PROJECT' "$ROOT/scripts/publish/vast-ai/run-gigaam-v3-apple-validation.sh" >/dev/null || die "dedicated dependency gate missing"
-  echo "run-gigaam-v3-apple-validation.sh self-test: OK"
+  SELF="$ROOT/scripts/verify/apple-silicon-gigaam-v3.sh"
+  rg -n -- 'VOKRA_REMOTE_APPLE_SILICON=1|VOKRA_EXPECTED_COMMIT|git rev-parse HEAD|status --porcelain|REMOTE_BUNDLE_NO_LOCAL_PULL|parity_gigaam_v3_real|validation-summary.json|GIGAAM_V3_APPLE_EVIDENCE_DIR' "$SELF" >/dev/null || die "Apple contract missing"
+  rg -n -- 'uname -s.*Darwin|uname -m.*arm64|xcrun -f metal|shasum -a 256' "$SELF" >/dev/null || die "Apple platform/tool gate missing"
+  rg -n -- '--features metal' "$SELF" >/dev/null || die "Metal feature build gate missing"
+  rg -n -- 'grep -Ec.*real_gigaam_v3_trace_matches_official|test result: ok.*1 passed' "$SELF" >/dev/null || die "Apple parity log gate missing"
+  rg -n -- '== 1 \]\]|test result: ok\\\. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out' "$SELF" >/dev/null || die "Apple exact parity result gate missing"
+  rg -n -- 'REMOTE_PACKET_REAL=|TARGET_REAL=|EVIDENCE_REAL=|REMOTE_PACKET_REAL/\*|validation-summary.json' "$SELF" >/dev/null || die "remote packet/evidence containment gate missing"
+  rg -n -- 'git_commit|metal_apple_status.*PENDING_APPLE|input_metal_apple_status|fingerprint.txt' "$SELF" >/dev/null || die "commit/PENDING_APPLE/fingerprint gate missing"
+  rg -n -- 'tools/parity/gigaam_v3/uv.lock|V3_PROJECT' "$SELF" >/dev/null || die "dedicated dependency gate missing"
+  echo "apple-silicon-gigaam-v3.sh self-test: OK"
   exit 0
 fi
 [[ $# == 2 && "${1:-}" == --backend ]] || die "usage: $0 --backend {cpu|metal}"
