@@ -65,11 +65,13 @@
 // explicit imports. Same posture as sister modules (`kernels.rs`, `model.rs`).
 #[cfg(not(feature = "std"))]
 use alloc::{format, vec, vec::Vec};
+use core::convert::TryInto;
 
 use vokra_core::{Result, VokraError};
 
 use crate::kernels::{
-    conv2d_int8, depthwise_conv2d_int8, fully_connected_int8, sigmoid_int8, softmax_int8, ConvDims,
+    conv2d_int8, conv2d_int8_per_channel, depthwise_conv2d_int8, depthwise_conv2d_int8_per_channel,
+    fully_connected_int8, fully_connected_int8_per_channel, sigmoid_int8, softmax_int8, ConvDims,
 };
 
 /// One layer in a microWakeWord INT8 forward chain.
@@ -142,6 +144,62 @@ pub enum LayerSpec {
         /// Requantisation multiplier.
         output_scale: f32,
     },
+    /// Standard convolution with per-output-channel quantisation and an
+    /// optional TFLite fused RELU clamp.
+    Conv2dPerChannel {
+        /// Pre-quantised INT8 weight buffer.
+        weight_i8: Vec<i8>,
+        /// Pre-scaled INT32 bias, one value per output channel.
+        bias_i32: Vec<i32>,
+        /// Shape / stride / padding.
+        dims: ConvDims,
+        /// Input activation zero-point.
+        input_zero_point: i8,
+        /// Candidate float requantisation scales, one per output channel.
+        output_scales: Vec<f32>,
+        /// Per-tensor output activation zero-point.
+        output_zero_point: i8,
+        /// Apply the quantised TFLite RELU lower clamp.
+        fused_relu: bool,
+    },
+    /// Depthwise convolution with per-output-channel quantisation and an
+    /// optional TFLite fused RELU clamp.
+    DepthwiseConv2dPerChannel {
+        /// Pre-quantised INT8 weight buffer.
+        weight_i8: Vec<i8>,
+        /// Pre-scaled INT32 bias, one value per channel.
+        bias_i32: Vec<i32>,
+        /// Shape / stride / padding.
+        dims: ConvDims,
+        /// Input activation zero-point.
+        input_zero_point: i8,
+        /// Candidate float requantisation scales, one per channel.
+        output_scales: Vec<f32>,
+        /// Per-tensor output activation zero-point.
+        output_zero_point: i8,
+        /// Apply the quantised TFLite RELU lower clamp.
+        fused_relu: bool,
+    },
+    /// Fully-connected layer with per-output-channel quantisation and an
+    /// optional TFLite fused RELU clamp.
+    FullyConnectedPerChannel {
+        /// Pre-quantised INT8 weight buffer.
+        weight_i8: Vec<i8>,
+        /// Pre-scaled INT32 bias, one value per output.
+        bias_i32: Vec<i32>,
+        /// Input vector length.
+        in_dim: usize,
+        /// Output vector length.
+        out_dim: usize,
+        /// Input activation zero-point.
+        input_zero_point: i8,
+        /// Candidate float requantisation scales, one per output.
+        output_scales: Vec<f32>,
+        /// Per-tensor output activation zero-point.
+        output_zero_point: i8,
+        /// Apply the quantised TFLite RELU lower clamp.
+        fused_relu: bool,
+    },
     /// Elementwise `LOGISTIC` (sigmoid). Preserves buffer size.
     Sigmoid {
         /// Number of elements (input and output length).
@@ -174,10 +232,14 @@ impl LayerSpec {
     /// Number of INT8 elements this layer reads.
     pub fn input_size(&self) -> usize {
         match self {
-            LayerSpec::Conv2d { dims, .. } | LayerSpec::DepthwiseConv2d { dims, .. } => {
+            LayerSpec::Conv2d { dims, .. }
+            | LayerSpec::DepthwiseConv2d { dims, .. }
+            | LayerSpec::Conv2dPerChannel { dims, .. }
+            | LayerSpec::DepthwiseConv2dPerChannel { dims, .. } => {
                 dims.in_h * dims.in_w * dims.in_c
             }
-            LayerSpec::FullyConnected { in_dim, .. } => *in_dim,
+            LayerSpec::FullyConnected { in_dim, .. }
+            | LayerSpec::FullyConnectedPerChannel { in_dim, .. } => *in_dim,
             LayerSpec::Sigmoid { size, .. } | LayerSpec::Softmax { size, .. } => *size,
         }
     }
@@ -190,7 +252,7 @@ impl LayerSpec {
     /// construction can perform that check).
     pub fn output_size(&self) -> Result<usize> {
         match self {
-            LayerSpec::Conv2d { dims, .. } => {
+            LayerSpec::Conv2d { dims, .. } | LayerSpec::Conv2dPerChannel { dims, .. } => {
                 let oh = dims.out_h().ok_or_else(|| {
                     VokraError::InvalidArgument(format!(
                         "Conv2d: invalid dims (in_h={}, kh={}, pad_h={}, stride_h={})",
@@ -205,7 +267,8 @@ impl LayerSpec {
                 })?;
                 Ok(oh * ow * dims.out_c)
             }
-            LayerSpec::DepthwiseConv2d { dims, .. } => {
+            LayerSpec::DepthwiseConv2d { dims, .. }
+            | LayerSpec::DepthwiseConv2dPerChannel { dims, .. } => {
                 let oh = dims.out_h().ok_or_else(|| {
                     VokraError::InvalidArgument(format!(
                         "DepthwiseConv2d: invalid dims (in_h={}, kh={}, pad_h={}, stride_h={})",
@@ -220,7 +283,8 @@ impl LayerSpec {
                 })?;
                 Ok(oh * ow * dims.in_c)
             }
-            LayerSpec::FullyConnected { out_dim, .. } => Ok(*out_dim),
+            LayerSpec::FullyConnected { out_dim, .. }
+            | LayerSpec::FullyConnectedPerChannel { out_dim, .. } => Ok(*out_dim),
             LayerSpec::Sigmoid { size, .. } | LayerSpec::Softmax { size, .. } => Ok(*size),
         }
     }
@@ -281,6 +345,62 @@ impl LayerSpec {
                 *output_zero_point,
                 *output_scale,
             ),
+            LayerSpec::Conv2dPerChannel {
+                weight_i8,
+                bias_i32,
+                dims,
+                input_zero_point,
+                output_scales,
+                output_zero_point,
+                fused_relu,
+            } => conv2d_int8_per_channel(
+                input,
+                weight_i8,
+                bias_i32,
+                output,
+                *input_zero_point,
+                output_scales,
+                *output_zero_point,
+                *fused_relu,
+                *dims,
+            ),
+            LayerSpec::DepthwiseConv2dPerChannel {
+                weight_i8,
+                bias_i32,
+                dims,
+                input_zero_point,
+                output_scales,
+                output_zero_point,
+                fused_relu,
+            } => depthwise_conv2d_int8_per_channel(
+                input,
+                weight_i8,
+                bias_i32,
+                output,
+                *input_zero_point,
+                output_scales,
+                *output_zero_point,
+                *fused_relu,
+                *dims,
+            ),
+            LayerSpec::FullyConnectedPerChannel {
+                weight_i8,
+                bias_i32,
+                input_zero_point,
+                output_scales,
+                output_zero_point,
+                fused_relu,
+                ..
+            } => fully_connected_int8_per_channel(
+                input,
+                weight_i8,
+                bias_i32,
+                output,
+                *input_zero_point,
+                output_scales,
+                *output_zero_point,
+                *fused_relu,
+            ),
             LayerSpec::Sigmoid {
                 input_scale,
                 input_zero_point,
@@ -325,8 +445,8 @@ impl LayerSpec {
 ///
 /// [`Self::run`] mem-swaps the two buffers after each layer, so the per-layer
 /// hot path performs no allocation of its own. (The [`crate::kernels`] sigmoid
-/// / softmax kernels internally build a small LUT / dequant scratch per call —
-/// documented in their own module docs; this is not a chain-executor concern.)
+/// / softmax kernels have their own bounded numeric scratch paths; this is not
+/// a chain-executor concern.)
 #[derive(Debug)]
 pub struct ChainConfig {
     /// The layer chain in forward order.
@@ -444,6 +564,568 @@ impl ChainConfig {
     /// Number of layers in the chain.
     pub fn layer_count(&self) -> usize {
         self.layers.len()
+    }
+}
+
+/// Fixed authenticated hey_jarvis streaming input shape (`rows × channels`).
+pub const HEY_JARVIS_INPUT_SIZE: usize = 3 * 40;
+/// Number of persistent rolling activation states in the hey_jarvis graph.
+pub const HEY_JARVIS_STATE_COUNT: usize = 6;
+/// Quantised real zero used to initialise the authenticated rolling states.
+pub const HEY_JARVIS_STATE_QUANTIZED_ZERO: i8 = -128;
+const HEY_JARVIS_STATE_LENGTHS: [usize; HEY_JARVIS_STATE_COUNT] =
+    [2 * 40, 4 * 30, 8 * 60, 12 * 60, 20 * 60, 4 * 60];
+const HEY_JARVIS_CONCAT_LENGTHS: [usize; HEY_JARVIS_STATE_COUNT] =
+    [5 * 40, 5 * 30, 9 * 60, 13 * 60, 21 * 60, 5 * 60];
+const HEY_JARVIS_LAYER_COUNT: usize = 11;
+
+/// A validated fixed topology for the authenticated hey_jarvis evidence.
+///
+/// The plan deliberately accepts only the eleven known operators. It is not
+/// a general graph executor and has no CALL_ONCE/VAR_HANDLE interpretation.
+#[derive(Debug)]
+pub struct HeyJarvisStreamingPlan {
+    layers: Vec<LayerSpec>,
+}
+
+impl HeyJarvisStreamingPlan {
+    /// Validates and stores the fixed conv/dwconv/pointwise/dense/logistic
+    /// topology. The layer list must contain exactly eleven layers.
+    pub fn new(layers: Vec<LayerSpec>) -> Result<Self> {
+        if layers.len() != HEY_JARVIS_LAYER_COUNT {
+            return Err(VokraError::InvalidArgument(format!(
+                "HeyJarvisStreamingPlan: expected {HEY_JARVIS_LAYER_COUNT} layers, got {}",
+                layers.len()
+            )));
+        }
+        validate_per_channel_conv(
+            &layers[0],
+            ConvDims {
+                in_h: 5,
+                in_w: 1,
+                in_c: 40,
+                out_c: 30,
+                kh: 5,
+                kw: 1,
+                stride_h: 3,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            false,
+            -128,
+            -128,
+            true,
+        )?;
+        validate_per_channel_conv(
+            &layers[1],
+            ConvDims {
+                in_h: 5,
+                in_w: 1,
+                in_c: 30,
+                out_c: 30,
+                kh: 5,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            true,
+            -128,
+            -11,
+            false,
+        )?;
+        validate_per_channel_conv(
+            &layers[2],
+            ConvDims {
+                in_h: 1,
+                in_w: 1,
+                in_c: 30,
+                out_c: 60,
+                kh: 1,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            false,
+            -11,
+            -128,
+            true,
+        )?;
+        validate_per_channel_conv(
+            &layers[3],
+            ConvDims {
+                in_h: 9,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 9,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            true,
+            -128,
+            31,
+            false,
+        )?;
+        validate_per_channel_conv(
+            &layers[4],
+            ConvDims {
+                in_h: 1,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 1,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            false,
+            31,
+            -128,
+            true,
+        )?;
+        validate_per_channel_conv(
+            &layers[5],
+            ConvDims {
+                in_h: 13,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 13,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            true,
+            -128,
+            1,
+            false,
+        )?;
+        validate_per_channel_conv(
+            &layers[6],
+            ConvDims {
+                in_h: 1,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 1,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            false,
+            1,
+            -128,
+            true,
+        )?;
+        validate_per_channel_conv(
+            &layers[7],
+            ConvDims {
+                in_h: 21,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 21,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            true,
+            -128,
+            -36,
+            false,
+        )?;
+        validate_per_channel_conv(
+            &layers[8],
+            ConvDims {
+                in_h: 1,
+                in_w: 1,
+                in_c: 60,
+                out_c: 60,
+                kh: 1,
+                kw: 1,
+                stride_h: 1,
+                stride_w: 1,
+                pad_h: 0,
+                pad_w: 0,
+            },
+            false,
+            -36,
+            -128,
+            true,
+        )?;
+        validate_per_channel_dense(&layers[9], 5 * 60, 1, -128, 30, false)?;
+        match &layers[10] {
+            LayerSpec::Sigmoid {
+                size: 1,
+                input_scale,
+                input_zero_point: 30,
+                output_scale,
+                output_zero_point: -128,
+            } if input_scale.is_finite()
+                && *input_scale > 0.0
+                && *input_scale == 0.17895515263080597
+                && output_scale.is_finite()
+                && *output_scale > 0.0
+                && *output_scale == 0.00390625 => {}
+            _ => {
+                return Err(VokraError::InvalidArgument(
+                    "HeyJarvisStreamingPlan: final layer must be finite Sigmoid(size=1) with input zp=30 and output zp=-128".into(),
+                ));
+            }
+        }
+        Ok(Self { layers })
+    }
+
+    /// Number of fixed operators (always eleven for a valid plan).
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+}
+
+fn validate_per_channel_conv(
+    layer: &LayerSpec,
+    expected: ConvDims,
+    depthwise: bool,
+    expected_input_zero_point: i8,
+    expected_output_zero_point: i8,
+    fused_relu: bool,
+) -> Result<()> {
+    let (dims, weight_len, bias_len, input_zero_point, scales, output_zero_point, actual_relu) =
+        match (depthwise, layer) {
+            (
+                false,
+                LayerSpec::Conv2dPerChannel {
+                    dims,
+                    weight_i8,
+                    bias_i32,
+                    input_zero_point,
+                    output_scales,
+                    output_zero_point,
+                    fused_relu,
+                    ..
+                },
+            ) => (
+                *dims,
+                weight_i8.len(),
+                bias_i32.len(),
+                *input_zero_point,
+                output_scales,
+                *output_zero_point,
+                *fused_relu,
+            ),
+            (
+                true,
+                LayerSpec::DepthwiseConv2dPerChannel {
+                    dims,
+                    weight_i8,
+                    bias_i32,
+                    input_zero_point,
+                    output_scales,
+                    output_zero_point,
+                    fused_relu,
+                    ..
+                },
+            ) => (
+                *dims,
+                weight_i8.len(),
+                bias_i32.len(),
+                *input_zero_point,
+                output_scales,
+                *output_zero_point,
+                *fused_relu,
+            ),
+            _ => {
+                return Err(VokraError::InvalidArgument(
+                    "HeyJarvisStreamingPlan: expected per-channel convolution layer".into(),
+                ));
+            }
+        };
+    if dims.in_h != expected.in_h
+        || dims.in_w != expected.in_w
+        || dims.in_c != expected.in_c
+        || dims.out_c != expected.out_c
+        || dims.kh != expected.kh
+        || dims.kw != expected.kw
+        || dims.stride_h != expected.stride_h
+        || dims.stride_w != expected.stride_w
+        || dims.pad_h != expected.pad_h
+        || dims.pad_w != expected.pad_w
+        || input_zero_point != expected_input_zero_point
+        || output_zero_point != expected_output_zero_point
+        || actual_relu != fused_relu
+    {
+        return Err(VokraError::InvalidArgument(
+            "HeyJarvisStreamingPlan: convolution shape or fused RELU drift".into(),
+        ));
+    }
+    let effective_out_c = if depthwise { dims.in_c } else { dims.out_c };
+    let expected_weight = if depthwise {
+        dims.kh
+            .checked_mul(dims.kw)
+            .and_then(|v| v.checked_mul(dims.in_c))
+    } else {
+        dims.out_c
+            .checked_mul(dims.kh)
+            .and_then(|v| v.checked_mul(dims.kw))
+            .and_then(|v| v.checked_mul(dims.in_c))
+    }
+    .ok_or_else(|| {
+        VokraError::InvalidArgument("HeyJarvisStreamingPlan: weight size overflow".into())
+    })?;
+    if weight_len != expected_weight || bias_len != effective_out_c {
+        return Err(VokraError::InvalidArgument(
+            "HeyJarvisStreamingPlan: convolution buffer length mismatch".into(),
+        ));
+    }
+    validate_quant_values(scales, effective_out_c)
+}
+
+fn validate_per_channel_dense(
+    layer: &LayerSpec,
+    in_dim: usize,
+    out_dim: usize,
+    expected_input_zero_point: i8,
+    expected_output_zero_point: i8,
+    fused_relu: bool,
+) -> Result<()> {
+    let (
+        actual_in,
+        actual_out,
+        weight_len,
+        bias_len,
+        input_zero_point,
+        scales,
+        output_zero_point,
+        actual_relu,
+    ) = match layer {
+        LayerSpec::FullyConnectedPerChannel {
+            in_dim,
+            out_dim,
+            weight_i8,
+            bias_i32,
+            input_zero_point,
+            output_scales,
+            output_zero_point,
+            fused_relu,
+            ..
+        } => (
+            *in_dim,
+            *out_dim,
+            weight_i8.len(),
+            bias_i32.len(),
+            *input_zero_point,
+            output_scales,
+            *output_zero_point,
+            *fused_relu,
+        ),
+        _ => {
+            return Err(VokraError::InvalidArgument(
+                "HeyJarvisStreamingPlan: expected per-channel dense layer".into(),
+            ));
+        }
+    };
+    let expected_weight = in_dim.checked_mul(out_dim).ok_or_else(|| {
+        VokraError::InvalidArgument("HeyJarvisStreamingPlan: dense size overflow".into())
+    })?;
+    if actual_in != in_dim
+        || actual_out != out_dim
+        || weight_len != expected_weight
+        || bias_len != out_dim
+        || input_zero_point != expected_input_zero_point
+        || output_zero_point != expected_output_zero_point
+        || actual_relu != fused_relu
+    {
+        return Err(VokraError::InvalidArgument(
+            "HeyJarvisStreamingPlan: dense shape or fused RELU drift".into(),
+        ));
+    }
+    validate_quant_values(scales, out_dim)
+}
+
+fn validate_quant_values(scales: &[f32], channels: usize) -> Result<()> {
+    if scales.len() != channels {
+        return Err(VokraError::InvalidArgument(format!(
+            "HeyJarvisStreamingPlan: expected {channels} output quantization scales, got {}",
+            scales.len()
+        )));
+    }
+    if scales
+        .iter()
+        .any(|scale| !scale.is_finite() || *scale <= 0.0)
+    {
+        return Err(VokraError::InvalidArgument(
+            "HeyJarvisStreamingPlan: output scales must be finite and > 0".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A preallocated executor for the fixed hey_jarvis streaming graph.
+#[derive(Debug)]
+pub struct HeyJarvisStreamingExecutor {
+    plan: HeyJarvisStreamingPlan,
+    states: [Vec<i8>; HEY_JARVIS_STATE_COUNT],
+    concat: [Vec<i8>; HEY_JARVIS_STATE_COUNT],
+    work_a: Vec<i8>,
+    work_b: Vec<i8>,
+}
+
+impl HeyJarvisStreamingExecutor {
+    /// Creates a fresh executor with all six rolling states set to quantised
+    /// real zero (`-128`).
+    pub fn new(plan: HeyJarvisStreamingPlan) -> Result<Self> {
+        let states = HEY_JARVIS_STATE_LENGTHS.map(|len| vec![HEY_JARVIS_STATE_QUANTIZED_ZERO; len]);
+        Self::from_states(plan, states.to_vec())
+    }
+
+    /// Restores explicitly supplied rolling states. Exactly six vectors with
+    /// the authenticated lengths are required; this API is intentionally not
+    /// a generic resource-variable mechanism.
+    pub fn from_states(plan: HeyJarvisStreamingPlan, states: Vec<Vec<i8>>) -> Result<Self> {
+        if states.len() != HEY_JARVIS_STATE_COUNT {
+            return Err(VokraError::InvalidArgument(format!(
+                "HeyJarvisStreamingExecutor: expected {HEY_JARVIS_STATE_COUNT} states, got {}",
+                states.len()
+            )));
+        }
+        for (idx, (state, &expected)) in states
+            .iter()
+            .zip(HEY_JARVIS_STATE_LENGTHS.iter())
+            .enumerate()
+        {
+            if state.len() != expected {
+                return Err(VokraError::InvalidArgument(format!(
+                    "HeyJarvisStreamingExecutor: state {idx} length {} != expected {expected}",
+                    state.len()
+                )));
+            }
+        }
+        let states: [Vec<i8>; HEY_JARVIS_STATE_COUNT] = states.try_into().map_err(|_| {
+            VokraError::InvalidArgument("HeyJarvisStreamingExecutor: state count drift".into())
+        })?;
+        Ok(Self {
+            plan,
+            states,
+            concat: HEY_JARVIS_CONCAT_LENGTHS.map(|len| vec![0i8; len]),
+            work_a: vec![0i8; 300],
+            work_b: vec![0i8; 300],
+        })
+    }
+
+    /// Resets every rolling state to quantised real zero.
+    pub fn reset(&mut self) {
+        for state in &mut self.states {
+            state.fill(HEY_JARVIS_STATE_QUANTIZED_ZERO);
+        }
+    }
+
+    /// Executes one 3×40 feature window and returns the quantised probability.
+    pub fn run(&mut self, input: &[i8]) -> Result<&[i8]> {
+        if input.len() != HEY_JARVIS_INPUT_SIZE {
+            return Err(VokraError::InvalidArgument(format!(
+                "HeyJarvisStreamingExecutor::run: input len {} != expected {HEY_JARVIS_INPUT_SIZE}",
+                input.len()
+            )));
+        }
+        let mut current_len = HEY_JARVIS_INPUT_SIZE;
+        let mut current_slot: Option<u8> = None;
+        let mut layer_idx = 0usize;
+        // States 0..=4 back the five convolutional stages. State 5 is the
+        // final dense input history and is consumed below.
+        for state_idx in 0..(HEY_JARVIS_STATE_COUNT - 1) {
+            let state_len = HEY_JARVIS_STATE_LENGTHS[state_idx];
+            let concat_len = HEY_JARVIS_CONCAT_LENGTHS[state_idx];
+            self.concat[state_idx][..state_len].copy_from_slice(&self.states[state_idx]);
+            match current_slot {
+                None => self.concat[state_idx][state_len..concat_len].copy_from_slice(input),
+                Some(0) => self.concat[state_idx][state_len..concat_len]
+                    .copy_from_slice(&self.work_a[..current_len]),
+                Some(1) => self.concat[state_idx][state_len..concat_len]
+                    .copy_from_slice(&self.work_b[..current_len]),
+                _ => unreachable!(),
+            }
+            self.states[state_idx]
+                .copy_from_slice(&self.concat[state_idx][concat_len - state_len..concat_len]);
+
+            let target_slot = if current_slot == Some(0) { 1 } else { 0 };
+            let out_len = self.plan.layers[layer_idx].output_size()?;
+            let target = if target_slot == 0 {
+                &mut self.work_a[..out_len]
+            } else {
+                &mut self.work_b[..out_len]
+            };
+            self.plan.layers[layer_idx].apply(&self.concat[state_idx][..concat_len], target)?;
+            current_len = out_len;
+            current_slot = Some(target_slot);
+            layer_idx += 1;
+            if state_idx > 0 {
+                // Every later state backs one depthwise convolution. Its
+                // following pointwise convolution has no additional history.
+                let op_out = self.plan.layers[layer_idx].output_size()?;
+                let op_target_slot = if current_slot == Some(0) { 1 } else { 0 };
+                if current_slot == Some(0) {
+                    self.plan.layers[layer_idx]
+                        .apply(&self.work_a[..current_len], &mut self.work_b[..op_out])?;
+                } else {
+                    self.plan.layers[layer_idx]
+                        .apply(&self.work_b[..current_len], &mut self.work_a[..op_out])?;
+                }
+                current_len = op_out;
+                current_slot = Some(op_target_slot);
+                layer_idx += 1;
+            }
+        }
+        // The six rolling stages consume layers 0..=8. Layer 9 consumes the
+        // final 5×60 concat; layer 10 applies sigmoid to the dense scalar.
+        let final_state_idx = HEY_JARVIS_STATE_COUNT - 1;
+        let state_len = HEY_JARVIS_STATE_LENGTHS[final_state_idx];
+        let concat_len = HEY_JARVIS_CONCAT_LENGTHS[final_state_idx];
+        self.concat[final_state_idx][..state_len].copy_from_slice(&self.states[final_state_idx]);
+        let current = if current_slot == Some(0) {
+            &self.work_a[..current_len]
+        } else {
+            &self.work_b[..current_len]
+        };
+        self.concat[final_state_idx][state_len..concat_len].copy_from_slice(current);
+        self.states[final_state_idx]
+            .copy_from_slice(&self.concat[final_state_idx][concat_len - state_len..concat_len]);
+        self.plan.layers[9].apply(
+            &self.concat[final_state_idx][..concat_len],
+            &mut self.work_a[..1],
+        )?;
+        self.plan.layers[10].apply(&self.work_a[..1], &mut self.work_b[..1])?;
+        Ok(&self.work_b[..1])
+    }
+
+    /// Number of rolling states (always six).
+    pub fn state_count(&self) -> usize {
+        self.states.len()
+    }
+
+    /// Returns a read-only rolling-state snapshot for diagnostics and a
+    /// checkpointing caller. Invalid indices are rejected explicitly.
+    pub fn state(&self, index: usize) -> Result<&[i8]> {
+        self.states.get(index).map(Vec::as_slice).ok_or_else(|| {
+            VokraError::InvalidArgument(format!(
+                "HeyJarvisStreamingExecutor: state index {index} out of range"
+            ))
+        })
     }
 }
 
@@ -708,5 +1390,203 @@ mod tests {
             out[2] > out[0] && out[2] > out[1],
             "class 2 must be the winner: {out:?}"
         );
+    }
+
+    fn synthetic_hey_jarvis_layers() -> Vec<LayerSpec> {
+        let q = |n: usize| vec![1.0f32; n];
+        let conv = |dims: ConvDims,
+                    weight_len: usize,
+                    out_c: usize,
+                    input_zp: i8,
+                    output_zp: i8,
+                    fused_relu: bool| {
+            let scales = q(out_c);
+            LayerSpec::Conv2dPerChannel {
+                weight_i8: vec![0; weight_len],
+                bias_i32: vec![0; out_c],
+                dims,
+                input_zero_point: input_zp,
+                output_scales: scales,
+                output_zero_point: output_zp,
+                fused_relu,
+            }
+        };
+        let dw = |h: usize, c: usize, input_zp: i8, output_zp: i8| {
+            let scales = q(c);
+            LayerSpec::DepthwiseConv2dPerChannel {
+                weight_i8: vec![0; h * c],
+                bias_i32: vec![0; c],
+                dims: ConvDims {
+                    in_h: h,
+                    in_w: 1,
+                    in_c: c,
+                    out_c: c,
+                    kh: h,
+                    kw: 1,
+                    stride_h: 1,
+                    stride_w: 1,
+                    pad_h: 0,
+                    pad_w: 0,
+                },
+                input_zero_point: input_zp,
+                output_scales: scales,
+                output_zero_point: output_zp,
+                fused_relu: false,
+            }
+        };
+        let pw = |in_c: usize, out_c: usize, input_zp: i8| {
+            let scales = q(out_c);
+            LayerSpec::Conv2dPerChannel {
+                weight_i8: vec![0; in_c * out_c],
+                bias_i32: vec![0; out_c],
+                dims: ConvDims {
+                    in_h: 1,
+                    in_w: 1,
+                    in_c,
+                    out_c,
+                    kh: 1,
+                    kw: 1,
+                    stride_h: 1,
+                    stride_w: 1,
+                    pad_h: 0,
+                    pad_w: 0,
+                },
+                input_zero_point: input_zp,
+                output_scales: scales,
+                output_zero_point: -128,
+                fused_relu: true,
+            }
+        };
+        let scales = q(1);
+        vec![
+            conv(
+                ConvDims {
+                    in_h: 5,
+                    in_w: 1,
+                    in_c: 40,
+                    out_c: 30,
+                    kh: 5,
+                    kw: 1,
+                    stride_h: 3,
+                    stride_w: 1,
+                    pad_h: 0,
+                    pad_w: 0,
+                },
+                5 * 40 * 30,
+                30,
+                -128,
+                -128,
+                true,
+            ),
+            dw(5, 30, -128, -11),
+            pw(30, 60, -11),
+            dw(9, 60, -128, 31),
+            pw(60, 60, 31),
+            dw(13, 60, -128, 1),
+            pw(60, 60, 1),
+            dw(21, 60, -128, -36),
+            pw(60, 60, -36),
+            LayerSpec::FullyConnectedPerChannel {
+                weight_i8: vec![0; 300],
+                bias_i32: vec![0],
+                in_dim: 300,
+                out_dim: 1,
+                input_zero_point: -128,
+                output_scales: scales,
+                output_zero_point: 30,
+                fused_relu: false,
+            },
+            LayerSpec::Sigmoid {
+                size: 1,
+                input_scale: 0.17895515263080597,
+                input_zero_point: 30,
+                output_scale: 0.00390625,
+                output_zero_point: -128,
+            },
+        ]
+    }
+
+    fn synthetic_hey_jarvis_plan() -> HeyJarvisStreamingPlan {
+        HeyJarvisStreamingPlan::new(synthetic_hey_jarvis_layers()).unwrap()
+    }
+
+    #[test]
+    fn hey_jarvis_streaming_initializes_updates_and_resets_states() {
+        let plan = synthetic_hey_jarvis_plan();
+        let mut executor = HeyJarvisStreamingExecutor::new(plan).unwrap();
+        assert_eq!(executor.state_count(), HEY_JARVIS_STATE_COUNT);
+        assert!(executor
+            .state(0)
+            .unwrap()
+            .iter()
+            .all(|&v| v == HEY_JARVIS_STATE_QUANTIZED_ZERO));
+        let input: Vec<i8> = (0..HEY_JARVIS_INPUT_SIZE).map(|v| v as i8).collect();
+        assert_eq!(executor.run(&input).unwrap().len(), 1);
+        assert_eq!(executor.state(0).unwrap(), &input[40..]);
+        assert!(executor.state(99).is_err());
+        executor.reset();
+        assert!(executor
+            .state(0)
+            .unwrap()
+            .iter()
+            .all(|&v| v == HEY_JARVIS_STATE_QUANTIZED_ZERO));
+    }
+
+    #[test]
+    fn hey_jarvis_streaming_rejects_wrong_state_count_and_input() {
+        let plan = synthetic_hey_jarvis_plan();
+        assert!(HeyJarvisStreamingExecutor::from_states(plan, vec![]).is_err());
+        let mut executor = HeyJarvisStreamingExecutor::new(synthetic_hey_jarvis_plan()).unwrap();
+        assert!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE - 1]).is_err());
+        assert_eq!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE]).unwrap(), &[0]);
+        assert_eq!(executor.run(&[0; HEY_JARVIS_INPUT_SIZE]).unwrap(), &[0]);
+    }
+
+    #[test]
+    fn hey_jarvis_plan_rejects_affine_and_fused_contract_tampering() {
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::Sigmoid { input_scale, .. } = &mut layers[10] {
+            *input_scale = 0.1;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
+
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::Sigmoid {
+            input_zero_point, ..
+        } = &mut layers[10]
+        {
+            *input_zero_point = -128;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
+
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::Sigmoid { output_scale, .. } = &mut layers[10] {
+            *output_scale = 1.0 / 128.0;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
+
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::Sigmoid {
+            output_zero_point, ..
+        } = &mut layers[10]
+        {
+            *output_zero_point = 0;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
+
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::DepthwiseConv2dPerChannel {
+            output_zero_point, ..
+        } = &mut layers[1]
+        {
+            *output_zero_point = -128;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
+
+        let mut layers = synthetic_hey_jarvis_layers();
+        if let LayerSpec::DepthwiseConv2dPerChannel { fused_relu, .. } = &mut layers[1] {
+            *fused_relu = true;
+        }
+        assert!(HeyJarvisStreamingPlan::new(layers).is_err());
     }
 }
