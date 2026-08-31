@@ -24,20 +24,22 @@ no `--push`, repo deletion or public replacement is authorized by this plan.
 ## Audited baseline (reconciled 2026-08-31)
 
 The live read-only Hugging Face audit was repeated at clean branch commit
-`9f69277d8a0d5df574c1ee95563bd1f005de91d0` on 2026-08-31. It returned 194
+`8f0d8572d46fe9972bfdd88241efa937e17e63ac` on 2026-08-31. It returned 194
 public repositories, 193 GGUF-bearing repositories and 198 GGUF files:
 
 | Dimension | Complete | Remaining |
 |---|---:|---:|
 | Mac CPU | 131 | 42 partial + 20 no-runtime-binder + 1 non-artifact |
-| Apple Metal | 129 | 62 blocked by CPU + 2 CPU-only + 1 non-artifact |
+| Apple Metal | 131 | 62 blocked by CPU + 1 non-artifact |
 
-The two CPU-complete repositories still classified as source-level CPU-only are
-`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`.  OmniASR-CTC-1B
-is now classified as a complete Metal code route, raising source-level Metal
-coverage from 128 to 129, but it still needs the same authenticated Apple CPU
-and Metal hardware evidence as the two GigaAM rows.  The Wave A Scaleway packet
-therefore deliberately still contains all three models.
+`vokra/sber-gigaam-multilingual`, `vokra/sber-gigaam-v3` and OmniASR-CTC-1B
+are now classified as complete Metal code routes.  The two GigaAM graphs route
+their complete learned-op sets through the selected `Compute` backend, and the
+pull-request audit now fails closed if a CPU-complete public architecture is
+missing from the conservative Metal registry.  The live audit therefore has
+zero source-level CPU-only rows.  This does not establish an Apple-hardware
+verdict: all three models still need authenticated Apple CPU and Metal evidence,
+so the Wave A Scaleway packet deliberately continues to contain all three.
 
 The 63 CPU-open rows split into execution classes rather than one misleading
 flat list:
@@ -251,7 +253,10 @@ upload is part of the stage.
 
 ## Execution order
 
-### Wave A: remove the three CPU-only Metal gaps
+### Wave A: close the three prepared Apple-hardware evidence gaps
+
+Steps 1-4 below are complete at the recorded source and VAST checkpoints.  The
+remaining action is step 5 on authenticated Scaleway Apple Silicon.
 
 1. Route the complete learned graphs of GigaAM v3 and GigaAM Multilingual
    through the `Compute` seam.  Selecting Metal must either execute every
