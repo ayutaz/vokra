@@ -24,7 +24,7 @@ from typing import Any
 FORMAT = "vokra-microwakeword-tflite-tensor-manifest-v1"
 TOPOLOGY_FORMAT = "vokra-microwakeword-tflite-topology-v1"
 PRODUCER = {"name": "microwakeword_tensor_manifest.py", "version": "1.1", "method": "raw_flatbuffer"}
-DTYPES = {0: ("float32", 4), 1: ("float16", 2), 2: ("int32", 4), 3: ("uint8", 1), 4: ("int64", 8), 5: ("string", 1), 6: ("bool", 1), 7: ("int16", 2), 8: ("complex64", 8), 9: ("int8", 1), 10: ("float64", 8), 11: ("resource", 1), 12: ("variant", 1), 13: ("uint16", 2), 14: ("uint32", 4), 15: ("uint64", 8), 16: ("int4", 1), 17: ("bfloat16", 2)}
+DTYPES = {0: ("float32", 4), 1: ("float16", 2), 2: ("int32", 4), 3: ("uint8", 1), 4: ("int64", 8), 5: ("string", 1), 6: ("bool", 1), 7: ("int16", 2), 8: ("complex64", 8), 9: ("int8", 1), 10: ("float64", 8), 11: ("complex128", 16), 12: ("uint64", 8), 13: ("resource", 1), 14: ("variant", 1), 15: ("uint32", 4), 16: ("uint16", 2), 17: ("int4", 1), 18: ("bfloat16", 2), 19: ("int2", 1), 20: ("uint4", 1)}
 SUPPORTED = {"float32", "int32", "int8"}
 TFLITE_MODEL_VERSION = 3
 # TensorFlow Lite's schema_v3.fbs declares Model.version as ``uint`` without
@@ -43,6 +43,10 @@ BUILTIN_OPERATORS = {
 }
 INVENTORY_OPERATOR_NAMES = {
     **BUILTIN_OPERATORS,
+    2: "CONCATENATION",
+    22: "RESHAPE",
+    45: "STRIDED_SLICE",
+    114: "QUANTIZE",
     32: "CUSTOM",
     127: None,
     129: "CALL_ONCE",
@@ -61,6 +65,14 @@ STATEFUL_BUILTIN_OPTIONS = {
     "VAR_HANDLE": 111,
     "READ_VARIABLE": 112,
     "ASSIGN_VARIABLE": 113,
+}
+INVENTORY_BUILTIN_OPTIONS = {
+    **BUILTIN_OPTIONS,
+    "CONCATENATION": 10,
+    "RESHAPE": 17,
+    "STRIDED_SLICE": 32,
+    "QUANTIZE": 89,
+    **STATEFUL_BUILTIN_OPTIONS,
 }
 ACTIVATIONS = {0: "NONE", 1: "RELU", 2: "RELU_N1_TO_1", 3: "RELU6", 4: "TANH", 5: "SIGN_BIT"}
 PADDINGS = {0: "SAME", 1: "VALID"}
@@ -855,11 +867,46 @@ def _inventory_builtin_options(reader: Reader, operator: int, name: str | None, 
             raise ValueError(f"{name} has builtin option type {options_type}, expected 0 or {expected_type}")
         record["decoded"] = {}
         return record
-    expected_type = BUILTIN_OPTIONS.get(name, STATEFUL_BUILTIN_OPTIONS.get(name))
+    expected_type = INVENTORY_BUILTIN_OPTIONS.get(name)
+    if name in {"RESHAPE", "QUANTIZE"} and options_type == 0:
+        if options_field is not None:
+            raise ValueError(f"{name} type 0 must omit builtin options")
+        record["decoded"] = {"new_shape": None} if name == "RESHAPE" else {}
+        return record
     if expected_type is not None and options_type != expected_type:
         raise ValueError(f"{name} has builtin option type {options_type}, expected {expected_type}")
     if name in BUILTIN_OPERATORS.values():
         record["decoded"] = _builtin_options(reader, operator, name)
+    elif name == "CONCATENATION":
+        if options_field is None:
+            raise ValueError("CONCATENATION lacks builtin options")
+        options = reader.indirect(options_field)
+        axis = _option_scalar(reader, options, 0, 4, 0)
+        activation = _option_scalar(reader, options, 1, 1, 0)
+        if activation not in ACTIVATIONS:
+            raise ValueError("CONCATENATION has an invalid fused activation")
+        record["decoded"] = {"axis": axis, "fused_activation": ACTIVATIONS[activation]}
+    elif name == "RESHAPE":
+        if options_field is None:
+            raise ValueError("RESHAPE typed options require a table")
+        options = reader.indirect(options_field)
+        new_shape_field = _present_uoffset(reader, reader.table_field(options, 0, 4))
+        record["decoded"] = {"new_shape": reader.i32_vector(new_shape_field) if new_shape_field is not None else None}
+    elif name == "STRIDED_SLICE":
+        if options_field is None:
+            raise ValueError("STRIDED_SLICE lacks builtin options")
+        options = reader.indirect(options_field)
+        masks = [_option_scalar(reader, options, field, 4, 0) for field in range(5)]
+        offset = _option_scalar(reader, options, 5, 1, 0)
+        if any(mask < 0 for mask in masks) or offset not in (0, 1):
+            raise ValueError("STRIDED_SLICE has invalid masks or offset")
+        record["decoded"] = {"begin_mask": masks[0], "end_mask": masks[1], "ellipsis_mask": masks[2], "new_axis_mask": masks[3], "shrink_axis_mask": masks[4], "offset": bool(offset)}
+    elif name == "QUANTIZE":
+        if options_field is None:
+            raise ValueError("QUANTIZE typed options require an empty table")
+        options = reader.indirect(options_field)
+        _require_empty_table(reader, options, name)
+        record["decoded"] = {}
     elif name == "CALL_ONCE":
         if options_field is None:
             raise ValueError("CALL_ONCE lacks builtin options")
@@ -1024,6 +1071,10 @@ def publish(path: Path, value: dict[str, Any]) -> None:
 
 
 def self_test() -> None:
+    assert {code: DTYPES[code][0] for code in range(21)} == {
+        0: "float32", 1: "float16", 2: "int32", 3: "uint8", 4: "int64", 5: "string", 6: "bool", 7: "int16", 8: "complex64", 9: "int8", 10: "float64", 11: "complex128", 12: "uint64", 13: "resource", 14: "variant", 15: "uint32", 16: "uint16", 17: "int4", 18: "bfloat16", 19: "int2", 20: "uint4"
+    }
+    assert DTYPES[11][1] == 16 and DTYPES[12][1] == 8 and DTYPES[13][1] == 1
     assert _select_builtin_code(0, 3) == 3
     assert _select_builtin_code(None, 3) == 3
     assert _select_builtin_code(200, 127) == 200
@@ -1069,7 +1120,10 @@ def self_test() -> None:
                 intermediate_values: list[int] | None = None,
                 variable_input: bool = False, stateful_option: str | None = None,
                 no_builtin_options: bool = False, builtin_options_type: int | None = None,
-                init_subgraph_index: int = 0, omit_opcode_index: bool = False) -> bytes:
+                init_subgraph_index: int = 0, omit_opcode_index: bool = False,
+                inventory_option: str | None = None, concat_axis: int = 1,
+                concat_activation: int = 3, reshape_values: list[int] | None = None,
+                strided_masks: list[int] | None = None, strided_offset: int = 0) -> bytes:
         out = bytearray(b"\x00\x00\x00\x00TFL3")
         def table(fields: int, size: int) -> int:
             vt = len(out); out.extend(struct.pack("<HH", 4 + fields * 2, size)); out.extend(b"\x00" * (fields * 2))
@@ -1109,7 +1163,8 @@ def self_test() -> None:
         stab = table(5, 24); tv = vector_slots(4); inputs = vector_i32([0]); outputs = vector_i32([3]); field_ptr(stab, 0, tv); field_ptr(stab, 1, inputs); field_ptr(stab, 2, outputs)
         op_vector = vector_slots(1)
         extended_operator = external_operator or intermediate_values is not None
-        option_type = STATEFUL_BUILTIN_OPTIONS.get(stateful_option, 8) if builtin_options_type is None else builtin_options_type
+        option_name = stateful_option or inventory_option
+        option_type = INVENTORY_BUILTIN_OPTIONS.get(option_name, 8) if builtin_options_type is None else builtin_options_type
         operator = table(14 if extended_operator else 8, 60 if extended_operator else 36); struct.pack_into("<I", out, operator + 4, 0); op_inputs = vector_i32([0, 1, 2]); op_outputs = vector_i32([3]); field_ptr(operator, 1, op_inputs); field_ptr(operator, 2, op_outputs); struct.pack_into("<B", out, operator + 16, option_type); omit_field(operator, 5); omit_field(operator, 6)
         if omit_opcode_index:
             omit_field(operator, 0)
@@ -1119,7 +1174,17 @@ def self_test() -> None:
             for field in (8, 10, 11, 12, 13):
                 omit_field(operator, field)
             struct.pack_into("<Q", out, operator + 4 + 9 * 4, 1 << 32)
-        if stateful_option == "CALL_ONCE":
+        if inventory_option == "CONCATENATION":
+            option = table(2, 12); struct.pack_into("<i", out, option + 4, concat_axis); struct.pack_into("<B", out, option + 8, concat_activation)
+        elif inventory_option == "RESHAPE":
+            option = table(1, 8); new_shape = vector_i32([1, 2] if reshape_values is None else reshape_values); field_ptr(option, 0, new_shape)
+        elif inventory_option == "STRIDED_SLICE":
+            option = table(6, 28); masks = [0, 1, 2, 3, 4] if strided_masks is None else strided_masks
+            for field, mask in enumerate(masks): struct.pack_into("<i", out, option + 4 + field * 4, mask)
+            struct.pack_into("<B", out, option + 24, strided_offset)
+        elif inventory_option == "QUANTIZE":
+            option = table(0, 4)
+        elif stateful_option == "CALL_ONCE":
             option = table(1, 8); struct.pack_into("<i", out, option + 4, init_subgraph_index)
         elif stateful_option == "VAR_HANDLE":
             option = table(2, 12); field_ptr(option, 0, string("container")); field_ptr(option, 1, string("shared"))
@@ -1199,6 +1264,26 @@ def self_test() -> None:
     logistic = inventory(fixture(opcode_builtin=14, opcode_deprecated=14, no_builtin_options=True, builtin_options_type=0))
     assert not logistic["subgraphs"][0]["operators"][0]["builtin_options"]["table_present"]
     assert logistic["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"type": 0}
+    concatenation = inventory(fixture(opcode_builtin=2, opcode_deprecated=2, inventory_option="CONCATENATION"))
+    assert concatenation["operator_codes"][0]["official_name"] == "CONCATENATION"
+    assert concatenation["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"axis": 1, "fused_activation": "RELU6"}
+    reshape = inventory(fixture(opcode_builtin=22, opcode_deprecated=22, inventory_option="RESHAPE", reshape_values=[4, 5]))
+    assert reshape["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"new_shape": [4, 5]}
+    reshape_omitted = inventory(fixture(opcode_builtin=22, opcode_deprecated=22, inventory_option="RESHAPE", builtin_options_type=0, no_builtin_options=True))
+    assert reshape_omitted["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"new_shape": None}
+    strided = inventory(fixture(opcode_builtin=45, opcode_deprecated=45, inventory_option="STRIDED_SLICE", strided_masks=[1, 2, 4, 8, 16], strided_offset=1))
+    assert strided["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"begin_mask": 1, "end_mask": 2, "ellipsis_mask": 4, "new_axis_mask": 8, "shrink_axis_mask": 16, "offset": True}
+    quantize = inventory(fixture(opcode_builtin=114, opcode_deprecated=114, inventory_option="QUANTIZE", builtin_options_type=0, no_builtin_options=True))
+    assert quantize["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
+    quantize_typed = inventory(fixture(opcode_builtin=114, opcode_deprecated=114, inventory_option="QUANTIZE"))
+    assert quantize_typed["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
+    for opcode, name, typed in ((22, "RESHAPE", 17), (114, "QUANTIZE", 89)):
+        try: inventory(fixture(opcode_builtin=opcode, opcode_deprecated=opcode, inventory_option=name, builtin_options_type=typed, no_builtin_options=True))
+        except ValueError: pass
+        else: raise AssertionError(f"{name} type/presence mismatch was accepted")
+        try: inventory(fixture(opcode_builtin=opcode, opcode_deprecated=opcode, inventory_option=name, builtin_options_type=0, no_builtin_options=False))
+        except ValueError: pass
+        else: raise AssertionError(f"{name} type-0 table mismatch was accepted")
     absent_name = inventory(fixture(missing_tensor_name=True))
     assert absent_name["subgraphs"][0]["tensors"][0]["name"] is None
     empty_name = inventory(fixture(empty_tensor_name=True))
