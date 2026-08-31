@@ -28,6 +28,8 @@ PUBLIC_REVISION="94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84"
 PUBLIC_FILE="voice-gender-classifier.restamped.gguf"
 PUBLIC_SHA256="e1e61f1493601087f5db5867c4f750ec99d6b11223b5323bd120e3c21e8f957f"
 CHECKPOINT_SHA256="2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"
+FP32_PARITY_BOUND="0.010000000"
+FIXTURE_KIND="official_canned_synthetic_tone"
 MIN_VAST_MEM_KIB=67108864
 MIN_FREE_DISK_KIB=150000000
 
@@ -270,8 +272,22 @@ print("corrected provenance confirmed: arch=voice_gender_classifier license=mit 
 PY
 }
 
-run_self_test() {
-  local script_path="${BASH_SOURCE[0]}" fail=0 required
+verify_cpu_parity_log() {
+  local log_path="$1" metrics marker_count pass_count
+  marker_count="$(grep -Ec '^VOICE_GENDER_OFFICIAL_PARITY(_METRICS| ).*$' "$log_path" || true)"
+  [[ "$marker_count" == 2 ]] || { die "CPU parity marker count is not exactly 2: $marker_count"; return 2; }
+  metrics="$(grep -E '^VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs=[0-9]+\.[0-9]{9} embedding_max_abs=[0-9]+\.[0-9]{9} logits_max_abs=[0-9]+\.[0-9]{9} probability_max_abs=[0-9]+\.[0-9]{9} bound=0\.010000000 fixture=official_canned_synthetic_tone$' "$log_path" || true)"
+  [[ -n "$metrics" ]] || { die "CPU parity metrics marker is missing or malformed"; return 2; }
+  [[ "$(printf '%s\n' "$metrics" | wc -l | tr -d '[:space:]')" == 1 ]] || { die "CPU parity metrics marker is duplicated"; return 2; }
+  pass_count="$(grep -Ec '^VOICE_GENDER_OFFICIAL_PARITY PASS bound=0\.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream$' "$log_path" || true)"
+  [[ "$pass_count" == 1 ]] || { die "CPU parity PASS marker is missing, duplicated, or malformed"; return 2; }
+  printf '%s\n' "$metrics" | awk '{ for (i = 2; i <= NF; i++) { split($i, pair, "="); if (pair[1] ~ /_max_abs$/ && (pair[2] + 0) > 0.01) exit 1 } }' \
+    || { die "CPU parity metric exceeds the fixed FP32 bound"; return 2; }
+  printf 'CPU parity gate authenticated: bound=%s fixture=%s\n%s\n' "$FP32_PARITY_BOUND" "$FIXTURE_KIND" "$metrics"
+}
+
+run_self_test() (
+  local script_path="${BASH_SOURCE[0]}" fail=0 required marker_dir
   # shellcheck disable=SC2016 # literal contract tokens intentionally keep quoting
   for required in "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$UPSTREAM_GITHUB_URL" \
     "$UPSTREAM_HF_REVISION" "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" \
@@ -291,8 +307,9 @@ run_self_test() {
     'verify_prepared_audit "$prepare_audit" "$prepared_checkpoint" | tee "$evidence_dir/checkpoint-prepare-verified.log"' \
     'prepared checkpoint audit authenticated: status=AUTHENTICATED_NORMALIZED input=233 floating=202 counters=31 output=202' \
     '--input "$prepared_checkpoint" --output "$corrected"' \
-    'parity_voice_gender_classifier' 'VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED' \
-    'VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED' 'verify_corrected_provenance'; do
+    'parity_voice_gender_classifier' 'VOKRA_VOICE_GENDER_FIXTURE_KIND' \
+    'VOICE_GENDER_OFFICIAL_PARITY_METRICS' 'VOICE_GENDER_OFFICIAL_PARITY PASS' \
+    'FP32_PARITY_BOUND' 'verify_cpu_parity_log' 'verify_corrected_provenance'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing: $required"; fail=1; }
   done
   # shellcheck disable=SC2016 # literal summary fields intentionally keep quoting
@@ -315,6 +332,43 @@ run_self_test() {
     || ! grep -Fq 'cargo fmt --manifest-path "$VOKRA_ROOT/Cargo.toml" --all -- --check | tee -a "$evidence_dir/gates.log"' "$script_path" \
     || ! grep -Fq 'cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace | tee -a "$evidence_dir/gates.log"' "$script_path"; then
     log "self-test found a repository gate log write contract gap"; fail=1
+  fi
+  marker_dir="$(mktemp -d "${TMPDIR:-/tmp}/vokra-voice-gender-marker.XXXXXX")"
+  trap 'rm -rf "$marker_dir"' EXIT
+  printf '%s\n' \
+    'VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs=0.001000000 embedding_max_abs=0.002000000 logits_max_abs=0.003000000 probability_max_abs=0.004000000 bound=0.010000000 fixture=official_canned_synthetic_tone' \
+    'VOICE_GENDER_OFFICIAL_PARITY PASS bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' \
+    > "$marker_dir/valid.log"
+  verify_cpu_parity_log "$marker_dir/valid.log" >/dev/null || { log "self-test rejected a valid CPU parity log"; fail=1; }
+  cp "$marker_dir/valid.log" "$marker_dir/duplicate.log"
+  printf '%s\n' 'VOICE_GENDER_OFFICIAL_PARITY PASS bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' >> "$marker_dir/duplicate.log"
+  if verify_cpu_parity_log "$marker_dir/duplicate.log" >/dev/null 2>&1; then
+    log "self-test accepted a duplicate CPU parity marker"; fail=1
+  fi
+  printf '%s\n' \
+    'VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs=0.001000000 embedding_max_abs=0.002000000 logits_max_abs=0.003000000 probability_max_abs=0.004000000 bound=0.020000000 fixture=official_canned_synthetic_tone' \
+    'VOICE_GENDER_OFFICIAL_PARITY PASS bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' \
+    > "$marker_dir/malformed.log"
+  if verify_cpu_parity_log "$marker_dir/malformed.log" >/dev/null 2>&1; then
+    log "self-test accepted a malformed CPU parity metrics marker"; fail=1
+  fi
+  printf '%s\n' \
+    'VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs=0.010000001 embedding_max_abs=0.002000000 logits_max_abs=0.003000000 probability_max_abs=0.004000000 bound=0.010000000 fixture=official_canned_synthetic_tone' \
+    'VOICE_GENDER_OFFICIAL_PARITY PASS bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' \
+    > "$marker_dir/over-bound.log"
+  if verify_cpu_parity_log "$marker_dir/over-bound.log" >/dev/null 2>&1; then
+    log "self-test accepted a CPU parity metric above the fixed bound"; fail=1
+  fi
+  printf '%s\n' \
+    'VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs=0.001000000 embedding_max_abs=0.002000000 logits_max_abs=0.003000000 probability_max_abs=0.004000000 bound=0.010000000 fixture=official_canned_synthetic_tone' \
+    'VOICE_GENDER_OFFICIAL_PARITY FAIL bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' \
+    > "$marker_dir/nonpass.log"
+  if verify_cpu_parity_log "$marker_dir/nonpass.log" >/dev/null 2>&1; then
+    log "self-test accepted a non-PASS CPU parity marker"; fail=1
+  fi
+  printf '%s\n' 'VOICE_GENDER_OFFICIAL_PARITY PASS bound=0.010000000 fixture=official_canned_synthetic_tone oracle=official_upstream' > "$marker_dir/missing.log"
+  if verify_cpu_parity_log "$marker_dir/missing.log" >/dev/null 2>&1; then
+    log "self-test accepted a missing CPU parity metrics marker"; fail=1
   fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PARITY_DUMPER" --self-test >/dev/null || fail=1
   UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --offline --python 3.12 python "$PREPARE_CHECKPOINT" --self-test >/dev/null || fail=1
@@ -388,7 +442,7 @@ PY
   "$script_path" --self-test --work-dir /tmp/invalid >/dev/null 2>&1 && { log "self-test accepted extra argument"; fail=1; } || true
   (( fail == 0 )) || return 1
   echo "run-voice-gender-classifier-validation.sh self-test: PASS"
-}
+)
 
 main() {
   local self_test=0 work_arg='' checkpoint_sha256='' checkpoint_seen=0 work_seen=0
@@ -442,10 +496,10 @@ main() {
   cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli 2>&1 | tee "$evidence_dir/build.log"
   "$VOKRA_ROOT/target/release/vokra-cli" convert --model "$MODEL_KIND" --input "$prepared_checkpoint" --output "$corrected" --license "$LICENSE_SPDX" 2>&1 | tee "$evidence_dir/convert.log"
   verify_corrected_provenance "$corrected" | tee "$evidence_dir/corrected-contract.log"
-  export VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32"
+  export VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32" VOKRA_VOICE_GENDER_FIXTURE_KIND="$FIXTURE_KIND"
   step "Run CPU parity"
   cargo test --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked -p vokra-models --test parity_voice_gender_classifier -- --nocapture 2>&1 | tee "$evidence_dir/parity.log"
-  grep -Fq 'VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED' "$evidence_dir/parity.log" || die "CPU parity measurement marker absent"
+  verify_cpu_parity_log "$evidence_dir/parity.log" | tee "$evidence_dir/cpu-parity-gate.log"
   step "Run repository gates on VAST"
   bash "$VOKRA_ROOT/scripts/check-forbidden-symbols.sh" | tee "$evidence_dir/gates.log"
   bash "$VOKRA_ROOT/scripts/check-zero-deps.sh" | tee -a "$evidence_dir/gates.log"
@@ -454,7 +508,7 @@ main() {
   cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"
-  { echo 'execution_status=MEASURED_NOT_GATED'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")"; echo "prepare_audit_sha256=$(sha256_file "$prepare_audit")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo 'cpu_parity=MEASURED_NOT_GATED'; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
+  { echo 'execution_status=CPU_PASS_METAL_NOT_RUN'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")"; echo "prepare_audit_sha256=$(sha256_file "$prepare_audit")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo "cpu_parity=PASS"; echo "cpu_parity_bound=$FP32_PARITY_BOUND"; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
 }
 
 main "$@"

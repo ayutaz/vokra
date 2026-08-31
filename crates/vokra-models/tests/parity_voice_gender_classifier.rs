@@ -4,6 +4,12 @@ use std::path::Path;
 
 use vokra_models::voice_gender_classifier::{CLASS_COUNT, VoiceGenderClassifier};
 
+const FP32_PARITY_BOUND: f32 = 0.01;
+// The PCM is the fixed synthetic tone emitted by the pinned independent
+// upstream dumper, not caller voice data; its aggregate errors are safe to
+// record as deterministic parity metrics.
+const FIXTURE_KIND: &str = "official_canned_synthetic_tone";
+
 fn f32s(path: &Path) -> Vec<f32> {
     let bytes = std::fs::read(path).expect("read parity fixture");
     assert_eq!(bytes.len() % 4, 0);
@@ -63,6 +69,11 @@ fn real_voice_gender_classifier_matches_official_reference() {
         eprintln!("SKIP: VOKRA_VOICE_GENDER_PROBABILITIES is not set");
         return;
     };
+    let Some(fixture_kind) = std::env::var_os("VOKRA_VOICE_GENDER_FIXTURE_KIND") else {
+        eprintln!("SKIP: VOKRA_VOICE_GENDER_FIXTURE_KIND is not set");
+        return;
+    };
+    assert_eq!(fixture_kind.to_string_lossy(), FIXTURE_KIND);
 
     let model = VoiceGenderClassifier::from_path(gguf).expect("strict dedicated bind");
     assert_eq!(model.weight_license(), vokra_core::LicenseClass::Permissive);
@@ -105,21 +116,34 @@ fn real_voice_gender_classifier_matches_official_reference() {
     let probability_error = max_abs(&actual_probabilities, &expected_probabilities);
     assert!(probability_error.is_finite());
     assert!(actual_probabilities.iter().all(|value| value.is_finite()));
-    assert_eq!(
-        prediction.label,
-        if expected_probabilities[1] > expected_probabilities[0] {
-            "female"
-        } else {
-            "male"
-        }
+    eprintln!(
+        "VOICE_GENDER_OFFICIAL_PARITY_METRICS feature_max_abs={feature_error:.9} embedding_max_abs={embedding_error:.9} logits_max_abs={logit_error:.9} probability_max_abs={probability_error:.9} bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND}"
     );
-    // The errors above are intentionally computed and asserted in-process so
-    // this remains a useful independent parity check. Do not emit them:
-    // they are derived from caller-supplied PCM and CodeQL correctly treats
-    // them as sensitive tainted data. The fixed sentinel keeps CI's
-    // report-only phase observable without copying voice-derived values into
-    // logs.
-    eprintln!("VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED");
+    assert!(
+        feature_error <= FP32_PARITY_BOUND,
+        "frontend feature max_abs {feature_error:.9} exceeds FP32 bound {FP32_PARITY_BOUND:.9}"
+    );
+    assert!(
+        embedding_error <= FP32_PARITY_BOUND,
+        "embedding max_abs {embedding_error:.9} exceeds FP32 bound {FP32_PARITY_BOUND:.9}"
+    );
+    assert!(
+        logit_error <= FP32_PARITY_BOUND,
+        "logit max_abs {logit_error:.9} exceeds FP32 bound {FP32_PARITY_BOUND:.9}"
+    );
+    assert!(
+        probability_error <= FP32_PARITY_BOUND,
+        "probability max_abs {probability_error:.9} exceeds FP32 bound {FP32_PARITY_BOUND:.9}"
+    );
+    let expected_label = if expected_probabilities[1] > expected_probabilities[0] {
+        "female"
+    } else {
+        "male"
+    };
+    assert_eq!(prediction.label, expected_label);
+    eprintln!(
+        "VOICE_GENDER_OFFICIAL_PARITY PASS bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND} oracle=official_upstream"
+    );
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
     {
@@ -131,8 +155,17 @@ fn real_voice_gender_classifier_matches_official_reference() {
         let metal_logits = metal.logits_pcm(&pcm, 16_000).expect("Metal classifier");
         let metal_error = max_abs(&metal_logits, &actual_logits);
         assert!(metal_error.is_finite());
+        eprintln!(
+            "VOICE_GENDER_METAL_VS_CPU_METRICS logits_max_abs={metal_error:.9} bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND}"
+        );
+        assert!(
+            metal_error <= FP32_PARITY_BOUND,
+            "Metal-vs-CPU logit max_abs {metal_error:.9} exceeds FP32 bound {FP32_PARITY_BOUND:.9}"
+        );
         let metal_prediction = metal.classify_pcm(&pcm, 16_000).expect("Metal prediction");
-        assert_eq!(metal_prediction.label, prediction.label);
-        eprintln!("VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED");
+        assert_eq!(metal_prediction.label, expected_label);
+        eprintln!(
+            "VOICE_GENDER_METAL_VS_CPU PASS bound={FP32_PARITY_BOUND:.9} fixture={FIXTURE_KIND} label={expected_label}"
+        );
     }
 }
