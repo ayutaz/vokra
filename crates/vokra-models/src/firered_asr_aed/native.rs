@@ -1721,7 +1721,7 @@ impl FireRedDecoderSelfAttention {
             key_mask,
             Some(past_frames),
         )?;
-        let mut output = linear(
+        let output = linear(
             compute,
             &attended,
             query_frames,
@@ -1848,7 +1848,7 @@ impl FireRedDecoderCrossAttention {
             source_mask,
             None,
         )?;
-        let mut output = linear(
+        let output = linear(
             compute,
             &attended,
             query_frames,
