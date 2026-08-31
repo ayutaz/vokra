@@ -1205,9 +1205,21 @@ pub struct FireRedConformerBlock {
     pub kernel_size: usize,
 }
 
+/// Source-authenticated encoder stack orchestration for batch-one frame-major
+/// activations.  The layer weights are supplied by the strict GGUF binder;
+/// this type deliberately does not manufacture a checkpoint-name mapping.
+#[derive(Debug, Clone, Copy)]
+pub struct FireRedConformerEncoder {
+    d_model: usize,
+    inner_dim: usize,
+    n_head: usize,
+    kernel_size: usize,
+}
+
 /// Borrowed checkpoint operands for one Conformer block.  Tensor names and
 /// dimensions remain the responsibility of the authenticated 940-field
 /// binder; these fields do not invent a manifest.
+#[derive(Clone, Copy)]
 pub struct FireRedConformerBlockWeights<'a> {
     pub ffn1_ln_gamma: &'a [f32],
     pub ffn1_ln_beta: &'a [f32],
@@ -1488,6 +1500,64 @@ impl FireRedConformerBlock {
             }
         }
         Ok(())
+    }
+}
+
+impl FireRedConformerEncoder {
+    /// Constructs the pinned release geometry.  The depth and all tensor
+    /// axes are intentionally not caller-controlled: this release has
+    /// exactly sixteen source blocks with the authenticated dimensions.
+    pub fn authenticated() -> Self {
+        Self {
+            d_model: super::AUTHENTICATED_ENCODER_D_MODEL as usize,
+            inner_dim: super::AUTHENTICATED_ENCODER_FFN_DIM as usize,
+            n_head: super::AUTHENTICATED_ENCODER_N_HEAD as usize,
+            kernel_size: super::AUTHENTICATED_ENCODER_KERNEL_SIZE as usize,
+        }
+    }
+
+    /// Runs all encoder blocks in source order and performs a complete
+    /// operand preflight for every block before the first backend dispatch.
+    /// `layers[0]` is the upstream block zero and so on; no name-based
+    /// fallback or layer truncation is permitted.
+    pub fn forward(
+        &self,
+        compute: &Compute,
+        input: &[f32],
+        frames: usize,
+        mask: &[bool],
+        layers: &[FireRedConformerBlockWeights<'_>],
+    ) -> Result<Vec<f32>> {
+        if layers.len() != super::AUTHENTICATED_ENCODER_N_LAYER as usize {
+            return Err(VokraError::ModelLoad(format!(
+                "FireRed Conformer encoder configuration/layer count is invalid: expected {} layers, got {}",
+                super::AUTHENTICATED_ENCODER_N_LAYER,
+                layers.len()
+            )));
+        }
+        let block = FireRedConformerBlock {
+            d_model: self.d_model,
+            inner_dim: self.inner_dim,
+            n_head: self.n_head,
+            kernel_size: self.kernel_size,
+        };
+        // Validate every layer against the original input shape and mask
+        // before invoking any Compute operation.  This makes a late layer's
+        // missing/non-finite operand fail before layer zero can dispatch.
+        for (index, weights) in layers.iter().enumerate() {
+            block
+                .validate_operands(input, frames, mask, weights)
+                .map_err(|error| {
+                    VokraError::ModelLoad(format!(
+                        "FireRed Conformer encoder layer {index} preflight failed: {error}"
+                    ))
+                })?;
+        }
+        let mut output = input.to_vec();
+        for weights in layers {
+            output = block.forward(compute, &output, frames, mask, weights)?;
+        }
+        Ok(output)
     }
 }
 
@@ -2110,6 +2180,144 @@ mod tests {
                 .validate_operands(&input, 2, &mask, &late_weights)
                 .is_err()
         );
+    }
+
+    fn encoder_fixture_weights(
+        final_ln_beta: &'static [f32; 1],
+    ) -> FireRedConformerBlockWeights<'static> {
+        static ONE: [f32; 1] = [1.0];
+        static ZERO: [f32; 1] = [0.0];
+        static EXPAND_W: [f32; 4] = [0.1, 0.2, 0.3, 0.4];
+        static EXPAND_B: [f32; 4] = [0.01, 0.02, 0.03, 0.04];
+        static PROJECT_W: [f32; 4] = [0.2, 0.3, 0.4, 0.5];
+        static PROJECT_B: [f32; 1] = [0.1];
+        static POSITION: [f32; 1] = [0.05];
+        static CONV_IN: [f32; 4] = [0.1, 0.2, 0.3, 0.4];
+        static DEPTHWISE: [f32; 2] = [0.5, 0.25];
+        static DEPTH_GAMMA: [f32; 2] = [1.0, 1.0];
+        static DEPTH_BETA: [f32; 2] = [0.0, 0.1];
+        static CONV_OUT: [f32; 2] = [0.2, 0.3];
+
+        FireRedConformerBlockWeights {
+            ffn1_ln_gamma: &ONE,
+            ffn1_ln_beta: &ZERO,
+            ffn1_expand_w_t: &EXPAND_W,
+            ffn1_expand_b: &EXPAND_B,
+            ffn1_project_w_t: &PROJECT_W,
+            ffn1_project_b: &PROJECT_B,
+            attention_positions: &POSITION,
+            attention_q_w_t: &ONE,
+            attention_k_w_t: &ONE,
+            attention_v_w_t: &ONE,
+            attention_linear_pos_w_t: &ONE,
+            attention_q_norm_gamma: &ONE,
+            attention_q_norm_beta: &ZERO,
+            attention_k_norm_gamma: &ONE,
+            attention_k_norm_beta: &ZERO,
+            attention_v_norm_gamma: &ONE,
+            attention_v_norm_beta: &ZERO,
+            attention_bias_u: &ZERO,
+            attention_bias_v: &ZERO,
+            attention_output_w_t: &ONE,
+            conv_pointwise_in_w: &CONV_IN,
+            conv_depthwise_w: &DEPTHWISE,
+            conv_depthwise_ln_gamma: &DEPTH_GAMMA,
+            conv_depthwise_ln_beta: &DEPTH_BETA,
+            conv_pointwise_out_w: &CONV_OUT,
+            conv_pre_ln_gamma: &ONE,
+            conv_pre_ln_beta: &ZERO,
+            ffn2_ln_gamma: &ONE,
+            ffn2_ln_beta: &ZERO,
+            ffn2_expand_w_t: &EXPAND_W,
+            ffn2_expand_b: &EXPAND_B,
+            ffn2_project_w_t: &PROJECT_W,
+            ffn2_project_b: &PROJECT_B,
+            final_ln_gamma: &ONE,
+            final_ln_beta,
+        }
+    }
+
+    #[test]
+    fn encoder_runs_all_sixteen_ordered_blocks_and_preflights_late_layer() {
+        static BAD_FINAL_BETA: [f32; 1] = [f32::NAN];
+        static LAYER_BETAS: [[f32; 1]; 16] = [
+            [0.0],
+            [0.1],
+            [0.2],
+            [0.3],
+            [0.4],
+            [0.5],
+            [0.6],
+            [0.7],
+            [0.8],
+            [0.9],
+            [1.0],
+            [1.1],
+            [1.2],
+            [1.3],
+            [1.4],
+            [1.5],
+        ];
+        let pinned = FireRedConformerEncoder::authenticated();
+        assert_eq!(pinned.d_model, 1_280);
+        assert_eq!(pinned.inner_dim, 5_120);
+        assert_eq!(pinned.n_head, 20);
+        assert_eq!(pinned.kernel_size, 33);
+
+        let layers: Vec<_> = (0..16)
+            .map(|index| encoder_fixture_weights(&LAYER_BETAS[index]))
+            .collect();
+        // Test-only small geometry keeps this unit test cheap; production
+        // callers can only construct the pinned authenticated geometry.
+        let encoder = FireRedConformerEncoder {
+            d_model: 1,
+            inner_dim: 4,
+            n_head: 1,
+            kernel_size: 1,
+        };
+        let output = encoder
+            .forward(&Compute::cpu(), &[1.0], 1, &[true], &layers)
+            .unwrap();
+        assert_eq!(output.len(), 1);
+        assert!(output[0].is_finite());
+
+        let block = FireRedConformerBlock {
+            d_model: 1,
+            inner_dim: 4,
+            n_head: 1,
+            kernel_size: 1,
+        };
+        let mut expected = vec![1.0];
+        for weights in &layers {
+            expected = block
+                .forward(&Compute::cpu(), &expected, 1, &[true], weights)
+                .unwrap();
+        }
+        assert_eq!(output, expected, "encoder must fold blocks in source order");
+
+        let mut reverse = layers.clone();
+        reverse.reverse();
+        let reversed = encoder
+            .forward(&Compute::cpu(), &[1.0], 1, &[true], &reverse)
+            .unwrap();
+        assert_ne!(
+            output, reversed,
+            "reversing distinct layers must change output"
+        );
+
+        let missing = &layers[..15];
+        assert!(
+            encoder
+                .forward(&Compute::cpu(), &[1.0], 1, &[true], missing)
+                .is_err()
+        );
+
+        let mut malformed = layers;
+        malformed[15] = encoder_fixture_weights(&BAD_FINAL_BETA);
+        let error = encoder
+            .forward(&Compute::cpu(), &[1.0], 1, &[true], &malformed)
+            .expect_err("late layer corruption must fail before layer zero dispatch");
+        assert!(error.to_string().contains("layer 15 preflight"));
     }
 
     #[test]

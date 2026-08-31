@@ -73,6 +73,9 @@
 //!    `named_buffers()` and records their roles. The converter/binder still
 //!    has no Rust field mapping that consumes that sidecar, so a best-guess
 //!    walk could bind wrong weights with valid shapes.
+//!    This remains an explicit **BLOCKED** boundary: the manifest-only
+//!    [`FireredAsrAedWeights`] loader is not a semantic encoder binder, and
+//!    no arbitrary caller-supplied name list is accepted as one.
 //! 3. **No tokenizer blob binding.** The source-authenticated
 //!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
 //!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
@@ -220,8 +223,8 @@ mod native;
 
 pub use native::{
     FIRERED_ASR_AED_HOT_OPS, FireRedCmvn, FireRedConformerBlock, FireRedConformerBlockWeights,
-    FireRedConformerConvolution, FireRedConformerFeedForward, FireRedConv2dSubsampling,
-    FireRedRelativeAttention, relative_positional_encoding,
+    FireRedConformerConvolution, FireRedConformerEncoder, FireRedConformerFeedForward,
+    FireRedConv2dSubsampling, FireRedRelativeAttention, relative_positional_encoding,
 };
 
 // ---------------------------------------------------------------------------
@@ -399,6 +402,16 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 16] = [
     KEY_EOS_ID,
     KEY_PAD_ID,
 ];
+
+/// Authenticated encoder geometry from the pinned upstream checkpoint
+/// inspection. These values are used for metadata validation and the future
+/// semantic binder/stack geometry; they are not defaults for minimal
+/// inspection fixtures.
+pub const AUTHENTICATED_ENCODER_N_LAYER: u32 = 16;
+pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
+pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
+pub const AUTHENTICATED_ENCODER_FFN_DIM: u32 = 5_120;
+pub const AUTHENTICATED_ENCODER_KERNEL_SIZE: u32 = 33;
 
 /// Optional `Array<String>` metadata key: the exact tensor names the
 /// producer wrote.
