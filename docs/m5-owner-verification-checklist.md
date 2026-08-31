@@ -7,8 +7,13 @@ the branch observed before the documentation commits was
 `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; the pre-refresh
 evidence/package checkpoint was
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. The workspace is version `0.2.0`, with
-57 C ABI functions / 15 typedefs and 49 checked / 33 unchecked literal boxes.
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. Those authenticated runtime/VAST
+checkpoints are historical workspace `0.2.0` evidence. The active branch is
+workspace `0.3.0`; immediately before this documentation refresh its remote
+head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109
+passing checks, 13 expected skips, and no failures or pending checks. The
+current surface has 57 C ABI functions / 15 typedefs and 49 checked / 33
+unchecked literal boxes.
 The GitHub `main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
 This checklist is the remaining action ledger feeding the **v1.0 GA** decision
 (commercial GA + C ABI freeze). It is NOT a GA declaration and NOT a freeze —
@@ -65,7 +70,7 @@ not disappear from planning merely because `rg '\[ \]'` cannot count them.
 | M5-13 | Freeze tooling and negative test landed; ABI remains unfrozen | v1.0.0 tag/freeze, `abi-surface` required promotion, delegate/WFST C-export GO/NO-GO (§1.1–§1.3) |
 | M5-14 / M5-15 | CPU/quant/UTMOS implementation waves and advisory gates landed to their documented scope | Final same-rig performance/quality sweeps and GA-quality evidence before the NPU bakeoff |
 | M5-16 / M5-17 | Explicit trigger-gated homes | Implement only when a named consumer/model/toolchain/hardware trigger fires; currently open concrete implementations are listed in §6.6 |
-| Mac CPU/Metal model closure | Five Apple-ready models have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Three authenticated packets are held on stopped/exited VAST instances `49168183` and `49261078`; compute is off and storage billing continues. Live inventory is CPU `full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`; Metal `full=129`, `blocked-by-cpu=62`, `cpu-only=2`, `not-artifact=1`. | Provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify all three packets, run the five Apple CPU/Metal workers, preserve evidence and destroy both VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
+| Mac CPU/Metal model closure | Five Apple-ready models have strict native CPU routes and independent official VAST evidence: GigaAM v3, GigaAM Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Three authenticated packets are held on stopped/exited VAST instances `49168183` and `49261078`; compute is off and storage billing continues. Live inventory is CPU `full=131`, `partial=42`, `no-runtime-binder=20`, `not-artifact=1`; Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`, with zero source-level CPU-only rows. GigaAM v3 and Multilingual have complete conservative Metal code routes, but all five rows still lack authenticated Apple-hardware verdicts. | Provision the 32 GiB-or-larger Scaleway Apple host, transfer and verify all three packets, run the five Apple CPU/Metal workers, preserve evidence and destroy both VAST instances. This closes only the prepared rows; it does not close the other 62 CPU-blocked repositories. |
 | SoTA / parity / publish | Converters and many structural proofs landed | The 33 literal boxes cover NPU capture, parity families, implementation follow-ups, publication/destination policy, Voxtral live correction, and optional Pages deployment |
 
 The cross-milestone Python binding, package distribution, and real-device lab

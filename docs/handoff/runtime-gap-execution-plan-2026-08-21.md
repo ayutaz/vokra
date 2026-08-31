@@ -6,7 +6,11 @@
 > [`mac-cpu-metal-full-coverage-2026-08-28.md`](mac-cpu-metal-full-coverage-2026-08-28.md)
 > and [`mac-cpu-metal-completion-plan-2026-08-30.md`](mac-cpu-metal-completion-plan-2026-08-30.md),
 > reconciled at code `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
-> evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+> evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`;
+> those are historical workspace `0.2.0` checkpoints. The active branch is
+> workspace `0.3.0`; its remote head immediately before this documentation
+> refresh was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79 (109 passing,
+> 13 expected skips, no failures or pending checks).
 
 This plan refines Phase C of
 `docs/handoff/remaining-work-plan-2026-08-20.md` from the live source tree. It

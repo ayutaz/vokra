@@ -22,11 +22,16 @@ This handoff is history-only. The baseline branch name was
 `feat/mac-cpu-metal-full-coverage-2026-08-28`. The 2026-08-31 documentation
 refresh cross-checked the pre-documentation implementation/code baseline at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and evidence/package checkpoint
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; workspace `0.2.0`, with C ABI
-57 functions / 15 typedefs and M5 49 checked / 33 unchecked. The GitHub `main`
-reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. Current model,
-VAST and Scaleway status is authoritative only in
-`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md` and
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; those checkpoints are historical
+workspace `0.2.0` evidence. The active branch is workspace `0.3.0`; immediately
+before this documentation refresh its remote head was
+`d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
+checks, 13 expected skips, and no failures or pending checks. The current C ABI
+is 57 functions / 15 typedefs and M5 is 49 checked / 33 unchecked. The GitHub
+`main` reference remains `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`.
+Current model, VAST and Scaleway status is authoritative only in
+`docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`,
+`docs/handoff/mac-cpu-metal-completion-plan-2026-08-30.md`, and
 `docs/m5-owner-verification-checklist.md`; the dated baseline and all later
 history in this file are not current-state claims.
 

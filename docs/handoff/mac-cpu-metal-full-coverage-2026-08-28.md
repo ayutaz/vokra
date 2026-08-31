@@ -21,9 +21,14 @@
 
 The authoritative runtime implementation/code snapshot is
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0` on
-`feat/mac-cpu-metal-full-coverage-2026-08-28`, workspace version `0.2.0`; the
+`feat/mac-cpu-metal-full-coverage-2026-08-28`, historically workspace version
+`0.2.0`; the
 pre-refresh evidence/package checkpoint was
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. GitHub `main` remains
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. The active branch is now
+workspace `0.3.0`; immediately before this documentation refresh its remote
+head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, which was
+mergeable and non-draft with 109 passing checks, 13 expected skips, and no
+failures or pending checks. GitHub `main` remains
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The source-level Metal inventory
 correction is `8f0d8572d46fe9972bfdd88241efa937e17e63ac`. The repeated live
 public-artifact audit at that commit reports 194 repositories, 193

@@ -8,6 +8,10 @@
 > [`Mac CPU/Metal completion plan`](mac-cpu-metal-completion-plan-2026-08-30.md),
 > reconciled at code `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
 > evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
+> Those checkpoints are historical workspace `0.2.0` evidence. The active
+> branch is workspace `0.3.0`; immediately before this documentation refresh
+> its remote head was `d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79,
+> with 109 passing checks, 13 expected skips, and no failures or pending checks.
 > The historical baseline and session narrative below are intentionally not
 > rewritten into present tense.
 

@@ -23,6 +23,14 @@ no `--push`, repo deletion or public replacement is authorized by this plan.
 
 ## Audited baseline (reconciled 2026-08-31)
 
+The active branch is workspace `0.3.0`; immediately before this documentation
+refresh its remote head was
+`d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
+checks, 13 expected skips, and no failures or pending checks. The authenticated
+runtime/VAST checkpoint `9f69277d8a0d5df574c1ee95563bd1f005de91d0` and
+evidence/package checkpoint `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`
+remain historical workspace `0.2.0` evidence.
+
 The live read-only Hugging Face audit was repeated at clean branch commit
 `8f0d8572d46fe9972bfdd88241efa937e17e63ac` on 2026-08-31. It returned 194
 public repositories, 193 GGUF-bearing repositories and 198 GGUF files:

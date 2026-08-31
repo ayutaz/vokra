@@ -12,8 +12,12 @@ runs on VAST, not on the development Mac.
 **2026-08-31 supersession note:** the pre-documentation implementation/code
 baseline observed was `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`, with evidence/package checkpoint
-`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`, workspace `0.2.0`; current C ABI
-is 57 functions / 15 typedefs.
+`5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`; those authenticated checkpoints
+are historical `0.2.0` evidence. The active branch is now workspace `0.3.0`;
+immediately before this documentation refresh its remote head was
+`d8a93bc3acdb8f9648ecb8dd37ef41657fbf425b` in open PR #79, with 109 passing
+checks, 13 expected skips, and no failures or pending checks. The current C
+ABI is 57 functions / 15 typedefs.
 The current M5 ledger is
 49 checked / 33 unchecked. For current model and platform status, use
 `docs/handoff/mac-cpu-metal-full-coverage-2026-08-28.md`,
