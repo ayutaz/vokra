@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,40 @@ ALGORITHM_SOURCE_FIXED_FILES = {
     "sampler_corrector": "sgmse/sampling/correctors.py",
 }
 LOCKED_DISTRIBUTION_BLOCKER = "BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION"
+TYPED_TENSOR_CONTRACT_FORMAT = "vokra-sgmse-typed-role-manifest-v1"
+# Filled only by a later commit after VAST reviews the real checkpoint.  The
+# inspector must not let a caller self-authorize rows and a matching digest.
+REVIEWED_TENSOR_MANIFEST_SHA256: str | None = None
+TYPED_FIXED_ROLES = {
+    "fourier_frequencies",
+    "sigma_first_projection",
+    "sigma_first_bias",
+    "sigma_second_projection",
+    "sigma_second_bias",
+}
+TYPED_STAGE_KINDS = {
+    "input",
+    "residual",
+    "attention",
+    "downsample",
+    "upsample",
+    "progressive_output",
+    "progressive_input",
+    "middle",
+    "output",
+}
+TYPED_STAGE_SLOTS = {
+    "weight",
+    "bias",
+    "norm_gamma",
+    "norm_beta",
+    "time_embedding",
+    "query",
+    "key",
+    "value",
+    "output",
+    "fir_kernel",
+}
 LOCKED_DISTRIBUTION_SOURCE_EXPECTATIONS = {
     "speechbrain/integrations/models/sgmse_plus.py": {
         "present": False,
@@ -119,7 +154,164 @@ def tensor_contract_status(loaded: dict[str, Any]) -> str:
     manifest = loaded.get("tensor_manifest")
     if not isinstance(manifest, dict) or not manifest:
         return "AUTHENTICATED_MANIFEST_REQUIRED"
+    bindings = loaded.get("typed_bindings")
+    required_roles = loaded.get("typed_required_roles")
+    if (
+        REVIEWED_TENSOR_MANIFEST_SHA256 is not None
+        and isinstance(bindings, list)
+        and bindings
+        and isinstance(required_roles, list)
+        and _reviewed_typed_binding(loaded, bindings, required_roles)
+    ):
+        return "SAFE_LOADED_TYPED_MANIFEST"
     return "SAFE_LOADED_MANIFEST"
+
+
+def valid_typed_role(role: Any) -> bool:
+    """Accept only the native binder's closed role vocabulary.
+
+    The tensor *name* is still supplied by the reviewed checkpoint manifest;
+    this parser deliberately does not normalize or invent source names.
+    """
+    if isinstance(role, str) and role in TYPED_FIXED_ROLES:
+        return True
+    if not isinstance(role, str) or not role.startswith("stage:"):
+        return False
+    fields = role.split(":")
+    if len(fields) != 5:
+        return False
+    _, index, kind, block, slot = fields
+    return (
+        index.isdecimal()
+        and block.isdecimal()
+        and kind in TYPED_STAGE_KINDS
+        and slot in TYPED_STAGE_SLOTS
+    )
+
+
+def validate_typed_manifest_rows(
+    rows: Any,
+    required_roles: Any,
+) -> None:
+    """Validate exact typed rows before a future GGUF writer can use them."""
+    if not isinstance(rows, list) or not isinstance(required_roles, list) or not required_roles:
+        raise ValueError("typed SGMSE manifest requires non-empty row and role lists")
+    if any(not isinstance(role, str) for role in required_roles):
+        raise ValueError("typed SGMSE required roles must be strings")
+    if len(set(required_roles)) != len(required_roles) or len(rows) != len(required_roles):
+        raise ValueError("typed SGMSE manifest role set is duplicate or incomplete")
+    expected = set(required_roles)
+    names: set[str] = set()
+    roles: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("typed SGMSE manifest row is not an object")
+        name = row.get("name")
+        role = row.get("role")
+        shape = row.get("shape")
+        dtype = row.get("dtype")
+        if (
+            set(row) != {"name", "role", "dtype", "shape"}
+            or not isinstance(name, str)
+            or not name
+            or any(ord(character) < 32 or ord(character) == 127 or character == "|" for character in name)
+            or name in names
+            or not isinstance(role, str)
+            or role in roles
+            or role not in expected
+            or not valid_typed_role(role)
+            or dtype not in {"torch.float32", "torch.float16", "torch.bfloat16"}
+            or not isinstance(shape, list)
+            or not shape
+            or any(not isinstance(axis, int) or isinstance(axis, bool) or axis <= 0 for axis in shape)
+        ):
+            raise ValueError("typed SGMSE manifest row is duplicate, unknown, or malformed")
+        names.add(name)
+        roles.add(role)
+    if roles != expected:
+        raise ValueError("typed SGMSE manifest has missing or extra roles")
+
+
+def _dtype_tag(dtype: Any) -> int:
+    return {
+        "torch.float32": 0,
+        "torch.float16": 1,
+        "torch.bfloat16": 30,
+    }.get(dtype, -1)
+
+
+def typed_manifest_sha256(rows: Any, required_roles: Any) -> str:
+    """Hash rows exactly as ``SgmseTensorManifest::canonical_sha256``.
+
+    Framing is role bytes + NUL + exact name bytes + NUL + little-endian
+    GGML dtype tag + little-endian rank + little-endian dimensions, with rows
+    sorted by exact tensor name.  The digest is the only release authority;
+    callers cannot choose an expected value.
+    """
+    validate_typed_manifest_rows(rows, required_roles)
+    canonical = bytearray()
+    for row in sorted(rows, key=lambda item: item["name"]):
+        canonical.extend(row["role"].encode("utf-8"))
+        canonical.append(0)
+        canonical.extend(row["name"].encode("utf-8"))
+        canonical.append(0)
+        canonical.extend(struct.pack("<I", _dtype_tag(row["dtype"])))
+        shape = row["shape"]
+        canonical.extend(struct.pack("<Q", len(shape)))
+        for dimension in shape:
+            canonical.extend(struct.pack("<Q", dimension))
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _bind_typed_manifest_rows(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> list[dict[str, Any]]:
+    """Bind reviewed role rows to the exact safe-loaded tensor descriptors.
+
+    This function never maps by prefixes or ordinal position.  It is usable by
+    the VAST evidence step once source review supplies the role rows; without
+    those rows, inspection remains ``AUTHENTICATED_MANIFEST_REQUIRED``.
+    """
+    validate_typed_manifest_rows(rows, required_roles)
+    source = loaded.get("tensor_manifest")
+    if not isinstance(source, dict) or set(source) != {row["name"] for row in rows}:
+        raise ValueError("typed SGMSE rows do not exactly cover the safe-loaded tensor manifest")
+    for row in rows:
+        descriptor = source[row["name"]]
+        if not isinstance(descriptor, dict) or descriptor.get("shape") != row["shape"] or descriptor.get("dtype") != row["dtype"]:
+            raise ValueError(f"typed SGMSE row descriptor mismatch for {row['name']!r}")
+    return [dict(row) for row in rows]
+
+
+def _reviewed_typed_binding(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> bool:
+    if REVIEWED_TENSOR_MANIFEST_SHA256 is None or not re.fullmatch(
+        r"[0-9a-f]{64}", REVIEWED_TENSOR_MANIFEST_SHA256
+    ):
+        return False
+    try:
+        _bind_typed_manifest_rows(loaded, rows, required_roles)
+    except ValueError:
+        return False
+    return typed_manifest_sha256(rows, required_roles) == REVIEWED_TENSOR_MANIFEST_SHA256
+
+
+def bind_typed_manifest(
+    loaded: dict[str, Any],
+    rows: Any,
+    required_roles: Any,
+) -> list[dict[str, Any]]:
+    """Production gate for typed binding; closed until a reviewed digest exists."""
+    if REVIEWED_TENSOR_MANIFEST_SHA256 is None:
+        raise ValueError("AUTHENTICATED_MANIFEST_REQUIRED: reviewed SGMSE tensor digest is not compiled in")
+    if not _reviewed_typed_binding(loaded, rows, required_roles):
+        raise ValueError("AUTHENTICATED_MANIFEST_REQUIRED: typed SGMSE rows do not match the reviewed digest")
+    return _bind_typed_manifest_rows(loaded, rows, required_roles)
 
 
 def tensor_manifest(value: Any, path: str = "") -> tuple[dict[str, dict[str, Any]], list[str], bool]:
@@ -472,7 +664,7 @@ def inspect(
     manifest = {
         "format": "vokra-sgmse-voicebank-inspection-v1",
         "tensor_contract": {
-            "format": "vokra-sgmse-tensor-contract-v1",
+            "format": TYPED_TENSOR_CONTRACT_FORMAT,
             # The inspector is the only producer of the checkpoint-specific
             # contract.  Keep this explicit until a real safe-loaded manifest
             # exists; a hand-written or historical 647-tensor list must never
@@ -480,6 +672,11 @@ def inspect(
             "status": tensor_contract_status(loaded),
             "source": "safe_load.tensor_manifest",
             "tensor_count": loaded.get("tensor_count"),
+            # Role assignment is intentionally absent until the pinned source
+            # and this exact safe-loaded manifest are reviewed on VAST.  A raw
+            # tensor list, including the historical 647-tensor list, cannot
+            # be treated as a typed graph assignment.
+            "typed_bindings": loaded.get("typed_bindings"),
         },
         "model_repository": MODEL_REPOSITORY,
         "model_revision": MODEL_REVISION,
@@ -551,6 +748,80 @@ def self_test() -> None:
     assert tensor_contract_status({"safe_load_status": "BLOCKED_WEIGHTS_ONLY"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED"}) == "AUTHENTICATED_MANIFEST_REQUIRED"
     assert tensor_contract_status({"safe_load_status": "SAFE_LOADED", "tensor_manifest": {"x": {}}}) == "SAFE_LOADED_MANIFEST"
+    required_roles = ["fourier_frequencies", "stage:0:input:0:weight"]
+    typed_rows = [
+        {"name": "source.frequency", "role": required_roles[0], "dtype": "torch.float32", "shape": [128]},
+        {"name": "source.input.weight", "role": required_roles[1], "dtype": "torch.float32", "shape": [4, 4]},
+    ]
+    validate_typed_manifest_rows(typed_rows, required_roles)
+    assert (
+        typed_manifest_sha256(typed_rows, required_roles)
+        == "7c77bb306c39ac21e019c069e329bc47751d5ded02519c3b09755db49658a4a2"
+    )
+    bound_rows = _bind_typed_manifest_rows(
+        {"tensor_manifest": {row["name"]: {"shape": row["shape"], "dtype": row["dtype"]} for row in typed_rows}},
+        typed_rows,
+        required_roles,
+    )
+    assert bound_rows == typed_rows
+    try:
+        _bind_typed_manifest_rows(
+            {"tensor_manifest": {"source.frequency": {"shape": [128], "dtype": "torch.float32"}}},
+            typed_rows,
+            required_roles,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("typed SGMSE rows with missing source tensor were accepted")
+    try:
+        bind_typed_manifest(
+            {"tensor_manifest": {row["name"]: {"shape": row["shape"], "dtype": row["dtype"]} for row in typed_rows}},
+            typed_rows,
+            required_roles,
+        )
+    except ValueError as error:
+        assert "AUTHENTICATED_MANIFEST_REQUIRED" in str(error)
+    else:
+        raise AssertionError("production SGMSE typed binder opened without reviewed digest")
+    globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = "0" * 64
+    try:
+        loaded_typed = {
+            "tensor_manifest": {
+                row["name"]: {"shape": row["shape"], "dtype": row["dtype"]}
+                for row in typed_rows
+            },
+            "typed_bindings": typed_rows,
+            "typed_required_roles": required_roles,
+        }
+        assert tensor_contract_status(loaded_typed) != "SAFE_LOADED_TYPED_MANIFEST"
+        bind_typed_manifest(
+            loaded_typed,
+            typed_rows,
+            required_roles,
+        )
+    except ValueError as error:
+        assert "AUTHENTICATED_MANIFEST_REQUIRED" in str(error)
+    else:
+        raise AssertionError("non-matching compiled SGMSE digest was accepted")
+    finally:
+        globals()["REVIEWED_TENSOR_MANIFEST_SHA256"] = None
+    for tampered in (
+        typed_rows[:1],
+        typed_rows + [dict(typed_rows[1], name="source.extra")],
+        [dict(typed_rows[0], role="arbitrary_passthrough"), typed_rows[1]],
+        [dict(typed_rows[0], dtype="torch.int64"), typed_rows[1]],
+        [dict(typed_rows[0], shape=[0]), typed_rows[1]],
+        [dict(typed_rows[0], name="source|frequency"), typed_rows[1]],
+        [dict(typed_rows[0], metadata="unexpected"), typed_rows[1]],
+        [{key: value for key, value in typed_rows[0].items() if key != "shape"}, typed_rows[1]],
+    ):
+        try:
+            validate_typed_manifest_rows(tampered, required_roles)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("tampered typed SGMSE row was accepted")
 
 
 def main() -> int:

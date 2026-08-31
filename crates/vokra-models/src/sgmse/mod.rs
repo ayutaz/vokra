@@ -13,9 +13,10 @@
 //! (`sgmse/backbones/ncsnpp.py`, `sgmse/data_module.py`, and
 //! `sgmse/model.py`).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
-use vokra_core::gguf::{GgufFile, chunks};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::ir::graph::{IstftAttrs, PadMode, StftAttrs, Window, WindowSymmetry};
 use vokra_core::{Result, VokraError};
 use vokra_ops::{Spectrogram, istft, stft};
@@ -31,13 +32,546 @@ pub const MODEL_NAME: &str = "sgmse-voicebank";
 pub const ARCH: &str = "sgmse_voicebank";
 /// Metadata key written only by a future authenticated converter.
 pub const KEY_MANIFEST_STATUS: &str = "vokra.sgmse.manifest_status";
+/// Digest of the complete role/name/dtype/shape manifest.  A converter must
+/// stamp this only after the VAST inspection has reviewed the safe-loaded
+/// checkpoint; a status string alone is never sufficient authentication.
+pub const KEY_TENSOR_MANIFEST_SHA256: &str = "vokra.sgmse.tensor_manifest_sha256";
+/// Array<String> rows encoded as `role|exact-name|dtype-tag|dim,dim,...`.
+pub const KEY_TENSOR_MANIFEST: &str = "vokra.sgmse.tensor_manifest";
+/// SHA-256 identity of the fixed VoiceBank checkpoint inspected by the worker.
+pub const CHECKPOINT_SHA256: &str =
+    "7ca96321aca40cdca90c450d1450a5c7f343935e5b46ee34a1b575f9f774ccc3";
+/// The release digest is deliberately uninstantiated until VAST reviews the
+/// real safe-loaded checkpoint and role assignment.  This prevents a caller
+/// from self-authorizing an arbitrary GGUF by supplying its own digest.
+pub const REVIEWED_TENSOR_MANIFEST_SHA256: Option<[u8; 32]> = None;
+/// The reviewed role set is held out with the digest so neither names nor
+/// required assignment targets can be supplied by an artifact caller.
+pub const REVIEWED_TENSOR_ROLES: Option<&'static [SgmseTensorRole]> = None;
 /// Status required before a native checkpoint can be opened.
 pub const AUTHENTICATED_MANIFEST: &str = "AUTHENTICATED";
-/// The native graph is not runnable until checkpoint-specific bindings and
-/// GroupNorm and OUVE seams are wired through the selected Compute backend;
-/// the authenticated binder/weights, full residual/FIR/resampling score
-/// graph, real parity, and device-resident execution remain incomplete.
+/// The typed manifest/binder boundary is implemented, but the native graph is
+/// not runnable until checkpoint-specific weights, GroupNorm and OUVE seams
+/// are wired through the selected Compute backend; full residual/FIR/
+/// resampling score graph, real parity, and device-resident execution remain
+/// incomplete.
 pub const SGMSE_STATUS: &str = "SOURCE_PLAN_ONLY";
+
+/// The only learned parameter roles accepted by the SGMSE binder.  Tensor
+/// names remain checkpoint-specific data from the authenticated manifest; no
+/// spelling or prefix is inferred here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SgmseTensorSlot {
+    Weight,
+    Bias,
+    NormGamma,
+    NormBeta,
+    TimeEmbedding,
+    Query,
+    Key,
+    Value,
+    Output,
+    FirKernel,
+}
+
+/// Typed assignment target for one authenticated checkpoint tensor.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SgmseTensorRole {
+    FourierFrequencies,
+    SigmaFirstProjection,
+    SigmaFirstBias,
+    SigmaSecondProjection,
+    SigmaSecondBias,
+    NcsnppStage {
+        stage_index: usize,
+        kind: NcsnppStageKind,
+        block: usize,
+        slot: SgmseTensorSlot,
+    },
+}
+
+impl SgmseTensorRole {
+    fn canonical_name(&self) -> String {
+        match self {
+            Self::FourierFrequencies => "fourier_frequencies".to_owned(),
+            Self::SigmaFirstProjection => "sigma_first_projection".to_owned(),
+            Self::SigmaFirstBias => "sigma_first_bias".to_owned(),
+            Self::SigmaSecondProjection => "sigma_second_projection".to_owned(),
+            Self::SigmaSecondBias => "sigma_second_bias".to_owned(),
+            Self::NcsnppStage {
+                stage_index,
+                kind,
+                block,
+                slot,
+            } => format!(
+                "stage:{stage_index}:{}:{block}:{}",
+                stage_kind_name(*kind),
+                slot_name(*slot)
+            ),
+        }
+    }
+}
+
+fn stage_kind_name(kind: NcsnppStageKind) -> &'static str {
+    match kind {
+        NcsnppStageKind::Input => "input",
+        NcsnppStageKind::Residual => "residual",
+        NcsnppStageKind::Attention => "attention",
+        NcsnppStageKind::Downsample => "downsample",
+        NcsnppStageKind::Upsample => "upsample",
+        NcsnppStageKind::ProgressiveOutput => "progressive_output",
+        NcsnppStageKind::ProgressiveInput => "progressive_input",
+        NcsnppStageKind::Middle => "middle",
+        NcsnppStageKind::Output => "output",
+    }
+}
+
+fn slot_name(slot: SgmseTensorSlot) -> &'static str {
+    match slot {
+        SgmseTensorSlot::Weight => "weight",
+        SgmseTensorSlot::Bias => "bias",
+        SgmseTensorSlot::NormGamma => "norm_gamma",
+        SgmseTensorSlot::NormBeta => "norm_beta",
+        SgmseTensorSlot::TimeEmbedding => "time_embedding",
+        SgmseTensorSlot::Query => "query",
+        SgmseTensorSlot::Key => "key",
+        SgmseTensorSlot::Value => "value",
+        SgmseTensorSlot::Output => "output",
+        SgmseTensorSlot::FirKernel => "fir_kernel",
+    }
+}
+
+fn parse_stage_kind(name: &str) -> Option<NcsnppStageKind> {
+    Some(match name {
+        "input" => NcsnppStageKind::Input,
+        "residual" => NcsnppStageKind::Residual,
+        "attention" => NcsnppStageKind::Attention,
+        "downsample" => NcsnppStageKind::Downsample,
+        "upsample" => NcsnppStageKind::Upsample,
+        "progressive_output" => NcsnppStageKind::ProgressiveOutput,
+        "progressive_input" => NcsnppStageKind::ProgressiveInput,
+        "middle" => NcsnppStageKind::Middle,
+        "output" => NcsnppStageKind::Output,
+        _ => return None,
+    })
+}
+
+fn parse_slot(name: &str) -> Option<SgmseTensorSlot> {
+    Some(match name {
+        "weight" => SgmseTensorSlot::Weight,
+        "bias" => SgmseTensorSlot::Bias,
+        "norm_gamma" => SgmseTensorSlot::NormGamma,
+        "norm_beta" => SgmseTensorSlot::NormBeta,
+        "time_embedding" => SgmseTensorSlot::TimeEmbedding,
+        "query" => SgmseTensorSlot::Query,
+        "key" => SgmseTensorSlot::Key,
+        "value" => SgmseTensorSlot::Value,
+        "output" => SgmseTensorSlot::Output,
+        "fir_kernel" => SgmseTensorSlot::FirKernel,
+        _ => return None,
+    })
+}
+
+fn parse_role(name: &str) -> Option<SgmseTensorRole> {
+    Some(match name {
+        "fourier_frequencies" => SgmseTensorRole::FourierFrequencies,
+        "sigma_first_projection" => SgmseTensorRole::SigmaFirstProjection,
+        "sigma_first_bias" => SgmseTensorRole::SigmaFirstBias,
+        "sigma_second_projection" => SgmseTensorRole::SigmaSecondProjection,
+        "sigma_second_bias" => SgmseTensorRole::SigmaSecondBias,
+        _ => {
+            let mut fields = name.split(':');
+            if fields.next()? != "stage" {
+                return None;
+            }
+            let stage_index = fields.next()?.parse().ok()?;
+            let kind = parse_stage_kind(fields.next()?)?;
+            let block = fields.next()?.parse().ok()?;
+            let slot = parse_slot(fields.next()?)?;
+            if fields.next().is_some() {
+                return None;
+            }
+            SgmseTensorRole::NcsnppStage {
+                stage_index,
+                kind,
+                block,
+                slot,
+            }
+        }
+    })
+}
+
+/// One row from the VAST-authenticated checkpoint contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SgmseTensorManifestEntry {
+    /// Exact source/checkpoint tensor name, preserved without normalization.
+    pub name: String,
+    /// Exact GGUF storage type declared by the converter.
+    pub dtype: GgmlType,
+    /// Exact GGUF dimensions (innermost dimension first).
+    pub dimensions: Vec<u64>,
+    /// Typed native destination; arbitrary pass-through roles are impossible.
+    pub role: SgmseTensorRole,
+}
+
+/// Checkpoint-specific contract assembled only by the production binder after
+/// the repository's reviewed digest and role set are compiled in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SgmseTensorManifest {
+    source_revision: String,
+    checkpoint_sha256: String,
+    graph_config: NcsnppV2Config,
+    sampler_config: SgmseConfig,
+    required_roles: Vec<SgmseTensorRole>,
+    entries: Vec<SgmseTensorManifestEntry>,
+}
+
+impl SgmseTensorManifest {
+    /// Reads the producer's exact typed rows without assigning roles by
+    /// ordinal or name prefix. This parser has no authority to claim source
+    /// identity, configuration, or role completeness.
+    pub fn from_gguf_metadata(file: &GgufFile) -> Result<Vec<SgmseTensorManifestEntry>> {
+        let value = file.get(KEY_TENSOR_MANIFEST).ok_or_else(|| {
+            VokraError::ModelLoad("sgmse: typed tensor manifest metadata is missing".to_owned())
+        })?;
+        let array = value.as_array().ok_or_else(|| {
+            VokraError::ModelLoad("sgmse: typed tensor manifest is not an array".to_owned())
+        })?;
+        if array.element_type != GgufValueType::String || array.values.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "sgmse: typed tensor manifest must be a non-empty Array<String>".to_owned(),
+            ));
+        }
+        let mut entries = Vec::with_capacity(array.values.len());
+        for (index, value) in array.values.iter().enumerate() {
+            let encoded = match value {
+                GgufMetadataValue::String(value) => value,
+                _ => {
+                    return Err(VokraError::ModelLoad(format!(
+                        "sgmse: typed tensor manifest row {index} is not a string"
+                    )));
+                }
+            };
+            let mut fields = encoded.splitn(4, '|');
+            let role = fields.next().and_then(parse_role).ok_or_else(|| {
+                VokraError::ModelLoad(format!(
+                    "sgmse: typed tensor manifest row {index} has an unknown role"
+                ))
+            })?;
+            let name = fields
+                .next()
+                .filter(|value| {
+                    !value.is_empty()
+                        && !value
+                            .chars()
+                            .any(|character| character == '|' || character.is_control())
+                })
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "sgmse: typed tensor manifest row {index} has an empty tensor name"
+                    ))
+                })?;
+            let dtype = fields
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .and_then(|value| GgmlType::from_tag(value).ok())
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "sgmse: typed tensor manifest row {index} has an invalid dtype"
+                    ))
+                })?;
+            let dimensions = fields
+                .next()
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(|dimension| dimension.parse::<u64>())
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                })
+                .transpose()
+                .map_err(|_| {
+                    VokraError::ModelLoad(format!(
+                        "sgmse: typed tensor manifest row {index} has an invalid shape"
+                    ))
+                })?
+                .filter(|dimensions| !dimensions.is_empty())
+                .ok_or_else(|| {
+                    VokraError::ModelLoad(format!(
+                        "sgmse: typed tensor manifest row {index} has an empty shape"
+                    ))
+                })?;
+            if dimensions.contains(&0) {
+                return Err(VokraError::ModelLoad(format!(
+                    "sgmse: typed tensor manifest row {index} has a zero dimension"
+                )));
+            }
+            entries.push(SgmseTensorManifestEntry {
+                name: name.to_owned(),
+                dtype,
+                dimensions,
+                role,
+            });
+        }
+        if entries.iter().any(|entry| entry.name.contains('|')) {
+            return Err(VokraError::ModelLoad(
+                "sgmse: typed tensor name contains the manifest separator".to_owned(),
+            ));
+        }
+        Ok(entries)
+    }
+
+    /// Validates identity, exact role completeness, and the canonical digest
+    /// supplied by the release's VAST review.  The expected digest is kept
+    /// outside the mutable GGUF metadata so a self-stamped file cannot close
+    /// the gate by itself.
+    fn validate(&self, plan: &NcsnppV2GraphPlan, expected_digest: [u8; 32]) -> Result<()> {
+        if expected_digest == [0; 32] {
+            return Err(VokraError::ModelLoad(
+                "sgmse: reviewed tensor manifest digest is missing".to_owned(),
+            ));
+        }
+        if self.source_revision != SOURCE_REVISION
+            || self.checkpoint_sha256 != CHECKPOINT_SHA256
+            || self.graph_config != plan.config
+            || self.sampler_config != SgmseConfig::voicebank()
+        {
+            return Err(VokraError::ModelLoad(
+                "sgmse: authenticated manifest source identity or configuration mismatch"
+                    .to_owned(),
+            ));
+        }
+        if self.entries.is_empty() || self.required_roles.is_empty() {
+            return Err(VokraError::ModelLoad(
+                "sgmse: authenticated tensor manifest is empty".to_owned(),
+            ));
+        }
+        let required: BTreeSet<_> = self.required_roles.iter().cloned().collect();
+        if required.len() != self.required_roles.len() || self.entries.len() != required.len() {
+            return Err(VokraError::ModelLoad(
+                "sgmse: tensor manifest role set is duplicate or incomplete".to_owned(),
+            ));
+        }
+        let mut names = BTreeSet::new();
+        let mut roles = BTreeSet::new();
+        for entry in &self.entries {
+            if entry.name.is_empty()
+                || !matches!(entry.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
+                || entry.dimensions.is_empty()
+                || !names.insert(entry.name.as_str())
+                || !roles.insert(entry.role.clone())
+                || !required.contains(&entry.role)
+            {
+                return Err(VokraError::ModelLoad(
+                    "sgmse: tensor manifest has duplicate, unknown, or unsupported entry"
+                        .to_owned(),
+                ));
+            }
+            if let SgmseTensorRole::NcsnppStage {
+                stage_index,
+                kind,
+                block,
+                ..
+            } = &entry.role
+            {
+                let Some(stage) = plan.stages.get(*stage_index) else {
+                    return Err(VokraError::ModelLoad(
+                        "sgmse: tensor role references a missing graph stage".to_owned(),
+                    ));
+                };
+                if stage.kind != *kind || stage.block != *block {
+                    return Err(VokraError::ModelLoad(
+                        "sgmse: tensor role graph stage metadata mismatches source plan".to_owned(),
+                    ));
+                }
+            }
+        }
+        if roles != required {
+            return Err(VokraError::ModelLoad(
+                "sgmse: tensor manifest is missing a required typed role".to_owned(),
+            ));
+        }
+        if self.canonical_sha256() != expected_digest {
+            return Err(VokraError::ModelLoad(
+                "sgmse: tensor manifest digest does not match the reviewed release digest"
+                    .to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Computes the stable digest over role, exact name, dtype, and shape.
+    #[must_use]
+    pub fn canonical_sha256(&self) -> [u8; 32] {
+        let mut rows: Vec<_> = self.entries.iter().collect();
+        rows.sort_unstable_by(|left, right| left.name.cmp(&right.name));
+        let mut bytes = Vec::new();
+        for row in rows {
+            bytes.extend_from_slice(row.role.canonical_name().as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(row.name.as_bytes());
+            bytes.push(0);
+            bytes.extend_from_slice(&row.dtype.tag().to_le_bytes());
+            bytes.extend_from_slice(&(row.dimensions.len() as u64).to_le_bytes());
+            for dimension in &row.dimensions {
+                bytes.extend_from_slice(&dimension.to_le_bytes());
+            }
+        }
+        crate::strict_checkpoint::sha256_bytes(&bytes)
+    }
+}
+
+/// Bound, finite graph operands produced only after the complete manifest is
+/// checked.  This is a typed assignment boundary, not an executable graph;
+/// unsupported residual/FIR/resampling kernels still keep SGMSE closed.
+#[derive(Debug, Clone)]
+pub struct SgmseGraphWeights {
+    plan: NcsnppV2GraphPlan,
+    tensors: Vec<(SgmseTensorRole, String, Vec<u64>, Vec<f32>)>,
+}
+
+impl SgmseGraphWeights {
+    /// Binds every declared tensor and rejects any missing/extra descriptor.
+    pub fn bind_authenticated(file: &GgufFile) -> Result<Self> {
+        let (Some(expected_digest), Some(reviewed_roles)) =
+            (REVIEWED_TENSOR_MANIFEST_SHA256, REVIEWED_TENSOR_ROLES)
+        else {
+            return Err(VokraError::ModelLoad(
+                "sgmse: AUTHENTICATED_MANIFEST_REQUIRED until VAST-reviewed tensor digest is compiled in"
+                    .to_owned(),
+            ));
+        };
+        let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default())?;
+        let manifest = SgmseTensorManifest {
+            source_revision: SOURCE_REVISION.to_owned(),
+            checkpoint_sha256: CHECKPOINT_SHA256.to_owned(),
+            graph_config: plan.config.clone(),
+            sampler_config: SgmseConfig::voicebank(),
+            required_roles: reviewed_roles.to_vec(),
+            entries: Self::from_gguf_metadata(file)?,
+        };
+        manifest.validate(&plan, expected_digest)?;
+        let arch = file
+            .get(chunks::KEY_MODEL_ARCH)
+            .and_then(|value| value.as_str());
+        if arch != Some(ARCH) {
+            return Err(VokraError::ModelLoad(
+                "sgmse: GGUF model arch is not the authenticated SGMSE arch".to_owned(),
+            ));
+        }
+        if file
+            .get(chunks::KEY_MODEL_NAME)
+            .and_then(|value| value.as_str())
+            != Some(MODEL_NAME)
+        {
+            return Err(VokraError::ModelLoad(
+                "sgmse: GGUF model name is not the authenticated VoiceBank model".to_owned(),
+            ));
+        }
+        let status = file
+            .get(KEY_MANIFEST_STATUS)
+            .and_then(|value| value.as_str());
+        if status != Some(AUTHENTICATED_MANIFEST) {
+            return Err(VokraError::ModelLoad(
+                "sgmse: AUTHENTICATED_MANIFEST_REQUIRED".to_owned(),
+            ));
+        }
+        let stamped = file
+            .get(KEY_TENSOR_MANIFEST_SHA256)
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "sgmse: tensor manifest digest metadata is missing".to_owned(),
+                )
+            })?;
+        if stamped != hex_digest(&expected_digest) {
+            return Err(VokraError::ModelLoad(
+                "sgmse: tensor manifest digest metadata mismatch".to_owned(),
+            ));
+        }
+        if file.tensors().len() != manifest.entries.len() {
+            return Err(VokraError::ModelLoad(
+                "sgmse: GGUF tensor count differs from authenticated manifest".to_owned(),
+            ));
+        }
+        let mut tensors = Vec::with_capacity(manifest.entries.len());
+        for entry in &manifest.entries {
+            let info = file.tensor_info(&entry.name).ok_or_else(|| {
+                VokraError::ModelLoad(format!("sgmse: missing tensor {:?}", entry.name))
+            })?;
+            if info.dtype != entry.dtype || info.dimensions != entry.dimensions {
+                return Err(VokraError::ModelLoad(format!(
+                    "sgmse: tensor {:?} dtype/shape differs from authenticated manifest",
+                    entry.name
+                )));
+            }
+            let values = file.tensor_f32(&entry.name).map_err(|error| {
+                VokraError::ModelLoad(format!(
+                    "sgmse: tensor {:?} decode failed: {error}",
+                    entry.name
+                ))
+            })?;
+            if values.iter().any(|value| !value.is_finite()) {
+                return Err(VokraError::ModelLoad(format!(
+                    "sgmse: tensor {:?} contains a non-finite value",
+                    entry.name
+                )));
+            }
+            tensors.push((
+                entry.role.clone(),
+                entry.name.clone(),
+                entry.dimensions.clone(),
+                values,
+            ));
+        }
+        let bound = Self { plan, tensors };
+        bound.validate_before_dispatch()?;
+        Ok(bound)
+    }
+
+    /// Rechecks all operands immediately before a future backend dispatch.
+    /// This catches corruption introduced after bind (including late-loaded
+    /// or device-transfer operands) rather than relying on constructor-time
+    /// validation alone.
+    pub fn validate_before_dispatch(&self) -> Result<()> {
+        self.plan.config.validate()?;
+        if self.tensors.is_empty()
+            || self.tensors.iter().any(|(_, _, dimensions, values)| {
+                let shape_count = dimensions.iter().try_fold(1usize, |count, &dimension| {
+                    usize::try_from(dimension).ok()?.checked_mul(count)
+                });
+                dimensions.is_empty()
+                    || values.is_empty()
+                    || shape_count != Some(values.len())
+                    || values.iter().any(|v| !v.is_finite())
+            })
+        {
+            return Err(VokraError::ModelLoad(
+                "sgmse: graph operands are incomplete or non-finite".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns the bound operand for a typed role, if present.
+    #[must_use]
+    pub fn tensor_for_role(&self, role: &SgmseTensorRole) -> Option<&[f32]> {
+        self.tensors
+            .iter()
+            .find(|(bound_role, _, _, _)| bound_role == role)
+            .map(|(_, _, _, values)| values.as_slice())
+    }
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(char::from(DIGITS[(byte >> 4) as usize]));
+        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
+    }
+    output
+}
 
 /// Source-authenticated frontend and sampler configuration for SGMSE+.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -175,7 +709,7 @@ pub struct NcsnppV2Config {
 
 /// A source-level NCSN++ stage. This is a topology description, not a weight
 /// manifest: the latter must be supplied by the safe-loader before execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NcsnppStageKind {
     /// Initial four-real-channel projection.
     Input,
@@ -1107,7 +1641,7 @@ impl SgmseModel {
             ));
         }
         Err(VokraError::ModelLoad(
-            "sgmse: AUTHENTICATED_MANIFEST_REQUIRED until the native tensor binder is reviewed"
+            "sgmse: AUTHENTICATED_MANIFEST_REQUIRED until the reviewed tensor digest and semantic bindings are compiled in"
                 .to_owned(),
         ))
     }
@@ -1127,8 +1661,8 @@ impl SgmseModel {
 }
 
 /// Hot ops required by the source graph. This inventory is intentionally not
-/// a completion claim: the public binder remains `SOURCE_PLAN_ONLY` until
-/// source-exact FIR/resampling paths and authenticated weights are bound.
+/// a completion claim: source-exact FIR/resampling paths and full learned
+/// graph dispatch remain unavailable even after typed weights are bound.
 pub const SGMSE_HOT_OPS: &[HotOp] = &[
     HotOp::Gemm,
     HotOp::Conv2d,
@@ -1477,6 +2011,68 @@ mod tests {
     #[test]
     fn strict_binder_stays_closed_without_authenticated_manifest() {
         assert!(SgmseModel::require_manifest(Path::new("checkpoint.gguf")).is_err());
+    }
+
+    #[test]
+    fn typed_manifest_requires_exact_roles_and_source_identity() {
+        let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap();
+        let role = SgmseTensorRole::NcsnppStage {
+            stage_index: 0,
+            kind: NcsnppStageKind::Input,
+            block: 0,
+            slot: SgmseTensorSlot::Weight,
+        };
+        let mut manifest = SgmseTensorManifest {
+            source_revision: SOURCE_REVISION.to_owned(),
+            checkpoint_sha256: CHECKPOINT_SHA256.to_owned(),
+            graph_config: plan.config.clone(),
+            sampler_config: SgmseConfig::voicebank(),
+            required_roles: vec![SgmseTensorRole::FourierFrequencies, role.clone()],
+            entries: vec![
+                SgmseTensorManifestEntry {
+                    name: "source.frequency".to_owned(),
+                    dtype: GgmlType::F32,
+                    dimensions: vec![128],
+                    role: SgmseTensorRole::FourierFrequencies,
+                },
+                SgmseTensorManifestEntry {
+                    name: "source.input.weight".to_owned(),
+                    dtype: GgmlType::F32,
+                    dimensions: vec![4, 4],
+                    role: role.clone(),
+                },
+            ],
+        };
+        let digest = manifest.canonical_sha256();
+        assert_eq!(
+            hex_digest(&digest),
+            "7c77bb306c39ac21e019c069e329bc47751d5ded02519c3b09755db49658a4a2"
+        );
+        manifest.validate(&plan, digest).unwrap();
+
+        manifest.required_roles.push(role);
+        assert!(manifest.validate(&plan, digest).is_err());
+    }
+
+    #[test]
+    fn graph_operands_are_revalidated_at_dispatch_boundary() {
+        let plan = NcsnppV2GraphPlan::from_config(NcsnppV2Config::source_default()).unwrap();
+        let role = SgmseTensorRole::FourierFrequencies;
+        let mut weights = SgmseGraphWeights {
+            plan,
+            tensors: vec![(
+                role.clone(),
+                "source.frequencies".to_owned(),
+                vec![1],
+                vec![1.0],
+            )],
+        };
+        weights.validate_before_dispatch().unwrap();
+        weights.tensors[0].2 = vec![2];
+        assert!(weights.validate_before_dispatch().is_err());
+        weights.tensors[0].2 = vec![1];
+        weights.tensors[0].3[0] = f32::NAN;
+        assert!(weights.validate_before_dispatch().is_err());
     }
 
     #[test]

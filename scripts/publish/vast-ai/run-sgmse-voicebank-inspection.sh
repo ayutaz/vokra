@@ -55,6 +55,7 @@ self_test() {
     'CorrectorRegistry' 'sampler_predictor' 'sampler_corrector' \
     'BLOCKED_LOCKED_DISTRIBUTION_MISSING_SGMSE_INTEGRATION' \
     'importlib.metadata' \
+    'vokra-sgmse-typed-role-manifest-v1' 'typed_bindings' 'bind_typed_manifest' \
     'verdict=BLOCKED' 'blocker_exit=2' 'git status --porcelain'; do
     if ! grep -Fq -- "$token" "$path"; then
       log "self-test FAIL: missing contract token: $token"
