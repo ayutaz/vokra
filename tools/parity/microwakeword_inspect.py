@@ -24,11 +24,11 @@ MODEL_REVISION = "05b65922cc433c9df13e98e32a7fe520758c837e"
 SOURCE_REPOSITORY = "https://github.com/kahrendt/microWakeWord"
 SOURCE_REVISION = "4665173cd35f1cff9a61e06fc427f124766c488e"
 MODEL_ARTIFACT_BYTES_SHA256: str | None = None
-LOCK_SHA256 = "05e8317758e7c884e8e86e110af5b39cdd23eff63b6a66705225e6baa3ab5e13"
-PACKAGE_ROWS_SHA256 = "d5c8aaca80e340be13e719de14d1486df193977f31ea80dea3bf954030057343"
+LOCK_SHA256 = "984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2"
+PACKAGE_ROWS_SHA256 = "d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7"
 RESOLUTION_MARKERS_SHA256 = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-LICENSE_ROWS_SHA256 = "eae9f062f7ceb787fe36e09290fbc04b8f2f842df9de612b79f95f7fd615c58f"
-PACKAGE_COUNT = 10
+LICENSE_ROWS_SHA256 = "4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c"
+PACKAGE_COUNT = 1
 
 # These are Git object IDs (not file SHA-256 values).  The model bytes digest
 # remains intentionally unset until the VAST-only acquisition records it.
@@ -65,27 +65,11 @@ MODEL_MANIFEST = {
 # JSON record, evidence is selected in this order: license_expression, then
 # license, then wheel METADATA/Classifiers. A resolved lock is not license
 # approval: policy-sensitive rows keep the worker at exit 2.
-LICENSE_ROWS = [
-    {"name": "ai-edge-litert", "version": "2.2.0", "license": "Apache-2.0_PRECOMPILED_WHEEL_NOTICES_REVIEW_REQUIRED", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/ai-edge-litert/2.2.0/json"},
-    {"name": "backports-strenum", "version": "1.3.1", "license": "MIT", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/backports-strenum/1.3.1/json"},
-    {"name": "colorama", "version": "0.4.6", "license": "BSD-3-Clause", "evidence_field": "classifiers", "primary_source": "https://pypi.org/pypi/colorama/0.4.6/json"},
-    {"name": "flatbuffers", "version": "25.12.19", "license": "Apache-2.0", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/flatbuffers/25.12.19/json"},
-    {"name": "microwakeword-prep", "version": "0.1.0", "license": "FIRST_PARTY", "evidence_field": "repository", "primary_source": "repository"},
-    {"name": "ml-dtypes", "version": "0.6.0", "license": "Apache-2.0_EIGEN_MPL-2.0_WHEEL_NOTICE_REVIEW_REQUIRED", "evidence_field": "description/license section", "primary_source": "https://pypi.org/pypi/ml-dtypes/0.6.0/json"},
-    {"name": "numpy", "version": "2.5.2", "license": "BSD-3-Clause_AND_0BSD_AND_MIT_AND_Zlib_AND_CC0-1.0_BUNDLED_NOTICES_REVIEW_REQUIRED", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/numpy/2.5.2/json"},
-    {"name": "protobuf", "version": "7.36.0", "license": "BSD-3-Clause_METADATA_REVIEW_REQUIRED", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/protobuf/7.36.0/json"},
-    {"name": "tqdm", "version": "4.70.0", "license": "MPL-2.0_AND_MIT_BLOCKED_BY_POLICY", "evidence_field": "license", "primary_source": "https://pypi.org/pypi/tqdm/4.70.0/json"},
-    {"name": "typing-extensions", "version": "4.16.0", "license": "PSF-2.0_BLOCKED_BY_POLICY", "evidence_field": "license_expression", "primary_source": "https://pypi.org/pypi/typing-extensions/4.16.0/json"},
-]
+LICENSE_ROWS = [{"name": "microwakeword-prep", "version": "0.1.0", "license": "FIRST_PARTY", "evidence_field": "repository", "primary_source": "repository"}]
 BLOCKERS = [
-    "ai-edge-litert==2.2.0: precompiled TFLite runtime wheel notices require review",
-    "tqdm==4.70.0: MPL-2.0/MIT requires owner policy clearance",
-    "typing-extensions==4.16.0: PSF-2.0 requires owner policy clearance",
-    "numpy==2.5.2: PyPI license_expression includes bundled BSD/0BSD/MIT/Zlib/CC0 notices requiring review",
-    "ml-dtypes==0.6.0: exact PyPI description/license section declares an Eigen/MPL-2.0 notice for precompiled wheels",
-    "protobuf==7.36.0: metadata/precompiled-wheel notice review is required",
     "models/v2/hey_jarvis.tflite: artifact byte SHA-256 is pending VAST-only acquisition",
     "hey_jarvis tensor manifest: authenticated VAST constant-buffer inspection is required",
+    "canonical topology: compiled REVIEWED_TOPOLOGY_SHA256 is unset",
 ]
 
 
@@ -138,10 +122,8 @@ def audit_lock() -> dict[str, Any]:
     if not LOCK.is_file() or hashlib.sha256(LOCK.read_bytes()).hexdigest() != LOCK_SHA256:
         raise RuntimeError("dedicated microWakeWord uv.lock is absent or identity drifted")
     project = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
-    if project.get("project", {}).get("dependencies") != [
-        "numpy==2.5.2", "ai-edge-litert==2.2.0"
-    ]:
-        raise RuntimeError("direct dependency pins drifted from the reviewed lock")
+    if project.get("project", {}).get("dependencies") != []:
+        raise RuntimeError("dedicated preparer must remain dependency-free")
     document = tomllib.loads(LOCK.read_text(encoding="utf-8"))
     if document.get("requires-python") != "==3.12.*":
         raise RuntimeError("microWakeWord lock is not Python 3.12-only")
@@ -187,7 +169,7 @@ def main() -> int:
     if not args.dependency_gate:
         parser.error("use --dependency-gate or --self-test")
     audit = audit_lock()
-    print(json.dumps({"status": "BLOCKED_UNREVIEWED_TRANSITIVE", "publication": "NO_UPLOAD", **audit}, sort_keys=True))
+    print(json.dumps({"status": "BLOCKED_UNREVIEWED_ARTIFACT", "publication": "NO_UPLOAD", **audit}, sort_keys=True))
     print("microWakeWord dependency/license gate is blocked: " + "; ".join(BLOCKERS), file=sys.stderr)
     return 2
 

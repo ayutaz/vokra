@@ -1,49 +1,37 @@
 # tools/parity/microwakeword
 
-> **Current status (2026-08-29): BLOCKED.** The dedicated Python 3.12 lock
-> is present and records the complete 10-package closure. Exact source/model
-> Git identities are recorded below, but license policy review remains open:
-> ai-edge-litert's precompiled-wheel notices, NumPy's composite bundled
-> notices, protobuf precompiled-wheel metadata, tqdm/MPL,
-> typing-extensions/PSF, and the
-> ml-dtypes wheel's Eigen/MPL notice. The VAST worker therefore exits before environment sync
-> or acquisition; the target's byte SHA-256 is also pending that acquisition:
+> **Current status (2026-09-01): BLOCKED.** The dedicated Python 3.12 lock
+> contains only the first-party preparer (zero external dependencies). The
+> stdlib raw FlatBuffer manifest carries authenticated constant bytes; the
+> preparer emits Q8_0/F32/I32 GGUF without an interpreter or NumPy. The VAST
+> normal production invocation still exits before acquisition because the
+> target byte SHA-256, reviewed topology authority, and parity evidence are
+> pending. The explicitly separate `--inspect-only` mode is VAST-gated and
+> records evidence only:
 > `scripts/publish/vast-ai/run-microwakeword-validation.sh`.
 >
 > The dedicated lock SHA-256 is
-> `05e8317758e7c884e8e86e110af5b39cdd23eff63b6a66705225e6baa3ab5e13`;
-> its 10-row package/dependency digest is
-> `d5c8aaca80e340be13e719de14d1486df193977f31ea80dea3bf954030057343`,
-> and its version-keyed license digest is
-> `eae9f062f7ceb787fe36e09290fbc04b8f2f842df9de612b79f95f7fd615c58f`.
+> `984703d5bafdd6c88006bd381095961d42ef684d269d66194edbeda1fddf8dc2`;
+> its one-row package digest is
+> `d9b806830227b4fdbdbe59ea5a20b529bfae40f6aa70e239b44a6238fabd5ad7`,
+> and its first-party license digest is
+> `4ee7351311d5d0bf69758093e88be7b4146fefdcbc80e026662bbdf58032272c`.
 
-License evidence is version-keyed in `microwakeword_inspect.py`. Each row was
-checked against the exact PyPI JSON record, preferring `license_expression`,
-then `license`, then the exact wheel METADATA/classifiers when needed. Thus
-ai-edge-litert is Apache-2.0 but its precompiled TFLite runtime wheel still
-requires bundled-notice review; NumPy records its exact
-`BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0` expression,
-typing-extensions is PSF-2.0. The ml-dtypes description /
-license section says Apache-2.0 but also requires review of the Eigen/MPL-2.0
-notice shipped by precompiled wheels. Protobuf's exact metadata also remains
-subject to precompiled-wheel notice review. No source archive was fetched; a
-resolved lock is not license approval, and policy-sensitive rows remain
-blocked.
+License evidence is version-keyed in `microwakeword_inspect.py`; the only
+locked package is the first-party preparer. This removes the former
+transitive-wheel license gate. Artifact provenance, reviewed topology, and
+real parity remain independent fail-closed gates.
 
-> **2026-08-30 current-state boundary:** The blocked status above is the
-> 2026-08-29 audit snapshot. It does not authorize local acquisition,
-> conversion, model execution, or an implied parity result. Apply the current
+> **2026-08-30 historical boundary:** The earlier 2026-08-29 audit snapshot
+> does not authorize local acquisition, conversion, model execution, or an
+> implied parity result. The current 2026-09-01 status above adds the
+> dependency-free preparer and VAST-only inspection boundary. Apply the current
 > repository AGENTS/skill gates and consult the M5 ledger before changing this
 > status.
 
-For auditability, every non-first-party lock row has its exact package/version
-and primary PyPI JSON URL in `LICENSE_ROWS`: `license_expression` supplies
-NumPy and typing-extensions; `license` supplies ai-edge-litert,
-backports-strenum, flatbuffers, protobuf, and tqdm; and exact wheel
-METADATA/classifiers supply colorama. The ml-dtypes row uses the exact PyPI
-description/license section and
-records its precompiled-wheel Eigen/MPL-2.0 notice. No license is inferred
-from a lock or from an unversioned project page.
+For auditability, `LICENSE_ROWS` records the first-party package identity. No
+third-party license is inferred from a lock or from an unversioned project
+page.
 
 Offline sidecar for **kahrendt/microWakeWord** (Apache-2.0) → Vokra GGUF
 conversion. Bridges the upstream TFLite artefacts (INT8-quantized
@@ -61,8 +49,8 @@ reader parses on both host and thumbv8m targets.
 
 ## What this directory contains
 
-- `prepare_checkpoint.py` — the authenticated conversion design. It extracts
-  tensors with `ai-edge-litert.Interpreter.get_tensor_details()` and emits
+- `prepare_checkpoint.py` — the authenticated conversion design. It consumes
+  raw producer `data_hex` constants and emits
   direct GGUF Q8_0 source-byte carriers plus exact dense GGUF I32 carriers for
   affine bias tensors. Production conversion additionally
   refuses a topology whose `canonical_identity` is unset; the raw producer
@@ -81,11 +69,11 @@ reader parses on both host and thumbv8m targets.
   `input_pcm.bin` + `features_ref.bin` + `output_ref.bin` +
   `manifest.json` for the Rust parity harness
   (`crates/vokra-kws-micro/tests/parity_microwakeword.rs`). Consumed
-  via `VOKRA_KWS_REAL_FIXTURES=<dir>`. See the script's module
-  docstring for the honest boundary (numpy log-mel = transcription
-  reference; TFLite output = real upstream forward).
-- `pyproject.toml` — uv project spec (Python 3.12 pinned per
-  `[[feedback-python-3-12]]`, deps = `numpy` + `ai-edge-litert`).
+  via `VOKRA_KWS_REAL_FIXTURES=<dir>`. It is a separate VAST-only reference
+  path and is not included in this production lock; see the script's module
+  docstring for its honest boundary (numerical transcription/reference
+  tooling is not a production conversion dependency).
+- `pyproject.toml` — dependency-free uv project spec (Python 3.12).
 - `.python-version` — `3.12` (auto-created by `uv python pin`).
 
 ## Prerequisites
@@ -97,13 +85,20 @@ reader parses on both host and thumbv8m targets.
   VAST-only. The local Mac path is deliberately terminally blocked; do not
   install, sync, acquire, or convert from this directory.
 
-The `ai-edge-litert` package reports Apache-2.0 in exact PyPI metadata and is
-the direct successor of `tflite-runtime` — Google renamed it in Q3 2024 when
-the old package stopped shipping wheels for Python ≥ 3.12. Its precompiled
-TFLite runtime wheel still requires bundled-notice review, so this fact does
-not clear the gate. The future Interpreter API surface is expected to remain
-(`interpreter.allocate_tensors()`, `interpreter.get_tensor_details()`,
-`interpreter.get_tensor(idx)`).
+The VAST worker's `VOKRA_INSPECT_ONLY=1 --inspect-only` mode is the only
+acquisition path. It uses the fixed repository revision/path, verifies the
+recorded model and license Git blobs plus sizes, hashes the downloaded model,
+and emits raw-manifest/canonical-topology evidence into the existing
+`MICROWAKEWORD_INSPECTION_DIR`. The directory receives the complete tensor
+manifest, fixed companion JSON, LICENSE, and a summary containing their
+SHA-256 values; the model `.tflite` remains temporary and is cleaned up. It
+performs no GGUF conversion, inference, Cargo build, or upload. Production
+remains closed until that evidence is reviewed and the compiled
+topology/artifact authorities are set.
+
+The production preparer intentionally has no interpreter or numerical Python
+dependency. Reference generation in `dump_reference.py` remains a separate
+VAST-only research path and is not part of the production conversion lock.
 
 ## Historical conversion notes (not an execution procedure)
 
@@ -188,10 +183,9 @@ the full write-up):
   the produced artefact is loadable by the `vokra-vad-micro`-shape
   reader without extra Rust code.
 - **No bit-parity against `tf.signal`**: the training-time TF mel
-  front-end is a `tensorflow` dep away; the sidecar stays at 2 deps
-  (`numpy` + `ai-edge-litert`) and Path B's transcription
-  parity is empirically within `1e-3` of `tf.signal` for the same
-  parameters.
+  front-end is a `tensorflow` dependency away. The production sidecar stays
+  dependency-free; the separate VAST-only reference path and Path B's
+  transcription parity are not production conversion evidence.
 - **No Cortex-M55 hardware verify**: per M5-03 ADR, hardware / FVP
   runs are owner-only. The cross-build (`thumbv8m.main-none-eabihf`)
   compile gate is documented in `crates/vokra-kws-micro/README.md`

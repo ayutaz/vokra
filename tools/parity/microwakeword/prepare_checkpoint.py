@@ -1,9 +1,8 @@
 """kahrendt/microWakeWord TFLite → Vokra GGUF (M5-03b typed sidecar).
 
 Offline sidecar tool (FR-LD-05: no Python / TFLite ever enters the runtime).
-Fetches a canonical microWakeWord model release (Apache-2.0), inspects the
-TFLite FlatBuffer via ``ai-edge-litert.Interpreter.get_tensor_details()``,
-and emits a GGUF v3 directly (without a re-quantizing writer) whose metadata keys use the
+Consumes a VAST-authenticated raw FlatBuffer inventory (including exact
+constant bytes) and emits a GGUF v3 directly (without a re-quantizing writer) whose metadata keys use the
 ``vokra.kws.*`` prefix so ``vokra_core::gguf::GgufFile::from_external`` (the
 no_std GGUF reader the ``vokra-vad-micro`` sister crate already uses) can
 open it on both host and thumbv8m Cortex-M55 (M5-03 IoT Tier-3).
@@ -70,22 +69,21 @@ writer fails closed rather than silently changing a declared shape.
   imported, never inspected; the ESPHome layer is out-of-scope for
   Vokra Apache-2.0 posture, see CLAUDE.md "Piper (piper1-gpl)" red-line).
 
-The tensor extraction logic is derived from ``ai-edge-litert`` public
-docs (``Interpreter.get_tensor_details()`` returning ``[{name, shape,
-dtype, quantization}]``) — a black-box API contract, no source
-transliteration.
+The tensor extraction logic consumes the independent raw FlatBuffer producer's
+authenticated ``data_hex`` bytes. No interpreter, NumPy, FlatBuffers package,
+or other model/runtime dependency is imported or executed here.
 
 # Usage
 
 ::
 
     cd tools/parity/microwakeword
-    uv sync
     # The owner-approved VAST worker supplies the authenticated byte digest;
-    # the model identity and URL are fixed by this script. It also supplies
+    # the model identity and source revision are fixed by this script. It also supplies
     # an independently hashed JSON manifest whose `tensors` entries identify
     # persistent FlatBuffer buffers (not allocated activations):
     uv run python prepare_checkpoint.py \\
+        --input /vast/hey_jarvis.tflite \\
         --expected-sha256 <authenticated-hey_jarvis-tflite-sha256> \\
         --tensor-manifest /approved/path/hey_jarvis.tensors.json \\
         --tensor-manifest-sha256 <authenticated-tensor-manifest-sha256> \\
@@ -100,7 +98,7 @@ transliteration.
         --tensor-manifest-sha256 <authenticated-tensor-manifest-sha256> \\
         --output /approved/path/hey_jarvis.gguf
 
-Fails loudly on any anomaly (unsupported weight dtype, incomplete runtime affine
+Fails loudly on any anomaly (unsupported weight dtype, incomplete source affine
 metadata, malformed FlatBuffer) rather than masking it — FR-EX-08
 posture, matches every other sidecar in ``tools/parity/``.
 
@@ -109,10 +107,11 @@ The required tensor manifest is an owner-authenticated JSON object with
 ``source_sha256``/``source_size``, one subgraph, and exact tensor/buffer/
 constant counts. Each entry must carry the inspected FlatBuffer ``index``,
 exact ``name``/``type``/``shape``, ``kind: "constant"``, a bounded
-``buffer_index``, positive ``buffer_size``, and ``buffer_sha256``. Supported
+``buffer_index``, positive ``buffer_size``, ``buffer_sha256``, and exact
+``data_hex`` bytes. Supported
 constant dtypes are ``int8``, ``int32``, and ``float32``; dense element count
-must exactly explain the buffer byte size. This is not inferred from
-``get_tensor()``. INT32 bias entries use dense GGUF I32 and require positive
+must exactly explain the buffer byte size. This is not inferred from a runtime
+interpreter. INT32 bias entries use dense GGUF I32 and require positive
 scales, exact zero-points of zero, and the same checked axis/shape contract.
 """
 
@@ -123,11 +122,9 @@ import hashlib
 import json
 import math
 import os
-import shutil
 import struct
 import sys
 import tempfile
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
@@ -199,6 +196,7 @@ GGML_TYPE_I32 = 26
 GGML_TYPE_Q8_0 = 8
 Q8_0_BLOCK_SIZE = 32
 Q8_0_BLOCK_BYTES = 34
+MAX_MANIFEST_CONSTANT_BYTES = 256 * 1024 * 1024
 
 # ----------------------------------------------------------------------
 
@@ -212,24 +210,14 @@ def sha256_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def download(url: str, dest: Path) -> None:
-    """Streams the URL to ``dest``. Raises loudly on non-200.
-
-    Kept in stdlib (``urllib.request``) — the microWakeWord release is a
-    single ~200 KB TFLite file, no auth, no chunking. Adding ``requests``
-    would double this file's dep footprint for zero win.
-    """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    # ``urlretrieve`` follows redirects (GitHub raw → objects.githubusercontent.com)
-    # and raises ``HTTPError`` on 4xx/5xx by default, which is the loud-fail
-    # behaviour we want.
-    with urllib.request.urlopen(url) as response:
-        if response.status != 200:
-            raise SystemExit(
-                f"HTTP {response.status} fetching {url!r}: {response.reason}"
-            )
-        with dest.open("wb") as f:
-            shutil.copyfileobj(response, f)
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject duplicate JSON keys instead of silently taking the last value."""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _exact_finite_integer(value: Any, field: str, name: str) -> int:
@@ -292,47 +280,24 @@ def _validate_affine_metadata(
     return normalized_dimension
 
 
-def dequantize_int8_to_f32(
-    quantized: np.ndarray,
-    scales: np.ndarray,
-    zero_points: np.ndarray,
-    quantized_dimension: int,
-) -> np.ndarray:
-    """Standard TFLite affine dequantization, including per-axis tensors."""
-    quantized_dimension = _validate_affine_metadata(
-        scales, zero_points, quantized_dimension, quantized.shape, "<unnamed>"
-    )
-    if scales.size == 1:
-        return (
-            quantized.astype(np.int64) - int(zero_points[0])
-        ).astype(np.float32) * float(scales[0])
-    view_shape = [1] * quantized.ndim
-    view_shape[quantized_dimension] = scales.size
-    return (
-        quantized.astype(np.int64)
-        - zero_points.astype(np.int64).reshape(view_shape)
-    ).astype(np.float32) * scales.astype(np.float32).reshape(view_shape)
-
-
 def quantization_parameters(
     td: dict[str, Any], tensor_shape: Any, *, int32_bias: bool = False
-) -> tuple[np.ndarray, np.ndarray, int]:
+) -> tuple[list[float], list[int], int]:
     """Returns the complete TFLite quantization vector for one tensor."""
     params = td.get("quantization_parameters")
     if isinstance(params, dict):
-        scales = np.asarray(params.get("scales", []), dtype=np.float32).reshape(-1)
-        raw_zero_points = np.asarray(params.get("zero_points", [])).reshape(-1)
-        zero_points = raw_zero_points
+        scales = list(params.get("scales", []))
+        zero_points = list(params.get("zero_points", []))
         raw_dimension = params.get("quantized_dimension", -1)
         quantized_dimension = raw_dimension
     else:
         quantization = td.get("quantization", (0.0, 0))
         if not isinstance(quantization, tuple) or len(quantization) != 2:
-            scales = np.empty(0, dtype=np.float32)
-            zero_points = np.empty(0, dtype=np.int64)
+            scales = []
+            zero_points = []
         else:
-            scales = np.asarray([quantization[0]], dtype=np.float32)
-            zero_points = np.asarray([quantization[1]])
+            scales = [quantization[0]]
+            zero_points = [quantization[1]]
         quantized_dimension = -1
     quantized_dimension = _validate_affine_metadata(
         scales,
@@ -342,12 +307,10 @@ def quantization_parameters(
         td.get("name", "<unnamed>"),
         int32_bias=int32_bias,
     )
-    zero_points = np.asarray(
-        [_exact_finite_integer(value, "INT32 bias zero_point" if int32_bias else "INT8 zero_point", td.get("name", "<unnamed>"))
-         for value in zero_points],
-        dtype=np.int64,
-    )
-    return scales, zero_points, quantized_dimension
+    return [float(value) for value in scales], [
+        _exact_finite_integer(value, "INT32 bias zero_point" if int32_bias else "INT8 zero_point", td.get("name", "<unnamed>"))
+        for value in zero_points
+    ], quantized_dimension
 
 
 def load_tensor_manifest(
@@ -360,8 +323,8 @@ def load_tensor_manifest(
 ) -> dict[int, dict[str, Any]]:
     """Load an independently authenticated constant-tensor manifest.
 
-    ``Interpreter.get_tensor`` alone cannot distinguish persistent FlatBuffer
-    buffers from allocated activations. The manifest must therefore be
+    Runtime tensor APIs cannot distinguish persistent FlatBuffer buffers from
+    allocated activations. The manifest must therefore be
     produced by the owner-approved VAST FlatBuffer inspection and authenticated
     independently before any tensor is emitted. Production acceptance also
     requires the closed ``REVIEWED_TOPOLOGY_SHA256`` authority; a caller's
@@ -376,14 +339,14 @@ def load_tensor_manifest(
     if manifest_sha256 != expected_sha256:
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
+    except (OSError, UnicodeError, ValueError) as error:
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED") from error
     producer = document.get("producer") if isinstance(document, dict) else None
     if (
         not isinstance(document, dict)
         or document.get("format") != "vokra-microwakeword-tflite-tensor-manifest-v1"
-        or producer != {"method": "raw_flatbuffer", "name": "microwakeword_tensor_manifest.py", "version": "1.0"}
+        or producer != {"method": "raw_flatbuffer", "name": "microwakeword_tensor_manifest.py", "version": "1.1"}
         or document.get("source_sha256") != source_sha256
         or (source_size is not None and document.get("source_size") != source_size)
         or not isinstance(document.get("source_size"), int)
@@ -429,7 +392,7 @@ def load_tensor_manifest(
             or isinstance(record.get("type"), bool)
             or record["type"] != {"int8": 9, "int32": 2, "float32": 0}[record["dtype"]]
             or not isinstance(record.get("shape"), list)
-            or any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in record["shape"])
+            or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in record["shape"])
             or not isinstance(record.get("buffer_index"), int)
             or isinstance(record.get("buffer_index"), bool)
             or record["buffer_index"] < 0
@@ -440,8 +403,22 @@ def load_tensor_manifest(
             or not isinstance(record.get("buffer_sha256"), str)
             or len(record["buffer_sha256"]) != 64
             or any(character not in "0123456789abcdefABCDEF" for character in record["buffer_sha256"])
+            or (record.get("kind") == "constant" and (
+                not isinstance(record.get("data_hex"), str)
+                or len(record["data_hex"]) % 2
+                or len(record["data_hex"]) // 2 != record.get("buffer_size")
+                or len(record["data_hex"]) // 2 > MAX_MANIFEST_CONSTANT_BYTES
+                or any(character not in "0123456789abcdef" for character in record["data_hex"])
+            ))
         ):
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        if record.get("kind") == "constant":
+            try:
+                raw = bytes.fromhex(record["data_hex"])
+            except ValueError as error:
+                raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED") from error
+            if hashlib.sha256(raw).hexdigest() != record["buffer_sha256"].lower():
+                raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
         contract_by_index[record["index"]] = record
     if set(contract_by_index) != set(range(document["tensor_count"])):
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
@@ -586,7 +563,7 @@ def load_tensor_manifest(
             or index >= document["tensor_count"]
             or buffer_index >= document["buffer_count"]
             or not isinstance(shape, list)
-            or any(not isinstance(dimension, int) or isinstance(dimension, bool) or dimension < 0 for dimension in shape)
+            or any(not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0 for dimension in shape)
             or index in result
         ):
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
@@ -606,7 +583,14 @@ def load_tensor_manifest(
             or contract["buffer_index"] != buffer_index
             or contract["buffer_size"] != buffer_size
             or contract["buffer_sha256"].lower() != buffer_sha256.lower()
+            or contract.get("data_hex") != entry.get("data_hex")
         ):
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        try:
+            raw = bytes.fromhex(entry["data_hex"])
+        except (TypeError, ValueError) as error:
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED") from error
+        if len(raw) != buffer_size or hashlib.sha256(raw).hexdigest() != buffer_sha256.lower():
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
         result[index] = entry
     if len(result) != document["constant_count"] or document["tensor_count"] < len(result):
@@ -653,114 +637,52 @@ def load_tensor_manifest(
 
 
 def extract_tensors(
-    interp: Interpreter, verbose: bool, constant_manifest: dict[int, dict[str, Any]]
+    constant_manifest: dict[int, dict[str, Any]], verbose: bool = False
 ) -> tuple[list[dict[str, Any]], int, int]:
-    """Walks ``interp.get_tensor_details()`` and returns
-    ``(records, weight_count, activation_count)`` — where ``records`` is
-    the per-weight list including source int8 bytes and complete quantization
-    vectors.
-
-    Only tensor indices present in the authenticated manifest are treated as
-    constants and become GGUF tensors. Unlisted interpreter details are
-    treated as activations; ``get_tensor`` success is never used as proof of
-    persistent FlatBuffer ownership.
-    """
+    """Decode authenticated FlatBuffer constant bytes without a model runtime."""
     weights: list[dict[str, Any]] = []
-    n_weights = 0
-    n_activations = 0
-    details_by_index: dict[int, dict[str, Any]] = {}
-    for td in interp.get_tensor_details():
-        index = td.get("index")
-        if not isinstance(index, (int, np.integer)) or isinstance(index, bool) or int(index) < 0 or int(index) in details_by_index:
-            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-        details_by_index[int(index)] = td
-    if set(constant_manifest) - set(details_by_index):
-        raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-    for idx, entry in constant_manifest.items():
-        td = details_by_index[idx]
-        if td.get("name") != entry["name"]:
-            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-    for td in details_by_index.values():
-        idx = td["index"]
-        name = td["name"]
-        shape = td["shape"]
-        dtype = td["dtype"]
-        entry = constant_manifest.get(int(idx))
-        if entry is None:
-            n_activations += 1
-            continue
-        expected_dtype = {
-            "int8": np.int8,
-            "int32": np.int32,
-            "float32": np.float32,
-        }[entry["dtype"]]
-        if dtype != expected_dtype:
-            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+    for idx, entry in sorted(constant_manifest.items()):
+        name = entry["name"]
+        shape = list(entry["shape"])
         try:
-            data = interp.get_tensor(idx)
-        except (ValueError, RuntimeError) as error:
+            raw = bytes.fromhex(entry["data_hex"])
+        except (TypeError, ValueError) as error:
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED") from error
-        # `data` shape and dtype are the ground truth (get_tensor_details()
-        # can carry a stale shape when the interpreter has never been
-        # allocated for the specific batch dimension).
-        if not isinstance(data, np.ndarray) or not data.flags.c_contiguous or (
-            data.dtype.byteorder == ">"
-            or (data.dtype.byteorder == "=" and not np.little_endian)
-        ):
+        if len(raw) != entry["buffer_size"] or hashlib.sha256(raw).hexdigest() != entry["buffer_sha256"].lower():
             raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-        raw = data.tobytes(order="C")
-        if list(data.shape) != entry.get("shape") or len(raw) != entry.get("buffer_size") or hashlib.sha256(raw).hexdigest() != entry.get("buffer_sha256"):
-            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-        n_weights += 1
-        if dtype == np.int8:
-            scales, zero_points, quantized_dimension = quantization_parameters(td, data.shape)
-            f32 = dequantize_int8_to_f32(
-                data, scales, zero_points, quantized_dimension
+        quant = entry.get("quantization")
+        dtype = entry["dtype"]
+        if dtype == "int8":
+            scales, zero_points, qdim = quantization_parameters(
+                {"name": name, "quantization_parameters": quant}, shape
             )
-            weights.append({
-                "name": name,
-                "shape": list(data.shape),
-                "f32_data": f32,
-                "i8_data": np.ascontiguousarray(data.astype(np.int8)),
-                "orig_dtype": "int8",
-                "scales": scales,
-                "zero_points": zero_points,
-                "quantized_dimension": quantized_dimension,
-                "source_index": int(idx),
-            })
-        elif dtype == np.float32:
-            weights.append({
-                "name": name,
-                "shape": list(data.shape),
-                "f32_data": data.astype(np.float32),
-                "orig_dtype": "float32",
-                "source_index": int(idx),
-            })
-        elif dtype == np.int32:
-            scales, zero_points, quantized_dimension = quantization_parameters(
-                td, data.shape, int32_bias=True
+            values = list(struct.unpack(f"<{len(raw)}b", raw))
+            record = {"name": name, "shape": shape, "i8_data": values,
+                      "orig_dtype": dtype, "scales": scales,
+                      "zero_points": zero_points, "quantized_dimension": qdim,
+                      "source_index": idx}
+        elif dtype == "float32":
+            values = list(struct.unpack(f"<{len(raw) // 4}f", raw))
+            if any(not math.isfinite(value) for value in values):
+                raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+            record = {"name": name, "shape": shape, "f32_data": values,
+                      "orig_dtype": dtype, "source_index": idx}
+        elif dtype == "int32":
+            scales, zero_points, qdim = quantization_parameters(
+                {"name": name, "quantization_parameters": quant}, shape,
+                int32_bias=True,
             )
-            weights.append({
-                "name": name,
-                "shape": list(data.shape),
-                "i32_data": np.ascontiguousarray(data.astype("<i4", copy=False)),
-                "orig_dtype": "int32",
-                "scales": scales,
-                "zero_points": zero_points,
-                "quantized_dimension": quantized_dimension,
-                "source_index": int(idx),
-            })
+            values = list(struct.unpack(f"<{len(raw) // 4}i", raw))
+            record = {"name": name, "shape": shape, "i32_data": values,
+                      "orig_dtype": dtype, "scales": scales,
+                      "zero_points": zero_points, "quantized_dimension": qdim,
+                      "source_index": idx}
         else:
-            # Loud fail rather than mask — the Q8_0/F32 contract is deliberate.
-            raise SystemExit(
-                f"tensor {name!r}: unsupported dtype {dtype!r} (only INT8, INT32 + F32 "
-                "are supported by this sidecar)"
-            )
+            raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
+        weights.append(record)
         if verbose:
-            print(f"  emit[{weights[-1]['orig_dtype']:>7s}] idx={idx:3d} "
-                  f"name={name!r} shape={list(data.shape)}",
-                  file=sys.stderr)
-    return weights, n_weights, n_activations
+            print(f"  emit[{dtype:>7s}] idx={idx:3d} name={name!r} shape={shape}", file=sys.stderr)
+    return weights, len(weights), 0
 
 
 def _gguf_string(value: str) -> bytes:
@@ -784,20 +706,21 @@ def _gguf_kv_i32(key: str, value: int) -> bytes:
     return _gguf_string(key) + struct.pack("<Ii", 5, value)
 
 
-def _gguf_kv_f32_array(key: str, values: np.ndarray) -> bytes:
+def _gguf_kv_f32_array(key: str, values: Any) -> bytes:
     flat = _plain_values(values)
     payload = struct.pack("<IIQ", 9, 6, len(flat))
     payload += struct.pack(f"<{len(flat)}f", *(float(value) for value in flat))
     return _gguf_string(key) + payload
 
 
-def _gguf_kv_i32_array(key: str, values: np.ndarray) -> bytes:
-    payload = struct.pack("<IIQ", 9, 5, int(values.size))
-    payload += np.asarray(values, dtype="<i4").tobytes()
+def _gguf_kv_i32_array(key: str, values: Any) -> bytes:
+    flat = _plain_values(values)
+    payload = struct.pack("<IIQ", 9, 5, len(flat))
+    payload += struct.pack(f"<{len(flat)}i", *(int(value) for value in flat))
     return _gguf_string(key) + payload
 
 
-def _gguf_kv_i64_array(key: str, values: np.ndarray) -> bytes:
+def _gguf_kv_i64_array(key: str, values: Any) -> bytes:
     flat = _plain_values(values)
     payload = struct.pack("<IIQ", 9, 11, len(flat))
     payload += struct.pack(f"<{len(flat)}q", *(int(value) for value in flat))
@@ -805,7 +728,7 @@ def _gguf_kv_i64_array(key: str, values: np.ndarray) -> bytes:
 
 
 def _plain_values(values: Any) -> list[Any]:
-    """Flattens NumPy arrays without making the wire writer NumPy-dependent."""
+    """Flatten list-like values without introducing a runtime dependency."""
     if hasattr(values, "reshape"):
         values = values.reshape(-1)
     result = []
@@ -1114,38 +1037,6 @@ def _self_test_parse_gguf(blob: bytes) -> tuple[dict[str, Any], list[dict[str, A
 def self_test() -> None:
     global REVIEWED_TOPOLOGY_SHA256
     """Exercise the direct writer and parse its wire output without model I/O."""
-    class FakeDtype:
-        byteorder = "="
-
-    class FakeArray:
-        dtype = FakeDtype()
-        shape = (2,)
-        nbytes = 8
-        flags = type("Flags", (), {"c_contiguous": True})()
-
-        def tobytes(self, order: str = "C") -> bytes:
-            assert order == "C"
-            return struct.pack("<ff", 1.0, 2.0)
-
-        def astype(self, dtype: Any) -> "FakeArray":
-            return self
-
-    class FakeNumpy:
-        ndarray = FakeArray
-        integer = int
-        int8 = object()
-        int32 = object()
-        float32 = FakeDtype()
-        little_endian = True
-
-        @staticmethod
-        def ascontiguousarray(value: Any) -> Any:
-            return value
-
-    global np
-    FakeNumpy.float32 = FakeArray.dtype
-    np = FakeNumpy
-
     def expect_metadata_error(
         scales: list[float], zero_points: list[Any], qdim: Any, shape: list[int], text: str
     ) -> None:
@@ -1237,7 +1128,7 @@ def self_test() -> None:
         manifest_path = directory_path / "tensor-manifest.json"
         manifest_document = {
                     "format": "vokra-microwakeword-tflite-tensor-manifest-v1",
-                    "producer": {"method": "raw_flatbuffer", "name": "microwakeword_tensor_manifest.py", "version": "1.0"},
+                    "producer": {"method": "raw_flatbuffer", "name": "microwakeword_tensor_manifest.py", "version": "1.1"},
                     "source_sha256": "0" * 64,
                     "source_size": 4,
                     "complete": True,
@@ -1260,6 +1151,8 @@ def self_test() -> None:
                             "buffer_index": 3,
                             "buffer_size": 32,
                             "buffer_sha256": hashlib.sha256(b"\x00" * 32).hexdigest(),
+                            "data_hex": (b"\x00" * 32).hex(),
+                            "quantization": {"scales": [1.0], "zero_points": [0], "quantized_dimension": -1},
                         }
                     ],
                     "tensor_contract": [
@@ -1273,7 +1166,8 @@ def self_test() -> None:
                             "buffer_index": 3,
                             "buffer_size": 32,
                             "buffer_sha256": hashlib.sha256(b"\x00" * 32).hexdigest(),
-                            "quantization": None,
+                            "data_hex": (b"\x00" * 32).hex(),
+                            "quantization": {"scales": [1.0], "zero_points": [0], "quantized_dimension": -1},
                         },
                         {
                             "index": 1,
@@ -1322,6 +1216,16 @@ def self_test() -> None:
         )
         if manifest[0]["name"] != "constant":
             raise AssertionError("authenticated tensor manifest was not loaded")
+        extracted, count, skipped = extract_tensors(manifest)
+        if count != 1 or skipped != 0 or extracted[0]["i8_data"] != [0] * 32:
+            raise AssertionError("raw authenticated constant bytes were not decoded exactly")
+        tampered = {0: {**manifest[0], "data_hex": (b"\x01" * 32).hex()}}
+        try:
+            extract_tensors(tampered)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("tampered authenticated constant bytes were accepted")
         try:
             load_tensor_manifest(manifest_path, sha256_of_file(manifest_path), "0" * 64)
         except SystemExit as error:
@@ -1329,7 +1233,7 @@ def self_test() -> None:
                 raise AssertionError(f"wrong production topology error: {error}")
         else:
             raise AssertionError("unreviewed topology entered production preparation")
-        reviewed_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        reviewed_document = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
         reviewed_digest = reviewed_document["topology"]["canonical_digest"]
         reviewed_document["topology"]["canonical_identity"] = reviewed_digest
         manifest_path.write_text(json.dumps(reviewed_document), encoding="utf-8")
@@ -1367,73 +1271,6 @@ def self_test() -> None:
             raise AssertionError("compiled authority mismatch was accepted")
         REVIEWED_TOPOLOGY_SHA256 = None
 
-        class FakeInterpreter:
-            def __init__(self, details: list[dict[str, Any]], value: Any):
-                self.details = details
-                self.value = value
-
-            def get_tensor_details(self) -> list[dict[str, Any]]:
-                return self.details
-
-            def get_tensor(self, index: int) -> Any:
-                assert index == 0
-                return self.value
-
-        runtime_value = FakeArray()
-        runtime_entry = {
-            "index": 0,
-            "name": "constant",
-            "dtype": "float32",
-            "shape": [2],
-            "buffer_size": runtime_value.nbytes,
-            "buffer_sha256": hashlib.sha256(runtime_value.tobytes(order="C")).hexdigest(),
-        }
-        runtime_details = [{"index": 0, "name": "constant", "shape": [2], "dtype": np.float32}]
-        extract_tensors(FakeInterpreter(runtime_details, runtime_value), False, {0: runtime_entry})
-        for malformed in (
-            {**runtime_entry, "shape": [3]},
-            {**runtime_entry, "buffer_size": runtime_value.nbytes + 4},
-            {**runtime_entry, "buffer_sha256": "0" * 64},
-        ):
-            try:
-                extract_tensors(FakeInterpreter(runtime_details, runtime_value), False, {0: malformed})
-            except SystemExit:
-                pass
-            else:
-                raise AssertionError("runtime tensor manifest mismatch was accepted")
-        class NonContiguousArray(FakeArray):
-            flags = type("Flags", (), {"c_contiguous": False})()
-
-        try:
-            extract_tensors(
-                FakeInterpreter(runtime_details, NonContiguousArray()),
-                False,
-                {0: runtime_entry},
-            )
-        except SystemExit:
-            pass
-        else:
-            raise AssertionError("non-contiguous runtime tensor was accepted")
-
-        class BigEndianArray(FakeArray):
-            dtype = type("BigEndianDtype", (), {"byteorder": ">"})()
-
-        try:
-            extract_tensors(
-                FakeInterpreter(runtime_details, BigEndianArray()),
-                False,
-                {0: runtime_entry},
-            )
-        except SystemExit:
-            pass
-        else:
-            raise AssertionError("big-endian runtime tensor was accepted")
-        try:
-            extract_tensors(FakeInterpreter(runtime_details + runtime_details, runtime_value), False, {0: runtime_entry})
-        except SystemExit:
-            pass
-        else:
-            raise AssertionError("duplicate runtime tensor index was accepted")
         invalid_manifest = directory_path / "invalid-tensor-manifest.json"
         invalid_manifest.write_text(
             json.dumps(
@@ -1461,6 +1298,15 @@ def self_test() -> None:
                 raise AssertionError(f"wrong tensor manifest error: {error}")
         else:
             raise AssertionError("invalid tensor manifest was accepted")
+        duplicate_manifest = directory_path / "duplicate-manifest.json"
+        duplicate_manifest.write_text('{"source_sha256":"' + "0" * 64 + '","source_sha256":"' + "0" * 64 + '"}', encoding="utf-8")
+        try:
+            load_tensor_manifest(duplicate_manifest, sha256_of_file(duplicate_manifest), "0" * 64)
+        except SystemExit as error:
+            if str(error) != "SOURCE_TENSOR_MANIFEST_REQUIRED":
+                raise AssertionError(f"wrong duplicate-key error: {error}")
+        else:
+            raise AssertionError("duplicate manifest key was accepted")
 
         writer_args = dict(
             model_name=CANONICAL_MODEL_NAME,
@@ -1682,18 +1528,10 @@ def main() -> int:
         action="store_true",
         help="Exercise and wire-parse a synthetic GGUF without model I/O.",
     )
-    src = ap.add_mutually_exclusive_group(required=False)
-    src.add_argument(
+    ap.add_argument(
         "--input",
         type=Path,
-        help="Local .tflite path (skip download). Mutually exclusive with --url.",
-    )
-    src.add_argument(
-        "--url",
-        type=str,
-        default=DEFAULT_UPSTREAM_URL,
-        help="URL to fetch the .tflite from (default: ESPHome micro-wake-word-models "
-             "hey_jarvis v2 release).",
+        help="VAST-materialized canonical .tflite transport path (required).",
     )
     ap.add_argument("--name", default="hey_jarvis",
                     help="Model name for GGUF vokra.kws.model (default hey_jarvis).")
@@ -1739,11 +1577,8 @@ def main() -> int:
         raise SystemExit(
             f"canonical microWakeWord conversion requires --name {CANONICAL_MODEL_NAME!r}"
         )
-    if args.url != DEFAULT_UPSTREAM_URL:
-        raise SystemExit(
-            "canonical microWakeWord conversion requires the fixed hey_jarvis URL "
-            f"at revision {CANONICAL_MODEL_REVISION}"
-        )
+    if args.input is None:
+        raise SystemExit("AUTHENTICATED_PAYLOAD_REQUIRED: --input is required")
     expected_sha256 = args.expected_sha256 or os.environ.get(AUTHENTICATED_SHA_ENV, "")
     if len(expected_sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in expected_sha256):
         raise SystemExit("AUTHENTICATED_PAYLOAD_SHA_REQUIRED")
@@ -1764,28 +1599,8 @@ def main() -> int:
         args.input is not None and args.tensor_manifest.resolve() == args.input.resolve()
     ):
         raise SystemExit("SOURCE_TENSOR_MANIFEST_REQUIRED")
-    # Keep the expensive TFLite and NumPy imports out of the no-I/O self-test
-    # and out of rejected unauthenticated conversion requests.
-    global np
-    import numpy as np
-    from ai_edge_litert.interpreter import Interpreter
-
-    # Resolve source .tflite path (download or use local).
-    if args.input is not None:
-        tflite_path = args.input
-        # A local path is only an input transport. Once its bytes match the
-        # authenticated digest below, provenance still names the fixed
-        # canonical mirror/revision rather than pretending the local path is
-        # an upstream identity.
-        upstream_url = DEFAULT_UPSTREAM_URL
-        tmpdir: tempfile.TemporaryDirectory[str] | None = None
-    else:
-        tmpdir = tempfile.TemporaryDirectory(prefix="vokra-mww-")
-        tflite_path = Path(tmpdir.name) / "model.tflite"
-        print(f"Downloading {args.url} …", file=sys.stderr)
-        download(args.url, tflite_path)
-        upstream_url = args.url
-
+    tflite_path = args.input
+    upstream_url = DEFAULT_UPSTREAM_URL
     try:
         tflite_sha256 = sha256_of_file(tflite_path)
         if tflite_sha256 != expected_sha256:
@@ -1800,14 +1615,7 @@ def main() -> int:
             args.tensor_manifest, manifest_sha256, expected_sha256, size
         )
 
-        # Parse the TFLite FlatBuffer via ai-edge-litert (successor of
-        # tflite-runtime; get_tensor_details() is the same API).
-        interp = Interpreter(model_path=str(tflite_path))
-        interp.allocate_tensors()
-
-        weights, n_weights, n_activations = extract_tensors(
-            interp, args.verbose, constant_manifest
-        )
+        weights, n_weights, n_activations = extract_tensors(constant_manifest, args.verbose)
         if not weights:
             raise SystemExit(
                 "No weight tensors extracted — the source .tflite may be "
@@ -1836,9 +1644,7 @@ def main() -> int:
               file=sys.stderr)
         print(f"sha256(output) = {sha256_of_file(args.output)}", file=sys.stderr)
     finally:
-        if tmpdir is not None:
-            tmpdir.cleanup()
-
+        pass
     return 0
 
 

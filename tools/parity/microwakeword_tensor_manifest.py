@@ -3,9 +3,11 @@
 
 This is intentionally not an interpreter: persistent constants are classified
 only from FlatBuffer Tensor.buffer -> Buffer.data ownership, never from a
-runtime ``get_tensor`` result. It emits a typed topology and a canonical
-evidence digest, but ``canonical_identity`` remains ``None`` until the
-owner-reviewed VAST artifact and parity evidence exist.
+runtime tensor result. Constant entries carry the exact buffer as lower-case
+hex plus size/hash, allowing the stdlib-only preparer to preserve source
+bytes. It emits a typed topology and a canonical evidence digest, but
+``canonical_identity`` remains ``None`` until owner-reviewed VAST artifact and
+parity evidence exist.
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ from typing import Any
 
 FORMAT = "vokra-microwakeword-tflite-tensor-manifest-v1"
 TOPOLOGY_FORMAT = "vokra-microwakeword-tflite-topology-v1"
-PRODUCER = {"name": "microwakeword_tensor_manifest.py", "version": "1.0", "method": "raw_flatbuffer"}
+PRODUCER = {"name": "microwakeword_tensor_manifest.py", "version": "1.1", "method": "raw_flatbuffer"}
 DTYPES = {0: ("float32", 4), 1: ("float16", 2), 2: ("int32", 4), 3: ("uint8", 1), 4: ("int64", 8), 5: ("string", 1), 6: ("bool", 1), 7: ("int16", 2), 8: ("complex64", 8), 9: ("int8", 1), 10: ("float64", 8), 11: ("resource", 1), 12: ("variant", 1), 13: ("uint16", 2), 14: ("uint32", 4), 15: ("uint64", 8), 16: ("int4", 1), 17: ("bfloat16", 2)}
 SUPPORTED = {"float32", "int32", "int8"}
 TFLITE_MODEL_VERSION = 3
@@ -356,6 +358,70 @@ def _validate_quantization(record: dict[str, Any], label: str, *, scalar: bool =
         raise ValueError(f"{label} bias zero points must be zero")
 
 
+def _validate_quantized_bias(
+    activation: dict[str, Any], weight: dict[str, Any], bias: dict[str, Any], label: str,
+    output_channels: int,
+) -> None:
+    """Validate TFLite CONV/DEPTHWISE/FC bias scale derivation.
+
+    This follows the TensorFlow Lite quantization specification for
+    CONV_2D/DEPTHWISE_CONV_2D (``bias_scale = input_scale * weight_scale``):
+    https://www.tensorflow.org/lite/performance/quantization_spec
+
+    TFLite serializes scales as float32. Normalize the input and weight
+    scales to their serialized float32 values, multiply them, normalize the
+    product to float32, and require exact equality with the serialized bias
+    scale. This avoids an absolute tolerance that would hide errors at small
+    scales and rejects even a one-float32-ULP tamper.
+    """
+    _validate_quantization(bias, f"{label} bias", bias=True)
+    input_quant = activation["quantization"]
+    weight_quant = weight["quantization"]
+    bias_quant = bias["quantization"]
+    input_scales = input_quant["scales"]
+    weight_scales = weight_quant["scales"]
+    bias_scales = bias_quant["scales"]
+    if bias["shape"] != [output_channels]:
+        raise ValueError(f"{label} bias shape must equal output channels")
+    if len(input_scales) != 1:
+        raise ValueError(f"{label} activation requires per-tensor quantization")
+    if len(bias_scales) != len(weight_scales):
+        raise ValueError(f"{label} bias scale count must match weight scale count")
+    if len(weight_scales) > 1 and bias_quant["quantized_dimension"] != 0:
+        raise ValueError(f"{label} per-axis bias must use output-channel axis 0")
+    if len(weight_scales) == 1 and bias_quant["quantized_dimension"] not in {-1, 0}:
+        raise ValueError(f"{label} scalar bias has an invalid quantized axis")
+    def serialized_f32(value: Any, field: str) -> float:
+        try:
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                raise ValueError
+            return struct.unpack("<f", struct.pack("<f", numeric))[0]
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"{label} {field} is not finite float32") from error
+
+    input_scale = serialized_f32(input_scales[0], "input scale")
+    expected = []
+    for scale in weight_scales:
+        weight_scale = serialized_f32(scale, "weight scale")
+        expected.append(serialized_f32(input_scale * weight_scale, "bias scale product"))
+    actual = [serialized_f32(scale, "bias scale") for scale in bias_scales]
+    if actual != expected:
+        raise ValueError(f"{label} bias scales do not equal input scale × weight scales")
+
+
+def _validate_weight_axis(weight: dict[str, Any], operator_name: str, output_channels: int) -> None:
+    quantization = weight["quantization"]
+    scales = quantization["scales"]
+    qdim = quantization["quantized_dimension"]
+    if any(value != 0 for value in quantization["zero_points"]):
+        raise ValueError(f"{operator_name} weight zero points must be zero")
+    if len(scales) > 1:
+        expected_axis = {"CONV_2D": 0, "DEPTHWISE_CONV_2D": 3, "FULLY_CONNECTED": 0}[operator_name]
+        if qdim != expected_axis or len(scales) != output_channels:
+            raise ValueError(f"{operator_name} per-axis weight must use output-channel axis {expected_axis}")
+
+
 def _conv_extent(size: int, kernel: int, stride: int, dilation: int, padding: str, label: str) -> tuple[int, int]:
     effective = (kernel - 1) * dilation + 1
     if padding == "VALID":
@@ -478,7 +544,6 @@ def _validate_topology(
             _validate_quantization(activation, f"{name} activation", scalar=True)
             _validate_quantization(output, f"{name} output", scalar=True)
             _validate_quantization(weight, f"{name} weight")
-            _validate_quantization(bias, f"{name} bias", scalar=True, bias=True)
             if name == "CONV_2D":
                 if len(activation["shape"]) != 4 or len(weight["shape"]) != 4 or len(output["shape"]) != 4 or len(bias["shape"]) != 1:
                     raise ValueError("Conv2D requires rank-4 activation/weight/output and rank-1 bias")
@@ -486,6 +551,8 @@ def _validate_topology(
                 out_c, kh, kw, weight_in_c = weight["shape"]
                 if weight_in_c != in_c or bias["shape"] != [out_c] or output["shape"][0] != 1:
                     raise ValueError("Conv2D tensor shapes do not agree")
+                _validate_weight_axis(weight, name, out_c)
+                _validate_quantized_bias(activation, weight, bias, name, out_c)
                 oh, _ = _conv_extent(in_h, kh, op["options"]["stride_h"], op["options"]["dilation_h"], op["options"]["padding"], "Conv2D height")
                 ow, _ = _conv_extent(in_w, kw, op["options"]["stride_w"], op["options"]["dilation_w"], op["options"]["padding"], "Conv2D width")
                 if output["shape"] != [1, oh, ow, out_c]:
@@ -500,6 +567,8 @@ def _validate_topology(
                     raise ValueError("DepthwiseConv2D tensor shapes do not agree")
                 if multiplier != 1:
                     raise ValueError("DepthwiseConv2D depth_multiplier other than one is unsupported")
+                _validate_weight_axis(weight, name, channels)
+                _validate_quantized_bias(activation, weight, bias, name, channels)
                 oh, _ = _conv_extent(in_h, kh, op["options"]["stride_h"], op["options"]["dilation_h"], op["options"]["padding"], "DepthwiseConv2D height")
                 ow, _ = _conv_extent(in_w, kw, op["options"]["stride_w"], op["options"]["dilation_w"], op["options"]["padding"], "DepthwiseConv2D width")
                 if output["shape"] != [1, oh, ow, channels]:
@@ -509,6 +578,8 @@ def _validate_topology(
                 out_dim = _shape_size(weight["shape"], "FullyConnected weight")
                 if len(weight["shape"]) != 2 or weight["shape"][1] != in_dim or bias["shape"] != [weight["shape"][0]] or _shape_size(output["shape"], "FullyConnected output") != weight["shape"][0]:
                     raise ValueError("FullyConnected tensor shapes do not agree")
+                _validate_weight_axis(weight, name, weight["shape"][0])
+                _validate_quantized_bias(activation, weight, bias, name, weight["shape"][0])
         elif name == "LOGISTIC":
             if len(inputs) != 1 or output["dtype"] != "int8":
                 raise ValueError("LOGISTIC requires one int8 input and output")
@@ -627,6 +698,11 @@ def parse(data: bytes) -> dict[str, Any]:
         payload = buffer_data[buffer_index]
         quantization = _tensor_quantization(reader, tensor)
         record = {"index": index, "name": name, "type": dtype_code, "dtype": dtype, "shape": shape, "buffer_index": buffer_index, "buffer_size": len(payload), "buffer_sha256": hashlib.sha256(payload).hexdigest(), "kind": "constant" if payload else "activation", "quantization": quantization}
+        # The raw parser is the authority for persistent buffer ownership.
+        # Carry the exact little-endian bytes forward so the preparer never
+        # has to reconstruct or execute the model through an interpreter.
+        if payload:
+            record["data_hex"] = payload.hex()
         all_tensors.append(record)
         if not payload:
             continue
@@ -681,6 +757,30 @@ def publish(path: Path, value: dict[str, Any]) -> None:
 
 
 def self_test() -> None:
+    activation = {"shape": [1, 1, 1, 1], "quantization": {"scales": [0.5], "zero_points": [0], "quantized_dimension": -1}}
+    weight = {"shape": [2, 1, 1, 2], "quantization": {"scales": [0.25, 0.5], "zero_points": [0, 0], "quantized_dimension": 0}}
+    bias = {"shape": [2], "quantization": {"scales": [0.125, 0.25], "zero_points": [0, 0], "quantized_dimension": 0}}
+    _validate_quantized_bias(activation, weight, bias, "synthetic CONV_2D", 2)
+    one_ulp_up = struct.unpack("<f", struct.pack("<I", struct.unpack("<I", struct.pack("<f", 0.125))[0] + 1))[0]
+    for tampered in (
+        {**bias, "quantization": {**bias["quantization"], "scales": [one_ulp_up, 0.25]}},
+        {**bias, "quantization": {**bias["quantization"], "quantized_dimension": -1}},
+        {**bias, "shape": [3]},
+    ):
+        try:
+            _validate_quantized_bias(activation, weight, tampered, "synthetic CONV_2D", 2)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid per-axis bias quantization was accepted")
+    nonzero_weight = {**weight, "quantization": {**weight["quantization"], "zero_points": [1, 0]}}
+    try:
+        _validate_weight_axis(nonzero_weight, "CONV_2D", 2)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("nonzero weight zero point was accepted")
+
     # Independently assembled FlatBuffer fixture with a complete one-op
     # FullyConnected chain; the parser does not depend on a TFLite/runtime
     # package.
@@ -750,6 +850,7 @@ def self_test() -> None:
     assert result["topology"]["canonical_digest"] == _canonical_topology_digest(result["tensor_contract"], result["topology"])
     assert result["topology"]["operators"][0]["builtin_name"] == "FULLY_CONNECTED"
     assert result["tensors"][0]["name"] == "weight"
+    assert result["tensors"][0]["data_hex"] == b"\x01".hex()
     try: parse(fixture(external_buffer=True))
     except ValueError: pass
     else: raise AssertionError("high-half Buffer external offset was truncated")
