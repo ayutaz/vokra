@@ -65,17 +65,15 @@
 //!
 //! 1. **The native frontend is not fully wired.** [`native`] now contains
 //!    source-faithful CMVN, positional encoding, and Conv2d subsampling
-//!    helpers. The complete fbank/CMVN input path, tensor binding, masks, and
-//!    encoder graph still remain fail-closed until the VAST tensor evidence is
-//!    consumed by a native model handle.
-//! 2. **No native tensor-name consumer.** The independent upstream dumper
-//!    authenticates all 940 names against `named_parameters()` /
-//!    `named_buffers()` and records their roles. The converter/binder still
-//!    has no Rust field mapping that consumes that sidecar, so a best-guess
-//!    walk could bind wrong weights with valid shapes.
-//!    This remains an explicit **BLOCKED** boundary: the manifest-only
-//!    [`FireredAsrAedWeights`] loader is not a semantic encoder binder, and
-//!    no arbitrary caller-supplied name list is accepted as one.
+//!    helpers. The complete fbank/CMVN input path, masks, and encoder graph
+//!    still remain fail-closed until the bound tensors are connected to those
+//!    native operators.
+//! 2. **The encoder semantic binder is authenticated.** The independent
+//!    upstream dumper authenticates all 940 names against `named_parameters()`
+//!    / `named_buffers()` and records their roles. This module now verifies
+//!    the exact 551 encoder names, source shapes, F32 types, role layout, and
+//!    compiled descriptor digest. It retains descriptors only; it does not
+//!    pretend that decoder or frontend execution is complete.
 //! 3. **No tokenizer blob binding.** The source-authenticated
 //!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
 //!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
@@ -85,7 +83,8 @@
 //!    subsampling stem, relative-position attention, and source-faithful
 //!    inference-only Conformer block; [`native`] exposes those exact
 //!    CPU/Metal-dispatched building blocks. The fbank input and strict
-//!    940-field model graph are not yet wired, so this binder remains
+//!    940-field executable model graph are not yet wired; the semantic
+//!    encoder descriptor binder is complete but execution remains
 //!    fail-closed.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
@@ -97,10 +96,11 @@
 //! shares that posture is **not** verified anywhere in this repository,
 //! and this module does not assert that it does.
 //!
-//! So: the remaining blockers are the full native frontend/field consumer,
-//! tokenizer blob, and complete 940-field Conformer/AED graph. The reusable
-//! native blocks are present, but their equivalence is not claimed until an
-//! independent VAST parity run consumes the authenticated checkpoint.
+//! So: the remaining blockers are the full native frontend connection,
+//! decoder/tokenizer, complete 940-field Conformer/AED execution graph, and
+//! independent VAST parity. The encoder descriptor binder and reusable native
+//! blocks are authenticated, but no runtime parity or transcription claim is
+//! made yet.
 //!
 //! # Loud-partial classification
 //!
@@ -215,7 +215,7 @@
 //! runtime never touches ONNX or a pickle (FR-LD-05 / NFR-DS-02).
 
 use vokra_core::engines::AsrEngine;
-use vokra_core::gguf::{GgufFile, GgufMetadataValue, GgufValueType, chunks};
+use vokra_core::gguf::{GgmlType, GgufFile, GgufMetadataValue, GgufValueType, chunks};
 use vokra_core::tasks::Transcription;
 use vokra_core::{BackendKind, LicenseClass, Result, VokraError};
 
@@ -404,14 +404,530 @@ pub const FIREREDASRAED_SPEC_KEYS: [&str; 16] = [
 ];
 
 /// Authenticated encoder geometry from the pinned upstream checkpoint
-/// inspection. These values are used for metadata validation and the future
-/// semantic binder/stack geometry; they are not defaults for minimal
-/// inspection fixtures.
+/// inspection. These values are used by the strict semantic binder and stack
+/// geometry; they are not defaults for minimal inspection fixtures.
 pub const AUTHENTICATED_ENCODER_N_LAYER: u32 = 16;
 pub const AUTHENTICATED_ENCODER_D_MODEL: u32 = 1_280;
 pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
 pub const AUTHENTICATED_ENCODER_FFN_DIM: u32 = 5_120;
 pub const AUTHENTICATED_ENCODER_KERNEL_SIZE: u32 = 33;
+
+/// SHA-256 of the canonical, source-order `(name|dtype|shape)` rows for the
+/// 551 authenticated encoder tensors.  This is compiled authority; a GGUF
+/// metadata field cannot replace it.
+pub const AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256: &str =
+    "42f34f512887ca0516f93eb204f048a61e3c44561f9ee6057dfd908a50661920";
+
+/// Semantic role of an authenticated FireRed encoder tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireRedEncoderTensorRole {
+    StemConv0Weight,
+    StemConv0Bias,
+    StemConv2Weight,
+    StemConv2Bias,
+    StemOutputWeight,
+    StemOutputBias,
+    PositionalEncoding,
+    Ffn1NormWeight,
+    Ffn1NormBias,
+    Ffn1ExpandWeight,
+    Ffn1ExpandBias,
+    Ffn1ProjectWeight,
+    Ffn1ProjectBias,
+    AttentionPosBiasU,
+    AttentionPosBiasV,
+    AttentionQWeight,
+    AttentionKWeight,
+    AttentionVWeight,
+    AttentionQNormWeight,
+    AttentionQNormBias,
+    AttentionKNormWeight,
+    AttentionKNormBias,
+    AttentionVNormWeight,
+    AttentionVNormBias,
+    AttentionOutputWeight,
+    AttentionLinearPosWeight,
+    ConvolutionPreNormWeight,
+    ConvolutionPreNormBias,
+    ConvolutionPointwiseInWeight,
+    ConvolutionDepthwiseWeight,
+    ConvolutionNormWeight,
+    ConvolutionNormBias,
+    ConvolutionPointwiseOutWeight,
+    Ffn2NormWeight,
+    Ffn2NormBias,
+    Ffn2ExpandWeight,
+    Ffn2ExpandBias,
+    Ffn2ProjectWeight,
+    Ffn2ProjectBias,
+    LayerNormWeight,
+    LayerNormBias,
+}
+
+/// How a source tensor is consumed by the native block once the executable
+/// value binder is added.  The current binder retains descriptors only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireRedEncoderNativeLayout {
+    Direct,
+    /// PyTorch Linear `[out, in]` transposed to Compute `[in, out]`.
+    LinearOutInToComputeInOut,
+    /// Raw PyTorch Conv2d `[out, in, height, width]`.
+    Conv2dOutInKernel,
+    /// Raw PyTorch Conv1d `[out, in, kernel]`.
+    Conv1dOutInKernel,
+    /// Source `[heads, head_dim]`; native attention currently needs a
+    /// flattened `[d_model]` adapter before executable binding.
+    HeadMajorBiasFlatten,
+    /// Source `[1, max_positions, d_model]`; native attention consumes a
+    /// cropped `[positions, d_model]` window.
+    PositionalTable,
+}
+
+/// One generated semantic descriptor in the authenticated encoder contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FireRedEncoderTensorSpec {
+    pub role: FireRedEncoderTensorRole,
+    pub name: String,
+    pub source_shape: Vec<u64>,
+    pub native_layout: FireRedEncoderNativeLayout,
+}
+
+const SHAPE_32_1_3_3: &[u64] = &[32, 1, 3, 3];
+const SHAPE_32: &[u64] = &[32];
+const SHAPE_32_32_3_3: &[u64] = &[32, 32, 3, 3];
+const SHAPE_1280_608: &[u64] = &[1280, 608];
+const SHAPE_1280: &[u64] = &[1280];
+const SHAPE_POSITIONS: &[u64] = &[1, 9999, 1280];
+const SHAPE_5120_1280: &[u64] = &[5120, 1280];
+const SHAPE_5120: &[u64] = &[5120];
+const SHAPE_1280_5120: &[u64] = &[1280, 5120];
+const SHAPE_20_64: &[u64] = &[20, 64];
+const SHAPE_1280_1280: &[u64] = &[1280, 1280];
+const SHAPE_5120_1280_1: &[u64] = &[5120, 1280, 1];
+const SHAPE_2560_1_33: &[u64] = &[2560, 1, 33];
+const SHAPE_2560: &[u64] = &[2560];
+const SHAPE_1280_2560_1: &[u64] = &[1280, 2560, 1];
+
+struct LayerTensorField {
+    suffix: &'static str,
+    role: FireRedEncoderTensorRole,
+    shape: &'static [u64],
+    native_layout: FireRedEncoderNativeLayout,
+}
+
+const LAYER_TENSOR_FIELDS: [LayerTensorField; 34] = [
+    LayerTensorField {
+        suffix: "ffn1.net.0.weight",
+        role: FireRedEncoderTensorRole::Ffn1NormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn1.net.0.bias",
+        role: FireRedEncoderTensorRole::Ffn1NormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn1.net.1.weight",
+        role: FireRedEncoderTensorRole::Ffn1ExpandWeight,
+        shape: SHAPE_5120_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "ffn1.net.1.bias",
+        role: FireRedEncoderTensorRole::Ffn1ExpandBias,
+        shape: SHAPE_5120,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn1.net.4.weight",
+        role: FireRedEncoderTensorRole::Ffn1ProjectWeight,
+        shape: SHAPE_1280_5120,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "ffn1.net.4.bias",
+        role: FireRedEncoderTensorRole::Ffn1ProjectBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.pos_bias_u",
+        role: FireRedEncoderTensorRole::AttentionPosBiasU,
+        shape: SHAPE_20_64,
+        native_layout: FireRedEncoderNativeLayout::HeadMajorBiasFlatten,
+    },
+    LayerTensorField {
+        suffix: "mhsa.pos_bias_v",
+        role: FireRedEncoderTensorRole::AttentionPosBiasV,
+        shape: SHAPE_20_64,
+        native_layout: FireRedEncoderNativeLayout::HeadMajorBiasFlatten,
+    },
+    LayerTensorField {
+        suffix: "mhsa.w_qs.weight",
+        role: FireRedEncoderTensorRole::AttentionQWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "mhsa.w_ks.weight",
+        role: FireRedEncoderTensorRole::AttentionKWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "mhsa.w_vs.weight",
+        role: FireRedEncoderTensorRole::AttentionVWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_q.weight",
+        role: FireRedEncoderTensorRole::AttentionQNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_q.bias",
+        role: FireRedEncoderTensorRole::AttentionQNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_k.weight",
+        role: FireRedEncoderTensorRole::AttentionKNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_k.bias",
+        role: FireRedEncoderTensorRole::AttentionKNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_v.weight",
+        role: FireRedEncoderTensorRole::AttentionVNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.layer_norm_v.bias",
+        role: FireRedEncoderTensorRole::AttentionVNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "mhsa.fc.weight",
+        role: FireRedEncoderTensorRole::AttentionOutputWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "mhsa.linear_pos.weight",
+        role: FireRedEncoderTensorRole::AttentionLinearPosWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "conv.pre_layer_norm.weight",
+        role: FireRedEncoderTensorRole::ConvolutionPreNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "conv.pre_layer_norm.bias",
+        role: FireRedEncoderTensorRole::ConvolutionPreNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "conv.pointwise_conv1.weight",
+        role: FireRedEncoderTensorRole::ConvolutionPointwiseInWeight,
+        shape: SHAPE_5120_1280_1,
+        native_layout: FireRedEncoderNativeLayout::Conv1dOutInKernel,
+    },
+    LayerTensorField {
+        suffix: "conv.depthwise_conv.weight",
+        role: FireRedEncoderTensorRole::ConvolutionDepthwiseWeight,
+        shape: SHAPE_2560_1_33,
+        native_layout: FireRedEncoderNativeLayout::Conv1dOutInKernel,
+    },
+    LayerTensorField {
+        suffix: "conv.batch_norm.weight",
+        role: FireRedEncoderTensorRole::ConvolutionNormWeight,
+        shape: SHAPE_2560,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "conv.batch_norm.bias",
+        role: FireRedEncoderTensorRole::ConvolutionNormBias,
+        shape: SHAPE_2560,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "conv.pointwise_conv2.weight",
+        role: FireRedEncoderTensorRole::ConvolutionPointwiseOutWeight,
+        shape: SHAPE_1280_2560_1,
+        native_layout: FireRedEncoderNativeLayout::Conv1dOutInKernel,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.0.weight",
+        role: FireRedEncoderTensorRole::Ffn2NormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.0.bias",
+        role: FireRedEncoderTensorRole::Ffn2NormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.1.weight",
+        role: FireRedEncoderTensorRole::Ffn2ExpandWeight,
+        shape: SHAPE_5120_1280,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.1.bias",
+        role: FireRedEncoderTensorRole::Ffn2ExpandBias,
+        shape: SHAPE_5120,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.4.weight",
+        role: FireRedEncoderTensorRole::Ffn2ProjectWeight,
+        shape: SHAPE_1280_5120,
+        native_layout: FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    LayerTensorField {
+        suffix: "ffn2.net.4.bias",
+        role: FireRedEncoderTensorRole::Ffn2ProjectBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "layer_norm.weight",
+        role: FireRedEncoderTensorRole::LayerNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+    LayerTensorField {
+        suffix: "layer_norm.bias",
+        role: FireRedEncoderTensorRole::LayerNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedEncoderNativeLayout::Direct,
+    },
+];
+
+const STEM_TENSOR_FIELDS: [(
+    &str,
+    FireRedEncoderTensorRole,
+    &[u64],
+    FireRedEncoderNativeLayout,
+); 7] = [
+    (
+        "encoder.input_preprocessor.conv.0.weight",
+        FireRedEncoderTensorRole::StemConv0Weight,
+        SHAPE_32_1_3_3,
+        FireRedEncoderNativeLayout::Conv2dOutInKernel,
+    ),
+    (
+        "encoder.input_preprocessor.conv.0.bias",
+        FireRedEncoderTensorRole::StemConv0Bias,
+        SHAPE_32,
+        FireRedEncoderNativeLayout::Direct,
+    ),
+    (
+        "encoder.input_preprocessor.conv.2.weight",
+        FireRedEncoderTensorRole::StemConv2Weight,
+        SHAPE_32_32_3_3,
+        FireRedEncoderNativeLayout::Conv2dOutInKernel,
+    ),
+    (
+        "encoder.input_preprocessor.conv.2.bias",
+        FireRedEncoderTensorRole::StemConv2Bias,
+        SHAPE_32,
+        FireRedEncoderNativeLayout::Direct,
+    ),
+    (
+        "encoder.input_preprocessor.out.weight",
+        FireRedEncoderTensorRole::StemOutputWeight,
+        SHAPE_1280_608,
+        FireRedEncoderNativeLayout::LinearOutInToComputeInOut,
+    ),
+    (
+        "encoder.input_preprocessor.out.bias",
+        FireRedEncoderTensorRole::StemOutputBias,
+        SHAPE_1280,
+        FireRedEncoderNativeLayout::Direct,
+    ),
+    (
+        "encoder.positional_encoding.pe",
+        FireRedEncoderTensorRole::PositionalEncoding,
+        SHAPE_POSITIONS,
+        FireRedEncoderNativeLayout::PositionalTable,
+    ),
+];
+
+fn expected_encoder_tensor_specs() -> Vec<FireRedEncoderTensorSpec> {
+    let mut specs = Vec::with_capacity(551);
+    for (name, role, shape, native_layout) in STEM_TENSOR_FIELDS {
+        specs.push(FireRedEncoderTensorSpec {
+            role,
+            name: name.to_owned(),
+            source_shape: shape.to_vec(),
+            native_layout,
+        });
+    }
+    for layer in 0..AUTHENTICATED_ENCODER_N_LAYER {
+        for field in LAYER_TENSOR_FIELDS {
+            specs.push(FireRedEncoderTensorSpec {
+                role: field.role,
+                name: format!("encoder.layer_stack.{layer}.{}", field.suffix),
+                source_shape: field.shape.to_vec(),
+                native_layout: field.native_layout,
+            });
+        }
+    }
+    specs
+}
+
+fn descriptor_digest(specs: &[FireRedEncoderTensorSpec]) -> [u8; 32] {
+    let mut canonical = Vec::new();
+    for spec in specs {
+        canonical.extend_from_slice(spec.name.as_bytes());
+        canonical.extend_from_slice(b"|torch.float32|");
+        for (index, dimension) in spec.source_shape.iter().enumerate() {
+            if index != 0 {
+                canonical.push(b',');
+            }
+            canonical.extend_from_slice(dimension.to_string().as_bytes());
+        }
+        canonical.push(b'\n');
+    }
+    crate::strict_checkpoint::sha256_bytes(&canonical)
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(64);
+    for byte in bytes {
+        output.push(char::from(DIGITS[(byte >> 4) as usize]));
+        output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
+    }
+    output
+}
+
+#[derive(Clone)]
+struct EncoderManifestRow {
+    name: String,
+    dtype: GgmlType,
+    shape: Vec<u64>,
+}
+
+fn validate_encoder_rows(rows: &[EncoderManifestRow]) -> Result<Vec<FireRedEncoderTensorSpec>> {
+    let expected = expected_encoder_tensor_specs();
+    if expected.len() != 551
+        || hex_digest(&descriptor_digest(&expected)) != AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l: compiled authenticated encoder descriptor contract is inconsistent"
+                .to_owned(),
+        ));
+    }
+    if rows.len() != expected.len() {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: encoder descriptor row count {}, expected 551",
+            rows.len()
+        )));
+    }
+    let mut canonical = Vec::new();
+    for (index, (row, spec)) in rows.iter().zip(&expected).enumerate() {
+        if row.name != spec.name {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: encoder descriptor row {index} is `{}`, expected `{}`",
+                row.name, spec.name
+            )));
+        }
+        if row.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated encoder tensor `{}` has dtype {:?}, expected F32",
+                row.name, row.dtype
+            )));
+        }
+        if row.shape != spec.source_shape {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated encoder tensor `{}` shape {:?}, expected {:?}",
+                row.name, row.shape, spec.source_shape
+            )));
+        }
+        canonical.extend_from_slice(row.name.as_bytes());
+        canonical.extend_from_slice(b"|torch.float32|");
+        for (dimension_index, dimension) in row.shape.iter().enumerate() {
+            if dimension_index != 0 {
+                canonical.push(b',');
+            }
+            canonical.extend_from_slice(dimension.to_string().as_bytes());
+        }
+        canonical.push(b'\n');
+    }
+    let actual_digest = hex_digest(&crate::strict_checkpoint::sha256_bytes(&canonical));
+    if actual_digest != AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: authenticated encoder descriptor digest {actual_digest}, expected {AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256}"
+        )));
+    }
+    Ok(expected)
+}
+
+fn bind_authenticated_encoder(
+    file: &GgufFile,
+    config: &FireredAsrAedConfig,
+) -> Result<Vec<FireRedEncoderTensorSpec>> {
+    if file.tensors().len() != 940 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: authenticated encoder contract requires 940 tensors, got {}",
+            file.tensors().len()
+        )));
+    }
+    if config.encoder.n_layer != AUTHENTICATED_ENCODER_N_LAYER
+        || config.encoder.d_model != AUTHENTICATED_ENCODER_D_MODEL
+        || config.encoder.n_head != AUTHENTICATED_ENCODER_N_HEAD
+        || config.encoder.ffn_dim != AUTHENTICATED_ENCODER_FFN_DIM
+        || config.kernel_size != AUTHENTICATED_ENCODER_KERNEL_SIZE
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l: authenticated encoder geometry drift".to_owned(),
+        ));
+    }
+    let required = read_required_tensors(file)?.ok_or_else(|| {
+        VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: `{KEY_REQUIRED_TENSORS}` is required for the authenticated encoder contract"
+        ))
+    })?;
+    if required.len() != 940 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: authenticated required-tensor list must contain 940 names, got {}",
+            required.len()
+        )));
+    }
+    validate_tensor_manifest(file, Some(&required))?;
+
+    let rows = file
+        .tensors()
+        .iter()
+        .filter(|info| info.name.starts_with("encoder."))
+        .map(|info| EncoderManifestRow {
+            name: info.name.clone(),
+            dtype: info.dtype,
+            shape: info.dimensions.clone(),
+        })
+        .collect::<Vec<_>>();
+    validate_encoder_rows(&rows)
+}
 
 /// Optional `Array<String>` metadata key: the exact tensor names the
 /// producer wrote.
@@ -1024,6 +1540,7 @@ pub struct FireredAsrAed {
     /// may omit it — see [`FireredAsrAedConfig`].
     cfg: Option<FireredAsrAedConfig>,
     weights: FireredAsrAedWeights,
+    encoder_specs: Option<Vec<FireRedEncoderTensorSpec>>,
     weight_license: LicenseClass,
     has_tokenizer: bool,
 }
@@ -1112,6 +1629,21 @@ impl FireredAsrAed {
         //    stamps the authenticated release geometry.
         let cfg = FireredAsrAedConfig::from_gguf(file)?;
 
+        // A 940-tensor file is the authenticated release shape and must
+        // carry the closed semantic encoder contract. Smaller inspection
+        // fixtures remain manifest-only and non-executable.
+        let encoder_specs = if weights.tensor_count() == 940 {
+            let config = cfg.as_ref().ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "firered-asr-aed-l: authenticated 940-tensor release requires encoder config"
+                        .to_owned(),
+                )
+            })?;
+            Some(bind_authenticated_encoder(file, config)?)
+        } else {
+            None
+        };
+
         // 4. Provenance surfacing. The converter stamps `apache-2.0` →
         //    Permissive by default; a GGUF with no stamp fail-closes to
         //    Unknown (memory `[[feedback-license-signoff-primary-source]]`).
@@ -1129,6 +1661,7 @@ impl FireredAsrAed {
         Ok(Self {
             cfg,
             weights,
+            encoder_specs,
             weight_license,
             has_tokenizer,
         })
@@ -1164,6 +1697,14 @@ impl FireredAsrAed {
     #[must_use]
     pub const fn weights(&self) -> &FireredAsrAedWeights {
         &self.weights
+    }
+
+    /// Exact semantic encoder descriptors for the authenticated 940-tensor
+    /// release. Minimal synthetic inspection fixtures return `None` and are
+    /// never executable.
+    #[must_use]
+    pub fn encoder_specs(&self) -> Option<&[FireRedEncoderTensorSpec]> {
+        self.encoder_specs.as_deref()
     }
 
     /// Number of tensors bound from the GGUF.
@@ -1385,11 +1926,12 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
              authenticate the 80-bin fbank/CMVN rules, and reusable native \
              frontend helpers now exist, but the complete native frontend tap \
              remains outside this runtime contract. \
-         (2) MISSING NATIVE TENSOR MAPPING: `{CONVERTER_PATH}` copies every float \
-         tensor under its verbatim prepared safetensors name and stamps the full \
-         required manifest. The independent upstream dumper authenticates each \
-         name's parameter/buffer role, but no native Rust field mapping consumes \
-         that evidence yet. \
+         (2) EXECUTABLE ENCODER GRAPH: the strict binder now consumes the \
+         authenticated 551-tensor encoder descriptor contract (including its \
+         compiled descriptor digest), while `{CONVERTER_PATH}` preserves every \
+         float tensor name and stamps the full required manifest. The native \
+         descriptor binding is not yet a retained executable weight cache, so \
+         frontend-to-block dispatch remains closed. \
          (3) MISSING TOKENIZER: an AED decoder emits token ids in a \
          `{KEY_VOCAB_SIZE}`-wide id space. The source-authenticated \
          SentencePiece/TokenDict and dictionary still need a native GGUF \
@@ -1397,8 +1939,8 @@ pub fn forward_loud_partial(cfg: Option<&FireredAsrAedConfig>, has_tokenizer: bo
              (4) NATIVE OPERATOR GAP: the pinned Conformer uses a Conv2d \
              subsampling stem, relative-position attention, and a \
              source-faithful inference-only Conformer block; CPU/Metal helper \
-             routes now exist, but the complete Conformer graph and its 940-field \
-             binding remain unimplemented and must be parity-\
+             routes now exist, but the complete Conformer graph and decoder \
+             execution remain unimplemented and must be parity-\
              tested before this model can run. \
          Output once real: decoder token ids per utterance, rendered to text only \
          once a tokenizer blob rides along. \
@@ -1638,6 +2180,84 @@ mod tests {
         assert!(!FIREREDASRAED_SPEC_KEYS.contains(&KEY_REQUIRED_TENSORS));
         assert!(!FIREREDASRAED_SPEC_KEYS.contains(&KEY_TOKENIZER_MODEL));
         assert_eq!(KEY_TOKENIZER_MODEL, "vokra.tokenizer.model");
+    }
+
+    #[test]
+    fn authenticated_encoder_descriptor_contract_is_exact_and_fail_closed() {
+        let expected = expected_encoder_tensor_specs();
+        assert_eq!(expected.len(), 551);
+        assert_eq!(
+            hex_digest(&descriptor_digest(&expected)),
+            AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256
+        );
+        assert_eq!(
+            expected[0].native_layout,
+            FireRedEncoderNativeLayout::Conv2dOutInKernel
+        );
+        assert_eq!(
+            expected[4].native_layout,
+            FireRedEncoderNativeLayout::LinearOutInToComputeInOut
+        );
+        assert_eq!(expected[7].role, FireRedEncoderTensorRole::Ffn1NormWeight);
+        assert_eq!(
+            expected[7 + 34].role,
+            FireRedEncoderTensorRole::Ffn1NormWeight
+        );
+        for layer in 0..16 {
+            let start = 7 + layer * 34;
+            assert!(
+                expected[start]
+                    .name
+                    .starts_with(&format!("encoder.layer_stack.{layer}."))
+            );
+            assert_eq!(
+                expected[start + 33].role,
+                FireRedEncoderTensorRole::LayerNormBias
+            );
+        }
+        let rows = || {
+            expected
+                .iter()
+                .map(|spec| EncoderManifestRow {
+                    name: spec.name.clone(),
+                    dtype: GgmlType::F32,
+                    shape: spec.source_shape.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(validate_encoder_rows(&rows()).unwrap().len(), 551);
+
+        let mut missing = rows();
+        missing.pop();
+        assert!(validate_encoder_rows(&missing).is_err());
+
+        let mut mutated_name = rows();
+        mutated_name[0].name.push_str(".mutated");
+        assert!(validate_encoder_rows(&mutated_name).is_err());
+
+        let mut duplicate = rows();
+        duplicate[35] = duplicate[34].clone();
+        assert!(validate_encoder_rows(&duplicate).is_err());
+
+        let mut late_layer = rows();
+        late_layer[7 + 15 * 34].name = "encoder.layer_stack.14.ffn1.net.0.weight".to_owned();
+        assert!(validate_encoder_rows(&late_layer).is_err());
+
+        let mut reordered = rows();
+        reordered.swap(7, 8);
+        assert!(validate_encoder_rows(&reordered).is_err());
+
+        let mut wrong_dtype = rows();
+        wrong_dtype[7].dtype = GgmlType::F16;
+        assert!(validate_encoder_rows(&wrong_dtype).is_err());
+
+        let mut wrong_shape = rows();
+        wrong_shape[7].shape[0] += 1;
+        assert!(validate_encoder_rows(&wrong_shape).is_err());
+
+        let mut unknown = rows();
+        unknown[7].name = "encoder.layer_stack.0.unknown.weight".to_owned();
+        assert!(validate_encoder_rows(&unknown).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -2044,9 +2664,10 @@ mod tests {
                      from the tensor shapes: {msg}"
                 );
 
-                // Blocker (2): the tensor-name manifest.
+                // Blocker (2): the executable encoder graph after semantic
+                // descriptor binding.
                 assert!(
-                    msg.contains("MISSING NATIVE TENSOR MAPPING"),
+                    msg.contains("EXECUTABLE ENCODER GRAPH"),
                     "gap (2) must be named: {msg}"
                 );
 
@@ -2239,8 +2860,7 @@ mod tests {
                 // Blockers (1) and (2) are untouched by a tokenizer, so the
                 // gate itself must not move.
                 assert!(
-                    msg.contains("FRONTEND CONTRACT")
-                        && msg.contains("MISSING NATIVE TENSOR MAPPING"),
+                    msg.contains("FRONTEND CONTRACT") && msg.contains("EXECUTABLE ENCODER GRAPH"),
                     "the remaining blockers must stay explicit: {msg}"
                 );
             }
