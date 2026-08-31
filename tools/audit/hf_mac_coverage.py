@@ -281,6 +281,8 @@ METAL_CODE_ARCHES = {
     "focalcodec",
     "frcrn",
     "funcodec",
+    "gigaam_multilingual",
+    "sber_gigaam_v3",
     "speechtokenizer",
     "speecht5",
     "fsmn-vad",

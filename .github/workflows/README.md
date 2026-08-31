@@ -74,6 +74,8 @@ main runが全てgreenかつ偽陽性0件だったため、同日にhard-failへ
 |---|---|---|
 | repo-hygiene | .github/workflows/ci-quality.yml | tracked file の scratch/gitignore drift 検査 |
 | catalog-audit | .github/workflows/ci-quality.yml | model catalog の実在性 audit (catalog-reality gate) |
+| hf-mac-coverage-unit | .github/workflows/ci-quality.yml | HF public architecture audit の offline unit suite（毎PR実行、weight downloadなし） |
+| hf-mac-coverage (advisory) | .github/workflows/ci-quality.yml | HF public Models API / README card の read-only Metal registry coverage（artifact parityとは別ゲート） |
 | unity-capi-lints | .github/workflows/ci-quality.yml | Unity C# 側 P/Invoke lint |
 | capi-smoke | .github/workflows/ci-quality.yml | C ABI smoke test (bytes error-path / session / stream / aec / s2s) |
 | msrv | .github/workflows/ci-quality.yml | Minimum Supported Rust Version 追随 |

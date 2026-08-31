@@ -1074,7 +1074,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             // Bind in run/bench so there is one concrete load site for the
-            // strict authenticated 552-tensor manifest and CPU-only route.
+            // strict authenticated 552-tensor manifest and selected backend.
             Ok((session, ModelTask::AsrGigaamMultilingual))
         }
         ARCH_GIGAAM_V3 => {
@@ -1085,7 +1085,7 @@ pub(crate) fn load_session_with_backend_and_mimi(
                 ));
             }
             // Bind in run/bench so the strict prepared-SHA gate and the
-            // selected CPU-only backend are applied at the concrete callsite.
+            // selected backend are applied at the concrete callsite.
             Ok((session, ModelTask::AsrGigaamV3Tokens))
         }
         ARCH_QWEN3_ASR => {

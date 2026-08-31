@@ -294,7 +294,7 @@ fn frame_count(samples: usize) -> Result<usize> {
         .ok_or_else(|| VokraError::InvalidArgument("GigaAM frame count overflows usize".into()))
 }
 
-/// Authenticated GigaAM Multilingual CTC model with a native CPU route.
+/// Authenticated GigaAM Multilingual CTC model with native CPU/Metal routes.
 ///
 /// Construction accepts only a GGUF file carrying the fixed metadata and
 /// complete 552-tensor manifest. The prepared-artifact digest gate remains
@@ -468,9 +468,9 @@ impl GigaamMultilingual {
 
     /// Select the backend for the complete learned operation graph.
     ///
-    /// Only [`BackendKind::Cpu`] is currently implemented. Other backends
-    /// return [`VokraError::UnsupportedOp`] rather than silently falling back
-    /// to scalar CPU execution.
+    /// The selected backend is preflighted against the complete learned-op
+    /// set. Unsupported backends return [`VokraError::UnsupportedOp`] rather
+    /// than silently falling back to scalar CPU execution.
     pub fn with_backend(mut self, backend: BackendKind) -> Result<Self> {
         Compute::for_backend(backend, GIGAAM_MULTILINGUAL_HOT_OPS)?;
         self.backend = backend;
@@ -487,7 +487,7 @@ impl GigaamMultilingual {
     /// input and expose encoder, logits, and greedy token IDs for VAST parity.
     ///
     /// This method is intended for the ignored real-weight parity test. It
-    /// uses the same strict binder and CPU-only backend as [`Self::transcribe`].
+    /// uses the same strict binder and selected backend as [`Self::transcribe`].
     pub fn parity_trace_log_mel(
         &self,
         mel: &[f32],

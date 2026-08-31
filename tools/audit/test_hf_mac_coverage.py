@@ -602,6 +602,24 @@ const BOUND_ARCHES: &[BoundArch] = &[
         self.assertIn("voice_gender_classifier", audit.METAL_CODE_ARCHES)
         self.assertIn("omniasr-ctc", audit.METAL_CODE_ARCHES)
         self.assertNotIn("omniasr-ctc", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertIn("gigaam_multilingual", audit.METAL_CODE_ARCHES)
+        self.assertIn("sber_gigaam_v3", audit.METAL_CODE_ARCHES)
+        self.assertNotIn("gigaam_multilingual", audit.ROUTED_PARTIAL_ARCHES)
+        self.assertNotIn("sber_gigaam_v3", audit.ROUTED_PARTIAL_ARCHES)
+
+    def test_gigaam_repositories_are_full_when_their_arches_are_routed(self):
+        for repo, architecture in (
+            ("vokra/sber-gigaam-multilingual", "gigaam_multilingual"),
+            ("vokra/sber-gigaam-v3", "sber_gigaam_v3"),
+        ):
+            with self.subTest(repo=repo):
+                coverage = audit.classify(
+                    audit.RepoRecord(repo, "abc", ("model.gguf",), architecture),
+                    {architecture},
+                    set(),
+                )
+                self.assertEqual(coverage.cpu_code, "full")
+                self.assertEqual(coverage.metal_code, "full")
 
     def test_omniasr_ctc_is_classified_full_when_artifact_is_routed(self):
         record = audit.RepoRecord(
