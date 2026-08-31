@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# VAST-only FireRedASR-AED-L inspection. No conversion or publication.
+# VAST-only FireRedASR-AED-L inspection and safe checkpoint preparation.
+# No runtime execution, parity claim, or publication.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${VOKRA_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
@@ -31,7 +32,8 @@ self_test() {
     '128' '32' '/dev/shm' 'findmnt' 'CARGO_BUILD_JOBS=1' 'status": "BLOCKED"' 'INSPECTION_ONLY' 'NO_UPLOAD' \
     'config.yaml' 'BLOCKER_EMPTY_CONFIG' 'git ls-files' 'git status' \
     'source_contract' 'AUTHENTICATED_SOURCE_CONTRACT' 'SOURCE_FACTS_AUTHENTICATED' \
-    'checkpoint geometry' 'token dictionary binding'; do
+    'checkpoint geometry' 'token dictionary binding' 'PREPARED' 'archive_members' \
+    'tensor_count' 'publication' '--audit-output' 'BLOCKED_NOT_RUN' 'fp32_atol_status'; do
     if ! grep -Fq -- "$token" "$path"; then log "self-test FAIL: missing token $token"; fail=1; fi
   done
   if ! UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$path" <<'PY'
@@ -188,14 +190,67 @@ grep -Fq '"status": "BLOCKED"' "$work_dir/evidence/manifest.json" || die 'blocke
 grep -Fq '"evidence_stage": "INSPECTION_ONLY"' "$work_dir/evidence/manifest.json" || die 'inspection stage missing'
 grep -Fq '"publication": "NO_UPLOAD"' "$work_dir/evidence/manifest.json" || die 'publication status missing'
 grep -Fq '"inspection_status": "AUTHENTICATED_EVIDENCE_COMPLETE"' "$work_dir/evidence/manifest.json" || die 'inspection did not complete authenticated evidence'
+prepared_path="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors"
+preparation_manifest="$work_dir/evidence/firered-asr-aed-l.prepared.safetensors.manifest.json"
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" \
+  --ckpt "$work_dir/model/model.pth.tar" \
+  --output "$prepared_path" \
+  --audit-output "$preparation_manifest" >> "$work_dir/evidence/validation.log" 2>&1
+[[ -s "$prepared_path" ]] || die 'prepared safetensors missing'
+[[ -s "$preparation_manifest" ]] || die 'preparation manifest missing'
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python "$PREPARER" \
+  --validate-manifest \
+  --inspection-manifest "$work_dir/evidence/manifest.json" \
+  --preparation-manifest "$preparation_manifest" \
+  --prepared "$prepared_path" >> "$work_dir/evidence/validation.log" 2>&1
+UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - \
+  "$work_dir/evidence/manifest.json" "$preparation_manifest" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+def reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+manifest_path, preparation_path = map(Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+preparation = json.loads(preparation_path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_pairs)
+manifest["preparation"] = preparation
+manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+PY
 UV_CACHE_DIR="$UV_CACHE_DIR" uv run --frozen --project "$ROOT/tools/parity" --python 3.12 python - "$work_dir/evidence/manifest.json" <<'PY'
 import json, re, sys
-manifest = json.loads(open(sys.argv[1], encoding="utf-8").read())
+def reject_duplicate_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+manifest = json.loads(open(sys.argv[1], encoding="utf-8").read(), object_pairs_hook=reject_duplicate_pairs)
 assert manifest["status"] == "BLOCKED"
 assert manifest["evidence_stage"] == "INSPECTION_ONLY"
 assert manifest["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
 assert manifest["publication"] == "NO_UPLOAD"
 assert manifest["inspection_status"] == "AUTHENTICATED_EVIDENCE_COMPLETE"
+preparation = manifest.get("preparation")
+assert isinstance(preparation, dict)
+assert preparation["status"] == "PREPARED"
+assert preparation["publication"] == "NO_UPLOAD"
+assert preparation["runtime_status"] == "NOT_IMPLEMENTED_FAIL_CLOSED"
+assert preparation["parity_status"] == "NOT_RUN"
+assert preparation["future_gate"]["status"] == "BLOCKED_NOT_RUN"
+assert preparation["future_gate"]["fp32_atol_status"] == "PREREGISTERED_NOT_RUN"
+assert "no pinned FireRedASR upstream package/import project" in preparation["future_gate"]["blocker"]
+state_audit = preparation["audit"]["state_dict"]
+assert state_audit["tensor_count"] > 0
+assert state_audit["tensor_count"] == len(state_audit["tensors"])
+assert preparation["output"]["bytes"] > 0
 contract = manifest.get("source_contract")
 assert isinstance(contract, dict)
 assert contract.get("status") == "AUTHENTICATED_SOURCE_CONTRACT"
@@ -215,4 +270,4 @@ for record in records:
     assert isinstance(record["markers"], list) and record["markers"]
 assert "INSPECTION_ERROR" not in json.dumps(manifest)
 PY
-die 'FireRedASR inspection evidence preserved; conversion/runtime/parity remain blocked'
+die 'FireRedASR inspection and preparation evidence preserved; conversion/runtime/parity remain blocked'
