@@ -564,9 +564,9 @@ def _validate_topology(
         opcode_field = reader.table_field(operator, 0, 4)
         inputs = reader.i32_vector(reader.table_field(operator, 1, 4)) if reader.table_field(operator, 1, 4) is not None else []
         outputs = reader.i32_vector(reader.table_field(operator, 2, 4)) if reader.table_field(operator, 2, 4) is not None else []
-        if opcode_field is None or not inputs or not outputs or any(value < 0 for value in inputs + outputs):
+        if not inputs or not outputs or any(value < 0 for value in inputs + outputs):
             raise ValueError(f"operator {index} has incomplete or negative tensor indices")
-        opcode_index = reader.u32(opcode_field)
+        opcode_index = reader.u32(opcode_field) if opcode_field is not None else 0
         if opcode_index >= len(operator_codes):
             raise ValueError(f"operator {index} opcode index is out of bounds")
         code = operator_codes[opcode_index]
@@ -949,9 +949,8 @@ def inventory(data: bytes) -> dict[str, Any]:
         operators = []
         for operator_index, operator in enumerate(reader.vector_uoffsets(operators_field)):
             opcode_field = reader.table_field(operator, 0, 4)
-            if opcode_field is None:
-                raise ValueError("operator lacks opcode index")
-            opcode_index = reader.u32(opcode_field)
+            # Operator.opcode_index is a uint with schema default 0.
+            opcode_index = reader.u32(opcode_field) if opcode_field is not None else 0
             if opcode_index >= len(operator_codes):
                 raise ValueError("operator opcode index is out of bounds")
             code = operator_codes[opcode_index]
@@ -1062,7 +1061,7 @@ def self_test() -> None:
                 intermediate_values: list[int] | None = None,
                 variable_input: bool = False, stateful_option: str | None = None,
                 no_builtin_options: bool = False, builtin_options_type: int | None = None,
-                init_subgraph_index: int = 0) -> bytes:
+                init_subgraph_index: int = 0, omit_opcode_index: bool = False) -> bytes:
         out = bytearray(b"\x00\x00\x00\x00TFL3")
         def table(fields: int, size: int) -> int:
             vt = len(out); out.extend(struct.pack("<HH", 4 + fields * 2, size)); out.extend(b"\x00" * (fields * 2))
@@ -1104,6 +1103,8 @@ def self_test() -> None:
         extended_operator = external_operator or intermediate_values is not None
         option_type = STATEFUL_BUILTIN_OPTIONS.get(stateful_option, 8) if builtin_options_type is None else builtin_options_type
         operator = table(14 if extended_operator else 8, 60 if extended_operator else 36); struct.pack_into("<I", out, operator + 4, 0); op_inputs = vector_i32([0, 1, 2]); op_outputs = vector_i32([3]); field_ptr(operator, 1, op_inputs); field_ptr(operator, 2, op_outputs); struct.pack_into("<B", out, operator + 16, option_type); omit_field(operator, 5); omit_field(operator, 6)
+        if omit_opcode_index:
+            omit_field(operator, 0)
         if mutating_values is None:
             omit_field(operator, 7)
         if external_operator:
@@ -1173,6 +1174,9 @@ def self_test() -> None:
     dedup_result = parse(bytes(deduped))
     dedup_inventory = inventory(bytes(deduped))
     assert dedup_result["complete"] and dedup_inventory["subgraph_count"] == 1
+    omitted_opcode = inventory(fixture(omit_opcode_index=True))
+    assert omitted_opcode["subgraphs"][0]["operators"][0]["opcode_index"] == 0
+    assert parse(fixture(omit_opcode_index=True))["complete"]
     evidence = inventory(fixture())
     assert evidence["format"] == "vokra-microwakeword-tflite-raw-inventory-v1"
     assert evidence["authority"] == "EVIDENCE_ONLY_UNREVIEWED"
