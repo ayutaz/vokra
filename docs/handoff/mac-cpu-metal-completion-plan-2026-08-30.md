@@ -253,11 +253,101 @@ VAST instances only for direct packet transfer, verify each manifest on
 Scaleway, execute the five model-specific CPU/Metal workers, recover the small
 signed evidence and then destroy both VAST instances.
 
-This Apple stage can decide only those five prepared rows. It cannot close the
-remaining 62 CPU-blocked repositories, the six XY dependency blockers, the
-HT-Demucs Python 3.12 contradiction, MOSS/Ultravox/NeuTTS remote reruns,
-publication/replacement gates or owner/license decisions. No Hugging Face
-upload is part of the stage.
+At the 2026-08-31 checkpoint this Apple stage could decide only those five
+prepared rows. It could not close the remaining 62 CPU-blocked repositories,
+the six XY dependency blockers, the HT-Demucs Python 3.12 contradiction,
+MOSS/Ultravox/NeuTTS remote reruns, publication/replacement gates or
+owner/license decisions. No Hugging Face upload is part of the stage.
+
+## 2026-09-01 cloud evidence update
+
+Disposable VAST instance `49422639` checked out clean code commit
+`8f968961a786fc843ba059175d9f8c2e98c04f58` and completed the next
+Scaleway-independent batch. No model ran on the maintainer Mac and no public
+artifact was uploaded.
+
+Voice Gender Classifier now has authenticated CPU evidence for the corrected
+dedicated architecture. The fixed upstream checkpoint was
+`JaesungHuh/voice-gender-classifier` at
+`db1222153bd60337e900be22add7af180452adc0`; its 61,907,512-byte
+`model.safetensors` matched SHA-256
+`2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5`.
+The independent source oracle was pinned at
+`49bcbecfd929ba5a043bde645fdff1a375eb79c7`. The converter wrote 202 tensors
+to the corrected GGUF with SHA-256
+`afb03696d8a640d5d701ea0c136bb065cac648cbfe905a5dcc4eae04e0769b1a`.
+The preregistered FP32 bound remained `0.01`; observed maximum absolute errors
+were `0.000072479` for features, `0.000058383` for embeddings,
+`0.000005677` for logits and `0.000002176` for probabilities. The official
+label also matched exactly. The evidence archive SHA-256 is
+`fc9e46d1715cca5ee094ba082817a63b42376809998f007c1de2d183135e4b7d`.
+The existing 202-tensor GGUF/reference packet
+`/private/tmp/voice-gender-apple-packet-f74374ab.tar.gz` has SHA-256
+`f755fbdc3a2146ca41942501d80415eff573f1dc8e56201ee474d93d4d3d7261`;
+Scaleway must use the current branch worker and verify this packet before
+running Apple CPU/Metal parity. No Metal verdict is claimed yet.
+
+The same exact code commit passed `cargo test --locked --workspace`, strict
+all-target/all-feature Clippy, `cargo deny check licenses advisories bans` and
+`cargo audit` on VAST. Tests and doctests completed with zero failures. Clippy
+retained only the existing non-fatal `clippy.toml`/`Cargo.toml` MSRV warning,
+and `cargo deny` retained only the existing unmatched `libfuzzer-sys`
+exception warning.
+
+FireRedASR-AED-L advanced from source-only inspection to authenticated
+checkpoint preparation without being misclassified as runnable. The exact
+4,678,597,714-byte `model.pth.tar` at revision
+`e57f5960d03cff1071ff7acbb409314d1e70ed3d` matched SHA-256
+`12380d0b4b6b83b09306292f3ab7e276bc84e2feeec33ce956b1a488cd4867e3`.
+Safe tensor-only loading authenticated 940 F32 tensors with no duplicate names
+or shared storage and no stripped counters. The measured checkpoint contract
+is 80 input bins, 7,832 output symbols, 16 encoder and 16 decoder layers,
+`d_model=1280`, 20 heads, `d_inner=5120` and kernel size 33. The prepared
+4,678,403,512-byte safetensors file had SHA-256
+`5e8608d5a23af0761cb6bb52d08ee19a6476b8c324799eff3c63c9785cef583e`.
+Only the two manifests and validation log were recovered; their archive
+SHA-256 is
+`475fa7e54c4636db4dd17bfb340d7c9f2709ab5af24c71433222f93d6ce79c78`.
+Status remains `NOT_IMPLEMENTED_FAIL_CLOSED`: an independently pinned upstream
+importer, native converter/runtime, CPU parity and complete Metal graph are
+still required. The `0.01` FP32 bound is preregistered but was not run.
+
+The corrected MOSS Audio Tokenizer v2, Ultravox and NeuTTS Air dependency
+audits were then rerun in their exact frozen Linux x86_64 environments. All
+three completed factual collection and remained `BLOCKED`, not because a job
+was skipped but because exact publication evidence is unavailable:
+
+- MOSS: `tqdm==4.70.0` has a hash-verified sdist with no bounded
+  LICENSE/COPYING/NOTICE/COPYRIGHT candidate; `triton==3.3.1` has neither an
+  installed publisher file nor a locked sdist. Report SHA-256:
+  `e3fb6d4f7c66d9a2df362bd42643d07266d859f01ee993d6443f6ee4293d9c46`.
+- Ultravox: the same `tqdm` fact remains, the exact upstream LICENSE path
+  returned 404 and the gated Llama companion LICENSE path returned 401.
+  Report SHA-256:
+  `21da50de30ee63b18343376ff9b292d7d10def38cfb188b8eb689f00da4f22aa`.
+- NeuTTS Air: the same `tqdm` fact remains and the fixed gated upstream LICENSE
+  path returned 401. Report SHA-256:
+  `bbac6840aee9431ef74354301954db0d1bc4e6b756ced9d510105c8cb5b8061a`.
+
+No license class, owner sign-off or publication approval was inferred. These
+three remote reruns are now complete as evidence tasks; their legal/owner
+blockers remain open.
+
+After all small evidence archives were recovered and their remote/local
+SHA-256 values matched, disposable instance `49422639` was destroyed and the
+VAST API returned `instances: null` for that id. Retained transfer instances
+`49168183` and `49261078` remain intentionally stopped. A live 2026-09-01
+status read reported storage-only costs of `$0.074074/h` and `$0.022222/h`, or
+about `$0.096296/h` (`$2.31/day`) combined. They must stay stopped until the
+three retained packets are transferred directly to Scaleway and verified, then
+both must be destroyed. The unrelated running instance labeled
+`cutetts-s1-preprocess` was not touched.
+
+The prepared Scaleway set is therefore six models: GigaAM v3, GigaAM
+Multilingual, OmniASR-CTC-1B, ReazonSpeech-NeMo-v2, BiCodec and Voice Gender
+Classifier. This does not change the live Hugging Face audit count before a
+separately authorized public replacement, and it does not make FireRed or the
+three blocked dependency families Apple-ready.
 
 ## Execution order
 

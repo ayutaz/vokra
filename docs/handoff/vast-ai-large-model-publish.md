@@ -203,6 +203,15 @@ retained handoff（別環境への転送待ちなど）に限り、外部 backup
 Scaleway へ直接転送するためだけに保持する。再開はその転送に限定し、
 Scaleway 上で manifest を検証して証拠を回収した後に両方を destroy する。
 
+**2026-09-01 live status supplement**: 上記2件は引き続き
+`cur_state=stopped`、`intended_status=stopped`、`actual_status=exited` で、
+compute は停止している。live API の storage-only cost は `49168183` が
+`$0.074074/h`、`49261078` が `$0.022222/h`、合計約 `$0.096296/h`
+（約 `$2.31/day`）。使い捨て検証 instance `49422639` は Voice Gender、
+FireRed preparation、3件の依存監査の小容量証跡を回収・照合した後に destroy
+し、個別照会で `instances: null` を確認した。別作業の running instance
+`cutetts-s1-preprocess` には触れていない。
+
 ## 3. int tensor 対応 (parakeet 系で発生した pattern)
 
 一部 checkpoint に `num_batches_tracked` (BatchNorm training-only int64 counter) 等の inference-inert int tensor が入っている。Vokra converter は F32/F16/BF16 のみ受け付けるため、**convert 前に strip する**:
