@@ -60,14 +60,19 @@ SOURCE_CONTRACT_MARKERS = {
     ),
     "fireredasr/data/asr_feat.py": (
         "kaldi_native_fbank",
-        "cmvn",
-        "16000",
+        "KaldifeatFbank(num_mel_bins=80, frame_length=25,",
+        "frame_shift=10, dither=0.0",
+        "sample_rate, wav_np = kaldiio.load_mat(",
+        "fbank.accept_waveform(sample_rate, wav_np.tolist())",
     ),
     "fireredasr/tokenizer/aed_tokenizer.py": (
         "SentencePieceProcessor",
         "TokenDict",
         "<sos>",
         "<eos>",
+    ),
+    "README.md": (
+        "ffmpeg -i input_audio -ar 16000 -ac 1 -acodec pcm_s16le -f wav output.wav",
     ),
 }
 
@@ -324,7 +329,7 @@ def inspect_source_contract(root: Path) -> dict[str, Any]:
     return {
         "status": "AUTHENTICATED_SOURCE_CONTRACT",
         "architecture": "ConformerEncoder + TransformerDecoder + batch_beam_search",
-        "frontend": "kaldi_native_fbank path with 16 kHz source marker; exact feature geometry remains checkpoint/config evidence",
+        "frontend": "ASRFeatExtractor accepts the provided WAV sample_rate dynamically; exact KaldifeatFbank geometry is source-authenticated, while the official README normalizes release input to 16 kHz mono",
         "tokenizer": "SentencePieceProcessor plus TokenDict with <sos>/<eos> source markers",
         "records": records,
     }

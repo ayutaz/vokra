@@ -203,6 +203,7 @@ expected_paths = [
     "fireredasr/models/fireredasr_aed.py",
     "fireredasr/data/asr_feat.py",
     "fireredasr/tokenizer/aed_tokenizer.py",
+    "README.md",
 ]
 records = contract.get("records")
 assert isinstance(records, list) and len(records) == len(expected_paths)
