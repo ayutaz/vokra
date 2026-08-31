@@ -19,17 +19,20 @@
 
 ## Authoritative current snapshot (2026-08-31)
 
-The authoritative implementation/code snapshot is
+The authoritative runtime implementation/code snapshot is
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0` on
 `feat/mac-cpu-metal-full-coverage-2026-08-28`, workspace version `0.2.0`; the
 pre-refresh evidence/package checkpoint was
 `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`. GitHub `main` remains
-`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The repeated live public-artifact
-audit reports 194 repositories, 193 GGUF-bearing repositories and 198 GGUF
-files: CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
-`not-artifact=1`; Metal `full=129`, `blocked-by-cpu=62`, `cpu-only=2`,
-`not-artifact=1`. The two exact CPU-complete/Metal-unsupported repositories are
-`vokra/sber-gigaam-multilingual` and `vokra/sber-gigaam-v3`.
+`41ce9ffdd4b0959497f55afa5016822f77a8a7b6`. The source-level Metal inventory
+correction is `8f0d8572d46fe9972bfdd88241efa937e17e63ac`. The repeated live
+public-artifact audit at that commit reports 194 repositories, 193
+GGUF-bearing repositories and 198 GGUF files: CPU `full=131`, `partial=42`,
+`no-runtime-binder=20`, `not-artifact=1`; Metal `full=131`,
+`blocked-by-cpu=62`, `not-artifact=1`. There are zero source-level
+CPU-complete/Metal-unsupported rows. GigaAM v3 and GigaAM Multilingual now have
+complete conservative Metal code routes, but both still require authenticated
+Apple CPU/Metal evidence and therefore remain in the prepared Scaleway set.
 
 Five models are ready for authenticated Apple execution: GigaAM v3, GigaAM
 Multilingual, OmniASR CTC 1B, ReazonSpeech NeMo v2 and BiCodec. Their immutable
@@ -441,6 +444,12 @@ git bundles. No branch was pushed and no Hugging Face upload occurred.
   `276ea4e27b5feb97199e42327c277a61c8d7db708baf6c6a78ab15d65f32c619`;
   the explicit summary SHA-256 is
   `99272fead6ada58ef0e11628bc411ef71b0c011f64fbf341945d50e187f40370`.
+
+  This bullet preserves the exact fail-closed audit result at the named
+  `9f69277d` VAST checkpoint. The later source-level inventory correction at
+  `8f0d8572` classifies both GigaAM routes as Metal-complete and produces the
+  current `full=131`, `blocked-by-cpu=62`, `not-artifact=1` split with zero
+  CPU-only rows. It does not supply an Apple-hardware verdict.
 
 This closes the current unblocked Linux/VAST evidence batch, not all 62
 repositories blocked by incomplete CPU artifacts or binders. Scaleway can
