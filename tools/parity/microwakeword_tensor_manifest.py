@@ -841,6 +841,20 @@ def _inventory_builtin_options(reader: Reader, operator: int, name: str | None, 
     options_type = reader.u8(type_field) if type_field is not None else 0
     options_field = _present_uoffset(reader, reader.table_field(operator, 4, 4))
     record: dict[str, Any] = {"type": options_type, "table_present": options_field is not None}
+    if name in {"READ_VARIABLE", "ASSIGN_VARIABLE"}:
+        expected_type = STATEFUL_BUILTIN_OPTIONS[name]
+        if options_type == 0:
+            if options_field is not None:
+                raise ValueError(f"{name} type 0 must omit builtin options")
+        elif options_type == expected_type:
+            if options_field is None:
+                raise ValueError(f"{name} typed options require an empty table")
+            options = reader.indirect(options_field)
+            _require_empty_table(reader, options, name)
+        else:
+            raise ValueError(f"{name} has builtin option type {options_type}, expected 0 or {expected_type}")
+        record["decoded"] = {}
+        return record
     expected_type = BUILTIN_OPTIONS.get(name, STATEFUL_BUILTIN_OPTIONS.get(name))
     if expected_type is not None and options_type != expected_type:
         raise ValueError(f"{name} has builtin option type {options_type}, expected {expected_type}")
@@ -863,12 +877,6 @@ def _inventory_builtin_options(reader: Reader, operator: int, name: str | None, 
             "container": _optional_string(reader, reader.table_field(options, 0, 4)),
             "shared_name": _optional_string(reader, reader.table_field(options, 1, 4)),
         }
-    elif name in {"READ_VARIABLE", "ASSIGN_VARIABLE"}:
-        if options_field is None:
-            raise ValueError(f"{name} lacks builtin options")
-        options = reader.indirect(options_field)
-        _require_empty_table(reader, options, name)
-        record["decoded"] = {}
     return record
 
 
@@ -1243,13 +1251,19 @@ def self_test() -> None:
     else: raise AssertionError("CALL_ONCE out-of-range init subgraph was accepted")
     var_handle = inventory(fixture(opcode_builtin=142, opcode_deprecated=127, stateful_option="VAR_HANDLE"))
     assert var_handle["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {"container": "container", "shared_name": "shared"}
-    read_variable = inventory(fixture(opcode_builtin=143, opcode_deprecated=127, stateful_option="READ_VARIABLE"))
-    assert read_variable["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
-    assign_variable = inventory(fixture(opcode_builtin=144, opcode_deprecated=127, stateful_option="ASSIGN_VARIABLE"))
-    assert assign_variable["subgraphs"][0]["operators"][0]["builtin_options"]["decoded"] == {}
-    try: inventory(fixture(opcode_builtin=143, opcode_deprecated=127, no_builtin_options=True, builtin_options_type=112))
-    except ValueError: pass
-    else: raise AssertionError("READ_VARIABLE without options was accepted")
+    for opcode, name, typed in ((143, "READ_VARIABLE", 112), (144, "ASSIGN_VARIABLE", 113)):
+        omitted = inventory(fixture(opcode_builtin=opcode, opcode_deprecated=127, stateful_option=name, builtin_options_type=0, no_builtin_options=True))
+        assert omitted["subgraphs"][0]["operators"][0]["builtin_options"] == {"type": 0, "table_present": False, "decoded": {}}
+        present = inventory(fixture(opcode_builtin=opcode, opcode_deprecated=127, stateful_option=name))
+        assert present["subgraphs"][0]["operators"][0]["builtin_options"] == {"type": typed, "table_present": True, "decoded": {}}
+        for kwargs in (
+            {"builtin_options_type": 0},
+            {"builtin_options_type": typed, "no_builtin_options": True},
+            {"builtin_options_type": 111},
+        ):
+            try: inventory(fixture(opcode_builtin=opcode, opcode_deprecated=127, stateful_option=name, **kwargs))
+            except ValueError: pass
+            else: raise AssertionError(f"malformed {name} options contract was accepted")
     unknown = inventory(fixture(opcode_builtin=250, opcode_deprecated=127))
     assert unknown["operator_codes"][0]["selected_code"] == 250
     assert unknown["operator_codes"][0]["official_name"] is None
