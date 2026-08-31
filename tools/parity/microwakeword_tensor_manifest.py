@@ -229,17 +229,38 @@ def _tensor_quantization(reader: Reader, tensor: int) -> dict[str, Any] | None:
     return {"scales": scales, "zero_points": zero_points, "quantized_dimension": qdim}
 
 
+PLACEHOLDER_FOR_GREATER_OP_CODES = 127
+
+
+def _select_builtin_code(builtin: int | None, deprecated: int | None) -> int:
+    """Apply schema_v3a OperatorCode deprecated/extended selection.
+
+    TensorFlow Lite schema_v3a uses ``deprecated_builtin_code`` for codes below
+    ``PLACEHOLDER_FOR_GREATER_OP_CODES``.  Only codes greater than the 127
+    placeholder use the current int32 field, and those rows must carry the
+    deprecated 127 placeholder. Code 127 is a placeholder, never an op.
+    """
+    current = 0 if builtin is None else builtin
+    if current < 0 or current == PLACEHOLDER_FOR_GREATER_OP_CODES:
+        raise ValueError("invalid TFLite builtin code placeholder")
+    if current > PLACEHOLDER_FOR_GREATER_OP_CODES:
+        if deprecated != PLACEHOLDER_FOR_GREATER_OP_CODES:
+            raise ValueError("extended TFLite builtin code lacks placeholder alias")
+        return current
+    if deprecated is None or deprecated == PLACEHOLDER_FOR_GREATER_OP_CODES:
+        raise ValueError("low TFLite builtin code lacks deprecated alias")
+    return deprecated
+
+
 def _operator_code(reader: Reader, table: int) -> dict[str, Any]:
     deprecated_field = reader.table_field(table, 0, 1)
-    # OperatorCode.builtin_code is a schema enum backed by int32. The legacy
-    # deprecated_builtin_code remains a byte, so do not truncate the current
-    # field to one byte when authenticating the operator identity.
+    # OperatorCode.builtin_code is a schema enum backed by int32. Per schema_v3a,
+    # low codes select deprecated_builtin_code; only extended codes select the
+    # current field with deprecated=127 as its placeholder.
     builtin_field = reader.table_field(table, 3, 4)
     deprecated = reader.u8(deprecated_field) if deprecated_field is not None else None
     builtin = reader.i32(builtin_field) if builtin_field is not None else None
-    if builtin is not None and deprecated is not None and builtin != deprecated:
-        raise ValueError("TFLite OperatorCode builtin code aliases disagree")
-    code = builtin if builtin is not None else deprecated if deprecated is not None else 0
+    code = _select_builtin_code(builtin, deprecated)
     custom_field = reader.table_field(table, 1, 4)
     custom = reader.string(custom_field) if custom_field is not None else None
     if custom:
@@ -757,6 +778,16 @@ def publish(path: Path, value: dict[str, Any]) -> None:
 
 
 def self_test() -> None:
+    assert _select_builtin_code(0, 3) == 3
+    assert _select_builtin_code(None, 3) == 3
+    assert _select_builtin_code(200, 127) == 200
+    for builtin, deprecated in ((127, 127), (200, 3), (200, None), (0, None), (0, 127), (-1, 3)):
+        try:
+            _select_builtin_code(builtin, deprecated)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed TFLite builtin-code alias was accepted")
     activation = {"shape": [1, 1, 1, 1], "quantization": {"scales": [0.5], "zero_points": [0], "quantized_dimension": -1}}
     weight = {"shape": [2, 1, 1, 2], "quantization": {"scales": [0.25, 0.5], "zero_points": [0, 0], "quantized_dimension": 0}}
     bias = {"shape": [2], "quantization": {"scales": [0.125, 0.25], "zero_points": [0, 0], "quantized_dimension": 0}}
@@ -813,7 +844,7 @@ def self_test() -> None:
         operator_code_vector = vector_slots(1)
         sv = vector_slots(1); bv = vector_slots(4 if external_buffer else 3)
         field_ptr(mtab, 1, operator_code_vector); field_ptr(mtab, 2, sv); field_ptr(mtab, 4, bv)
-        opcode = table(4, 20); omit_field(opcode, 0); omit_field(opcode, 1); struct.pack_into("<i", out, opcode + 12, 1); struct.pack_into("<B", out, opcode + 16, 9)
+        opcode = table(4, 20); struct.pack_into("<B", out, opcode + 4, 9); omit_field(opcode, 1); struct.pack_into("<i", out, opcode + 12, 1); struct.pack_into("<i", out, opcode + 16, 0)
         patch_vector(operator_code_vector, [opcode])
         stab = table(5, 24); tv = vector_slots(4); inputs = vector_i32([0]); outputs = vector_i32([3]); field_ptr(stab, 0, tv); field_ptr(stab, 1, inputs); field_ptr(stab, 2, outputs)
         op_vector = vector_slots(1)
