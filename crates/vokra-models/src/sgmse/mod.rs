@@ -448,7 +448,7 @@ impl SgmseGraphWeights {
             graph_config: plan.config.clone(),
             sampler_config: SgmseConfig::voicebank(),
             required_roles: reviewed_roles.to_vec(),
-            entries: Self::from_gguf_metadata(file)?,
+            entries: SgmseTensorManifest::from_gguf_metadata(file)?,
         };
         manifest.validate(&plan, expected_digest)?;
         let arch = file
@@ -709,7 +709,7 @@ pub struct NcsnppV2Config {
 
 /// A source-level NCSN++ stage. This is a topology description, not a weight
 /// manifest: the latter must be supplied by the safe-loader before execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NcsnppStageKind {
     /// Initial four-real-channel projection.
     Input,
@@ -1422,7 +1422,7 @@ impl NcsnppBigGanBlockWeights {
                 ));
             }
         }
-        let all_values = norm0_gamma
+        let mut all_values = norm0_gamma
             .iter()
             .chain(&norm0_beta)
             .chain(&conv0)
