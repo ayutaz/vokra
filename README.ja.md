@@ -14,11 +14,13 @@ Vokra は provenance を含む GGUF を読み込み、ランタイムでは ONNX
 ロードしません。デフォルトランタイムに外部 Cargo 依存はなく、root
 `Cargo.lock` は first-party の `vokra-*` crate だけで構成されます。
 
-> **開発状況:** workspace は `0.2.0` development で、Git tag と公開済み
-> release はまだありません。Rust API、C ABI、GGUF metadata、モデル対応範囲は
-> 引き続き pre-1.0 で、変更される可能性があります。他プロジェクトで評価する
-> ときは現段階では正確な commit を固定し、release 公開後は正確な tag または
-> release を固定してください。
+> **開発状況（2026-08-31）:** workspace は `0.3.0` development です。現在の
+> ドキュメント refresh 直前の PR #79 snapshot は `d8a93bc3`（109 pass / 13
+> expected skip）で、`origin/main` は `41ce9ffd` でした。Git tag と公開済み
+> release はまだありません。
+> Rust API、C ABI、GGUF metadata、モデル対応範囲は引き続き pre-1.0 で、変更される
+> 可能性があります。他プロジェクトで評価するときは現段階では正確な commit を固定し、
+> release 公開後は正確な tag または release を固定してください。
 
 ## Vokra の特徴
 

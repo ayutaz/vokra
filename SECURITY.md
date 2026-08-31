@@ -27,7 +27,7 @@ respected when requested.
 
 ## Supported versions
 
-The workspace is `0.2.0` development; no Git tag or published release exists
+The workspace is `0.3.0` development; no Git tag or published release exists
 yet. Security fixes are made on the current development line. Older commits,
 private builds, and unreleased snapshots do not receive backports.
 

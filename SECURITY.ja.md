@@ -25,7 +25,7 @@ credit は advisory 内で調整し、匿名の希望を尊重します。
 
 ## サポート対象
 
-workspace は `0.2.0` development で、Git tag と公開済み release はまだ
+workspace は `0.3.0` development で、Git tag と公開済み release はまだ
 ありません。セキュリティ修正は現行 development line に適用します。古い commit、
 private build、未公開 snapshot への backport は行いません。
 

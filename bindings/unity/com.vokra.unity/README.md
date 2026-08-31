@@ -11,8 +11,8 @@ authorized CD; they are not present in the tracked UPM tree.
 
 ## Status
 
-The workspace is `0.2.0` development; no Git tag or GitHub release exists as
-of 2026-08-30. The Unity package source metadata remains `0.1.0` in
+The workspace is `0.3.0` development; no Git tag or GitHub release exists as
+of 2026-08-31. The Unity package source metadata remains `0.1.0` in
 `package.json`, but that package version is unpublished. Native binaries are
 not bundled in this checkout: the tracked `Plugins/` tree contains only
 `.gitkeep`/`.meta` placeholders. They are assembled by CD when an authorized

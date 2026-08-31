@@ -58,6 +58,22 @@ Python / JS の全バインディングはこの 1 つのヘッダの上に乗�
   チュートリアルがリファレンス。初回の docs.rs render は crates.io publish 後に
   owner が確認する。
 
+## 5. 現行 0.3.0 release と Apple 検証 status
+
+現行の workspace release line は `0.3.0` である。以下の parity 数値は文書更新前の
+snapshot であり、PR #79 の `d8a93bc3` を `origin/main` の `41ce9ffd` と照合して
+109 pass、13 expected skip を記録した時点のものである。live public audit の現行値は
+194 repository（GGUF repository 193、GGUF file 198）。CPU coverage は `full=131`、
+`partial=42`、
+`no-runtime-binder=20`、`not-artifact=1`、Metal は `full=131`、
+`blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
+現時点の release tag は 0、GitHub Release も 0 である。
+
+GigaAM v3 / Multilingual は conservative な Metal code route が complete だが、
+Apple hardware verdict は未取得。OmniASR も認証済み Scaleway run 待ちである。
+CI Quality の `hf-mac-coverage-unit` と live advisory は最新 PR で green だが、
+CI/audit 結果を Apple 実機 evidence の代用とはしない。
+
 ## Keeping this page current
 
 **最終確認日: 2026-08-31 — GitHub `main`

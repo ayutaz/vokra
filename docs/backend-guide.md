@@ -150,6 +150,14 @@ their complete learned-op inventory before selecting Metal; these seams do not
 authorize a silent CPU fallback. Their source-level contracts were verified at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`; real Apple CPU/Metal evidence for
 the staged GigaAM, OmniASR, ReazonSpeech and BiCodec packets remains pending.
+In the current 0.3.0 line, GigaAM v3 and GigaAM Multilingual have complete
+conservative Metal code routes, but their Apple-hardware verdict is still
+unmeasured. OmniASR likewise remains pending the authenticated Scaleway run;
+source-level route completeness is not an Apple-device result. The live public
+coverage snapshot is CPU `full=131`, `partial=42`, `no-runtime-binder=20`,
+`not-artifact=1`, and Metal `full=131`, `blocked-by-cpu=62`, `not-artifact=1`,
+with source-level CPU-only coverage at 0.
+There are currently 0 release tags and 0 GitHub Releases.
 
 This guide documents the *procedure*. It does **not** run devices: real GPU /
 NPU parity and soak on physical hardware (an Apple Neural Engine, a Hexagon

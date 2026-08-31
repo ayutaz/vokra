@@ -2,7 +2,7 @@
 
 [English](python.md) | **日本語**
 
-> **実装状態（2026-08-30 照合）: workspace `0.2.0` development、source 実装済み・
+> **実装状態（2026-08-31 照合）: workspace `0.3.0` development、source 実装済み・
 > 未公開。** package root は
 > `Session`、`Stream`、`Event`、typed error を export し、生成 table は現行 C ABI
 > の全 function を覆います。PyPI 公開は未検証・未承認です。正確な

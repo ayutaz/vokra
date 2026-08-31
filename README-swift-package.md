@@ -1,6 +1,6 @@
 # Vokra Swift Package
 
-The workspace is `0.2.0` development as of 2026-08-30. No Git tag or GitHub
+The workspace is `0.3.0` development as of 2026-08-31. No Git tag or GitHub
 Release is available yet; the package is consumed from repository source or a
 locally built XCFramework until an authorized release is published.
 
@@ -19,7 +19,7 @@ from a clean clone. Use the local flow below until an authorized CD release
 publishes the XCFramework.
 
 1. Clone the repository and check out the publicly fetchable GitHub `main`
-   baseline verified on 2026-08-30:
+   baseline verified on 2026-08-31:
 
    ```sh
    git clone https://github.com/ayutaz/vokra.git

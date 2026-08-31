@@ -18,6 +18,19 @@ cron 時刻・required check name・trigger の記述に各 workflow file の co
   壊すことがあるため、**§1 の table 構造は変更しない** こと（job id / check name / 定義 file
   の列は追加・削除禁止、値の差替のみ許可）
 
+**Current 0.3.0 Apple/CI status**: the parity figures below are a
+pre-documentation-refresh snapshot from PR #79 head `d8a93bc3`, evaluated
+against `origin/main` `41ce9ffd`; that snapshot recorded 109 passes and 13
+expected skips. The live public audit currently is 194 repositories (193 GGUF
+repositories, 198 GGUF files), with CPU `full=131`, `partial=42`,
+`no-runtime-binder=20`, `not-artifact=1`, Metal `full=131`,
+`blocked-by-cpu=62`, `not-artifact=1`, and source-level CPU-only coverage 0.
+GigaAM v3/Multilingual have complete conservative Metal code routes but no
+Apple-hardware verdict; OmniASR awaits the authenticated Scaleway run. Both
+`hf-mac-coverage-unit` and the live advisory coverage check are green on the
+latest PR. These are CI/audit facts, not Apple-device sign-off.
+There are currently 0 release tags and 0 GitHub Releases.
+
 ---
 
 ## 1. Required checks (main branch protection)

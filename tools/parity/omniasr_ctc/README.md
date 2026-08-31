@@ -55,3 +55,16 @@ Transfer it directly VAST-to-Scaleway, verify the manifest there, preserve the
 small Apple evidence and then destroy the retained VAST instance. Storage
 billing continues while stopped. No Scaleway run or Hugging Face upload has
 occurred.
+
+## Current 0.3.0 release status
+
+The current workspace release line is `0.3.0`. The parity figures below are a
+pre-documentation-refresh snapshot from PR #79 at `d8a93bc3`, against
+`origin/main` `41ce9ffd`. The independent CPU
+packet and source-level Metal route are not an Apple-device verdict: OmniASR
+CPU repetition and Metal execution remain explicitly blocked on the
+authenticated Scaleway run. That snapshot's parity summary is 109 passes and
+13 expected skips; the live coverage audit currently reports CPU
+`full=131/partial=42/no-runtime-binder=20/not-artifact=1` and Metal
+`full=131/blocked-by-cpu=62/not-artifact=1`.
+There are currently 0 release tags and 0 GitHub Releases.

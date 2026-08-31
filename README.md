@@ -15,11 +15,13 @@ Vokra loads provenance-aware GGUF files and does not load ONNX graphs at
 runtime. The default runtime has no third-party Cargo dependencies: the root
 `Cargo.lock` contains only first-party `vokra-*` crates.
 
-> **Development status:** the workspace is `0.2.0` development, with no Git
-> tag or published release yet. Rust APIs, the C ABI, GGUF metadata, and model
-> coverage remain pre-1.0 and may change. During this unpublished phase, pin an
-> exact commit when evaluating Vokra in another project; switch to an exact tag
-> or release after one is published.
+> **Development status (2026-08-31):** the workspace is `0.3.0` development.
+> The pre-documentation-refresh PR #79 snapshot was `d8a93bc3` (109 pass / 13
+> expected skip), against `origin/main` at `41ce9ffd`; there are no Git tags or
+> published releases yet. Rust APIs, the C ABI, GGUF metadata, and model coverage remain
+> pre-1.0 and may change. During this unpublished phase, pin an exact commit
+> when evaluating Vokra in another project; switch to an exact tag or release
+> after one is published.
 
 ## Why Vokra
 

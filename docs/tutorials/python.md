@@ -2,7 +2,7 @@
 
 **English** | [日本語](python.ja.md)
 
-> **Implementation status (reviewed 2026-08-30): workspace `0.2.0` development,
+> **Implementation status (reviewed 2026-08-31): workspace `0.3.0` development,
 > source-complete, unpublished.**
 > The package root exports `Session`, `Stream`, `Event`, and typed errors, and
 > its generated table covers the complete current C function set. No PyPI release has

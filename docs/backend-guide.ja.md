@@ -143,7 +143,14 @@ ConvTranspose1d、Conv2d、ConvTranspose2d kernel も公開する。モデル経
 は silent CPU fallback を許可しない。source-level contract は
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0` で確認済みだが、準備済みの
 GigaAM、OmniASR、ReazonSpeech、BiCodec packet に対する実 Apple CPU/Metal
-evidence は引き続き pending である。
+evidence は引き続き pending である。現行 0.3.0 系列では GigaAM v3 と
+Multilingual は conservative な Metal code route が complete だが、Apple
+hardware の verdict はまだ未取得である。OmniASR も認証済み Scaleway 実機 run
+待ちであり、source-level route の complete を Apple device 結果とはみなさない。
+live public coverage の現行値は CPU `full=131`、`partial=42`、
+`no-runtime-binder=20`、`not-artifact=1`、Metal `full=131`、
+`blocked-by-cpu=62`、`not-artifact=1`、source-level CPU-only は 0 である。
+現時点の release tag は 0、GitHub Release も 0 である。
 
 本ガイドは*手順*を documentation する。device は回さない: 実機（Apple Neural
 Engine・Hexagon device・Android 端末）上の実 GPU / NPU parity と soak は owner

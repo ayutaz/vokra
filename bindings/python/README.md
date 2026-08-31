@@ -7,12 +7,13 @@ keeps third-party Python runtime dependencies at zero.
 
 ## Status: source implementation current, package unpublished
 
-**Reviewed:** 2026-08-31 against GitHub `main`
+**Reviewed:** 2026-08-31 against the pre-documentation-refresh PR #79 snapshot
+at `d8a93bc3` (109 pass / 13 expected skip), with GitHub `main` at
 `41ce9ffdd4b0959497f55afa5016822f77a8a7b6`, the pre-documentation code
 baseline branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 `9f69277d8a0d5df574c1ee95563bd1f005de91d0`, and the generated C header.
 
-The workspace is `0.2.0` development with no Git tag or published release;
+The workspace is `0.3.0` development with no Git tag or published release;
 the package metadata remains `0.1.0.dev0` for unpublished source wheels. This
 checkout must not be documented as an installed `vokra==0.1.0` release. The source tree exports `Session`,
 `Stream`, `Event`, and the typed `VokraError` hierarchy without loading the

@@ -9,6 +9,12 @@ baseline was branch `feat/mac-cpu-metal-full-coverage-2026-08-28` at
 documentation/evidence checkpoint was
 `5cd97d124bc9eb9d2bb7b0367541dcd1492e4d1e`.
 
+The current checkout is workspace `0.3.0`. The pre-documentation-refresh PR
+#79 snapshot was `d8a93bc3` with 109 pass / 13 expected skip, against
+`origin/main` at `41ce9ffd`; the repository has 0 Git tags and 0 published
+releases. The `9f69277d` and
+`5cd97d12` hashes above are historical 0.2.0 records, not the current version.
+
 This directory contains public guides, generated-surface pointers, design
 decisions, validation evidence, and dated engineering records. Start with the
 guides below; use handoff and benchmark files only for the commit and
@@ -60,7 +66,7 @@ and the publication scripts for release eligibility.
 
 ## Current release posture
 
-The workspace version is `0.2.0` development; no Git tag or published release
+The workspace version is `0.3.0` development; no Git tag or published release
 exists yet. Rust APIs, the C ABI, GGUF metadata, and the model roster remain
 pre-1.0 and may change. The C header and Python prototype table are checked for
 exact function-set equality; documentation therefore avoids copying a function
