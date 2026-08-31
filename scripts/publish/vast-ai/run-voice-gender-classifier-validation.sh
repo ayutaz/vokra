@@ -10,6 +10,7 @@ VOKRA_ROOT="${VOKRA_ROOT:-$DEFAULT_ROOT}"
 VOKRA_SCRATCH="${VOKRA_SCRATCH:-$HOME/scratchpad}"
 PARITY_PROJECT="$VOKRA_ROOT/tools/parity"
 PARITY_DUMPER="$VOKRA_ROOT/tools/parity/voice_gender_classifier_dump_reference.py"
+PREPARE_CHECKPOINT="$VOKRA_ROOT/tools/parity/voice_gender_classifier_prepare_checkpoint.py"
 MODEL_KIND="voice-gender-classifier"
 LICENSE_SPDX="mit"
 UPSTREAM_REPO="JaesungHuh/voice-gender-classifier"
@@ -134,6 +135,68 @@ verify_checkpoint() {
     || die "checkpoint byte size mismatch for $path"
 }
 
+verify_prepared_audit() {
+  local audit_path="$1" prepared_path="$2"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python - \
+    "$audit_path" "$prepared_path" "$UPSTREAM_REPO" "$UPSTREAM_HF_REVISION" \
+    "$UPSTREAM_GITHUB_URL" "$UPSTREAM_REVISION" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+audit_path, prepared_path, repository, revision, source_repository, source_revision = sys.argv[1:]
+audit = json.loads(Path(audit_path).read_text(encoding="utf-8"))
+expected = {
+    "schema": "vokra-voice-gender-checkpoint-normalization-v1",
+    "status": "AUTHENTICATED_NORMALIZED",
+    "source_repository": repository,
+    "source_revision": revision,
+    "upstream_source_repository": source_repository,
+    "upstream_source_revision": source_revision,
+    "transform": "remove_authenticated_batchnorm_num_batches_tracked_v1",
+    "input_tensor_count": 233,
+    "input_floating_tensor_count": 202,
+    "input_counter_count": 31,
+    "output_tensor_count": 202,
+}
+for key, value in expected.items():
+    if audit.get(key) != value:
+        raise SystemExit(f"prepared checkpoint audit mismatch: {key}={audit.get(key)!r}, expected {value!r}")
+
+counter_names = {"bn1.num_batches_tracked", "bn5.num_batches_tracked", "bn6.num_batches_tracked", "attention.2.num_batches_tracked"}
+for layer in range(1, 4):
+    counter_names.add(f"layer{layer}.bn1.num_batches_tracked")
+    counter_names.update(f"layer{layer}.bns.{inner}.num_batches_tracked" for inner in range(7))
+    counter_names.add(f"layer{layer}.bn3.num_batches_tracked")
+removed = audit.get("removed_counter_names")
+if not isinstance(removed, list) or len(removed) != 31 or len(set(removed)) != 31 or set(removed) != counter_names:
+    raise SystemExit("prepared checkpoint audit counter manifest is not the exact 31-counter set")
+
+manifest = audit.get("floating_tensor_manifest")
+if not isinstance(manifest, list) or len(manifest) != 202:
+    raise SystemExit("prepared checkpoint audit floating manifest count is not 202")
+names = [row.get("name") if isinstance(row, dict) else None for row in manifest]
+if any(not isinstance(name, str) or not name for name in names) or len(set(names)) != 202:
+    raise SystemExit("prepared checkpoint audit floating manifest names are not unique")
+for row in manifest:
+    if not isinstance(row, dict) or set(row) != {"name", "shape", "dtype", "sha256"}:
+        raise SystemExit("prepared checkpoint audit floating manifest row is malformed")
+manifest_bytes = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+if audit.get("floating_tensor_manifest_sha256") != manifest_sha256:
+    raise SystemExit("prepared checkpoint audit floating manifest digest mismatch")
+
+prepared = Path(prepared_path).read_bytes()
+if audit.get("output_bytes") != len(prepared):
+    raise SystemExit("prepared checkpoint audit output byte count mismatch")
+actual_sha256 = hashlib.sha256(prepared).hexdigest()
+if audit.get("output_sha256") != actual_sha256:
+    raise SystemExit(f"prepared checkpoint audit output SHA-256 mismatch: {audit.get('output_sha256')!r} != {actual_sha256}")
+print("prepared checkpoint audit authenticated: status=AUTHENTICATED_NORMALIZED input=233 floating=202 counters=31 output=202")
+PY
+}
+
 require_vast_host() {
   local memory free_disk
   [[ "${VOKRA_PUBLISH_ON_VAST:-0}" == 1 ]] || die "VOKRA_PUBLISH_ON_VAST=1 is required"
@@ -155,6 +218,9 @@ require_tooling() {
   [[ -d "$VOKRA_ROOT/.git" && -f "$VOKRA_ROOT/Cargo.toml" ]] || die "repository checkout is missing"
   [[ -f "$PARITY_PROJECT/pyproject.toml" && -f "$PARITY_PROJECT/uv.lock" ]] || die "locked parity project is missing"
   [[ -f "$PARITY_DUMPER" ]] || die "dedicated reference dumper is missing"
+  [[ -f "$PREPARE_CHECKPOINT" ]] || die "dedicated checkpoint preparation sidecar is missing"
+  grep -Fq 'EXPECTED_INPUT_TENSOR_COUNT = 233' "$PREPARE_CHECKPOINT" || die "checkpoint preparation tensor contract is missing"
+  grep -Fq 'EXPECTED_COUNTER_COUNT = 31' "$PREPARE_CHECKPOINT" || die "checkpoint preparation counter contract is missing"
   grep -Fq 'model.ECAPA_gender' "$PARITY_DUMPER" || die "dumper is not importing official model"
   grep -Fq "$UPSTREAM_REVISION" "$PARITY_DUMPER" || die "dumper revision is not pinned"
   [[ -z "$(git -C "$VOKRA_ROOT" status --porcelain --untracked-files=all)" ]] || die "VAST checkout must be clean"
@@ -210,6 +276,7 @@ run_self_test() {
   for required in "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$UPSTREAM_GITHUB_URL" \
     "$UPSTREAM_HF_REVISION" "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" \
     "$PUBLIC_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" "voice_gender_classifier_dump_reference.py" \
+    "voice_gender_classifier_prepare_checkpoint.py" 'checkpoint-prepare.log' \
     "$CHECKPOINT_SHA256" "$CHECKPOINT_BYTES" "$UPSTREAM_LICENSE_FILE" "$UPSTREAM_LICENSE_SPDX" \
     "$UPSTREAM_LICENSE_COPYRIGHT" "$UPSTREAM_HF_LICENSE" 'verify_hf_identity' 'verify_source_identity' \
     "CARGO_BUILD_JOBS=\"\${CARGO_BUILD_JOBS:-1}\"" 'VOKRA_PUBLISH_ON_VAST' \
@@ -219,9 +286,18 @@ run_self_test() {
     'cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"' \
     '(cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"' \
     '(cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"' \
+    '--checkpoint "$checkpoint" --upstream-src "$source_dir" --canned --out-dir "$fixture_dir"' \
+    '--input "$checkpoint" --output "$prepared_checkpoint" --audit-json "$prepare_audit"' \
+    'verify_prepared_audit "$prepare_audit" "$prepared_checkpoint" | tee "$evidence_dir/checkpoint-prepare-verified.log"' \
+    'prepared checkpoint audit authenticated: status=AUTHENTICATED_NORMALIZED input=233 floating=202 counters=31 output=202' \
+    '--input "$prepared_checkpoint" --output "$corrected"' \
     'parity_voice_gender_classifier' 'VOICE_GENDER_OFFICIAL_PARITY MEASURED_NOT_GATED' \
     'VOICE_GENDER_METAL_VS_CPU MEASURED_NOT_GATED' 'verify_corrected_provenance'; do
     grep -Fq -- "$required" "$script_path" || { log "self-test missing: $required"; fail=1; }
+  done
+  # shellcheck disable=SC2016 # literal summary fields intentionally keep quoting
+  for required in 'prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")' 'prepare_audit_sha256=$(sha256_file "$prepare_audit")' 'publication=NOT_PERFORMED'; do
+    grep -Fq -- "$required" "$script_path" || { log "self-test missing summary evidence: $required"; fail=1; }
   done
   if grep -En '^[[:space:]]*(python3?|pip)([[:space:]]|$)' "$script_path" >/dev/null; then
     log "self-test found direct Python invocation"; fail=1
@@ -241,6 +317,7 @@ run_self_test() {
     log "self-test found a repository gate log write contract gap"; fail=1
   fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PARITY_DUMPER" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --project "$PARITY_PROJECT" --frozen --offline --python 3.12 python "$PREPARE_CHECKPOINT" --self-test >/dev/null || fail=1
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
     "$PARITY_PROJECT" "$UPSTREAM_REPO" "$UPSTREAM_HF_REVISION" "$UPSTREAM_FILE" "$CHECKPOINT_BYTES" "$CHECKPOINT_SHA256" <<'PY' || fail=1
 import sys
@@ -334,12 +411,12 @@ main() {
   preflight_gate "$checkpoint_sha256"
   require_vast_host
   require_tooling
-  local run_stamp work_dir input_dir source_dir fixture_dir evidence_dir checkpoint public_artifact corrected
+  local run_stamp work_dir input_dir source_dir fixture_dir evidence_dir checkpoint prepared_checkpoint prepare_audit public_artifact corrected
   run_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   work_dir="${work_arg:-$VOKRA_SCRATCH/voice-gender-validation/$run_stamp}"
   [[ ! -e "$work_dir" || -z "$(find "$work_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]] || die "work directory must be absent or empty"
   input_dir="$work_dir/input"; source_dir="$input_dir/source"; fixture_dir="$work_dir/fixtures"; evidence_dir="$work_dir/evidence"
-  checkpoint="$input_dir/checkpoint/$UPSTREAM_FILE"; public_artifact="$input_dir/public/$PUBLIC_FILE"; corrected="$work_dir/voice-gender-classifier-corrected.gguf"
+  checkpoint="$input_dir/checkpoint/$UPSTREAM_FILE"; prepared_checkpoint="$input_dir/checkpoint/voice-gender-classifier.prepared.safetensors"; prepare_audit="$evidence_dir/checkpoint-prepare.json"; public_artifact="$input_dir/public/$PUBLIC_FILE"; corrected="$work_dir/voice-gender-classifier-corrected.gguf"
   mkdir -p "$fixture_dir" "$evidence_dir" "$(dirname "$checkpoint")" "$(dirname "$public_artifact")"
   export UV_CACHE_DIR="$VOKRA_SCRATCH/uv-cache-voice-gender"
   step "Record environment"
@@ -357,9 +434,13 @@ main() {
   verify_source_identity "$source_dir" | tee "$evidence_dir/source-identity.log"
   step "Generate independent official fixtures"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PARITY_DUMPER" --checkpoint "$checkpoint" --upstream-src "$source_dir" --canned --out-dir "$fixture_dir" 2>&1 | tee "$evidence_dir/dumper.log"
+  step "Normalize inference checkpoint for converter"
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PREPARE_CHECKPOINT" --input "$checkpoint" --output "$prepared_checkpoint" --audit-json "$prepare_audit" 2>&1 | tee "$evidence_dir/checkpoint-prepare.log"
+  [[ -s "$prepared_checkpoint" && -s "$prepare_audit" ]] || die "checkpoint preparation did not produce auditable outputs"
+  verify_prepared_audit "$prepare_audit" "$prepared_checkpoint" | tee "$evidence_dir/checkpoint-prepare-verified.log"
   step "Convert with dedicated architecture"
   cargo build --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --release -p vokra-cli 2>&1 | tee "$evidence_dir/build.log"
-  "$VOKRA_ROOT/target/release/vokra-cli" convert --model "$MODEL_KIND" --input "$checkpoint" --output "$corrected" --license "$LICENSE_SPDX" 2>&1 | tee "$evidence_dir/convert.log"
+  "$VOKRA_ROOT/target/release/vokra-cli" convert --model "$MODEL_KIND" --input "$prepared_checkpoint" --output "$corrected" --license "$LICENSE_SPDX" 2>&1 | tee "$evidence_dir/convert.log"
   verify_corrected_provenance "$corrected" | tee "$evidence_dir/corrected-contract.log"
   export VOKRA_VOICE_GENDER_GGUF="$corrected" VOKRA_VOICE_GENDER_PCM="$fixture_dir/pcm.f32" VOKRA_VOICE_GENDER_FEATURES="$fixture_dir/features.f32" VOKRA_VOICE_GENDER_EMBEDDING="$fixture_dir/embedding.f32" VOKRA_VOICE_GENDER_LOGITS="$fixture_dir/logits.f32" VOKRA_VOICE_GENDER_PROBABILITIES="$fixture_dir/probabilities.f32"
   step "Run CPU parity"
@@ -373,7 +454,7 @@ main() {
   cargo clippy --manifest-path "$VOKRA_ROOT/Cargo.toml" --locked --workspace --all-targets -- -D warnings | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo deny check licenses advisories bans) | tee -a "$evidence_dir/gates.log"
   (cd "$VOKRA_ROOT" && cargo audit) | tee -a "$evidence_dir/gates.log"
-  { echo 'execution_status=MEASURED_NOT_GATED'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo 'cpu_parity=MEASURED_NOT_GATED'; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
+  { echo 'execution_status=MEASURED_NOT_GATED'; echo "corrected_sha256=$(sha256_file "$corrected")"; echo "public_sha256=$(sha256_file "$public_artifact")"; echo "prepared_checkpoint_sha256=$(sha256_file "$prepared_checkpoint")"; echo "prepare_audit_sha256=$(sha256_file "$prepare_audit")"; echo "upstream_revision=$UPSTREAM_REVISION"; echo 'cpu_parity=MEASURED_NOT_GATED'; echo 'publication=NOT_PERFORMED'; } | tee "$evidence_dir/summary.txt"
 }
 
 main "$@"
