@@ -17,10 +17,11 @@ import tomllib
 from urllib.parse import urlparse
 
 GATE_VERSION = 2
-# These are the VAST-reviewed inputs.  The lock hash is intentionally updated
-# only after uv has regenerated the lock for the exact pyproject below.
-LOCK_SHA256 = "7af99972fbf9c2935a74031cfc92d7fbe61db354f5185decf1d46f2d7ee2a1d1"
-PYPROJECT_SHA256 = "71260140341f4b4f47ee5116e79b9560aff3b63f719fac01c1d21352bea709e9"
+# These are the exact active closure inputs.  The retained dependency audit is
+# historical evidence for the previous lock and is independently checked below;
+# production remains blocked until a fresh audit binds these active bytes.
+LOCK_SHA256 = "e540f3151282a473f5ef63b901f1791927d4f5c6833fc807c89f945fd396cc06"
+PYPROJECT_SHA256 = "6105b4101732309880f43e3e8361c68ec5b7fa88f14611397e1e8b5f4827175b"
 FULL_AUDIT_SHA256 = "b7a4c6ffcbc68109d8743b127432dfedb4897cd52641b251433945da3f4b4d3d"
 COMPACT_AUDIT_SCHEMA = "vokra-speecht5-dependency-audit-compact-v1"
 EXPECTED_BUILD_CONSTRAINTS = [
@@ -424,6 +425,7 @@ def self_test() -> int:
         base["dependency_reviews"][0]["native_review"] = False
         base["model_reviews"][0]["bundled_review"] = False
         base["dependency_reviews_sha256"] = canonical(base["dependency_reviews"])
+        compact_audit["inputs"]["pyproject_sha256"] = digest((test_project / "pyproject.toml").read_bytes())
         compact_audit["inputs"]["uv_lock_sha256"] = LOCK_SHA256
         audit_path.write_text(json.dumps(compact_audit, sort_keys=True, separators=(",", ":")), encoding="utf-8")
         base["dependency_audit_evidence"]["sha256"] = digest(audit_path.read_bytes())

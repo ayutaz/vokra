@@ -1,9 +1,9 @@
 {
   "gate_version": 2,
-  "lock_sha256": "7af99972fbf9c2935a74031cfc92d7fbe61db354f5185decf1d46f2d7ee2a1d1",
-  "pyproject_sha256": "71260140341f4b4f47ee5116e79b9560aff3b63f719fac01c1d21352bea709e9",
-  "package_rows_sha256": "25d7e3700c35b44e99e0e4698dd4840f92fbd921a37d5f00f480fec5161c74cc",
-  "dependency_reviews_sha256": "6d338c58b3546b1a331743bfd887e6381084f897f4012d09a5f2fd2b2a62a222",
+  "lock_sha256": "e540f3151282a473f5ef63b901f1791927d4f5c6833fc807c89f945fd396cc06",
+  "pyproject_sha256": "6105b4101732309880f43e3e8361c68ec5b7fa88f14611397e1e8b5f4827175b",
+  "package_rows_sha256": "bb79a48eea1943b997b0cfda2eae1ef61cb1d9c831b5c669d1ab3aef9cae5d8d",
+  "dependency_reviews_sha256": "4cc8ab446af2d3b42ed5001ced15e4f66e0b7268b12e84310cd7883f35b689e7",
   "transformers_route": "transformers==5.5.0 / SpeechT5ForTextToSpeech.generate_speech",
   "tts_identity": {
     "repo": "microsoft/speecht5_tts",
@@ -305,16 +305,16 @@
       "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
     },
     {
-      "id": "setuptools@68.2.2",
+      "id": "setuptools@83.0.0",
       "name": "setuptools",
-      "version": "68.2.2",
+      "version": "83.0.0",
       "source": {
         "registry": "https://pypi.org/simple"
       },
-      "status": "REVIEWED",
-      "license": "MIT",
-      "native_review": "No native extension files observed in VAST audit",
-      "bundled_review": "Publisher license files audited; no prohibited bundled code identified"
+      "status": "PENDING_REVIEW",
+      "license": null,
+      "native_review": null,
+      "bundled_review": null
     },
     {
       "id": "sympy@1.14.0",

@@ -8,7 +8,7 @@ dependencies = [
     "numpy==1.26.4",
     "safetensors==0.8.0",
     "sentencepiece==0.2.2",
-    "setuptools==68.2.2",
+    "setuptools==83.0.0",
     "torch==2.4.1",
     "transformers==5.5.0",
     "typer==0.9.0",
