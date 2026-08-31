@@ -68,12 +68,13 @@
 //!    helpers. The complete fbank/CMVN input path, masks, and encoder graph
 //!    still remain fail-closed until the bound tensors are connected to those
 //!    native operators.
-//! 2. **The encoder semantic binder is authenticated.** The independent
-//!    upstream dumper authenticates all 940 names against `named_parameters()`
-//!    / `named_buffers()` and records their roles. This module now verifies
-//!    the exact 551 encoder names, source shapes, F32 types, role layout, and
-//!    compiled descriptor digest. It retains descriptors only; it does not
-//!    pretend that decoder or frontend execution is complete.
+//! 2. **The encoder and decoder semantic descriptors are authenticated.** The
+//!    independent upstream dumper authenticates all 940 names against
+//!    `named_parameters()` / `named_buffers()` and records their roles. This
+//!    module now verifies the exact 551 encoder names plus 389 decoder names,
+//!    source shapes, F32 types, role layouts, and compiled descriptor digests.
+//!    It retains typed descriptors only; it does not pretend that decoder or
+//!    frontend execution is complete.
 //! 3. **No tokenizer blob binding.** The source-authenticated
 //!    SentencePiece/TokenDict contract and 7832-entry dictionary are known,
 //!    but the converter stamps no [`KEY_TOKENIZER_MODEL`] blob. This binder
@@ -84,7 +85,7 @@
 //!    inference-only Conformer block; [`native`] exposes those exact
 //!    CPU/Metal-dispatched building blocks. The fbank input and strict
 //!    940-field executable model graph are not yet wired; the semantic
-//!    encoder descriptor binder is complete but execution remains
+//!    encoder and decoder descriptor binders are complete but execution remains
 //!    fail-closed.
 //!
 //! The upstream config is additionally awkward to reach: the handoff for
@@ -98,9 +99,9 @@
 //!
 //! So: the remaining blockers are the full native frontend connection,
 //! decoder/tokenizer, complete 940-field Conformer/AED execution graph, and
-//! independent VAST parity. The encoder descriptor binder and reusable native
-//! blocks are authenticated, but no runtime parity or transcription claim is
-//! made yet.
+//! independent VAST parity. The encoder/decoder descriptor binders and
+//! reusable native blocks are authenticated, but no runtime parity or
+//! transcription claim is made yet.
 //!
 //! # Loud-partial classification
 //!
@@ -412,11 +413,27 @@ pub const AUTHENTICATED_ENCODER_N_HEAD: u32 = 20;
 pub const AUTHENTICATED_ENCODER_FFN_DIM: u32 = 5_120;
 pub const AUTHENTICATED_ENCODER_KERNEL_SIZE: u32 = 33;
 
+/// Authenticated decoder geometry from the same FireRedASR-AED-L release.
+/// These constants are descriptor/binder authority, not fallback defaults for
+/// inspection fixtures.
+pub const AUTHENTICATED_DECODER_N_LAYER: u32 = 16;
+pub const AUTHENTICATED_DECODER_D_MODEL: u32 = 1_280;
+pub const AUTHENTICATED_DECODER_N_HEAD: u32 = 20;
+pub const AUTHENTICATED_DECODER_FFN_DIM: u32 = 5_120;
+pub const AUTHENTICATED_DECODER_VOCAB_SIZE: u32 = 7_832;
+pub const AUTHENTICATED_DECODER_MAX_POSITIONS: u32 = 5_000;
+
 /// SHA-256 of the canonical, source-order `(name|dtype|shape)` rows for the
 /// 551 authenticated encoder tensors.  This is compiled authority; a GGUF
 /// metadata field cannot replace it.
 pub const AUTHENTICATED_ENCODER_DESCRIPTOR_SHA256: &str =
     "42f34f512887ca0516f93eb204f048a61e3c44561f9ee6057dfd908a50661920";
+
+/// SHA-256 of the canonical, source-order `(name|dtype|shape)` rows for the
+/// 389 authenticated decoder tensors. This compiled value is the authority;
+/// caller metadata cannot substitute for it.
+pub const AUTHENTICATED_DECODER_DESCRIPTOR_SHA256: &str =
+    "671d375ee0c536ba5fc633d18a16754dc40d100082ec2b6023116165ca4a3fb5";
 
 /// Semantic role of an authenticated FireRed encoder tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -483,6 +500,68 @@ pub enum FireRedEncoderNativeLayout {
     PositionalTable,
 }
 
+/// Semantic role of an authenticated FireRed decoder tensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireRedDecoderTensorRole {
+    TargetEmbedding,
+    PositionalEncoding,
+    SelfAttentionNormWeight,
+    SelfAttentionNormBias,
+    SelfAttentionQWeight,
+    SelfAttentionQBias,
+    SelfAttentionKWeight,
+    SelfAttentionVWeight,
+    SelfAttentionVBias,
+    SelfAttentionOutputWeight,
+    SelfAttentionOutputBias,
+    CrossAttentionNormWeight,
+    CrossAttentionNormBias,
+    CrossAttentionQWeight,
+    CrossAttentionQBias,
+    CrossAttentionKWeight,
+    CrossAttentionVWeight,
+    CrossAttentionVBias,
+    CrossAttentionOutputWeight,
+    CrossAttentionOutputBias,
+    MlpNormWeight,
+    MlpNormBias,
+    MlpExpandWeight,
+    MlpExpandBias,
+    MlpProjectWeight,
+    MlpProjectBias,
+    TargetProjection,
+    OutputNormWeight,
+    OutputNormBias,
+}
+
+/// Source-to-native layout for a decoder descriptor. The descriptor is
+/// intentionally typed even while executable decoder binding remains closed:
+/// it records the exact PyTorch orientation that a future value binder must
+/// preserve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireRedDecoderNativeLayout {
+    /// Vocabulary rows consumed by embedding lookup: `[vocab, d_model]`.
+    EmbeddingRows,
+    /// `[1, max_positions, d_model]`, cropped by position at execution time.
+    PositionalTable,
+    /// A one-dimensional norm or bias vector.
+    Direct,
+    /// PyTorch Linear `[out, in]`; native Compute consumes `[in, out]`.
+    LinearOutInToComputeInOut,
+    /// Vocabulary-row projection `[vocab, d_model]`, tied-or-compatible with
+    /// the target embedding orientation but retained as its own semantic role.
+    ProjectionRows,
+}
+
+/// One generated semantic descriptor in the authenticated decoder contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FireRedDecoderTensorSpec {
+    pub role: FireRedDecoderTensorRole,
+    pub name: String,
+    pub source_shape: Vec<u64>,
+    pub native_layout: FireRedDecoderNativeLayout,
+}
+
 /// One generated semantic descriptor in the authenticated encoder contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FireRedEncoderTensorSpec {
@@ -507,6 +586,207 @@ const SHAPE_5120_1280_1: &[u64] = &[5120, 1280, 1];
 const SHAPE_2560_1_33: &[u64] = &[2560, 1, 33];
 const SHAPE_2560: &[u64] = &[2560];
 const SHAPE_1280_2560_1: &[u64] = &[1280, 2560, 1];
+const SHAPE_7832_1280: &[u64] = &[
+    AUTHENTICATED_DECODER_VOCAB_SIZE as u64,
+    AUTHENTICATED_DECODER_D_MODEL as u64,
+];
+const SHAPE_DECODER_POSITIONS: &[u64] = &[
+    1,
+    AUTHENTICATED_DECODER_MAX_POSITIONS as u64,
+    AUTHENTICATED_DECODER_D_MODEL as u64,
+];
+
+struct DecoderLayerTensorField {
+    suffix: &'static str,
+    role: FireRedDecoderTensorRole,
+    shape: &'static [u64],
+    native_layout: FireRedDecoderNativeLayout,
+}
+
+const DECODER_LAYER_TENSOR_FIELDS: [DecoderLayerTensorField; 24] = [
+    DecoderLayerTensorField {
+        suffix: "self_attn_norm.weight",
+        role: FireRedDecoderTensorRole::SelfAttentionNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn_norm.bias",
+        role: FireRedDecoderTensorRole::SelfAttentionNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.w_qs.weight",
+        role: FireRedDecoderTensorRole::SelfAttentionQWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.w_qs.bias",
+        role: FireRedDecoderTensorRole::SelfAttentionQBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.w_ks.weight",
+        role: FireRedDecoderTensorRole::SelfAttentionKWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.w_vs.weight",
+        role: FireRedDecoderTensorRole::SelfAttentionVWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.w_vs.bias",
+        role: FireRedDecoderTensorRole::SelfAttentionVBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.fc.weight",
+        role: FireRedDecoderTensorRole::SelfAttentionOutputWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "self_attn.fc.bias",
+        role: FireRedDecoderTensorRole::SelfAttentionOutputBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn_norm.weight",
+        role: FireRedDecoderTensorRole::CrossAttentionNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn_norm.bias",
+        role: FireRedDecoderTensorRole::CrossAttentionNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.w_qs.weight",
+        role: FireRedDecoderTensorRole::CrossAttentionQWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.w_qs.bias",
+        role: FireRedDecoderTensorRole::CrossAttentionQBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.w_ks.weight",
+        role: FireRedDecoderTensorRole::CrossAttentionKWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.w_vs.weight",
+        role: FireRedDecoderTensorRole::CrossAttentionVWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.w_vs.bias",
+        role: FireRedDecoderTensorRole::CrossAttentionVBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.fc.weight",
+        role: FireRedDecoderTensorRole::CrossAttentionOutputWeight,
+        shape: SHAPE_1280_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "cross_attn.fc.bias",
+        role: FireRedDecoderTensorRole::CrossAttentionOutputBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp_norm.weight",
+        role: FireRedDecoderTensorRole::MlpNormWeight,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp_norm.bias",
+        role: FireRedDecoderTensorRole::MlpNormBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp.w_1.weight",
+        role: FireRedDecoderTensorRole::MlpExpandWeight,
+        shape: SHAPE_5120_1280,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp.w_1.bias",
+        role: FireRedDecoderTensorRole::MlpExpandBias,
+        shape: SHAPE_5120,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp.w_2.weight",
+        role: FireRedDecoderTensorRole::MlpProjectWeight,
+        shape: SHAPE_1280_5120,
+        native_layout: FireRedDecoderNativeLayout::LinearOutInToComputeInOut,
+    },
+    DecoderLayerTensorField {
+        suffix: "mlp.w_2.bias",
+        role: FireRedDecoderTensorRole::MlpProjectBias,
+        shape: SHAPE_1280,
+        native_layout: FireRedDecoderNativeLayout::Direct,
+    },
+];
+
+const DECODER_GLOBAL_TENSOR_FIELDS: [(
+    &str,
+    FireRedDecoderTensorRole,
+    &[u64],
+    FireRedDecoderNativeLayout,
+); 5] = [
+    (
+        "decoder.tgt_word_emb.weight",
+        FireRedDecoderTensorRole::TargetEmbedding,
+        SHAPE_7832_1280,
+        FireRedDecoderNativeLayout::EmbeddingRows,
+    ),
+    (
+        "decoder.positional_encoding.pe",
+        FireRedDecoderTensorRole::PositionalEncoding,
+        SHAPE_DECODER_POSITIONS,
+        FireRedDecoderNativeLayout::PositionalTable,
+    ),
+    (
+        "decoder.tgt_word_prj.weight",
+        FireRedDecoderTensorRole::TargetProjection,
+        SHAPE_7832_1280,
+        FireRedDecoderNativeLayout::ProjectionRows,
+    ),
+    (
+        "decoder.layer_norm_out.weight",
+        FireRedDecoderTensorRole::OutputNormWeight,
+        SHAPE_1280,
+        FireRedDecoderNativeLayout::Direct,
+    ),
+    (
+        "decoder.layer_norm_out.bias",
+        FireRedDecoderTensorRole::OutputNormBias,
+        SHAPE_1280,
+        FireRedDecoderNativeLayout::Direct,
+    ),
+];
 
 struct LayerTensorField {
     suffix: &'static str,
@@ -795,7 +1075,54 @@ fn expected_encoder_tensor_specs() -> Vec<FireRedEncoderTensorSpec> {
     specs
 }
 
+fn expected_decoder_tensor_specs() -> Vec<FireRedDecoderTensorSpec> {
+    let mut specs = Vec::with_capacity(389);
+    for (name, role, shape, native_layout) in DECODER_GLOBAL_TENSOR_FIELDS[..2].iter().copied() {
+        specs.push(FireRedDecoderTensorSpec {
+            role,
+            name: name.to_owned(),
+            source_shape: shape.to_vec(),
+            native_layout,
+        });
+    }
+    for layer in 0..AUTHENTICATED_DECODER_N_LAYER {
+        for field in DECODER_LAYER_TENSOR_FIELDS {
+            specs.push(FireRedDecoderTensorSpec {
+                role: field.role,
+                name: format!("decoder.layer_stack.{layer}.{}", field.suffix),
+                source_shape: field.shape.to_vec(),
+                native_layout: field.native_layout,
+            });
+        }
+    }
+    for (name, role, shape, native_layout) in DECODER_GLOBAL_TENSOR_FIELDS[2..].iter().copied() {
+        specs.push(FireRedDecoderTensorSpec {
+            role,
+            name: name.to_owned(),
+            source_shape: shape.to_vec(),
+            native_layout,
+        });
+    }
+    specs
+}
+
 fn descriptor_digest(specs: &[FireRedEncoderTensorSpec]) -> [u8; 32] {
+    let mut canonical = Vec::new();
+    for spec in specs {
+        canonical.extend_from_slice(spec.name.as_bytes());
+        canonical.extend_from_slice(b"|torch.float32|");
+        for (index, dimension) in spec.source_shape.iter().enumerate() {
+            if index != 0 {
+                canonical.push(b',');
+            }
+            canonical.extend_from_slice(dimension.to_string().as_bytes());
+        }
+        canonical.push(b'\n');
+    }
+    crate::strict_checkpoint::sha256_bytes(&canonical)
+}
+
+fn decoder_descriptor_digest(specs: &[FireRedDecoderTensorSpec]) -> [u8; 32] {
     let mut canonical = Vec::new();
     for spec in specs {
         canonical.extend_from_slice(spec.name.as_bytes());
@@ -823,6 +1150,13 @@ fn hex_digest(bytes: &[u8; 32]) -> String {
 
 #[derive(Clone)]
 struct EncoderManifestRow {
+    name: String,
+    dtype: GgmlType,
+    shape: Vec<u64>,
+}
+
+#[derive(Clone)]
+struct DecoderManifestRow {
     name: String,
     dtype: GgmlType,
     shape: Vec<u64>,
@@ -883,6 +1217,62 @@ fn validate_encoder_rows(rows: &[EncoderManifestRow]) -> Result<Vec<FireRedEncod
     Ok(expected)
 }
 
+fn validate_decoder_rows(rows: &[DecoderManifestRow]) -> Result<Vec<FireRedDecoderTensorSpec>> {
+    let expected = expected_decoder_tensor_specs();
+    if expected.len() != 389
+        || hex_digest(&decoder_descriptor_digest(&expected))
+            != AUTHENTICATED_DECODER_DESCRIPTOR_SHA256
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l: compiled authenticated decoder descriptor contract is inconsistent"
+                .to_owned(),
+        ));
+    }
+    if rows.len() != expected.len() {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: decoder descriptor row count {}, expected 389",
+            rows.len()
+        )));
+    }
+    let mut canonical = Vec::new();
+    for (index, (row, spec)) in rows.iter().zip(&expected).enumerate() {
+        if row.name != spec.name {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: decoder descriptor row {index} is `{}`, expected `{}`",
+                row.name, spec.name
+            )));
+        }
+        if row.dtype != GgmlType::F32 {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated decoder tensor `{}` has dtype {:?}, expected F32",
+                row.name, row.dtype
+            )));
+        }
+        if row.shape != spec.source_shape {
+            return Err(VokraError::ModelLoad(format!(
+                "firered-asr-aed-l: authenticated decoder tensor `{}` shape {:?}, expected {:?}",
+                row.name, row.shape, spec.source_shape
+            )));
+        }
+        canonical.extend_from_slice(row.name.as_bytes());
+        canonical.extend_from_slice(b"|torch.float32|");
+        for (dimension_index, dimension) in row.shape.iter().enumerate() {
+            if dimension_index != 0 {
+                canonical.push(b',');
+            }
+            canonical.extend_from_slice(dimension.to_string().as_bytes());
+        }
+        canonical.push(b'\n');
+    }
+    let actual_digest = hex_digest(&crate::strict_checkpoint::sha256_bytes(&canonical));
+    if actual_digest != AUTHENTICATED_DECODER_DESCRIPTOR_SHA256 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: authenticated decoder descriptor digest {actual_digest}, expected {AUTHENTICATED_DECODER_DESCRIPTOR_SHA256}"
+        )));
+    }
+    Ok(expected)
+}
+
 fn bind_authenticated_encoder(
     file: &GgufFile,
     config: &FireredAsrAedConfig,
@@ -927,6 +1317,39 @@ fn bind_authenticated_encoder(
         })
         .collect::<Vec<_>>();
     validate_encoder_rows(&rows)
+}
+
+fn bind_authenticated_decoder(
+    file: &GgufFile,
+    config: &FireredAsrAedConfig,
+) -> Result<Vec<FireRedDecoderTensorSpec>> {
+    if file.tensors().len() != 940 {
+        return Err(VokraError::ModelLoad(format!(
+            "firered-asr-aed-l: authenticated decoder contract requires 940 tensors, got {}",
+            file.tensors().len()
+        )));
+    }
+    if config.decoder.n_layer != AUTHENTICATED_DECODER_N_LAYER
+        || config.decoder.d_model != AUTHENTICATED_DECODER_D_MODEL
+        || config.decoder.n_head != AUTHENTICATED_DECODER_N_HEAD
+        || config.decoder.ffn_dim != AUTHENTICATED_DECODER_FFN_DIM
+        || config.vocab_size != AUTHENTICATED_DECODER_VOCAB_SIZE
+    {
+        return Err(VokraError::ModelLoad(
+            "firered-asr-aed-l: authenticated decoder geometry drift".to_owned(),
+        ));
+    }
+    let rows = file
+        .tensors()
+        .iter()
+        .filter(|info| info.name.starts_with("decoder."))
+        .map(|info| DecoderManifestRow {
+            name: info.name.clone(),
+            dtype: info.dtype,
+            shape: info.dimensions.clone(),
+        })
+        .collect::<Vec<_>>();
+    validate_decoder_rows(&rows)
 }
 
 /// Optional `Array<String>` metadata key: the exact tensor names the
@@ -1541,6 +1964,7 @@ pub struct FireredAsrAed {
     cfg: Option<FireredAsrAedConfig>,
     weights: FireredAsrAedWeights,
     encoder_specs: Option<Vec<FireRedEncoderTensorSpec>>,
+    decoder_specs: Option<Vec<FireRedDecoderTensorSpec>>,
     weight_license: LicenseClass,
     has_tokenizer: bool,
 }
@@ -1643,6 +2067,17 @@ impl FireredAsrAed {
         } else {
             None
         };
+        let decoder_specs = if weights.tensor_count() == 940 {
+            let config = cfg.as_ref().ok_or_else(|| {
+                VokraError::ModelLoad(
+                    "firered-asr-aed-l: authenticated 940-tensor release requires decoder config"
+                        .to_owned(),
+                )
+            })?;
+            Some(bind_authenticated_decoder(file, config)?)
+        } else {
+            None
+        };
 
         // 4. Provenance surfacing. The converter stamps `apache-2.0` →
         //    Permissive by default; a GGUF with no stamp fail-closes to
@@ -1662,6 +2097,7 @@ impl FireredAsrAed {
             cfg,
             weights,
             encoder_specs,
+            decoder_specs,
             weight_license,
             has_tokenizer,
         })
@@ -1705,6 +2141,15 @@ impl FireredAsrAed {
     #[must_use]
     pub fn encoder_specs(&self) -> Option<&[FireRedEncoderTensorSpec]> {
         self.encoder_specs.as_deref()
+    }
+
+    /// Exact semantic decoder descriptors for the authenticated 940-tensor
+    /// release. Minimal synthetic inspection fixtures return `None` and are
+    /// never executable. The descriptor contract does not imply that the
+    /// decoder value graph, tokenizer, or transcription path is complete.
+    #[must_use]
+    pub fn decoder_specs(&self) -> Option<&[FireRedDecoderTensorSpec]> {
+        self.decoder_specs.as_deref()
     }
 
     /// Number of tensors bound from the GGUF.
@@ -2258,6 +2703,84 @@ mod tests {
         let mut unknown = rows();
         unknown[7].name = "encoder.layer_stack.0.unknown.weight".to_owned();
         assert!(validate_encoder_rows(&unknown).is_err());
+    }
+
+    #[test]
+    fn authenticated_decoder_descriptor_contract_is_exact_and_fail_closed() {
+        let expected = expected_decoder_tensor_specs();
+        assert_eq!(expected.len(), 389);
+        assert_eq!(
+            hex_digest(&decoder_descriptor_digest(&expected)),
+            AUTHENTICATED_DECODER_DESCRIPTOR_SHA256
+        );
+        assert_eq!(expected[0].role, FireRedDecoderTensorRole::TargetEmbedding);
+        assert_eq!(
+            expected[0].native_layout,
+            FireRedDecoderNativeLayout::EmbeddingRows
+        );
+        assert_eq!(
+            expected[1].native_layout,
+            FireRedDecoderNativeLayout::PositionalTable
+        );
+        assert_eq!(
+            expected[2].role,
+            FireRedDecoderTensorRole::SelfAttentionNormWeight
+        );
+        assert_eq!(
+            expected[2 + 15 * 24].name,
+            "decoder.layer_stack.15.self_attn_norm.weight"
+        );
+        assert_eq!(
+            expected[2 + 16 * 24].role,
+            FireRedDecoderTensorRole::TargetProjection
+        );
+        assert_eq!(
+            expected[2 + 16 * 24 + 1].role,
+            FireRedDecoderTensorRole::OutputNormWeight
+        );
+        let rows = || {
+            expected
+                .iter()
+                .map(|spec| DecoderManifestRow {
+                    name: spec.name.clone(),
+                    dtype: GgmlType::F32,
+                    shape: spec.source_shape.clone(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(validate_decoder_rows(&rows()).unwrap().len(), 389);
+
+        let mut missing = rows();
+        missing.pop();
+        assert!(validate_decoder_rows(&missing).is_err());
+
+        let mut mutated_name = rows();
+        mutated_name[0].name.push_str(".mutated");
+        assert!(validate_decoder_rows(&mutated_name).is_err());
+
+        let mut duplicate = rows();
+        duplicate[3] = duplicate[2].clone();
+        assert!(validate_decoder_rows(&duplicate).is_err());
+
+        let mut late_layer = rows();
+        late_layer[2 + 15 * 24].name = "decoder.layer_stack.14.self_attn_norm.weight".to_owned();
+        assert!(validate_decoder_rows(&late_layer).is_err());
+
+        let mut reordered = rows();
+        reordered.swap(2, 3);
+        assert!(validate_decoder_rows(&reordered).is_err());
+
+        let mut wrong_dtype = rows();
+        wrong_dtype[2].dtype = GgmlType::F16;
+        assert!(validate_decoder_rows(&wrong_dtype).is_err());
+
+        let mut wrong_shape = rows();
+        wrong_shape[2].shape[0] += 1;
+        assert!(validate_decoder_rows(&wrong_shape).is_err());
+
+        let mut unknown = rows();
+        unknown[2].name = "decoder.layer_stack.0.unknown.weight".to_owned();
+        assert!(validate_decoder_rows(&unknown).is_err());
     }
 
     // -----------------------------------------------------------------------
