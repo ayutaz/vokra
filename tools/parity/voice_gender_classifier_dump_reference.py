@@ -15,6 +15,9 @@ import argparse
 import hashlib
 import importlib
 import json
+import os
+import platform
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,10 +26,17 @@ from typing import Any
 UPSTREAM_REPOSITORY = "https://github.com/JaesungHuh/voice-gender-classifier.git"
 UPSTREAM_REVISION = "49bcbecfd929ba5a043bde645fdff1a375eb79c7"
 UPSTREAM_HF_REVISION = "db1222153bd60337e900be22add7af180452adc0"
+UPSTREAM_HF_FILE = "model.safetensors"
+CHECKPOINT_BYTES = 61_907_512
+CHECKPOINT_SHA256 = "2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"
+UPSTREAM_LICENSE_FILE = "LICENSE"
+UPSTREAM_LICENSE_SPDX = "MIT"
+UPSTREAM_LICENSE_COPYRIGHT = "Copyright (c) 2024 jaesunghuh"
+UPSTREAM_HF_LICENSE = "mit"
 SAMPLE_RATE = 16_000
 CLASS_LABELS = ["male", "female"]
-DUMPER_VERSION = 2
-CHECKPOINT_IDENTITY_STATUS = "UNRESOLVED"
+DUMPER_VERSION = 3
+CHECKPOINT_IDENTITY_STATUS = "AUTHENTICATED_FIXED"
 
 np: Any
 torch: Any
@@ -46,11 +56,18 @@ def bind_runtime_dependencies() -> None:
 
 
 def dependency_gate() -> int:
-    print(
-        "voice-gender reference BLOCKED: fixed checkpoint bytes/license evidence is unresolved",
-        file=sys.stderr,
-    )
-    return 2
+    """Check that this dumper is compiled against the fixed identity contract."""
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", CHECKPOINT_SHA256)
+        or CHECKPOINT_BYTES <= 0
+        or UPSTREAM_HF_FILE != "model.safetensors"
+        or UPSTREAM_LICENSE_FILE != "LICENSE"
+        or UPSTREAM_LICENSE_SPDX != "MIT"
+        or UPSTREAM_HF_LICENSE != "mit"
+    ):
+        print("voice-gender reference BLOCKED: fixed identity contract is invalid", file=sys.stderr)
+        return 2
+    return 0
 
 
 def sha256_file(path: Path) -> str:
@@ -79,6 +96,40 @@ def validate_checkout(checkout: Path) -> None:
         raise ValueError(f"upstream checkout is not pinned to {UPSTREAM_REVISION}")
     if git_output(checkout, "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("upstream checkout is dirty")
+    license_path = checkout / UPSTREAM_LICENSE_FILE
+    if not license_path.is_file() or license_path.is_symlink():
+        raise ValueError("upstream checkout is missing its primary MIT license file")
+    license_text = license_path.read_text(encoding="utf-8")
+    normalized_license = license_text.casefold()
+    required_license_evidence = (
+        "mit license",
+        UPSTREAM_LICENSE_COPYRIGHT.casefold(),
+        "permission is hereby granted, free of charge",
+    )
+    if any(marker not in normalized_license for marker in required_license_evidence):
+        raise ValueError("upstream checkout does not contain the pinned standard MIT license evidence")
+
+
+def validate_checkpoint(checkpoint: Path) -> None:
+    if checkpoint.name != UPSTREAM_HF_FILE:
+        raise ValueError(f"checkpoint filename must be exactly {UPSTREAM_HF_FILE}")
+    actual_bytes = checkpoint.stat().st_size
+    if actual_bytes != CHECKPOINT_BYTES:
+        raise ValueError(f"checkpoint byte size mismatch: {actual_bytes} != {CHECKPOINT_BYTES}")
+    actual_sha256 = sha256_file(checkpoint)
+    if actual_sha256 != CHECKPOINT_SHA256:
+        raise ValueError(f"checkpoint SHA-256 mismatch: {actual_sha256} != {CHECKPOINT_SHA256}")
+
+
+def execution_context_allowed(system: str, machine: str, publish_on_vast: str | None) -> bool:
+    return system == "Linux" and machine == "x86_64" and publish_on_vast == "1"
+
+
+def require_vast_context() -> None:
+    if not execution_context_allowed(
+        platform.system(), platform.machine(), os.environ.get("VOKRA_PUBLISH_ON_VAST")
+    ):
+        raise RuntimeError("voice-gender checkpoint execution requires VAST Linux x86_64 context")
 
 
 def canned_pcm() -> np.ndarray:
@@ -117,11 +168,23 @@ def write_raw(path: Path, values: np.ndarray, dtype: str) -> None:
 
 
 def self_test() -> None:
-    assert dependency_gate() == 2
+    assert dependency_gate() == 0
     required = [
         "ECAPA_gender",
         "load_file",
         "UPSTREAM_REVISION",
+        "UPSTREAM_HF_REVISION",
+        "UPSTREAM_HF_FILE",
+        "CHECKPOINT_BYTES",
+        "CHECKPOINT_SHA256",
+        "UPSTREAM_LICENSE_FILE",
+        "UPSTREAM_LICENSE_SPDX",
+        "UPSTREAM_LICENSE_COPYRIGHT",
+        "UPSTREAM_HF_LICENSE",
+        "validate_checkpoint",
+        "require_vast_context",
+        "execution_context_allowed",
+        "permission is hereby granted, free of charge",
         "torch.no_grad",
         "register_forward_pre_hook",
         "DUMPER_VERSION",
@@ -130,6 +193,9 @@ def self_test() -> None:
     missing = [token for token in required if token not in source]
     if missing:
         raise AssertionError(f"reference contract missing: {missing}")
+    assert execution_context_allowed("Linux", "x86_64", "1")
+    for context in (("Darwin", "arm64", "1"), ("Linux", "aarch64", "1"), ("Linux", "x86_64", None)):
+        assert not execution_context_allowed(*context)
     forbidden_reimplementation = "nn." + "Linear(192, 2)"
     if forbidden_reimplementation in source:
         raise AssertionError("dumper must not contain a model reimplementation")
@@ -161,12 +227,14 @@ def main() -> int:
         raise ValueError("exactly one of --pcm or --canned is required")
     if dependency_gate() != 0:
         return 2
+    require_vast_context()
     bind_runtime_dependencies()
     checkpoint = args.checkpoint.expanduser().resolve()
     checkout = args.upstream_src.expanduser().resolve()
     out_dir = args.out_dir.expanduser().resolve()
     if not checkpoint.is_file():
         raise ValueError(f"checkpoint does not exist: {checkpoint}")
+    validate_checkpoint(checkpoint)
     validate_checkout(checkout)
     pcm = canned_pcm() if args.canned else read_pcm(args.pcm.expanduser().resolve())
     torch.set_num_threads(1)
@@ -218,8 +286,15 @@ def main() -> int:
         "upstream_repository": UPSTREAM_REPOSITORY,
         "upstream_revision": UPSTREAM_REVISION,
         "upstream_hf_revision": UPSTREAM_HF_REVISION,
+        "checkpoint_file": UPSTREAM_HF_FILE,
+        "checkpoint_bytes": CHECKPOINT_BYTES,
         "upstream_class": "model.ECAPA_gender",
-        "checkpoint_sha256": sha256_file(checkpoint),
+        "checkpoint_sha256": CHECKPOINT_SHA256,
+        "upstream_license": UPSTREAM_LICENSE_SPDX,
+        "upstream_license_file": UPSTREAM_LICENSE_FILE,
+        "upstream_license_copyright": UPSTREAM_LICENSE_COPYRIGHT,
+        "upstream_hf_license": UPSTREAM_HF_LICENSE,
+        "checkpoint_identity_status": CHECKPOINT_IDENTITY_STATUS,
         "sample_rate": SAMPLE_RATE,
         "n_mels": 80,
         "n_fft": 512,

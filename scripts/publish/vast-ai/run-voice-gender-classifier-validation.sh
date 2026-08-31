@@ -17,11 +17,16 @@ UPSTREAM_REVISION="49bcbecfd929ba5a043bde645fdff1a375eb79c7"
 UPSTREAM_GITHUB_URL="https://github.com/JaesungHuh/voice-gender-classifier.git"
 UPSTREAM_HF_REVISION="db1222153bd60337e900be22add7af180452adc0"
 UPSTREAM_FILE="model.safetensors"
+CHECKPOINT_BYTES=61907512
+UPSTREAM_LICENSE_FILE="LICENSE"
+UPSTREAM_LICENSE_SPDX="MIT"
+UPSTREAM_LICENSE_COPYRIGHT="Copyright (c) 2024 jaesunghuh"
+UPSTREAM_HF_LICENSE="mit"
 PUBLIC_REPO="vokra/voice-gender-classifier"
 PUBLIC_REVISION="94c8d0ba41cfe2f7b8a773eb4a7982cf4facbc84"
 PUBLIC_FILE="voice-gender-classifier.restamped.gguf"
 PUBLIC_SHA256="e1e61f1493601087f5db5867c4f750ec99d6b11223b5323bd120e3c21e8f957f"
-CHECKPOINT_SHA256=""
+CHECKPOINT_SHA256="2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"
 MIN_VAST_MEM_KIB=67108864
 MIN_FREE_DISK_KIB=150000000
 
@@ -33,7 +38,17 @@ step() { printf '\n[voice-gender-vast] ==== %s ====\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
 preflight_gate() {
-  die "fixed upstream checkpoint byte identity/license gate is unresolved; arbitrary --checkpoint-sha256 is not accepted"
+  local requested_sha256="${1:-}"
+  [[ "$UPSTREAM_REPO" == "JaesungHuh/voice-gender-classifier" ]] || die "upstream repository contract drifted"
+  [[ "$UPSTREAM_GITHUB_URL" == "https://github.com/JaesungHuh/voice-gender-classifier.git" ]] || die "upstream source URL contract drifted"
+  [[ "$UPSTREAM_REVISION" == "49bcbecfd929ba5a043bde645fdff1a375eb79c7" ]] || die "upstream source revision contract drifted"
+  [[ "$UPSTREAM_HF_REVISION" == "db1222153bd60337e900be22add7af180452adc0" ]] || die "upstream Hub revision contract drifted"
+  [[ "$UPSTREAM_FILE" == "model.safetensors" && "$CHECKPOINT_BYTES" == 61907512 ]] || die "upstream checkpoint file contract drifted"
+  [[ "$CHECKPOINT_SHA256" == "2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5" ]] || die "fixed checkpoint digest contract drifted"
+  [[ "$UPSTREAM_LICENSE_FILE" == "LICENSE" && "$UPSTREAM_LICENSE_SPDX" == "MIT" ]] || die "upstream license contract drifted"
+  [[ "$UPSTREAM_LICENSE_COPYRIGHT" == "Copyright (c) 2024 jaesunghuh" ]] || die "upstream license copyright contract drifted"
+  [[ "$UPSTREAM_HF_LICENSE" == "mit" ]] || die "HF cardData license contract drifted"
+  [[ "$requested_sha256" == "$CHECKPOINT_SHA256" ]] || die "checkpoint digest is not the fixed authenticated identity"
 }
 
 usage() {
@@ -58,6 +73,51 @@ sha256_file() {
   fi
 }
 
+verify_hf_identity() {
+  uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python - \
+    "$PARITY_PROJECT" "$UPSTREAM_REPO" "$UPSTREAM_HF_REVISION" "$UPSTREAM_FILE" "$CHECKPOINT_BYTES" "$CHECKPOINT_SHA256" <<'PY'
+import sys
+from huggingface_hub import HfApi, RepoFile, RepoFolder
+sys.path.insert(0, sys.argv[1])
+from voice_gender_classifier_hf_identity import verify_info
+
+_, repository, revision, filename, expected_bytes, expected_sha256 = sys.argv[1:]
+expected_bytes = int(expected_bytes)
+api = HfApi()
+info = api.model_info(repo_id=repository, revision=revision)
+tree = []
+for item in api.list_repo_tree(repo_id=repository, revision=revision, recursive=True, expand=True):
+    if isinstance(item, RepoFolder):
+        continue
+    if not isinstance(item, RepoFile):
+        raise SystemExit(f"unsupported HF tree entry: {item!r}")
+    tree.append(item)
+verify_info(
+    info,
+    tree,
+    repository=repository,
+    revision=revision,
+    filename=filename,
+    expected_bytes=expected_bytes,
+    expected_sha256=expected_sha256,
+    expected_license="mit",
+)
+print(f"HF identity authenticated: repository={repository} revision={revision} file={filename} bytes={expected_bytes} sha256={expected_sha256} license=MIT")
+PY
+}
+
+verify_source_identity() {
+  local source_dir="$1"
+  [[ "$(git -C "$source_dir" rev-parse HEAD)" == "$UPSTREAM_REVISION" ]] || die "upstream source checkout is not the fixed revision"
+  [[ -z "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]] || die "upstream source checkout is dirty"
+  local license_path="$source_dir/$UPSTREAM_LICENSE_FILE"
+  [[ -f "$license_path" && ! -L "$license_path" ]] || die "upstream source primary license file is missing or symlinked"
+  grep -Fqi -- 'MIT License' "$license_path" || die "upstream source does not contain MIT license evidence"
+  grep -Fqi -- "$UPSTREAM_LICENSE_COPYRIGHT" "$license_path" || die "upstream source copyright evidence is missing"
+  grep -Fqi -- 'Permission is hereby granted, free of charge' "$license_path" || die "upstream source MIT grant evidence is missing"
+  echo "source identity authenticated: revision=$UPSTREAM_REVISION license=$UPSTREAM_LICENSE_SPDX license_file=$UPSTREAM_LICENSE_FILE"
+}
+
 verify_file() {
   local path="$1" expected="$2"
   [[ -f "$path" && ! -L "$path" ]] || { die "missing or symlinked file: $path"; return 2; }
@@ -65,6 +125,13 @@ verify_file() {
     die "SHA-256 mismatch for $path"
     return 2
   }
+}
+
+verify_checkpoint() {
+  local path="$1"
+  verify_file "$path" "$CHECKPOINT_SHA256"
+  [[ "$(wc -c < "$path" | tr -d '[:space:]')" == "$CHECKPOINT_BYTES" ]] \
+    || die "checkpoint byte size mismatch for $path"
 }
 
 require_vast_host() {
@@ -143,6 +210,8 @@ run_self_test() {
   for required in "$UPSTREAM_REPO" "$UPSTREAM_REVISION" "$UPSTREAM_GITHUB_URL" \
     "$UPSTREAM_HF_REVISION" "$PUBLIC_REPO" "$PUBLIC_REVISION" "$PUBLIC_FILE" \
     "$PUBLIC_SHA256" "$MODEL_KIND" "$LICENSE_SPDX" "voice_gender_classifier_dump_reference.py" \
+    "$CHECKPOINT_SHA256" "$CHECKPOINT_BYTES" "$UPSTREAM_LICENSE_FILE" "$UPSTREAM_LICENSE_SPDX" \
+    "$UPSTREAM_LICENSE_COPYRIGHT" "$UPSTREAM_HF_LICENSE" 'verify_hf_identity' 'verify_source_identity' \
     "CARGO_BUILD_JOBS=\"\${CARGO_BUILD_JOBS:-1}\"" 'VOKRA_PUBLISH_ON_VAST' \
     'MIN_VAST_MEM_KIB=67108864' 'MIN_FREE_DISK_KIB=150000000' \
     '"$VOKRA_ROOT/target/release/vokra-cli" convert' \
@@ -158,6 +227,73 @@ run_self_test() {
     log "self-test found publication operation"; fail=1
   fi
   UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python "$PARITY_DUMPER" --self-test >/dev/null || fail=1
+  UV_NO_CACHE=1 uv run --no-cache --no-project --offline --python 3.12 python - \
+    "$PARITY_PROJECT" "$UPSTREAM_REPO" "$UPSTREAM_HF_REVISION" "$UPSTREAM_FILE" "$CHECKPOINT_BYTES" "$CHECKPOINT_SHA256" <<'PY' || fail=1
+import sys
+from types import SimpleNamespace
+
+sys.path.insert(0, sys.argv[1])
+from voice_gender_classifier_hf_identity import IdentityError, verify_info
+
+repository, revision, filename, expected_bytes, expected_sha256 = sys.argv[2:]
+expected_bytes = int(expected_bytes)
+good_lfs = SimpleNamespace(size=expected_bytes, sha256=expected_sha256, pointer_size=128)
+good_item = SimpleNamespace(path=filename, size=expected_bytes, lfs=good_lfs)
+good_info = SimpleNamespace(
+    id=repository,
+    sha=revision,
+    card_data=SimpleNamespace(license="mit"),
+)
+
+def clone(value, **changes):
+    fields = vars(value).copy()
+    fields.update(changes)
+    return SimpleNamespace(**fields)
+
+def check(info=good_info, tree=(good_item,)):
+    verify_info(
+        info,
+        tree,
+        repository=repository,
+        revision=revision,
+        filename=filename,
+        expected_bytes=expected_bytes,
+        expected_sha256=expected_sha256,
+    )
+
+check()
+failures = {
+    "repository": clone(good_info, id="other/repository"),
+    "revision": clone(good_info, sha="0" * 40),
+    "license": clone(good_info, card_data=SimpleNamespace(license="apache-2.0")),
+    "legacy-cardData": SimpleNamespace(id=repository, sha=revision, cardData={"license": "mit"}),
+}
+for name, info in failures.items():
+    try:
+        check(info=info)
+    except IdentityError:
+        pass
+    else:
+        raise AssertionError(f"accepted {name} drift")
+
+bad_items = {
+    "missing-file": (),
+    "duplicate-file": (good_item, good_item),
+    "size": (clone(good_item, size=expected_bytes + 1),),
+    "missing-lfs": (clone(good_item, lfs=None),),
+    "lfs-size": (clone(good_item, lfs=clone(good_lfs, size=expected_bytes + 1)),),
+    "lfs-sha256": (clone(good_item, lfs=clone(good_lfs, sha256="1" * 64)),),
+    "malformed-lfs-sha256": (clone(good_item, lfs=clone(good_lfs, sha256="not-a-sha")),),
+}
+for name, tree in bad_items.items():
+    try:
+        check(tree=tree)
+    except IdentityError:
+        pass
+    else:
+        raise AssertionError(f"accepted {name} drift")
+print("voice_gender_classifier_hf_identity self-test: PASS")
+PY
   "$script_path" --self-test --work-dir /tmp/invalid >/dev/null 2>&1 && { log "self-test accepted extra argument"; fail=1; } || true
   (( fail == 0 )) || return 1
   echo "run-voice-gender-classifier-validation.sh self-test: PASS"
@@ -180,8 +316,8 @@ main() {
   fi
   (( checkpoint_seen )) || { usage; die "--checkpoint-sha256 is required"; return 2; }
   [[ "$checkpoint_sha256" =~ ^[0-9A-Fa-f]{64}$ ]] || die "checkpoint digest must be 64 hexadecimal characters"
-  CHECKPOINT_SHA256="$(printf '%s' "$checkpoint_sha256" | tr '[:upper:]' '[:lower:]')"
-  preflight_gate
+  checkpoint_sha256="$(printf '%s' "$checkpoint_sha256" | tr '[:upper:]' '[:lower:]')"
+  preflight_gate "$checkpoint_sha256"
   require_vast_host
   require_tooling
   local run_stamp work_dir input_dir source_dir fixture_dir evidence_dir checkpoint public_artifact corrected
@@ -199,11 +335,12 @@ main() {
   verify_file "$public_artifact" "$PUBLIC_SHA256"
   verify_artifact_contract "$public_artifact" | tee "$evidence_dir/public-contract.log"
   step "Fetch checkpoint and exact upstream source"
+  verify_hf_identity | tee "$evidence_dir/hf-identity.log"
   download_hf_file "$UPSTREAM_REPO" "$UPSTREAM_HF_REVISION" "$UPSTREAM_FILE" "$(dirname "$checkpoint")"
-  verify_file "$checkpoint" "$CHECKPOINT_SHA256"
+  verify_checkpoint "$checkpoint"
   git clone --no-checkout "$UPSTREAM_GITHUB_URL" "$source_dir"
   git -C "$source_dir" checkout --detach "$UPSTREAM_REVISION"
-  [[ -z "$(git -C "$source_dir" status --porcelain --untracked-files=all)" ]] || die "upstream source checkout is dirty"
+  verify_source_identity "$source_dir" | tee "$evidence_dir/source-identity.log"
   step "Generate independent official fixtures"
   uv run --project "$PARITY_PROJECT" --frozen --python 3.12 python "$PARITY_DUMPER" --checkpoint "$checkpoint" --upstream-src "$source_dir" --canned --out-dir "$fixture_dir" 2>&1 | tee "$evidence_dir/dumper.log"
   step "Convert with dedicated architecture"

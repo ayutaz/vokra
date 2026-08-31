@@ -16,12 +16,34 @@ MIN_MEMORY_BYTES=32000000000
 MIN_FREE_DISK_KIB=10000000
 UPSTREAM_REPOSITORY="https://github.com/JaesungHuh/voice-gender-classifier.git"
 UPSTREAM_REVISION="49bcbecfd929ba5a043bde645fdff1a375eb79c7"
+UPSTREAM_HF_REVISION="db1222153bd60337e900be22add7af180452adc0"
+UPSTREAM_HF_FILE="model.safetensors"
+CHECKPOINT_BYTES=61907512
+CHECKPOINT_SHA256="2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"
+UPSTREAM_LICENSE_FILE="LICENSE"
+UPSTREAM_LICENSE_SPDX="MIT"
+UPSTREAM_LICENSE_COPYRIGHT="Copyright (c) 2024 jaesunghuh"
+UPSTREAM_HF_LICENSE="mit"
 
 log() { printf '[voice-gender-apple] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; return 2; }
 
 preflight_gate() {
-  die "fixed upstream checkpoint byte identity/license gate is unresolved; Apple execution is blocked"
+  [[ "$UPSTREAM_REPOSITORY" == "https://github.com/JaesungHuh/voice-gender-classifier.git" ]] \
+    || die "upstream repository contract drifted"
+  [[ "$UPSTREAM_REVISION" == "49bcbecfd929ba5a043bde645fdff1a375eb79c7" ]] \
+    || die "upstream source revision contract drifted"
+  [[ "$UPSTREAM_HF_REVISION" == "db1222153bd60337e900be22add7af180452adc0" ]] \
+    || die "upstream Hub revision contract drifted"
+  [[ "$UPSTREAM_HF_FILE" == "model.safetensors" && "$CHECKPOINT_BYTES" == 61907512 ]] \
+    || die "upstream checkpoint file contract drifted"
+  [[ "$CHECKPOINT_SHA256" == "2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5" ]] \
+    || die "fixed checkpoint digest contract drifted"
+  [[ "$UPSTREAM_LICENSE_FILE" == "LICENSE" && "$UPSTREAM_LICENSE_SPDX" == "MIT" ]] \
+    || die "upstream license contract drifted"
+  [[ "$UPSTREAM_LICENSE_COPYRIGHT" == "Copyright (c) 2024 jaesunghuh" ]] \
+    || die "upstream license copyright contract drifted"
+  [[ "$UPSTREAM_HF_LICENSE" == "mit" ]] || die "HF cardData license contract drifted"
 }
 
 usage() {
@@ -102,6 +124,14 @@ require_reference() {
     '"upstream_repository": "https://github.com/JaesungHuh/voice-gender-classifier.git"' \
     '"upstream_revision": "49bcbecfd929ba5a043bde645fdff1a375eb79c7"' \
     '"upstream_hf_revision": "db1222153bd60337e900be22add7af180452adc0"' \
+    '"checkpoint_file": "model.safetensors"' \
+    '"checkpoint_bytes": 61907512' \
+    '"checkpoint_sha256": "2d8e0be1fdf159d60d5087416e6f6277c5e30ce9e33a61c767a9a409e6c503c5"' \
+    '"upstream_license": "MIT"' \
+    '"upstream_license_file": "LICENSE"' \
+    '"upstream_license_copyright": "Copyright (c) 2024 jaesunghuh"' \
+    '"upstream_hf_license": "mit"' \
+    '"checkpoint_identity_status": "AUTHENTICATED_FIXED"' \
     '"upstream_class": "model.ECAPA_gender"' \
     '"sample_rate": 16000' '"n_mels": 80' '"n_fft": 512' \
     '"win_length": 400' '"hop_length": 160' '"embedding_dim": 192'; do
@@ -154,7 +184,9 @@ run_self_test() (
     'VOKRA_REMOTE_APPLE_SILICON=1' 'Darwin' 'arm64' \
     'MIN_MEMORY_BYTES=32000000000' 'MIN_FREE_DISK_KIB=10000000' \
     'hw.memsize' 'df -Pk' 'xcrun -f metal' \
-    "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" \
+    "$UPSTREAM_REPOSITORY" "$UPSTREAM_REVISION" "$UPSTREAM_HF_REVISION" \
+    "$UPSTREAM_HF_FILE" "$CHECKPOINT_BYTES" "$CHECKPOINT_SHA256" \
+    "$UPSTREAM_LICENSE_FILE" "$UPSTREAM_LICENSE_SPDX" "$UPSTREAM_LICENSE_COPYRIGHT" "$UPSTREAM_HF_LICENSE" \
     'real_voice_gender_classifier_matches_official_reference' \
     'VOKRA_VOICE_GENDER_GGUF' 'VOKRA_VOICE_GENDER_PCM' \
     'VOKRA_VOICE_GENDER_FEATURES' 'VOKRA_VOICE_GENDER_LOGITS' \
