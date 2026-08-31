@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 import tomllib
 
-LOCK_SHA256 = "9bce463a60232d03bb3685999fb532e47c63990addfd7724f200766a218529a7"
+LOCK_SHA256 = "5a05395c04e3c047714e4c3e6fa1f7849520c83e4343c3d07aaea23b3f1bf754"
 PYPROJECT_SHA256 = "05ee8513b32d3bec6e9205c352363602177d7a52f3db525d3eb8bf1081181fb1"
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
